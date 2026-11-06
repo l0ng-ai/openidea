@@ -14,6 +14,7 @@ const cmd = {
   syntaxLocals: vi.fn((): R<Locals> => ok({ status: "noIdentifier" })),
   syntaxIdentifiers: vi.fn((): R<unknown> => ok([])),
   syntaxIdentifiersInFiles: vi.fn((): R<unknown> => ok([])),
+  indexUsages: vi.fn((): R<unknown> => ok([])),
   fsReadText: vi.fn(() => ok("a\nb\nc")),
 };
 const filesMentioning = vi.fn(async () => ({ paths: ["/p/b.ts"], limitHit: false }));
@@ -27,7 +28,7 @@ vi.mock("./candidates", () => ({ filesMentioning: () => filesMentioning() }));
 const { _addEditor } = await import("@/editor/api");
 const { fetchUsages } = await import("./usages");
 const { incompleteNote } = await import("@/editor/lsp/lsp");
-const { LOCAL_NOTE, TEXT_NOTE } = await import("./syntaxUsages");
+const { LOCAL_NOTE, TEXT_NOTE, INDEX_NOTE } = await import("./syntaxUsages");
 
 const r = (line: number, col: number, endCol: number): Range => ({ start: { line, col }, end: { line, col: endCol } });
 const view = new EditorView({ state: EditorState.create({ doc: "let x = 1;\nx + y;" }) });
@@ -99,6 +100,44 @@ describe("Find Usages fallback", () => {
     expect(res.note).toBe(TEXT_NOTE);
     expect(cmd.syntaxIdentifiersInFiles.mock.calls[0]).toEqual(expect.arrayContaining([["/p/b.ts", "/p/a.ts"], "y"]));
     expect(res.groups.map((g) => g.path)).toEqual(["/p/a.ts", "/p/b.ts"]);
+  });
+
+  it("answers non-locals from the project index before text search", async () => {
+    cmd.lspReferences.mockReturnValueOnce(err("internal"));
+    cmd.syntaxLocals.mockReturnValueOnce(
+      ok({ status: "notLocal", name: "y", range: r(1, 4, 5), reason: "unresolved" }),
+    );
+    cmd.indexUsages.mockReturnValueOnce(
+      ok([
+        { path: "/p/a.ts", range: r(1, 4, 5), uri: null },
+        { path: "/p/b.ts", range: r(2, 0, 1), uri: null },
+      ]),
+    );
+    const res = await fetchUsages(caret);
+    expect(cmd.indexUsages).toHaveBeenCalledWith("y");
+    expect(res.note).toBe(INDEX_NOTE);
+    expect(res.groups.map((g) => [g.path, g.usages.map((u) => [u.line, u.col])])).toEqual([
+      ["/p/a.ts", [[1, 4]]],
+      ["/p/b.ts", [[2, 0]]],
+    ]);
+    expect(filesMentioning).not.toHaveBeenCalled();
+    expect(cmd.syntaxIdentifiersInFiles).not.toHaveBeenCalled();
+  });
+
+  it("falls back to text search when the index has no occurrences", async () => {
+    cmd.lspReferences.mockReturnValueOnce(err("internal"));
+    cmd.syntaxLocals.mockReturnValueOnce(
+      ok({ status: "notLocal", name: "y", range: r(1, 4, 5), reason: "unresolved" }),
+    );
+    cmd.indexUsages.mockReturnValueOnce(ok([]));
+    cmd.syntaxIdentifiersInFiles.mockReturnValueOnce(
+      ok([{ path: "/p/a.ts", occurrences: [{ range: r(1, 4, 5), kind: "identifier", qualified: false }] }]),
+    );
+    const res = await fetchUsages(caret);
+    expect(cmd.indexUsages).toHaveBeenCalledWith("y");
+    expect(filesMentioning).toHaveBeenCalledWith(expect.anything(), "y");
+    expect(res.note).toBe(TEXT_NOTE);
+    expect(res.groups.map((g) => g.path)).toEqual(["/p/a.ts"]);
   });
 
   it("keeps the server error when the language has no grammar", async () => {

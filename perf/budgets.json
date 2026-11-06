@@ -5,19 +5,16 @@
   "ui": {
     "bundle.initialJsKb": 850,
     "bundle.initialCssKb": 60,
-
     "startup.readyMs": 400,
     "startup.tbtMs": 50,
     "startup.heapMb": 30,
     "startup.domNodes": 1500,
-
     "typing.p95Ms": 20,
     "typing.maxMs": 33,
     "typing.missedFramePct": 2,
     "typing.styleLayoutMsPerKey": 3,
     "typing.mainThreadMsPerKey": 10,
     "typing.tbtMs": 50,
-
     "typingLarge.openMs": 200,
     "typingLarge.p95Ms": 20,
     "typingLarge.maxMs": 33,
@@ -25,35 +22,28 @@
     "typingLarge.styleLayoutMsPerKey": 3,
     "typingLarge.mainThreadMsPerKey": 20,
     "typingLarge.tbtMs": 50,
-
     "keyRepeat.p95Ms": 20,
     "keyRepeat.maxMs": 33,
     "keyRepeat.missedFramePct": 2,
     "keyRepeat.mainThreadMsPerKey": 16,
     "keyRepeat.tbtMs": 50,
-
     "scroll.frameP95Ms": 17.5,
     "scroll.droppedFramesPct": 2,
     "scroll.tbtMs": 50,
     "scroll.jumpMs": 33,
-
     "tabs.openSmallMs": 100,
     "tabs.switchP95Ms": 33,
-
     "popups.findActionOpenMs": 50,
     "popups.findActionQueryMs": 120,
     "popups.findActionKeyP95Ms": 33,
     "popups.searchEverywhereOpenMs": 50,
     "popups.searchEverywhereQueryMs": 120,
-
     "toolWindows.maxMs": 50,
-
     "projectTree.expandMs": 50,
     "projectTree.frameP95Ms": 17.5,
     "projectTree.droppedFramesPct": 2,
     "projectTree.arrowKeyP95Ms": 20,
     "projectTree.arrowKeyMissedFramePct": 2,
-
     "leaks.heapGrowthMb": 4,
     "leaks.domNodeGrowth": 100,
     "leaks.listenerGrowth": 20
@@ -67,13 +57,11 @@
     "text/offset_to_pos_round_trip": 5,
     "text/pos_to_byte": 5,
     "text/text_for_save_crlf_1mb": 1000,
-
     "syntax_2mb/selection_cached_hit": 5000,
     "syntax_2mb/outline_cached_hit": 10000,
     "syntax_2mb/folding_cached_hit": 1000,
     "syntax_2mb/folding_after_keystroke_incremental": 200000,
     "syntax_2mb/outline_after_keystroke_incremental": 350000,
-
     "index_100k/find_files/a": 10000,
     "index_100k/find_files/ordcon": 10000,
     "index_100k/find_files/src/user": 10000,
@@ -85,13 +73,12 @@
     "index_100k/find_symbols/q": 15000,
     "index_100k/find_symbols/invoiceRepo": 15000,
     "index_100k/find_symbols_types/UsSe": 15000,
-
     "search_5k/literal": 100000,
     "search_5k/regex": 100000,
     "search_5k/dense_limit": 20000,
-
     "plugins/load_50": 20000,
     "plugins/cold_activation": 30000,
-    "plugins/syntax_highlights_2k_lines": 50000
+    "plugins/syntax_highlights_2k_lines": 50000,
+    "index_100k.usages_of": 1000.0
   }
 }

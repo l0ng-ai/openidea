@@ -16,6 +16,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import {
+  call,
   commands,
   isCancelled,
   type GotoKind,
@@ -387,6 +388,14 @@ async function probeNavigation(view: EditorView, offset: number): Promise<{ info
   let navigable = !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
   if (!navigable && doc) {
     const pos = offsetToPos(view.state.doc, offset);
+    // The project index answers locally: a hit needs no server round-trip.
+    const word = view.state.wordAt(offset);
+    if (word) {
+      const indexed = await call(commands.indexGoto(doc.doc, pos, view.state.sliceDoc(word.from, word.to))).catch(
+        () => null,
+      );
+      if (indexed?.targets.length) return { info: null };
+    }
     try {
       navigable = (await lspRequest(() => commands.lspGoto(doc.doc, pos, "definition"))).length > 0;
     } catch (e) {

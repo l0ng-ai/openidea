@@ -1,10 +1,11 @@
 /**
  * Find Usages without a language server (IDEA's dumb mode): a certain local's
- * same-scope references, otherwise identifier occurrences of the name across
- * the project (comments and strings excluded) — labelled as text occurrences.
+ * same-scope references, otherwise the project index's occurrences of the name
+ * (identifiers and component tags), else identifier occurrences across the
+ * project (comments and strings excluded) — labelled as text occurrences.
  */
 import type { Location, Range } from "@/bindings";
-import { nextRequestId } from "@/platform/ipc";
+import { call, commands, nextRequestId } from "@/platform/ipc";
 import { editorsFor, whenSynced } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { filesMentioning } from "./candidates";
@@ -12,6 +13,7 @@ import type { CaretContext } from "./ipc";
 
 export const LOCAL_NOTE = "Based on syntax (language server not ready)";
 export const TEXT_NOTE = "Text occurrences (language server not ready)";
+export const INDEX_NOTE = "Based on project index (language server not ready)";
 
 export interface SyntaxUsages {
   locs: Location[];
@@ -56,6 +58,10 @@ export async function syntaxUsages(c: CaretContext): Promise<SyntaxUsages | null
     name = locals.name;
   }
   if (!name || !IDENT.test(name)) return null;
+  // Non-local name: the project index first (identifiers + component tags),
+  // then whole-word text search as the last resort when the index is empty.
+  const indexed = await call(commands.indexUsages(name)).catch(() => null);
+  if (indexed?.length) return { locs: indexed.map((l) => ({ path: l.path, range: l.range })), note: INDEX_NOTE };
   const { paths, limitHit } = await filesMentioning(nextRequestId(), name);
   if (!paths.includes(c.path)) paths.push(c.path);
   const files = await structure.identifiersInFiles(paths, name);

@@ -25,6 +25,10 @@ fn bench(c: &mut Criterion) {
     g.bench_function("find_symbols_types/UsSe", |b| {
         b.iter(|| black_box(index.find_symbols("UsSe", SymbolFilter::Types, 50).len()))
     });
+    // Find-usages fallback: one inverted-map lookup (docs §11a budget: < 1 ms).
+    for q in ["orderController", "invoiceRepo", "zzzz"] {
+        g.bench_function(format!("usages_of/{q}"), |b| b.iter(|| black_box(index.usages_of(q).len())));
+    }
     g.finish();
 }
 

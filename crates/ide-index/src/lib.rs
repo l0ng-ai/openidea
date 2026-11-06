@@ -362,7 +362,7 @@ mod tests;
 #[doc(hidden)]
 pub mod bench_support {
     use super::*;
-    use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
+    use crate::data::{FileEntry, FileRecord, IndexData, StoredOccurrence, StoredSymbol};
 
     pub struct SyntheticIndex {
         data: IndexData,
@@ -405,7 +405,14 @@ pub mod bench_support {
                         range: Range::default(),
                     })
                     .collect();
-                let record = FileRecord { symbols, ..Default::default() };
+                let occurrences = (0..symbols_per_file * 3)
+                    .map(|k| StoredOccurrence {
+                        name: format!("{}{}{k}", WORDS[next(WORDS.len())], SUFFIX[next(SUFFIX.len())]),
+                        range: Range::default(),
+                        qualified: k % 4 == 0,
+                    })
+                    .collect();
+                let record = FileRecord { symbols, occurrences, ..Default::default() };
                 data.insert(FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record));
             }
             let recent = data.paths().take(MAX_RECENT).cloned().collect();
@@ -430,6 +437,11 @@ pub mod bench_support {
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
             matching::find_symbols(&self.data, &matching::Recents { paths: &self.recent }, query, filter, limit)
+        }
+
+        /// The inverted occurrence map's answer for `name` (find-usages).
+        pub fn usages_of(&self, name: &str) -> Vec<(PathBuf, Range, bool)> {
+            self.data.occurrences_of(name)
         }
     }
 }
