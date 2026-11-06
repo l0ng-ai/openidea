@@ -238,6 +238,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
@@ -3387,6 +3388,11 @@ async fn rename_edits_files_outside_the_analysis_scope() {
     eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
 }
 
+/// tsserver project registrations sent through vtsls, without the `geterr` that follows the first.
+fn project_requests(s: &MockState) -> Vec<Value> {
+    s.requested("workspace/executeCommand").into_iter().filter(|r| r["arguments"][0] != "geterr").collect()
+}
+
 #[tokio::test]
 async fn external_projects_are_capability_gated_and_follow_lifecycle() {
     for capable in [false, true] {
@@ -3408,24 +3414,21 @@ async fn external_projects_are_capability_gated_and_follow_lifecycle() {
             assert!(s.requested("workspace/executeCommand").is_empty());
             continue;
         }
-        let requests = s.requested("workspace/executeCommand");
+        let requests = project_requests(&s);
         assert_eq!(requests[0]["arguments"][0], "openExternalProject");
         assert_eq!(requests[0]["arguments"][1]["rootFiles"].as_array().unwrap().len(), 2);
         assert_eq!(s.docs.lock().len(), 1, "registration must not open source documents");
         std::fs::write(h.root.join("new.ts"), "export const newHelper = 1;").unwrap();
         h.mgr.project_files_changed([&h.root.join("new.ts")]);
-        eventually(|| s.requested("workspace/executeCommand").len() >= 2).await;
-        assert_eq!(
-            s.requested("workspace/executeCommand")[1]["arguments"][1]["rootFiles"].as_array().unwrap().len(),
-            3
-        );
+        eventually(|| project_requests(&s).len() >= 2).await;
+        assert_eq!(project_requests(&s)[1]["arguments"][1]["rootFiles"].as_array().unwrap().len(), 3);
         std::fs::rename(h.root.join("new.ts"), h.root.join("renamed.ts")).unwrap();
         h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
-        eventually(|| s.requested("workspace/executeCommand").len() >= 3).await;
-        assert!(s.requested("workspace/executeCommand")[2].to_string().contains("renamed.ts"));
+        eventually(|| project_requests(&s).len() >= 3).await;
+        assert!(project_requests(&s)[2].to_string().contains("renamed.ts"));
         std::fs::remove_file(h.root.join("renamed.ts")).unwrap();
         h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
-        eventually(|| s.requested("workspace/executeCommand").len() >= 4).await;
+        eventually(|| project_requests(&s).len() >= 4).await;
         let id = h.mgr.servers()[0].id;
         h.mgr.restart(id).await.unwrap();
         h.wait_status("arbitrary-name", ServerStatus::Ready).await;
@@ -3449,6 +3452,55 @@ async fn external_projects_are_capability_gated_and_follow_lifecycle() {
         .await;
         h.mgr.shutdown_all().await;
     }
+}
+
+#[tokio::test]
+async fn external_projects_carry_plugin_files_and_module_aliases() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["typescript.tsserverRequest"] });
+    let h = harness_configured("vue", "vue", &[("vtsls", caps)], |cfg| {
+        cfg.tsserver_project = true;
+        cfg.tsserver_project_extras.extensions = vec!["vue".into()];
+        cfg.tsserver_project_extras.paths.insert("@/*".into(), vec!["/project/src/*".into()]);
+    });
+    let s = h.launcher.state("vtsls");
+    s.respond("workspace/executeCommand", json!({ "success": true, "body": true }));
+    s.respond("textDocument/references", json!([]));
+    // vtsls answers from one file until its project reports diagnostics: loading till then,
+    // so an empty usage count is not final.
+    let diagnostics = Arc::new(Gate::default());
+    let gate = diagnostics.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        if method == "workspace/executeCommand" && params["arguments"][0] == "geterr" {
+            gate.hold();
+            return Some(Value::Null);
+        }
+        None
+    }));
+    std::fs::write(h.root.join("format.js"), "export const sum = 1;").unwrap();
+    let (doc, app) = h.open("App.vue", "<script>import { sum } from '@/format'</script>");
+    h.wait_status("vtsls", ServerStatus::Busy).await;
+    eventually(|| diagnostics.entered()).await;
+    let geterr = s.requested("workspace/executeCommand").into_iter().find(|r| r["arguments"][0] == "geterr").unwrap();
+    assert_eq!(geterr["arguments"][1]["files"], json!([app]), "an open file has a project in tsserver");
+    assert_eq!(geterr["arguments"][2]["isAsync"], true);
+    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+    diagnostics.open();
+    h.wait_status("vtsls", ServerStatus::Ready).await;
+    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, None);
+    let requests = s.requested("workspace/executeCommand");
+    let args = &requests[0]["arguments"][1];
+    assert_eq!(requests[0]["arguments"][0], "openExternalProject");
+    assert_eq!(args["rootFiles"].as_array().unwrap().len(), 2, "{args}");
+    assert_eq!(args["options"]["paths"], json!({ "@/*": ["/project/src/*"] }));
+    std::fs::write(h.root.join("Cart.vue"), "<script></script>").unwrap();
+    h.mgr.project_files_changed([&h.root.join("Cart.vue")]);
+    eventually(|| project_requests(&s).len() >= 2).await;
+    assert!(project_requests(&s)[1].to_string().contains("Cart.vue"));
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3, "geterr only after the first registration");
+    h.mgr.shutdown_all().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

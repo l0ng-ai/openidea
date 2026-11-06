@@ -38,6 +38,7 @@ fn server(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
