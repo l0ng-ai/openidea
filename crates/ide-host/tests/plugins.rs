@@ -2625,6 +2625,15 @@ fn services_location_is_accepted() {
     let middle = hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"middle\""));
     let err = f.host.install_from_dir(&middle, &Consent::all()).unwrap_err();
     assert!(err.message.contains("view \"greetings\": `location` is left, right, bottom or services"), "{err:?}");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let web = hello_variant(tmp.path(), |t| {
+        t.replace("location = \"right\"", "location = \"services\"\nweb = \"web/index.html\"")
+    });
+    std::fs::create_dir_all(web.join("web")).unwrap();
+    std::fs::write(web.join("web/index.html"), "<p>x</p>").unwrap();
+    let err = f.host.install_from_dir(&web, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("a services view is rendered by the plugin's code (no `web`)"), "{err:?}");
 }
 
 #[test]

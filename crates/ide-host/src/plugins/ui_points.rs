@@ -376,6 +376,9 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     if !["left", "right", "bottom", SERVICES_LOCATION].contains(&d.location.as_str()) {
         return Err(format!("view {:?}: `location` is left, right, bottom or services", d.id));
     }
+    if d.location == SERVICES_LOCATION && d.web.is_some() {
+        return Err(format!("view {:?}: a services view is rendered by the plugin's code (no `web`)", d.id));
+    }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {
         return Err(format!("view {:?}: icon names are up to 64 bytes", d.id));
     }

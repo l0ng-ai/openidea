@@ -127,23 +127,23 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                                                       | Code needed   |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                                               | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                             | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                   | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                     | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?`                                | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
-| `views`         | `id`, `title`, `icon?` (an icon name, or an SVG of the package), `location` (`left`, `right`, `bottom`), `web?` (see _Web views_) | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
+| Point           | Declaration                                                                                                                                                     | Code needed   |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                                                             | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                                                           | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                                 | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                                                   | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                                                       | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                        | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                                                 | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `tools`), `command`, `when?`                                                              | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                               | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                     | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                                                      | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name, or an SVG of the package), `location` (`left`, `right`, `bottom`, `services`), `web?` (see _Web views_, _Services views_) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                     | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                        | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                                                  | no            |
 
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
@@ -479,6 +479,57 @@ values (the body already uses the text colour, UI font and size):
 Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
 `openidea.onThemeChange(fn)`, for drawing on a canvas, say. Variables are only
 ever added.
+
+#### Services views
+
+`location = "services"` puts a view in the Services tool window, next to
+Docker and the run configurations, instead of a tool window of its own. Its
+code renders it (no `web`), and a plugin using it needs `engines.openidea =
+"^1.2"`:
+
+```toml
+[[contributes.views]]
+id = "kube"
+title = "Kubernetes"
+icon = "icons/kubernetes.svg"
+location = "services"
+
+[capabilities]
+optional = ["process:kubectl"]
+```
+
+The items of the view's `tree` are Services nodes; its toolbar buttons show
+while one of them is selected (a click sends `Select(key)`, then
+`Button(id)`), and activate / expand / collapse arrive as in a tool window.
+For the selected node the IDE renders the pane beside the tree with the same
+`render`, under the view id `"<view>/<item key>"` (view ids can't contain
+`/`; `views::split_detail` splits it), and sends that pane's events to
+`handle` under the same id. `host::refresh_view("kube")` renders the nodes
+and the open pane again.
+
+Three bodies suit the pane (they travel as `Other` and work in any view):
+
+- `Body::text(s)`: read-only text the user can select and copy.
+- `Body::process(program, args)`: the IDE runs `program` (it needs the
+  plugin's `process:<program>` grant) in the project root and streams its
+  output into the log Docker containers use (ANSI stripped, the last 5000
+  lines, Soft-wrap, Clear). `.toggle(id, label, args)` adds a switch that
+  appends `args` and restarts the program. It stops when the pane goes away.
+- `Body::tabs(vec![(id, label, body)])`: tabs the IDE switches without
+  calling the plugin; a tab's body is a message, `text` or `process`.
+
+```rust
+fn render(&mut self, view: &str, _: Option<Viewport>, _: &Invocation) -> Result<View, Error> {
+    if let Some(("kube", key)) = views::split_detail(view) {
+        let pod = key.trim_start_matches("pod:");
+        let log = Body::process("kubectl", &["logs", "-f", "--tail=1000", pod])
+            .toggle("ts", "Timestamps", &["--timestamps"]);
+        let describe = Body::process("kubectl", &["describe", "pod", pod]);
+        return Ok(View::new(Body::tabs(vec![("log", "Log", log.into()), ("inspect", "Inspect", describe.into())])));
+    }
+    Ok(View::new(Body::Tree(self.pods())).button(Button::new("delete", "Delete").icon("trash")))
+}
+```
 
 #### Web views
 

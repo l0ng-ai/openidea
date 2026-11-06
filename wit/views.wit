@@ -153,6 +153,9 @@ interface view-provider {
     use invocation.{invocation};
     use types.{error};
 
+    /// `view` is a declared view, or `"<view>/<item key>"`: the pane of the
+    /// selected node of a `location = "services"` view (whose events reach
+    /// `handle` under the same id).
     render: func(view: string, viewport: option<viewport>, ctx: borrow<invocation>) -> result<view, error>;
     handle: func(view: string, event: view-event, ctx: borrow<invocation>) -> result<_, error>;
 }

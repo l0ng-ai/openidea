@@ -1357,9 +1357,9 @@ mod tests {
         assert!(invalid(&other_view("tabs", nested), "tabs"));
         assert!(invalid(&other_view("tabs", "{not json"), "tabs"));
         let tab = r#"{"id":"a","label":"A","body":{"kind":"message","text":"m"}}"#;
-        let nine = format!(r#"{{"tabs":[{}]}}"#, vec![tab; 9].join(","));
+        let nine = format!(r#"{{"tabs":[{}]}}"#, [tab; 9].join(","));
         assert!(invalid(&other_view("tabs", &nine), "tabs"));
-        let eight = format!(r#"{{"tabs":[{}]}}"#, vec![tab; 8].join(","));
+        let eight = format!(r#"{{"tabs":[{}]}}"#, [tab; 8].join(","));
         assert!(
             matches!(other_view("tabs", &eight), ViewBody::Tabs(t) if t.len() == 8 && t[0].body == ViewBody::Message("m".into()))
         );
