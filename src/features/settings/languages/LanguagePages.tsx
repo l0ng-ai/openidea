@@ -4,8 +4,8 @@
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
 import { useEffect, useId, useMemo, useState } from "react";
-import { call, commands } from "@/platform/ipc";
-import { IconButton, Input, type SelectOption } from "@/ui";
+import { call, commands, type Sdk } from "@/platform/ipc";
+import { IconButton, Input, type SelectOption, T } from "@/ui";
 import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
@@ -134,6 +134,25 @@ function usePathPhp(enabled: boolean): string | null {
   return path;
 }
 
+/**
+ * The Xdebug version `php` loads, `null` for none; `undefined` while it is checked or when the check
+ * fails. Checked again when detection runs again (after installing Xdebug).
+ */
+function useXdebug(php: Sdk | undefined): string | null | undefined {
+  const [found, setFound] = useState<{ php: Sdk; xdebug: string | null } | null>(null);
+  useEffect(() => {
+    if (!php) return;
+    let live = true;
+    call(commands.sdkPhpXdebug(php.path, null))
+      .then((r) => live && setFound({ php, xdebug: r.xdebug }))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [php]);
+  return found && found.php === php ? found.xdebug : undefined;
+}
+
 export function PhpPage() {
   const [interpreter] = useSetting<string>("languages.php.interpreter");
   const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
@@ -143,6 +162,7 @@ export function PhpPage() {
   const pathPhp = usePathPhp(!interpreter);
   // Default runs the `php` on PATH: the list is newest first, so it isn't necessarily `list[0]`.
   const selected = list.find((s) => s.path === (interpreter || pathPhp));
+  const xdebug = useXdebug(selected);
   return (
     <div className={styles.page}>
       <Section>
@@ -203,6 +223,7 @@ export function PhpPage() {
           hint="Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
         />
         {selected?.version && <Row label="Version">{selected.version}</Row>}
+        {xdebug !== undefined && <Row label="Xdebug">{xdebug ?? <T>Not installed</T>}</Row>}
       </Section>
     </div>
   );

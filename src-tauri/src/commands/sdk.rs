@@ -35,6 +35,19 @@ pub fn sdk_php_effective(window: Window, state: State<'_, AppState>) -> IdeResul
     ide_host::ops::sdk::sdk_php_effective(&state.host, window.label())
 }
 
+/// The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
+/// project root).
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_php_xdebug(
+    window: Window,
+    state: State<'_, AppState>,
+    php: PathBuf,
+    cwd: Option<PathBuf>,
+) -> IdeResult<ide_sdk::php::PhpXdebug> {
+    ide_host::ops::sdk::sdk_php_xdebug(&state.host, window.label(), php, cwd).await
+}
+
 /// The PHP language level of the project `path` belongs to: the effective one and Auto's.
 #[tauri::command]
 #[specta::specta]

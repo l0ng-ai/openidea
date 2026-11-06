@@ -799,6 +799,11 @@ export const commands = {
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
 	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
+	/**
+	 *  The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
+	 *  project root).
+	 */
+	sdkPhpXdebug: (php: string, cwd: string | null) => typedError<PhpXdebug, IdeError>(__TAURI_INVOKE("sdk_php_xdebug", { php, cwd })),
 	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
 	sdkPhpLanguageLevel: (path: string) => typedError<PhpLanguageLevels, IdeError>(__TAURI_INVOKE("sdk_php_language_level", { path })),
 	/**  The Composer project `path` belongs to, when its dependencies need `composer install`. */
@@ -5671,6 +5676,15 @@ export type PhpSettings = {
 	 *  `~/`, or relative to the project.
 	 */
 	phpstanConfig?: string,
+};
+
+/**  A PHP interpreter's version and the Xdebug it loads. */
+export type PhpXdebug = {
+	php: IpcPath,
+	/**  `PHP_VERSION`. */
+	phpVersion: string,
+	/**  The Xdebug version; `None`: not loaded, so PHP ignores the `xdebug.*` options a debug session sets. */
+	xdebug: string | null,
 };
 
 /**  An entry of a plugin's `pick` or `pick-many`. */
