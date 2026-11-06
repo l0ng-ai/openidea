@@ -1620,12 +1620,17 @@ fn saving_a_loaded_run_configuration_drops_what_settings_derived() {
 fn nested_python_configs_get_their_own_virtualenv_but_explicit_settings_stay_project_relative() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    let _outer = fake_venv(root, ".venv");
-    let nested = fake_venv(&root.join("apps/python"), ".venv");
+    let outer = fake_venv(root, ".venv");
+    let nested = fake_venv(&root.join("apps").join("python"), ".venv");
     let mut config = run("python", "python3", &["main.py"]);
     config.extras.module = Some("apps/python".into());
     apply_to_run_configs(std::slice::from_mut(&mut config), root, &Settings::default());
     assert_eq!(config.env["VIRTUAL_ENV"], nested.parent().unwrap().parent().unwrap().to_string_lossy());
+    // A workspace member without its own virtualenv uses the one at the project root (uv workspaces).
+    let mut member = run("pytest", "python3", &["-m", "pytest"]);
+    member.extras.module = Some("packages/lib".into());
+    apply_to_run_configs(std::slice::from_mut(&mut member), root, &Settings::default());
+    assert_eq!(member.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
     let mut settings = Settings::default();
     settings.languages.python.interpreter = "custom/bin/python".into();
     let mut config = run("python", "python3", &["main.py"]);

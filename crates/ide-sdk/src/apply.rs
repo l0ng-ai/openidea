@@ -11,6 +11,7 @@ use ide_core::{IdeError, IdeResult};
 use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -265,7 +266,8 @@ fn gradle_run_jdk<'a>(
 ) -> Option<&'a crate::java::Jdk> {
     configured.or_else(|| {
         let release = release?;
-        let gradle = gradle?;
+        // An unknown Gradle version cannot narrow the choice: the release alone decides.
+        let Some(gradle) = gradle else { return crate::java::pick_jdk(installed, Some(release)) };
         let compatible: Vec<_> = installed.iter().filter(|jdk| gradle_supports_java(gradle, jdk.major)).collect();
         compatible
             .iter()
@@ -1064,20 +1066,30 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
 
+    // Module-local toolchains, looked up once per owning module and only for the kinds using them.
+    let mut toolchains: HashMap<(&'static str, PathBuf), Option<PathBuf>> = HashMap::new();
+    let mut toolchain = |tool: &'static str, owner: &Path| {
+        toolchains
+            .entry((tool, owner.to_path_buf()))
+            .or_insert_with(|| {
+                // A module outside the project (an external linked build) keeps the project's choices.
+                let near = if owner.starts_with(root) { owner } else { root };
+                match tool {
+                    "python" => python_interpreter_near(root, Some(near), s),
+                    "node" if non_empty(&s.languages.node.interpreter).is_none() => {
+                        node_dir(near, s).or_else(|| node_dir(root, s))
+                    }
+                    "node" => node_dir(root, s),
+                    "go" if non_empty(&s.languages.go.goroot).is_none() => goroot(near, s).or_else(|| goroot(root, s)),
+                    "go" => goroot(root, s),
+                    _ => setting_path(root, &s.languages.ruby.interpreter).or_else(|| ruby_interpreter(near, s)),
+                }
+            })
+            .clone()
+    };
+
     for c in configs.iter_mut() {
         let owner = ide_run::scope::owner(root, c);
-        let python = explicit_python.clone().or_else(|| python_interpreter(&owner, s));
-        let node = if non_empty(&s.languages.node.interpreter).is_some() {
-            node_dir(root, s)
-        } else {
-            node_dir(&owner, s).or_else(|| node_dir(root, s))
-        };
-        let go = if non_empty(&s.languages.go.goroot).is_some() {
-            goroot(root, s)
-        } else {
-            goroot(&owner, s).or_else(|| goroot(root, s))
-        };
-        let ruby = setting_path(root, &s.languages.ruby.interpreter).or_else(|| ruby_interpreter(&owner, s));
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
@@ -1101,6 +1113,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                         c.args = ["-m".to_owned(), "pytest".to_owned()].into_iter().chain(rest).collect();
                     }
                 }
+                let python = toolchain("python", &owner);
                 if let Some(venv) = python.as_deref().and_then(venv_of)
                     && !c.env.contains_key("VIRTUAL_ENV")
                 {
@@ -1118,7 +1131,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
                 // The configuration's own Node interpreter, else the project's.
                 let own = c.extras.params.get("nodeInterpreter").and_then(|p| setting_path(root, p));
-                if let Some(dir) = own.and_then(|p| p.parent().map(Path::to_path_buf)).or_else(|| node.clone()) {
+                if let Some(dir) =
+                    own.and_then(|p| p.parent().map(Path::to_path_buf)).or_else(|| toolchain("node", &owner))
+                {
                     path_dirs.push(dir);
                 }
             }
@@ -1145,7 +1160,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 for (key, value) in crate::go::module_environment(root, &s.languages.go.modules) {
                     c.env.entry(key).or_insert(value);
                 }
-                if let Some(goroot) = &go {
+                if let Some(goroot) = &toolchain("go", &owner) {
                     let bin = goroot.join("bin");
                     if c.command == "go" && bin.join(exe("go")).is_file() {
                         c.command = bin.join(exe("go")).to_string_lossy().into_owned();
@@ -1167,7 +1182,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "ruby" | "rake" | "rspec" => {
-                if let Some(ruby) = &ruby
+                if let Some(ruby) = &toolchain("ruby", &owner)
                     && let Some(bin) = crate::ruby::bin_dir_of(ruby)
                 {
                     // `ruby`, `bundle`, `rake`, `rspec` of the chosen interpreter when installed
@@ -1447,7 +1462,9 @@ mod gradle_runtime_tests {
             std::fs::write(dir.join("build.gradle.kts"), format!("kotlin {{ jvmToolchain({target}) }}")).unwrap();
             assert_eq!(gradle_run_jdk(Some(target), None, &installed, Some(gradle)).unwrap().major, expected);
         }
-        assert!(gradle_run_jdk(Some(21), None, &installed, None).is_none());
+        assert_eq!(gradle_run_jdk(Some(21), None, &installed, None).unwrap().major, 21);
+        assert_eq!(gradle_run_jdk(Some(19), None, &installed, None).unwrap().major, 21);
+        assert!(gradle_run_jdk(None, None, &installed, None).is_none());
     }
 
     #[test]

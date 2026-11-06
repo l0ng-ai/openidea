@@ -609,7 +609,7 @@ mod gradle_settings_tests {
         let root = temp.path();
         let tool = |name: &str| format!("{name}{}", std::env::consts::EXE_SUFFIX);
         for name in ["cargo", "go"] {
-            let path = root.join("sdk/bin").join(tool(name));
+            let path = root.join("sdk").join("bin").join(tool(name));
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, "").unwrap();
         }
@@ -622,9 +622,9 @@ mod gradle_settings_tests {
             (
                 "Cargo.toml",
                 "[package]\nname='demo'\nversion='0.1.0'",
-                root.join("sdk/bin").join(tool("cargo")).to_string_lossy().into_owned(),
+                root.join("sdk").join("bin").join(tool("cargo")).to_string_lossy().into_owned(),
             ),
-            ("go.mod", "module demo", root.join("sdk/bin").join(tool("go")).to_string_lossy().into_owned()),
+            ("go.mod", "module demo", root.join("sdk").join("bin").join(tool("go")).to_string_lossy().into_owned()),
             ("package.json", r#"{"scripts":{"build":"echo built"},"packageManager":"pnpm@10"}"#, "yarn".into()),
         ] {
             let dir = root.join(marker.replace('.', "-"));
