@@ -1,5 +1,5 @@
 /** "Resolve Conflicts" dialog and in-editor conflict resolution actions. */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FileStatus } from "@/bindings";
 import { activeEditor } from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
@@ -9,12 +9,27 @@ import { blockAt, parseConflicts, resolutionText, type Resolution } from "./conf
 import { openDialog } from "./dialogs";
 import { mergeInput } from "./mergeKind";
 import { baseName, dirName, relTo, stripSlash } from "./model";
-import { controlLabel, controlOperation, inProgress, operationTitle } from "./operations";
+import { controlLabel, controlOperation, inProgress, operationTitle, type InProgress } from "./operations";
 import { runOp, writeFileText } from "./ops";
 import { executeAction } from "@/platform/actions";
 import { conflictedFiles, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
+
+/**
+ * The stopped rebase / cherry-pick / revert whose conflicts are being resolved from the
+ * Conflicts dialog (there or in the merge editor it opened): once the last one is
+ * resolved the operation continues by itself, as IDEA does. Closing the dialog
+ * without resolving them leaves it stopped.
+ */
+let continueWhenResolved: InProgress | null = null;
+
+/** The operation to continue now that its conflicts are resolved, if any (only once). */
+export function takeContinueWhenResolved(): InProgress | null {
+  const op = continueWhenResolved;
+  continueWhenResolved = null;
+  return op;
+}
 
 export function showConflictsDialog() {
   if (!conflictedFiles().length) {
@@ -52,6 +67,20 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
   const files = useVcs((s) => s.status).filter((f) => f.unstaged === "conflicted");
   const root = useVcs((s) => s.root) ?? "";
   const op = useVcs((s) => inProgress(s.branch?.operation));
+  useEffect(() => {
+    continueWhenResolved = op && op !== "merge" ? op : null;
+  }, [op]);
+  // The last conflict resolved here: the operation continues (see onConflictsCleared), the dialog goes.
+  const hadConflicts = useRef(files.length > 0);
+  useEffect(() => {
+    if (hadConflicts.current && !files.length && op && op !== "merge") onClose();
+    hadConflicts.current = files.length > 0;
+  }, [files.length, op, onClose]);
+  // Closed without going on to resolve them: the operation stays stopped.
+  const dismiss = () => {
+    continueWhenResolved = null;
+    onClose();
+  };
   const head = useVcs((s) => s.branch?.head ?? null);
   const [active, setActive] = useState(0);
   const current = files[Math.min(active, files.length - 1)];
@@ -66,7 +95,7 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
     <Dialog
       open
       title="Conflicts"
-      onClose={onClose}
+      onClose={dismiss}
       width={600}
       footerStart={<span className={styles.hint}>{op ? operationTitle(op, head) : ""}</span>}
       buttons={[
@@ -77,7 +106,7 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
                 role: "default" as const,
                 autoFocus: true,
                 onClick: () => {
-                  onClose();
+                  dismiss();
                   conclude.run();
                 },
               },

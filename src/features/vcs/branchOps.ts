@@ -203,8 +203,12 @@ export async function checkoutRevision() {
 }
 
 export function conflictActions(message: string) {
-  return conflictedFiles().length || /conflict/i.test(message)
-    ? [{ label: "Resolve Conflicts…", run: () => void executeAction("vcs.resolveConflicts") }]
+  if (conflictedFiles().length || /conflict/i.test(message))
+    return [{ label: "Resolve Conflicts…", run: () => void executeAction("vcs.resolveConflicts") }];
+  // Stopped for another reason (the status was refreshed by openConflictsInstead): Abort.
+  const op = useVcs.getState().branch?.operation;
+  return op === "rebase" || op === "merge"
+    ? [{ label: "Abort", run: () => void executeAction(`vcs.${op}.abort`) }]
     : [];
 }
 
@@ -219,21 +223,26 @@ export async function openConflictsInstead(): Promise<boolean> {
   return true;
 }
 
-export async function mergeIntoCurrent(branch: string, repo: string | null = currentRepo()) {
+/** The full ref of a branch, so a tag of the same name isn't taken instead. */
+export function branchRef(name: string, remote: boolean): string {
+  return remote ? `refs/remotes/${name}` : `refs/heads/${name}`;
+}
+
+export async function mergeIntoCurrent(branch: string, repo: string | null = currentRepo(), ref = branch) {
   const current = (repo === currentRepo() ? useVcs.getState().branch?.head : null) ?? "HEAD";
   await saveAll();
-  await runOp(tx`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(repo, branch)), {
+  await runOp(tx`Merge ${branch} into ${current}`, () => call(commands.vcsMerge(repo, ref)), {
     success: tx`Merged ${branch} into ${current}`,
     errorActions: conflictActions,
     onError: openConflictsInstead,
   });
 }
 
-export async function rebaseOnto(branch: string) {
+export async function rebaseOnto(branch: string, ref = branch) {
   const repo = currentRepo();
   const current = useVcs.getState().branch?.head ?? "HEAD";
   await saveAll();
-  await runOp(tx`Rebase ${current} onto ${branch}`, () => call(commands.vcsRebase(repo, branch)), {
+  await runOp(tx`Rebase ${current} onto ${branch}`, () => call(commands.vcsRebase(repo, ref)), {
     success: tx`Rebased ${current} onto ${branch}`,
     errorActions: conflictActions,
     onError: openConflictsInstead,
@@ -312,6 +321,65 @@ export async function deleteBranch(name: string) {
   });
 }
 
+/** Remotes of the selected repository, as its remote-tracking branches name them. */
+export function knownRemotes(): string[] {
+  const names = useVcs
+    .getState()
+    .branches.filter((b) => b.remote)
+    .map((b) => b.name.slice(0, b.name.indexOf("/")))
+    .filter(Boolean);
+  return [...new Set(names)];
+}
+
+/** Tag › Delete: deletes the local tag; the notification restores it or deletes it on the remotes too. */
+export async function deleteTag(name: string) {
+  const repo = currentRepo();
+  const deleted = await runOp(tx`Delete tag ${name}`, () => call(commands.vcsDeleteTag(repo, name)));
+  if (!deleted) return;
+  const remotes = knownRemotes();
+  const key = `vcs.deletedTag.${name}`;
+  const done = () => notifications().expire?.(key);
+  notifications().notify({
+    group: "vcs",
+    level: "info",
+    key,
+    title: tx`Deleted tag ${name}`,
+    actions: [
+      {
+        label: "Restore",
+        run: () => {
+          done();
+          void runOp(tx`Restore tag ${name}`, () => call(commands.vcsRestoreTag(repo, deleted)), {
+            success: tx`Restored tag ${name}`,
+          });
+        },
+      },
+      ...(remotes.length
+        ? [
+            {
+              label: remotes.length === 1 ? "Delete on Remote" : "Delete on Remotes",
+              run: () => {
+                done();
+                void deleteRemoteTag(name, remotes, repo);
+              },
+            },
+          ]
+        : []),
+    ],
+  });
+}
+
+async function deleteRemoteTag(tag: string, remotes: readonly string[], repo: string | null) {
+  for (const remote of remotes) {
+    if (!(await runRemote({ op: "deleteRemoteTag", tag, remote }, `${remote}: ${tag}`, [repo]))) return;
+  }
+}
+
+/** Push Tag › Push to `remote`. */
+export async function pushTag(tag: string, remote: string) {
+  await runRemote({ op: "pushTag", tag, remote }, `${tag} → ${remote}`);
+}
+
 /** Deletes a branch on its remote (`git push <remote> --delete <name>`); `name` is e.g. `origin/feature`. */
 export async function deleteRemoteBranch(name: string) {
   const ok = await confirmDialog({
@@ -333,7 +401,7 @@ export async function checkoutAndRebase(name: string) {
   rememberBranch(current);
   rememberBranch(name);
   await refreshNow();
-  await rebaseOnto(current);
+  await rebaseOnto(current, branchRef(current, false));
 }
 
 /** Update for a branch other than the current one: fast-forwards it to its upstream. */

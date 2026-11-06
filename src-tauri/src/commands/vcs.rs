@@ -323,6 +323,30 @@ pub async fn vcs_delete_branch(
     ide_host::ops::vcs::vcs_delete_branch(&state.host, window.label(), repo, branch).await
 }
 
+/// Tag › Delete: the result is what "Restore" needs.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_delete_tag(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    name: String,
+) -> IdeResult<ide_vcs::DeletedTag> {
+    ide_host::ops::vcs::vcs_delete_tag(&state.host, window.label(), repo, name).await
+}
+
+/// "Restore" of the tag-deleted notification.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_restore_tag(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    deleted: ide_vcs::DeletedTag,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_restore_tag(&state.host, window.label(), repo, deleted).await
+}
+
 /// "Restore" of the branch-deleted notification.
 #[tauri::command]
 #[specta::specta]
@@ -671,6 +695,18 @@ pub async fn vcs_diff_numstat(
     paths: Vec<String>,
 ) -> IdeResult<Vec<FileLineStats>> {
     ide_host::ops::vcs::vcs_diff_numstat(&state.host, window.label(), repo, from, to, paths).await
+}
+
+/// Whether the repository has the executable Git hook `name` (Push dialog › Run Git hooks).
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_has_hook(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    name: String,
+) -> IdeResult<bool> {
+    ide_host::ops::vcs::vcs_has_hook(&state.host, window.label(), repo, name).await
 }
 
 /// The best common ancestor of `a` and `b` (`git merge-base`), if any.
