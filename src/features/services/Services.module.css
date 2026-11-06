@@ -4,8 +4,7 @@
   flex-direction: column;
   min-height: 0;
 }
-.toolbar,
-.subToolbar {
+.toolbar {
   height: 32px;
   flex: none;
   display: flex;
@@ -13,19 +12,11 @@
   gap: 2px;
   padding: 0 6px;
 }
-.subToolbar {
-  gap: 12px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--border);
-}
 .sep {
   width: 1px;
   height: 16px;
   margin: 0 4px;
   background: var(--border);
-}
-.flex {
-  flex: 1;
 }
 .banner {
   flex: none;
@@ -132,10 +123,6 @@
 }
 .log > div {
   cursor: text;
-}
-.wrap {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 .json {
   white-space: pre;
