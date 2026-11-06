@@ -1,6 +1,6 @@
 import { expect, test } from "./fixtures";
 
-test("configures an Oracle source and requires the Instant Client directory", async ({ workbench: page }, info) => {
+test("configures an Oracle source with its Instant Client directory", async ({ workbench: page }, info) => {
   await page.evaluate(async () => {
     const storePath = "/src/features/database/store.ts";
     const bindingsPath = "/src/bindings.ts";
@@ -20,15 +20,14 @@ test("configures an Oracle source and requires the Instant Client directory", as
   await expect(dialog.locator("#db-port")).toHaveValue("1521");
   await expect(dialog.locator("#db-url")).toHaveValue("jdbc:oracle://localhost:1521");
 
-  // The client libraries are not bundled: the Options tab names their directory first.
+  // The client libraries are not bundled: the Options tab names their directory (empty: ORACLE_HOME).
   const testButton = dialog.getByRole("button", { name: "Test Connection", exact: true });
-  await expect(testButton).toBeDisabled();
   await dialog.locator("#db-url").fill("oracle://scott:tiger@db.example:1521/ORCLPDB1");
   await expect(dialog.locator("#db-host")).toHaveValue("db.example");
   await expect(dialog.locator("#db-port")).toHaveValue("1521");
   await expect(dialog.locator("#db-user")).toHaveValue("scott");
   await expect(dialog.locator("#db-database")).toHaveValue("ORCLPDB1");
-  await expect(testButton).toBeDisabled();
+  await expect(testButton).toBeEnabled();
 
   await dialog.getByRole("tab", { name: "Options", exact: true }).click();
   await dialog.locator("#db-instant-client").fill("/opt/oracle/instantclient_23_5");

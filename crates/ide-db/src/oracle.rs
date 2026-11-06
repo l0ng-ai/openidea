@@ -606,5 +606,19 @@ mod tests {
         let values: Vec<String> = page.rows.iter().filter_map(|r| r.first().cloned().flatten()).collect();
         assert_eq!(values, ["5", "6", "7"]);
         assert!(page.has_more);
+
+        // PL/SQL units reach the server with their closing `END;`.
+        pool.rows("begin null; end;", 0).await.expect("anonymous block");
+        pool.rows("declare n number := 1; begin n := n + 1; end;", 0).await.expect("declare block");
+        let proc = "create or replace procedure openidea_p(a number) is\n  x number := a;\nbegin\n  x := x + 1;\nend;";
+        let rows = pool.rows(&format!("{proc}\nselect 7 from dual;"), 1).await.expect("procedure, then a query");
+        assert_eq!(rows.first().and_then(|r| r.first().cloned().flatten()).as_deref(), Some("7"));
+        pool.rows("begin openidea_p(1); end;", 0).await.expect("call the procedure");
+        let package = "create or replace package openidea_k as\n  function f return number;\nend openidea_k;\n/\n\
+                       create or replace package body openidea_k as\n  function f return number is begin return 8; end;\nend openidea_k;\n/";
+        pool.rows(package, 0).await.expect("package spec and body");
+        let rows = pool.rows("select openidea_k.f from dual", 1).await.expect("call the package");
+        assert_eq!(rows.first().and_then(|r| r.first().cloned().flatten()).as_deref(), Some("8"));
+        pool.rows("drop package openidea_k; drop procedure openidea_p", 0).await.expect("clean up");
     }
 }

@@ -9,7 +9,8 @@ use specta::Type;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SqlStatement {
-    /// UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded).
+    /// UTF-16 offsets of the statement text (whitespace trimmed, `;` excluded except
+    /// after an Oracle PL/SQL block, whose `END;` needs it).
     pub from: u32,
     pub to: u32,
     pub text: String,
@@ -52,6 +53,10 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     let mut depth = 0usize;
     // Inside a top-level block's declaration section (`DECLARE … BEGIN`).
     let mut declarations = false;
+    // The segment is a PL/SQL block: its closing `;` is part of the statement.
+    let mut block = false;
+    // `CREATE PACKAGE` / `TYPE BODY`: only `/` on its own line (or the end) ends it.
+    let mut package = false;
     let push = |out: &mut Vec<SqlStatement>, s: usize, e: usize, has_code: bool| {
         if !has_code {
             return;
@@ -75,10 +80,22 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
         let next = chars.get(i + 1).map(|c| c.1);
         match state {
             State::Code => match c {
-                ';' if depth == 0 && !declarations => {
-                    push(&mut out, start, i, has_code);
+                _ if plsql && !has_code && c.is_alphabetic() => {
+                    match plsql_unit(&chars, i) {
+                        Unit::Sql => {}
+                        Unit::Block => block = true,
+                        Unit::Subprogram => (block, declarations) = (true, true),
+                        Unit::Package => (block, package) = (true, true),
+                    }
+                    has_code = true;
+                    // Re-read this character as code (it may start BEGIN / DECLARE).
+                    continue;
+                }
+                ';' if depth == 0 && !declarations && !package => {
+                    push(&mut out, start, if block { i + 1 } else { i }, has_code);
                     start = i + 1;
                     has_code = false;
+                    block = false;
                 }
                 ';' => has_code = true,
                 '\'' => {
@@ -107,6 +124,8 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
                     has_code = false;
                     depth = 0;
                     declarations = false;
+                    block = false;
+                    package = false;
                 }
                 '-' if next == Some('-') => {
                     state = State::LineComment;
@@ -208,6 +227,49 @@ pub fn split(text: &str, driver: DbDriver) -> Vec<SqlStatement> {
     }
     push(&mut out, start, chars.len(), has_code);
     out
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Unit {
+    Sql,
+    /// `DECLARE` / `BEGIN`: an anonymous block.
+    Block,
+    /// `CREATE PROCEDURE` / `FUNCTION` / `TRIGGER`: declarations up to the body's BEGIN.
+    Subprogram,
+    /// `CREATE PACKAGE [BODY]` / `TYPE BODY`.
+    Package,
+}
+
+/// What kind of PL/SQL unit, if any, a statement starting at `i` is.
+fn plsql_unit(chars: &[(usize, char)], mut i: usize) -> Unit {
+    let mut words: Vec<String> = Vec::new();
+    while words.len() < 6 {
+        let word: String = chars[i.min(chars.len())..]
+            .iter()
+            .map(|&(_, c)| c)
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if word.is_empty() {
+            break;
+        }
+        i = skip_ws(chars, i + word.chars().count());
+        words.push(word.to_ascii_uppercase());
+    }
+    let w = |n: usize| words.get(n).map_or("", String::as_str);
+    match w(0) {
+        "DECLARE" | "BEGIN" => return Unit::Block,
+        "CREATE" => {}
+        _ => return Unit::Sql,
+    }
+    let mut n = if (w(1), w(2)) == ("OR", "REPLACE") { 3 } else { 1 };
+    if matches!(w(n), "EDITIONABLE" | "NONEDITIONABLE") {
+        n += 1;
+    }
+    match (w(n), w(n + 1)) {
+        ("PROCEDURE" | "FUNCTION" | "TRIGGER", _) => Unit::Subprogram,
+        ("PACKAGE", _) | ("TYPE", "BODY") => Unit::Package,
+        _ => Unit::Sql,
+    }
 }
 
 /// Whether the characters at `i` are the keyword `word` (identifier bounds respected).
@@ -351,9 +413,15 @@ mod tests {
     #[test]
     fn oracle_keeps_plsql_blocks_as_one_statement() {
         let block = "begin\n  for r in (select 1 from dual) loop\n    null; -- ;\n  end loop;\nend";
-        assert_eq!(texts(&format!("{block};\nselect 2;"), DbDriver::Oracle), vec![block, "select 2"]);
+        assert_eq!(
+            texts(&format!("{block};\nselect 2;"), DbDriver::Oracle),
+            vec![format!("{block};"), "select 2".into()]
+        );
         let nested = "declare\n  x number;\nbegin\n  if x = 1 then\n    case when x = 2 then\n      null;\n    end case;\n    begin\n      null;\n    end;\n  end if;\nend";
-        assert_eq!(texts(&format!("{nested};\nselect 3;"), DbDriver::Oracle), vec![nested, "select 3"]);
+        assert_eq!(
+            texts(&format!("{nested};\nselect 3;"), DbDriver::Oracle),
+            vec![format!("{nested};"), "select 3".into()]
+        );
         // Plain SQL with CASE is unaffected; END IF does not close a block twice.
         assert_eq!(
             texts("select case when a = 1 then 2 end from t; select 2", DbDriver::Oracle),
@@ -366,10 +434,37 @@ mod tests {
         // `END;` ends the block; a following `/` (SQL*Plus's own terminator) adds nothing.
         assert_eq!(
             texts("begin\n  null;\nend;\n/\nselect 2", DbDriver::Oracle),
-            vec!["begin\n  null;\nend", "select 2"]
+            vec!["begin\n  null;\nend;", "select 2"]
         );
         // A division is not a terminator.
         assert_eq!(texts("select 1 /\n 2 from dual", DbDriver::Oracle), vec!["select 1 /\n 2 from dual"]);
         assert_eq!(texts("select 'a;b' from t; select 2", DbDriver::Oracle), vec!["select 'a;b' from t", "select 2"]);
+    }
+
+    #[test]
+    fn oracle_create_units_keep_their_declarations_and_end() {
+        let proc = "create or replace procedure p(a number) is\n  x number := 1;\nbegin\n  null;\nend p;";
+        assert_eq!(texts(&format!("{proc}\nselect 1 from dual;"), DbDriver::Oracle), vec![proc, "select 1 from dual"]);
+        let trigger =
+            "CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW\nDECLARE n NUMBER;\nBEGIN\n  :new.id := 1;\nEND;";
+        assert_eq!(
+            texts(&format!("{trigger}\nselect 2 from dual"), DbDriver::Oracle),
+            vec![trigger, "select 2 from dual"]
+        );
+        // Packages end at `/` (or the end of the script), like in SQL*Plus.
+        let spec = "create package k as\n  procedure a;\n  function f return number;\nend k;";
+        let body = "create package body k as\n  procedure a is begin null; end;\n  function f return number is begin return 1; end;\nbegin\n  null;\nend k;";
+        assert_eq!(
+            texts(&format!("{spec}\n/\n{body}\n/\nselect 3 from dual;"), DbDriver::Oracle),
+            vec![spec, body, "select 3 from dual"]
+        );
+        // Other CREATE statements and object types stay plain SQL.
+        assert_eq!(
+            texts(
+                "create view v as select 1 x from dual; create type t as object (a number); select 4",
+                DbDriver::Oracle
+            ),
+            vec!["create view v as select 1 x from dual", "create type t as object (a number)", "select 4"]
+        );
     }
 }

@@ -395,12 +395,9 @@ export function SourceDialog({
   const name =
     s.name?.trim() || (sqlite ? fileSourceName(s.file ?? "") : `${database || s.user || "db"}@${host || "localhost"}`);
   const sshOn = !sqlite && !!ssh.enabled;
-  const valid =
-    (sqlite
-      ? !!s.file?.trim()
-      : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || sshTunnelReady(ssh, sshConfigs))) &&
-    (!oracle || !!s.options?.instantClient?.trim());
-  const instantClientInvalid = oracle && !s.options?.instantClient?.trim();
+  const valid = sqlite
+    ? !!s.file?.trim()
+    : (urlOnly ? urlValid : !!s.host?.trim()) && (!sshOn || sshTunnelReady(ssh, sshConfigs));
   const sslOn = (s.ssl ?? "prefer") !== "disable";
 
   /** What is saved / tested: a preset's port when the field was left empty. */
@@ -681,13 +678,12 @@ export function SourceDialog({
           <Input
             id="db-instant-client"
             value={options.instantClient ?? ""}
-            invalid={instantClientInvalid}
             placeholder="/opt/oracle/instantclient_23_5"
             onChange={(e) => setOptions({ instantClient: e.target.value })}
           />
           <span />
           <span className={styles.formHint}>
-            <T>Directory of Oracle Instant Client 19+ with the basic and sqlplus libraries; needed to connect.</T>
+            <T>Directory of Oracle Instant Client 19 or later. Empty: ORACLE_HOME or the system library path.</T>
           </span>
         </>
       )}
