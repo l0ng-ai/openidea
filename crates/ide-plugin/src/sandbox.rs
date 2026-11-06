@@ -22,9 +22,11 @@ pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
 }
 
 /// Like [`resolve_in_root`] for a path that may not exist yet (a file about to
-/// be created): the part that exists is resolved through symlinks, the rest is
-/// normalised lexically, and the result must stay inside `root`.
+/// be created) or that names a symlink itself (to delete or rename it): the
+/// directory part is resolved through symlinks, the final name is kept as is,
+/// and the result must stay inside `root`.
 pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let outside = || format!("{path}: access outside the project root is not allowed");
     if path.is_empty() {
         return Err("empty path".into());
     }
@@ -41,19 +43,23 @@ pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
             part => lexical.push(part),
         }
     }
+    let (Some(name), Some(parent)) = (lexical.file_name(), lexical.parent()) else {
+        return Err(outside());
+    };
     let mut missing = Vec::new();
-    let mut existing = lexical.as_path();
+    let mut existing = parent;
     while !existing.exists() {
-        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
-            return Err(format!("{path}: access outside the project root is not allowed"));
+        let (Some(dir), Some(above)) = (existing.file_name(), existing.parent()) else {
+            return Err(outside());
         };
-        missing.push(name);
-        existing = parent;
+        missing.push(dir);
+        existing = above;
     }
     let mut real = existing.canonicalize().map_err(|e| format!("{path}: {e}"))?;
     real.extend(missing.into_iter().rev());
+    real.push(name);
     if !real.starts_with(&root) {
-        return Err(format!("{path}: access outside the project root is not allowed"));
+        return Err(outside());
     }
     Ok(real)
 }
@@ -112,6 +118,21 @@ mod tests {
         assert!(resolve_new_in_root(&root, "src/../../x.txt").unwrap_err().contains("outside"));
         assert!(resolve_new_in_root(&root, "/etc/new.txt").is_err());
         assert!(resolve_new_in_root(&root, "").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_named_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("target.txt"), "t").unwrap();
+        std::os::unix::fs::symlink(root.join("target.txt"), root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), root.join("out")).unwrap();
+        let root_real = root.canonicalize().unwrap();
+
+        assert_eq!(resolve_new_in_root(&root, "link.txt").unwrap(), root_real.join("link.txt"));
+        assert!(resolve_new_in_root(&root, "out/x.txt").unwrap_err().contains("outside"));
     }
 
     #[cfg(unix)]

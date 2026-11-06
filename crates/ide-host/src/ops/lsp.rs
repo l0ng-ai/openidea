@@ -380,15 +380,15 @@ pub async fn lsp_code_actions(
 fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> CodeAction {
     // With `data` and nothing to apply, the plugin computes the edits when the action is picked.
     let lazy = a.edits.is_empty() && a.operations.is_empty() && a.data.is_some();
-    let (files, disabled_reason) = match plugin_file_edits(root, &a) {
-        Ok(files) => (files, None),
-        Err(reason) => (Vec::new(), Some(reason)),
+    let (files, open, disabled_reason) = match plugin_file_edits(root, &a) {
+        Ok((files, open)) => (files, open, None),
+        Err(reason) => (Vec::new(), None, Some(reason)),
     };
-    let data = (lazy || a.open.is_some())
+    let data = (lazy || open.is_some())
         .then(|| PluginActionRef {
             plugin: plugin.to_owned(),
             data: a.data.filter(|_| lazy),
-            open: a.open.map(|p| ide_plugin::resolve_new_in_root(root, &p.to_string_lossy()).unwrap_or(p).into()),
+            open: open.map(Into::into),
         })
         .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
@@ -403,13 +403,19 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
     }
 }
 
-/// The action's file operations, then its text edits, as one workspace edit's files.
-/// A path outside the project root disables the whole action.
-fn plugin_file_edits(root: &Path, a: &ide_plugin::CodeAction) -> Result<Vec<ide_core::FileEdit>, String> {
+/// The action's file operations, then its text edits, as one workspace edit's files, and the
+/// file to open. An action with file operations or an `open` target stays inside the project
+/// root as a whole: a path outside it disables the action.
+fn plugin_file_edits(
+    root: &Path,
+    a: &ide_plugin::CodeAction,
+) -> Result<(Vec<ide_core::FileEdit>, Option<std::path::PathBuf>), String> {
     use ide_core::FileEdit;
     use ide_plugin::FileOperation;
+    let confine = !a.operations.is_empty() || a.open.is_some();
     let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
     let mut files = Vec::new();
+    let mut created_with_text = Vec::new();
     for operation in &a.operations {
         match operation {
             FileOperation::Create { path, text, overwrite } => {
@@ -418,10 +424,11 @@ fn plugin_file_edits(root: &Path, a: &ide_plugin::CodeAction) -> Result<Vec<ide_
                 if !text.is_empty() {
                     let start = Range::point(Pos::new(0, 0));
                     files.push(FileEdit::Edit {
-                        path: path.into(),
+                        path: path.clone().into(),
                         edits: vec![TextEdit { range: start, new_text: text.clone() }],
                         version: None,
                     });
+                    created_with_text.push(path);
                 }
             }
             FileOperation::Rename { from, to } => {
@@ -432,12 +439,15 @@ fn plugin_file_edits(root: &Path, a: &ide_plugin::CodeAction) -> Result<Vec<ide_
             }
         }
     }
-    files.extend(a.edits.iter().map(|(path, edits)| FileEdit::Edit {
-        path: path.clone().into(),
-        edits: edits.clone(),
-        version: None,
-    }));
-    Ok(files)
+    for (path, edits) in &a.edits {
+        let path = if confine { confined(path)? } else { path.clone() };
+        if created_with_text.contains(&path) {
+            return Err("put the text of a created file in its `create`, not in an edit".into());
+        }
+        files.push(FileEdit::Edit { path: path.into(), edits: edits.clone(), version: None });
+    }
+    let open = a.open.as_deref().map(confined).transpose()?;
+    Ok((files, open))
 }
 
 /// A code action resolved by whoever offered it: its language server, or
@@ -1024,6 +1034,18 @@ mod tests {
         assert!(matches!(&files[4], FileEdit::Edit { path, .. } if **path == root.join("a.txt")));
         let r: PluginActionRef = serde_json::from_value(created.data.unwrap()).unwrap();
         assert_eq!((r.data, r.open.map(|p| p.to_path_buf())), (None, Some(home)));
+
+        let outside = tmp.path().join("evil.txt");
+        let mut open_outside = action(Vec::new());
+        open_outside.open = Some(outside.clone());
+        assert!(plugin_code_action("acme.x", &root, open_outside).disabled_reason.is_some());
+        let mut edit_outside = action(vec![FileOperation::Delete { path: root.join("gone.txt") }]);
+        edit_outside.edits.push((outside, Vec::new()));
+        assert!(plugin_code_action("acme.x", &root, edit_outside).disabled_reason.is_some());
+        let mut edit_created =
+            action(vec![FileOperation::Create { path: root.join("n.txt"), text: "x".into(), overwrite: false }]);
+        edit_created.edits = vec![(root.join("n.txt"), Vec::new())];
+        assert!(plugin_code_action("acme.x", &root, edit_created).disabled_reason.is_some());
 
         for outside in [tmp.path().join("evil.txt"), "../evil.txt".into()] {
             for operation in [
