@@ -121,6 +121,7 @@ impl crate::Host {
                     self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
                 }
                 project.lsp.set_execution_allowed(true);
+                project.lsp.prewarm_java_configuration();
             } else {
                 self.environment.project_closed();
                 project.agents.shutdown();
