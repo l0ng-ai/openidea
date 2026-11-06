@@ -3231,6 +3231,8 @@ export type EditorAppearanceSettings = {
 	whitespaceInner?: boolean,
 	whitespaceTrailing?: boolean,
 	indentGuides?: boolean,
+	/**  Colour indent guides by depth (`--syn-rainbow-*`), while `indent_guides` is on. */
+	rainbowIndentGuides?: boolean,
 	/**  Right margin and visual guides from Code Style. */
 	hardWrapGuides?: boolean,
 	intentionBulb?: boolean,

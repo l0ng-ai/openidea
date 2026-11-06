@@ -36,7 +36,7 @@ import { caretRowHighlight } from "./caretRow";
 import { changeLane, overviewLane } from "./lanes";
 import { foldingExtension } from "./folding";
 import { syntaxHighlightField } from "./syntaxHighlight";
-import { indentGuides } from "./indentGuides";
+import { indentGuides, rainbowIndentGuides } from "./indentGuides";
 import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
@@ -235,7 +235,7 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   const prefs = prefsOf(settings);
   return [
     prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
-    prefs.appearance.indentGuides ? indentGuides : [],
+    prefs.appearance.indentGuides ? (prefs.appearance.rainbowIndentGuides ? rainbowIndentGuides : indentGuides) : [],
     prefs.rainbowBrackets ? rainbowBrackets() : [],
     prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];

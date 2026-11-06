@@ -7,6 +7,7 @@
  */
 import { EditorView } from "@codemirror/view";
 import { BRACKET_COLORS } from "./rainbowBrackets";
+import { GUIDE_COLORS } from "./indentGuides";
 
 /** The `--editor-*` locals of `findStyles`, for the `&` rule. */
 export const findLocals = {
@@ -132,6 +133,13 @@ export const openideaTheme = EditorView.theme({
       "var(--bg-editor-selection-inactive, color-mix(in srgb, var(--accent) 14%, transparent))",
     "--editor-indent-guide": "var(--border-indent-guide, var(--border))",
     "--openidea-guide": "linear-gradient(var(--editor-indent-guide), var(--editor-indent-guide))",
+    // Rainbow indent guides: one image per depth, so they follow the colour scheme.
+    ...Object.fromEntries(
+      Array.from({ length: GUIDE_COLORS }, (_, i) => {
+        const color = `var(--syn-rainbow-${i + 1}, var(--editor-indent-guide))`;
+        return [`--openidea-guide-${i + 1}`, `linear-gradient(${color}, ${color})`];
+      }),
+    ),
     ...findLocals,
     "--editor-brace": "var(--bg-matched-brace, color-mix(in srgb, var(--accent) 22%, transparent))",
     "--editor-fold-chip": "var(--bg-fold-placeholder, color-mix(in srgb, var(--fg-muted) 14%, transparent))",

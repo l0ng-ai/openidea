@@ -2134,6 +2134,7 @@
   "Show in tool window": "在工具窗口中显示",
   "Show inlay Run to Cursor popup": "显示内嵌的“运行到光标处”按钮",
   "Show indent guides": "显示缩进参考线",
+  "Rainbow indent guides": "彩虹缩进参考线",
   "Show inlay hints": "显示嵌入提示",
   "Show inlay hints for:": "为以下语言显示嵌入提示：",
   "Show install log": "显示安装日志",

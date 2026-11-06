@@ -223,7 +223,7 @@ The full table is `UI_KEYS` in [`src/features/plugins/intellijTheme.ts`](../../s
 | `--syn-annotation`, `--syn-decorator` | `DEFAULT_METADATA` |
 | `--syn-punct`, `--syn-escape` | `DEFAULT_OPERATION_SIGN`, `DEFAULT_VALID_STRING_ESCAPE` |
 | `--syn-tag`, `--syn-attribute`, `--syn-todo`, `--syn-invalid` | `DEFAULT_TAG`, `DEFAULT_ATTRIBUTE`, `TODO_DEFAULT_ATTRIBUTES`, `BAD_CHARACTER` |
-| `--syn-rainbow-1` … `--syn-rainbow-5` (Semantic highlighting) | `RAINBOW_COLOR1` … `RAINBOW_COLOR5` |
+| `--syn-rainbow-1` … `--syn-rainbow-5` (Semantic highlighting, rainbow indent guides) | `RAINBOW_COLOR1` … `RAINBOW_COLOR5` |
 | `--wave-error`, `--wave-warning` | `ERRORS_ATTRIBUTES`, `WARNING_ATTRIBUTES` (effect colour) |
 | `--bg-matched-brace`, `--bg-identifier-under-caret` | `MATCHED_BRACE_ATTRIBUTES`, `IDENTIFIER_UNDER_CARET_ATTRIBUTES` |
 | `--bg-text-search-result`, `--bg-search-match` | `TEXT_SEARCH_RESULT_ATTRIBUTES`, `SEARCH_RESULT_ATTRIBUTES` |

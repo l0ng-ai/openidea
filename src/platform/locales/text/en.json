@@ -30,5 +30,6 @@
   "{added} line added": "{added} line added",
   "{added} lines added": "{added} lines added",
   "{removed} line deleted": "{removed} line deleted",
-  "{removed} lines deleted": "{removed} lines deleted"
+  "{removed} lines deleted": "{removed} lines deleted",
+  "Rainbow indent guides": "Rainbow indent guides"
 }
