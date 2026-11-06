@@ -792,7 +792,7 @@ export const commands = {
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
-	sdkPythonEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective")),
+	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
 	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
 	/**  The PHP language level of the project `path` belongs to: the effective one and Auto's. */
@@ -6470,7 +6470,10 @@ export type RunConfig_Serialize = {
 export type RunExtras = RunExtras_Serialize | RunExtras_Deserialize;
 
 export type RunExtras_Deserialize = {
-	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	/**
+	 *  Owning module, independent of the working directory; also supplies a JVM application's classpath.
+	 *  Empty means the project root.
+	 */
 	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },
@@ -6509,7 +6512,10 @@ export type RunExtras_Deserialize = {
 };
 
 export type RunExtras_Serialize = {
-	/**  Module supplying a JVM application's classpath; empty means the project root. */
+	/**
+	 *  Owning module, independent of the working directory; also supplies a JVM application's classpath.
+	 *  Empty means the project root.
+	 */
 	module?: string | null,
 	/**  Values of the configuration type's own form fields (the command line derives from them). */
 	params?: { [key in string]: string },

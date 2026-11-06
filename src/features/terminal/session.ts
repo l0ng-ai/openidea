@@ -16,9 +16,9 @@ import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
-import { splitCommandLine } from "@/platform/commandLine";
+import { parseShellCommand } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
-import { useRemote } from "@/platform/remote";
+import { hostOs, useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -530,7 +530,7 @@ export class TerminalSession {
     };
     try {
       const t = workflowSettings().terminal;
-      const [shellPath, ...shellArgs] = splitCommandLine(t.shellPath);
+      const [shellPath, ...shellArgs] = parseShellCommand(t.shellPath, hostOs() === "windows");
       const shell = custom ? custom.program : shellPath;
       const args = custom ? custom.args : shellArgs;
       const info = await call(

@@ -20,8 +20,12 @@ pub async fn sdk_detect(window: Window, state: State<'_, AppState>, kind: SdkKin
 /// The interpreter the project uses: the configured one, else its virtualenv.
 #[tauri::command]
 #[specta::specta]
-pub fn sdk_python_effective(window: Window, state: State<'_, AppState>) -> IdeResult<Option<ide_core::IpcPath>> {
-    ide_host::ops::sdk::sdk_python_effective(&state.host, window.label())
+pub fn sdk_python_effective(
+    window: Window,
+    state: State<'_, AppState>,
+    near: Option<PathBuf>,
+) -> IdeResult<Option<ide_core::IpcPath>> {
+    ide_host::ops::sdk::sdk_python_effective(&state.host, window.label(), near)
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.

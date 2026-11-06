@@ -174,6 +174,8 @@ pub fn run() {
         app.manage(windows);
         app.manage(application_focus::ApplicationFocus::default());
         #[cfg(target_os = "macos")]
+        macos::intercept_system_quit(app.handle());
+        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
         if let Some(paths) = setup_opens.lock().take() {
@@ -234,6 +236,7 @@ pub fn run() {
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
+                state.host.stop_processes_on_exit();
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }
@@ -253,7 +256,11 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
 fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
-    let id = event.id().as_ref();
+    dispatch_menu_action(app, event.id().as_ref());
+}
+
+/// Runs menu item `id` as if it were chosen: in the focused window's frontend, or here without one.
+pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
