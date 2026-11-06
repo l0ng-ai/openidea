@@ -13,7 +13,7 @@ use crate::FsBatch;
 use crate::rules::{ExcludeMatcher, GitignoreStack};
 use ide_core::{IdeError, IdeEvent, IdeResult, SharedSink};
 use notify::event::{ModifyKind, RenameMode};
-use notify::{Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
+use notify::{ErrorKind, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -179,7 +179,7 @@ impl Watcher {
             },
             config,
         )
-        .map_err(|e| io_error(format!("cannot start file watcher: {e}")))?;
+        .map_err(|e| watcher_error("cannot start file watcher", e))?;
         *state.watcher.lock() = Some(Box::new(watcher));
         let deferred = if mode == WatchMode::PerDirectory {
             state.watch_tree_bounded(root, SYNC_WATCH_BUDGET)
@@ -225,6 +225,29 @@ fn io_error(msg: String) -> IdeError {
 /// OS watchers report only the entries (also seen, through that directory's watch).
 fn is_dir_touch(event: &notify::Event) -> bool {
     matches!(event.kind, EventKind::Modify(_)) && event.paths.iter().all(|p| p.is_dir())
+}
+
+const MAX_WATCHES_HINT: &str = "the inotify watch limit is exhausted (fs.inotify.max_user_watches); raise it, e.g. \
+                                `sudo sysctl -w fs.inotify.max_user_watches=524288`";
+
+/// `io_error` with a fix hint when Linux's inotify limits are exhausted: one
+/// instance per watcher (`EMFILE`, os error 24) or one watch per directory
+/// (`ENOSPC`, mapped by notify to [`ErrorKind::MaxFilesWatch`]). A bare OS
+/// error sends users off to search engines otherwise (issue #788).
+fn watcher_error(what: &str, error: notify::Error) -> IdeError {
+    let hint = match error.kind {
+        ErrorKind::MaxFilesWatch => Some(MAX_WATCHES_HINT),
+        ErrorKind::Io(ref e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(24) => Some(
+            "the inotify instance limit is exhausted (fs.inotify.max_user_instances); raise it, e.g. \
+                  `sudo sysctl -w fs.inotify.max_user_instances=1024`",
+        ),
+        ErrorKind::Io(ref e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(28) => Some(MAX_WATCHES_HINT),
+        _ => None,
+    };
+    match hint {
+        Some(hint) => io_error(format!("{what}: {error}; {hint}")),
+        None => io_error(format!("{what}: {error}")),
+    }
 }
 
 /// Shared with the notify callback (weakly) and the debounce thread.
@@ -1272,5 +1295,29 @@ mod tests {
         // Later writes inside a new folder are seen through its own poll.
         std::fs::write(root.join("src/new/inner/h.rs"), "x").unwrap();
         assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("src/new/inner/h.rs"))));
+    }
+
+    #[test]
+    fn ordinary_watcher_errors_keep_the_bare_message() {
+        let other = notify::Error::io(std::io::Error::other("no space left"));
+        assert_eq!(
+            watcher_error("cannot start file watcher", other).message,
+            "cannot start file watcher: no space left"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inotify_limits_get_a_sysctl_hint() {
+        let emfile = notify::Error::io(std::io::Error::from_raw_os_error(24));
+        let msg = watcher_error("cannot start file watcher", emfile).message;
+        assert!(msg.contains("os error 24"), "{msg}");
+        assert!(msg.contains("max_user_instances"), "{msg}");
+        let enospc = notify::Error::io(std::io::Error::from_raw_os_error(28));
+        assert!(watcher_error("cannot watch /proj", enospc).message.contains("max_user_watches"));
+        let max_files = notify::Error::new(ErrorKind::MaxFilesWatch);
+        assert!(watcher_error("cannot watch /proj", max_files).message.contains("max_user_watches"));
+        let other = notify::Error::io(std::io::Error::from_raw_os_error(13));
+        assert!(!watcher_error("cannot start file watcher", other).message.contains("inotify"));
     }
 }

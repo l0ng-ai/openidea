@@ -531,6 +531,34 @@ fn unverified(enabled: impl Iterator<Item = bool>) -> Vec<BreakpointState> {
         .collect()
 }
 
+/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (on Windows
+/// `__debug_bin.exe` plus `__debug_bin.exe<digits>` in DAP mode) and removes it on a
+/// graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
+/// the leftovers once the session is down. Runs after `session_closed`, so Delve
+/// has already exited or been killed and holds no file locks; a leftover of a
+/// still-building run is removed on that run's own shutdown.
+fn remove_delve_binaries(cwd: &Path) {
+    let Ok(entries) = std::fs::read_dir(cwd) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // Windows writes `__debug_bin.exe` (and `.exe<digits>` in DAP mode); other
+        // platforms keep the bare name. Suffixes like `.go` are user files.
+        let suffix = name.strip_prefix("__debug_bin");
+        let leftover = suffix.is_some_and(|s| {
+            s.is_empty()
+                || s == ".exe"
+                || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
+        });
+        if leftover
+            && entry.file_type().is_ok_and(|t| t.is_file())
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+        }
+    }
+}
+
 pub(crate) fn variable_from(v: &Value) -> Variable {
     let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_owned);
     Variable {
@@ -995,6 +1023,10 @@ impl DebugManager {
         }
         s.conn.close();
         self.session_closed(s).await;
+        if s.adapter == "delve" && s.spec.server_host.is_none() {
+            let cwd = s.spec.cwd.clone();
+            tokio::task::spawn_blocking(move || remove_delve_binaries(&cwd));
+        }
     }
 
     /// Breakpoints are kept per file even without a session and sent on start.

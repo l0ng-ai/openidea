@@ -301,6 +301,21 @@ pub(crate) fn is_atomic_temp(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.') && n.contains(TMP_MARKER))
 }
 
+/// `sync_all` failures that mean "this filesystem cannot fsync at all", not that
+/// the data was lost: ENOTTY (`os error 25`, virtio-fs on macOS VMs answering
+/// F_FULLFSYNC/fsync with "Inappropriate ioctl for device") and EINVAL (some
+/// network filesystems). Other errors keep failing the write.
+fn sync_error_is_tolerable(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::InvalidInput {
+        return true;
+    }
+    // EINVAL is already covered by InvalidInput; ENOTTY has no ErrorKind of its own.
+    #[cfg(unix)]
+    return e.raw_os_error() == Some(25);
+    #[cfg(not(unix))]
+    false
+}
+
 /// Writes `bytes` to `path` atomically: temp file in the same directory, fsync,
 /// rename over the target. Preserves the permissions of an existing file and
 /// writes through symlinks. Falls back to an in-place write when the directory
@@ -347,7 +362,17 @@ fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool) -> IdeResu
     };
     let result = (|| -> std::io::Result<()> {
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if let Err(e) = file.sync_all() {
+            // virtio-fs (macOS VMs) and similar filesystems have no fsync/F_FULLFSYNC
+            // (ENOTTY, EINVAL): the write itself already went through, so the rename is
+            // still the best durability the filesystem offers — degrade like SQLite
+            // instead of failing the whole atomic write.
+            if sync_error_is_tolerable(&e) {
+                tracing::debug!("fsync unsupported for {}: {e}; continuing", target.display());
+            } else {
+                return Err(e);
+            }
+        }
         if let Some(meta) = &existing {
             fs::set_permissions(&tmp, meta.permissions())?;
         }
@@ -525,5 +550,20 @@ mod tests {
         assert_eq!(encode("中", "gbk", true).unwrap(), [0xD6, 0xD0]);
         assert_eq!(encode("x", "nope", false).unwrap_err().kind, ide_core::error::ErrorKind::InvalidInput);
         assert_eq!(encode("中", "windows-1252", false).unwrap_err().kind, ide_core::error::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn sync_errors_without_fsync_support_are_tolerable() {
+        // Some network filesystems report EINVAL for fsync.
+        assert!(sync_error_is_tolerable(&std::io::Error::new(std::io::ErrorKind::InvalidInput, "EINVAL")));
+        #[cfg(unix)]
+        {
+            // virtio-fs on macOS VMs answers fsync with "Inappropriate ioctl for device".
+            assert!(sync_error_is_tolerable(&std::io::Error::from_raw_os_error(25)));
+            assert!(sync_error_is_tolerable(&std::io::Error::from_raw_os_error(22)));
+        }
+        // Real write failures still fail the atomic write.
+        assert!(!sync_error_is_tolerable(&std::io::Error::from_raw_os_error(28)));
+        assert!(!sync_error_is_tolerable(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied")));
     }
 }

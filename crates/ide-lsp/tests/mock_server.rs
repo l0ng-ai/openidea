@@ -2882,7 +2882,8 @@ async fn classified_java_references_widen_without_losing_metadata() {
     assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
     assert!(refs.classified.iter().all(|r| matches!(r.kind, ReferenceKind::Field)));
     assert_eq!(refs.incomplete, None);
-    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    // Scoped; then the sources, widened; then the dependencies too.
+    assert_eq!(s.requested("workspace/executeCommand").len(), 4);
     assert!(s.requested("textDocument/references").is_empty());
     eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
     for limit_hit in [true, false] {
@@ -2898,6 +2899,97 @@ async fn classified_java_references_widen_without_losing_metadata() {
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
         );
     }
+}
+
+/// A library method's usages in the sources are shown before the dependencies and the JDK
+/// are searched, which takes seconds; scope widening searches the sources alone again.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let library = json!({"uri": "jdt://contents/lib.jar/lib/Lib.class", "range": {
+        "start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 10}}});
+    *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+        (method == "workspace/executeCommand").then(|| {
+            let sources = params["arguments"].get(4) == Some(&json!("sources"));
+            let mut rows: Vec<Value> = s
+                .docs
+                .lock()
+                .iter()
+                .flat_map(|(uri, text)| occurrences(uri, text))
+                .map(|location| json!({"location": location, "kind": "unknown"}))
+                .chain((!sources).then(|| json!({"location": library, "kind": "unknown", "text": "    target();"})))
+                .collect();
+            rows.reverse();
+            Value::Array(rows)
+        })
+    }));
+    let b = h.root.join("b.java");
+    std::fs::write(&b, "target();").unwrap();
+    grep_candidates(&h);
+    let (doc, a) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let partials = Mutex::new(Vec::new());
+    let refs = h
+        .mgr
+        .references_streaming(
+            doc,
+            Pos::new(0, 5),
+            true,
+            true,
+            true,
+            Default::default(),
+            Some(&|r| partials.lock().push(r)),
+        )
+        .await
+        .unwrap();
+    let partials = partials.into_inner();
+    assert_eq!(partials.len(), 1);
+    let paths =
+        |r: &References| r.locations.iter().map(|l| (l.path.to_path_buf(), l.uri.is_some())).collect::<Vec<_>>();
+    let mut shown = paths(&partials[0]);
+    shown.sort();
+    assert_eq!(shown, [(a.clone(), false), (b.clone(), false)]);
+    assert_eq!(partials[0].classified.len(), 2);
+    // All of them, those in the sources first.
+    assert_eq!(refs.locations.len(), 3);
+    assert!(refs.locations[..2].iter().all(|l| l.uri.is_none()));
+    assert!(refs.locations[2].uri.is_some());
+    // The server gives a library class's line along.
+    let line = |r: &References| r.classified.iter().find(|c| c.location.uri.is_some()).and_then(|c| c.text.clone());
+    assert_eq!(line(&refs).as_deref(), Some("    target();"));
+    assert!(!refs.libraries_skipped);
+    let scopes: Vec<_> =
+        s.requested("workspace/executeCommand").iter().map(|p| p["arguments"].get(4).cloned()).collect();
+    assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources")), None]);
+    // Without the libraries: the sources alone, widened, and no partial answer.
+    let partials = Mutex::new(Vec::new());
+    let project = h
+        .mgr
+        .references_streaming(
+            doc,
+            Pos::new(0, 5),
+            true,
+            true,
+            false,
+            Default::default(),
+            Some(&|r| partials.lock().push(r)),
+        )
+        .await
+        .unwrap();
+    assert!(partials.into_inner().is_empty());
+    assert!(project.libraries_skipped);
+    assert_eq!(project.locations.len(), 2);
+    assert!(project.locations.iter().all(|l| l.uri.is_none()));
+    let scopes: Vec<_> =
+        s.requested("workspace/executeCommand")[3..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
+    assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources"))]);
+    // Scoped probes (code lenses) search everything at once.
+    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    assert_eq!(scoped.locations.len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
