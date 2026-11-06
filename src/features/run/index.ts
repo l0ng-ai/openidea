@@ -320,6 +320,20 @@ export function activate(): () => void {
         serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions)
           .filter(liveServiceSession)
           .map((s) => ({ name: s.config.name })),
+      // A closing window asks first, then shows the progress while these shut down; `kill`
+      // is the second Stop that SIGKILLs instead of waiting.
+      stop: (kill) => {
+        // The first call asks to stop; with `kill` the second one reaches the backend while
+        // the session is already stopping, which turns it into SIGKILL.
+        for (const s of useRun.getState().sessions.filter(isLive)) {
+          void stopSession(s.id);
+          if (kill) void stopSession(s.id);
+        }
+        for (const d of useDebugRunSessions.getState().sessions) {
+          d.stop();
+          if (kill) d.stop();
+        }
+      },
     }),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),

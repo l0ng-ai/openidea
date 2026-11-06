@@ -1487,6 +1487,11 @@ export interface RunningProcessesProvider {
   id: string;
   /** Processes this feature is running in the window right now. */
   running(): RunningProcess[] | Promise<RunningProcess[]>;
+  /**
+   * Stops them before a close: graceful first (stop command / SIGINT, as IDEA does), the
+   * whole set again when `kill` asks for SIGKILL.
+   */
+  stop?(kill: boolean): Promise<void> | void;
 }
 
 const runningProcessesProviders = new Map<string, RunningProcessesProvider>();
@@ -1496,6 +1501,11 @@ export function registerRunningProcessesProvider(p: RunningProcessesProvider): (
   return () => {
     if (runningProcessesProviders.get(p.id) === p) runningProcessesProviders.delete(p.id);
   };
+}
+
+/** Asks every provider to stop its processes: graceful, or killed when `kill` is set. */
+export async function stopRunningProcesses(kill: boolean): Promise<void> {
+  await Promise.all([...runningProcessesProviders.values()].map((p) => p.stop?.(kill)));
 }
 
 /** Live processes of every provider, one entry per name. */
