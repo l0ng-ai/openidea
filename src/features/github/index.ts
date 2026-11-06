@@ -10,69 +10,48 @@
  */
 import "./ui/palette.css";
 import { registerActions, type Action } from "@/platform/actions";
-import { getContext, setContext } from "@/platform/context";
-import { useProject } from "@/platform/project";
+import { setContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import {
-  maybeEditorService,
   registerCloneSource,
   registerEditorKind,
   registerOverlay,
   registerToolWindow,
 } from "@/workbench/contributions";
-import { activateReviewDiff, toggleReviewDiffViewed } from "./diff";
-import { reloadList } from "./data/list";
-import { checkoutPullRequest, clearDiffCache, copyUrl, openInBrowser, openInWorktree } from "./data/local";
-import { deleteMergedBranch } from "./data/operations";
-import { cachedDetails, loadPullRequestData, reloadPullRequest } from "./data/pullRequest";
-import { refreshConnection, resetConnection, useGhRepository } from "./data/repository";
-import { showSubmitReview } from "./details/SubmitReviewPopup";
-import { activateReviewMode } from "./reviewMode";
+import { useGithubShell } from "./shell";
 import { githubHandler, handlerContextKey } from "./toolwindow/handlers";
-import {
-  openCreatePullRequest,
-  openPullRequest,
-  selectOpenedPullRequest,
-  showPullRequests,
-  WINDOW,
-} from "./toolwindow/open";
-import {
-  changeRepository,
-  PullRequestsHeaderActions,
-  PullRequestsTabs,
-  PullRequestsToolWindow,
-  usePullRequestsHeaderMenu,
-} from "./toolwindow/PullRequestsToolWindow";
-import { contextPullRequest, resetTabs } from "./toolwindow/store";
-import {
-  activeTimelinePullRequest,
-  openTimeline,
-  TIMELINE_KIND,
-  timelineIcon,
-  timelineTitle,
-} from "./toolwindow/timelineInput";
-import { GithubDialogHost, numberDialog } from "./ui/dialogs";
+import { GithubDialogHost } from "./ui/dialogs";
 
+const WINDOW = "pullRequests";
+const TIMELINE_KIND = "github.timeline";
 const WHEN = "projectOpen";
 const CONNECTED = "projectOpen && githubConnected";
 const IN_WINDOW = `activeToolWindow == '${WINDOW}'`;
 
-/** The pull request an action applies to: its argument, the timeline editor, the active tab or the list selection. */
-function targetPullRequest(arg: unknown): number | null {
-  if (typeof arg === "number") return arg;
-  return activeTimelinePullRequest() ?? contextPullRequest();
+/** The pull requests UI and data load after start-up (or on first use); registrations stay here. */
+type Runtime = typeof import("./runtime");
+let runtime: Runtime | null = null;
+let loading: Promise<Runtime> | null = null;
+let dispose: (() => void) | null = null;
+let active = false;
+
+function load(): Promise<Runtime> {
+  return (loading ??= import("./runtime").then(
+    (m) => {
+      runtime = m;
+      if (active && !dispose) dispose = m.activate();
+      return m;
+    },
+    (e: unknown) => {
+      loading = null; // A failed chunk load may succeed later.
+      throw e;
+    },
+  ));
 }
 
-async function withPullRequest(arg: unknown, run: (number: number) => unknown) {
-  const n = targetPullRequest(arg);
-  if (n !== null) await run(n);
-}
+type ActionSpec = Omit<Action, "run"> & { run?: Action["run"] };
 
-async function prUrl(number: number): Promise<string> {
-  return cachedDetails(number)?.url ?? (await loadPullRequestData(number, "details")).url;
-}
-
-function actions(): Action[] {
+function actions(): ActionSpec[] {
   return [
     // Git › GitHub
     {
@@ -83,7 +62,6 @@ function actions(): Action[] {
       icon: "toolwindow-pull-requests",
       keywords: ["github", "pr", "review", "merge request", "code review"],
       when: WHEN,
-      run: () => void showPullRequests(),
     },
     {
       // Github.Create.Pull.Request
@@ -94,7 +72,6 @@ function actions(): Action[] {
       keywords: ["github", "pr", "new pull request", "start pull request", "merge request", "code review"],
       when: WHEN,
       keyWhen: IN_WINDOW,
-      run: () => openCreatePullRequest(),
     },
     {
       id: "github.checkoutPullRequest",
@@ -104,11 +81,6 @@ function actions(): Action[] {
       icon: "branch",
       keywords: ["github", "pr"],
       when: WHEN,
-      run: async ({ arg }) => {
-        if (!(await showPullRequests(false))) return;
-        const n = targetPullRequest(arg) ?? (await numberDialog("Checkout Pull Request"));
-        if (n) await checkoutPullRequest(n);
-      },
     },
     {
       // Github.Open.In.Browser
@@ -117,12 +89,6 @@ function actions(): Action[] {
       category: "GitHub",
       icon: "external-link",
       when: WHEN,
-      run: async () => {
-        if (!(await showPullRequests(false))) return;
-        const n = targetPullRequest(undefined);
-        const url = n !== null ? await prUrl(n) : useGhRepository.getState().connection?.repository.url;
-        if (url) await openInBrowser(url);
-      },
     },
     {
       // Github.PullRequest.List.Reload
@@ -133,10 +99,6 @@ function actions(): Action[] {
       keywords: ["refresh list", "reload"],
       when: WHEN,
       keyWhen: `${IN_WINDOW} && githubPrTab == 'list'`,
-      run: async () => {
-        await refreshConnection();
-        if (useGhRepository.getState().connection) await reloadList();
-      },
     },
     // Tool window
     {
@@ -145,8 +107,6 @@ function actions(): Action[] {
       title: "Change Repository or Account…",
       category: "GitHub",
       when: WHEN,
-      // Not connected yet: the tool window offers the repository selector, or explains how to log in.
-      run: () => (useGhRepository.getState().connection ? changeRepository() : void showPullRequests()),
     },
     {
       // pull.request.select.action
@@ -155,7 +115,6 @@ function actions(): Action[] {
       category: "GitHub",
       icon: "locate",
       when: `${CONNECTED} && githubTimelineActive`,
-      run: () => selectOpenedPullRequest(),
     },
     // A pull request
     {
@@ -165,7 +124,6 @@ function actions(): Action[] {
       description: "View pull request information and timeline",
       category: "GitHub",
       when: CONNECTED,
-      run: ({ arg }) => withPullRequest(arg, (n) => openPullRequest(n)),
     },
     {
       // Github.PullRequest.Timeline.Show
@@ -175,7 +133,6 @@ function actions(): Action[] {
       category: "GitHub",
       icon: "github-timeline",
       when: CONNECTED,
-      run: ({ arg }) => withPullRequest(arg, (n) => openTimeline(n, { focus: true })),
     },
     {
       // Github.PullRequest.Details.Reload
@@ -185,7 +142,6 @@ function actions(): Action[] {
       icon: "refresh",
       when: CONNECTED,
       keyWhen: `${IN_WINDOW} && githubPrTab == 'pr'`,
-      run: ({ arg }) => withPullRequest(arg, reloadPullRequest),
     },
     {
       // Github.PullRequest.Timeline.Update
@@ -196,7 +152,6 @@ function actions(): Action[] {
       icon: "refresh",
       when: `${CONNECTED} && githubTimelineActive`,
       keyWhen: "editorAreaFocus",
-      run: () => withPullRequest(undefined, reloadPullRequest),
     },
     {
       // Github.PullRequest.Open.Link
@@ -206,7 +161,6 @@ function actions(): Action[] {
       icon: "external-link",
       keywords: ["open pull request in github"],
       when: CONNECTED,
-      run: ({ arg }) => withPullRequest(arg, async (n) => openInBrowser(await prUrl(n))),
     },
     {
       // Github.PullRequest.Copy.Link
@@ -215,7 +169,6 @@ function actions(): Action[] {
       category: "GitHub",
       icon: "copy",
       when: CONNECTED,
-      run: ({ arg }) => withPullRequest(arg, async (n) => copyUrl(await prUrl(n))),
     },
     {
       // Github.PullRequest.CheckoutBranch
@@ -225,7 +178,6 @@ function actions(): Action[] {
       category: "GitHub",
       icon: "branch",
       when: CONNECTED,
-      run: ({ arg }) => withPullRequest(arg, checkoutPullRequest),
     },
     {
       // Github.PullRequest.OpenInWorktree
@@ -234,7 +186,6 @@ function actions(): Action[] {
       description: "Fetch and open the pull request branch in a Git worktree",
       category: "GitHub",
       when: CONNECTED,
-      run: ({ arg }) => withPullRequest(arg, openInWorktree),
     },
     {
       // GitHub.Timeline.DeleteMergedBranch
@@ -245,11 +196,6 @@ function actions(): Action[] {
       icon: "trash",
       hidden: true,
       when: CONNECTED,
-      run: ({ arg }) =>
-        withPullRequest(arg, async (n) => {
-          const ref = (await loadPullRequestData(n, "details")).headRef;
-          if (ref) await deleteMergedBranch(n, ref.id);
-        }),
     },
     // Implemented by other parts (`provideGithubHandler`)
     {
@@ -259,12 +205,6 @@ function actions(): Action[] {
       category: "GitHub",
       // The details panel's popup; without it (the branch popup in review mode) one of its own.
       when: `${CONNECTED} && (${handlerContextKey("submitReview")} || githubCurrentBranchPullRequest)`,
-      run: ({ arg }) =>
-        withPullRequest(arg, (n) => {
-          const handler = githubHandler("submitReview");
-          if (handler) handler(n);
-          else void showSubmitReview(n);
-        }),
     },
     {
       // Github.PullRequest.Changed.MarkViewed.Toggle
@@ -274,9 +214,6 @@ function actions(): Action[] {
       category: "GitHub",
       // The file of the focused review diff, else the details panel's selection.
       when: `${CONNECTED} && (${handlerContextKey("toggleViewed")} || githubReviewDiff)`,
-      run: () => {
-        if (!(getContext().diffEditorFocus && toggleReviewDiffViewed())) githubHandler("toggleViewed")?.();
-      },
     },
     {
       // Github.Pull.Request.Show.In.Toolwindow
@@ -308,7 +245,13 @@ function actions(): Action[] {
   ];
 }
 
+const lazyView = (name: "PullRequestsToolWindow" | "PullRequestsTabs" | "PullRequestsHeaderActions") =>
+  lazyComponent<{ id: string }>(() => import("./toolwindow/PullRequestsToolWindow").then((m) => m[name]));
+
+const useHeaderMenu = () => useGithubShell((s) => s.headerMenu);
+
 export function activate(): () => void {
+  active = true;
   setContext("githubPrTab", "list");
   const disposers = [
     registerCloneSource({
@@ -325,39 +268,28 @@ export function activate(): () => void {
       anchor: "left",
       order: 2,
       stripe: "onUse",
-      component: PullRequestsToolWindow,
-      headerContent: PullRequestsTabs,
-      headerActions: PullRequestsHeaderActions,
-      headerMenu: usePullRequestsHeaderMenu,
+      component: lazyView("PullRequestsToolWindow"),
+      headerContent: lazyView("PullRequestsTabs"),
+      headerActions: lazyView("PullRequestsHeaderActions"),
+      headerMenu: useHeaderMenu,
     }),
     registerEditorKind({
       kind: TIMELINE_KIND,
       component: lazyComponent(() => import("./timeline/TimelineEditor").then((m) => m.TimelineEditor)),
-      title: timelineTitle,
-      icon: timelineIcon,
+      title: (input) =>
+        runtime?.timeline.title(input) ?? `#${(input.data as { number?: number } | undefined)?.number ?? "?"}`,
+      icon: (input) => runtime?.timeline.icon(input) ?? "github-timeline",
     }),
     registerOverlay({ id: "github.dialogs", component: GithubDialogHost }),
-    registerActions(actions()),
-    useGhRepository.subscribe((s, prev) => {
-      setContext("githubConnected", !!s.connection);
-      setContext("githubTimelineActive", activeTimelinePullRequest() !== null);
-      const a = s.connection?.coordinates;
-      const b = prev.connection?.coordinates;
-      if (a?.owner !== b?.owner || a?.name !== b?.name) {
-        resetTabs();
-        clearDiffCache();
-      }
-    }),
-    useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) resetConnection();
-    }),
-    activateReviewDiff(),
-    activateReviewMode(),
+    registerActions(actions().map((a) => ({ ...a, run: a.run ?? (async (c) => (await load()).runs[a.id]!(c)) }))),
   ];
-  const editors = maybeEditorService();
-  const stopEditors = editors?.onActiveInputChange?.(() =>
-    setContext("githubTimelineActive", activeTimelinePullRequest() !== null),
-  );
-  if (stopEditors) disposers.push(stopEditors);
-  return () => disposers.reverse().forEach((d) => d());
+  // Review mode follows the current branch: start once the window is up.
+  const idle = typeof requestIdleCallback === "function" ? requestIdleCallback : (f: () => void) => setTimeout(f, 200);
+  idle(() => void load().catch((e: unknown) => console.error("could not load GitHub", e)));
+  return () => {
+    active = false;
+    dispose?.();
+    dispose = null;
+    disposers.reverse().forEach((d) => d());
+  };
 }
