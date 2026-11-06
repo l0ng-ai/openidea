@@ -193,7 +193,7 @@ impl Env {
         for name in names {
             let state = match (self.vars.get(name), other.vars.get(name)) {
                 (Some(a), Some(b)) => VarState {
-                    ty: Type::union([a.ty.clone(), b.ty.clone()]),
+                    ty: capped(Type::union([a.ty.clone(), b.ty.clone()])),
                     defined: if a.defined == Defined::Yes && b.defined == Defined::Yes {
                         Defined::Yes
                     } else {
@@ -352,6 +352,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 self.expr(statement.expression);
                 if self.env.reachable
                     && matches!(statement.expression, Expression::Call(_))
+                    && super::chain_depth(statement.expression) <= super::MAX_CHAIN
                     && self.type_of(statement.expression) == Type::Never
                 {
                     self.env.reachable = false;
@@ -1034,17 +1035,26 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 };
                 (&call.argument_list, signature)
             }
+            // The receiver is only typed when an argument may be written
+            // through a by-reference parameter: typing goes through the
+            // whole call chain, which fluent builders make very long.
             Call::Method(call) => {
                 self.expr(call.object);
                 self.selector(&call.method);
-                let receiver = self.type_of(call.object);
-                (&call.argument_list, self.types.method_signature(&receiver, &call.method, self.frames))
+                let signature = may_write(&call.argument_list, call.object).then(|| {
+                    let receiver = self.type_of(call.object);
+                    self.types.method_signature(&receiver, &call.method, self.frames)
+                });
+                (&call.argument_list, signature.flatten())
             }
             Call::NullSafeMethod(call) => {
                 self.expr(call.object);
                 self.selector(&call.method);
-                let receiver = self.type_of(call.object).without_null();
-                (&call.argument_list, self.types.method_signature(&receiver, &call.method, self.frames))
+                let signature = may_write(&call.argument_list, call.object).then(|| {
+                    let receiver = self.type_of(call.object).without_null();
+                    self.types.method_signature(&receiver, &call.method, self.frames)
+                });
+                (&call.argument_list, signature.flatten())
             }
             Call::StaticMethod(call) => {
                 self.expr(call.class);
@@ -1301,6 +1311,98 @@ fn direct<'a>(expr: &'a Expression<'a>) -> Option<&'a DirectVariable<'a>> {
 }
 
 /// Something a value can be stored into.
+/// Members a type joined from several paths keeps before its arrays are
+/// collapsed.
+const MAX_JOINED: usize = 16;
+
+/// A joined type kept small: past [`MAX_JOINED`] members its array shapes,
+/// arrays and lists become one `array<K, V>`, and if that isn't enough it
+/// is `mixed`. Without it, a variable gaining a key under each of `n`
+/// consecutive `if`s (`if (…) { $meta['a'] = …; } if (…) { $meta['b'] = …; }`)
+/// would be a union of 2^n shapes.
+fn capped(ty: Type) -> Type {
+    if ty.members().len() <= MAX_JOINED {
+        if size(&ty, MAX_JOINED_SIZE) <= MAX_JOINED_SIZE {
+            return ty;
+        }
+        // Nested shapes grown too big (`$schema['properties'][…] = …` on a
+        // large literal across branches): plain arrays.
+        return ty.map(&mut |member| match member {
+            Type::Shape(_) | Type::Array { .. } | Type::List { .. } => Some(Type::array()),
+            _ => None,
+        });
+    }
+    let (mut keys, mut values, mut others) = (Vec::new(), Vec::new(), Vec::new());
+    for member in ty.members() {
+        match member {
+            Type::Shape(shape) => {
+                keys.push(shape.key_type());
+                values.push(shape.value_type());
+            }
+            Type::Array { key, value, .. } => {
+                keys.push((**key).clone());
+                values.push((**value).clone());
+            }
+            Type::List { value, .. } => {
+                keys.push(Type::Int);
+                values.push((**value).clone());
+            }
+            other => others.push(other.clone()),
+        }
+    }
+    if !keys.is_empty() {
+        others.push(Type::array_of(Type::union(keys).widen(), Type::union(values).widen()));
+    }
+    let out = Type::union(others);
+    if out.members().len() > MAX_JOINED { Type::Mixed } else { out }
+}
+
+/// Nodes a type joined from several paths may have before its arrays
+/// become plain `array`s.
+const MAX_JOINED_SIZE: usize = 256;
+
+/// The number of nodes of `ty`, counted up to a little past `limit`.
+fn size(ty: &Type, limit: usize) -> usize {
+    fn count(ty: &Type, total: &mut usize, limit: usize) {
+        *total += 1;
+        if *total > limit {
+            return;
+        }
+        match ty {
+            Type::Union(members) | Type::Intersection(members) => {
+                members.iter().for_each(|member| count(member, total, limit))
+            }
+            Type::Shape(shape) => {
+                for field in &shape.fields {
+                    count(&field.ty, total, limit);
+                }
+                if let Some((key, value)) = &shape.rest {
+                    count(key, total, limit);
+                    count(value, total, limit);
+                }
+            }
+            Type::Array { key, value, .. } | Type::Iterable { key, value } => {
+                count(key, total, limit);
+                count(value, total, limit);
+            }
+            Type::List { value, .. } => count(value, total, limit),
+            Type::Named { args, .. } => args.iter().for_each(|arg| count(arg, total, limit)),
+            _ => {}
+        }
+    }
+    let mut total = 0;
+    count(ty, &mut total, limit);
+    total
+}
+
+/// Whether a method call on `object` may write one of its arguments
+/// (one is a possible by-reference destination and the receiver's chain
+/// is short enough to type).
+fn may_write(arguments: &ArgumentList<'_>, object: &Expression<'_>) -> bool {
+    arguments.arguments.iter().any(|argument| is_destination(argument_value(argument)))
+        && super::chain_depth(object) <= super::MAX_CHAIN
+}
+
 fn is_destination(expr: &Expression<'_>) -> bool {
     matches!(
         expr,

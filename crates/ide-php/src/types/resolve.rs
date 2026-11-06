@@ -831,7 +831,11 @@ impl<'a> Resolver<'a> {
             Type::Relative(Relative::Self_) => Some(Type::named(self_class)),
             Type::GenericRelative { relative: Relative::Self_, args } => Some(Type::generic(self_class, args.clone())),
             Type::GenericRelative { relative: Relative::Static | Relative::This, args } => {
-                context.static_type.as_ref().map(|this| with_args(this, args))
+                // `static<int, static>`: the arguments are bound too.
+                context.static_type.as_ref().map(|this| {
+                    let args: Vec<Type> = args.iter().map(|arg| self.bind(arg, context)).collect();
+                    with_args(this, &args)
+                })
             }
             Type::Relative(Relative::Parent) => {
                 let parent = parent.get_or_insert_with(|| self.parent_of(self_class));
@@ -862,7 +866,10 @@ fn bind_static(ty: &Type, this: &Type) -> Type {
     }
     ty.map(&mut |ty| match ty {
         Type::Relative(Relative::Static | Relative::This) => Some(this.clone()),
-        Type::GenericRelative { relative: Relative::Static | Relative::This, args } => Some(with_args(this, args)),
+        Type::GenericRelative { relative: Relative::Static | Relative::This, args } => {
+            let args: Vec<Type> = args.iter().map(|arg| bind_static(arg, this)).collect();
+            Some(with_args(this, &args))
+        }
         _ => None,
     })
 }

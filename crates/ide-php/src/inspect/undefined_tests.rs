@@ -219,8 +219,11 @@ fn quiet_on_the_fixture() {
         found.extend(inspected.problems.iter().map(|p| format!("{rel}: {}", p.message)));
     }
     let phpunit = |f: &String| f.starts_with("tests/") && (f.contains("TestCase") || f.contains("MockObject"));
-    assert!(found.iter().all(phpunit), "{found:#?}");
-    assert!(!found.is_empty(), "PHPUnit isn't installed in the fixture");
+    // The fixture's deliberate error (`ShelfReport::summary`).
+    let deliberate = "src/Reports/ShelfReport.php: Undefined method 'count' in 'App\\Library'";
+    assert!(found.iter().all(|f| phpunit(f) || f == deliberate), "{found:#?}");
+    assert!(found.iter().any(phpunit), "PHPUnit isn't installed in the fixture");
+    assert!(found.iter().any(|f| f == deliberate), "{found:#?}");
     engine.shutdown();
 }
 

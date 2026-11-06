@@ -6,7 +6,8 @@
 //!   reports [`Problem`]s. A problem may carry [`QuickFix`]es, each a
 //!   `WorkspaceEdit`. The checks are registered in
 //!   [`Inspections::builtin`] ([`undefined`]: undefined class-likes,
-//!   functions and constants); [`PhpEngine::set_inspections`] replaces the
+//!   functions and constants; [`members`]: undefined methods, properties
+//!   and class constants); [`PhpEngine::set_inspections`] replaces the
 //!   set (tests, and the settings of phase 4.10).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
@@ -29,6 +30,7 @@
 //! (`https://plugins.jetbrains.com/docs/intellij/code-inspections.html`):
 //! a short name, a default level, a visitor and quick-fixes.
 
+pub mod members;
 pub(crate) mod runner;
 pub mod suppress;
 #[cfg(test)]
@@ -76,6 +78,9 @@ impl Inspections {
             Arc::new(undefined::UndefinedClass),
             Arc::new(undefined::UndefinedFunction),
             Arc::new(undefined::UndefinedConstant),
+            Arc::new(members::UndefinedMethod),
+            Arc::new(members::UndefinedField),
+            Arc::new(members::UndefinedClassConstant),
         ])
     }
 
@@ -224,11 +229,20 @@ pub struct InspectionContext<'a> {
     pub cancel: &'a CancellationToken,
     names: OnceLock<FileNames>,
     summary: OnceLock<FileSummary>,
+    members: OnceLock<Vec<members::Found>>,
 }
 
 impl<'a> InspectionContext<'a> {
     pub fn new(engine: &'a PhpEngine, parsed: &'a ParsedFile, path: &'a Path, cancel: &'a CancellationToken) -> Self {
-        Self { engine, parsed, path, cancel, names: OnceLock::new(), summary: OnceLock::new() }
+        Self {
+            engine,
+            parsed,
+            path,
+            cancel,
+            names: OnceLock::new(),
+            summary: OnceLock::new(),
+            members: OnceLock::new(),
+        }
     }
 
     /// The file's resolved names (computed once for all inspections).
@@ -239,6 +253,12 @@ impl<'a> InspectionContext<'a> {
     /// The file's declarations (computed once for all inspections).
     pub fn summary(&self) -> &FileSummary {
         self.summary.get_or_init(|| FileSummary::extract(self.parsed))
+    }
+
+    /// The file's undefined members (computed once for the three member
+    /// inspections).
+    pub(crate) fn undefined_members(&self) -> &[members::Found] {
+        self.members.get_or_init(|| members::find(self))
     }
 
     pub fn resolver(&self) -> Resolver<'a> {

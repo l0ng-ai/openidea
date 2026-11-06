@@ -363,7 +363,17 @@ fn replacing_the_inspections_runs_them_again() {
     assert!(p.engine.inspected(doc).unwrap().problems.is_empty());
     assert_eq!(p.engine.inspections().ids(), Vec::<&str>::new());
     p.engine.set_inspections(Inspections::builtin());
-    assert_eq!(p.engine.inspections().ids(), ["PhpUndefinedClass", "PhpUndefinedFunction", "PhpUndefinedConstant"]);
+    assert_eq!(
+        p.engine.inspections().ids(),
+        [
+            "PhpUndefinedClass",
+            "PhpUndefinedFunction",
+            "PhpUndefinedConstant",
+            "PhpUndefinedMethod",
+            "PhpUndefinedField",
+            "PhpUndefinedClassConstant"
+        ]
+    );
 }
 
 #[test]
@@ -384,3 +394,6 @@ fn tag_ids_and_matching() {
 
 #[path = "undefined_tests.rs"]
 mod undefined_tests;
+
+#[path = "members_tests.rs"]
+mod members_tests;

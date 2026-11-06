@@ -330,7 +330,7 @@ The design:
 - [x] Phase 4.2: Undefined symbols
       Inspections for undefined classes, interfaces, traits, functions and constants. They respect `class_exists` / `function_exists` guards and `@noinspection`. Avoid false positives on the corpora: run the comparison harness, and record the false-positive count in PROGRESS.
 
-- [ ] Phase 4.3: Undefined members
+- [x] Phase 4.3: Undefined members
       Inspections for undefined methods, properties and class constants. They respect `__call`, `__callStatic`, `__get`, `__set`, `@method`, `@property`, `@mixin`, `stdClass`, and `mixed` receivers (no warning). Tests: unit tests, and a false-positive count on the corpora.
 
 - [ ] Phase 4.4: Variables

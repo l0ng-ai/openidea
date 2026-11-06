@@ -59,6 +59,30 @@ pub use flow::{Defined, Flow, PROBE_VARIABLE, VarState};
 /// needs the enclosing function's) before an empty flow is used.
 const MAX_DEPTH: usize = 64;
 
+/// Call chains longer than this aren't typed where only a hint is wanted
+/// (whether a call statement returns `never`; the undefined-member
+/// inspection): typing a chain goes through every link recursively, and
+/// fluent builders (Symfony's configuration trees) chain hundreds of calls.
+pub(crate) const MAX_CHAIN: usize = 32;
+
+/// How many member accesses, calls and array accesses `expr` is made of.
+pub(crate) fn chain_depth(mut expr: &Expression<'_>) -> usize {
+    let mut depth = 0;
+    loop {
+        expr = match expr {
+            Expression::Call(Call::Method(call)) => call.object,
+            Expression::Call(Call::NullSafeMethod(call)) => call.object,
+            Expression::Call(Call::StaticMethod(call)) => call.class,
+            Expression::Access(Access::Property(access)) => access.object,
+            Expression::Access(Access::NullSafeProperty(access)) => access.object,
+            Expression::ArrayAccess(access) => access.array,
+            Expression::Parenthesized(inner) => inner.expression,
+            _ => return depth,
+        };
+        depth += 1;
+    }
+}
+
 /// Array literals with more fields than this are `array<K, V>` / `list<V>`
 /// rather than shapes.
 const MAX_SHAPE_FIELDS: usize = 32;

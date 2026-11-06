@@ -1073,7 +1073,8 @@ async fn php() {
 /// server: the checks it answers so far, the Structure view, go to definition of class names (in a
 /// `new`, an `extends` and a `use` import), of members and of variables, hover, completion
 /// (members, and a class name with auto-import), the auto-import quick fix, Optimize Imports,
-/// syntax-error diagnostics, parameter info, inlay hints and rename. Not ignored: it
+/// the baseline's undefined-method diagnostic and syntax-error diagnostics, parameter info, inlay
+/// hints and rename. Not ignored: it
 /// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
@@ -1180,8 +1181,13 @@ async fn php_native() {
             Imports::Removed,
         )
         .await;
-    // Diagnostics: the engine inspects open documents in the background and publishes them under
+    // Diagnostics: the baseline's check, the fixture's deliberate undefined method (an
+    // inspection). The engine inspects open documents in the background and publishes them under
     // `php`; a syntax error typed into a file is reported on its line and goes away with the edit.
+    if let Some((file, message)) = PHP.diagnostic {
+        let _ = smoke.doc(file).await;
+        smoke.diagnostic(file, message).await;
+    }
     let (doc, pos, before) = smoke
         .type_line(crate::typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $broken = ;"))
         .await;

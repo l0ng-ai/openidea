@@ -27,6 +27,32 @@ fn branches_merge() {
     ]);
 }
 
+/// A key added under each of many consecutive `if`s doesn't make a union
+/// of every combination of keys (2^n shapes): past a few the shapes merge
+/// into one array.
+#[test]
+fn many_optional_keys_stay_small() {
+    let mut body = String::from("$m = [];\n");
+    for i in 0..24 {
+        body.push_str(&format!("if ($c{i}) {{ $m['k{i}'] = {i}; }}\n"));
+    }
+    body.push_str("$m/*|*/;");
+    let started = std::time::Instant::now();
+    check(&[(body.as_str(), "array<string, int>")]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+
+    // The same nested inside a large literal (WordPress's REST schemas).
+    let fields: Vec<String> = (0..40).map(|i| format!("'f{i}' => ['type' => 'string', 'n' => {i}]")).collect();
+    let mut body = format!("$s = ['properties' => [{}]];\n", fields.join(", "));
+    for i in 0..24 {
+        body.push_str(&format!("if ($c{i}) {{ $s['properties']['k{i}'] = ['type' => 'int', 'i' => {i}]; }}\n"));
+    }
+    body.push_str("$s/*|*/;");
+    let started = std::time::Instant::now();
+    assert!(crate::types::expr::tests::type_at_caret(&body).is_some());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+}
+
 #[test]
 fn definitions() {
     check(&[

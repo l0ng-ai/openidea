@@ -75,20 +75,20 @@ enum Callable {
 }
 
 /// A direct subtype found by [`Subtypes::direct`].
-pub(super) struct Subtype {
-    pub(super) path: PathBuf,
-    pub(super) class: ClassLike,
+pub(crate) struct Subtype {
+    pub(crate) path: PathBuf,
+    pub(crate) class: ClassLike,
 }
 
 /// Direct subtypes from the index and the open buffers (which override the
 /// index for their files).
-pub(super) struct Subtypes {
+pub(crate) struct Subtypes {
     open: Vec<(PathBuf, FileSummary)>,
     open_keys: HashSet<String>,
 }
 
 impl Subtypes {
-    pub(super) fn new(engine: &PhpEngine) -> Self {
+    pub(crate) fn new(engine: &PhpEngine) -> Self {
         let open: Vec<(PathBuf, FileSummary)> = engine
             .open_documents()
             .iter()
@@ -100,7 +100,7 @@ impl Subtypes {
 
     /// The class-likes that directly extend or implement `fqn`, sorted by
     /// file and position.
-    fn direct(&self, engine: &PhpEngine, fqn: &str) -> IdeResult<Vec<Subtype>> {
+    pub(crate) fn direct(&self, engine: &PhpEngine, fqn: &str) -> IdeResult<Vec<Subtype>> {
         let mut out = Vec::new();
         if let Some(index) = engine.index() {
             for decl in index.direct_subclasses(fqn)? {
@@ -137,7 +137,7 @@ impl Subtypes {
     }
 
     /// Every subtype of `fqn`, directly or not, nearest first.
-    pub(super) fn all(&self, engine: &PhpEngine, fqn: &str, cancel: &CancellationToken) -> IdeResult<Vec<Subtype>> {
+    pub(crate) fn all(&self, engine: &PhpEngine, fqn: &str, cancel: &CancellationToken) -> IdeResult<Vec<Subtype>> {
         let mut seen: HashSet<String> = HashSet::from([fqn.trim_start_matches('\\').to_ascii_lowercase()]);
         let mut queue = vec![fqn.to_owned()];
         let mut out = Vec::new();

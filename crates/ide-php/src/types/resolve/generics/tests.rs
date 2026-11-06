@@ -76,6 +76,9 @@ class LCollection implements \ArrayAccess, \IteratorAggregate {
     public function getIterator(): \Traversable { return new \ArrayIterator([]); }
 
     public function keys() { return $this->map(fn ($v, $k) => $k); }
+
+    /** @return static<int, static> */
+    public function chunk(int $size) { return $this; }
 }
 
 /** @extends LCollection<int, Book> */
@@ -259,6 +262,12 @@ fn laravel_style_collection() {
             (
                 "/** @param LCollection<string, Author> $c */\nfunction f($c) { $c->getIterator()/*|*/; }",
                 "ArrayIterator<string, Lib\\Author>",
+            ),
+            // `static` inside the arguments of `static<…>` is the receiver
+            // too, not the class the call is written in.
+            (
+                "class Caller { public function f(BookCollection $b) { foreach ($b->chunk(2) as $c) { $c/*|*/; } } }",
+                r"Lib\BookCollection",
             ),
             // An untyped callback's return can't be inferred.
             ("function f(BookCollection $b) { $b->map(fn ($x) => $x)/*|*/; }", "Lib\\LCollection<int, mixed>"),
