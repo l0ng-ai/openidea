@@ -60,7 +60,7 @@
 //! method differently, calls after a spread argument (`...$args`), by-ref
 //! parameters (they are destinations), returns of generators (a
 //! `Generator`/`Iterator`/`Traversable`/`iterable` return type), `void`
-//! and `never` functions (phase 4.7), property hooks, dumb mode and
+//! and `never` functions ([`super::control`]), property hooks, dumb mode and
 //! `.phpstorm.meta.php` files. The ids follow PhpStorm's documented
 //! inspections where one exists; the rules are our own.
 

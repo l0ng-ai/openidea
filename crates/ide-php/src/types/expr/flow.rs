@@ -93,8 +93,11 @@ pub struct Flow {
     /// By the start of a closure or arrow function: the variables of this
     /// scope it can see (`use` captures, or all of them for `fn`).
     captures: HashMap<u32, BTreeMap<Vec<u8>, VarState>>,
-    /// The first statement of each run of statements no path reaches.
+    /// The first statement of each run of statements no path reaches,
+    /// after a statement of the same list that some path reaches.
     unreachable: Vec<Range<u32>>,
+    /// Some path runs off the end of the body (an implicit `return`).
+    falls_through: bool,
     /// Variables may come from where the flow can't see (`extract`,
     /// `$$name`, `include`, `eval`, `get_defined_vars`, `parse_str`).
     dynamic: bool,
@@ -130,9 +133,17 @@ impl Flow {
     }
 
     /// Byte ranges of the first statement of each unreachable run, in
-    /// source order.
+    /// source order. Only runs that follow a reachable statement of the
+    /// same list count: the body of `if (false) { … }` isn't one (a block
+    /// no path enters is a constant condition, not dead code after a jump).
     pub fn unreachable(&self) -> &[Range<u32>] {
         &self.unreachable
+    }
+
+    /// True when some path reaches the end of the body, returning without
+    /// a `return` statement.
+    pub fn falls_through(&self) -> bool {
+        self.falls_through
     }
 
     /// True when variables can appear in ways the flow doesn't follow.
@@ -253,6 +264,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         let mut builder = Builder { types, frames, flow, env: Env::new(), loops: Vec::new(), tries: Vec::new() };
         builder.body();
         let mut flow = builder.flow.borrow_mut();
+        flow.falls_through = builder.env.reachable;
         flow.unreachable.sort_by_key(|range| (range.start, range.end));
         flow.unreachable.dedup();
     }
@@ -348,10 +360,17 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
     // --------------------------------------------------------- statements
 
     fn statements(&mut self, statements: impl Iterator<Item = &'a Statement<'a>>) {
+        // Whether a statement of this list was reached, and the current
+        // unreachable run reported (or not to be: no reached statement
+        // came before it).
+        let mut reached = false;
         let mut reported = false;
         for statement in statements {
             if self.env.reachable {
+                reached = true;
                 reported = false;
+            } else if !reached {
+                reported = true;
             } else if !reported && !is_inert(statement) {
                 let span = statement.span();
                 self.flow.borrow_mut().unreachable.push(span.start.offset..span.end.offset);

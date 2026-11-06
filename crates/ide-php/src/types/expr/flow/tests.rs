@@ -256,4 +256,29 @@ fn unreachable_code() {
     assert_eq!(unreachable("function stop(): never { exit; }\nfunction f() { stop(); $a/*|*/ = 2; }"), vec!["$a = 2;"]);
     // Declarations after a return are hoisted, not dead.
     assert_eq!(unreachable("function f() { return; function g() {} $a/*|*/ = 1; }"), vec!["$a = 1;"]);
+    // A block no path enters is a constant condition, not code after a jump.
+    assert_eq!(unreachable("function f() { if (false) { $a = 1; return; $b = 2; } $a/*|*/; }"), Vec::<String>::new());
+    assert_eq!(unreachable("function f() { while (false) { $a = 1; } $a/*|*/; }"), Vec::<String>::new());
+    assert_eq!(
+        unreachable("function f() { return; if (true) { $a = 1; } $b/*|*/ = 1; }"),
+        vec!["if (true) { $a = 1; }"]
+    );
+    // `switch`: a `break` after a `return` is dead.
+    assert_eq!(unreachable("function f($k) { switch ($k) { case 1: return 1; break; } $a/*|*/; }"), vec!["break;"]);
+}
+
+#[test]
+fn falls_through() {
+    let falls = |body: &str| flow_at_caret(body).0.falls_through();
+    assert!(falls("function f() { $a/*|*/ = 1; }"));
+    assert!(falls("function f($c) { if ($c) { return 1; } $a/*|*/ = 1; }"));
+    assert!(!falls("function f($c) { if ($c) { return 1; } $a/*|*/ = 1; return 2; }"));
+    assert!(!falls("function f($c) { if ($c) { return 1; } else { throw new \\Exception(); } $a/*|*/; }"));
+    assert!(falls("function f($k) { switch ($k) { case 1: return 1; } $a/*|*/; }"));
+    assert!(!falls("function f($k) { switch ($k) { case 1: return 1; default: return 2; } $a/*|*/; }"));
+    assert!(!falls("function f() { while (true) { $a/*|*/ = 1; } }"));
+    assert!(falls("function f($c) { while (true) { if ($c) break; } $a/*|*/; }"));
+    assert!(!falls("function f() { try { return 1; } finally { $a/*|*/ = 1; } }"));
+    assert!(falls("function f() { try { return g(); } catch (\\Exception $e) { $a/*|*/ = 1; } }"));
+    assert!(!falls("function stop(): never { exit; }\nfunction f() { $a/*|*/ = 1; stop(); }"));
 }

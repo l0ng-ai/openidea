@@ -11,7 +11,9 @@
 //!   unused local variables; [`calls`]: argument count, named arguments,
 //!   argument, return and property types, lenient or strict
 //!   ([`Inspections::builtin_with`]); [`unused`]: unused imports, private
-//!   members and parameters); [`PhpEngine::set_inspections`] replaces the
+//!   members and parameters; [`control`]: unreachable statements, missing
+//!   returns, `void` functions returning a value and `never` functions
+//!   returning); [`PhpEngine::set_inspections`] replaces the
 //!   set (tests, and the settings of phase 4.10).
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
@@ -35,6 +37,7 @@
 //! a short name, a default level, a visitor and quick-fixes.
 
 pub mod calls;
+pub mod control;
 pub mod members;
 pub(crate) mod runner;
 pub mod suppress;
@@ -106,6 +109,10 @@ impl Inspections {
             Arc::new(unused::UnusedPrivateField),
             Arc::new(unused::UnusedPrivateConstant),
             Arc::new(unused::UnusedParameter),
+            Arc::new(control::UnreachableStatement),
+            Arc::new(control::MissingReturn),
+            Arc::new(control::VoidReturn),
+            Arc::new(control::NeverReturn),
         ])
     }
 
@@ -258,6 +265,7 @@ pub struct InspectionContext<'a> {
     variables: OnceLock<Vec<variables::Found>>,
     calls: OnceLock<Vec<calls::Found>>,
     unused: OnceLock<Vec<unused::Found>>,
+    control: OnceLock<Vec<control::Found>>,
 }
 
 impl<'a> InspectionContext<'a> {
@@ -273,6 +281,7 @@ impl<'a> InspectionContext<'a> {
             variables: OnceLock::new(),
             calls: OnceLock::new(),
             unused: OnceLock::new(),
+            control: OnceLock::new(),
         }
     }
 
@@ -308,6 +317,12 @@ impl<'a> InspectionContext<'a> {
     /// private member inspections).
     pub(crate) fn unused_members(&self) -> &[unused::Found] {
         self.unused.get_or_init(|| unused::find(self))
+    }
+
+    /// The file's control-flow problems (computed once for the four
+    /// control-flow inspections).
+    pub(crate) fn control(&self) -> &[control::Found] {
+        self.control.get_or_init(|| control::find(self))
     }
 
     pub fn resolver(&self) -> Resolver<'a> {

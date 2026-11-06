@@ -346,7 +346,7 @@ The design:
 - [x] Phase 4.6: Unused code
       Inspections for unused imports, private methods, properties and constants, and unused parameters (excluding overrides and interface implementations). Tests: unit tests.
 
-- [ ] Phase 4.7: Control flow
+- [x] Phase 4.7: Control flow
       Inspections for unreachable code, missing return in a non-void function, `void` returning a value, and `never` returning. Tests: unit tests.
 
 - [ ] Phase 4.8: Language level and deprecation

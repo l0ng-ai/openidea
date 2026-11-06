@@ -384,6 +384,10 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpUnusedPrivateField",
             "PhpUnusedPrivateConstant",
             "PhpUnusedParameter",
+            "PhpUnreachableStatement",
+            "PhpMissingReturnStatement",
+            "PhpVoidFunctionReturnsValue",
+            "PhpNeverFunctionReturns",
         ]
     );
 }
@@ -429,3 +433,6 @@ mod calls_tests;
 
 #[path = "unused_tests.rs"]
 mod unused_tests;
+
+#[path = "control_tests.rs"]
+mod control_tests;
