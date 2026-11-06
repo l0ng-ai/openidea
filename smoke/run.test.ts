@@ -128,12 +128,14 @@ let server: Server | null = null;
 let disconnect: (() => void) | null = null;
 let base = "";
 
-afterEach(() => {
+afterEach(async () => {
   // As switching projects does: run ids restart with each server.
   resetRuns();
   disconnect?.();
-  server?.close();
-  if (base) rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  await server?.close();
+  // A language server's own process (jdtls's JVM) can outlive the server's for a moment:
+  // deleting its data directory has to wait for it.
+  if (base) rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
 });
 
 async function open(c: Case): Promise<string> {
