@@ -1124,6 +1124,42 @@ mod tests {
     }
 
     #[test]
+    fn per_directory_mode_watches_the_rest_of_a_large_tree_after_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let dirs = SYNC_WATCH_BUDGET + 40;
+        for i in 0..dirs {
+            std::fs::create_dir_all(root.join(format!("d{i:03}"))).unwrap();
+        }
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        let sink: SharedSink = Arc::new(|_e: IdeEvent| {});
+        let watcher = {
+            let batches = batches.clone();
+            Watcher::start_with(
+                &root,
+                vec!["**/node_modules".into()],
+                sink,
+                Box::new(move |b| batches.lock().push(b.clone())),
+                WatchMode::PerDirectory,
+            )
+            .unwrap()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while watcher.watch_count() < dirs + 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // root and every d*, but not node_modules
+        assert_eq!(watcher.watch_count(), dirs + 1);
+        std::thread::sleep(Duration::from_millis(200));
+        for i in [0, dirs - 1] {
+            let file = root.join(format!("d{i:03}/f.rs"));
+            std::fs::write(&file, "x").unwrap();
+            assert!(wait_for(&batches, |b| all_paths(b).contains(&file)), "{file:?}");
+        }
+    }
+
+    #[test]
     fn per_directory_mode_follows_worktree_registrations() {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();

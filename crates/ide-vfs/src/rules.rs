@@ -475,4 +475,24 @@ mod tests {
         assert_eq!(stack.nested.lock().by_root.len(), 1);
         assert!(Arc::ptr_eq(&nested, stack.nested.lock().by_root.get(&repo).unwrap()));
     }
+
+    #[test]
+    fn a_repository_created_inside_the_workspace_becomes_a_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path();
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+        std::fs::create_dir_all(workspace.join("sub/deep")).unwrap();
+        std::fs::write(workspace.join(".gitignore"), "*.tmp\n").unwrap();
+
+        let stack = GitignoreStack::new(workspace);
+        assert!(stack.is_ignored(&workspace.join("sub/deep/a.tmp"), false));
+
+        std::fs::create_dir(workspace.join("sub/.git")).unwrap();
+        stack.invalidate_tree(&workspace.join("sub/.git"));
+        assert!(!stack.is_ignored(&workspace.join("sub/deep/a.tmp"), false));
+
+        std::fs::remove_dir(workspace.join("sub/.git")).unwrap();
+        stack.invalidate_tree(&workspace.join("sub/.git"));
+        assert!(stack.is_ignored(&workspace.join("sub/deep/a.tmp"), false));
+    }
 }
