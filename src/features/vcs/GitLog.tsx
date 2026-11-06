@@ -33,7 +33,6 @@ import {
   SplitHandle,
   SplitPanel,
   Spinner,
-  Dialog,
   Popup,
   TOOLTIP_DELAY,
   Tabs,
@@ -94,7 +93,7 @@ import {
   isFavoriteBranch,
   type BranchTreeNode,
 } from "./branches";
-import { chooseDateRange, chooseMany, openDialog } from "./dialogs";
+import { chooseDateRange, chooseMany } from "./dialogs";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
 import { DIFF_KIND, diffInput } from "./diffInput";
 import {
@@ -2531,24 +2530,6 @@ function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: 
     <div className={clsx(compact && styles.commitEntry)}>
       <div className={styles.subjectLine}>
         <CommitMessageText text={subject ?? ""} repo={repo} />
-        {/* Only a message with a body has more to show. */}
-        {body && (
-          <button
-            type="button"
-            className={clsx(styles.linkButton, styles.expandMessage)}
-            onClick={() =>
-              openDialog((close) => (
-                <Dialog open title={tx`Commit ${commit.shortId}`} width={760} onClose={close}>
-                  <div className={clsx(styles.messageBox, styles.fullMessage)}>
-                    <CommitMessageText text={message} repo={repo} />
-                  </div>
-                </Dialog>
-              ))
-            }
-          >
-            {tx("Expand Commit Message")}
-          </button>
-        )}
       </div>
       {body && (
         <div className={styles.fullMessage}>

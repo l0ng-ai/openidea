@@ -6138,8 +6138,6 @@
   "Collapse or expand this branch": "Contraer o expandir esta rama",
   "Diff Preview Location": "Ubicación de la vista previa de diferencias",
   "Parent": "Padre",
-  "Commit {shortId}": "Confirmación {shortId}",
-  "Expand Commit Message": "Expandir mensaje de confirmación",
   "Committed by": "Confirmado por",
   "Merge of": "Fusión de",
   "Containing branches": "Ramas que lo contienen",

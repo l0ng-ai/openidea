@@ -12,14 +12,17 @@ export function quoteIdent(driver: DbDriver, name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-/** Quotes only when needed: lower-case (PostgreSQL) / plain words stay bare, like IDEA's generated SQL. */
+/** Quotes only when needed: lower-case (PostgreSQL) / UPPER-case (Oracle) / plain words stay bare, like IDEA's SQL. */
 export function ident(driver: DbDriver, name: string): string {
   const plain =
     driver === "postgres"
       ? /^[a-z_][a-z0-9_$]*$/
-      : driver === "clickhouse"
-        ? /^[A-Za-z_][A-Za-z0-9_]*$/
-        : /^[A-Za-z_][A-Za-z0-9_$]*$/;
+      : // Oracle folds unquoted names to upper case.
+        driver === "oracle"
+        ? /^[A-Z_][A-Z0-9_$]*$/
+        : driver === "clickhouse"
+          ? /^[A-Za-z_][A-Za-z0-9_]*$/
+          : /^[A-Za-z_][A-Za-z0-9_$]*$/;
   return plain.test(name) && !RESERVED.has(name.toUpperCase()) ? name : quoteIdent(driver, name);
 }
 
@@ -87,6 +90,7 @@ export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string 
       return `alter index ${q} rename to ${ident(driver, to)};`;
     case "view":
       if (driver === "postgres") return `alter view ${q} rename to ${ident(driver, to)};`;
+      if (driver === "oracle") return `rename ${q} to ${ident(driver, to)};`;
       return `rename table ${q} to ${qualifiedName(driver, o.schema, to)};`;
     default:
       if (driver === "mysql" || driver === "clickhouse")
@@ -118,8 +122,11 @@ export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): st
     case "index":
       if (driver === "mysql")
         return `drop index ${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")};`;
+      // Oracle's DROP INDEX takes no IF EXISTS.
+      if (driver === "oracle") return `drop index ${qualifiedName(driver, o.schema, o.name)};`;
       return `drop index ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
     case "schema":
+      if (driver === "oracle") return `drop user ${ident(driver, o.name)} cascade;`;
       return `drop ${driver === "mysql" || driver === "clickhouse" ? "database" : "schema"} ${ifExists}${ident(driver, o.name)}${cascade};`;
     case "materializedView":
       if (driver === "clickhouse") return `drop table ${ifExists}${qualifiedName(driver, o.schema, o.name)};`;
@@ -147,7 +154,8 @@ export function truncateSql(
 ): string {
   const q = qualifiedName(driver, schema, table);
   if (driver === "sqlite") return `delete from ${q};`;
-  if (driver === "mysql" || driver === "sqlServer" || driver === "clickhouse") return `truncate table ${q};`;
+  if (driver === "mysql" || driver === "sqlServer" || driver === "clickhouse" || driver === "oracle")
+    return `truncate table ${q};`;
   return `truncate table ${q}${opts.restartIdentity ? " restart identity" : ""}${opts.cascade ? " cascade" : ""};`;
 }
 
@@ -177,7 +185,9 @@ export function scriptSql(
     case "selectAll":
       return `select *\nfrom ${q};\n`;
     case "selectFirst":
-      return `select *\nfrom ${q}\nlimit 10;\n`;
+      return driver === "oracle"
+        ? `select *\nfrom ${q}\nfetch first 10 rows only;\n`
+        : `select *\nfrom ${q}\nlimit 10;\n`;
     case "insert":
       return `insert into ${q} (${names.join(", ")})\nvalues (${names.map(() => "?").join(", ")});\n`;
     case "update": {
@@ -223,7 +233,9 @@ export function draftOf(c: DbColumnInfo, key: number): ColumnDraft {
 }
 
 function columnDefinition(driver: DbDriver, c: ColumnDraft): string {
-  let s = `${ident(driver, c.name)} ${c.dataType.trim() || (driver === "clickhouse" ? "String" : driver === "sqlite" ? "TEXT" : "text")}`;
+  const fallback =
+    driver === "clickhouse" ? "String" : driver === "sqlite" ? "TEXT" : driver === "oracle" ? "VARCHAR2(255)" : "text";
+  let s = `${ident(driver, c.name)} ${c.dataType.trim() || fallback}`;
   if (c.default.trim()) s += ` default ${c.default.trim()}`;
   if (c.notNull && driver !== "clickhouse") s += " not null";
   return s;
@@ -266,7 +278,14 @@ export function alterTableSql(
   for (const c of columns) {
     const o = c.original;
     if (!o) {
-      if (!c.dropped && c.name.trim()) out.push(`alter table ${q()} add column ${columnDefinition(driver, c)};`);
+      if (!c.dropped && c.name.trim()) {
+        // Oracle takes the added column's definition in parentheses.
+        out.push(
+          driver === "oracle"
+            ? `alter table ${q()} add (${columnDefinition(driver, c)});`
+            : `alter table ${q()} add column ${columnDefinition(driver, c)};`,
+        );
+      }
       continue;
     }
     if (c.dropped) {
@@ -278,6 +297,26 @@ export function alterTableSql(
       c.dataType.trim() !== o.dataType || c.notNull !== !o.nullable || c.default.trim() !== (o.default ?? "").trim();
     if (driver === "mysql" && (renamed || changed)) {
       out.push(`alter table ${q()} change column ${ident(driver, o.name)} ${columnDefinition(driver, c)};`);
+      continue;
+    }
+    if (driver === "oracle") {
+      const col = ident(driver, o.name);
+      if (c.dataType.trim() && c.dataType.trim() !== o.dataType) {
+        out.push(`alter table ${q()} modify (${col} ${c.dataType.trim()}${c.notNull ? " not null" : ""});`);
+      }
+      if (c.notNull !== !o.nullable) {
+        out.push(
+          c.notNull ? `alter table ${q()} modify (${col} not null);` : `alter table ${q()} modify (${col} null);`,
+        );
+      }
+      if (c.default.trim() !== (o.default ?? "").trim()) {
+        out.push(
+          c.default.trim()
+            ? `alter table ${q()} modify (${col} default ${c.default.trim()});`
+            : `alter table ${q()} modify (${col} default null);`,
+        );
+      }
+      if (renamed) out.push(`alter table ${q()} rename column ${col} to ${ident(driver, c.name)};`);
       continue;
     }
     if (renamed) out.push(`alter table ${q()} rename column ${ident(driver, o.name)} to ${ident(driver, c.name)};`);
