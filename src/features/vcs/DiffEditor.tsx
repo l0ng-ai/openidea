@@ -634,7 +634,26 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       }
       pendingFile.current = 0;
       setNavHint(null);
-      (dir === 1 ? goToNextChunk : goToPreviousChunk)({ state: v.state, dispatch: (tr) => v.dispatch(tr) });
+      (dir === 1 ? goToNextChunk : goToPreviousChunk)({
+        state: v.state,
+        dispatch: (tr) => {
+          v.dispatch({ selection: tr.selection, userEvent: "select.byChunk" });
+          const scroller = views.merge && !views.panes ? views.merge.dom : v.scrollDOM;
+          v.requestMeasure({
+            key: step,
+            read: () => {
+              const documentTop = v.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop;
+              const lineTop = v.lineBlockAt(v.state.selection.main.head).top;
+              return documentTop + lineTop - scroller.clientHeight / 3;
+            },
+            write: (top) =>
+              scroller.scrollTo({
+                top: Math.max(0, top),
+                behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+              }),
+          });
+        },
+      });
       if (v !== views.b) {
         // Mirror the caret into the right pane so the counter follows.
         const chunks = getChunks(v.state)?.chunks ?? [];

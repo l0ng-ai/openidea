@@ -4,6 +4,7 @@
  * 600ms of hover. Hidden on scroll, key press, pointer down or leave.
  */
 import { useEffect, useRef, useState } from "react";
+import clsx from "clsx";
 import { createPortal } from "react-dom";
 import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import styles from "./Tooltip.module.css";
@@ -25,6 +26,7 @@ interface Shown {
   x: number;
   y: number;
   placed: boolean;
+  stripe?: "left" | "right";
 }
 
 export function TooltipHost() {
@@ -50,7 +52,15 @@ export function TooltipHost() {
       if (!text || !el.isConnected) return;
       visible = true;
       anchorRef.current = el;
-      setShown({ text, shortcut: el.dataset.tooltipShortcut, x: -9999, y: -9999, placed: false });
+      const stripe = el.dataset.tooltipStripe;
+      setShown({
+        text,
+        shortcut: el.dataset.tooltipShortcut,
+        x: -9999,
+        y: -9999,
+        placed: false,
+        stripe: stripe === "left" || stripe === "right" ? stripe : undefined,
+      });
     };
 
     const onOver = (e: PointerEvent) => {
@@ -101,7 +111,7 @@ export function TooltipHost() {
     if (!anchor || !tip) return;
     let cancelled = false;
     void computePosition(anchor, tip, {
-      placement: "bottom",
+      placement: shown.stripe === "right" ? "left" : shown.stripe === "left" ? "right" : "bottom",
       strategy: "fixed",
       middleware: [offset(6), flip({ padding: 6 }), shift({ padding: 6 })],
     }).then(({ x, y }) => {
@@ -117,7 +127,7 @@ export function TooltipHost() {
     <div
       ref={tipRef}
       role="tooltip"
-      className={styles.tooltip}
+      className={clsx(styles.tooltip, shown.stripe && styles.stripe)}
       data-placed={shown.placed || undefined}
       style={{ left: shown.x, top: shown.y }}
     >

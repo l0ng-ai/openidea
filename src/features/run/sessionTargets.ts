@@ -13,6 +13,7 @@ export function selectedTarget(selectedId: string | null, runs: RunSession[], de
         startedAt: s.startedAt,
         debug: false,
         paused: false,
+        starting: s.status === "starting",
         rerun: () => rerunSession(s.id),
         stop: () => void stopSession(s.id),
         resume: () => {},
@@ -26,7 +27,7 @@ export function compoundTargets(config: RunConfig | undefined, runs: RunSession[
   if (config?.kind !== "compound") return [];
   const ids = new Set(compoundChildren(config, useRun.getState().configs).map((c) => c.id));
   return [
-    ...sessionsOf(config, runs).map((s) => ({ stop: () => void stopSession(s.id) })),
+    ...sessionsOf(config, runs).map((s) => ({ starting: s.status === "starting", stop: () => void stopSession(s.id) })),
     ...debug.filter((s) => s.configId != null && ids.has(s.configId)),
   ];
 }

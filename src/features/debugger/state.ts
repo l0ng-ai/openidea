@@ -318,6 +318,7 @@ export function publishContext() {
           name: session.runConfig?.name ?? session.name,
           startedAt: session.startedAt ?? 0,
           paused: !!paused,
+          starting: session.status === "starting",
           rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
           stop: () => void stopSession(session.id),
           resume: () => {

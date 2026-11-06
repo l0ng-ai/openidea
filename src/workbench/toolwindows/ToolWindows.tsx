@@ -410,6 +410,7 @@ function StripeButton({
         e.preventDefault();
         showContextMenu(e, stripeButtonMenu(tw, showName));
       }}
+      data-tooltip-stripe={side}
       {...tooltipAttrs(tw.title, shortcut)}
     >
       <span className={styles.stripeIcon}>

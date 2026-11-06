@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { RunConfig } from "@/platform/ipc";
@@ -149,4 +149,25 @@ it("matches a detected Spring configuration after its object and id are regenera
   expect(regenerated).not.toBe(original);
   expect(regenerated.id).toBe(original.id);
   expect(selectedTarget(regenerated.id, [run(original), run(npm)], [])?.name).toBe(original.name);
+});
+
+it("shows startup feedback until the selected run becomes running", async () => {
+  useRun.setState({ sessions: [{ ...run(app), status: "starting" }] });
+  render(<RunWidget />);
+  expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: `Rerun '${app.name}'` })).toBeNull();
+  expect(screen.queryByRole("button", { name: `Stop '${app.name}'` })).toBeNull();
+  act(() => useRun.setState({ sessions: [run(app)] }));
+  expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: `Stop '${app.name}'` })).toBeNull();
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: `Stop '${app.name}'` })).toBeEnabled());
+  expect(screen.queryByRole("status", { name: "Starting…" })).toBeNull();
+  expect(screen.getByRole("button", { name: `Rerun '${app.name}'` })).toBeEnabled();
+});
+
+it("shows startup feedback for the selected debugger", () => {
+  useDebugRunSessions.setState({ sessions: [{ ...debug(app), starting: true }] });
+  render(<RunWidget />);
+  expect(screen.getByRole("status", { name: "Starting…" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: `Rerun '${app.name}'` })).toBeNull();
 });

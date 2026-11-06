@@ -1351,6 +1351,8 @@ export function localChangedPaths(
 // running a whole command line; anything else runs as a shell command.
 
 export interface RunAnythingItem {
+  /** Optional section within the provider; the shared `recent` id merges command histories. */
+  group?: { id: string; label: string };
   /** Stable within the provider. */
   key: string;
   label: string;
@@ -1443,6 +1445,7 @@ export function showStatusInfo(text: string, ms = 8000) {
 
 /** Live debugger roots exposed to the run toolbar without coupling feature stores. */
 export interface DebugRunSession {
+  starting?: boolean;
   id: number;
   configId: string | null;
   name: string;
