@@ -98,7 +98,14 @@ pub struct Flow {
     /// Variables may come from where the flow can't see (`extract`,
     /// `$$name`, `include`, `eval`, `get_defined_vars`, `parse_str`).
     dynamic: bool,
+    /// By the offset of a read or write of [`PROBE_VARIABLE`]: every
+    /// variable of the scope there (for completion).
+    probes: HashMap<u32, BTreeMap<Vec<u8>, VarState>>,
 }
+
+/// The variable completion puts at the caret (`$__ideProbe`): the flow keeps
+/// the whole environment at it ([`Flow::variables_at`]).
+pub const PROBE_VARIABLE: &[u8] = b"__ideProbe";
 
 impl Flow {
     /// The state of the variable read at byte `offset` (the `$`), before
@@ -127,6 +134,13 @@ impl Flow {
     /// True when variables can appear in ways the flow doesn't follow.
     pub fn is_dynamic(&self) -> bool {
         self.dynamic
+    }
+
+    /// Every variable of the scope where [`PROBE_VARIABLE`] is read or
+    /// written at byte `offset` (the `$`), as it is there; undefined ones
+    /// included (with [`Defined::No`]).
+    pub fn variables_at(&self, offset: u32) -> Option<&BTreeMap<Vec<u8>, VarState>> {
+        self.probes.get(&offset)
     }
 }
 
@@ -285,7 +299,11 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             return;
         }
         let state = self.env.get(name);
-        self.flow.borrow_mut().reads.insert(variable.span.start.offset, state);
+        let mut flow = self.flow.borrow_mut();
+        if name == PROBE_VARIABLE {
+            flow.probes.insert(variable.span.start.offset, self.env.vars.clone());
+        }
+        flow.reads.insert(variable.span.start.offset, state);
     }
 
     fn write(&mut self, variable: &DirectVariable<'a>, ty: Type) {
@@ -294,6 +312,9 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             return;
         }
         let state = VarState::defined(ty);
+        if name == PROBE_VARIABLE {
+            self.flow.borrow_mut().probes.insert(variable.span.start.offset, self.env.vars.clone());
+        }
         self.env.vars.insert(name.to_vec(), state.clone());
         self.flow.borrow_mut().writes.insert(variable.span.start.offset, state);
     }

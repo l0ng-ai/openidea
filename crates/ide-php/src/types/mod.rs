@@ -55,7 +55,7 @@ mod subtype;
 
 use serde::{Deserialize, Serialize};
 
-pub use expr::{Defined, ExprTypes, Flow, Frame, Located, VarState, type_at};
+pub use expr::{Defined, ExprTypes, Flow, Frame, Located, PROBE_VARIABLE, VarState, type_at};
 pub use lazy::LazyType;
 pub use model::ClassModel;
 pub use parse::{TypeParseError, parse_doc_type};

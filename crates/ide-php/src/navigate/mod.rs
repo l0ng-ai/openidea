@@ -199,11 +199,11 @@ fn decl_kind(kind: DeclKind) -> SymbolKind {
     }
 }
 
-fn short_name(fqn: &str) -> &str {
+pub(crate) fn short_name(fqn: &str) -> &str {
     fqn.rsplit_once('\\').map_or(fqn, |(_, name)| name)
 }
 
-fn namespace_of(fqn: &str) -> &str {
+pub(crate) fn namespace_of(fqn: &str) -> &str {
     fqn.rsplit_once('\\').map_or("", |(ns, _)| ns)
 }
 
@@ -224,7 +224,7 @@ pub fn find_declaration<'a>(summary: &'a FileSummary, kind: NameKind, fqn: &str)
 }
 
 /// The innermost class-like whose declaration contains `offset`.
-fn enclosing_class(summary: &FileSummary, offset: u32) -> Option<&ClassLike> {
+pub(crate) fn enclosing_class(summary: &FileSummary, offset: u32) -> Option<&ClassLike> {
     summary
         .class_likes
         .iter()
@@ -240,7 +240,7 @@ const PREFIX: u32 = 600;
 /// Scores lower-case candidate names against a query (case-insensitive):
 /// nucleo's fuzzy score, boosted for an exact name or a prefix. Returns the
 /// best `limit` as `(score, candidate index)`, best first.
-fn rank(candidates: &[String], query: &str, limit: usize) -> Vec<(u32, usize)> {
+pub(crate) fn rank(candidates: &[String], query: &str, limit: usize) -> Vec<(u32, usize)> {
     let query = query.to_lowercase();
     let needle = Utf32String::from(query.as_str());
     let mut matcher = Matcher::new(Config::DEFAULT);

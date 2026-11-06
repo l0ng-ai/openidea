@@ -341,7 +341,13 @@ impl PhpEngine {
         Some(HoverInfo { markdown, range: found.range })
     }
 
-    fn describe(&self, decl: &Decl, resolver: &Resolver<'_>, here: &Path, summary: &FileSummary) -> Option<String> {
+    pub(crate) fn describe(
+        &self,
+        decl: &Decl,
+        resolver: &Resolver<'_>,
+        here: &Path,
+        summary: &FileSummary,
+    ) -> Option<String> {
         match decl {
             Decl::ClassLike(fqn) => {
                 let class = summary.class_like(fqn).cloned().or_else(|| resolver.declarations().class_like(fqn))?;

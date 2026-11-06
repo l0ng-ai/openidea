@@ -262,7 +262,7 @@ The design:
 
   Map to the IDE types in `ide_lsp::types`. Tests: unit tests, and Native `language_smoke` hover and definition checks.
 
-- [ ] Phase 2.10: Completion
+- [x] Phase 2.10: Completion
       Completion is context-aware:
   - members after `->`, `?->` and `::`, filtered by visibility from the caller's context
   - variables in scope, keywords by context

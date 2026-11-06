@@ -53,7 +53,7 @@ use crate::syntax::ParsedFile;
 
 mod flow;
 
-pub use flow::{Defined, Flow, VarState};
+pub use flow::{Defined, Flow, PROBE_VARIABLE, VarState};
 
 /// How deeply flows may be nested in their building (a closure's flow
 /// needs the enclosing function's) before an empty flow is used.

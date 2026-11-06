@@ -15,9 +15,10 @@ use std::sync::Arc;
 
 use ide_core::settings::{PhpEngineKind, Settings};
 use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, SharedSink};
-use ide_lsp::types::{GotoKind, Hover, Markup, WorkspaceSymbol};
+use ide_lsp::types::{CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, WorkspaceSymbol};
 
 use crate::language_service::Answer;
+use ide_php::complete::{Completion, CompletionData};
 use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
 use ide_php::project::LayoutConfig;
 use ide_php::stubs::StubFilter;
@@ -179,8 +180,9 @@ impl DocumentObserver for PhpObserver {
 /// registered for `php` in every project, it answers only while the engine
 /// runs (Settings › PHP › Engine is `Native`); otherwise requests go to
 /// Intelephense. The requests it answers natively are added feature by feature:
-/// so far document and workspace symbols, hover, and goto definition and type
-/// definition (names, members, named arguments and variables).
+/// so far document and workspace symbols, hover, goto definition and type
+/// definition (names, members, named arguments and variables), and
+/// completion with lazily resolved documentation.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -208,6 +210,35 @@ impl crate::language_service::LanguageService for PhpService {
         Some(symbols)
     }
 
+    fn completion(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        trigger: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Answer<CompletionList> {
+        let engine = self.0.engine()?;
+        if !engine.is_open(doc) {
+            return None;
+        }
+        let server = engine.server_id();
+        let found = engine.completion(doc, pos, trigger, cancel)?;
+        let items = found.items.into_iter().map(|item| completion_item(item, server)).collect();
+        Some(Ok(CompletionList { is_incomplete: found.incomplete, items }))
+    }
+
+    fn resolve_completion(&self, doc: DocId, item: &CompletionItem) -> Answer<CompletionItem> {
+        let engine = self.0.engine()?;
+        let data: CompletionData = serde_json::from_value(item.data.clone()?).ok()?;
+        let mut item = item.clone();
+        if item.documentation.is_none()
+            && let Some(markdown) = engine.completion_documentation(doc, &data)
+        {
+            item.documentation = Some(Markup { kind: "markdown".into(), value: markdown });
+        }
+        Some(Ok(item))
+    }
+
     fn hover(&self, doc: DocId, pos: Pos, _cancel: &CancellationToken) -> Answer<Option<Hover>> {
         let engine = self.0.engine()?;
         if !engine.is_open(doc) {
@@ -228,6 +259,44 @@ impl crate::language_service::LanguageService for PhpService {
             GotoKind::Implementation => return None,
         };
         Some(Ok(targets.into_iter().map(|t| Location::file(t.path, t.range)).collect()))
+    }
+}
+
+/// An engine completion item as the editor takes it.
+fn completion_item(item: Completion, server: ide_core::ServerId) -> CompletionItem {
+    use ide_php::complete::CompletionKind as Kind;
+    let kind = match item.kind {
+        Kind::Class | Kind::Trait => CompletionKind::Class,
+        Kind::Interface => CompletionKind::Interface,
+        Kind::Enum => CompletionKind::Enum,
+        Kind::Function => CompletionKind::Function,
+        Kind::Method => CompletionKind::Method,
+        Kind::Property => CompletionKind::Property,
+        Kind::Constant => CompletionKind::Constant,
+        Kind::EnumCase => CompletionKind::EnumMember,
+        Kind::Variable | Kind::Parameter => CompletionKind::Variable,
+        Kind::Keyword => CompletionKind::Keyword,
+        Kind::Value => CompletionKind::Value,
+    };
+    CompletionItem {
+        label: item.label,
+        label_detail: item.label_detail,
+        detail: item.detail,
+        kind: Some(kind),
+        documentation: None,
+        sort_text: Some(item.sort_text),
+        filter_text: item.filter_text,
+        preselect: false,
+        deprecated: item.deprecated,
+        insert_text: item.insert_text,
+        is_snippet: item.is_snippet,
+        replace_range: Some(item.replace),
+        replace_range_tab: item.replace_tab,
+        additional_edits: item.additional_edits,
+        commit_characters: Vec::new(),
+        command: None,
+        data: item.data.and_then(|data| serde_json::to_value(data).ok()),
+        server,
     }
 }
 

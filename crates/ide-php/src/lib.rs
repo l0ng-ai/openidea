@@ -37,6 +37,10 @@
 //! - [`meta`]: `.phpstorm.meta.php` directives ([`meta::PhpStormMeta`]):
 //!   return-type overrides and exit points applied through a type provider,
 //!   expected argument and return values for completion.
+//! - [`complete`]: context-aware code completion
+//!   ([`complete::Completions`]): members, variables, keywords, names with
+//!   auto-import, named arguments, expected values, enum cases and array
+//!   keys.
 //! - [`navigate`]: document symbols, fuzzy workspace symbols and goto
 //!   definition of class-like, function and constant names.
 //! - [`types`]: the type model ([`types::Type`]): parsing from native hints
@@ -45,6 +49,7 @@
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
+pub mod complete;
 pub mod engine;
 pub mod index;
 pub mod meta;

@@ -1071,7 +1071,8 @@ async fn php() {
 
 /// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
 /// server: the checks it answers so far, the Structure view, go to definition of class names (in a
-/// `new`, an `extends` and a `use` import), of members and of variables, and hover. Not ignored: it
+/// `new`, an `extends` and a `use` import), of members and of variables, hover, and completion
+/// (members, and a class name with auto-import). Not ignored: it
 /// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
@@ -1141,6 +1142,10 @@ async fn php_native() {
         )
         .await;
     smoke.hover(at("src/Library.php", "return $lent;", "$lent"), r"App\Model\Book $lent").await;
+    // Completion: the baseline's member check, and a class name with its `use` import.
+    let (typed, offers) = PHP.completion;
+    smoke.completion(typed, offers).await;
+    smoke.auto_import(PHP.auto_import).await;
     let servers = ops::lsp::lsp_servers(&smoke.host, WINDOW).unwrap_or_default();
     assert!(
         !servers.iter().any(|s| s.name.to_ascii_lowercase().contains("intelephense")),
