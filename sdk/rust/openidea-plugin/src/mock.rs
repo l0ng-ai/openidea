@@ -79,6 +79,7 @@ struct State {
     terminals: Vec<MockTerminal>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
+    locale: Option<String>,
 }
 
 /// A terminal the plugin opened.
@@ -262,6 +263,11 @@ impl MockHost {
         self.state.borrow_mut().settings.insert(key.into(), json.into());
     }
 
+    /// The UI language [`crate::host::locale`] reports (`en` by default).
+    pub fn set_locale(&self, tag: &str) {
+        self.state.borrow_mut().locale = Some(tag.into());
+    }
+
     /// A secret the user stored.
     pub fn set_secret(&self, name: &str, value: &str) {
         self.state.borrow_mut().secrets.insert(name.into(), value.into());
@@ -383,6 +389,10 @@ pub mod current {
             s.clipboard = Some(text.to_owned());
             Ok(())
         })
+    }
+
+    pub fn locale() -> String {
+        with(|s| s.locale.clone().unwrap_or_else(|| "en".into()))
     }
 
     pub fn open_url(url: &str) -> Result<(), Error> {
@@ -740,6 +750,9 @@ mod tests {
         host::open_url("https://example.com/a").unwrap();
         assert_eq!(mock.opened_urls(), ["https://example.com/a"]);
         assert!(matches!(host::open_url("file:///etc/passwd"), Err(Error::Invalid(_))));
+        assert_eq!(host::locale(), "en");
+        mock.set_locale("zh-CN");
+        assert_eq!(host::locale(), "zh-CN");
         {
             let task = host::begin_task("Work", true);
             task.report(1, Some(2), None);

@@ -2229,6 +2229,46 @@ web = "panel/index.html"
     assert!(assets[0].1.contains("<rect"));
 }
 
+#[test]
+fn a_package_ships_translations_in_locales() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = |id: &str, catalogs: &[(&str, &str)]| {
+        let pkg = tmp.path().join(id);
+        std::fs::create_dir_all(pkg.join("locales")).unwrap();
+        for (name, text) in catalogs {
+            std::fs::write(pkg.join("locales").join(name), text).unwrap();
+        }
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                "id = \"{id}\"\nname = \"Words\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n\n\
+                 [[contributes.commands]]\nid = \"count\"\ntitle = \"Count Words\"\n"
+            ),
+        )
+        .unwrap();
+        pkg
+    };
+
+    for bad in ["{", "[]", r#"{"Count Words": 1}"#] {
+        let pkg = package("bad-catalog", &[("fr.json", bad)]);
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "{bad}");
+    }
+
+    let pkg = package("words", &[("fr.json", r#"{"Count Words": "Compter les mots"}"#), ("zh-CN.json", "{}")]);
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let item = f.host.ui_items("locales").into_iter().find(|i| i.plugin_id == "words").expect("the catalogs");
+    assert_eq!(item.decl["tags"], serde_json::json!(["fr", "zh-CN"]));
+    let assets = f.host.assets("words", "locale/fr").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("Compter les mots"));
+
+    let other = f.install(&package("other", &[]));
+    assert!(other.error.is_none(), "{:?}", other.error);
+    assert!(f.host.assets("other", "locale/").unwrap().is_empty());
+}
+
 /// A plugin with web views and no code: its pages and their files are
 /// installed with it and served only from the declared directories, while
 /// it is enabled and only for the installed version; file icons and

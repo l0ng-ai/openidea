@@ -688,6 +688,11 @@ impl PluginHost {
         Ok(self.ui.assets_with_prefix(id, prefix).into_iter().map(|(k, v)| (k, v.to_string())).collect())
     }
 
+    /// The UI language windows run in, as `locale()` reports it to plugin code.
+    pub fn set_ui_locale(&self, tag: &str) {
+        *self.shared.locale.write() = tag.to_owned();
+    }
+
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;

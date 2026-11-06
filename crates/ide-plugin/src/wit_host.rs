@@ -261,6 +261,10 @@ impl ui::Host for StoreData {
         let client = self.invocation.client.clone();
         Ok(self.host.open_url(client.as_deref(), trimmed.to_owned()).map_err(to_wit))
     }
+
+    fn locale(&mut self) -> wasmtime::Result<String> {
+        Ok(self.host.locale())
+    }
 }
 
 impl storage::Host for StoreData {

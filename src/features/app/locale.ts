@@ -1,6 +1,6 @@
 /** Keeps the UI locale in sync with `appearance.locale`; re-registers localised contributions. */
 import { registerActions, type Action } from "@/platform/actions";
-import { setLocale, useI18n } from "@/platform/i18n";
+import { LOCALES, setLocale, useI18n } from "@/platform/i18n";
 import { commands, isTauri, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
@@ -14,7 +14,9 @@ export function installLocaleSync(): () => void {
     const value = localeSetting(settings);
     if (value === undefined || value === current) return;
     current = value;
-    void setLocale(value);
+    void setLocale(value).then((locale) => {
+      if (isTauri()) void commands.pluginSetUiLocale(LOCALES[locale].tag).catch(() => {});
+    });
   };
   const initial = useProject.getState().settings;
   if (initial) apply(initial);

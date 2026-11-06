@@ -16,6 +16,7 @@ import { BarButton } from "@/ui/BarButton";
 import { maybeEditorService, registerStatusItem } from "@/workbench/contributions";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
+import { usePluginT } from "./pluginText";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
 import { runPluginCommand, usePlugins } from "./store";
 
@@ -64,16 +65,19 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const running = usePluginStatusItems((s) => s.items.get(itemKey));
   const declared = useDeclaredStatusItems((s) => s.items.get(itemKey));
   const entry = running ?? declared;
+  const t = usePluginT(entry?.pluginId ?? "");
   if (!entry) return null;
   const { pluginId, item } = entry;
   const command = item.command;
+  const tooltip = item.tooltip ? t(item.tooltip) : undefined;
+  const text = t(item.text);
   return (
     <BarButton
-      tooltip={item.tooltip ?? undefined}
-      aria-label={item.tooltip ?? item.text}
+      tooltip={tooltip}
+      aria-label={tooltip ?? text}
       onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
     >
-      {item.text}
+      {text}
     </BarButton>
   );
 }

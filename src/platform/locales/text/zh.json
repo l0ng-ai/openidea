@@ -5948,6 +5948,7 @@
   "Value of {label}": "{label} 的值",
   "The plugin can only send these with its network requests; it cannot read them.": "插件只能在网络请求中发送这些值，无法读取它们。",
   "Editor Providers": "编辑器提供者",
+  "Translations": "翻译",
   "Linked for development": "为开发而链接",
   "Low": "低",
   "Medium": "中",

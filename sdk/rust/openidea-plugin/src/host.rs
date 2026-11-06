@@ -81,6 +81,10 @@ mod imp {
         wit::ui::open_url(url).map_err(error)
     }
 
+    pub fn locale() -> String {
+        wit::ui::locale()
+    }
+
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         wit::storage::get(key).map_err(error)
     }
@@ -553,6 +557,15 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
 /// Opens an `http://` or `https://` URL in the user's default browser.
 pub fn open_url(url: &str) -> Result<(), Error> {
     imp::open_url(url)
+}
+
+/// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …), for the
+/// text the plugin builds itself (notifications, error messages, HTML). The
+/// strings of the manifest and of views are translated by the IDE from the
+/// package's `locales/<tag>.json`. Read it when the text is made: it follows
+/// a change of language.
+pub fn locale() -> String {
+    imp::locale()
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of

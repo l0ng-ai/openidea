@@ -165,6 +165,8 @@ pub(super) struct Shared {
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
     /// Validated UI declarations (settings schemas, declared views).
     pub ui: Arc<ide_extension::UiStore>,
+    /// The UI language the windows report (BCP 47).
+    pub locale: RwLock<String>,
 }
 
 impl Shared {
@@ -176,6 +178,7 @@ impl Shared {
     ) -> Arc<Self> {
         Arc::new(Self {
             ui,
+            locale: RwLock::new("en".into()),
             sink,
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
@@ -714,6 +717,10 @@ impl HostApi for PluginApi {
         };
         self.shared.sink.emit(client, event);
         Ok(())
+    }
+
+    fn locale(&self) -> String {
+        self.shared.locale.read().clone()
     }
 
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String> {

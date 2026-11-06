@@ -27,6 +27,11 @@ interface ui {
     copy-to-clipboard: func(text: string) -> result<_, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.
     open-url: func(url: string) -> result<_, error>;
+    /// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …); it
+    /// follows a change of language. For the text the plugin builds itself:
+    /// the strings of its manifest and views are translated from
+    /// `locales/<tag>.json`.
+    locale: func() -> string;
 }
 
 /// Persistent key-value storage of the plugin (survives restarts and idle

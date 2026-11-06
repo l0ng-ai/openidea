@@ -471,6 +471,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_link,
         plugin::plugin_unlink,
         plugin::plugin_assets,
+        plugin::plugin_set_ui_locale,
         plugin::plugin_activation_event,
         plugin::plugin_catalog,
         plugin::plugin_uninstall,
