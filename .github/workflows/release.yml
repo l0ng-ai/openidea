@@ -355,3 +355,10 @@ jobs:
             await github.rest.repos.updateRelease({
               ...context.repo, release_id: Number(process.env.RELEASE_ID), draft: false,
             });
+
+  # The China mirror the updater's CNB source reads; a failure here leaves the GitHub release as is.
+  cnb-mirror:
+    needs: publish
+    uses: ./.github/workflows/cnb-mirror.yml
+    with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
+    secrets: inherit

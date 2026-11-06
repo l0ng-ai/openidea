@@ -81,6 +81,7 @@
   "app.update.progressUnknown": "{done} MB",
   "app.update.restart": "重启",
   "app.update.retry": "重试",
+  "app.update.retryWith": "改用 {source} 重试",
   "app.window.desktopOnly": "多窗口需要桌面应用",
   "app.window.openFailed": "无法打开 {name}",
   "app.window.pickFileTitle": "打开文件",

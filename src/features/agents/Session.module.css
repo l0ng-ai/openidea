@@ -157,7 +157,10 @@
 .stream:focus {
   outline: none;
 }
-/* Skip off-screen output layout; editable messages must repaint immediately when focus/content changes. */
+/*
+ * Skip off-screen output layout; editable messages must repaint immediately when focus/content changes.
+ * Thinking and tool output sit in a <div>: on <details> itself WebKit wouldn't expand them.
+ */
 .stream > :not(.message):not(details) {
   content-visibility: auto;
   contain-intrinsic-block-size: auto 80px;
