@@ -6234,8 +6234,6 @@
   "Collapse or expand this branch": "折叠或展开此分支",
   "Diff Preview Location": "差异预览位置",
   "Parent": "父提交",
-  "Commit {shortId}": "提交 {shortId}",
-  "Expand Commit Message": "展开提交消息",
   "Committed by": "提交者",
   "Merge of": "合并自",
   "Containing branches": "包含此提交的分支",
