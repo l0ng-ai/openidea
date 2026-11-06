@@ -1028,18 +1028,11 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
                 multiSelect={false}
                 selected={new Set([selected])}
                 onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
-                renderNode={(n) =>
-                  n.attr ? (
-                    <span
-                      className={`${styles.treeLabel} ${mine?.[n.attr.id] ? styles.attrModified : ""}`}
-                      style={tokenStyle(n.attr)}
-                    >
-                      {n.label}
-                    </span>
-                  ) : (
-                    <span className={styles.treeLabel}>{n.label}</span>
-                  )
-                }
+                renderNode={(n) => (
+                  <span className={`${styles.treeLabel} ${n.attr && mine?.[n.attr.id] ? styles.attrModified : ""}`}>
+                    {n.label}
+                  </span>
+                )}
                 speedSearch
               />
             </div>
