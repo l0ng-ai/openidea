@@ -1,4 +1,7 @@
 {
+  "Reference Search": "引用搜索",
+  "Search additional project files for:": "为以下语言补扫项目文件：",
+  "Search files outside the language service's analysis scope. This may find more usages, but can take longer. Also applies to rename and incoming calls.": "搜索语言服务分析范围之外的文件，可能找到更多引用，但也会增加耗时。同样适用于重命名和传入调用。",
   "Cannot copy reference": "无法复制引用",
   "Group actions": "分组操作",
   "New Project Group": "新建项目组",

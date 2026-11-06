@@ -81,6 +81,20 @@ function InlayLanguages() {
   return <LanguageChecks k={`${P}.inlay.disabledLanguages`} label="Show inlay hints for:" disabled={!on} />;
 }
 
+function ReferenceSearchLanguages() {
+  return (
+    <>
+      <div className={styles.note}>
+        {tx`Search files outside the language service's analysis scope. This may find more usages, but can take longer. Also applies to rename and incoming calls.`}
+      </div>
+      <LanguageChecks
+        k={`${P}.codeEditing.referenceScopeDisabledLanguages`}
+        label="Search additional project files for:"
+      />
+    </>
+  );
+}
+
 function InlineCompletionLanguages() {
   const [on] = useSetting<boolean>(`${P}.inlineCompletion.enabled`);
   return (
@@ -802,6 +816,17 @@ const CODE_EDITING = editorPage({
   ],
 });
 
+const REFERENCE_SEARCH = editorPage({
+  id: "editor.codeEditing.referenceSearch",
+  title: "Reference Search",
+  order: 0,
+  projectScope: true,
+  keywords: ["references", "usages", "scope", "rename", "incoming calls"],
+  sections: [
+    { items: [{ t: "custom", label: "Search additional project files for:", component: ReferenceSearchLanguages }] },
+  ],
+});
+
 const INLAY: Item[] = [
   {
     t: "check",
@@ -847,5 +872,6 @@ export const GENERAL_PAGES = [
   SMART_KEYS,
   STICKY,
   CODE_EDITING,
+  REFERENCE_SEARCH,
   INLAY_HINTS,
 ];

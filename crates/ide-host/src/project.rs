@@ -267,6 +267,12 @@ impl Host {
             }));
         }
         {
+            let settings = settings.clone();
+            lsp.set_reference_scope_hook(Box::new(move |language| {
+                settings.effective().editor.code_editing.reference_scope_enabled(language.as_str())
+            }));
+        }
+        {
             let documents = documents.clone();
             lsp.set_apply_edit_hook(Box::new(move |edit| apply_workspace_edit(&documents, &edit).is_ok()));
         }

@@ -12,6 +12,7 @@
 use crate::server::{Running, Server};
 use crate::types::ReferencesIncomplete;
 use crate::{DocSnap, LspManager, Target};
+use ide_core::settings::CodeEditingSettings;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId, Pos};
 use lsp_types as lsp;
 use serde_json::json;
@@ -51,6 +52,9 @@ pub struct CandidateFiles {
 /// blocking thread and should stop early when cancelled.
 pub type CandidateFn = dyn Fn(&CandidateQuery, &CancellationToken) -> CandidateFiles + Send + Sync;
 
+/// Whether searches for a document language may open same-name candidate files.
+pub type ReferenceScopeFn = dyn Fn(&LanguageId) -> bool + Send + Sync;
+
 /// A reference-based answer and, when files were opened for it, the second one.
 pub(crate) struct Widened<R> {
     pub first: R,
@@ -78,6 +82,19 @@ impl LspManager {
     /// Finds the project files a references search may open (see the module docs).
     pub fn set_candidates_hook(&self, hook: Box<CandidateFn>) {
         *self.candidates_hook.write() = Some(Arc::from(hook));
+    }
+
+    /// Reads the user's current per-language scope policy before each search.
+    pub fn set_reference_scope_hook(&self, hook: Box<ReferenceScopeFn>) {
+        *self.reference_scope_hook.write() = Some(Arc::from(hook));
+    }
+
+    fn reference_scope_enabled(&self, language: &LanguageId) -> bool {
+        let hook = self.reference_scope_hook.read().clone();
+        match hook {
+            Some(hook) => hook(language),
+            None => CodeEditingSettings::default().reference_scope_enabled(language.as_str()),
+        }
     }
 
     async fn candidates(&self, t: &Target, word: String, cancel: &CancellationToken) -> Option<CandidateFiles> {
@@ -110,7 +127,9 @@ impl LspManager {
         Fut: Future<Output = IdeResult<R>>,
     {
         let busy = t.server.is_busy();
-        let word = search_word(snap, pos).filter(|_| t.caps().open_close);
+        // Scope expansion is a document-language preference, independent of the server's name.
+        let word =
+            search_word(snap, pos).filter(|_| t.caps().open_close && self.reference_scope_enabled(&snap.language));
         let candidates = async {
             match word {
                 Some(w) => self.candidates(t, w, cancel).await,

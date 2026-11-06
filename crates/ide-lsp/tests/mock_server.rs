@@ -2810,6 +2810,132 @@ async fn references_open_unopened_files_that_mention_the_name() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn go_searches_do_not_scan_or_open_same_named_candidates() {
+    let r =
+        |sl, sc, el, ec| json!({ "start": { "line": sl, "character": sc }, "end": { "line": el, "character": ec } });
+    for (name, found) in [("gopls", true), ("renamed-go", true), ("gopls", false), ("renamed-go", false)] {
+        let h = harness_for("go", "go", &[(name, incremental_caps())], &[]);
+        let s = h.launcher.state(name);
+        std::fs::create_dir_all(h.root.join("internal/gateway")).unwrap();
+        std::fs::create_dir_all(h.root.join("cmd/gateway")).unwrap();
+        let source = format!("{}func New(version string) {{}}\n", "\n".repeat(21));
+        let (doc, path) = h.open("internal/gateway/gateway.go", &source);
+        let caller = h.root.join("cmd/gateway/main.go");
+        std::fs::write(&caller, "package main\nfunc main() { gateway.New(version) }\n").unwrap();
+        let unrelated = h.root.join("unrelated.go");
+        std::fs::write(&unrelated, "package unrelated\nfunc New() {}\n").unwrap();
+        let scans = Arc::new(AtomicUsize::new(0));
+        let seen = scans.clone();
+        h.mgr.set_candidates_hook(Box::new(move |q, _| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(q.word, "New");
+            ide_lsp::CandidateFiles { files: vec![unrelated.clone()], limit_hit: true }
+        }));
+        let location = json!({ "uri": uri_of(&caller), "range": r(1, 22, 1, 25) });
+        s.respond("textDocument/references", if found { json!([location]) } else { json!([]) });
+        let mut changes = serde_json::Map::new();
+        if found {
+            changes.insert(uri_of(&caller), json!([{ "range": r(1, 22, 1, 25), "newText": "Renamed" }]));
+        }
+        s.respond("textDocument/rename", json!({ "changes": changes }));
+        let item = json!({ "name": "New", "kind": 12, "uri": uri_of(&path),
+            "range": r(21, 0, 21, 35), "selectionRange": r(21, 5, 21, 8) });
+        s.respond("textDocument/prepareCallHierarchy", json!([item]));
+        let from = json!({ "name": "main", "kind": 12, "uri": uri_of(&caller),
+            "range": r(1, 0, 1, 36), "selectionRange": r(1, 5, 1, 9) });
+        s.respond(
+            "callHierarchy/incomingCalls",
+            if found { json!([{ "from": from, "fromRanges": [r(1, 22, 1, 25)] }]) } else { json!([]) },
+        );
+        h.wait_status(name, ServerStatus::Ready).await;
+        eventually(|| s.docs.lock().len() == 1).await;
+
+        let at = Pos::new(21, 5);
+        let refs = h.mgr.references(doc, at, false, true, Default::default()).await.unwrap();
+        assert_eq!(refs.locations.len(), usize::from(found));
+        assert_eq!(refs.incomplete, None);
+        if found {
+            assert_eq!(refs.locations[0].path.as_ref(), caller);
+        }
+        let renamed = h.mgr.rename(doc, at, "Renamed".into(), Default::default()).await.unwrap();
+        assert_eq!(renamed.edit.files.len(), usize::from(found));
+        assert_eq!(renamed.incomplete, None);
+        let calls = h.mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, Default::default()).await.unwrap();
+        assert_eq!(calls.items.len(), usize::from(found));
+        assert_eq!(calls.incomplete, None);
+        if found {
+            assert_eq!(calls.items[0].path.as_ref(), caller);
+        }
+        assert_eq!(scans.load(Ordering::SeqCst), 0);
+        for method in ["textDocument/references", "textDocument/rename", "callHierarchy/incomingCalls"] {
+            assert_eq!(s.requested(method).len(), 1, "{method}");
+        }
+        assert_eq!(uris(&s.notified("textDocument/didOpen")), [uri_of(&path)]);
+        assert!(s.notified("textDocument/didClose").is_empty());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_go_searches_expand_even_if_the_server_is_named_gopls() {
+    let h = harness(&[("gopls", incremental_caps())]);
+    let s = h.launcher.state("gopls");
+    *s.responder.lock() = Some(open_files_only(vec![]));
+    let seen = grep_candidates(&h);
+    let b = h.root.join("b.mk");
+    std::fs::write(&b, "call target\n").unwrap();
+    let (doc, a) = h.open("a.mk", "def target\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let mut paths: Vec<PathBuf> = refs.locations.iter().map(|l| l.path.to_path_buf()).collect();
+    paths.sort();
+    assert_eq!(paths, [a, b.clone()]);
+    assert_eq!(seen.lock().len(), 1);
+    assert_eq!(s.requested("textDocument/references").len(), 2);
+    eventually(|| uris(&s.notified("textDocument/didClose")) == [uri_of(&b)]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reference_scope_preferences_apply_to_the_next_search_without_restarting() {
+    for (language, name) in [("go", "renamed-go"), ("mock", "gopls")] {
+        let h = harness_for(language, "mk", &[(name, incremental_caps())], &[]);
+        let s = h.launcher.state(name);
+        *s.responder.lock() = Some(open_files_only(vec![]));
+        let preferences = Arc::new(Mutex::new(ide_core::settings::CodeEditingSettings::default()));
+        let effective = preferences.clone();
+        h.mgr.set_reference_scope_hook(Box::new(move |language| {
+            effective.lock().reference_scope_enabled(language.as_str())
+        }));
+        let seen = grep_candidates(&h);
+        let b = h.root.join("b.mk");
+        std::fs::write(&b, "call target\n").unwrap();
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status(name, ServerStatus::Ready).await;
+        eventually(|| s.docs.lock().len() == 1).await;
+
+        for enabled in [false, true, false] {
+            preferences.lock().reference_scope_disabled_languages =
+                if enabled { Vec::new() } else { vec![language.into()] };
+            let scans_before = seen.lock().len();
+            let at = Pos::new(0, 5);
+            let refs = h.mgr.references(doc, at, true, true, Default::default()).await.unwrap();
+            assert_eq!(refs.locations.len(), if enabled { 2 } else { 1 });
+            assert_eq!(refs.incomplete, None);
+            let renamed = h.mgr.rename(doc, at, "renamed".into(), Default::default()).await.unwrap();
+            assert_eq!(renamed.edit.files.len(), if enabled { 2 } else { 1 });
+            assert_eq!(renamed.incomplete, None);
+            let calls = h.mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, Default::default()).await.unwrap();
+            assert_eq!(calls.items.len(), if enabled { 2 } else { 1 });
+            assert_eq!(calls.incomplete, None);
+            assert_eq!(seen.lock().len() - scans_before, if enabled { 3 } else { 0 });
+            eventually(|| s.docs.lock().len() == 1).await;
+        }
+        assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn references_never_reopen_or_close_the_users_files() {
     let h = harness(&[("mock", incremental_caps())]);
     let s = h.launcher.state("mock");
@@ -3236,13 +3362,24 @@ async fn opening_a_file_during_a_search_takes_it_over() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
-    let h = harness(&[("mock", incremental_caps())]);
-    let s = h.launcher.state("mock");
+    indexing_retries("mock", "mock").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_still_retries_an_empty_answer_after_indexing() {
+    for name in ["gopls", "renamed-go"] {
+        indexing_retries("go", name).await;
+    }
+}
+
+async fn indexing_retries(language: &str, name: &str) {
+    let h = harness_for(language, "mk", &[(name, incremental_caps())], &[]);
+    let s = h.launcher.state(name);
     let (doc, path) = h.open("a.mk", "def target\n");
-    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status(name, ServerStatus::Ready).await;
     let peer = s.peer();
     peer.notify("$/progress", json!({ "token": "idx", "value": { "kind": "begin", "title": "Indexing" } })).unwrap();
-    h.wait_status("mock", ServerStatus::Busy).await;
+    h.wait_status(name, ServerStatus::Busy).await;
     // Nothing found while indexing; indexing ends once that answer is out.
     s.respond("textDocument/references", Value::Array(occurrences(&uri_of(&path), "def target\n")));
     let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3263,7 +3400,7 @@ async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
     s.peer()
         .notify("$/progress", json!({ "token": "again", "value": { "kind": "begin", "title": "Indexing" } }))
         .unwrap();
-    h.wait_status("mock", ServerStatus::Busy).await;
+    h.wait_status(name, ServerStatus::Busy).await;
     let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
     assert_eq!((refs.locations.len(), refs.incomplete), (1, None));
     s.respond("textDocument/references", json!([]));

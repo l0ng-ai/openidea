@@ -289,6 +289,8 @@ pub struct CodeEditingSettings {
     /// Next / previous error goes to errors only (skips warnings).
     pub next_error_errors_only: bool,
     pub sticky_lines_max: u32,
+    /// Languages whose reference searches use the language server's own analysis scope.
+    pub reference_scope_disabled_languages: Vec<String>,
 }
 
 impl Default for CodeEditingSettings {
@@ -301,7 +303,14 @@ impl Default for CodeEditingSettings {
             quick_doc_delay: 500,
             next_error_errors_only: true,
             sticky_lines_max: 5,
+            reference_scope_disabled_languages: vec!["go".into()],
         }
+    }
+}
+
+impl CodeEditingSettings {
+    pub fn reference_scope_enabled(&self, language: &str) -> bool {
+        !self.reference_scope_disabled_languages.iter().any(|disabled| disabled == language)
     }
 }
 
@@ -461,6 +470,33 @@ impl Default for EncodingSettings {
             properties: "iso-8859-1".into(),
             native_to_ascii: false,
             utf8_bom: "never".into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CodeEditingSettings;
+    use serde_json::json;
+
+    #[test]
+    fn reference_scope_defaults_keep_legacy_settings_compatible() {
+        let settings: CodeEditingSettings = serde_json::from_value(json!({ "highlightUsages": false })).unwrap();
+        assert!(!settings.highlight_usages);
+        assert!(!settings.reference_scope_enabled("go"));
+        for language in ["python", "rust", "typescript", "custom-language"] {
+            assert!(settings.reference_scope_enabled(language));
+        }
+        assert_eq!(serde_json::to_value(settings).unwrap()["referenceScopeDisabledLanguages"], json!(["go"]));
+    }
+
+    #[test]
+    fn reference_scope_can_be_enabled_or_disabled_for_any_language() {
+        for (disabled, go, python) in [(json!([]), true, true), (json!(["python"]), true, false)] {
+            let settings: CodeEditingSettings =
+                serde_json::from_value(json!({ "referenceScopeDisabledLanguages": disabled })).unwrap();
+            assert_eq!(settings.reference_scope_enabled("go"), go);
+            assert_eq!(settings.reference_scope_enabled("python"), python);
         }
     }
 }

@@ -1,4 +1,7 @@
 {
+  "Reference Search": "Reference Search",
+  "Search additional project files for:": "Search additional project files for:",
+  "Search files outside the language service's analysis scope. This may find more usages, but can take longer. Also applies to rename and incoming calls.": "Search files outside the language service's analysis scope. This may find more usages, but can take longer. Also applies to rename and incoming calls.",
   "Cannot copy reference": "Cannot copy reference",
   "Connect through:": "Connect through:",
   "Connect through": "Connect through",

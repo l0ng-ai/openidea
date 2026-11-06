@@ -163,6 +163,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     quickDocDelay: 500,
     nextErrorErrorsOnly: true,
     stickyLinesMax: 5,
+    referenceScopeDisabledLanguages: ["go"] as string[],
   },
   inlay: {
     types: true,

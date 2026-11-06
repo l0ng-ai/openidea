@@ -32,7 +32,7 @@ mod virtual_doc;
 
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
-pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
+pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES, ReferenceScopeFn};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
@@ -183,6 +183,7 @@ pub struct LspManager {
     prepare_hook: RwLock<Option<Arc<PrepareFn>>>,
     servers_hook: RwLock<Option<Arc<ServersFn>>>,
     candidates_hook: RwLock<Option<Arc<CandidateFn>>>,
+    reference_scope_hook: RwLock<Option<Arc<ReferenceScopeFn>>>,
     excludes_hook: RwLock<Option<Arc<external_project::ExcludesFn>>>,
     watch_roots_hook: RwLock<Option<Arc<WatchRootsFn>>>,
     shutting_down: AtomicBool,
@@ -373,6 +374,7 @@ impl LspManager {
             prepare_hook: RwLock::new(None),
             servers_hook: RwLock::new(None),
             candidates_hook: RwLock::new(None),
+            reference_scope_hook: RwLock::new(None),
             excludes_hook: RwLock::new(None),
             watch_roots_hook: RwLock::new(None),
             shutting_down: AtomicBool::new(false),

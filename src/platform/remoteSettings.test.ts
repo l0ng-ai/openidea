@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CLIENT_SETTINGS_KEYS } from "./clientSettings";
+import { CLIENT_SETTINGS_KEYS, isClientSetting, overlayClientSettings } from "./clientSettings";
 import { commands, call, type Settings } from "./ipc";
 import { loadSettings, useProject } from "./project";
 import { connectRemote, disableRemote, enableRemote, isRemoteWindow, remoteRouting } from "./remote";
@@ -111,6 +111,7 @@ describe("remote client settings", () => {
     "editor.tabSize",
     "editor.formatOnSave",
     "editor.codeStyle.languages",
+    "editor.codeEditing.referenceScopeDisabledLanguages",
     "terminal.shellPath",
     "terminal.env",
     "tools.node",
@@ -119,6 +120,54 @@ describe("remote client settings", () => {
   ])("preserves routing for host setting %s", (key) => {
     expect(remoteRouting("settings_set", { scope: "project", key }, served)).toBe("remote");
     expect(remoteRouting("settings_set", { scope: "global", key }, served)).toBe("both");
+  });
+  it("keeps reference scope on the host while overlaying local code editing preferences", () => {
+    const key = "editor.codeEditing.referenceScopeDisabledLanguages";
+    expect(isClientSetting(key)).toBe(false);
+    expect(isClientSetting(`${key}.0`)).toBe(false);
+    const settings = overlayClientSettings(
+      {
+        editor: {
+          codeEditing: { highlightUsages: false, quickDocDelay: 100, referenceScopeDisabledLanguages: ["rust"] },
+        },
+      },
+      {
+        editor: { codeEditing: { highlightUsages: true, quickDocDelay: 800, referenceScopeDisabledLanguages: ["go"] } },
+      },
+    );
+    expect(settings.editor.codeEditing).toMatchObject({
+      highlightUsages: true,
+      quickDocDelay: 800,
+      referenceScopeDisabledLanguages: ["rust"],
+    });
+  });
+  it.each(["global", "project"] as const)("writes reference scope to the remote %s layer", async (scope) => {
+    const key = "editor.codeEditing.referenceScopeDisabledLanguages";
+    const value = '["rust"]';
+    const remoteSettings = {
+      ...remote,
+      editor: { ...remote.editor, codeEditing: { highlightUsages: false, referenceScopeDisabledLanguages: ["rust"] } },
+    };
+    const localSettings = {
+      ...local,
+      editor: { ...local.editor, codeEditing: { highlightUsages: true, referenceScopeDisabledLanguages: ["go"] } },
+    };
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === "remote_invoke" ? JSON.stringify(remoteSettings) : localSettings,
+    );
+    const settings = await call(commands.settingsSet(scope, key, value));
+    expect(invoke).toHaveBeenCalledWith(
+      "remote_invoke",
+      expect.objectContaining({ cmd: "settings_set", args: JSON.stringify({ scope, key, value }) }),
+      undefined,
+    );
+    const localWrites = invoke.mock.calls.filter(([cmd]) => cmd === "settings_set");
+    expect(localWrites).toHaveLength(scope === "global" ? 1 : 0);
+    if (scope === "global") expect(localWrites[0]?.[1]).toEqual({ scope, key, value });
+    expect(settings.editor?.codeEditing).toMatchObject({
+      highlightUsages: true,
+      referenceScopeDisabledLanguages: ["rust"],
+    });
   });
   it("merges settings before publishing a newly connected project", async () => {
     disableRemote();
