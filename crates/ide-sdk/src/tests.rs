@@ -1788,7 +1788,7 @@ fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
 #[test]
 fn project_structure_module_jdk_language_level_and_external_libraries() {
     let temp = tempfile::tempdir().unwrap();
-    let root_buf = temp.path().canonicalize().unwrap();
+    let root_buf = dunce::canonicalize(temp.path()).unwrap();
     let root = root_buf.as_path();
     let jdk17 = root.join("jdk17");
     let jdk21 = root.join("jdk21");
