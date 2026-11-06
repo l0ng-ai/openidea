@@ -20,7 +20,8 @@ vi.mock("../diffInput", async (original) => ({
   openDiff,
 }));
 
-import { ChangesTree } from "../CommitView";
+import { ChangesTree, nodeMenu } from "../CommitView";
+import type { ChangeNode } from "../changes";
 import { VcsDialogHost } from "../dialogs";
 import { useVcs } from "../store";
 
@@ -78,6 +79,20 @@ describe("Commit dialog diff window (#1863)", () => {
     expect(screen.queryByRole("dialog", { name: /\(HEAD ↔ Your version\)/ })).toBeNull();
     // Back at the Commit dialog's tree, unchanged.
     expect(screen.getByRole("tree", { name: "Changes" })).toBeTruthy();
+  });
+
+  it("opens the context menu's Show Diff in a front dialog, not in an editor tab", async () => {
+    render(<VcsDialogHost />);
+    const f = modified("/p/a.ts");
+    const node: ChangeNode = { key: f.path, type: "file", label: "a.ts", group: "changes", files: [f], path: f.path };
+    const item = nodeMenu([node], ["/p"], { mode: "dialog", roots: [node] }).find(
+      (i) => i.kind !== "separator" && "label" in i && i.label === "Show Diff",
+    );
+    expect(item).toMatchObject({ label: "Show Diff" });
+    act(() => (item as { run: () => void }).run());
+    expect(openDiff).not.toHaveBeenCalled();
+    await diffDialogs();
+    expect(screen.getByTestId("diff-view")).toHaveAttribute("data-path", "/p/a.ts");
   });
 
   it("moves along the chain inside the dialog instead of opening editor tabs", async () => {

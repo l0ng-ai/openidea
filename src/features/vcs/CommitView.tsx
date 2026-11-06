@@ -246,7 +246,11 @@ export function deletableFiles(nodes: ChangeNode[]): string[] {
   return files.length && files.every(onDisk) ? files.map((f) => f.path) : [];
 }
 
-export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
+export function nodeMenu(
+  nodes: ChangeNode[],
+  repos: readonly string[],
+  opts?: { mode?: "commit" | "local" | "dialog"; roots?: readonly ChangeNode[] },
+): MenuItem[] {
   const files = filesOf(nodes);
   const deletable = deletableFiles(nodes);
   const paths = files.map((f) => f.path);
@@ -275,7 +279,11 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
       run: () => commitFiles(paths),
     },
     { kind: "separator" },
-    { kind: "action", action: "vcs.showDiff", arg: first?.path },
+    // In `dialog` mode an editor tab would sit behind the modal Commit dialog (#1863):
+    // open the diff in a front dialog, like double-click does.
+    opts?.mode === "dialog" && opts.roots && first
+      ? { label: "Show Diff", icon: "diff", run: () => openNode(first, opts.roots!, "dialog") }
+      : { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
       label: "Jump to Source",
       icon: "external-link",
@@ -660,7 +668,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               return;
             }
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos));
+            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos, { mode, roots }));
           }}
           aria-label="Changes"
           empty={
