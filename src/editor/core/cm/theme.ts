@@ -20,6 +20,14 @@ export const findStyles = {
     backgroundColor: "var(--editor-search)",
     borderRadius: "2px",
   },
+  // The scheme's search text colour, over the syntax colours of the tokens inside the match.
+  ".cm-openidea-findMatch, .cm-openidea-findMatch *": {
+    color: "var(--fg-search-match, inherit)",
+  },
+  // Selected text inside a match is painted with the selection background (selectionMarks.ts).
+  ".cm-openidea-findMatch .cm-openidea-selected, .cm-openidea-findMatch .cm-openidea-selected *": {
+    color: "var(--fg-editor, var(--fg))",
+  },
   ".cm-openidea-findExcluded": {
     textDecoration: "line-through",
     textDecorationColor: "var(--fg-muted)",
