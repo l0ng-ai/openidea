@@ -28,13 +28,22 @@ const appCheckUpdate = vi.fn(() => check.promise);
 const appRestart = vi.fn(async () => null);
 const cancelRequest = vi.fn(async () => null);
 const appBuildInfo = vi.fn(async () => ({ version: "0.1.21" }));
+const settingsSet = vi.fn(async () => ({ status: "ok", data: { general: {}, appearance: {} } }));
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
   return {
     ...actual,
     isTauri: () => true,
-    commands: { ...actual.commands, appInstallUpdate, appCheckUpdate, appRestart, cancelRequest, appBuildInfo },
+    commands: {
+      ...actual.commands,
+      appInstallUpdate,
+      appCheckUpdate,
+      appRestart,
+      cancelRequest,
+      appBuildInfo,
+      settingsSet,
+    },
   };
 });
 
@@ -141,6 +150,27 @@ describe("Install and Restart", () => {
     await cancelled;
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "Update cancelled", key: UPDATE_KEY });
     expect(appRestart).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a failed", "unavailable", "github", "CNB", "cnb"],
+    ["a failed", "unavailable", "cnb", "GitHub", "github"],
+    ["a cancelled (likely slow)", "cancelled", "cnb", "GitHub", "github"],
+  ])("offers %s download from %s again from the other source", async (_case, kind, from, label, to) => {
+    useProject.setState({ settings: { general: { updateSource: from }, appearance: {} } as unknown as Settings });
+    const first = installUpdate("0.1.22");
+    install.resolve({ status: "error", error: { kind, message: kind } });
+    await first;
+    const action = notes.at(-1)!.actions!.at(-1)!;
+    expect(action.label).toBe(`Retry with ${label}`);
+
+    install = deferred();
+    action.run();
+    await tick();
+    expect(settingsSet).toHaveBeenCalledWith("global", "general.updateSource", JSON.stringify(to));
+    expect(appInstallUpdate.mock.calls.at(-1)![0]).toBe(to);
+    install.resolve(ok(null));
+    await tick();
   });
 });
 

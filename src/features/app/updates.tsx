@@ -39,6 +39,31 @@ export function updateSource(): UpdateSource {
   return resolveLocale(settings?.appearance?.locale) === "zh" ? "cnb" : "github";
 }
 
+const SOURCE_NAMES: Record<UpdateSource, string> = { github: "GitHub", cnb: "CNB" };
+
+/** Makes `source` the update source; the retry it precedes uses it even if saving fails. */
+async function chooseSource(source: UpdateSource) {
+  try {
+    useProject.setState({
+      settings: await call(commands.settingsSet("global", "general.updateSource", JSON.stringify(source))),
+    });
+  } catch {
+    /* the choice still applies to this retry */
+  }
+}
+
+/**
+ * Offered once a download failed or was cancelled (likely too slow): the same install from
+ * the other source. A check never needs it, since it already falls back to the other source.
+ */
+function otherSourceAction(version: string, source: UpdateSource) {
+  const other: UpdateSource = source === "cnb" ? "github" : "cnb";
+  return {
+    label: t("app.update.retryWith", { source: SOURCE_NAMES[other] }),
+    run: () => void chooseSource(other).then(() => installUpdate(version, other)),
+  };
+}
+
 let checking: Promise<void> | null = null;
 let installing: Promise<void> | null = null;
 
@@ -127,13 +152,13 @@ export function progressText(p: UpdateProgress): { message: string; fraction: nu
 }
 
 /** Downloads and installs `version`, then restarts. A second call while one runs joins it. */
-export function installUpdate(version: string): Promise<void> {
+export function installUpdate(version: string, source = updateSource()): Promise<void> {
   if (!isTauri()) return Promise.resolve();
-  installing ??= runInstall(version).finally(() => (installing = null));
+  installing ??= runInstall(version, source).finally(() => (installing = null));
   return installing;
 }
 
-async function runInstall(version: string) {
+async function runInstall(version: string, source: UpdateSource) {
   const title = t("app.update.downloading", { version });
   const request = nextRequestId();
   const cancel = () => void commands.cancelRequest(request).catch(() => {});
@@ -169,17 +194,25 @@ async function runInstall(version: string) {
   // Replaces the notification whose action is now spent.
   balloon([{ label: t("app.update.cancel"), run: cancel }]);
   try {
-    await call(commands.appInstallUpdate(updateSource(), request, channel));
+    await call(commands.appInstallUpdate(source, request, channel));
   } catch (e) {
     if (isCancelled(e)) {
-      notifications().notify({ level: "info", title: t("app.update.cancelled"), key: UPDATE_KEY });
+      notifications().notify({
+        level: "info",
+        title: t("app.update.cancelled"),
+        key: UPDATE_KEY,
+        actions: [otherSourceAction(version, source)],
+      });
     } else {
       notifications().notify({
         level: "error",
         title: t("app.update.installFailed"),
         body: errorText(e),
         key: UPDATE_KEY,
-        actions: [{ label: t("app.update.retry"), run: () => void installUpdate(version) }],
+        actions: [
+          { label: t("app.update.retry"), run: () => void installUpdate(version, source) },
+          otherSourceAction(version, source),
+        ],
       });
     }
     return;
