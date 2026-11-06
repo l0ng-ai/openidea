@@ -12,6 +12,7 @@ import {
   pythonSyntaxRanges,
   type PythonSymbolKind,
 } from "./highlight";
+import { implementPythonAbstractMethods, pythonMemberIntentions } from "./members";
 
 /** Server tokens these kinds override: the kind's own classes replace the generic ones. */
 const VARIABLE_KINDS = new Set<PythonSymbolKind>([
@@ -50,6 +51,8 @@ const pythonSemantics: LanguageSemantics = {
     }
   },
   isLocal: ({ type, kind }) => (kind ? kind === "localVariable" || kind === "parameter" : type === "parameter"),
+  intentions: pythonMemberIntentions,
+  implementMethods: implementPythonAbstractMethods,
 };
 
 registerLanguageSemantics("python", pythonSemantics);

@@ -4,7 +4,9 @@
  * by the document's language instead of branching on language names.
  */
 import type { EditorState, Text } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
 import type { Tree } from "@lezer/common";
+import type { ContributedIntention } from "@/editor/api";
 
 /** One decorated range; `source` says which parse-tree pass produced it. */
 export interface SemanticRange {
@@ -51,6 +53,10 @@ export interface LanguageSemantics {
   constructAt?(state: EditorState, pos: number): ConstructDoc | null;
   /** Construct documentation by name (completion item detail). */
   constructDocumentation?(name: string): string | null;
+  /** Bulb intentions contributed on this language's documents. */
+  intentions?(view: EditorView): ContributedIntention[];
+  /** Fallback for the Implement Methods action when the server offers no code action. */
+  implementMethods?(view: EditorView): Promise<boolean>;
 }
 
 const registry: Record<string, LanguageSemantics> = {};
@@ -61,4 +67,9 @@ export function registerLanguageSemantics(language: string, semantics: LanguageS
 
 export function languageSemantics(language: string | null | undefined): LanguageSemantics | undefined {
   return language ? registry[language.toLowerCase()] : undefined;
+}
+
+/** Every registered provider; language folders register when their module is imported. */
+export function allLanguageSemantics(): LanguageSemantics[] {
+  return Object.values(registry);
 }
