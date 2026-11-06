@@ -29,6 +29,7 @@ import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, reset
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
+import { flashTaskbarForBreakpoint, stopTaskbarFlash } from "./taskbarFlash";
 import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 
@@ -713,6 +714,7 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
 }
 
 function markTerminated(id: DebugSessionId) {
+  stopTaskbarFlash();
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
   if (st.active === id) {
@@ -1013,13 +1015,17 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       } catch {
         // ignore
       }
+      // Attention for a background window: focusing the app and flashing the taskbar are
+      // alternatives (IDEA), so a window configured to grab focus does not also flash.
       if (dbg.focusAppOnBreakpoint) focusAppWindow();
+      else if (isBp) flashTaskbarForBreakpoint();
       break;
     }
     case "continued": {
       const cur = useDebug.getState().sessions[id]!;
       if (cur.status === "terminated") break;
       if (!event.allThreadsContinued && event.threadId !== (cur.selectedThread ?? cur.stoppedThread)) break;
+      stopTaskbarFlash();
       patch(id, {
         status: "running",
         frames: [],
