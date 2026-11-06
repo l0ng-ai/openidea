@@ -37,7 +37,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.1.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.2.0`, world
 `plugin`).
 
 ## 1. Quick start
