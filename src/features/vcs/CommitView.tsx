@@ -70,6 +70,7 @@ import { pushAfterCommit } from "./commitUi";
 import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
+import { openDiffDialog } from "./diffDialog";
 import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
@@ -182,12 +183,18 @@ const bottomLeft = (el: HTMLElement) => {
   return { x: r.left, y: r.bottom + 2 };
 };
 
-/** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
-function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
+/**
+ * Opens a file's diff; F7 continues through the other files of its group, in tree
+ * order. `dialog` opens it in a front dialog: an editor tab would sit behind the
+ * modal Commit dialog, invisible until it closes (#1863).
+ */
+function openNode(n: ChangeNode, roots: readonly ChangeNode[], mode: "commit" | "local" | "dialog") {
   if (n.type !== "file" || !n.path) return;
   const nodes = groupFileNodes(roots, n);
   const items = nodes.map((f) => workingDiffData(f.path!, undefined, stagingSide(f.group, f.files[0]!)));
-  void openDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
+  const data = withChain(items, Math.max(0, nodes.indexOf(n)));
+  if (mode === "dialog") openDiffDialog(data);
+  else void openDiff(data, { preview: true });
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -239,7 +246,11 @@ export function deletableFiles(nodes: ChangeNode[]): string[] {
   return files.length && files.every(onDisk) ? files.map((f) => f.path) : [];
 }
 
-export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
+export function nodeMenu(
+  nodes: ChangeNode[],
+  repos: readonly string[],
+  opts?: { mode?: "commit" | "local" | "dialog"; roots?: readonly ChangeNode[] },
+): MenuItem[] {
   const files = filesOf(nodes);
   const deletable = deletableFiles(nodes);
   const paths = files.map((f) => f.path);
@@ -268,7 +279,11 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
       run: () => commitFiles(paths),
     },
     { kind: "separator" },
-    { kind: "action", action: "vcs.showDiff", arg: first?.path },
+    // In `dialog` mode an editor tab would sit behind the modal Commit dialog (#1863):
+    // open the diff in a front dialog, like double-click does.
+    opts?.mode === "dialog" && opts.roots && first
+      ? { label: "Show Diff", icon: "diff", run: () => openNode(first, opts.roots!, "dialog") }
+      : { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
       label: "Jump to Source",
       icon: "external-link",
@@ -645,7 +660,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
           }}
-          onActivate={(n) => openNode(n, roots)}
+          onActivate={(n) => openNode(n, roots, mode)}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
@@ -653,7 +668,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               return;
             }
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos));
+            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos, { mode, roots }));
           }}
           aria-label="Changes"
           empty={
