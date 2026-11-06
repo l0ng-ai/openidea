@@ -127,21 +127,27 @@ fn containing_branches_exclude_symbolic_aliases_but_keep_direct_head_names() {
         git(dir, &["symbolic-ref", &format!("refs/remotes/{remote}/alias"), &main]);
     }
     git(dir, &["update-ref", "refs/remotes/origin/topic/HEAD", &tip]);
+    git(dir, &["symbolic-ref", "refs/heads/local-alias", "refs/heads/main"]);
     let repo = Repo::discover(dir).unwrap().unwrap();
+    let expected = [
+        "contributor-742/main",
+        "issue-739/main",
+        "issue-765/main",
+        "main",
+        "origin/main",
+        "origin/topic/HEAD",
+        "topic/HEAD",
+    ];
     let mut branches = repo.log_details(&tip).unwrap().containing_branches;
     branches.sort();
-    assert_eq!(
-        branches,
-        [
-            "contributor-742/main",
-            "issue-739/main",
-            "issue-765/main",
-            "main",
-            "origin/main",
-            "origin/topic/HEAD",
-            "topic/HEAD"
-        ]
-    );
+    assert_eq!(branches, expected);
+    let mut listed: Vec<_> = repo.branches().unwrap().into_iter().map(|b| b.name).collect();
+    listed.sort();
+    assert_eq!(listed, expected);
+    let log = repo.log(&LogQuery::default()).unwrap();
+    let mut labels: Vec<_> = log[0].refs.iter().filter(|r| *r != "HEAD").cloned().collect();
+    labels.sort();
+    assert_eq!(labels, expected);
 }
 
 #[test]

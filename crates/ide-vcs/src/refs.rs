@@ -96,6 +96,9 @@ pub(crate) fn branches(r: &Repo) -> IdeResult<Vec<Branch>> {
 
     for reference in platform.local_branches().map_err(gx)? {
         let mut reference = reference.map_err(gx)?;
+        if reference.target().try_name().is_some() {
+            continue;
+        }
         let full = reference.name().to_owned();
         let Ok(id) = reference.peel_to_id().map(|id| id.detach()) else { continue };
         let current = head_name.as_ref().is_some_and(|h| h == &full);
@@ -121,11 +124,11 @@ pub(crate) fn branches(r: &Repo) -> IdeResult<Vec<Branch>> {
     }
     for reference in platform.remote_branches().map_err(gx)? {
         let mut reference = reference.map_err(gx)?;
-        let full = reference.name().to_owned();
-        // Skip `refs/remotes/<remote>/HEAD` symbolic pointers.
-        if full.as_bstr().ends_with(b"/HEAD") {
+        // Skip symbolic aliases such as `refs/remotes/<remote>/HEAD`.
+        if reference.target().try_name().is_some() {
             continue;
         }
+        let full = reference.name().to_owned();
         let Ok(id) = reference.peel_to_id().map(|id| id.detach()) else { continue };
         out.push(Branch {
             name: to_string(full.as_ref().shorten()),
