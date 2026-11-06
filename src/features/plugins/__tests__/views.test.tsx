@@ -351,6 +351,32 @@ describe("tabs, text and process bodies", () => {
     unmount();
     expect(stops.at(1)).toHaveBeenCalled();
   });
+  it("restarts the program when a refresh changes a toggle's arguments", async () => {
+    let tagArgs = ["--timestamps"];
+    const view = (): View => ({
+      toolbar: [],
+      status: null,
+      body: { kind: "process", value: { ...process, toggles: [{ id: "ts", label: "Timestamps", args: tagArgs }] } },
+    });
+    const stops: ReturnType<typeof vi.fn>[] = [];
+    const backend = {
+      ...backendWith(view),
+      streamProcess: vi.fn<PluginsBackend["streamProcess"]>(() => {
+        const stop = vi.fn();
+        stops.push(stop);
+        return stop;
+      }),
+    };
+    setPluginsBackend(backend);
+    render(<PluginView pluginId="kube" view="pods/pod:a" />);
+    await waitFor(() => expect(backend.streamProcess).toHaveBeenCalledTimes(1));
+    tagArgs = ["-t"];
+    bumpView("kube", "pods/pod:a");
+    await waitFor(() => expect(backend.streamProcess).toHaveBeenCalledTimes(2));
+    expect(backend.streamProcess.mock.calls[1]?.[2].toggles[0]?.args).toEqual(["-t"]);
+    expect(stops.at(0)).toHaveBeenCalled();
+  });
+
   it("stops the program while its tool window is hidden", async () => {
     const { backend, stops } = streaming({ toolbar: [], status: null, body: { kind: "process", value: process } });
     const view = (shown: boolean) => (

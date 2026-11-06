@@ -248,7 +248,7 @@ function ProcessBody({ process, pluginId, view }: { process: ViewProcess; plugin
   if (!toolWindowShown || !editorShown) return null;
   return (
     <LogPane
-      sourceKey={[pluginId, view, process.program, ...process.args].join("\0")}
+      sourceKey={JSON.stringify([pluginId, view, process])}
       live
       toggles={process.toggles}
       ariaLabel={process.program}
