@@ -233,7 +233,7 @@ impl ProjectIndex {
             .read()
             .occurrences_of(name)
             .into_iter()
-            .map(|(path, range)| Location { path: path.into(), range, uri: None })
+            .map(|(path, range, _qualified)| Location { path: path.into(), range, uri: None })
             .collect()
     }
 

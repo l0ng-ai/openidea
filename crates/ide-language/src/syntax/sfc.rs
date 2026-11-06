@@ -91,14 +91,12 @@ pub(crate) fn component_tags(tree: &Tree, text: &str) -> Vec<CodeOccurrence> {
             return true;
         }
         // Skip tags of script/style elements: their raw text is code, not markup.
-        if let Some(parent) = n.parent() {
-            if parent.kind() == "end_tag" || parent.kind() == "start_tag" {
-                if let Some(element) = parent.parent() {
-                    if matches!(element.kind(), "script_element" | "style_element") {
-                        return true;
-                    }
-                }
-            }
+        if let Some(parent) = n.parent()
+            && (parent.kind() == "end_tag" || parent.kind() == "start_tag")
+            && let Some(element) = parent.parent()
+            && matches!(element.kind(), "script_element" | "style_element")
+        {
+            return true;
         }
         let name = n.utf8_text(text.as_bytes()).unwrap_or("");
         if !name.is_empty() && (name.contains('-') || name.chars().any(|c| c.is_uppercase())) {

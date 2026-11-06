@@ -203,13 +203,16 @@ impl IndexData {
         self.by_path.get(path).and_then(|&i| self.files[i as usize].as_ref())
     }
 
-    /// Files and ranges where `name` occurs (identifiers, component tags).
-    pub(crate) fn occurrences_of(&self, name: &str) -> Vec<(PathBuf, Range)> {
+    /// Files and ranges where `name` occurs (identifiers, component tags),
+    /// with the member-position flag for call-site filtering.
+    pub(crate) fn occurrences_of(&self, name: &str) -> Vec<(PathBuf, Range, bool)> {
         self.occ_by_name
             .get(name)
             .map(|list| {
                 list.iter()
-                    .filter_map(|o| Some((self.files.get(o.slot as usize)?.as_ref()?.path.clone(), o.range)))
+                    .filter_map(|o| {
+                        Some((self.files.get(o.slot as usize)?.as_ref()?.path.clone(), o.range, o.qualified))
+                    })
                     .collect()
             })
             .unwrap_or_default()

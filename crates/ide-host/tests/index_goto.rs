@@ -134,7 +134,7 @@ async fn finds_usages_through_the_inverted_index() {
     assert!(paths.contains(&root.join("src/App.vue")), "{paths:?}");
     // The declaration's usages: the `useAuth` binding in App.vue (script setup).
     let hit = ide_host::ops::nav::index_usages(&host, "main", "useAuth".to_string()).await.unwrap();
-    assert!(hit.iter().any(|l| PathBuf::from(l.path.clone()) == root.join("src/App.vue")), "{hit:?}");
+    assert!(hit.iter().any(|l| l.path.clone() == root.join("src/App.vue")), "{hit:?}");
     // An unknown name has no usages.
     let hit = ide_host::ops::nav::index_usages(&host, "main", "noSuchName".to_string()).await.unwrap();
     assert!(hit.is_empty());
