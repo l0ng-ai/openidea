@@ -4253,6 +4253,7 @@
   "Branch {name}": "分支 {name}",
   "Tag {name}": "标签 {name}",
   "Branch {branch} of {repository}": "{repository} 的分支 {branch}",
+  "Branch '{name}'": "分支 '{name}'",
   "Branches of {root}": "{root} 的分支",
   "Include {name} in commit": "在提交中包含 {name}",
   "Compare {current} with {branch}": "比较 {current} 与 {branch}",

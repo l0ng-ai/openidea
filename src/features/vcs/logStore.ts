@@ -973,13 +973,23 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
               } else page = await fetchPage(null);
             } else page = await fetchPage(null);
           }
+          const repoBranches = repo ? (refs[repo] ?? []) : [];
+          const remoteNames = repo ? repoBranches.filter((b) => b.remote).map((b) => b.name) : undefined;
+          const branchesByTip = new Map<string, Branch[]>();
+          for (const branch of repoBranches) {
+            if (!branch.commit) continue;
+            const atTip = branchesByTip.get(branch.commit);
+            if (atTip) atTip.push(branch);
+            else branchesByTip.set(branch.commit, [branch]);
+          }
           return page.map((c) => ({
             ...c,
             repo,
             user,
             userName,
             readOnly: tab?.readOnly === true,
-            remoteNames: repo ? refs[repo]?.filter((b) => b.remote).map((b) => b.name) : undefined,
+            remoteNames,
+            refBranches: branchesByTip.get(c.id)?.filter((branch) => c.refs.includes(branch.name)),
           }));
         }),
       );
