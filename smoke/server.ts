@@ -78,9 +78,14 @@ export class Server {
     }
   }
 
-  close() {
-    this.child.stdin.end();
-    this.child.kill();
+  /** Kills the server; resolves once the process is gone (its children may still be exiting). */
+  async close(): Promise<void> {
+    if (this.child.exitCode === null && !this.child.killed) {
+      const exited = new Promise<void>((resolve) => this.child.once("exit", () => resolve()));
+      this.child.stdin.end();
+      this.child.kill();
+      await exited;
+    }
   }
 
   private request(method: string, params: unknown): Promise<unknown> {

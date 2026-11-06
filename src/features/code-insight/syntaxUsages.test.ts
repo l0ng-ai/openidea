@@ -23,6 +23,12 @@ vi.mock("@/platform/ipc", async (orig) => {
   return { ...actual, isTauri: () => true, commands: { ...actual.commands, ...cmd } };
 });
 vi.mock("./candidates", () => ({ filesMentioning: () => filesMentioning() }));
+vi.mock("@tauri-apps/api/core", async (orig) => ({
+  ...(await orig<object>()),
+  Channel: class {
+    onmessage = () => {};
+  },
+}));
 
 const { _addEditor } = await import("@/editor/api");
 const { fetchUsages } = await import("./usages");
@@ -42,7 +48,7 @@ beforeEach(() => {
 describe("Find Usages fallback", () => {
   it("uses the server when it answers, even with nothing", async () => {
     cmd.lspReferences.mockReturnValueOnce(ok({ locations: [], incomplete: null }));
-    expect(await fetchUsages(caret)).toEqual({ groups: [], note: null });
+    expect(await fetchUsages(caret)).toEqual({ groups: [], note: null, librariesSkipped: false });
     expect(cmd.syntaxLocals).not.toHaveBeenCalled();
   });
 
@@ -50,7 +56,7 @@ describe("Find Usages fallback", () => {
     const usage = { path: "/p/a.ts", range: r(1, 0, 1) };
     cmd.lspReferences.mockReturnValueOnce(ok({ locations: [usage], incomplete: "indexing" }));
     const res = await fetchUsages(caret, 42 as never);
-    expect(cmd.lspReferences).toHaveBeenCalledWith(42, 3, { line: 1, col: 0 }, false, true);
+    expect(cmd.lspReferences).toHaveBeenCalledWith(42, 3, { line: 1, col: 0 }, false, true, false, expect.anything());
     expect(res.groups[0]!.usages.length).toBe(1);
     expect(res.note).toBe(incompleteNote("indexing", "x"));
     expect(incompleteNote("tooManyFiles", "x")).toBe(

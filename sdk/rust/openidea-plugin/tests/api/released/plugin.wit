@@ -7,7 +7,7 @@
 /// or processes beyond WASI's clocks and randomness; everything else goes
 /// through the imports below, gated by the capabilities granted in
 /// `plugin.toml` (a missing one returns `error::denied`).
-package openidea:plugin@1.1.0;
+package openidea:plugin@1.2.0;
 
 world plugin {
     import log;
@@ -50,6 +50,12 @@ world plugin-views {
     export view-provider;
 }
 
+/// A plugin with a document indexer (`[[contributes.documentIndexers]]`).
+world plugin-indexing {
+    include plugin;
+    export document-indexer;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -64,4 +70,9 @@ world editor-providers {
 /// Only the `view-provider` export, generated next to `plugin` like `syntax`.
 world views-provider {
     export view-provider;
+}
+
+/// Only the `document-indexer` export, generated next to `plugin` like `syntax`.
+world indexing {
+    export document-indexer;
 }

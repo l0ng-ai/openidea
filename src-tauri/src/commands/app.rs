@@ -316,6 +316,13 @@ pub async fn project_trust_set(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+    state.trust.add_location(&path)?;
+    state.host.refresh_project_trust().await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn project_trust_remove_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
     state.trust.remove_location(&path)?;
     state.host.refresh_project_trust().await?;

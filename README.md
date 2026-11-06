@@ -64,6 +64,12 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 
   <img src="docs/assets/wechat-group.png" alt="WeChat group QR code" width="200">
 
+### Contributors
+
+<a href="https://github.com/l0ng-ai/openidea/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=100" alt="OpenIDEA contributors">
+</a>
+
 ## License
 
 [Apache 2.0](LICENSE). Bundled third-party assets are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

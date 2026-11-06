@@ -28,6 +28,7 @@ export const commands = {
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
 	projectTrustList: () => typedError<TrustDecisions, IdeError>(__TAURI_INVOKE("project_trust_list")),
 	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
+	projectTrustAddLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_add_location", { path })),
 	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
 	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
@@ -424,9 +425,12 @@ export const commands = {
 	/**
 	 *  References of the symbol at `pos`. `project_wide` also searches project files
 	 *  outside the language server's analysis scope; bulk scans over many symbols
-	 *  leave it off. Cancel with `cancel_request(request)`.
+	 *  leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
+	 *  are not searched; with it, those found in the sources arrive on `on_partial` before
+	 *  the slower search for the rest, and the result has them all. Cancel with
+	 *  `cancel_request(request)`.
 	 */
-	lspReferences: (request: RequestId, doc: DocId, pos: Pos, includeDeclaration: boolean, projectWide: boolean) => typedError<References, IdeError>(__TAURI_INVOKE("lsp_references", { request, doc, pos, includeDeclaration, projectWide })),
+	lspReferences: (request: RequestId, doc: DocId, pos: Pos, includeDeclaration: boolean, projectWide: boolean, libraries: boolean, onPartial: Channel<References>) => typedError<References, IdeError>(__TAURI_INVOKE("lsp_references", { request, doc, pos, includeDeclaration, projectWide, libraries, onPartial })),
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	lspWorkspaceSymbols: (request: RequestId, query: string) => typedError<WorkspaceSymbol[], IdeError>(__TAURI_INVOKE("lsp_workspace_symbols", { request, query })),
 	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
@@ -1019,15 +1023,22 @@ export const commands = {
 	path: string,
 	language: string,
 	selections: Range[],
-} | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor })),
+} | null, paths: string[] | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
 	pluginPostEvents: (events: WorkbenchEvent[]) => __TAURI_INVOKE<void>("plugin_post_events", { events }),
 	/**  Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`). */
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
 	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	/**  Plugin context keys in effect for this window (later changes arrive as `contextChanged`). */
+	pluginContextKeys: () => __TAURI_INVOKE<PluginContextKey[]>("plugin_context_keys"),
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
 	pluginCancelTask: (taskId: string) => __TAURI_INVOKE<boolean>("plugin_cancel_task", { taskId }),
+	/**
+	 *  Reports the user's answer to a plugin's `promptRequested`: the chosen keys
+	 *  (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
+	 */
+	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
 	/**
 	 *  Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
 	 *  a tool window, the window's active editor, as commands get it).
@@ -2025,6 +2036,7 @@ export type CatalogPlugin = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
+	icon: PluginIcon | null,
 	/**  Package directory; install with `install_from_dir(path)`. */
 	path: IpcPath,
 	hasCode: boolean,
@@ -2113,6 +2125,8 @@ export type ClassifiedReference = {
 	access?: ReferenceAccess | null,
 	location: Location,
 	kind: ReferenceKind,
+	/**  The usage's line, when the server has it at hand (a library class's). */
+	text?: string | null,
 };
 
 export type ClearCachesResult = {
@@ -4417,6 +4431,11 @@ export type IndexEntry = {
 	engine?: string,
 	/**  Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know. */
 	categories?: string[],
+	/**
+	 *  The manifest's icon, sanitised by whoever wrote the index and again by
+	 *  the IDE before showing it.
+	 */
+	icon?: PluginIcon | null,
 };
 
 export type IndexStatus = {
@@ -5647,6 +5666,20 @@ export type PhpSettings = {
 	phpstanConfig?: string,
 };
 
+/**  An entry of a plugin's `pick` or `pick-many`. */
+export type PickItem = {
+	key: string,
+	label: string,
+	description: string | null,
+};
+
+/**  A plugin's context key for `when` clauses (`value` is JSON text). */
+export type PluginContextKey = {
+	pluginId: string,
+	key: string,
+	value: string,
+};
+
 /**  The focused editor when a plugin command is invoked. */
 export type PluginEditor = {
 	path: string,
@@ -5667,6 +5700,11 @@ export type PluginEvent =
 { type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
+/**
+ *  A plugin's context key was set (`value`: JSON text) or removed, in the
+ *  emitted window (every window when the client is `None`).
+ */
+{ type: "contextChanged"; pluginId: string; key: string; value: string | null } | 
 /**  A plugin began a task: show it with the background tasks. */
 { type: "taskStarted"; pluginId: string; taskId: string; title: string; cancellable: boolean } | { type: "taskProgress"; pluginId: string; taskId: string; done: number; total: number | null; message: string | null } | { type: "taskEnded"; pluginId: string; taskId: string } | 
 /**
@@ -5693,7 +5731,22 @@ export type PluginEvent =
 /**  Copy `text` to the system clipboard. */
 { type: "copyToClipboard"; pluginId: string; text: string } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
-{ type: "openUrl"; pluginId: string; url: string };
+{ type: "openUrl"; pluginId: string; url: string } | 
+/**
+ *  A command waits for the user's answer: show `prompt`, then report it with
+ *  `plugin_answer_prompt(prompt_id, …)`.
+ */
+{ type: "promptRequested"; pluginId: string; promptId: string; prompt: Prompt } | 
+/**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
+{ type: "promptClosed"; promptId: string } | 
+/**  Bring the tool window of the plugin's view `view` to the front. */
+{ type: "revealView"; pluginId: string; view: string };
+
+/**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
+export type PluginIcon = {
+	light: string,
+	dark: string | null,
+};
 
 export type PluginInfo = {
 	id: string,
@@ -5703,6 +5756,7 @@ export type PluginInfo = {
 	authors: string[],
 	homepage: string | null,
 	changeNotes: string | null,
+	icon: PluginIcon | null,
 	source: PluginSource,
 	/**  Package directory. */
 	path: IpcPath,
@@ -6023,6 +6077,9 @@ export type ProjectStructureSettings = {
 	excludeFiles?: string,
 };
 
+/**  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`). */
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
+
 export type ProxyKind = "http" | "socks";
 
 export type ProxyMode = 
@@ -6178,6 +6235,8 @@ export type References = {
 	classified?: ClassifiedReference[],
 	locations: Location[],
 	incomplete: ReferencesIncomplete | null,
+	/**  The dependencies and the JDK were not searched (asked for without `libraries`). */
+	librariesSkipped?: boolean,
 };
 
 /**  Why a references search may have missed usages. */

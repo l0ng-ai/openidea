@@ -576,6 +576,17 @@ mod tests {
     }
 
     #[test]
+    fn method_annotations_do_not_swallow_the_method_name() {
+        // A method-level annotation with arguments: `stmt.find('(')` would land
+        // inside `@DataPermission(…)` and read `DataPermission` as the name.
+        let java = parse_java(
+            "package com.acme;\n\npublic interface SecuredMapper {\n    @DataPermission(column = \"id\", scope = (@Scope(\"self\")))\n    List<User> findAll(@Param(\"org\") String org);\n\n    @org.acme.Check(value = \"(nested)\")\n    int count();\n}\n",
+        );
+        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        assert_eq!(names, [("findAll", vec!["org".to_owned()]), ("count", Vec::<String>::new())]);
+    }
+
+    #[test]
     fn completes_ids_and_parameters() {
         let _host = setup();
         let mut n = Navigator::default();
