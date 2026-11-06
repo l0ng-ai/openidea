@@ -313,44 +313,6 @@ fn node_workspace_patterns(root: &Path, pkg: &Json) -> Vec<String> {
     patterns
 }
 
-/*
-fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
-    let mut covered = HashSet::new();
-
-    let projects =
-        ide_core::project_roots::discover_matching(root, ide_core::project_roots::SEARCH_DEPTH, false, |dir| {
-            dir.join("package.json").is_file()
-        });
-    for dir in projects {
-        if !covered.insert(dir.clone()) {
-            continue;
-        }
-        let Some(pkg) = read_json(&dir.join("package.json")) else { continue };
-        let pm = package_manager(&dir, &pkg);
-        let rel = relative(root, &dir);
-        let label = ide_core::ipc_path::to_ipc(&rel);
-        if pm != "bun" {
-            push_scripts(&pkg, pm, (dir != root).then_some(label.as_str()), (dir != root).then_some(rel), out);
-        }
-        for member_dir in expand_members(&dir, &node_workspace_patterns(&dir, &pkg), "package.json") {
-            if !covered.insert(member_dir.clone()) {
-                continue;
-            }
-            let Some(member) = read_json(&member_dir.join("package.json")) else { continue };
-            let rel = relative(root, &member_dir);
-            let name = member
-                .get("name")
-                .and_then(Json::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| ide_core::ipc_path::to_ipc(&rel));
-            let name = if dir == root { name } else { format!("{label}:{name}") };
-            if pm != "bun" {
-                push_scripts(&member, pm, Some(&name), Some(rel), out);
-            }
-        }
-    }
-}*/
-
 fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
     let mut covered = HashSet::new();
     let projects =
