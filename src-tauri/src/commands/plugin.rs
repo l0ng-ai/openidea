@@ -689,16 +689,11 @@ pub async fn plugin_navigation_goto(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn plugin_navigation_presentations(
+pub async fn plugin_navigation_markers(
     window: Window,
     state: State<'_, AppState>,
     paths: Vec<PathBuf>,
-) -> IdeResult<Vec<ide_plugin::indexing::FilePresentation>> {
-    ide_host::plugins::index_ops::plugin_navigation_presentations(
-        &state.host,
-        state.plugins.clone(),
-        window.label(),
-        paths,
-    )
-    .await
+) -> IdeResult<Vec<ide_plugin::indexing::FileMarkers>> {
+    ide_host::plugins::index_ops::plugin_navigation_markers(&state.host, state.plugins.clone(), window.label(), paths)
+        .await
 }

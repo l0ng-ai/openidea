@@ -1,5 +1,5 @@
 //! API 1.x document indexers: background snapshots become project-scoped
-//! associations. Navigation and presentation only read validated memory indexes.
+//! associations. Navigation and gutter markers only read validated memory indexes.
 use super::PluginHost;
 use ide_core::{IdeError, IdeResult, Location, Pos, Range};
 use ide_extension::{Capability, Disposable, ExtensionPoint, Package, Placement, Prepared, decode};
@@ -66,8 +66,7 @@ impl Graph {
             self.edges -= file.edges.definitions.len()
                 + file.edges.references.len()
                 + file.edges.aliases.len()
-                + file.edges.presentation.markers.len()
-                + file.edges.presentation.regions.len();
+                + file.edges.markers.len();
             for alias in file.edges.aliases {
                 if let Some(entries) = self.aliases.get_mut(&alias.prefix) {
                     entries.retain(|(p, _)| p != path);
@@ -91,8 +90,7 @@ impl Graph {
         self.edges += file.edges.definitions.len()
             + file.edges.references.len()
             + file.edges.aliases.len()
-            + file.edges.presentation.markers.len()
-            + file.edges.presentation.regions.len();
+            + file.edges.markers.len();
         for alias in &file.edges.aliases {
             self.aliases.entry(alias.prefix.clone()).or_default().push((path.clone(), alias.target.clone()));
         }
@@ -250,11 +248,10 @@ impl PluginHost {
                 .definitions
                 .iter()
                 .chain(&edges.references)
-                .chain(&edges.presentation.markers)
+                .chain(&edges.markers)
                 .map(|a| a.key.len().saturating_add(32))
                 .sum::<usize>()
-                .saturating_add(edges.aliases.iter().map(|a| a.prefix.len() + a.target.len()).sum::<usize>())
-                .saturating_add(edges.presentation.regions.len().saturating_mul(64));
+                .saturating_add(edges.aliases.iter().map(|a| a.prefix.len() + a.target.len()).sum::<usize>());
             if output_bytes > MAX_DOCUMENT_BYTES {
                 return Err(IdeError::invalid("document index output is too large"));
             }
@@ -274,16 +271,10 @@ impl PluginHost {
             {
                 return Err(IdeError::invalid("invalid navigation anchors"));
             }
-            let ui = &edges.presentation;
-            if ui
-                .icon
-                .as_ref()
-                .is_some_and(|i| i.len() > 64 || !i.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c)))
-                || ui.markers.len() + ui.regions.len() > MAX_EDGES
-                || ui.markers.iter().any(|a| a.key.is_empty() || a.key.len() > 1024 || !valid_range(&lines, a.range))
-                || ui.regions.iter().any(|r| r.language != "sql" || !valid_range(&lines, r.range))
+            if edges.markers.len() > MAX_EDGES
+                || edges.markers.iter().any(|a| a.key.is_empty() || a.key.len() > 1024 || !valid_range(&lines, a.range))
             {
-                return Err(IdeError::invalid("invalid navigation presentation"));
+                return Err(IdeError::invalid("invalid navigation markers"));
             }
             let mut index = self.navigation.lock();
             if index.epochs.get(root).copied() != generation {
@@ -307,8 +298,7 @@ impl PluginHost {
                 + edges.definitions.len()
                 + edges.references.len()
                 + edges.aliases.len()
-                + edges.presentation.markers.len()
-                + edges.presentation.regions.len()
+                + edges.markers.len()
                 > 200_000
             {
                 return Err(IdeError::unavailable("navigation association limit reached"));
@@ -375,14 +365,14 @@ impl PluginHost {
         }
         result.filter(|r| !r.targets.is_empty())
     }
-    /// Visible-file presentation lookup. Uses only existing graph entries; never executes WASM.
-    pub fn navigation_presentations(
+    /// Gutter markers of visible files. Uses only existing graph entries; never executes WASM.
+    pub fn navigation_markers(
         &self,
         root: &Path,
         paths: &[PathBuf],
         client: Option<&str>,
         version_of: impl Fn(&Path) -> Option<u32>,
-    ) -> Vec<FilePresentation> {
+    ) -> Vec<FileMarkers> {
         if !(self.project_policy.read())(root) {
             return vec![];
         }
@@ -402,9 +392,8 @@ impl PluginHost {
                 if version_of(path).is_some_and(|v| file.version != Some(v)) {
                     continue;
                 }
-                let ui = &file.edges.presentation;
                 let mut markers = vec![];
-                for anchor in &ui.markers {
+                for anchor in &file.edges.markers {
                     let candidates = graph.targets(&anchor.key);
                     let local =
                         candidates.iter().any(|t| graph.files.get(&t.path.0).is_some_and(|f| f.scope == file.scope));
@@ -425,28 +414,8 @@ impl PluginHost {
                         markers.push(NavigationResult { range: anchor.range, targets });
                     }
                 }
-                let icon = if ui.linked_only && markers.is_empty() {
-                    None
-                } else {
-                    ui.icon
-                        .as_ref()
-                        .filter(|id| {
-                            plugin
-                                .manifest()
-                                .declarations("fileIcons")
-                                .iter()
-                                .any(|d| d.get("id").and_then(toml::Value::as_str) == Some(id.as_str()))
-                        })
-                        .map(|id| format!("ext:fileIcon/{}/{id}", plugin.id()))
-                };
-                if icon.is_some() || !markers.is_empty() || !ui.regions.is_empty() {
-                    result.push(FilePresentation {
-                        path: path.clone(),
-                        version: file.version,
-                        icon,
-                        markers,
-                        regions: ui.regions.clone(),
-                    });
+                if !markers.is_empty() {
+                    result.push(FileMarkers { path: path.clone(), version: file.version, markers });
                 }
             }
         }

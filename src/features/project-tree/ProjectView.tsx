@@ -1,4 +1,3 @@
-import { usePluginFileIcon } from "@/platform/pluginPresentation";
 /**
  * The Project tool window: a virtualized, lazily loaded file tree with VCS
  * colours (file decorations), inline create / rename, drag & drop moves,
@@ -282,14 +281,13 @@ const Row = memo(function Row({
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
-  const pluginIcon = usePluginFileIcon(node.dir || node.placeholder ? "" : node.path);
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
   const icon =
     node.dir || node.placeholder || node.icon
       ? iconFor(node, roots, root, build, detected, expanded, holdsOpen)
-      : (pluginIcon ?? presentationIcon(node.path, file, roots, root, build.spring));
+      : presentationIcon(node.path, file, roots, root, build.spring);
   const moduleFolder =
     node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
   const isEditing =

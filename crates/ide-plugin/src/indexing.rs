@@ -1,7 +1,9 @@
+//! Edges a `document-indexer` export returns, and what the host answers from them.
 use ide_core::{Location, Range};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
+
 #[derive(Clone, Debug, Deserialize, Serialize, Type)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
@@ -19,37 +21,21 @@ pub struct Alias {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Edges {
+    pub definitions: Vec<Anchor>,
+    pub references: Vec<Anchor>,
     #[serde(default)]
     pub aliases: Vec<Alias>,
     #[serde(default)]
-    pub presentation: Presentation,
-    pub definitions: Vec<Anchor>,
-    pub references: Vec<Anchor>,
+    pub markers: Vec<Anchor>,
 }
 
-/// Optional declarative UI contributions. No plugin HTML or scripts reach the UI.
-#[derive(Clone, Default, Debug, Deserialize, Serialize, Type)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-pub struct Presentation {
-    pub icon: Option<String>,
-    pub linked_only: bool,
-    pub markers: Vec<Anchor>,
-    pub regions: Vec<EmbeddedRegion>,
-}
-#[derive(Clone, Debug, Deserialize, Serialize, Type)]
-#[serde(deny_unknown_fields)]
-pub struct EmbeddedRegion {
-    pub language: String,
-    pub range: Range,
-}
+/// The resolved gutter markers of one file.
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
-pub struct FilePresentation {
+pub struct FileMarkers {
     pub path: PathBuf,
     pub version: Option<u32>,
-    pub icon: Option<String>,
     pub markers: Vec<NavigationResult>,
-    pub regions: Vec<EmbeddedRegion>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

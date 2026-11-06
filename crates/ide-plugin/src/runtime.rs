@@ -677,7 +677,7 @@ impl Runtime {
                     name: s.name.clone(),
                     kind: s.kind.clone(),
                     container: s.container.clone(),
-                    span: range_to_wit(s.range),
+                    range: range_to_wit(s.range),
                 })
                 .collect(),
         };
@@ -685,7 +685,7 @@ impl Runtime {
             e.indexer.as_ref().expect("checked").call_index(store, &doc)
         })?;
         fn anchor(a: wit_index::Anchor) -> crate::indexing::Anchor {
-            crate::indexing::Anchor { key: a.key, range: range_from_wit(a.span) }
+            crate::indexing::Anchor { key: a.key, range: range_from_wit(a.range) }
         }
         Ok(crate::indexing::Edges {
             definitions: edges.definitions.into_iter().map(anchor).collect(),
@@ -695,17 +695,7 @@ impl Runtime {
                 .into_iter()
                 .map(|a| crate::indexing::Alias { prefix: a.prefix, target: a.target })
                 .collect(),
-            presentation: crate::indexing::Presentation {
-                icon: edges.presentation.icon,
-                linked_only: edges.presentation.linked_only,
-                markers: edges.presentation.markers.into_iter().map(anchor).collect(),
-                regions: edges
-                    .presentation
-                    .regions
-                    .into_iter()
-                    .map(|r| crate::indexing::EmbeddedRegion { language: r.language, range: range_from_wit(r.span) })
-                    .collect(),
-            },
+            markers: edges.markers.into_iter().map(anchor).collect(),
         })
     }
 

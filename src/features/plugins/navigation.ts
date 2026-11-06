@@ -1,5 +1,3 @@
-import { invalidatePluginPresentations } from "@/platform/pluginPresentation";
-import { notifications } from "@/workbench/contributions";
 /** Background navigation indexing. Opening a project discovers files once;
  * edits and filesystem events then enqueue only affected paths. */
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
@@ -9,7 +7,9 @@ import { docOf } from "@/editor/lsp/lsp";
 import { offsetToPos, rangeToOffsets } from "@/editor/lsp/positions";
 import { call, commands, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { notifications } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
+import { invalidatePluginMarkers } from "./markerStore";
 import { usePlugins } from "./store";
 
 export function startPluginNavigation(): () => void {
@@ -85,7 +85,7 @@ export function startPluginNavigation(): () => void {
   function queue(paths: string[], priority = false) {
     const matching = paths.filter(eligible);
     if (!matching.length || !ready()) return;
-    invalidatePluginPresentations(matching);
+    invalidatePluginMarkers(matching);
     matching.forEach((p) => dirty.add(p));
     pending = priority ? new Set([...matching, ...pending]) : new Set([...pending, ...matching]);
     notify();
@@ -114,7 +114,7 @@ export function startPluginNavigation(): () => void {
     }
   }
   function reset() {
-    invalidatePluginPresentations();
+    invalidatePluginMarkers();
     generation++;
     if (request !== null) void commands.cancelRequest(request);
     clearTimeout(timer);

@@ -1,5 +1,3 @@
-import { startPluginNavigation } from "./navigation";
-import { startPluginPresentation } from "./presentation";
 /**
  * Plugins: Settings › Plugins (installed list, enable/disable, install from
  * disk with a permission page, uninstall, theme selection) and the runtime
@@ -36,6 +34,8 @@ import { startViewUi } from "./uiPoints";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { IntellijThemesDialogHost } from "./IntellijThemesDialog";
 import { startWorkspaceContains } from "./workspaceContains";
+import { startIndexedMarkers } from "./indexedMarkers";
+import { startPluginNavigation } from "./navigation";
 import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
 
 function registerPluginsPage(): () => void {
@@ -146,7 +146,7 @@ export function activate(): () => void {
     ]),
     startPluginBridge(),
     startPluginNavigation(),
-    startPluginPresentation(),
+    startIndexedMarkers(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
     startWorkspaceContains(),

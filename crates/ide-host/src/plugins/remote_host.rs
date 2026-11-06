@@ -480,10 +480,10 @@ impl RemotePlugins {
             }
         });
         let h = host.clone();
-        d.add("plugin_navigation_presentations", move |c| {
+        d.add("plugin_navigation_markers", move |c| {
             let h = h.clone();
             async move {
-                super::index_ops::plugin_navigation_presentations(&c.host, alive(&h)?, &c.window, c.arg("paths")?).await
+                super::index_ops::plugin_navigation_markers(&c.host, alive(&h)?, &c.window, c.arg("paths")?).await
             }
         });
         d.add("plugin_line_markers", |c| async move {

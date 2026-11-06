@@ -50,7 +50,7 @@ fn method() -> SymbolTag {
     }
 }
 const SOURCE: &str = "def source:item\nref mapping:item\n";
-const MAPPING: &str = "def mapping:item\nref source:item\nsql SELECT 1\n";
+const MAPPING: &str = "def mapping:item\nref source:item\n";
 fn reference_pos() -> Pos {
     Pos::new(1, 5)
 }
@@ -196,25 +196,24 @@ fn two_windows_of_same_root_keep_unsaved_snapshots_isolated() {
 }
 
 #[test]
-fn presentation_icons_markers_and_disable_follow_graph_state() {
+fn markers_and_disable_follow_graph_state() {
     let f = Fixture::new();
     let tags = vec![];
     let source = f.index("source.idx", SOURCE, &tags, Some(1), "app");
-    assert!(f.host.navigation_presentations(&f.root, std::slice::from_ref(&source), None, |_| None).is_empty());
+    assert!(f.host.navigation_markers(&f.root, std::slice::from_ref(&source), None, |_| None).is_empty());
     let mapping = f.index("mapping.idx", MAPPING, &[], Some(1), "app");
-    let entries = f.host.navigation_presentations(&f.root, &[source.clone(), mapping.clone()], None, |_| None);
-    let source_ui = entries.iter().find(|e| e.path == source).unwrap();
-    assert_eq!(source_ui.icon.as_deref(), Some("ext:fileIcon/test.indexer/mapping"));
-    assert_eq!(source_ui.markers.len(), 1);
-    let mapping_ui = entries.iter().find(|e| e.path == mapping).unwrap();
-    assert_eq!(mapping_ui.icon.as_deref(), Some("ext:fileIcon/test.indexer/mapping"));
-    assert_eq!(mapping_ui.markers.len(), 1);
-    assert_eq!(mapping_ui.regions.len(), 1);
-    assert!(f.host.navigation_presentations(&f.root, std::slice::from_ref(&source), None, |_| Some(2)).is_empty());
+    let entries = f.host.navigation_markers(&f.root, &[source.clone(), mapping.clone()], None, |_| None);
+    let source_markers = entries.iter().find(|e| e.path == source).unwrap();
+    assert_eq!(source_markers.markers.len(), 1);
+    assert_eq!(source_markers.markers[0].targets[0].path.0, mapping);
+    let mapping_markers = entries.iter().find(|e| e.path == mapping).unwrap();
+    assert_eq!(mapping_markers.markers.len(), 1);
+    assert_eq!(mapping_markers.markers[0].targets[0].path.0, source);
+    assert!(f.host.navigation_markers(&f.root, std::slice::from_ref(&source), None, |_| Some(2)).is_empty());
     f.host.invalidate_navigation(&f.root, Some(&[mapping]));
-    assert!(f.host.navigation_presentations(&f.root, std::slice::from_ref(&source), None, |_| None).is_empty());
+    assert!(f.host.navigation_markers(&f.root, std::slice::from_ref(&source), None, |_| None).is_empty());
     f.host.set_enabled("test.indexer", false).unwrap();
-    assert!(f.host.navigation_presentations(&f.root, &[source], None, |_| None).is_empty());
+    assert!(f.host.navigation_markers(&f.root, &[source], None, |_| None).is_empty());
 }
 
 #[test]
@@ -233,5 +232,5 @@ fn invalid_ranges_and_oversized_documents_never_publish() {
                 .is_err()
         );
     }
-    assert!(f.host.navigation_presentations(&f.root, &[path], None, |_| None).is_empty());
+    assert!(f.host.navigation_markers(&f.root, &[path], None, |_| None).is_empty());
 }

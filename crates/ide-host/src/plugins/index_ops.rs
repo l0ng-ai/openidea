@@ -153,19 +153,19 @@ pub async fn plugin_navigation_goto(
     .await
 }
 
-pub async fn plugin_navigation_presentations(
+pub async fn plugin_navigation_markers(
     host: &crate::Host,
     plugins: Arc<PluginHost>,
     window: &str,
     paths: Vec<PathBuf>,
-) -> IdeResult<Vec<crate::plugins::navigation::FilePresentation>> {
+) -> IdeResult<Vec<crate::plugins::navigation::FileMarkers>> {
     if paths.len() > 64 {
-        return Err(IdeError::invalid("presentation batches are limited to 64 files"));
+        return Err(IdeError::invalid("marker batches are limited to 64 files"));
     }
     let project = host.project(window)?;
     let client = window.to_owned();
     blocking(move || {
-        Ok(plugins.navigation_presentations(&project.root, &paths, Some(&client), |p| {
+        Ok(plugins.navigation_markers(&project.root, &paths, Some(&client), |p| {
             project.documents.by_path(p).and_then(|id| project.documents.version(id).ok())
         }))
     })

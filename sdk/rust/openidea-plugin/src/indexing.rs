@@ -1,6 +1,10 @@
-//! Background symbolic indexing. The host supplies cached syntax symbols and
-//! resolves published references without running a provider on every click.
+//! Background document indexing (`[[contributes.documentIndexers]]`): return
+//! the keys a document defines and refers to; the host keeps the project-wide
+//! graph and resolves Go to Declaration and gutter markers from it. Register
+//! with `register_plugin!(Plugin, indexing)`.
 use crate::Range;
+
+/// A symbol the host's syntax support found in the document.
 #[derive(Clone, Debug)]
 pub struct Symbol {
     pub name: String,
@@ -8,38 +12,35 @@ pub struct Symbol {
     pub container: Option<String>,
     pub range: Range,
 }
+
 pub struct Document {
     pub path: String,
     pub text: String,
     pub symbols: Vec<Symbol>,
 }
+
+/// A range tied to a key the plugin chooses.
 #[derive(Clone, Debug)]
 pub struct Anchor {
     pub key: String,
     pub range: Range,
 }
+
+/// Keys starting with `prefix` also resolve under `target` (both end with `#`).
 pub struct Alias {
     pub prefix: String,
     pub target: String,
 }
-pub struct Region {
-    pub language: String,
-    pub range: Range,
-}
-#[derive(Default)]
-pub struct Presentation {
-    pub icon: Option<String>,
-    pub linked_only: bool,
-    pub markers: Vec<Anchor>,
-    pub regions: Vec<Region>,
-}
+
 #[derive(Default)]
 pub struct Edges {
     pub definitions: Vec<Anchor>,
     pub references: Vec<Anchor>,
     pub aliases: Vec<Alias>,
-    pub presentation: Presentation,
+    /// Gutter icons that go to the definitions of their key.
+    pub markers: Vec<Anchor>,
 }
+
 pub trait DocumentIndexer {
     fn index(&mut self, doc: &Document) -> Edges;
 }

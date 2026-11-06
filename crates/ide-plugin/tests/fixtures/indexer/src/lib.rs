@@ -1,5 +1,5 @@
 //! Deliberately tiny line-oriented fixture, not a language/framework plugin.
-use openidea_plugin::indexing::{Alias, Anchor, Document, DocumentIndexer, Edges, Presentation, Region};
+use openidea_plugin::indexing::{Alias, Anchor, Document, DocumentIndexer, Edges};
 use openidea_plugin::{Error, Invocation, Plugin, Position, Range, register_plugin};
 
 #[derive(Default)]
@@ -11,10 +11,7 @@ impl Plugin for Indexer {
 }
 impl DocumentIndexer for Indexer {
     fn index(&mut self, doc: &Document) -> Edges {
-        let mut out = Edges {
-            presentation: Presentation { icon: Some("mapping".into()), linked_only: true, ..Default::default() },
-            ..Default::default()
-        };
+        let mut out = Edges::default();
         for (line, text) in doc.text.lines().enumerate() {
             let Some((kind, value)) = text.split_once(' ') else { continue };
             let range = Range {
@@ -26,14 +23,13 @@ impl DocumentIndexer for Indexer {
                 "def" => out.definitions.push(anchor),
                 "ref" => {
                     out.references.push(anchor.clone());
-                    out.presentation.markers.push(anchor);
+                    out.markers.push(anchor);
                 }
                 "alias" => {
                     if let Some((prefix, target)) = value.split_once(' ') {
                         out.aliases.push(Alias { prefix: prefix.into(), target: target.into() });
                     }
                 }
-                "sql" => out.presentation.regions.push(Region { language: "sql".into(), range }),
                 "symbols" => out.definitions.extend(
                     doc.symbols
                         .iter()

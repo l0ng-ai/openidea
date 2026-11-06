@@ -1050,7 +1050,7 @@ export const commands = {
 	range: Range,
 	targets: Location[],
 } | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
-	pluginNavigationPresentations: (paths: string[]) => typedError<FilePresentation[], IdeError>(__TAURI_INVOKE("plugin_navigation_presentations", { paths })),
+	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -3446,11 +3446,6 @@ export type EditorTabsSettings = {
 	activateOnClose?: string,
 };
 
-export type EmbeddedRegion = {
-	language: string,
-	range: Range,
-};
-
 /**  Editor › File Encodings. */
 export type EncodingSettings = {
 	/**  Fallback for files outside the project that are not valid UTF-8 (WHATWG label). */
@@ -3641,6 +3636,13 @@ export type FileLineStats = {
 	removed: number,
 };
 
+/**  The resolved gutter markers of one file. */
+export type FileMarkers = {
+	path: string,
+	version: number | null,
+	markers: NavigationResult[],
+};
+
 export type FileMatch = {
 	path: IpcPath,
 	/**  Path relative to the project root, as displayed. */
@@ -3668,14 +3670,6 @@ export type FilePosition = {
 	path: IpcPath,
 	line: number,
 	column: number,
-};
-
-export type FilePresentation = {
-	path: string,
-	version: number | null,
-	icon: string | null,
-	markers: NavigationResult[],
-	regions: EmbeddedRegion[],
 };
 
 /**  What the editor needs to know before choosing a viewer for a file. */

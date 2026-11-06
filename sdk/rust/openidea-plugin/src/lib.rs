@@ -122,7 +122,7 @@ pub mod indexing_bindings {
         world: "indexing", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_indexing_world",
         default_bindings_module: "openidea_plugin::indexing_bindings",
-        with: { "openidea:plugin/types@1.0.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.2.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -586,29 +586,19 @@ pub mod __rt {
                     name: s.name,
                     kind: s.kind,
                     container: s.container,
-                    range: crate::host::__range_from(s.span),
+                    range: crate::host::__range_from(s.range),
                 })
                 .collect(),
         };
         let e = with::<T, _>(|p| p.index(&doc));
         fn anchor(a: i::Anchor) -> w::Anchor {
-            w::Anchor { key: a.key, span: crate::host::__range_to(a.range) }
+            w::Anchor { key: a.key, range: crate::host::__range_to(a.range) }
         }
         w::Edges {
             definitions: e.definitions.into_iter().map(anchor).collect(),
             references: e.references.into_iter().map(anchor).collect(),
             aliases: e.aliases.into_iter().map(|a| w::Alias { prefix: a.prefix, target: a.target }).collect(),
-            presentation: w::Presentation {
-                icon: e.presentation.icon,
-                linked_only: e.presentation.linked_only,
-                markers: e.presentation.markers.into_iter().map(anchor).collect(),
-                regions: e
-                    .presentation
-                    .regions
-                    .into_iter()
-                    .map(|r| w::Region { language: r.language, span: crate::host::__range_to(r.range) })
-                    .collect(),
-            },
+            markers: e.markers.into_iter().map(anchor).collect(),
         }
     }
 

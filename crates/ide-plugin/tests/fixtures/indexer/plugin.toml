@@ -1,7 +1,7 @@
 id = "test.indexer"
 name = "Document indexer fixture"
 version = "0.1.0"
-engines.openidea = "^1.0"
+engines.openidea = "^1.2"
 wasm = "dist/plugin.wasm"
 
 [capabilities]
@@ -9,8 +9,3 @@ required = ["project.read"]
 
 [[contributes.documentIndexers]]
 extensions = ["idx"]
-
-[[contributes.fileIcons]]
-id = "mapping"
-patterns = ["*.idx"]
-icon = "icons/mapping.svg"

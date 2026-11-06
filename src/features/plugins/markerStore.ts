@@ -1,11 +1,9 @@
-/** Shared visible-file plugin presentation cache. Bounded IPC; no file reads. */
-import { useEffect } from "react";
+/** Gutter markers of document indexers for the files open in editors: bounded IPC, no file reads. */
 import { create } from "zustand";
-import { call, commands, isTauri, type FilePresentation } from "./ipc";
-import { isIconName, useFileIconRevision, type IconName } from "@/ui/icons";
+import { call, commands, isTauri, type FileMarkers } from "@/platform/ipc";
 import { navigationEpoch, onNavigationProvidersChanged } from "@/editor/navigationProviders";
 
-export const usePluginPresentations = create<{ entries: ReadonlyMap<string, FilePresentation> }>(() => ({
+export const usePluginMarkers = create<{ entries: ReadonlyMap<string, FileMarkers> }>(() => ({
   entries: new Map(),
 }));
 const visible = new Map<string, number>();
@@ -29,37 +27,30 @@ async function refresh() {
   const epoch = navigationEpoch();
   const current = session;
   const paths = [...visible.keys()];
-  const entries = new Map<string, FilePresentation>();
+  const entries = new Map<string, FileMarkers>();
   try {
     for (let i = 0; i < paths.length; i += 64) {
-      const results = await call(commands.pluginNavigationPresentations(paths.slice(i, i + 64)));
+      const results = await call(commands.pluginNavigationMarkers(paths.slice(i, i + 64)));
       if (epoch !== navigationEpoch() || current !== session) return;
       for (const result of results) {
         if (!visible.has(result.path)) continue;
         const previous = entries.get(result.path);
         entries.set(
           result.path,
-          previous
-            ? {
-                ...previous,
-                icon: previous.icon ?? result.icon,
-                markers: [...previous.markers, ...result.markers],
-                regions: [...previous.regions, ...result.regions],
-              }
-            : result,
+          previous ? { ...previous, markers: [...previous.markers, ...result.markers] } : result,
         );
       }
     }
-    if (epoch === navigationEpoch() && current === session) usePluginPresentations.setState({ entries });
+    if (epoch === navigationEpoch() && current === session) usePluginMarkers.setState({ entries });
   } catch {
     // Plugin navigation may be unavailable during project close or reload.
-    if (epoch === navigationEpoch() && current === session) usePluginPresentations.setState({ entries: new Map() });
+    if (epoch === navigationEpoch() && current === session) usePluginMarkers.setState({ entries: new Map() });
   } finally {
     running = false;
     if (again) schedule();
   }
 }
-export function watchPluginPresentation(path: string): () => void {
+export function watchPluginMarkers(path: string): () => void {
   if (!path || !isTauri()) return () => {};
   if (!visible.size)
     off = onNavigationProvidersChanged(() => {
@@ -78,22 +69,15 @@ export function watchPluginPresentation(path: string): () => void {
       clearTimeout(timer);
       timer = undefined;
       again = false;
-      usePluginPresentations.setState({ entries: new Map() });
+      usePluginMarkers.setState({ entries: new Map() });
     }
   };
 }
-export function usePluginFileIcon(path: string): IconName | undefined {
-  useFileIconRevision();
-  useEffect(() => watchPluginPresentation(path), [path]);
-  const icon = usePluginPresentations((s) => s.entries.get(path)?.icon);
-  return icon && isIconName(icon) ? icon : undefined;
-}
-
-export function invalidatePluginPresentations(paths?: readonly string[]) {
-  const entries = new Map(usePluginPresentations.getState().entries);
+export function invalidatePluginMarkers(paths?: readonly string[]) {
+  const entries = new Map(usePluginMarkers.getState().entries);
   for (const [path, entry] of entries) {
     if (!paths || paths.includes(path) || entry.markers.some((m) => m.targets.some((t) => paths.includes(t.path))))
       entries.delete(path);
   }
-  usePluginPresentations.setState({ entries });
+  usePluginMarkers.setState({ entries });
 }
