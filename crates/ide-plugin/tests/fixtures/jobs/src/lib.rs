@@ -4,7 +4,7 @@
 
 use openidea_plugin::host;
 use openidea_plugin::views::{Body, Button, TreeItem, View, ViewEvent, Viewport, Views};
-use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, register_plugin};
+use openidea_plugin::{Error, Invocation, NotificationLevel, PickItem, Plugin, register_plugin};
 
 pub const VIEW: &str = "jobs";
 
@@ -61,6 +61,22 @@ impl Plugin for Jobs {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)
             }
+            "pick" | "pick-many" => {
+                let long_key = "k".repeat(300);
+                let items = [
+                    PickItem::new(if arg == Some("long-key") { &long_key } else { "a" }, "Alpha").description("first"),
+                    PickItem::new("b", "Beta"),
+                    PickItem::new("c", "Gamma"),
+                ];
+                let picked = match id {
+                    "pick" => host::pick("Pick", &items)?.map(|key| vec![key]),
+                    _ => host::pick_many("Pick", &items)?,
+                };
+                Ok(Some(picked.map_or("none".to_owned(), |keys| keys.join(","))))
+            }
+            "input" => Ok(Some(host::input("Name", arg)?.unwrap_or_else(|| "none".to_owned()))),
+            "confirm" => Ok(Some(host::confirm("Delete", "Really?")?.to_string())),
+            "reveal" => host::reveal_view(arg.unwrap_or_default()).map(|()| None),
             "selection" => {
                 let paths = ctx.selected_paths().join("\n");
                 host::notify(NotificationLevel::Info, "Selected paths", &paths);

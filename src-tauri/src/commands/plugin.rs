@@ -385,6 +385,14 @@ pub fn plugin_cancel_task(state: State<'_, AppState>, task_id: String) -> bool {
     state.plugins.cancel_task(&task_id)
 }
 
+/// Reports the user's answer to a plugin's `promptRequested`: the chosen keys
+/// (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_answer_prompt(state: State<'_, AppState>, prompt_id: String, answer: Option<Vec<String>>) -> bool {
+    state.plugins.answer_prompt(&prompt_id, answer)
+}
+
 /// Gutter markers of plugin `line-markers` providers for an open document.
 #[tauri::command]
 #[specta::specta]

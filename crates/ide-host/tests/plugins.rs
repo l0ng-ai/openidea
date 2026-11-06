@@ -2214,6 +2214,126 @@ fn vcs_remotes_clipboard_and_open_url() {
     }
 }
 
+/// Runs `cmd` of the jobs plugin; once it asks the user, answers after `delay`
+/// (`None`: dismisses). Returns the command's result and what it asked.
+fn run_and_answer(
+    f: &Fixture,
+    cmd: &str,
+    arg: Option<&str>,
+    answer: Option<&[&str]>,
+    delay: Duration,
+) -> (Result<Option<String>, String>, ide_plugin::Prompt) {
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("jobs", cmd, arg));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (client, prompt_id, prompt) = loop {
+            let asked = f.take_events().into_iter().find_map(|(client, e)| match e {
+                PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+                _ => None,
+            });
+            if let Some(asked) = asked {
+                break asked;
+            }
+            assert!(Instant::now() < deadline && !running.is_finished(), "the command never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(client.as_deref(), Some("main"), "asks in the window that ran the command");
+        std::thread::sleep(delay);
+        let answer = answer.map(|a| a.iter().map(|s| (*s).to_owned()).collect());
+        assert!(f.host.answer_prompt(&prompt_id, answer));
+        assert!(!f.host.answer_prompt(&prompt_id, None), "an answer counts once");
+        (running.join().unwrap(), prompt)
+    })
+}
+
+#[test]
+fn commands_ask_the_user_and_reveal_their_views() {
+    use ide_plugin::{PickItem, Prompt};
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    let none = Duration::ZERO;
+
+    let (result, prompt) = run_and_answer(&f, "pick", None, Some(&["b"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("b"));
+    let items = vec![
+        PickItem { key: "a".into(), label: "Alpha".into(), description: Some("first".into()) },
+        PickItem { key: "b".into(), label: "Beta".into(), description: None },
+        PickItem { key: "c".into(), label: "Gamma".into(), description: None },
+    ];
+    assert_eq!(prompt, Prompt::QuickPick { title: "Pick".into(), items, multiple: false });
+
+    let (result, prompt) = run_and_answer(&f, "pick-many", None, Some(&["a", "c"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("a,c"));
+    assert!(matches!(prompt, Prompt::QuickPick { multiple: true, .. }));
+    assert_eq!(run_and_answer(&f, "pick", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "input", Some("Main"), Some(&["Other"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("Other"));
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()) });
+    assert_eq!(run_and_answer(&f, "input", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "confirm", None, Some(&[]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("true"));
+    assert_eq!(prompt, Prompt::Confirm { title: "Delete".into(), message: "Really?".into() });
+    assert_eq!(run_and_answer(&f, "confirm", None, None, none).0.unwrap().as_deref(), Some("false"));
+
+    // The wait is not part of the call's 500 ms budget.
+    let (result, _) = run_and_answer(&f, "confirm", None, Some(&[]), Duration::from_millis(1200));
+    assert_eq!(result.unwrap().as_deref(), Some("true"));
+
+    // Keys come back as given: one that doesn't fit is refused, not cut.
+    f.take_events();
+    let err = f.run("jobs", "pick", Some("long-key")).unwrap_err();
+    assert!(err.contains("item key is longer"), "{err}");
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // Without a window there is nothing to attach the dialog to.
+    f.take_events();
+    let no_window = Invocation { client: None, ..f.inv() };
+    for cmd in ["pick", "input", "confirm"] {
+        let err = f.host.run_command("jobs", cmd, None, no_window.clone()).unwrap_err().message;
+        assert!(err.contains("from a command the user invoked"), "{cmd}: {err}");
+    }
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // `views.reveal` only knows the plugin's own declared views.
+    f.take_events();
+    f.run("jobs", "reveal", Some("jobs")).unwrap();
+    let revealed = f.take_events().into_iter().find_map(|(client, e)| match e {
+        PluginEvent::RevealView { plugin_id, view } => Some((client, plugin_id, view)),
+        _ => None,
+    });
+    assert_eq!(revealed, Some((Some("main".into()), "jobs".into(), "jobs".into())));
+    for view in ["greetings", ""] {
+        let err = f.run("jobs", "reveal", Some(view)).unwrap_err();
+        assert!(err.contains("declares no view"), "{view:?}: {err}");
+    }
+    assert!(f.run("jobs", "reveal", Some("jobs")).is_ok(), "the instance survives");
+}
+
+#[test]
+fn disabling_a_plugin_that_waits_for_an_answer_does_not_hang() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("jobs", "confirm", None));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })) {
+            assert!(Instant::now() < deadline && !running.is_finished(), "the command never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        f.host.set_enabled("jobs", false).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5), "disabling waited for the user");
+        assert!(running.join().unwrap().is_err(), "the waiting command ends with an error");
+    });
+    f.host.set_enabled("jobs", true).unwrap();
+    let (result, _) = run_and_answer(&f, "confirm", None, Some(&[]), Duration::ZERO);
+    assert_eq!(result.unwrap().as_deref(), Some("true"), "prompts work again after the restart");
+}
+
 #[test]
 fn views_can_use_an_svg_icon_from_the_package() {
     let f = fixture(Limits::default());

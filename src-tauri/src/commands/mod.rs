@@ -482,6 +482,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_status_items,
         plugin::plugin_context_keys,
         plugin::plugin_cancel_task,
+        plugin::plugin_answer_prompt,
         plugin::plugin_view_render,
         plugin::plugin_view_event,
         plugin::plugin_web_page,

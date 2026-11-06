@@ -46,6 +46,7 @@ import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
 import { declareStatusItem } from "./runtimeUi";
+import { pluginToolWindowId } from "./views/viewStore";
 import {
   CUSTOM_EDITOR_KIND,
   CustomEditor,
@@ -306,8 +307,6 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
     undo();
   };
 }
-
-export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
 
 function registerView(pluginId: string, decl: ViewDecl, icon: string): () => void {
   return registerToolWindow({

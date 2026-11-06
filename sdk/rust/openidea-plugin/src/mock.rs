@@ -8,7 +8,7 @@
 use crate::host::Invocation;
 use crate::types::*;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 
@@ -70,6 +70,8 @@ struct State {
     fetch_error: Option<Error>,
     clipboard: Option<String>,
     opened_urls: Vec<String>,
+    answers: VecDeque<Option<Vec<String>>>,
+    revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
@@ -233,6 +235,19 @@ impl MockHost {
     /// URLs opened with [`crate::host::open_url`], in order.
     pub fn opened_urls(&self) -> Vec<String> {
         self.state.borrow().opened_urls.clone()
+    }
+
+    /// The answer the next [`crate::host::pick`], [`crate::host::input`] or
+    /// [`crate::host::confirm`] gets: the chosen keys, the text (one element),
+    /// anything for OK, or `None` for dismissed. Unscripted prompts are dismissed.
+    pub fn answer_next_prompt(&self, answer: Option<&[&str]>) {
+        let answer = answer.map(|a| a.iter().map(|&s| s.to_owned()).collect());
+        self.state.borrow_mut().answers.push_back(answer);
+    }
+
+    /// Views brought forward with [`crate::host::reveal_view`], in order.
+    pub fn revealed_views(&self) -> Vec<String> {
+        self.state.borrow().revealed_views.clone()
     }
 
     /// Makes `vcs-fetch` fail.
@@ -414,6 +429,36 @@ pub mod current {
             s.opened_urls.push(trimmed.to_owned());
             Ok(())
         })
+    }
+
+    pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+        let keys = pick_many(title, items)?;
+        match keys {
+            Some(keys) if keys.len() > 1 => Err(Error::Invalid("more than one item chosen".into())),
+            keys => Ok(keys.and_then(|keys| keys.into_iter().next())),
+        }
+    }
+
+    pub fn pick_many(_title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+        let answer = with(|s| s.answers.pop_front().flatten());
+        let Some(keys) = answer else { return Ok(None) };
+        if let Some(unknown) = keys.iter().find(|k| !items.iter().any(|i| &i.key == *k)) {
+            return Err(Error::Invalid(format!("{unknown:?} is not one of the items")));
+        }
+        Ok(Some(keys))
+    }
+
+    pub fn input(_prompt: &str, _value: Option<&str>) -> Result<Option<String>, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn confirm(_title: &str, _body: &str) -> Result<bool, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).is_some())
+    }
+
+    pub fn reveal_view(view: &str) -> Result<(), Error> {
+        with(|s| s.revealed_views.push(view.to_owned()));
+        Ok(())
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -779,6 +824,22 @@ mod tests {
         host::open_url("https://example.com/a").unwrap();
         assert_eq!(mock.opened_urls(), ["https://example.com/a"]);
         assert!(matches!(host::open_url("file:///etc/passwd"), Err(Error::Invalid(_))));
+        let items = [PickItem::new("a", "A"), PickItem::new("b", "B").description("second")];
+        assert_eq!(host::pick("Pick", &items).unwrap(), None);
+        mock.answer_next_prompt(Some(&["b"]));
+        assert_eq!(host::pick("Pick", &items).unwrap().as_deref(), Some("b"));
+        mock.answer_next_prompt(Some(&["a", "b"]));
+        assert_eq!(host::pick_many("Pick", &items).unwrap(), Some(vec!["a".to_owned(), "b".to_owned()]));
+        mock.answer_next_prompt(Some(&["zzz"]));
+        assert!(matches!(host::pick_many("Pick", &items), Err(Error::Invalid(_))));
+        mock.answer_next_prompt(Some(&["x.txt"]));
+        assert_eq!(host::input("Name", Some("a.txt")).unwrap().as_deref(), Some("x.txt"));
+        mock.answer_next_prompt(Some(&[]));
+        assert!(host::confirm("Sure?", "Really").unwrap());
+        mock.answer_next_prompt(None);
+        assert!(!host::confirm("Sure?", "Really").unwrap());
+        host::reveal_view("panel").unwrap();
+        assert_eq!(mock.revealed_views(), ["panel"]);
         {
             let task = host::begin_task("Work", true);
             task.report(1, Some(2), None);

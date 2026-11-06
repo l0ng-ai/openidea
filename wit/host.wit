@@ -17,6 +17,13 @@ interface ui {
         command: option<string>,
     }
 
+    record pick-item {
+        /// Returned when the item is chosen.
+        key: string,
+        label: string,
+        description: option<string>,
+    }
+
     /// A context key's value, as `when` clauses compare it.
     variant context-value {
         flag(bool),
@@ -44,6 +51,20 @@ interface ui {
     copy-to-clipboard: func(text: string) -> result<_, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.
     open-url: func(url: string) -> result<_, error>;
+    /// Shows a list in the window the current command or event came from and
+    /// waits for the key of the chosen item, or `none` when the user dismisses
+    /// it. Needs no capability. Returns `invalid` outside a command or event of
+    /// a window (including in editor providers). Waiting doesn't count against
+    /// the call's budget.
+    pick: func(title: string, items: list<pick-item>) -> result<option<string>, error>;
+    /// Like `pick`, with any number of items chosen.
+    pick-many: func(title: string, items: list<pick-item>) -> result<option<list<string>>, error>;
+    /// Asks for a line of text, pre-filled with `value`; `none` when dismissed.
+    /// Same rules as `pick`.
+    input: func(prompt: string, value: option<string>) -> result<option<string>, error>;
+    /// Asks for confirmation with OK and Cancel: `true` on OK, `false` on
+    /// Cancel or Escape. Same rules as `pick`.
+    confirm: func(title: string, body: string) -> result<bool, error>;
 }
 
 /// Persistent key-value storage of the plugin (survives restarts and idle

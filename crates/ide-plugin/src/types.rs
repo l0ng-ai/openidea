@@ -68,6 +68,27 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// An entry of a plugin's `pick` or `pick-many`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PickItem {
+    pub key: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Prompt {
+    #[serde(rename_all = "camelCase")]
+    QuickPick { title: String, items: Vec<PickItem>, multiple: bool },
+    #[serde(rename_all = "camelCase")]
+    Input { prompt: String, value: Option<String> },
+    #[serde(rename_all = "camelCase")]
+    Confirm { title: String, message: String },
+}
+
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
