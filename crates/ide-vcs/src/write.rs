@@ -372,11 +372,13 @@ pub(crate) fn commit(
         args.extend(["-F", "-"]);
         Some(message.as_bytes())
     };
-    if options.partial.is_empty() {
+    if options.partial.is_empty() && options.stage.is_empty() && options.exclude.is_empty() {
         run(r.root(), &args, stdin)?;
     } else {
-        commit_partial(r, &args, stdin, &options.partial, encoding)?;
+        commit_selected(r, &args, stdin, options, encoding)?;
     }
+    // A commit concluding a merge brings back the local changes put aside for it.
+    let _ = crate::preserve::restore(r);
     let repo = r.gix()?;
     Ok(repo.head_id().map_err(gx)?.detach().to_string())
 }
@@ -391,15 +393,16 @@ impl Drop for TempIndex {
     }
 }
 
-/// Commits the index with only the chosen hunks of `partial` files, through a copy of the
-/// index (`GIT_INDEX_FILE`), as IDEA's partial commit does: the working tree and the
-/// user's index are left alone except that the partial files' entries end up matching
-/// the new commit.
-fn commit_partial(
+/// Commits a selection of the changes through a copy of the index (`GIT_INDEX_FILE`):
+/// `exclude` goes back to HEAD in the copy, `stage` takes its working-tree content and
+/// `partial` only the chosen hunks. The working tree and the user's index are left alone
+/// except that the committed files' entries end up matching the new commit, so changes
+/// left out keep their staged state.
+fn commit_selected(
     r: &Repo,
     commit_args: &[&str],
     stdin: Option<&[u8]>,
-    partial: &[crate::PartialCommitFile],
+    options: &CommitOptions,
     encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
 ) -> IdeResult<()> {
     let tmp = TempIndex(r.git_dir.join("openidea-partial-index"));
@@ -408,8 +411,22 @@ fn commit_partial(
         std::fs::copy(&index, &tmp.0)?;
     }
     let env = [("GIT_INDEX_FILE", tmp.0.as_os_str())];
-    let mut rels = Vec::new();
-    for file in partial {
+    let rel_paths = |paths: &[ide_core::IpcPath]| -> IdeResult<Vec<String>> {
+        let paths: Vec<PathBuf> = paths.iter().map(|p| p.0.clone()).collect();
+        r.rel_paths(&paths)
+    };
+    let exclude = rel_paths(&options.exclude)?;
+    if !exclude.is_empty() {
+        let args: &[&str] = if r.has_head()? {
+            &["--literal-pathspecs", "reset", "-q", "HEAD", "--"]
+        } else {
+            &["--literal-pathspecs", "rm", "--cached", "-r", "-q", "--ignore-unmatch", "--"]
+        };
+        cli::run_paths_env(r.root(), args, &exclude, None, &env)?;
+    }
+    let mut rels = rel_paths(&options.stage)?;
+    cli::run_paths_env(r.root(), &["--literal-pathspecs", "add", "-A", "--"], &rels, None, &env)?;
+    for file in &options.partial {
         let rel = r.rel_path(&file.path.0)?;
         let head = {
             let repo = r.gix()?;
@@ -525,8 +542,16 @@ fn switch_plan(r: &Repo, branch: &str, create: bool, diverged: Option<DivergedLo
 
 /// Files git refuses to overwrite with local changes, from its error message.
 fn overwritten_files(stderr: &str) -> Option<Vec<String>> {
-    let mut lines =
-        stderr.lines().skip_while(|l| !l.contains("local changes to the following files would be overwritten"));
+    listed_files(stderr, "local changes to the following files would be overwritten")
+}
+
+/// Untracked files git refuses to overwrite, from its error message.
+fn overwritten_untracked(stderr: &str) -> Option<Vec<String>> {
+    listed_files(stderr, "untracked working tree files would be")
+}
+
+fn listed_files(stderr: &str, header: &str) -> Option<Vec<String>> {
+    let mut lines = stderr.lines().skip_while(|l| !l.contains(header));
     lines.next()?;
     Some(lines.take_while(|l| l.starts_with('\t')).map(|l| l.trim().to_string()).collect())
 }
@@ -547,10 +572,13 @@ pub(crate) fn checkout_with(
     let mut args = match switch_plan(r, branch, create, options.diverged)? {
         SwitchPlan::Ahead { local, remote } => return Ok(CheckoutOutcome::LocalBranchAhead { local, remote }),
         SwitchPlan::Rebase { local, remote } => {
-            let out = cli::run_raw(r.root(), &["rebase", "--autostash", &remote, &local], None)?;
+            crate::preserve::save(r, "Local changes saved before checkout")?;
+            let out = cli::run_raw(r.root(), &["rebase", &remote, &local], None)?;
             if out.code == Some(0) {
+                crate::preserve::restore(r)?;
                 return Ok(CheckoutOutcome::Done);
             }
+            crate::preserve::restore(r)?;
             let files = unmerged_paths(r)?;
             if files.is_empty() {
                 return Err(cli::failure(&["rebase"], &out.stderr, &out.stdout, out.code));
@@ -567,7 +595,11 @@ pub(crate) fn checkout_with(
     if out.code == Some(0) {
         return Ok(CheckoutOutcome::Done);
     }
-    let Some(files) = overwritten_files(&String::from_utf8_lossy(&out.stderr)) else {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if let Some(files) = overwritten_untracked(&stderr) {
+        return Ok(CheckoutOutcome::UntrackedFiles { files });
+    }
+    let Some(files) = overwritten_files(&stderr) else {
         return Err(cli::failure(&argv, &out.stderr, &out.stdout, out.code));
     };
     if options.mode != CheckoutMode::Smart {
@@ -583,7 +615,17 @@ pub(crate) fn checkout_with(
         run(r.root(), &["stash", "pop", "-q", "--index"], None)?;
         return Err(e);
     }
-    let pop = cli::run_raw(r.root(), &["stash", "pop", "-q"], None)?;
+    // Staged changes come back staged; when the index can't be restored as it was (it
+    // conflicts with the new branch), the changes come back unstaged.
+    let pop = cli::run_raw(r.root(), &["stash", "pop", "-q", "--index"], None)?;
+    if pop.code == Some(0) {
+        return Ok(CheckoutOutcome::Done);
+    }
+    let pop = if unmerged_paths(r)?.is_empty() && stash_count(r)? > before {
+        cli::run_raw(r.root(), &["stash", "pop", "-q"], None)?
+    } else {
+        pop
+    };
     if pop.code == Some(0) {
         return Ok(CheckoutOutcome::Done);
     }
@@ -623,6 +665,104 @@ pub(crate) fn create_branch(r: &Repo, name: &str, start: Option<&str>, checkout:
 
 /// Undo Commit: moves the current branch back to the parent of `commit` (which must be
 /// HEAD), keeping its changes staged. Returns the undone commit's message.
+/// Edit Commit Message: writes `commit` again with `message`, and its descendants on top
+/// of it with their own trees, then moves HEAD to the new tip. Trees don't change, so the
+/// index and the working tree stay as they are (local changes included). Returns HEAD
+/// before and after, for [`restore_head`].
+pub(crate) fn reword(r: &Repo, commit: &str, message: &str) -> IdeResult<(String, String)> {
+    if r.branch_info()?.operation.is_some() {
+        return Err(IdeError::invalid(
+            "cannot edit a commit message while a merge, rebase or cherry-pick is in progress",
+        ));
+    }
+    let message = message.trim();
+    if message.is_empty() {
+        return Err(IdeError::invalid("commit message is empty"));
+    }
+    let (target, head) = {
+        let repo = r.gix()?;
+        let head = repo.head_id().map_err(|_| IdeError::invalid("there is no commit to edit"))?.detach();
+        let target = repo.find_object(resolve(&repo, commit)?).map_err(gx)?.peel_to_commit().map_err(gx)?.id;
+        (target.to_string(), head.to_string())
+    };
+    if cli::run_raw(r.root(), &["merge-base", "--is-ancestor", &target, &head], None)?.code != Some(0) {
+        return Err(IdeError::invalid("the commit is not in the current branch"));
+    }
+    // target..HEAD must be a straight line on top of the target.
+    let range = format!("{target}..{head}");
+    let listed = run(r.root(), &["rev-list", "--reverse", "--topo-order", "--parents", &range], None)?.stdout_str();
+    let mut chain = vec![target.clone()];
+    for line in listed.lines() {
+        let ids: Vec<&str> = line.split_whitespace().collect();
+        if ids.len() != 2 || ids[1] != chain.last().unwrap() {
+            return Err(IdeError::invalid("the commits after this one are not a linear history"));
+        }
+        chain.push(ids[0].to_string());
+    }
+    let mut parent: Option<String> = None;
+    for (i, id) in chain.iter().enumerate() {
+        let raw = run(r.root(), &["cat-file", "commit", id], None)?.stdout;
+        let text = String::from_utf8_lossy(&raw);
+        let (headers, body) = text.split_once("\n\n").unwrap_or((&text, ""));
+        let mut tree = "";
+        let mut parents = Vec::new();
+        let mut author = "";
+        for line in headers.lines() {
+            if let Some(v) = line.strip_prefix("tree ") {
+                tree = v;
+            } else if let Some(v) = line.strip_prefix("parent ") {
+                parents.push(v.to_string());
+            } else if let Some(v) = line.strip_prefix("author ") {
+                author = v;
+            }
+        }
+        if parents.len() > 1 {
+            return Err(IdeError::invalid("merge commits cannot be reworded"));
+        }
+        if let Some(p) = &parent {
+            parents = vec![p.clone()];
+        }
+        let (name, rest) = author.split_once(" <").unwrap_or((author, ""));
+        let (email, date) = rest.split_once("> ").unwrap_or((rest, ""));
+        let env = [
+            ("GIT_AUTHOR_NAME", std::ffi::OsStr::new(name)),
+            ("GIT_AUTHOR_EMAIL", std::ffi::OsStr::new(email)),
+            ("GIT_AUTHOR_DATE", std::ffi::OsStr::new(date)),
+        ];
+        let mut args = vec!["commit-tree", tree];
+        for p in &parents {
+            args.extend(["-p", p.as_str()]);
+        }
+        let new_message = if i == 0 { format!("{message}\n") } else { body.to_string() };
+        let created = cli::run_env(r.root(), &args, Some(new_message.as_bytes()), &env)?.stdout_str();
+        parent = Some(created.trim().to_string());
+    }
+    let new_head = parent.expect("the chain holds the target");
+    let reason = format!("reword: {}", message.lines().next().unwrap_or_default());
+    run(r.root(), &["update-ref", "-m", &reason, "HEAD", &new_head, &head], None)?;
+    Ok((head, new_head))
+}
+
+/// Undo of a history rewrite: moves HEAD from `after` back to `before`, keeping local
+/// changes (`git reset --keep`). Refused when HEAD has moved since.
+pub(crate) fn restore_head(r: &Repo, before: &str, after: &str) -> IdeResult<()> {
+    if r.branch_info()?.operation.is_some() {
+        return Err(IdeError::invalid("cannot undo while a merge, rebase or cherry-pick is in progress"));
+    }
+    let head = run(r.root(), &["rev-parse", "--verify", "HEAD"], None)?.stdout_str();
+    if head.trim() != after {
+        return Err(IdeError::invalid("the branch has changed since; undo is no longer possible"));
+    }
+    let before = check_rev(before)?;
+    let tree = |rev: &str| run(r.root(), &["rev-parse", &format!("{rev}^{{tree}}")], None).map(|o| o.stdout_str());
+    if tree(before)? == tree(after)? {
+        run(r.root(), &["update-ref", "-m", "undo", "HEAD", before, after], None)?;
+    } else {
+        run(r.root(), &["reset", "-q", "--keep", before, "--"], None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn undo_commit(r: &Repo, commit: &str) -> IdeResult<String> {
     if r.branch_info()?.operation.is_some() {
         return Err(IdeError::invalid("cannot undo a commit while a merge, rebase or cherry-pick is in progress"));
@@ -711,11 +851,17 @@ fn check_rev(rev: &str) -> IdeResult<&str> {
 
 /// Local changes are stashed and restored around the merge (IDEA's "save local changes").
 pub(crate) fn merge(r: &Repo, branch: &str) -> IdeResult<()> {
-    run(r.root(), &["merge", "--no-edit", "--autostash", check_rev(branch)?], None).map(|_| ())
+    let branch = check_rev(branch)?;
+    crate::preserve::around(r, "Local changes saved before merge", || {
+        run(r.root(), &["merge", "--no-edit", branch], None).map(|_| ())
+    })
 }
 
 pub(crate) fn rebase(r: &Repo, onto: &str) -> IdeResult<()> {
-    run(r.root(), &["rebase", "--autostash", check_rev(onto)?], None).map(|_| ())
+    let onto = check_rev(onto)?;
+    crate::preserve::around(r, "Local changes saved before rebase", || {
+        run(r.root(), &["rebase", onto], None).map(|_| ())
+    })
 }
 
 pub(crate) fn stash_push(r: &Repo, message: Option<&str>, include_untracked: bool, keep_index: bool) -> IdeResult<()> {

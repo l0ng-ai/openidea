@@ -1,6 +1,6 @@
 /** Branch operations (checkout, create, merge, rebase, update, delete) with recents and favorites. */
 import { create } from "zustand";
-import type { Branch, CheckoutOptions } from "@/bindings";
+import type { Branch, BranchInfo, CheckoutOptions } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -98,6 +98,16 @@ async function performCheckout(
         });
         await openConflictsInstead();
         return true;
+      case "untrackedFiles": {
+        const files = outcome.files.join("\n");
+        notifications().notify({
+          group: "vcs",
+          level: "error",
+          title: "Untracked files prevent checkout",
+          body: tx`The following untracked working tree files would be overwritten by checkout:\n${files}\nPlease move or remove them before you switch branches.`,
+        });
+        return false;
+      }
       case "localChanges": {
         const mode = await askSmartCheckout(outcome.files);
         if (!mode) return false;
@@ -344,25 +354,86 @@ function inRepos(done: number, total: number): string {
   return done === total ? `in ${total} repositories` : `in ${done} of ${total} repositories`;
 }
 
+interface Rollback<T> {
+  /** What rolling back does, for the question: "check out the previous branch again". */
+  undo: string;
+  run: (root: string, result: T, before: BranchInfo) => Promise<unknown>;
+}
+
+const branchInfo = (root: string) => call(commands.vcsBranchInfo(root)).catch(() => null);
+
 /**
  * Runs `step` in each repository in turn, stopping at the first one that fails (its
  * error is reported by `step`), then reports how many repositories it was done in.
+ * When it failed after succeeding in some repositories, offers to roll those back so
+ * the repositories don't diverge (not when the failed one stopped on conflicts).
  */
-async function eachRepo(roots: readonly string[], step: (root: string) => Promise<boolean>, title: string) {
-  let done = 0;
+async function eachRepo<T>(
+  roots: readonly string[],
+  step: (root: string) => Promise<T | undefined>,
+  title: string,
+  rollback?: Rollback<T>,
+) {
+  const done: { root: string; result: T; before: BranchInfo }[] = [];
+  let failed: string | null = null;
   for (const root of roots) {
-    if (!(await step(root))) break;
-    done++;
+    const before = await branchInfo(root);
+    const result = await step(root);
+    if (result === undefined || !before) {
+      failed = root;
+      break;
+    }
+    done.push({ root, result, before });
   }
   await refreshNow();
-  if (done) notifications().notify({ group: "vcs", level: "info", title: `${title} ${inRepos(done, roots.length)}` });
+  if (failed && done.length && rollback && !(await branchInfo(failed))?.operation) {
+    const succeeded = done.map((d) => repoName(d.root)).join(", ");
+    const failedName = repoName(failed);
+    const r = await ask({
+      title: "Rollback",
+      body: tx`The operation failed in ${failedName}, but succeeded in ${succeeded}. Roll those back (${rollback.undo}) so the repositories don't diverge?`,
+      icon: "warning",
+      buttons: [
+        { id: "rollback", label: "Rollback", primary: true },
+        { id: "keep", label: "Don't Rollback" },
+      ],
+    });
+    if (r.button === "rollback") {
+      for (const d of done.reverse()) {
+        const repo = repoName(d.root);
+        await runOp(tx`Rollback (${repo})`, () => rollback.run(d.root, d.result, d.before), { refresh: false });
+      }
+      await refreshNow();
+      return;
+    }
+  }
+  if (done.length)
+    notifications().notify({ group: "vcs", level: "info", title: `${title} ${inRepos(done.length, roots.length)}` });
+}
+
+/** HEAD as a checkout target: the branch, or the commit on a detached HEAD. */
+const headRef = (b: BranchInfo) => b.head ?? b.headCommit ?? "HEAD";
+
+async function checkoutBack(root: string, before: BranchInfo) {
+  await call(commands.vcsCheckout(root, headRef(before), false, { mode: "smart", diverged: null }));
+}
+
+/** Moves HEAD back to where it was before a merge or rebase, keeping local changes. */
+async function resetBack(root: string, before: BranchInfo) {
+  const after = (await branchInfo(root))?.headCommit;
+  if (before.headCommit && after) await call(commands.vcsRestoreHead(root, before.headCommit, after));
 }
 
 /** Checks out `name` (local, or remote: its local namesake) in every repository of `roots`. */
 export async function checkoutInRepos(name: string, roots: readonly string[]) {
   const label = useVcs.getState().branches.some((b) => b.remote && b.name === name) ? shortRemoteName(name) : name;
   const previous = useVcs.getState().branch?.head;
-  await eachRepo(roots, (root) => performCheckout(name, () => "", root, true), `Checked out ${label}`);
+  await eachRepo(
+    roots,
+    async (root) => ((await performCheckout(name, () => "", root, true)) ? true : undefined),
+    `Checked out ${label}`,
+    { undo: tx("check out the previous branch again"), run: (root, _, before) => checkoutBack(root, before) },
+  );
   rememberBranch(previous);
   rememberBranch(useVcs.getState().branch?.head);
 }
@@ -385,15 +456,18 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   if (r.checked) await saveAll();
   await eachRepo(
     roots,
-    async (root) =>
-      (await runOp(
-        tx`Create branch ${name}`,
-        () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked)),
-        {
-          refresh: false,
-        },
-      )) !== undefined,
+    (root) =>
+      runOp(tx`Create branch ${name}`, () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked)), {
+        refresh: false,
+      }).then((done) => (done === undefined ? undefined : true)),
     r.checked ? `Created and checked out ${name}` : `Created branch ${name}`,
+    {
+      undo: tx`delete branch ${name}`,
+      run: async (root, _, before) => {
+        if (r.checked) await checkoutBack(root, before);
+        await call(commands.vcsDeleteBranch(root, name));
+      },
+    },
   );
 }
 
@@ -402,13 +476,14 @@ export async function mergeInRepos(branch: string, roots: readonly string[]) {
   await saveAll();
   await eachRepo(
     roots,
-    async (root) =>
-      (await runOp(tx`Merge ${branch} (${repoName(root)})`, () => call(commands.vcsMerge(root, branch)), {
+    (root) =>
+      runOp(tx`Merge ${branch} (${repoName(root)})`, () => call(commands.vcsMerge(root, branch)), {
         refresh: false,
         errorActions: conflictActions,
         onError: openConflictsInstead,
-      })) !== undefined,
+      }).then((done) => (done === undefined ? undefined : true)),
     `Merged ${branch}`,
+    { undo: tx("reset to the commit before the merge"), run: (root, _, before) => resetBack(root, before) },
   );
 }
 
@@ -417,13 +492,14 @@ export async function rebaseInRepos(branch: string, roots: readonly string[]) {
   await saveAll();
   await eachRepo(
     roots,
-    async (root) =>
-      (await runOp(tx`Rebase onto ${branch} (${repoName(root)})`, () => call(commands.vcsRebase(root, branch)), {
+    (root) =>
+      runOp(tx`Rebase onto ${branch} (${repoName(root)})`, () => call(commands.vcsRebase(root, branch)), {
         refresh: false,
         errorActions: conflictActions,
         onError: openConflictsInstead,
-      })) !== undefined,
+      }).then((done) => (done === undefined ? undefined : true)),
     `Rebased onto ${branch}`,
+    { undo: tx("reset to the commit before the rebase"), run: (root, _, before) => resetBack(root, before) },
   );
 }
 
@@ -438,11 +514,12 @@ export async function deleteInRepos(name: string, roots: readonly string[]) {
   if (!ok) return;
   await eachRepo(
     roots,
-    async (root) =>
-      (await runOp(tx`Delete branch ${name} (${repoName(root)})`, () => call(commands.vcsDeleteBranch(root, name)), {
+    (root) =>
+      runOp(tx`Delete branch ${name} (${repoName(root)})`, () => call(commands.vcsDeleteBranch(root, name)), {
         refresh: false,
-      })) !== undefined,
+      }),
     `Deleted branch ${name}`,
+    { undo: tx`restore branch ${name}`, run: (root, deleted) => call(commands.vcsRestoreBranch(root, deleted)) },
   );
 }
 

@@ -285,6 +285,33 @@ pub async fn vcs_undo_commit(
     ide_host::ops::vcs::vcs_undo_commit(&state.host, window.label(), repo, commit).await
 }
 
+/// Edit Commit Message: rewrites the commit and its descendants without touching the
+/// working tree.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_reword(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    commit: String,
+    message: String,
+) -> IdeResult<ide_vcs::HeadChange> {
+    ide_host::ops::vcs::vcs_reword(&state.host, window.label(), repo, commit, message).await
+}
+
+/// Undo of a history rewrite (Edit Commit Message, Drop, Squash).
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_restore_head(
+    window: Window,
+    state: State<'_, AppState>,
+    repo: Option<PathBuf>,
+    before: String,
+    after: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_restore_head(&state.host, window.label(), repo, before, after).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_delete_branch(

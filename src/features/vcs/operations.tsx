@@ -15,6 +15,8 @@ import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, fileCount } from "./model";
 import { runGitOperation, runOp } from "./ops";
+import { loadLogDetails } from "./logDetails";
+import { isProtectedBranch } from "./remoteUi";
 import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
@@ -238,8 +240,20 @@ export async function cherryPick(commits: Commit[]) {
   const ordered = newestFirst(commits).reverse();
   const label =
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
+  // Commits already pushed to a protected branch get "(cherry picked from commit …)".
+  const remoteBranches = new Set(
+    useVcs
+      .getState()
+      .branches.filter((b) => b.remote)
+      .map((b) => b.name),
+  );
+  const fromProtected = async (c: Commit) =>
+    (await loadLogDetails(c).catch(() => null))?.containingBranches.some(
+      (b) => remoteBranches.has(b) && isProtectedBranch(b.slice(b.indexOf("/") + 1)),
+    ) ?? false;
+  const recordOrigin = (await Promise.all(ordered.map(fromProtected))).every(Boolean);
   await runGitOperation(
-    { op: "cherryPick", commits: ordered.map((c) => c.id) },
+    { op: "cherryPick", commits: ordered.map((c) => c.id), recordOrigin },
     {
       progress: "Cherry-picking",
       success: tx`Cherry-picked ${label}`,
