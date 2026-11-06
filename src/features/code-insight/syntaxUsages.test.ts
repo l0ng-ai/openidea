@@ -153,4 +153,30 @@ describe("Find Usages fallback", () => {
       kind: "unavailable",
     });
   });
+
+  it("queries the css namespace from a stylesheet", async () => {
+    // An editor must be registered for the path: syntaxUsages resolves the
+    // language through editorsFor (a css file has no locals.scm, so the flow
+    // reads the word from the caret context and goes straight to the index).
+    const cssView = new EditorView({ state: EditorState.create({ doc: ".card { color: red }" }) });
+    _addEditor({
+      view: cssView,
+      ctx: { doc: 9, path: "/p/styles/main.css", language: "css", uiMode: null, readOnly: false },
+    });
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: true, locals: false }));
+    cmd.lspReferences.mockReturnValueOnce(err("internal"));
+    cmd.indexUsages.mockReturnValueOnce(ok([{ path: "/p/App.vue", range: r(2, 4, 8), uri: null }]));
+    const res = await fetchUsages({
+      doc: 9,
+      path: "/p/styles/main.css",
+      line: 0,
+      col: 0,
+      word: "card",
+      view: cssView,
+    });
+    expect(cmd.indexUsages).toHaveBeenCalledWith("card", true);
+    expect(res.note).toBe(INDEX_NOTE);
+    // The usage lands in the group for the file that uses the class.
+    expect(res.groups.some((g) => g.path === "/p/App.vue")).toBe(true);
+  });
 });
