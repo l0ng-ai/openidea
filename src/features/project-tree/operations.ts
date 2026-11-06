@@ -39,7 +39,7 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
-import { hostOs, isRemoteWindow } from "@/platform/remote";
+import { hostOs, isRemoteWindow, useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
@@ -821,8 +821,20 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
   }
 }
 
+/**
+ * The path the local OS's file manager can open: in a WSL session the node
+ * paths are inside the distro (`/home/…`), which `revealItemInDir` reads as
+ * local paths — translate them to `\\wsl.localhost\<distro>\…` UNC shares.
+ */
+export function revealablePath(path: string): string {
+  const session = useRemote.getState().session;
+  if (session?.target.kind !== "wsl" || usePlatform.getState().os !== "windows") return path;
+  if (!path.startsWith("/")) return path;
+  return `\\\\wsl.localhost\\${session.target.distro}${path.replaceAll("/", "\\")}`;
+}
+
 export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
-  const paths = nodes.map((n) => n.path);
+  const paths = nodes.map((n) => revealablePath(n.path));
   if (!paths.length) return;
   try {
     const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
