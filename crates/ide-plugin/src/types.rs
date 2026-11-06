@@ -301,6 +301,30 @@ pub struct McpEndpoint {
     pub stdio_command: Vec<String>,
 }
 
+/// A text search in a project (WIT `workspace.search-text`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextSearch {
+    pub query: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    /// File masks (`*.rs`, `!*.min.js`); empty: every file.
+    pub globs: Vec<String>,
+    pub limit: usize,
+}
+
+/// One match of a [`TextSearch`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextMatch {
+    pub path: PathBuf,
+    /// 0-based line; UTF-16 columns `start..end` in it.
+    pub line: u32,
+    pub start: u32,
+    pub end: u32,
+    /// The line, cut around the match when very long.
+    pub text: String,
+}
+
 /// A terminal tab to open (WIT `terminal.options`, `views.open-terminal`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerminalRequest {

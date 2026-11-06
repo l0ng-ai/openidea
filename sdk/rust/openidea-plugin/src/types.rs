@@ -361,6 +361,53 @@ pub struct McpEndpoint {
     pub stdio_command: Vec<String>,
 }
 
+/// A problem the Problems view lists (see [`crate::host::Project::problems`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Problem {
+    /// Absolute path of the file.
+    pub path: String,
+    pub range: Range,
+    pub severity: Severity,
+    pub message: String,
+    /// What found it: a language server (`rust-analyzer`), an inspection, a plugin.
+    pub source: Option<String>,
+    /// Rule or check id.
+    pub code: Option<String>,
+}
+
+/// How [`crate::host::Project::search_text`] matches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// The query is a regular expression (Rust `regex` syntax).
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    /// File masks (`*.rs`, `src/**/*.ts`, `!*.min.js` excludes); empty: every file.
+    pub globs: Vec<String>,
+    /// Most matches returned.
+    pub limit: u32,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self { regex: false, case_sensitive: false, whole_word: false, globs: Vec::new(), limit: 100 }
+    }
+}
+
+/// One match of [`crate::host::Project::search_text`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextMatch {
+    /// Absolute path.
+    pub path: String,
+    /// 0-based line.
+    pub line: u32,
+    /// UTF-16 columns of the match in the line, `end` exclusive.
+    pub start: u32,
+    pub end: u32,
+    /// The line's text, cut around the match when very long.
+    pub text: String,
+}
+
 /// A terminal tab to open with [`crate::host::open_terminal_with`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerminalOptions {

@@ -7,7 +7,7 @@
  * permission dialog, and opened files fire `on-language` / `on-file`.
  */
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
-import { onEditorEvent, useEditorRegistry } from "@/editor/api";
+import { onEditorEvent, openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
 import { notifications } from "@/workbench/contributions";
 import { useProducerNames } from "@/platform/inspections";
@@ -275,6 +275,36 @@ function trackActiveFile(): () => void {
   };
 }
 
+/** Reports the files open in editor tabs once tabs stop opening and closing (`workspace.open-editors`). */
+function trackOpenEditors(): () => void {
+  let last = "";
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const report = () => {
+    timer = null;
+    const paths = openEditorPaths();
+    const key = paths.join("\n");
+    if (key === last) return;
+    last = key;
+    void pluginsBackend()
+      .setOpenEditors(paths)
+      .catch(() => (last = ""));
+  };
+  const schedule = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(report, SELECTION_REPORT_MS);
+  };
+  schedule();
+  const offRegistry = useEditorRegistry.subscribe(schedule);
+  const offEvents = onEditorEvent((e) => {
+    if (e.type === "docOpened" || e.type === "docClosed" || e.type === "activeEditorChanged") schedule();
+  });
+  return () => {
+    offRegistry();
+    offEvents();
+    if (timer) clearTimeout(timer);
+  };
+}
+
 // --- events -----------------------------------------------------------------
 
 function announceUpdates(updates: readonly PluginUpdate[]) {
@@ -378,6 +408,7 @@ export function startPluginBridge(): () => void {
     followThemeSetting(),
     trackIconTheme(),
     trackActiveFile(),
+    trackOpenEditors(),
     trackActivationEvents(),
     startRuntimeUi(),
   ];

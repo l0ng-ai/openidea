@@ -8,8 +8,8 @@ use ide_core::{IdeError, IdeResult};
 use ide_extension::ActivationEvent;
 use ide_host::plugins::intellij::{self, InstalledIntellijTheme, IntellijThemeSource};
 use ide_host::plugins::{
-    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginEditor,
-    PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
+    ActiveTheme, CatalogPlugin, Consent, EventKind, FileProblems, HostWorkspace, InstallPreview, PackageFile,
+    PluginEditor, PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
 };
 use ide_plugin::{Invocation, Limits};
 use parking_lot::Mutex;
@@ -618,6 +618,22 @@ pub fn plugin_set_active_file(window: Window, state: State<'_, AppState>, path: 
 #[specta::specta]
 pub fn plugin_set_focused_editor(window: Window, state: State<'_, AppState>, editor: Option<PluginEditor>) {
     state.plugins.set_focused_editor(window.label(), editor.map(PluginEditor::context));
+}
+
+/// The UI reports the files open in this window's editor tabs (`workspace.open-editors`).
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_set_open_editors(window: Window, state: State<'_, AppState>, paths: Vec<ide_core::IpcPath>) {
+    state.plugins.set_open_editors(window.label(), paths.into_iter().map(PathBuf::from).collect());
+}
+
+/// The UI reports what this window's Problems view lists for the files that
+/// changed (all of them, with `reset`), for `diagnostics.problems`.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_report_problems(window: Window, state: State<'_, AppState>, reset: bool, files: Vec<FileProblems>) {
+    let files = files.into_iter().map(|f| (PathBuf::from(f.path), f.items)).collect();
+    state.plugins.report_problems(window.label(), reset, files);
 }
 
 /// Selects a plugin theme; both `None` restores the built-in theme.

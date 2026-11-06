@@ -7,6 +7,7 @@ import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
 import { clearProblems, installProblemsEvents, useProblems } from "./problemsStore";
+import { reportProblems } from "./problemsReport";
 import { installProblemDecorations } from "./decorations";
 import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
 import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
@@ -43,6 +44,7 @@ export function activate(): () => void {
   const disposers = [
     unsubProject,
     installProblemsEvents(),
+    reportProblems(),
     installProblemDecorations(),
     installServerEvents(),
     installWorkspaceEditUndo(),

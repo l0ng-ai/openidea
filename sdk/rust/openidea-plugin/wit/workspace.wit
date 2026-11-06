@@ -19,6 +19,41 @@ interface workspace {
 
     /// Projects open in any window. Requires `project.read`.
     projects: func() -> result<list<project>, error>;
+
+    /// Paths of the files open in editor tabs of the windows showing
+    /// `project`, in tab order. Requires `project.read`.
+    open-editors: func(project: borrow<project>) -> result<list<string>, error>;
+
+    /// How `search-text` matches.
+    record search-options {
+        /// `query` is a regular expression (Rust `regex` syntax) instead of text.
+        regex: bool,
+        case-sensitive: bool,
+        whole-word: bool,
+        /// File masks the files must match (`*.rs`, `src/**/*.ts`, `!*.min.js`
+        /// excludes); empty: every file.
+        globs: list<string>,
+        /// Most matches returned.
+        limit: u32,
+    }
+
+    /// One match of `search-text`.
+    record text-match {
+        /// Absolute path.
+        path: string,
+        /// 0-based line.
+        line: u32,
+        /// UTF-16 columns of the match in the line, `end` exclusive.
+        start: u32,
+        end: u32,
+        /// The line's text, cut around the match when very long.
+        text: string,
+    }
+
+    /// Searches the text of `project`'s files like Find in Files: unsaved
+    /// editor contents win, binary, ignored and excluded files are skipped.
+    /// At most `options.limit` matches, in file order. Requires `project.read`.
+    search-text: func(project: borrow<project>, query: string, options: search-options) -> result<list<text-match>, error>;
 }
 
 interface editor {

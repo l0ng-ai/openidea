@@ -272,6 +272,52 @@ mod imp {
         wit::terminal::open(&options).map_err(error)
     }
 
+    pub fn open_editors(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        wit::workspace::open_editors(p).map_err(error)
+    }
+
+    pub fn search_text(p: &ProjectRes, query: &str, o: &SearchOptions) -> Result<Vec<TextMatch>, Error> {
+        let options = wit::workspace::SearchOptions {
+            regex: o.regex,
+            case_sensitive: o.case_sensitive,
+            whole_word: o.whole_word,
+            globs: o.globs.clone(),
+            limit: o.limit,
+        };
+        wit::workspace::search_text(p, query, &options)
+            .map(|found| {
+                found
+                    .into_iter()
+                    .map(|m| TextMatch { path: m.path, line: m.line, start: m.start, end: m.end, text: m.text })
+                    .collect()
+            })
+            .map_err(error)
+    }
+
+    pub fn problems(p: &ProjectRes, path: Option<&str>) -> Result<Vec<Problem>, Error> {
+        use wit::diagnostics::Severity as S;
+        wit::diagnostics::problems(p, path)
+            .map(|found| {
+                found
+                    .into_iter()
+                    .map(|d| Problem {
+                        path: d.path,
+                        range: range_in(d.range),
+                        severity: match d.severity {
+                            S::Error => Severity::Error,
+                            S::Warning => Severity::Warning,
+                            S::Info => Severity::Info,
+                            S::Hint => Severity::Hint,
+                        },
+                        message: d.message,
+                        source: d.source,
+                        code: d.code,
+                    })
+                    .collect()
+            })
+            .map_err(error)
+    }
+
     pub fn mcp_endpoint(p: &ProjectRes) -> Result<McpEndpoint, Error> {
         wit::mcp::endpoint(p)
             .map(|e| McpEndpoint { url: e.url, token: e.token, stdio_command: e.stdio_command })
@@ -382,6 +428,26 @@ impl Project {
     /// at most `limit`, as absolute paths; ignored files are skipped. Needs `project.read`.
     pub fn find_files(&self, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         imp::project_find(&self.inner, glob, limit)
+    }
+
+    /// Files open in editor tabs of the windows showing this project, in tab
+    /// order (absolute paths). Needs `project.read`.
+    pub fn open_editors(&self) -> Result<Vec<String>, Error> {
+        imp::open_editors(&self.inner)
+    }
+
+    /// What the Problems view lists for this project (language servers, the
+    /// IDE's inspections, plugins), of the file at `path` (absolute or
+    /// root-relative) only when given. Needs `project.read`.
+    pub fn problems(&self, path: Option<&str>) -> Result<Vec<Problem>, Error> {
+        imp::problems(&self.inner, path)
+    }
+
+    /// Searches the text of the project's files like Find in Files (unsaved
+    /// editor contents win; binary, ignored and excluded files are skipped):
+    /// at most `options.limit` matches, in file order. Needs `project.read`.
+    pub fn search_text(&self, query: &str, options: &SearchOptions) -> Result<Vec<TextMatch>, Error> {
+        imp::search_text(&self.inner, query, options)
     }
 
     /// Runs the approved `process:<program>` in this project's root.

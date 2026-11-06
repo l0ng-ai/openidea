@@ -2658,7 +2658,7 @@ fn mcp_tools_answer_agents_over_http() {
     let list = rpc("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["where_am_i", "fail"], "{list}");
+    assert_eq!(names, ["where_am_i", "fail", "ide_state"], "{list}");
     assert_eq!(tools[0]["inputSchema"]["properties"]["note"]["type"], "string");
     assert_eq!(tools[0]["annotations"], json!({ "readOnlyHint": true, "destructiveHint": false }));
     assert_eq!(tools[1]["annotations"]["destructiveHint"], true);
@@ -2785,4 +2785,86 @@ fn mcp_tools_and_endpoint_need_the_grant() {
     assert!(matches!(refused, ide_mcp::ToolCallError::UnknownTool(_)), "{refused:?}");
     let err = f.run("mcp-tools", "launch", None).unwrap_err();
     assert!(err.contains("permission mcp was not granted"), "{err}");
+}
+
+/// `workspace.open-editors`, `diagnostics.problems` and `workspace.search-text`:
+/// what the windows showing the project reported (tabs, the Problems view), and
+/// Find in Files with unsaved editor contents.
+#[test]
+fn tools_see_open_editors_problems_and_search_matches() {
+    let f = fixture(Limits::default());
+    f.install(&sample("mcp-tools"));
+    let (root, src) = (f.project.clone(), f.project.join("src"));
+    std::fs::write(src.join("more.txt"), "Two\nnothing\n").unwrap();
+    std::fs::write(src.join("skip.rs"), "two").unwrap();
+    f.workspace.open("src/notes.txt", &[]);
+    f.workspace.type_text("src/notes.txt", "two ");
+    let call = |args: &str| f.host.call_mcp_tool(&root, "ide_state", args).unwrap();
+
+    f.host.set_open_editors("main", vec![src.join("notes.txt"), src.join("skip.rs")]);
+    f.host.set_open_editors("other", vec![src.join("skip.rs"), src.join("more.txt")]);
+    let problem = |line: u32, severity: ide_core::Severity, message: &str| ide_core::Diagnostic {
+        range: ide_core::Range::new(ide_core::Pos::new(line, 1), ide_core::Pos::new(line, 3)),
+        severity,
+        message: message.into(),
+        source: Some("rustc".into()),
+        code: None,
+        unnecessary: false,
+        deprecated: false,
+        server: None,
+    };
+    use ide_core::Severity::{Error, Warning};
+    f.host.report_problems(
+        "main",
+        false,
+        vec![(src.join("skip.rs"), vec![problem(2, Warning, "w"), problem(0, Error, "e")])],
+    );
+    f.host.report_problems("main", false, vec![(src.join("more.txt"), vec![problem(1, Warning, "m")])]);
+    f.host.report_problems("main", false, vec![(src.join("more.txt"), vec![])]);
+    f.host.report_problems(
+        "other",
+        false,
+        vec![(root.parent().unwrap().join("x.rs"), vec![problem(0, Error, "outside")])],
+    );
+
+    let state = call("{\"query\":\"two\"}");
+    let (notes, more, skip) =
+        (to_ipc(&src.join("notes.txt")), to_ipc(&src.join("more.txt")), to_ipc(&src.join("skip.rs")));
+    assert_eq!(
+        state,
+        format!(
+            "editors=Ok(\"{notes},{skip},{more}\")\n\
+             problems=Ok(\"{skip}:0:1 Error rustc e,{skip}:2:1 Warning rustc w\")\n\
+             search=Ok(\"{more}:0:0-3 Two,{notes}:0:0-3 two one two three,{notes}:0:8-11 two one two three\")"
+        )
+    );
+    let only = call("{\"query\":\"\",\"path\":\"src/more.txt\"}");
+    assert!(only.contains("problems=Ok(\"\")\nsearch=Ok(\"\")"), "{only}");
+
+    // A reset replaces what the window reported; a closed window's reports go.
+    f.host.report_problems("main", true, vec![(src.join("more.txt"), vec![problem(1, Warning, "m")])]);
+    assert!(call("{}").contains(&format!("problems=Ok(\"{more}:1:1 Warning rustc m\")")));
+    f.host.forget_window("main");
+    f.host.forget_window("other");
+    assert!(call("{}").starts_with("editors=Ok(\"\")\nproblems=Ok(\"\")"));
+    let invalid = call("{\"query\":\"(\"}");
+    assert!(invalid.contains("search=Ok"), "a literal query: {invalid}");
+}
+
+/// The three queries need `project.read`.
+#[test]
+fn ide_state_needs_project_read() {
+    let f = fixture(Limits::default());
+    let dir = f._tmp.path().join("mcp-no-read");
+    copy_dir(&sample("mcp-tools"), &dir);
+    let manifest = std::fs::read_to_string(dir.join("plugin.toml")).unwrap().replacen(
+        "required = [\"mcp\", \"project.read\"]\noptional = [",
+        "required = [\"mcp\"]\noptional = [\"project.read\", ",
+        1,
+    );
+    std::fs::write(dir.join("plugin.toml"), manifest).unwrap();
+    f.install(&dir);
+    f.host.set_capability("mcp-tools", "project.read", false).unwrap();
+    let state = f.host.call_mcp_tool(&f.project, "ide_state", "{\"query\":\"two\"}").unwrap();
+    assert_eq!(state.matches("Err(Denied(\"project.read\"))").count(), 3, "{state}");
 }

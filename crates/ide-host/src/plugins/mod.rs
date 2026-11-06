@@ -1224,6 +1224,35 @@ impl PluginHost {
         self.post_events(Some(client), vec![WorkbenchEvent::EditorFocused(path)]);
     }
 
+    /// The UI reports the files open in `client`'s editor tabs (`workspace.open-editors`).
+    pub fn set_open_editors(&self, client: &str, paths: Vec<PathBuf>) {
+        self.shared.open_editors.lock().insert(client.to_owned(), paths);
+    }
+
+    /// The UI reports what `client`'s Problems view lists for `files` (an empty
+    /// list: none); `reset` drops what it reported before (`diagnostics.problems`).
+    pub fn report_problems(&self, client: &str, reset: bool, files: Vec<(PathBuf, Vec<ide_core::Diagnostic>)>) {
+        let mut problems = self.shared.problems.lock();
+        let window = problems.entry(client.to_owned()).or_default();
+        if reset {
+            window.clear();
+        }
+        for (path, items) in files {
+            if items.is_empty() {
+                window.remove(&path);
+            } else {
+                window.insert(path, items);
+            }
+        }
+    }
+
+    /// `client` closed: forget what its UI reported.
+    pub fn forget_window(&self, client: &str) {
+        self.focused_editors.lock().remove(client);
+        self.shared.open_editors.lock().remove(client);
+        self.shared.problems.lock().remove(client);
+    }
+
     /// Where plugin secrets are kept (default: files under the plugins
     /// directory; the desktop app uses the OS keychain).
     pub fn set_secret_store(&self, store: Arc<dyn SecretStore>) {

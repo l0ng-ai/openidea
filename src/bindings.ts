@@ -1095,6 +1095,13 @@ export const commands = {
 	language: string,
 	selections: Range[],
 } | null) => __TAURI_INVOKE<void>("plugin_set_focused_editor", { editor }),
+	/**  The UI reports the files open in this window's editor tabs (`workspace.open-editors`). */
+	pluginSetOpenEditors: (paths: IpcPath[]) => __TAURI_INVOKE<void>("plugin_set_open_editors", { paths }),
+	/**
+	 *  The UI reports what this window's Problems view lists for the files that
+	 *  changed (all of them, with `reset`), for `diagnostics.problems`.
+	 */
+	pluginReportProblems: (reset: boolean, files: FileProblems[]) => __TAURI_INVOKE<void>("plugin_report_problems", { reset, files }),
 	mcpServerStatus: () => __TAURI_INVOKE<McpServerStatus>("mcp_server_status"),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
@@ -3719,6 +3726,13 @@ export type FileProbe = {
 	binary: boolean,
 	/**  Above the read-only threshold: the text editor would open it read-only. */
 	tooLarge: boolean,
+};
+
+/**  What a window's Problems view lists for one file (`plugin_report_problems`). */
+export type FileProblems = {
+	path: IpcPath,
+	/**  Empty: the file has none (any more). */
+	items: Diagnostic[],
 };
 
 /**  A path written in a document: an HTML URL attribute, a CSS `url()` / `@import`. */

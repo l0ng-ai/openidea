@@ -5,7 +5,8 @@
 use crate::runtime::{StoreData, clip};
 use crate::sandbox;
 use crate::types::{
-    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, TerminalRequest, net_host,
+    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, TerminalRequest, TextSearch,
+    net_host,
 };
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -341,7 +342,58 @@ impl workspace::Host for StoreData {
         }
         Ok(Ok(out))
     }
+
+    fn open_editors(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<String>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.open_editors(&root).map(|paths| paths.iter().map(|p| to_ipc(p)).collect()).map_err(to_wit))
+    }
+
+    fn search_text(
+        &mut self,
+        project: Resource<ProjectRes>,
+        query: String,
+        options: workspace::SearchOptions,
+    ) -> Fallible<Vec<workspace::TextMatch>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if query.len() > 4096 || options.globs.len() > 64 || options.globs.iter().any(|g| g.len() > 1024) {
+            return Ok(Err(wit::Error::Invalid("query or file masks too long".into())));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let search = TextSearch {
+            query,
+            regex: options.regex,
+            case_sensitive: options.case_sensitive,
+            whole_word: options.whole_word,
+            globs: options.globs,
+            limit: options.limit.min(MAX_FIND) as usize,
+        };
+        let token = self.cancel.token();
+        Ok(self
+            .host
+            .search_text(&root, search, &token)
+            .map(|found| {
+                found
+                    .into_iter()
+                    .map(|m| workspace::TextMatch {
+                        path: to_ipc(&m.path),
+                        line: m.line,
+                        start: m.start,
+                        end: m.end,
+                        text: clip(m.text, MAX_LINE),
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
 }
+
+/// Longest line text a search match carries.
+const MAX_LINE: usize = 1024;
 
 impl workspace::HostProject for StoreData {
     fn root(&mut self, this: Resource<ProjectRes>) -> Fallible<String> {
@@ -609,7 +661,42 @@ impl diagnostics::Host for StoreData {
             .collect();
         Ok(self.host.publish_diagnostics(Path::new(&path), items).map_err(to_wit))
     }
+
+    fn problems(&mut self, project: Resource<ProjectRes>, path: Option<String>) -> Fallible<Vec<diagnostics::Problem>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        // A filter only (nothing is read): the path as given, under the root when relative.
+        let path = path.map(|p| root.join(p));
+        Ok(self
+            .host
+            .problems(&root, path.as_deref())
+            .map(|found| {
+                found
+                    .into_iter()
+                    .take(MAX_PROBLEMS)
+                    .map(|(path, d)| diagnostics::Problem {
+                        path: to_ipc(&path),
+                        range: range_to_wit(&d.range),
+                        severity: match d.severity {
+                            ide_core::Severity::Error => diagnostics::Severity::Error,
+                            ide_core::Severity::Warning => diagnostics::Severity::Warning,
+                            ide_core::Severity::Info => diagnostics::Severity::Info,
+                            ide_core::Severity::Hint => diagnostics::Severity::Hint,
+                        },
+                        message: clip(d.message, 4096),
+                        source: d.source.map(|s| clip(s, 128)),
+                        code: d.code.map(|c| clip(c, 128)),
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
 }
+
+/// Most problems one `diagnostics.problems` call returns.
+const MAX_PROBLEMS: usize = 50_000;
 
 impl net::Host for StoreData {
     fn fetch(&mut self, req: net::Request) -> Fallible<net::Response> {

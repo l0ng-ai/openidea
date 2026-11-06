@@ -1,0 +1,7 @@
+{
+  "type": "object",
+  "properties": {
+    "query": { "type": "string", "description": "Text to search for." },
+    "path": { "type": "string", "description": "Only this file's problems." }
+  }
+}

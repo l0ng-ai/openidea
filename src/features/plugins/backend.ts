@@ -97,6 +97,8 @@ export interface PluginsBackend {
   setActiveFile(path: string | null): Promise<void>;
   /** The window's focused text editor and selections (MCP tool calls for this project get it). */
   setFocusedEditor(editor: PluginEditor | null): Promise<void>;
+  /** Files open in the window's editor tabs (`workspace.open-editors`). */
+  setOpenEditors(paths: string[]): Promise<void>;
   setTheme(pluginId: string | null, themeId: string | null): Promise<ActiveTheme | null>;
   /** The selected theme's resolved frame colour (`#rrggbb[aa]`), which new windows open in. */
   setThemeFrame(color: string | null): Promise<void>;
@@ -224,6 +226,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   },
   setFocusedEditor: async (editor) => {
     await commands.pluginSetFocusedEditor(editor);
+  },
+  setOpenEditors: async (paths) => {
+    await commands.pluginSetOpenEditors(paths);
   },
   setTheme: (pluginId, themeId) => call(commands.pluginSetTheme(pluginId, themeId)),
   setThemeFrame: async (color) => {
@@ -548,6 +553,7 @@ export function createMemoryPluginsBackend(
       activeFile = path;
     },
     setFocusedEditor: async () => {},
+    setOpenEditors: async () => {},
     setTheme: async (pluginId, themeId) => {
       theme = pluginId && themeId ? { pluginId, themeId } : null;
       const t = activeTheme();

@@ -3,6 +3,7 @@ package openidea:plugin@1.2.0;
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {
     use types.{error, range, location};
+    use workspace.{project};
 
     enum severity {
         error,
@@ -33,6 +34,26 @@ interface diagnostics {
     /// Replaces the plugin's diagnostics for the file at `path` (absolute, in
     /// an open project); an empty list clears them. Requires `project.read`.
     publish: func(path: string, diagnostics: list<diagnostic>) -> result<_, error>;
+
+    /// A problem the Problems view shows.
+    record problem {
+        /// Absolute path of the file.
+        path: string,
+        range: range,
+        severity: severity,
+        message: string,
+        /// What found it: a language server (`rust-analyzer`), an inspection,
+        /// a plugin.
+        source: option<string>,
+        /// Rule or check id.
+        code: option<string>,
+    }
+
+    /// The problems the Problems view of the windows showing `project` lists
+    /// (language servers, the IDE's inspections, plugins; after the
+    /// inspection profile), of the file at `path` only when given. Requires
+    /// `project.read`.
+    problems: func(project: borrow<project>, path: option<string>) -> result<list<problem>, error>;
 }
 
 /// HTTP(S) to the hosts granted with `net:<host>`.

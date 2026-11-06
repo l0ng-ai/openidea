@@ -29,3 +29,9 @@ name = "fail"
 description = "Always fails."
 input-schema = "mcp/empty.json"
 destructive = true
+
+[[contributes.mcpTools]]
+name = "ide_state"
+description = "Open editors, problems and matches of a text search."
+input-schema = "mcp/ide_state.json"
+read-only = true

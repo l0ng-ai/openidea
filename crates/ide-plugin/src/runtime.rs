@@ -6,7 +6,8 @@
 use crate::types::{CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument};
 use crate::types::{
     EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, McpEndpoint, NotificationLevel, ProcessOutput,
-    RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, TerminalRequest, WorkbenchEvent,
+    RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, TerminalRequest, TextMatch, TextSearch,
+    WorkbenchEvent,
 };
 use crate::types::{
     FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
@@ -16,7 +17,7 @@ use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -121,6 +122,18 @@ pub trait HostApi: Send + Sync {
         let _ = root;
         Err(HostError::Failed("the IDE's MCP server is not available here".into()))
     }
+    /// Files open in editor tabs of the windows showing the project at `root`.
+    fn open_editors(&self, root: &Path) -> Result<Vec<PathBuf>, HostError>;
+    /// What the Problems view of the windows showing the project at `root`
+    /// lists, of `path` only when given: (file, problem).
+    fn problems(&self, root: &Path, path: Option<&Path>) -> Result<Vec<(PathBuf, ide_core::Diagnostic)>, HostError>;
+    /// Find in Files over the project at `root`.
+    fn search_text(
+        &self,
+        root: &Path,
+        search: TextSearch,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<TextMatch>, HostError>;
 }
 
 /// Shared compilation engine plus an epoch ticker thread for wall-clock limits.

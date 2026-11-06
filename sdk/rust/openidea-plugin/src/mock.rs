@@ -31,6 +31,7 @@ pub struct MockTask {
 
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
+type SearchHandler = Box<dyn Fn(&str, &SearchOptions) -> Result<Vec<TextMatch>, Error>>;
 
 /// A process run the plugin made.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +81,9 @@ struct State {
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
     mcp_stopped: bool,
+    open_editors: Vec<String>,
+    problems: Vec<Problem>,
+    search: Option<SearchHandler>,
 }
 
 /// A terminal the plugin opened.
@@ -265,6 +269,24 @@ impl MockHost {
     /// While on, it answers port 4000 and token `mock-token`.
     pub fn stop_mcp_server(&self) {
         self.state.borrow_mut().mcp_stopped = true;
+    }
+
+    /// Files open in editor tabs (`Project::open_editors`); the focused
+    /// editor's file comes first when it isn't listed.
+    pub fn set_open_editors(&self, paths: &[&str]) {
+        self.state.borrow_mut().open_editors = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
+    /// A problem the Problems view lists (`Project::problems`).
+    pub fn add_problem(&self, problem: Problem) {
+        self.state.borrow_mut().problems.push(problem);
+    }
+
+    /// Answers `Project::search_text` instead of the mock's own search, which
+    /// finds literal text in the files added with [`MockHost::add_file`] and
+    /// the editor (no regular expressions).
+    pub fn on_search(&self, handler: impl Fn(&str, &SearchOptions) -> Result<Vec<TextMatch>, Error> + 'static) {
+        self.state.borrow_mut().search = Some(Box::new(handler));
     }
 
     /// The value of one of the plugin's settings, as JSON (`true`, `"text"`).
@@ -598,6 +620,90 @@ pub mod current {
         })
     }
 
+    pub fn open_editors(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let focused = s.editor.as_ref().map(|e| e.path.clone()).filter(|e| !s.open_editors.contains(e));
+            let root = format!("{}/", p.root.trim_end_matches('/'));
+            Ok(focused.into_iter().chain(s.open_editors.iter().cloned()).filter(|f| f.starts_with(&root)).collect())
+        })
+    }
+
+    pub fn problems(p: &ProjectRes, path: Option<&str>) -> Result<Vec<Problem>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let root = p.root.trim_end_matches('/');
+            let wanted = path.map(|f| if f.starts_with('/') { f.to_owned() } else { format!("{root}/{f}") });
+            Ok(s.problems
+                .iter()
+                .filter(|d| d.path.starts_with(&format!("{root}/")))
+                .filter(|d| wanted.as_ref().is_none_or(|w| *w == d.path))
+                .cloned()
+                .collect())
+        })
+    }
+
+    pub fn search_text(p: &ProjectRes, query: &str, o: &SearchOptions) -> Result<Vec<TextMatch>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if let Some(handler) = &s.search {
+                return handler(query, o).map(|mut found| {
+                    found.truncate(o.limit as usize);
+                    found
+                });
+            }
+            if o.regex {
+                return Err(Error::Invalid("the mock host searches literal text (MockHost::on_search)".into()));
+            }
+            if query.is_empty() {
+                return Ok(Vec::new());
+            }
+            let root = p.root.trim_end_matches('/');
+            let mut files: BTreeMap<String, String> = s
+                .files
+                .iter()
+                .map(|(k, v)| (if k.starts_with('/') { k.clone() } else { format!("{root}/{k}") }, v.clone()))
+                .collect();
+            if let Some(e) = &s.editor {
+                files.insert(e.path.clone(), e.text.clone());
+            }
+            let fold = |t: &str| if o.case_sensitive { t.to_owned() } else { t.to_lowercase() };
+            let needle = fold(query);
+            let mut out = Vec::new();
+            for (path, text) in files {
+                let Some(rel) = path.strip_prefix(&format!("{root}/")) else { continue };
+                if !mask_match(&o.globs, rel) {
+                    continue;
+                }
+                for (line, content) in text.lines().enumerate() {
+                    let hay = fold(content);
+                    let mut from = 0;
+                    while let Some(i) = hay[from..].find(&needle).map(|i| i + from) {
+                        from = i + needle.len().max(1);
+                        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+                        if o.whole_word
+                            && (word(hay[..i].chars().last()) || word(hay[i + needle.len()..].chars().next()))
+                        {
+                            continue;
+                        }
+                        if out.len() >= o.limit as usize {
+                            return Ok(out);
+                        }
+                        let col = |b: usize| content[..b.min(content.len())].encode_utf16().count() as u32;
+                        out.push(TextMatch {
+                            path: path.clone(),
+                            line: line as u32,
+                            start: col(i),
+                            end: col(i + needle.len()),
+                            text: content.to_owned(),
+                        });
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
         with(|s| {
             require(s, "project.read")?;
@@ -756,6 +862,16 @@ pub mod current {
     }
 }
 
+/// File masks as Find in Files reads them: `!mask` excludes, a mask without
+/// `/` matches the file name; none: every file.
+fn mask_match(masks: &[String], rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let hit = |m: &str| if m.contains('/') { glob_match(m, rel) } else { glob_match(m, name) };
+    let masks: Vec<&str> = masks.iter().flat_map(|m| m.split(',')).map(str::trim).filter(|m| !m.is_empty()).collect();
+    let (excludes, includes): (Vec<&str>, Vec<&str>) = masks.into_iter().partition(|m| m.starts_with('!'));
+    (includes.is_empty() || includes.iter().any(|m| hit(m))) && !excludes.iter().any(|m| hit(&m[1..]))
+}
+
 /// `*` within a segment, `**` across segments, `?` one character.
 fn glob_match(glob: &str, path: &str) -> bool {
     fn go(p: &[u8], s: &[u8]) -> bool {
@@ -829,6 +945,44 @@ mod tests {
         );
         mock.stop_mcp_server();
         assert!(matches!(project.mcp_endpoint(), Err(Error::Failed(_))));
+    }
+
+    #[test]
+    fn open_editors_problems_and_search() {
+        let mock = MockHost::install().with_capabilities(&[]);
+        let project = mock.invocation().project().unwrap();
+        assert_eq!(project.open_editors(), Err(Error::Denied("project.read".into())));
+        let mock = MockHost::install();
+        mock.add_file("src/a.rs", "fn main() {\n    let Main = 1;\n}\n");
+        mock.add_file("README.md", "main");
+        mock.open_editor("/project/src/b.rs", "rust", "// main", &[]);
+        mock.set_open_editors(&["/project/src/a.rs", "/elsewhere/c.rs"]);
+        let project = mock.invocation().project().unwrap();
+        assert_eq!(project.open_editors().unwrap(), ["/project/src/b.rs", "/project/src/a.rs"]);
+        let problem = |path: &str| Problem {
+            path: path.into(),
+            range: Range::default(),
+            severity: Severity::Error,
+            message: "m".into(),
+            source: Some("rustc".into()),
+            code: None,
+        };
+        mock.add_problem(problem("/project/src/a.rs"));
+        mock.add_problem(problem("/project/src/b.rs"));
+        assert_eq!(project.problems(None).unwrap().len(), 2);
+        assert_eq!(project.problems(Some("src/b.rs")).unwrap(), [problem("/project/src/b.rs")]);
+        let rs = SearchOptions { globs: vec!["*.rs".into()], ..SearchOptions::default() };
+        let found = project.search_text("main", &rs).unwrap();
+        let at: Vec<_> = found.iter().map(|m| (m.path.as_str(), m.line, m.start, m.end)).collect();
+        assert_eq!(
+            at,
+            [("/project/src/a.rs", 0, 3, 7), ("/project/src/a.rs", 1, 8, 12), ("/project/src/b.rs", 0, 3, 7)]
+        );
+        let exact = SearchOptions { case_sensitive: true, limit: 1, ..rs.clone() };
+        assert_eq!(project.search_text("Main", &exact).unwrap()[0].text, "    let Main = 1;");
+        assert!(matches!(project.search_text("m.in", &SearchOptions { regex: true, ..rs }), Err(Error::Invalid(_))));
+        mock.on_search(|q, _| Ok(vec![TextMatch { text: q.into(), ..TextMatch::default() }]));
+        assert_eq!(project.search_text("m.in", &SearchOptions::default()).unwrap()[0].text, "m.in");
     }
 
     #[test]

@@ -237,6 +237,15 @@ impl PluginEditor {
     }
 }
 
+/// What a window's Problems view lists for one file (`plugin_report_problems`).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileProblems {
+    pub path: ide_core::IpcPath,
+    /// Empty: the file has none (any more).
+    pub items: Vec<ide_core::Diagnostic>,
+}
+
 /// A text file of a package the UI generated, at its `/`-separated path in the package.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

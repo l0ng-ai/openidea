@@ -8,7 +8,7 @@ use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
     EventKind, HostApi, HostError, HttpRequest, HttpResponse, McpEndpoint, NotificationLevel, ProcessOutput,
-    RepositoryStatus, StatusItem, TerminalRequest,
+    RepositoryStatus, StatusItem, TerminalRequest, TextMatch, TextSearch,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -50,6 +50,11 @@ pub trait PluginWorkspace: Send + Sync {
     /// The window showing the project at `root` (MCP tool calls run in its context).
     fn window_of(&self, _root: &Path) -> Option<String> {
         None
+    }
+    /// Masks of what Find in Files never searches in the project at `root`
+    /// (excluded roots, ignored names).
+    fn search_excludes(&self, _root: &Path) -> Vec<String> {
+        Vec::new()
     }
     /// The user's values of `plugin`'s settings: the project's at `root`
     /// (over global), or global.
@@ -171,6 +176,10 @@ pub(super) struct Shared {
     pub ui: Arc<ide_extension::UiStore>,
     /// The IDE's MCP server, while it runs (`mcp.endpoint`).
     pub mcp: RwLock<Option<super::McpServerInfo>>,
+    /// Window → files open in its editor tabs, as the UI last reported them.
+    pub open_editors: Mutex<HashMap<String, Vec<PathBuf>>>,
+    /// Window → file → what its Problems view lists, as the UI reported it.
+    pub problems: Mutex<HashMap<String, HashMap<PathBuf, Vec<ide_core::Diagnostic>>>>,
 }
 
 impl Shared {
@@ -193,6 +202,8 @@ impl Shared {
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
             mcp: RwLock::new(None),
+            open_editors: Mutex::default(),
+            problems: Mutex::default(),
         })
     }
 
@@ -202,6 +213,15 @@ impl Shared {
 
     pub fn project_of(&self, window: &str) -> Option<PathBuf> {
         self.workspace()?.project_of(window)
+    }
+
+    /// The windows showing the project at `root`, among `windows`.
+    fn windows_of<'a>(&self, root: &Path, windows: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+        let Some(workspace) = self.workspace() else { return Vec::new() };
+        let mut out: Vec<String> =
+            windows.into_iter().filter(|w| workspace.project_of(w).as_deref() == Some(root)).cloned().collect();
+        out.sort();
+        out
     }
 
     /// Shows `plugin`'s problems of `path`, remembering the file until they are
@@ -714,6 +734,89 @@ impl HostApi for PluginApi {
         Ok(server.endpoint(root))
     }
 
+    fn open_editors(&self, root: &Path) -> Result<Vec<PathBuf>, HostError> {
+        let reported = self.shared.open_editors.lock();
+        let mut out: Vec<PathBuf> = Vec::new();
+        for window in self.shared.windows_of(root, reported.keys()) {
+            for path in &reported[&window] {
+                if !out.contains(path) {
+                    out.push(path.clone());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn problems(&self, root: &Path, path: Option<&Path>) -> Result<Vec<(PathBuf, ide_core::Diagnostic)>, HostError> {
+        let reported = self.shared.problems.lock();
+        let mut files: BTreeMap<&Path, &[ide_core::Diagnostic]> = BTreeMap::new();
+        for window in self.shared.windows_of(root, reported.keys()) {
+            for (file, items) in &reported[&window] {
+                if file.starts_with(root) && path.is_none_or(|p| p == file) {
+                    files.entry(file).or_insert(items);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for (file, items) in files {
+            let mut items = items.to_vec();
+            items.sort_by_key(|d| (d.range.start.line, d.range.start.col, d.severity as u8));
+            out.extend(items.into_iter().map(|d| (file.to_path_buf(), d)));
+        }
+        Ok(out)
+    }
+
+    fn search_text(
+        &self,
+        root: &Path,
+        search: TextSearch,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<TextMatch>, HostError> {
+        if search.limit == 0 || search.query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workspace = self.shared.workspace();
+        let query = ide_search::SearchQuery {
+            pattern: search.query,
+            is_regex: search.regex,
+            case_sensitive: search.case_sensitive,
+            whole_word: search.whole_word,
+            include: search.globs,
+            exclude: workspace.as_ref().map(|w| w.search_excludes(root)).unwrap_or_default(),
+            scope: ide_search::SearchScope::Project,
+            max_matches: u32::try_from(search.limit).unwrap_or(u32::MAX),
+            context: ide_search::SearchContext::Any,
+        };
+        let found = Mutex::new(Vec::new());
+        let overlay = |p: &Path| workspace.as_ref().and_then(|w| w.buffer_text(p));
+        let summary = ide_search::search(root, &query, &overlay, cancel, &|file| found.lock().push(file))
+            .map_err(|e| HostError::Invalid(e.message))?;
+        if summary.cancelled && cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let mut files = found.into_inner();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut out = Vec::new();
+        'files: for file in files {
+            let path = file.path.to_path_buf();
+            for m in file.matches {
+                for (start, end) in &m.ranges {
+                    if out.len() >= search.limit {
+                        break 'files;
+                    }
+                    out.push(TextMatch {
+                        path: path.clone(),
+                        line: m.line,
+                        start: m.text_offset + start,
+                        end: m.text_offset + end,
+                        text: m.text.trim_end_matches(['\r', '\n']).to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError> {
         let event = PluginEvent::OpenLocation {
             plugin_id: self.id().to_owned(),
@@ -799,6 +902,10 @@ impl PluginWorkspace for HostWorkspace {
 
     fn window_of(&self, root: &Path) -> Option<String> {
         self.0.upgrade()?.window_of(root)
+    }
+
+    fn search_excludes(&self, root: &Path) -> Vec<String> {
+        HostWorkspace::projects(self).iter().find(|p| p.root == root).map(|p| p.search_excludes()).unwrap_or_default()
     }
 
     fn publish_diagnostics(

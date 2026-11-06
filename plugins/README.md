@@ -195,21 +195,21 @@ installing (or when a new version asks for more). Low-risk capabilities are
 listed; high-risk ones are called out as equivalent to running code on the
 machine. Users can revoke optional capabilities in Settings › Plugins.
 
-| Capability          | Risk   | Unlocks today                                                                                       |
-| ------------------- | ------ | --------------------------------------------------------------------------------------------------- |
-| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics`                 |
-| `editor.read`       | low    | `TextEditor::document`, `selections`                                                                |
-| `editor.write`      | medium | `TextEditor::apply_edits`                                                                           |
-| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`                      |
-| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only)                                                        |
-| `storage`           | low    | `host::storage` (1 MiB per plugin)                                                                  |
-| `events`            | low    | file opened/saved, editor focused, repository changed events                                        |
-| `events.input`      | medium | `action-performed` events (which actions you run, and how)                                          |
-| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                      |
-| `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                                        |
-| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                                       |
-| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                           |
-| `mcp`               | high   | its `mcpTools` for AI agents outside the IDE (with its other capabilities), `Project::mcp_endpoint` |
+| Capability          | Risk   | Unlocks today                                                                                                                  |
+| ------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `open_editors`, `problems`, `search_text`, `host::projects`, `publish_diagnostics` |
+| `editor.read`       | low    | `TextEditor::document`, `selections`                                                                                           |
+| `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                      |
+| `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`                                                 |
+| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only)                                                                                   |
+| `storage`           | low    | `host::storage` (1 MiB per plugin)                                                                                             |
+| `events`            | low    | file opened/saved, editor focused, repository changed events                                                                   |
+| `events.input`      | medium | `action-performed` events (which actions you run, and how)                                                                     |
+| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                 |
+| `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                                                                   |
+| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                                                                  |
+| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                      |
+| `mcp`               | high   | its `mcpTools` for AI agents outside the IDE (with its other capabilities), `Project::mcp_endpoint`                            |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -328,6 +328,9 @@ then run `openidea-plugin check`.
 | `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
+| `Project::open_editors()`                                                | `workspace.open-editors`         | Files open in editor tabs of the windows showing the project, in tab order. Needs `project.read`.                                                                                                                    |
+| `Project::problems(path)` → `[Problem]`                                  | `diagnostics.problems`           | What the Problems view lists (language servers, the IDE's inspections, plugins; after the inspection profile), of one file when `path` is given. Needs `project.read`.                                               |
+| `Project::search_text(query, &SearchOptions)` → `[TextMatch]`            | `workspace.search-text`          | Find in Files: text or regex, case, whole word, file masks (`*.rs`, `!*.min.js`), at most `limit` matches (path, line, UTF-16 columns, line text); unsaved editor contents win. Needs `project.read`.                |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
 | `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
 | `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |

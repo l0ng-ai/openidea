@@ -1,9 +1,10 @@
 //! Test fixture: MCP tools (`where_am_i` reports where it runs, `fail`
-//! fails) and a command launching an "agent" in a terminal with the MCP
-//! endpoint in its environment.
+//! fails, `ide_state` lists open editors, problems and search matches) and a
+//! command launching an "agent" in a terminal with the MCP endpoint in its
+//! environment.
 
 use openidea_plugin::mcp::McpTools;
-use openidea_plugin::{Error, Invocation, Plugin, TerminalOptions, host, register_plugin};
+use openidea_plugin::{Error, Invocation, Plugin, SearchOptions, TerminalOptions, host, register_plugin};
 
 #[derive(Default)]
 pub struct McpProbe {
@@ -45,6 +46,28 @@ impl McpTools for McpProbe {
                 Ok(format!("project={root} editor={editor} calls={} args={arguments}", self.calls))
             }
             "fail" => Err(Error::Failed("asked to fail".into())),
+            "ide_state" => {
+                let project = ctx.project().ok_or("no project")?;
+                let field = |name: &str| {
+                    let at = arguments.find(&format!("\"{name}\":\""))? + name.len() + 4;
+                    Some(arguments[at..].split('"').next()?.to_owned())
+                };
+                let editors = project.open_editors().map(|e| e.join(","));
+                let problems = project.problems(field("path").as_deref()).map(|found| {
+                    let found = found.iter().map(|p| {
+                        let at = p.range.start;
+                        let source = p.source.as_deref().unwrap_or("-");
+                        format!("{}:{}:{} {:?} {source} {}", p.path, at.line, at.character, p.severity, p.message)
+                    });
+                    found.collect::<Vec<_>>().join(",")
+                });
+                let options = SearchOptions { globs: vec!["*.txt".into()], limit: 5, ..SearchOptions::default() };
+                let found = project.search_text(&field("query").unwrap_or_default(), &options).map(|found| {
+                    let found = found.iter().map(|m| format!("{}:{}:{}-{} {}", m.path, m.line, m.start, m.end, m.text));
+                    found.collect::<Vec<_>>().join(",")
+                });
+                Ok(format!("editors={editors:?}\nproblems={problems:?}\nsearch={found:?}"))
+            }
             _ => Err(Error::NotFound(format!("tool {name}"))),
         }
     }
@@ -71,5 +94,11 @@ mod tests {
         let terminal = &host.terminals()[0];
         assert_eq!(terminal.env, [("OPENIDEA_MCP_TOKEN".to_owned(), "mock-token".to_owned())]);
         assert_eq!(terminal.cwd.as_deref(), Some("src"));
+
+        host.add_file("src/notes.txt", "alpha\nbeta alpha");
+        host.set_open_editors(&["/project/src/notes.txt"]);
+        let state = probe.call_tool("ide_state", "{\"query\":\"alpha\"}", &host.invocation()).unwrap();
+        assert!(state.contains("editors=Ok(\"/project/src/a.rs,/project/src/notes.txt\")"), "{state}");
+        assert!(state.contains("/project/src/notes.txt:1:5-10 beta alpha"), "{state}");
     }
 }
