@@ -70,6 +70,51 @@ fn ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 
+/// Index of the `(` opening a method's parameter list inside a declaration
+/// fragment. `(`s that belong to annotation arguments — `@Anno(…)` — are
+/// skipped so `@DataPermission(column = "id") int count()` finds the paren
+/// after `count`, not the one after `DataPermission`.
+fn method_paren(stmt: &str) -> Option<usize> {
+    let mut rest = stmt;
+    let mut base = 0;
+    while let Some(i) = rest.find('(') {
+        // Is the token right before this `(` an annotation name (`@Anno`, `@a.b.Anno`)?
+        let before = rest[..i].trim_end();
+        let annotation = before.rfind('@').is_some_and(|a| before[a + 1..].chars().all(|c| ident(c) || c == '.'));
+        if !annotation {
+            return Some(base + i);
+        }
+        // Skip the annotation's argument list (it may nest and hold literals).
+        let mut depth = 1usize;
+        let mut end = None;
+        let mut chars = rest[i + 1..].char_indices().peekable();
+        while let Some((j, c)) = chars.next() {
+            match c {
+                '"' | '\'' => {
+                    for (_, d) in chars.by_ref() {
+                        if d == c {
+                            break;
+                        }
+                    }
+                }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i + 1 + j + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let skip = end?;
+        base += skip;
+        rest = &rest[skip..];
+    }
+    None
+}
+
 /// The interface's name and methods (with their parameter names).
 pub fn parse_java(text: &str) -> MapperJava {
     let package =
@@ -95,7 +140,7 @@ pub fn parse_java(text: &str) -> MapperJava {
             }
             ';' if depth == 0 => {
                 let stmt = &text[stmt_start..k];
-                if let Some(paren) = stmt.find('(') {
+                if let Some(paren) = method_paren(stmt) {
                     let before = stmt[..paren].trim_end();
                     let name_start = before.rfind(|c: char| !ident(c)).map_or(0, |p| p + 1);
                     let method = &before[name_start..];
@@ -359,6 +404,17 @@ mod tests {
         assert_eq!((to_java[0].path.ends_with("UserMapper.java"), to_java[0].range.start), (true, Position::new(7, 8)));
         assert!(n.definition(&xml, Position::new(3, 5)).is_empty(), "not on an id");
         assert_eq!(n.line_markers(&xml)[0].tooltip, "Go to UserMapper.findById()");
+    }
+
+    #[test]
+    fn method_annotations_do_not_swallow_the_method_name() {
+        // A method-level annotation with arguments: `stmt.find('(')` would land
+        // inside `@DataPermission(…)` and read `DataPermission` as the name.
+        let java = parse_java(
+            "package com.acme;\n\npublic interface SecuredMapper {\n    @DataPermission(column = \"id\", scope = (@Scope(\"self\")))\n    List<User> findAll(@Param(\"org\") String org);\n\n    @org.acme.Check(value = \"(nested)\")\n    int count();\n}\n",
+        );
+        let names: Vec<_> = java.methods.iter().map(|(m, p)| (m.name.as_str(), p.clone())).collect();
+        assert_eq!(names, [("findAll", vec!["org".to_owned()]), ("count", Vec::<String>::new())]);
     }
 
     #[test]
