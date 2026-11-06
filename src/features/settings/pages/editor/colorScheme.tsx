@@ -13,6 +13,8 @@ import {
   overrideDeclarations,
   effectiveScheme,
   resolvedSchemeTokens,
+  resolvedAttribute,
+  CLEAR_COLOR,
   listSchemes,
   customSchemes,
   type AttributeDef,
@@ -615,17 +617,20 @@ const SAMPLES: Record<string, CodeSample> = {
 
 function AttributeEditor({
   attr,
+  inherited,
   value,
   onChange,
 }: {
   attr: AttributeDef;
+  inherited: TextAttributesOverride;
   value: TextAttributesOverride | undefined;
   onChange: (v: TextAttributesOverride | undefined) => void;
 }) {
   const v = value ?? {};
   const set = (patch: Partial<TextAttributesOverride>) => {
     const next: TextAttributesOverride = { ...v, ...patch };
-    for (const k of Object.keys(next) as Array<keyof TextAttributesOverride>) if (next[k] === undefined) delete next[k];
+    for (const k of Object.keys(next) as Array<keyof TextAttributesOverride>)
+      if (next[k] === undefined || next[k] === inherited[k]) delete next[k];
     onChange(Object.keys(next).length ? next : undefined);
   };
   return (
@@ -633,8 +638,8 @@ function AttributeEditor({
       {attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
-            checked={v.italic ?? attr.defaultItalic ?? true}
-            onChange={(b) => set({ italic: b === (attr.defaultItalic ?? true) ? undefined : b })}
+            checked={v.italic ?? inherited.italic ?? attr.defaultItalic ?? true}
+            onChange={(b) => set({ italic: b === (inherited.italic ?? attr.defaultItalic ?? true) ? undefined : b })}
             label="Italic"
           />
         </div>
@@ -642,29 +647,65 @@ function AttributeEditor({
       {attr.token && !attr.italicOnly && (
         <>
           <div className={styles.attrRow}>
-            <Checkbox checked={!!v.bold} onChange={(b) => set({ bold: b || undefined })} label="Bold" />
-            <Checkbox checked={!!v.italic} onChange={(b) => set({ italic: b || undefined })} label="Italic" />
+            <Checkbox
+              checked={v.bold ?? inherited.bold ?? false}
+              onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
+              label="Bold"
+            />
+            <Checkbox
+              checked={v.italic ?? inherited.italic ?? false}
+              onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
+              label="Italic"
+            />
           </div>
         </>
       )}
-      {attr.fg && <ColorRow label="Foreground" value={v.foreground} onChange={(c) => set({ foreground: c })} />}
-      {(attr.bg || (attr.token && !attr.italicOnly)) && (
-        <ColorRow label="Background" value={v.background} onChange={(c) => set({ background: c })} />
+      {attr.fg && (
+        <ColorRow
+          label="Foreground"
+          value={v.foreground}
+          inherited={inherited.foreground}
+          onChange={(c) => set({ foreground: c })}
+        />
       )}
-      {attr.effect && <ColorRow label="Effects" value={v.effectColor} onChange={(c) => set({ effectColor: c })} />}
+      {(attr.bg || (attr.token && !attr.italicOnly)) && (
+        <ColorRow
+          label="Background"
+          value={v.background}
+          inherited={inherited.background}
+          onChange={(c) => set({ background: c })}
+        />
+      )}
+      {attr.effect && (
+        <ColorRow
+          label="Effects"
+          value={v.effectColor}
+          inherited={inherited.effectColor}
+          onChange={(c) => set({ effectColor: c })}
+        />
+      )}
       {attr.token && !attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
-            checked={!!v.effect && v.effect !== "none"}
+            checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
             onChange={(b) =>
-              set({ effect: b ? "underline" : undefined, effectColor: b ? (v.effectColor ?? "#808080") : undefined })
+              set({
+                effect: b
+                  ? inherited.effect && inherited.effect !== "none"
+                    ? inherited.effect
+                    : "underline"
+                  : inherited.effect && inherited.effect !== "none"
+                    ? "none"
+                    : undefined,
+                effectColor: b ? v.effectColor : undefined,
+              })
             }
             label="Effects"
           />
-          {v.effect && v.effect !== "none" && (
+          {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
             <>
               <Select
-                value={v.effect}
+                value={(v.effect ?? inherited.effect)!}
                 options={[
                   { value: "underline", label: "Underscored" },
                   { value: "wave", label: "Underwaved" },
@@ -674,7 +715,7 @@ function AttributeEditor({
                 aria-label="Effect"
               />
               <ColorInput
-                value={v.effectColor ?? "#808080"}
+                value={v.effectColor ?? inherited.effectColor ?? "#808080"}
                 onChange={(c) => set({ effectColor: c ?? "#808080" })}
                 label="Effect color"
               />
@@ -684,7 +725,7 @@ function AttributeEditor({
       )}
       {!attr.italicOnly && (
         <div className={styles.inherited}>
-          <T>Unchecked values are inherited from the scheme.</T>
+          <T>The controls show the scheme's actual appearance; changes override it.</T>
         </div>
       )}
     </div>
@@ -730,16 +771,34 @@ function ColorInput({
 function ColorRow({
   label,
   value,
+  inherited,
   onChange,
 }: {
   label: string;
   value: string | undefined;
+  inherited: string | undefined;
   onChange: (c: string | undefined) => void;
 }) {
+  const cleared = value === CLEAR_COLOR;
+  const shown = cleared ? undefined : (value ?? inherited);
   return (
     <div className={styles.attrRow}>
-      <Checkbox checked={value !== undefined} onChange={(on) => onChange(on ? "#808080" : undefined)} label={label} />
-      {value !== undefined && <ColorInput value={value} onChange={onChange} label={label} />}
+      <Checkbox
+        checked={shown !== undefined}
+        onChange={(on) =>
+          onChange(
+            on
+              ? cleared
+                ? (inherited ?? "#808080")
+                : (shown ?? "#808080")
+              : inherited !== undefined
+                ? CLEAR_COLOR
+                : undefined,
+          )
+        }
+        label={label}
+      />
+      {shown !== undefined && <ColorInput value={shown} onChange={onChange} label={label} />}
     </div>
   );
 }
@@ -785,6 +844,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   const mine = overrides?.[id];
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const language = attr?.language;
+  const inherited = useMemo(() => (attr ? resolvedAttribute(id, attr.id, customs) : {}), [id, attr, customs]);
   const vars = useMemo(
     () => ({ ...previewVars(id, mine, customs, language), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
     [id, mine, customs, language, weight, boldFontWeight],
@@ -985,6 +1045,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
                 <AttributeEditor
                   key={`${id}/${attr.id}`}
                   attr={attr}
+                  inherited={inherited}
                   value={mine?.[attr.id]}
                   onChange={(v) => update(attr.id, v)}
                 />
