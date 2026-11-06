@@ -7,6 +7,7 @@ import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
 import { classFileBreakpointReason } from "@/platform/classFiles";
+import { lineHasCode } from "./breakpoints/codeLines";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
 import {
   removeAllBreakpoints,
@@ -628,6 +629,9 @@ export function registerDebugActions(): () => void {
           return;
         }
         const ed = activeEditor();
+        // Like IDEA, no new breakpoint on a blank or comment-only line; an existing one still goes.
+        const taken = exists || specialAt(c.path).some((b) => b.line === c.line);
+        if (!taken && ed && !lineHasCode(ed.view.state, c.line)) return;
         if (ed) toggleBreakpointSmart(c.path, c.line, language, ed.view.state.doc.toString());
         else toggleBreakpoint(c.path, c.line);
       },
@@ -640,8 +644,11 @@ export function registerDebugActions(): () => void {
       description: "A line breakpoint that is removed after it is hit",
       run: () => {
         const c = cursor();
-        if (c && breakpointPathAllowed(c.path) && canPlaceBreakpoint(activeEditor()?.ctx.language ?? "", c.path))
-          toggleTemporaryBreakpoint(c.path, c.line);
+        const ed = activeEditor();
+        if (!c || !breakpointPathAllowed(c.path) || !canPlaceBreakpoint(ed?.ctx.language ?? "", c.path)) return;
+        const exists = useBreakpoints.getState().byFile[c.path]?.some((b) => b.line === c.line);
+        if (!exists && ed && !lineHasCode(ed.view.state, c.line)) return;
+        toggleTemporaryBreakpoint(c.path, c.line);
       },
     },
     {
