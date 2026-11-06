@@ -239,6 +239,23 @@ describe("multi-caret paste", () => {
     );
   });
 
+  it("keeps a trailing newline as the last caret's empty line (issue #1828)", () => {
+    const line = 'icjsdiocjosid "" cdscsd';
+    // Seven carets, six copied lines with a trailing newline: split keeps the
+    // empty seventh segment, so the last caret gets "" as the issue expects.
+    const v = view(
+      Array(7).fill(line).join("\n"),
+      Array.from({ length: 7 }, (_, i) => {
+        const from = i * (line.length + 1) + 15;
+        return [from, from] as [number, number];
+      }),
+    );
+    pasteEditorText(v, "s\nd\nd\ns\nd\nd\n");
+    expect(v.state.doc.toString()).toBe(
+      Array.from({ length: 7 }, (_, i) => `icjsdiocjosid "${"sddsdd"[i] ?? ""}" cdscsd`).join("\n"),
+    );
+  });
+
   it("pastes the whole text at every caret when the counts differ", () => {
     const v = view("a b", [
       [1, 1],
