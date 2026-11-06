@@ -1033,7 +1033,9 @@ mod tests {
         assert!(matches!(&files[3], FileEdit::Delete { recursive: false, .. }));
         assert!(matches!(&files[4], FileEdit::Edit { path, .. } if **path == root.join("a.txt")));
         let r: PluginActionRef = serde_json::from_value(created.data.unwrap()).unwrap();
-        assert_eq!((r.data, r.open.map(|p| p.to_path_buf())), (None, Some(home)));
+        assert_eq!(r.data, None);
+        let opened = r.open.unwrap().to_path_buf();
+        assert!(opened.components().eq(dunce::simplified(&home).components()), "{opened:?}");
 
         let outside = tmp.path().join("evil.txt");
         let mut open_outside = action(Vec::new());
