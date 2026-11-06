@@ -57,6 +57,9 @@ pub struct Launch {
     /// Comparison windows: the revisions to compare (boxed: most launches have none).
     #[serde(default)]
     pub comparison: Option<Box<ComparisonLaunch>>,
+    /// `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none).
+    #[serde(default)]
+    pub diff: Option<Box<DiffFilesLaunch>>,
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
@@ -91,6 +94,13 @@ pub struct ComparisonLaunch {
     pub to: Option<ComparisonRevision>,
     pub scope: Option<ComparisonScope>,
     pub repo: Option<ide_core::IpcPath>,
+}
+
+/// The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DiffFilesLaunch {
+    pub left: ide_core::IpcPath,
+    pub right: ide_core::IpcPath,
 }
 
 /// A caret position for a file opened from the command line: 0-based line and column.
@@ -356,6 +366,9 @@ pub fn cycle_target(sorted: &[String], current: &str, forward: bool) -> Option<S
 /// Flags followed by a value (`--line 12`).
 const VALUE_FLAGS: [&str; 2] = ["--line", "--column"];
 
+/// The subcommand opening two files side by side (`openidea diff a.txt b.txt`).
+const DIFF_ARG: &str = "diff";
+
 /// The project path from command-line arguments (`openidea /path/to/project`):
 /// the first argument after the binary that is not a flag or a flag's value, resolved against `cwd`.
 pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
@@ -372,6 +385,50 @@ pub fn cli_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
         return Some(if p.is_absolute() { p } else { cwd.join(p) });
     }
     None
+}
+
+/// What the command line asks to open (arguments after the binary, resolved against `cwd`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliLaunch {
+    /// `openidea diff a.txt b.txt`: the two files side by side in the diff viewer.
+    Diff(DiffFilesLaunch),
+    /// A project folder or a file (`openidea /path/to/project`).
+    Path(PathBuf),
+}
+
+/// What the command line asks to open; see [`CliLaunch`].
+pub fn cli_launch(args: &[String], cwd: &Path) -> Option<CliLaunch> {
+    if args.get(1).map(String::as_str) == Some(DIFF_ARG) {
+        return match cli_diff_paths(args, cwd).as_slice() {
+            [left, right, ..] => {
+                Some(CliLaunch::Diff(DiffFilesLaunch { left: left.clone().into(), right: right.clone().into() }))
+            }
+            // One file is no pair: open it like any path.
+            [one] => Some(CliLaunch::Path(one.clone())),
+            // `openidea diff` with no files: like starting without arguments.
+            [] => None,
+        };
+    }
+    cli_path(args, cwd).map(CliLaunch::Path)
+}
+
+/// The file paths of a `diff` subcommand (everything after it that is not a flag or a flag's
+/// value), resolved against `cwd`.
+fn cli_diff_paths(args: &[String], cwd: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut rest = args.iter().skip(2);
+    while let Some(a) = rest.next() {
+        if VALUE_FLAGS.contains(&a.as_str()) {
+            rest.next();
+            continue;
+        }
+        if a.starts_with('-') || a.is_empty() {
+            continue;
+        }
+        let p = PathBuf::from(a);
+        paths.push(if p.is_absolute() { p } else { cwd.join(p) });
+    }
+    paths
 }
 
 /// `--line <n>` and `--column <n>` (1-based, also as `--line=<n>`) as a 0-based position;
@@ -1064,8 +1121,9 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
             return;
         }
     }
-    match cli_path(&args, Path::new(&cwd)) {
-        Some(path) => {
+    match cli_launch(&args, Path::new(&cwd)) {
+        Some(CliLaunch::Diff(diff)) => open_diff_files(app, diff),
+        Some(CliLaunch::Path(path)) => {
             remember_cli_position(&app.state::<WindowsState>(), &args, &path);
             open_path(app, &path)
         }
@@ -1076,6 +1134,27 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
                 spawn_window(app, None);
             }
         }
+    }
+}
+
+/// `openidea diff a.txt b.txt` while the app is running: hands the pair to the window the user is
+/// looking at (a project window, never an auxiliary one), else opens a new window for it.
+fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
+    let launch = Launch { diff: Some(Box::new(diff)), ..Default::default() };
+    let target = target_window(app)
+        .filter(|window| auxiliary_parent(window.label()).is_none())
+        .or_else(|| project_window_labels(app).into_iter().find_map(|label| app.get_webview_window(&label)));
+    if let Some(window) = target {
+        app.state::<WindowsState>().set_launch(window.label(), launch);
+        let _ = app.emit_to(window.label(), LAUNCH_EVENT, ());
+        focus(&window);
+    } else {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = create_window_for(&app, None, launch, false) {
+                tracing::warn!("cannot open window: {}", e.message);
+            }
+        });
     }
 }
 
@@ -1477,6 +1556,39 @@ mod tests {
         assert_eq!(
             cli_path(&s(&["openidea", "--line=3", "a b/文件.rs"]), cwd),
             Some(PathBuf::from("/work/a b/文件.rs"))
+        );
+    }
+
+    #[test]
+    fn cli_launch_parses_the_diff_subcommand() {
+        let cwd = Path::new("/work");
+        // Two paths: a diff pair; relative paths resolve against the cwd.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "a.txt", "b.txt"]), cwd),
+            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/work/a.txt".into(), right: "/work/b.txt".into() }))
+        );
+        // Absolute paths stay absolute; a path with spaces is one argument (the shell unquotes it
+        // before the arguments reach us).
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "/abs/my a.txt", "my b.txt"]), cwd),
+            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/abs/my a.txt".into(), right: "/work/my b.txt".into() }))
+        );
+        // Flags and their values are not file paths.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "--line", "3", "a.txt", "b.txt"]), cwd),
+            Some(CliLaunch::Diff(DiffFilesLaunch { left: "/work/a.txt".into(), right: "/work/b.txt".into() }))
+        );
+        // One file is no pair: it opens like any path.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "diff", "a.txt"]), cwd),
+            Some(CliLaunch::Path(PathBuf::from("/work/a.txt")))
+        );
+        // No files at all: like starting without arguments.
+        assert_eq!(cli_launch(&s(&["openidea", "diff"]), cwd), None);
+        // Only a leading `diff` is the subcommand; the rest still opens a path.
+        assert_eq!(
+            cli_launch(&s(&["openidea", "proj", "diff", "a.txt"]), cwd),
+            Some(CliLaunch::Path(PathBuf::from("/work/proj")))
         );
     }
 

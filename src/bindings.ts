@@ -903,6 +903,8 @@ export const commands = {
 	positions?: FilePosition[],
 	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
 	comparison?: ComparisonLaunch | null,
+	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
+	diff?: DiffFilesLaunch | null,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 } | null>("window_take_launch"),
@@ -3077,6 +3079,12 @@ export type Diagnostic = {
 	server?: string | null,
 };
 
+/**  The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable. */
+export type DiffFilesLaunch = {
+	left: IpcPath,
+	right: IpcPath,
+};
+
 export type DirectoryCompareEntry = {
 	path: string,
 	status: DirectoryCompareStatus,
@@ -4967,6 +4975,8 @@ export type Launch = {
 	positions?: FilePosition[],
 	/**  Comparison windows: the revisions to compare (boxed: most launches have none). */
 	comparison?: ComparisonLaunch | null,
+	/**  `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none). */
+	diff?: DiffFilesLaunch | null,
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment?: DeploymentLaunch | null,
 };

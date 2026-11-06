@@ -163,11 +163,19 @@ pub fn run() {
         builder.mount_events(app);
         let state = AppState::new(app.handle().clone())?;
         let windows = WindowsState::default();
-        if let Ok(cwd) = std::env::current_dir()
-            && let Some(path) = windows::cli_path(&std::env::args().collect::<Vec<_>>(), &cwd)
-        {
-            windows::remember_cli_position(&windows, &std::env::args().collect::<Vec<_>>(), &path);
-            windows.set_launch("main", windows::path_launch(path));
+        if let Ok(cwd) = std::env::current_dir() {
+            let args = std::env::args().collect::<Vec<_>>();
+            match windows::cli_launch(&args, &cwd) {
+                Some(windows::CliLaunch::Path(path)) => {
+                    windows::remember_cli_position(&windows, &args, &path);
+                    windows.set_launch("main", windows::path_launch(path));
+                }
+                // `openidea diff a.txt b.txt`: the main window opens the pair in the diff viewer.
+                Some(windows::CliLaunch::Diff(diff)) => {
+                    windows.set_launch("main", windows::Launch { diff: Some(Box::new(diff)), ..Default::default() });
+                }
+                None => {}
+            }
         }
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
