@@ -40,6 +40,12 @@
     "completion.arrowMissedFramePct": 2,
     "completion.tbtMs": 50,
 
+    "consoleOutput.streamMs": 4600,
+    "consoleOutput.droppedFramesPct": 2,
+    "consoleOutput.keyP95Ms": 20,
+    "consoleOutput.keyMissedFramePct": 10,
+    "consoleOutput.tbtMs": 50,
+
     "keyRepeat.p95Ms": 20,
     "keyRepeat.maxMs": 33,
     "keyRepeat.missedFramePct": 2,

@@ -72,6 +72,7 @@ import {
   selectConfig,
   selectedConfig,
   startRun,
+  startSampleOutput,
   stopSession,
   trackRecentConfigurations,
   useRun,
@@ -278,6 +279,21 @@ const useEditConfigsOpen = () => useRun((s) => s.editorOpen);
 
 export function activate(): () => void {
   const disposers: Array<() => void> = [
+    // The performance harness (`perf/`): a console streaming generated output.
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "run.sampleOutput",
+            title: "Stream Sample Output",
+            category: "Run",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { lines = 20_000, perFrame = 200 } = (arg ?? {}) as { lines?: number; perFrame?: number };
+              await startSampleOutput(lines, perFrame);
+            },
+          },
+        ])
+      : () => {},
     registerToolWindow({
       id: "run",
       title: "Run",

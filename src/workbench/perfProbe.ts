@@ -16,7 +16,7 @@ export interface PerfProbe {
   /** Seeds file contents for the in-memory document backend (plain-browser mode). */
   seed(path: string, text: string): void;
   openFile(path: string): Promise<void>;
-  runAction(id: string): Promise<boolean>;
+  runAction(id: string, arg?: unknown): Promise<boolean>;
   /** Effective keymap bindings of an action, e.g. `["Ctrl+Shift+A"]`. */
   bindings(id: string): string[];
   /** Moves the caret of the active editor and focuses it. */
@@ -77,7 +77,7 @@ export function installPerfProbe(): () => void {
       backend.files.set(path, text);
     },
     openFile: (path) => editorService().openFile(path),
-    runAction: (id) => executeAction(id),
+    runAction: (id, arg) => executeAction(id, arg),
     bindings: (id) => bindingsFor(id),
     setCursor(offset) {
       const view = activeEditor()?.view;

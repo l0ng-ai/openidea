@@ -152,6 +152,46 @@ const completion: Scenario = {
   },
 };
 
+/**
+ * A process printing 50,000 log lines (stack frames among them) at 200 lines a
+ * frame (~4 s) into the Run console, while the user types in an editor: the
+ * console must keep up and the editor must stay responsive.
+ */
+const consoleOutput: Scenario = {
+  id: "consoleOutput",
+  title: "Type while the Run console streams 50k lines",
+  async run(h) {
+    await h.openFile(SAMPLE);
+    const st = await h.editorState();
+    await h.setCursor(Math.floor((st?.length ?? 0) / 2));
+    await h.page.keyboard.press("End");
+    await h.page.keyboard.press("Enter");
+    const refresh = await h.refreshMs();
+    const t0 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const streamMs = h.page.evaluate(async () => {
+      const w = window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } };
+      const started = performance.now();
+      await w.__openideaPerf.runAction("run.sampleOutput", { lines: 50_000, perFrame: 200 });
+      return performance.now() - started;
+    });
+    // The console takes focus with it; type back in the editor while it streams.
+    await h.page.waitForTimeout(100);
+    await h.setCursor((await h.editorState())?.head ?? 0);
+    const keys = await h.typeMeasured(TYPED.slice(0, 40), 70);
+    const total = await streamMs;
+    const frames = await h.inPage((p) => p.stopFrames());
+    await h.inPage((p) => p.waitShown("body", "processed order #49998", 5_000));
+    return {
+      // 250 frames of output at the display rate is the floor.
+      streamMs: total,
+      ...frameSummary(frames, refresh),
+      ...keySummary(keys, refresh, "key"),
+      tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+    };
+  },
+};
+
 /** Held key: auto-repeat at ~30 Hz must never fall behind. */
 const keyRepeat: Scenario = {
   id: "keyRepeat",
@@ -412,6 +452,7 @@ export const SCENARIOS: Scenario[] = [
   typingLarge,
   typingAngular,
   completion,
+  consoleOutput,
   keyRepeat,
   scroll,
   tabs,
