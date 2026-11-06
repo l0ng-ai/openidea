@@ -143,6 +143,40 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// A context key's value, as `when` clauses compare it ([`crate::host::set_context`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContextValue {
+    Flag(bool),
+    /// A finite number.
+    Number(f64),
+    /// At most 1024 bytes.
+    Text(String),
+}
+
+impl From<bool> for ContextValue {
+    fn from(value: bool) -> Self {
+        Self::Flag(value)
+    }
+}
+
+impl From<f64> for ContextValue {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<&str> for ContextValue {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_owned())
+    }
+}
+
+impl From<String> for ContextValue {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
 /// Kinds of workbench events; later SDKs add more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]

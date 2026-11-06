@@ -231,7 +231,12 @@ fn fixture(limits: Limits) -> Fixture {
 
 impl Fixture {
     fn inv(&self) -> Invocation {
-        Invocation { client: Some("main".into()), workspace_root: Some(self.project.clone()), editor: None }
+        Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(self.project.clone()),
+            editor: None,
+            selected_paths: Vec::new(),
+        }
     }
 
     fn install(&self, dir: &Path) -> PluginInfo {
@@ -357,7 +362,7 @@ fn read_file_is_confined_to_the_project() {
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
     // Without a project there is nothing to read.
-    let inv = Invocation { client: None, workspace_root: None, editor: None };
+    let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
@@ -668,6 +673,7 @@ fn contribution_only_plugins() {
     let theme = f.install(&theme_template());
     assert_eq!(theme.status, PluginStatus::Static);
     assert!(!theme.has_code);
+    assert!(theme.icon.is_none());
     assert_eq!(f.theme_kinds("openidea.harbor-night")[0].0, "harbor-night");
     let lang = f.install(&sample("language-toy"));
     assert_eq!(lang.status, PluginStatus::Static);
@@ -1934,6 +1940,69 @@ fn official_csv_editor_edits_the_shared_document() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
 }
 
+#[test]
+fn view_item_menus_name_a_declared_view() {
+    /// The menu is new in API 1.2.
+    fn api_1_2(m: &str) -> String {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.2\"")
+    }
+    fn with_menu(extra: &str) -> impl Fn(&str) -> String + '_ {
+        move |m: &str| format!("{}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n", api_1_2(m))
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+
+    let second_view =
+        "[[contributes.views]]\nid = \"more\"\ntitle = \"More\"\nicon = \"plugin\"\nlocation = \"right\"\n";
+    let ok = hello_variant(tmp.path(), |m| {
+        let on_greetings =
+            with_menu("menu = \"viewItem.context\"\nview = \"greetings\"\nwhen = \"viewItemKind == English\"")(m);
+        let on_more = with_menu("menu = \"viewItem.context\"\nview = \"more\"")("");
+        format!("{on_greetings}\n{second_view}\n{on_more}")
+    });
+    assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
+    let item = f.host.ui_items("menus").into_iter().find(|i| i.decl["menu"] == "viewItem.context").unwrap();
+    assert_eq!(
+        (item.key.as_str(), item.decl["view"].as_str()),
+        ("viewItem.context/greetings/word-count", Some("greetings"))
+    );
+    let keys: Vec<String> = f.host.ui_items("menus").into_iter().map(|i| i.key).collect();
+    for view in ["greetings", "more"] {
+        assert!(keys.contains(&format!("viewItem.context/{view}/word-count")), "{keys:?}");
+    }
+    f.host.uninstall("hello").unwrap();
+
+    for (extra, message) in [
+        ("menu = \"viewItem.context\"", "needs `view`"),
+        ("menu = \"viewItem.context\"\nview = \"nope\"", "view \"nope\" is not declared"),
+        ("menu = \"projectView.context\"\nview = \"greetings\"", "`view` is only for viewItem.context"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let err = f.host.install_from_dir(&hello_variant(dir.path(), with_menu(extra)), &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{extra}: {}", err.message);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let web_view = "[[contributes.views]]\nid = \"page\"\ntitle = \"Page\"\nicon = \"plugin\"\nlocation = \"right\"\nweb = \"web/index.html\"\n";
+    let pkg = hello_variant(dir.path(), |m| {
+        let on_page = with_menu("menu = \"viewItem.context\"\nview = \"page\"")("");
+        format!("{}\n{web_view}\n{on_page}", api_1_2(m))
+    });
+    std::fs::create_dir_all(pkg.join("web")).unwrap();
+    std::fs::write(pkg.join("web/index.html"), "<p>hi</p>").unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("is a web view"), "{}", err.message);
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = hello_variant(dir.path(), |m| {
+        format!(
+            "{m}\n[[contributes.menus]]\nmenu = \"viewItem.context\"\nview = \"greetings\"\ncommand = \"word-count\"\n"
+        )
+    });
+    let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
+}
+
 /// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.
@@ -2076,6 +2145,17 @@ fn views_open_project_files_at_a_line() {
     let (result, opened) = press("log");
     assert!(result.unwrap_err().message.contains("project.read"), "needs project.read");
     assert!(opened.is_none());
+}
+
+#[test]
+fn commands_see_the_paths_they_were_run_on() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let (a, b) = (f.project.join("src/a.txt"), f.project.join("src/b.txt"));
+    let inv = Invocation { selected_paths: vec![a.clone(), b.clone()], ..f.inv() };
+    let out = f.host.run_command("jobs", "selection", Some(&to_ipc(&a)), inv).unwrap();
+    assert_eq!(out.as_deref(), Some(format!("{}\n{}", to_ipc(&a), to_ipc(&b)).as_str()));
+    assert_eq!(f.run("jobs", "selection", None).unwrap().as_deref(), Some(""));
 }
 
 #[test]
@@ -2629,7 +2709,7 @@ fn plugins_set_their_own_context_keys() {
     assert_eq!(f.host.context_keys(Some("main")).len(), 1);
     assert!(f.host.context_keys(Some("other")).is_empty(), "window-scoped");
 
-    for bad in ["bad key=true", "a.b=true", "x=null", "x=[1]", "x={"] {
+    for bad in ["bad key=true", "a.b=true", "x=NaN"] {
         assert!(f.run("jobs", "context", Some(bad)).unwrap_err().contains("invalid"), "{bad}");
     }
 
@@ -2656,8 +2736,8 @@ fn context_keys_are_capped_and_windows_overlay_global_ones() {
 
     let global = Invocation { client: None, ..f.inv() };
     f.host.run_command("jobs", "context", Some("g=1"), global.clone()).unwrap();
-    f.host.run_command("jobs", "context", Some("w=\"global\""), global).unwrap();
-    f.run("jobs", "context", Some("w=\"window\"")).unwrap();
+    f.host.run_command("jobs", "context", Some("w=global"), global).unwrap();
+    f.run("jobs", "context", Some("w=window")).unwrap();
     let w = |client| f.host.context_keys(Some(client)).into_iter().find(|k| k.key == "w").map(|k| k.value);
     assert_eq!(w("main").as_deref(), Some("\"window\""));
     assert_eq!(w("other").as_deref(), Some("\"global\""));
@@ -2667,16 +2747,21 @@ fn context_keys_are_capped_and_windows_overlay_global_ones() {
 }
 
 #[test]
-fn context_values_are_stored_in_canonical_form_and_bounded() {
+fn context_values_are_stored_as_json_and_bounded() {
     let f = fixture(Limits::default());
     f.install(&sample("jobs"));
+    let value = |arg: &str| {
+        f.run("jobs", "context", Some(arg)).unwrap();
+        f.host.context_keys(Some("main")).into_iter().find(|k| k.key == "x").unwrap().value
+    };
+    assert_eq!(value("x=true"), "true");
+    assert_eq!(value("x=2.5"), "2.5");
+    assert_eq!(value("x=say \"hi\""), "\"say \\\"hi\\\"\"");
+    assert_eq!(value("x=1"), "1");
     f.take_events();
-    f.run("jobs", "context", Some("x= 1 ")).unwrap();
-    assert_eq!(f.host.context_keys(Some("main"))[0].value, "1");
-    f.take_events();
-    f.run("jobs", "context", Some("x=1")).unwrap();
-    assert!(f.take_events().is_empty(), "same canonical value emits nothing");
-    let long = format!("x=1{}", " ".repeat(5000));
+    f.run("jobs", "context", Some("x=1.0")).unwrap();
+    assert!(f.take_events().is_empty(), "the same value emits nothing");
+    let long = format!("x={}", "a".repeat(1025));
     assert!(f.run("jobs", "context", Some(&long)).unwrap_err().contains("invalid"));
 }
 
@@ -2729,4 +2814,62 @@ fn stopping_a_plugin_withdraws_each_context_key_in_its_own_scope() {
         .collect();
     removed.sort();
     assert_eq!(removed, [(None, "g".to_owned()), (Some("main".to_owned()), "w".to_owned())]);
+}
+
+/// A data-only package `id` in `dir` whose manifest ends with `extra`, plus `files`.
+fn icon_package(dir: &Path, id: &str, extra: &str, files: &[(&str, &str)]) -> PathBuf {
+    let pkg = dir.join(id);
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("id = \"{id}\"\nname = \"Iconic\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n{extra}"),
+    )
+    .unwrap();
+    for (name, text) in files {
+        std::fs::write(pkg.join(name), text).unwrap();
+    }
+    pkg
+}
+
+const RECT: &str = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+const CIRCLE: &str = r#"<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>"#;
+
+#[test]
+fn plugin_icons_install_with_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = icon_package(
+        tmp.path(),
+        "iconic",
+        "icon = \"icon.svg\"\nicon-dark = \"icon_dark.svg\"\n",
+        &[("icon.svg", RECT), ("icon_dark.svg", CIRCLE)],
+    );
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    let icon = info.icon.expect("icon");
+    assert!(icon.light.contains("<rect"), "{}", icon.light);
+    assert!(icon.dark.unwrap().contains("<circle"));
+    assert!(f.installed("iconic").join("icon_dark.svg").is_file());
+
+    f.host.set_enabled("iconic", false).unwrap();
+    assert!(f.host.info_of("iconic").unwrap().icon.is_some(), "disabled plugins keep their icon");
+}
+
+#[test]
+fn invalid_plugin_icons_refuse_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let big = format!("<svg>{}</svg>", "<path d=\"M0 0h1v1z\"/>".repeat(1000));
+    let padded = format!("<svg><!--{}--><rect/></svg>", " ".repeat(20 << 10));
+    let cases = [
+        ("scripted", "icon = \"icon.svg\"\n", "<svg><script>alert(1)</script></svg>".to_owned(), "icon.svg"),
+        ("oversized", "icon = \"icon.svg\"\n", big, "16 KiB"),
+        ("padded", "icon = \"icon.svg\"\n", padded, "16 KiB"),
+        ("missing", "icon = \"missing.svg\"\n", RECT.to_owned(), "missing.svg"),
+    ];
+    for (id, extra, svg, expected) in cases {
+        let pkg = icon_package(tmp.path(), id, extra, &[("icon.svg", &svg)]);
+        let err = f.host.preview_install(&pkg).map(|_| ()).unwrap_err().message;
+        assert!(err.contains(expected), "{id}: {err}");
+    }
 }

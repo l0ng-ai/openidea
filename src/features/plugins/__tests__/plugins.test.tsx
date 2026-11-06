@@ -61,6 +61,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     authors: [],
     homepage: null,
     changeNotes: null,
+    icon: null,
     source: "installed",
     path: `/plugins/${partial.id}`,
     enabled: true,
@@ -446,8 +447,30 @@ describe("bridge events", () => {
           language: "plaintext",
           selections: [{ start: { line: 1, col: 0 }, end: { line: 1, col: 4 } }],
         },
+        [],
       ],
     ]);
+  });
+
+  it("forwards a menu's path and selection to the command", async () => {
+    const calls: unknown[][] = [];
+    setPluginsBackend({
+      ...backend,
+      runCommand: async (...args) => {
+        calls.push(args);
+        return null;
+      },
+    });
+    undefinePoints();
+    undefinePoints = () => {};
+    const stop = startPluginBridge();
+    await refreshPlugins();
+    await act(() =>
+      executeAction("plugin.hello.insert-date", { path: "/p/a.java", paths: ["/p/a.java", "/p/b.java"] }),
+    );
+    expect(calls[0]?.[2]).toBe("/p/a.java");
+    expect(calls[0]?.[4]).toEqual(["/p/a.java", "/p/b.java"]);
+    stop();
   });
 
   it("shows status items and tasks of running plugin code", () => {
@@ -532,6 +555,16 @@ describe("PluginsPage", () => {
     act(() => useProject.setState({ project: { ...project, trusted: true } }));
     expect(await imports()).toHaveLength(2);
     act(() => useProject.setState({ project: null }));
+  });
+
+  it("shows a plugin's own icon in its row and details", async () => {
+    const icon = { light: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>', dark: null };
+    setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "iconic", name: "Iconic", icon })]));
+    render(<PluginsPage />);
+    const list = await screen.findByRole("list", { name: "Installed plugins" });
+    await waitFor(() => expect(within(list).getByText("Iconic")).toBeInTheDocument());
+    expect(list.querySelector("circle")).not.toBeNull();
+    expect(screen.getByLabelText("Iconic details").querySelector("circle")).not.toBeNull();
   });
 
   it("restarts a failed plugin instead of disabling it", async () => {

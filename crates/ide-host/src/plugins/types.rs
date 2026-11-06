@@ -1,6 +1,7 @@
 //! UI-facing plugin types and the event stream.
 
 use super::theme::ThemeDef;
+use ide_extension::package::PluginIcon;
 use ide_extension::{CapabilityInfo, ContributionInfo, UiContribution};
 pub use ide_plugin::{ActionPerformed, ActionSource, EventKind, NotificationLevel, StatusItem, WorkbenchEvent};
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,7 @@ pub struct PluginInfo {
     pub authors: Vec<String>,
     pub homepage: Option<String>,
     pub change_notes: Option<String>,
+    pub icon: Option<PluginIcon>,
     pub source: PluginSource,
     /// Package directory.
     pub path: ide_core::IpcPath,
@@ -113,6 +115,7 @@ pub struct CatalogPlugin {
     pub authors: Vec<String>,
     pub homepage: Option<String>,
     pub change_notes: Option<String>,
+    pub icon: Option<PluginIcon>,
     /// Package directory; install with `install_from_dir(path)`.
     pub path: ide_core::IpcPath,
     pub has_code: bool,

@@ -125,7 +125,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
 
 impl PluginHost {
     fn package_files(&self, plugin: &super::LoadedPlugin) -> IdeResult<Vec<PathBuf>> {
-        let set = self.registry.prepare(&plugin.pkg).map_err(IdeError::invalid)?;
+        let set = self.prepare(&plugin.pkg).map_err(IdeError::invalid)?;
         Ok(set.files.into_iter().chain(plugin.manifest().wasm.clone()).collect())
     }
 
@@ -368,10 +368,12 @@ impl RemotePlugins {
                 let command_id: String = c.arg("commandId")?;
                 let arg: Option<String> = c.arg("arg")?;
                 let editor: Option<PluginEditor> = c.arg("editor")?;
+                let paths: Option<Vec<PathBuf>> = c.arg("paths")?;
                 let invocation = Invocation {
                     client: Some(c.window.clone()),
                     workspace_root: c.host.project(&c.window).ok().map(|p| p.root.clone()),
                     editor: editor.map(PluginEditor::context),
+                    selected_paths: paths.unwrap_or_default(),
                 };
                 blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
             }

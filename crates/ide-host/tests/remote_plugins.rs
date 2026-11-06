@@ -317,5 +317,14 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     .await;
     let keys = invoke(&peer, "plugin_context_keys", json!({})).await.unwrap();
     assert_eq!(keys, json!([{ "pluginId": "jobs", "key": "mode", "value": "true" }]), "{keys}");
+
+    let selected = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "jobs", "commandId": "selection", "arg": null, "editor": null, "paths": ["/srv/src/a.txt"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(selected, "/srv/src/a.txt");
     plugins.host().shutdown();
 }

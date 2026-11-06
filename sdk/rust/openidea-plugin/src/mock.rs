@@ -56,10 +56,11 @@ struct State {
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
     editor: Option<Editor>,
+    selected_paths: Vec<String>,
     notifications: Vec<Notification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
-    context: BTreeMap<String, String>,
+    context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
     tasks: Vec<MockTask>,
@@ -145,6 +146,11 @@ impl MockHost {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
     }
 
+    /// Sets the paths invocations report as selected.
+    pub fn select_paths(&self, paths: &[&str]) {
+        self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
     pub fn open_editor(&self, path: &str, language: &str, text: &str, selections: &[(u32, u32, u32, u32)]) {
         let selections =
@@ -186,7 +192,7 @@ impl MockHost {
         self.state.borrow().status.clone()
     }
 
-    pub fn context_keys(&self) -> BTreeMap<String, String> {
+    pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
         self.state.borrow().context.clone()
     }
 
@@ -382,12 +388,13 @@ pub mod current {
         with(|s| s.status.remove(id));
     }
 
-    pub fn set_context(key: &str, value: Option<&str>) -> Result<(), Error> {
-        with(|s| match value {
-            Some(v) => s.context.insert(key.to_owned(), v.to_owned()),
-            None => s.context.remove(key),
-        });
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        with(|s| s.context.insert(key.to_owned(), value));
         Ok(())
+    }
+
+    pub fn remove_context(key: &str) {
+        with(|s| s.context.remove(key));
     }
 
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
@@ -484,6 +491,10 @@ pub mod current {
             s.editor = Some(e);
             r
         })
+    }
+
+    pub fn invocation_selected_paths(_: InvocationRef<'_>) -> Vec<String> {
+        with(|s| s.selected_paths.clone())
     }
 
     pub fn editor_path(_: &EditorRes) -> String {
@@ -731,6 +742,14 @@ mod tests {
     use crate::host;
 
     #[test]
+    fn invocations_carry_selected_paths() {
+        let host = MockHost::install();
+        assert!(host.invocation().selected_paths().is_empty());
+        host.select_paths(&["/p/a", "/p/b"]);
+        assert_eq!(host.invocation().selected_paths(), ["/p/a", "/p/b"]);
+    }
+
+    #[test]
     fn records_and_enforces() {
         let mock = MockHost::install();
         mock.add_file("src/a.txt", "hello");
@@ -746,9 +765,12 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
-        host::set_context("a", Some("1")).unwrap();
-        assert_eq!(mock.context_keys()["a"], "1");
-        host::set_context("a", None).unwrap();
+        host::set_context("a", 1.0).unwrap();
+        host::set_context("b", "x").unwrap();
+        assert_eq!(mock.context_keys()["a"], ContextValue::Number(1.0));
+        assert_eq!(mock.context_keys()["b"], ContextValue::Text("x".into()));
+        host::remove_context("a");
+        host::remove_context("b");
         assert!(mock.context_keys().is_empty());
         mock.set_vcs_remotes(&[("origin", "git@github.com:o/r.git")]);
         assert_eq!(project.vcs_remotes().unwrap(), [("origin".into(), "git@github.com:o/r.git".into())]);

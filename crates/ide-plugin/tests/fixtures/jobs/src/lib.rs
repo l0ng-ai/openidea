@@ -4,7 +4,7 @@
 
 use openidea_plugin::host;
 use openidea_plugin::views::{Body, Button, TreeItem, View, ViewEvent, Viewport, Views};
-use openidea_plugin::{Error, Invocation, Plugin, register_plugin};
+use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, register_plugin};
 
 pub const VIEW: &str = "jobs";
 
@@ -41,8 +41,16 @@ impl Plugin for Jobs {
                 Ok(Some(remotes.into_iter().map(|(n, u)| format!("{n}={u}")).collect::<Vec<_>>().join("\n")))
             }
             "context" => {
+                // `key=` removes; `true` / `false`, numbers and other text set.
                 let (key, value) = arg.unwrap_or_default().split_once('=').ok_or("expected key=value")?;
-                host::set_context(key, Some(value).filter(|v| !v.is_empty()))?;
+                match value {
+                    "" => host::remove_context(key),
+                    "true" | "false" => host::set_context(key, value == "true")?,
+                    _ => match value.parse::<f64>() {
+                        Ok(n) => host::set_context(key, n)?,
+                        Err(_) => host::set_context(key, value)?,
+                    },
+                }
                 Ok(None)
             }
             "copy" => {
@@ -52,6 +60,11 @@ impl Plugin for Jobs {
             "open-url" => {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)
+            }
+            "selection" => {
+                let paths = ctx.selected_paths().join("\n");
+                host::notify(NotificationLevel::Info, "Selected paths", &paths);
+                Ok(Some(paths))
             }
             _ => Err(Error::NotFound(format!("command {id}"))),
         }

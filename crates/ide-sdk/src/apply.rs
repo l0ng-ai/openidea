@@ -798,6 +798,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 json!({ "settings": { "java": { "configuration": { "maven": { "userSettings": file } } } } }),
             );
         }
+        // m2e resolves and downloads into `maven.repo.local`; without it the
+        // embedded Maven falls back to ~/.m2 even when the IDE's own `mvn`
+        // runs honor the configured local repository. A `-Dmaven.repo.local`
+        // the user put in their own jdtls VM options wins.
+        if let Some(repo) = maven_local_repository(root, s) {
+            let arg = format!("-Dmaven.repo.local={}", repo.to_string_lossy());
+            let taken = cfg.args.iter().enumerate().any(|(i, a)| {
+                let value = a
+                    .strip_prefix("--jvm-arg=")
+                    .or_else(|| (i > 0 && cfg.args[i - 1] == "--jvm-arg").then_some(a.as_str()));
+                value.is_some_and(|a| a.split('=').next() == Some("-Dmaven.repo.local"))
+            });
+            if !taken {
+                cfg.args.push(format!("--jvm-arg={arg}"));
+            }
+        }
     }
 
     if let Some(lib) = tsdk(server_root, s).or_else(|| tsdk(root, s)) {

@@ -17,20 +17,29 @@ interface ui {
         command: option<string>,
     }
 
+    /// A context key's value, as `when` clauses compare it.
+    variant context-value {
+        flag(bool),
+        /// A finite number.
+        number(f64),
+        /// At most 1024 bytes.
+        text(string),
+    }
+
     /// Shows a notification balloon in the window the current command or
     /// event came from (every window when there is none).
     show-notification: func(level: notification-level, title: string, body: string);
     /// Shows or updates the plugin's status bar item `id` in every window.
     set-status-item: func(id: string, item: status-item);
     remove-status-item: func(id: string);
-    /// Sets (`some`) or removes (`none`) the plugin's context key `key` in the
-    /// window the current command or event came from (every window when there is
-    /// none), for `when` clauses as `plugin.<id>.<key>`. A window's value takes
-    /// precedence over the global one; global calls don't clear window keys.
-    /// `value` is JSON text of a boolean, number or string (the string at most 1024
-    /// bytes, the raw text at most 4096 bytes); `key` is 1-64 of `A-Za-z0-9_-`; at
-    /// most 100 keys.
-    set-context: func(key: string, value: option<string>) -> result<_, error>;
+    /// Sets the plugin's context key `key`, which `when` clauses test as
+    /// `plugin.<id>.<key>`, in the window the current command or event came
+    /// from (every window when there is none). A window's value takes
+    /// precedence over the global one. `key` is 1-64 of `A-Za-z0-9_-`; at most
+    /// 100 keys; they go away when the plugin stops.
+    set-context: func(key: string, value: context-value) -> result<_, error>;
+    /// Removes the key `set-context` set in the same scope.
+    remove-context: func(key: string);
     /// Copies `text` to the system clipboard. Requires `clipboard`.
     copy-to-clipboard: func(text: string) -> result<_, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.

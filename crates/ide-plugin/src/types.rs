@@ -28,6 +28,8 @@ pub struct Invocation {
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
     pub editor: Option<EditorContext>,
+    /// Files and folders the command was run on.
+    pub selected_paths: Vec<PathBuf>,
 }
 
 /// A failed host call, as the plugin sees it (WIT `types.error`).
