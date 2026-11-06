@@ -234,7 +234,12 @@ pub fn plan(
     Ok(BuildPlan { system, title, steps })
 }
 
-fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<&Path>) -> IdeResult<Vec<BuildStep>> {
+pub(super) fn maven_steps(
+    root: &Path,
+    model: &BuildModel,
+    kind: BuildKind,
+    module: Option<&Path>,
+) -> IdeResult<Vec<BuildStep>> {
     let fallback;
     let m = match &model.maven {
         Some(m) => m,
