@@ -28,7 +28,30 @@ pub struct ContainerRun<'a> {
     pub name: &'a str,
     /// `--user uid:gid`; `None` keeps the image's user.
     pub user: Option<(u32, u32)>,
+    /// Runs the Python program under debugpy, for the debugger to attach.
+    pub debug: Option<ContainerDebug<'a>>,
 }
+
+/// A debug run: the program starts under [`DEBUG_BOOTSTRAP`], which waits for the
+/// debugger on `port` (published on this machine's loopback interface only).
+pub struct ContainerDebug<'a> {
+    pub port: u16,
+    /// Folder on this machine holding [`DEBUG_BOOTSTRAP`] as [`DEBUG_BOOTSTRAP_NAME`].
+    pub bootstrap_dir: &'a Path,
+    /// The IDE's debugpy (the folder that contains the `debugpy` package), used when
+    /// the image has none.
+    pub debugpy: Option<&'a Path>,
+}
+
+/// The script that starts a debugged program in the container: it prints a line
+/// starting with [`DEBUG_READY`] once debugpy listens, then runs the program.
+pub const DEBUG_BOOTSTRAP: &str = include_str!("openidea_debug.py");
+pub const DEBUG_BOOTSTRAP_NAME: &str = "openidea_debug.py";
+/// Where the bootstrap folder and the IDE's debugpy are mounted (read-only).
+const DEBUG_DIR: &str = "/opt/openidea/debug";
+const DEBUGPY_DIR: &str = "/opt/openidea/debugpy-lib";
+/// Start of the line the bootstrap prints when the debugger can attach.
+pub const DEBUG_READY: &str = "debugpy is waiting for the debugger on port ";
 
 /// The container folder of the project when a Docker target sets none.
 pub fn default_container_root(root: &Path) -> String {
@@ -108,6 +131,14 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
     if let Some((uid, gid)) = run.user {
         args.extend(["--user".into(), format!("{uid}:{gid}")]);
     }
+    if let Some(debug) = &run.debug {
+        let port = debug.port;
+        args.extend(["--publish".into(), format!("127.0.0.1:{port}:{port}")]);
+        args.extend(["--volume".into(), format!("{}:{DEBUG_DIR}:ro", debug.bootstrap_dir.to_string_lossy())]);
+        if let Some(lib) = debug.debugpy {
+            args.extend(["--volume".into(), format!("{}:{DEBUGPY_DIR}:ro", lib.to_string_lossy())]);
+        }
+    }
     let options = target.run_options.trim();
     if !options.is_empty() {
         args.extend(ide_run::import::split_args(options));
@@ -116,9 +147,18 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
         RunTargetKind::Compose => target.service.trim().to_owned(),
         _ => target.image.trim().to_owned(),
     });
-    match command.shell_line {
-        Some(line) => args.extend(["sh".into(), "-c".into(), line]),
-        None => {
+    match (command.shell_line, &run.debug) {
+        (Some(_), Some(_)) => {
+            return Err(IdeError::invalid(format!(
+                "'{}' is a shell command line: only a Python script, module or console script can be debugged in a container",
+                config.name
+            )));
+        }
+        (Some(line), None) => args.extend(["sh".into(), "-c".into(), line]),
+        (None, Some(debug)) => {
+            args.extend(debug_command(&command.program, &command.args, target, debug.port, run.container_root)?)
+        }
+        (None, None) => {
             args.push(command.program);
             args.extend(command.args);
         }
@@ -136,6 +176,73 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
     // `docker stop` signals the container's process (the CLI may not forward a signal).
     extras.stop_command = Some(format!("{} stop {}", shell_word(run.docker), run.name));
     Ok(out)
+}
+
+/// Project managers whose `run` executes in the project's environment (`uv run python …`).
+const PYTHON_RUNNERS: [&str; 6] = ["uv", "poetry", "pdm", "pipenv", "hatch", "rye"];
+
+fn is_python(program: &str) -> bool {
+    let name = program.rsplit('/').next().unwrap_or(program);
+    name == "python" || name == "python2" || name.starts_with("python3")
+}
+
+/// The container's command line that runs `program args` under [`DEBUG_BOOTSTRAP`]:
+/// `python [options] <bootstrap> <port> <folder> (script | -m module | -c code) args`.
+/// A console script (`pytest`) runs as a module of the interpreter next to it, or of the
+/// target's; `uv run …` and the like keep the manager in front.
+fn debug_command(
+    program: &str,
+    args: &[String],
+    target: &RunTarget,
+    port: u16,
+    folder: &str,
+) -> IdeResult<Vec<String>> {
+    let tool_module = |tool: &str, rest: &[String]| -> Vec<String> {
+        let module = tool.rsplit('/').next().unwrap_or(tool).to_owned();
+        [vec!["-m".to_owned(), module], rest.to_vec()].concat()
+    };
+    let (mut line, rest): (Vec<String>, Vec<String>) = if is_python(program) {
+        (vec![program.to_owned()], args.to_vec())
+    } else if PYTHON_RUNNERS.contains(&program.rsplit('/').next().unwrap_or(program))
+        && args.first().is_some_and(|a| a == "run")
+        && args.len() > 1
+    {
+        if is_python(&args[1]) {
+            (vec![program.to_owned(), "run".into(), args[1].clone()], args[2..].to_vec())
+        } else {
+            (vec![program.to_owned(), "run".into(), "python".into()], tool_module(&args[1], &args[2..]))
+        }
+    } else {
+        let python = match program.rfind('/') {
+            Some(i) => format!("{}python", &program[..=i]),
+            None if !target.python.trim().is_empty() => target.python.trim().to_owned(),
+            None => "python3".to_owned(),
+        };
+        (vec![python], tool_module(program, args))
+    };
+    // Interpreter options stay before the bootstrap (`-u`, `-X dev`).
+    let mut i = 0;
+    while let Some(a) = rest.get(i).filter(|a| a.starts_with('-') && *a != "-m" && *a != "-c") {
+        line.push(a.clone());
+        if matches!(a.as_str(), "-W" | "-X")
+            && let Some(value) = rest.get(i + 1)
+        {
+            line.push(value.clone());
+            i += 1;
+        }
+        i += 1;
+    }
+    let rest = &rest[i..];
+    match rest.first().map(String::as_str) {
+        None => return Err(IdeError::invalid("nothing to debug: the command names no Python script or module")),
+        Some("-m" | "-c") if rest.len() < 2 => {
+            return Err(IdeError::invalid(format!("nothing to debug: `{}` has no argument", rest[0])));
+        }
+        _ => {}
+    }
+    line.extend([format!("{DEBUG_DIR}/{DEBUG_BOOTSTRAP_NAME}"), port.to_string(), folder.to_owned()]);
+    line.extend(rest.iter().cloned());
+    Ok(line)
 }
 
 /// `word` for this machine's shell (the stop command runs there): the docker CLI found
@@ -229,6 +336,7 @@ mod tests {
             file_env: files,
             name: "openidea-app-1",
             user: Some((501, 20)),
+            debug: None,
         }
     }
 
@@ -314,6 +422,76 @@ mod tests {
 
         let target = RunTarget { kind: RunTargetKind::Compose, name: "c".into(), ..Default::default() };
         assert!(container_config(&c, &run(&target, &none, &none)).unwrap_err().message.contains("no service"));
+    }
+
+    /// The container's command line of `c` debugged on `target` (after the image).
+    #[cfg(unix)]
+    fn debugged(target: &RunTarget, c: &RunConfig) -> IdeResult<Vec<String>> {
+        let none = BTreeMap::new();
+        let mut r = run(target, &none, &none);
+        r.debug = Some(ContainerDebug {
+            port: 41234,
+            bootstrap_dir: Path::new("/data/container-debug"),
+            debugpy: Some(Path::new("/data/tools/debugpy/lib")),
+        });
+        let out = container_config(c, &r)?;
+        Ok(out.args)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debug_runs_the_program_under_the_bootstrap() {
+        let target = RunTarget { kind: RunTargetKind::Docker, image: "python:3.12".into(), ..Default::default() };
+        let boot = "/opt/openidea/debug/openidea_debug.py 41234 /workspaces/proj";
+        assert!(DEBUG_BOOTSTRAP.contains(&format!("\"{DEBUG_READY}%d, project folder %s\"")));
+        let line = |c: RunConfig| {
+            let args = debugged(&target, &c).unwrap();
+            let image = args.iter().position(|a| a == "python:3.12").unwrap();
+            args[image + 1..].join(" ")
+        };
+        let args = debugged(&target, &config("python3", &["main.py"])).unwrap().join(" ");
+        assert!(
+            args.contains(
+                "--user 501:20 --publish 127.0.0.1:41234:41234 \
+                 --volume /data/container-debug:/opt/openidea/debug:ro \
+                 --volume /data/tools/debugpy/lib:/opt/openidea/debugpy-lib:ro python:3.12"
+            ),
+            "{args}"
+        );
+        assert_eq!(
+            line(config("/work/proj/.venv/bin/python", &["-u", "-X", "dev", "/work/proj/main.py", "a"])),
+            format!("python3 -u -X dev {boot} /workspaces/proj/main.py a"),
+            "interpreter options stay with the interpreter"
+        );
+        assert_eq!(line(config("python3", &["-m", "pytest", "-x"])), format!("python3 {boot} -m pytest -x"));
+        assert_eq!(line(config("python3", &["-c", "print(1)", "a"])), format!("python3 {boot} -c print(1) a"));
+        assert_eq!(
+            line(config("/work/proj/.venv/bin/pytest", &["tests"])),
+            format!("/workspaces/proj/.venv/bin/python {boot} -m pytest tests"),
+            "a console script runs as a module of the interpreter next to it"
+        );
+        assert_eq!(line(config("uv", &["run", "python", "main.py"])), format!("uv run python {boot} main.py"));
+        assert_eq!(line(config("uv", &["run", "pytest", "-x"])), format!("uv run python {boot} -m pytest -x"));
+        let custom = RunTarget { python: "/usr/local/bin/python".into(), ..target.clone() };
+        let args = debugged(&custom, &config("uvicorn", &["app:app"])).unwrap();
+        assert!(args.join(" ").ends_with(&format!("python:3.12 /usr/local/bin/python {boot} -m uvicorn app:app")));
+
+        for (command, args, error) in [
+            ("python3", &["-u"][..], "nothing to debug"),
+            ("python3", &["-m"][..], "`-m` has no argument"),
+            ("python manage.py runserver", &[][..], "shell command line"),
+        ] {
+            let err = debugged(&target, &config(command, args)).unwrap_err();
+            assert!(err.message.contains(error), "{command}: {}", err.message);
+        }
+
+        // Without the IDE's copy only the bootstrap is mounted (the image brings debugpy).
+        let none = BTreeMap::new();
+        let mut r = run(&target, &none, &none);
+        r.debug =
+            Some(ContainerDebug { port: 41234, bootstrap_dir: Path::new("/data/container-debug"), debugpy: None });
+        let args = container_config(&config("python3", &["main.py"]), &r).unwrap().args.join(" ");
+        assert!(args.contains("openidea/debug:ro python:3.12") && !args.contains("debugpy-lib"), "{args}");
     }
 
     #[cfg(unix)]
