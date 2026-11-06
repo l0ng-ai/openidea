@@ -1022,6 +1022,8 @@ export const commands = {
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
 	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	/**  Plugin context keys in effect for this window (later changes arrive as `contextChanged`). */
+	pluginContextKeys: () => __TAURI_INVOKE<PluginContextKey[]>("plugin_context_keys"),
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
 	pluginCancelTask: (taskId: string) => __TAURI_INVOKE<boolean>("plugin_cancel_task", { taskId }),
 	/**
@@ -5643,6 +5645,13 @@ export type PhpSettings = {
 	phpstanConfig?: string,
 };
 
+/**  A plugin's context key for `when` clauses (`value` is JSON text). */
+export type PluginContextKey = {
+	pluginId: string,
+	key: string,
+	value: string,
+};
+
 /**  The focused editor when a plugin command is invoked. */
 export type PluginEditor = {
 	path: string,
@@ -5663,6 +5672,11 @@ export type PluginEvent =
 { type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
+/**
+ *  A plugin's context key was set (`value`: JSON text) or removed, in the
+ *  emitted window (every window when the client is `None`).
+ */
+{ type: "contextChanged"; pluginId: string; key: string; value: string | null } | 
 /**  A plugin began a task: show it with the background tasks. */
 { type: "taskStarted"; pluginId: string; taskId: string; title: string; cancellable: boolean } | { type: "taskProgress"; pluginId: string; taskId: string; done: number; total: number | null; message: string | null } | { type: "taskEnded"; pluginId: string; taskId: string } | 
 /**

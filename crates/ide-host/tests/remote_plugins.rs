@@ -300,5 +300,22 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
         })
     })
     .await;
+
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "jobs", "commandId": "context", "arg": "mode=true", "editor": null }),
+    )
+    .await
+    .unwrap();
+    until("the context key's event", 5, || {
+        client.plugin_events.lock().iter().any(|m| {
+            m.window.as_deref() == Some("main")
+                && matches!(&m.event, PluginEvent::ContextChanged { key, value, .. } if key == "mode" && value.as_deref() == Some("true"))
+        })
+    })
+    .await;
+    let keys = invoke(&peer, "plugin_context_keys", json!({})).await.unwrap();
+    assert_eq!(keys, json!([{ "pluginId": "jobs", "key": "mode", "value": "true" }]), "{keys}");
     plugins.host().shutdown();
 }

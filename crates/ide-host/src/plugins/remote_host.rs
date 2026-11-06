@@ -13,7 +13,7 @@
 //!
 //! The commands a window needs at run time (`plugin_run_command`,
 //! `plugin_post_events`, `plugin_event_kinds`, `plugin_status_items`,
-//! `plugin_cancel_task`, `plugin_set_active_file`, `plugin_line_markers`,
+//! `plugin_context_keys`, `plugin_cancel_task`, `plugin_set_active_file`, `plugin_line_markers`,
 //! `plugin_view_render`, `plugin_view_event`)
 //! carry the desktop commands' names and arguments, so a remote window's UI
 //! routes them here unchanged. Plugin results come back as `plugin`
@@ -107,6 +107,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
         event,
         PluginEvent::Notification { .. }
             | PluginEvent::StatusItemChanged { .. }
+            | PluginEvent::ContextChanged { .. }
             | PluginEvent::TaskStarted { .. }
             | PluginEvent::TaskProgress { .. }
             | PluginEvent::TaskEnded { .. }
@@ -398,6 +399,11 @@ impl RemotePlugins {
                     .map(|(plugin_id, id, item)| PluginStatusItem { plugin_id, id, item })
                     .collect::<Vec<_>>())
             }
+        });
+        let h = host.clone();
+        d.add("plugin_context_keys", move |c| {
+            let h = h.clone();
+            async move { Ok(alive(&h)?.context_keys(Some(&c.window))) }
         });
         let h = host.clone();
         d.add("plugin_cancel_task", move |c| {
