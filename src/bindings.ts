@@ -7662,7 +7662,13 @@ export type View = {
 	status: string | null,
 };
 
-export type ViewBody = { kind: "message"; value: string } | { kind: "tree"; value: ViewTreeItem[] } | { kind: "list"; value: ViewListItem[] } | { kind: "form"; value: ViewField[] } | { kind: "table"; value: ViewTable } | { kind: "html"; value: string };
+export type ViewBody = { kind: "message"; value: string } | { kind: "tree"; value: ViewTreeItem[] } | { kind: "list"; value: ViewListItem[] } | { kind: "form"; value: ViewField[] } | { kind: "table"; value: ViewTable } | { kind: "html"; value: string } | 
+/**  Tabs switched by the IDE; a tab's body is a message, text or process. */
+{ kind: "tabs"; value: ViewTab[] } | 
+/**  Read-only text that can be selected and copied. */
+{ kind: "text"; value: string } | 
+/**  A program the IDE runs, its output streamed into a log. */
+{ kind: "process"; value: ViewProcess };
 
 export type ViewButton = {
 	id: string,
@@ -7687,12 +7693,32 @@ export type ViewListItem = {
 	detail: string | null,
 };
 
+/**  Runs with the plugin's `process:<program>` grant in the project root. */
+export type ViewProcess = {
+	program: string,
+	args: string[],
+	toggles: ViewToggle[],
+};
+
+export type ViewTab = {
+	id: string,
+	label: string,
+	body: ViewBody,
+};
+
 export type ViewTable = {
 	columns: string[],
 	totalRows: number,
 	firstRow: number,
 	rows: string[][],
 	editable: boolean,
+};
+
+/**  A switch above the log; when on, `args` are appended and the program restarts. */
+export type ViewToggle = {
+	id: string,
+	label: string,
+	args: string[],
 };
 
 export type ViewTreeItem = {
