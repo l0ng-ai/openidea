@@ -63,6 +63,15 @@
   flex: 1;
   min-height: 0;
 }
+/* The branches pane's detail line: the current tag text and the popup-style sync
+   markers share one vertically centered line (the popup's row uses the same 8px
+   gap; its `syncSmall + syncSmall` rule tightens the marker pair to 4px). */
+.detailSync {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 
 /* filters */
 .filters {

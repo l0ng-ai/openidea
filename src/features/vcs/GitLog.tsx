@@ -108,6 +108,8 @@ import {
 } from "./logChanges";
 import { canDeleteBranch, canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
 import styles from "./GitLog.module.css";
+// The Branches pane's sync markers reuse the Branches popup's styles (icon + count, accent / success).
+import widgetStyles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { gitTabs, shownTab } from "./gitTabs";
@@ -344,11 +346,46 @@ export function LogView() {
 
 // --- branches ---------------------------------------------------------------
 
-function branchDetail(n: BranchTreeNode): string | undefined {
+/** Like the Branches popup (BranchWidget): the current tag, then icon + count sync markers. */
+function branchDetail(n: BranchTreeNode): ReactNode | undefined {
   const b = n.branch;
   if (!b) return undefined;
-  const sync = [b.behind > 0 ? `↓${b.behind}` : "", b.ahead > 0 ? `↑${b.ahead}` : ""].filter(Boolean).join(" ");
-  return [b.current ? tx("current") : "", sync].filter(Boolean).join("  ") || undefined;
+  // IDEA order: incoming (↓) before outgoing (↑).
+  const sync = [
+    b.behind > 0 && (
+      <span
+        key="incoming"
+        className={clsx(widgetStyles.syncSmall, widgetStyles.incoming)}
+        title={tx`${b.behind} incoming commits`}
+      >
+        <Icon name="vcs-incoming" size={12} />
+        {b.behind}
+      </span>
+    ),
+    b.ahead > 0 && (
+      <span
+        key="outgoing"
+        className={clsx(widgetStyles.syncSmall, widgetStyles.outgoing)}
+        title={tx`${b.ahead} outgoing commits`}
+      >
+        <Icon name="vcs-outgoing" size={12} />
+        {b.ahead}
+      </span>
+    ),
+  ].filter(Boolean);
+  if (!b.current && sync.length === 0) return undefined;
+  // One flex line, laid out like the popup's row: the current tag pill, then the
+  // icon + count markers (an inline marker box would ride on its own baseline).
+  return (
+    <span className={styles.detailSync}>
+      {b.current && (
+        <span className={widgetStyles.tag}>
+          <T>current</T>
+        </span>
+      )}
+      {sync}
+    </span>
+  );
 }
 
 export function BranchesPanel() {
@@ -560,7 +597,7 @@ export function BranchesPanel() {
                       : "branch"
                     : "folder"
           }
-          getDetail={branchDetail}
+          renderDetail={branchDetail}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {

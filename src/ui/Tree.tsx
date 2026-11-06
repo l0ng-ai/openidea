@@ -87,6 +87,8 @@ export interface TreeProps<T> {
   getIcon?: (node: T, expanded: boolean) => IconName | (string & {}) | undefined;
   /** Muted trailing text (e.g. a path next to the project root). */
   getDetail?: (node: T) => string | undefined;
+  /** Rich trailing detail (e.g. the Git log's sync markers); wins over `getDetail` when it returns a value. */
+  renderDetail?: (node: T) => ReactNode;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
@@ -219,6 +221,7 @@ export function Tree<T>(props: TreeProps<T>) {
     renderNode,
     getIcon,
     getDetail,
+    renderDetail,
     getColor,
     multiSelect = true,
     onActivate,
@@ -641,7 +644,7 @@ export function Tree<T>(props: TreeProps<T>) {
               matches,
             };
             const icon = getIcon?.(row.node, row.expanded);
-            const detail = getDetail?.(row.node);
+            const detail = renderDetail?.(row.node) ?? getDetail?.(row.node);
             const color = getColor?.(row.node);
             return (
               <div
