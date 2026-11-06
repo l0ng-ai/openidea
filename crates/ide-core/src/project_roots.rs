@@ -67,8 +67,6 @@ pub fn discover_matching(
 }
 
 /// The closest package manager declaration or lockfile, shared by build and run.
-// added Bun as seperate runtime 
-
 pub fn package_manager(root: &Path) -> &'static str {
     for dir in root.ancestors() {
         let package = std::fs::read(dir.join("package.json"))
@@ -85,11 +83,10 @@ pub fn package_manager(root: &Path) -> &'static str {
         }
         
         // Check if any script uses 'bun' command (bun project indicator)
-        if let Some(scripts) = package.as_ref().and_then(|p| p.get("scripts")).and_then(|s| s.as_object()) {
-            if scripts.values().any(|v| v.as_str().map(|s| s.starts_with("bun ")).unwrap_or(false)) {
+        if let Some(scripts) = package.as_ref().and_then(|p| p.get("scripts")).and_then(|s| s.as_object())
+            && scripts.values().any(|v| v.as_str().map(|s| s.starts_with("bun ")).unwrap_or(false)) {
                 return "bun";
             }
-        }
         
         for (marker, pm) in [
             ("pnpm-lock.yaml", "pnpm"),

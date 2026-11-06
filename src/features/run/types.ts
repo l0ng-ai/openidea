@@ -266,7 +266,6 @@ const npm: RunConfigTypeContribution = {
 
 const BUN_COMMANDS = ["bun", "run", "test", "install", "add", "remove", "publish"];
 
-
 const bun: RunConfigTypeContribution = {
   id: "bun",
   label: "Bun",

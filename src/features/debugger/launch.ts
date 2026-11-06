@@ -148,10 +148,10 @@ export function debugUnsupportedReason(rc: RunConfig): string | null {
     return "The Java debugger can't start this command itself. Debug an Application, Spring Boot, Maven or Gradle configuration, or start the JVM with a JDWP agent and attach with a Remote JVM Debug configuration.";
   const name = commandName(rc.command);
   if (rc.debugAdapter === "js-debug" && (rc.kind === "bun" || (name === "bun" && rc.kind !== "npm")))
-  return (
-    "Bun's inspector speaks the WebKit Inspector protocol, which the JavaScript debugger (vscode-js-debug) " +
-    "can't attach to. Use the bun-dap debugger, or run it with `bun --inspect` and open the printed debug.bun.sh link."
-  );
+    return (
+      "Bun's inspector speaks the WebKit Inspector protocol, which the JavaScript debugger (vscode-js-debug) " +
+      "can't attach to. Use the bun-dap debugger, or run it with `bun --inspect` and open the printed debug.bun.sh link."
+    );
 
   if (rc.kind === "deno" || name === "deno") {
     if (!denoRuntime(rc))
@@ -188,15 +188,15 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
 
 function bunDapLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "bun-dap", cwd);
-  
+
   const scriptArgs = rc.params?.arguments ? parseArgs(rc.params.arguments) : [];
-  
+
   const extra: Record<string, unknown> = {
     program: join(cwd, rc.params?.script ?? ""),
     runtime: rc.command,
     runtimeArgs: scriptArgs,
   };
-  
+
   out.extraJson = JSON.stringify(extra);
   return out;
 }
