@@ -264,14 +264,13 @@ export function collapseLinear<
   return { commits: visible, graph };
 }
 
-/** Ids of the loaded commits reachable from `head` (log order: children before parents). */
+/** Ids reachable from the given heads (log order: children before parents). */
 export function reachableFrom(
   commits: ReadonlyArray<{ id: string; parents: readonly string[] }>,
-  head: string | null,
+  heads: Iterable<string>,
 ): Set<string> {
-  const out = new Set<string>();
-  if (!head) return out;
-  out.add(head);
+  const out = new Set(heads);
+  if (!out.size) return out;
   for (const c of commits) if (out.has(c.id)) for (const p of c.parents) out.add(p);
   return out;
 }
@@ -504,6 +503,30 @@ export function hideLongEdges(rows: readonly GraphRow[], minLength = LONG_EDGE):
     }
   }
   return out;
+}
+
+/**
+ * Packs each row's lanes side by side, in their order: lanes laid out by branch leave
+ * gaps (one per branch) and hidden long edges free theirs. Each row boundary and each
+ * node level is packed on its own; adjacent rows share the boundary, so lines stay joined.
+ */
+export function compactLanes(rows: readonly GraphRow[]): GraphRow[] {
+  const ranks = (lanes: Iterable<number>) => new Map([...new Set(lanes)].sort((a, b) => a - b).map((l, i) => [l, i]));
+  const boundaries = Array.from({ length: rows.length + 1 }, (_, r) =>
+    ranks([...(rows[r]?.up.map((s) => s.from) ?? []), ...(rows[r - 1]?.down.map((s) => s.to) ?? [])]),
+  );
+  return rows.map((row, r) => {
+    const node = ranks([row.lane, ...row.up.map((s) => s.to), ...row.down.map((s) => s.from)]);
+    const top = boundaries[r]!;
+    const bottom = boundaries[r + 1]!;
+    return {
+      ...row,
+      lane: node.get(row.lane)!,
+      up: row.up.map((s) => ({ ...s, from: top.get(s.from)!, to: node.get(s.to)! })),
+      down: row.down.map((s) => ({ ...s, from: node.get(s.from)!, to: bottom.get(s.to)! })),
+      width: Math.max(node.size, top.size, bottom.size),
+    };
+  });
 }
 
 /**

@@ -152,9 +152,9 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-/** The settings shown as dropdowns: model, mode, approvals, thinking effort, in that order. */
+/** The settings shown in the composer: model, mode, permissions, approvals, effort. */
 export function mainOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
-  const order = ["model", "mode", "approval", "thought_level"];
+  const order = ["model", "mode", "permissions", "approval", "thought_level"];
   return order.flatMap((c) => config.filter((o) => o.category === c).slice(0, 1));
 }
 
@@ -165,12 +165,17 @@ export const modeOption = (config: readonly AgentConfigOption[]) => config.find(
  * Claude `acceptEdits`, Gemini `auto_edit`, Codex `full-access`…). Unknown modes ask.
  */
 export function modeIcon(mode: string): string {
-  const m = mode.toLowerCase().replace(/[^a-z]/g, "");
+  const m =
+    mode
+      .toLowerCase()
+      .split(/[#/]/)
+      .at(-1)
+      ?.replace(/[^a-z]/g, "") ?? "";
   if (m.includes("plan") || m === "architect") return "todo";
   if (m.includes("bypass") || m === "yolo" || m.includes("fullaccess") || m === "dangerous") return "unlock";
   if (m.includes("readonly") || m === "ask" || m === "chat") return "eye";
   if (m.includes("edit") || m === "code") return "edit";
-  if (m === "auto" || m === "agent") return "run";
+  if (m === "auto" || m === "agent" || m.includes("autopilot")) return "run";
   return "lock";
 }
 
@@ -180,6 +185,9 @@ export function bypassDefaults(config: readonly AgentConfigOption[]): Record<str
   const mode = modeOption(config);
   const unlock = mode?.values.find((v) => modeIcon(v.value) === "unlock");
   if (mode && unlock) out[mode.id] = unlock.value;
+  const permissions = config.find((o) => o.category === "permissions");
+  const allowAll = permissions?.values.find((v) => /^(on|true)$/i.test(v.value));
+  if (permissions && allowAll) out[permissions.id] = allowAll.value;
   const approval = config.find((o) => o.category === "approval");
   if (approval?.values.some((v) => v.value === "bypass")) out[approval.id] = "bypass";
   return out;

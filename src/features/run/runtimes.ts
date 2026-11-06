@@ -5,6 +5,7 @@
  * Rust come from SDK discovery and everything else resolves at launch.
  */
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isWindows } from "./jvmTypes";
 import type { LocatedTool, ToolEnv } from "./producers";
 
 const TTL = 60_000;
@@ -15,7 +16,6 @@ interface Entry {
 }
 
 const cache = new Map<string, Entry>();
-const isWindows = typeof navigator !== "undefined" && /Win/i.test(navigator.platform || navigator.userAgent);
 let compileDir: string | null = null;
 let locateUnavailable = false;
 
@@ -86,6 +86,14 @@ async function projectPython(): Promise<string | null> {
   }
 }
 
+async function projectPhp(): Promise<string | null> {
+  try {
+    return await call(commands.sdkPhpEffective());
+  } catch {
+    return null;
+  }
+}
+
 async function rootMarkers(root: string | null): Promise<{ deno: boolean; bun: boolean }> {
   if (!root) return { deno: false, bun: false };
   try {
@@ -106,17 +114,20 @@ export async function toolEnv(
   file: string | null,
   root: string | null,
   python: boolean,
+  php = false,
 ): Promise<ToolEnv> {
-  const [tools, py, markers] = await Promise.all([
+  const [tools, py, phpInterpreter, markers] = await Promise.all([
     locateTools(names, file),
     python ? projectPython() : Promise.resolve(null),
+    php ? projectPhp() : Promise.resolve(null),
     names.includes("deno") || names.includes("bun") ? rootMarkers(root) : Promise.resolve({ deno: false, bun: false }),
   ]);
   return {
     tool: (n) => tools.get(n),
     compileDir: compileDir ?? "/tmp/openidea-run",
-    windows: isWindows,
+    windows: isWindows(),
     python: py,
+    php: phpInterpreter,
     ...markers,
   };
 }

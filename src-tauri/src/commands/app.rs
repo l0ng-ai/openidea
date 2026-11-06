@@ -2,8 +2,8 @@ use crate::state::AppState;
 use ide_core::settings::Settings;
 use ide_core::{EventSink, IdeError, IdeResult, RequestId, TaskId};
 use ide_language::LanguageInfo;
-use ide_workspace::RecentProject;
 use ide_workspace::settings::SettingsScope;
+use ide_workspace::{RecentProject, RecentProjectGroup};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
@@ -46,7 +46,27 @@ pub fn recent_projects(state: State<'_, AppState>) -> Vec<RecentProject> {
 #[tauri::command]
 #[specta::specta]
 pub fn remove_recent_project(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
-    state.recent.remove(&path)
+    state.recent.remove(&path)?;
+    crate::jump_list::refresh(&state.app, state.recent.list());
+    Ok(())
+}
+
+/// The welcome screen's project groups.
+#[tauri::command]
+#[specta::specta]
+pub fn recent_project_groups(state: State<'_, AppState>) -> Vec<RecentProjectGroup> {
+    state.recent.groups()
+}
+
+/// Replaces the project groups; returns them as saved (names trimmed and unique, each
+/// project in one group, only recent projects).
+#[tauri::command]
+#[specta::specta]
+pub fn set_recent_project_groups(
+    state: State<'_, AppState>,
+    groups: Vec<RecentProjectGroup>,
+) -> IdeResult<Vec<RecentProjectGroup>> {
+    state.recent.set_groups(groups)
 }
 
 #[tauri::command]
@@ -65,10 +85,8 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
     let info = project_info(&project);
     let _ = window.set_title(&info.name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
-    let grouped = window.state::<crate::windows::WindowsState>().groups.lock().group(window.label()).is_some();
-    if grouped {
-        crate::window_groups::persist(window.app_handle()).await?;
-    }
+    // Every project window is part of the session reopened at the next start.
+    crate::window_groups::persist(window.app_handle()).await?;
     Ok(info)
 }
 
@@ -107,10 +125,12 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
     let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
     project.settings.set(SettingsScope::Project, "general.projectName", value)?;
     state.recent.rename(&project.root, (!name.is_empty()).then_some(name))?;
+    crate::jump_list::refresh(&state.app, state.recent.list());
     Ok(project_info(&project))
 }
 
-#[tauri::command]
+// Not on the main thread: closing stops the project's language servers, runs and file watcher.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());

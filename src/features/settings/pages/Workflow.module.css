@@ -213,6 +213,16 @@
   vertical-align: -3px;
   margin-right: 6px;
 }
+/* The aligned rows of a section share one label column, as wide as its widest label. */
+.toolsLayout *:has(> .alignedRow) {
+  display: grid;
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+  column-gap: 8px;
+  align-content: start;
+}
+.toolsLayout *:has(> .alignedRow) > * {
+  grid-column: 1 / -1;
+}
 .toolsLayout .alignedRow {
-  grid-template-columns: 130px minmax(0, 1fr);
+  grid-template-columns: subgrid;
 }

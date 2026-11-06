@@ -468,6 +468,40 @@ async fn run_in_terminal_spawns_debuggee() {
     assert!(response["body"]["processId"].as_u64().unwrap() > 0);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn run_in_terminal_program_reads_typed_input() {
+    let h = harness(Script {
+        // CodeLLDB's launcher asks to clear the terminal; the console keeps its output.
+        run_in_terminal: Some(vec![
+            "sh".into(),
+            "-c".into(),
+            "[ -t 0 ] && echo 'name?' && read name && echo \"hello $name\"".into(),
+            "--clear-screen".into(),
+        ]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::ProgramInput)).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("name?"))).await;
+    h.manager.send_input(session, "Bob\n").unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("hello Bob"))).await;
+    let output: String = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Debug { event: DebugEvent::Output { category, output }, .. } if category == "stdout" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!output.contains('\r'), "{output:?}");
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "x\n").is_err());
+}
+
 #[test]
 fn launch_arguments_merge_and_defaults() {
     let mut c = config();
@@ -1268,4 +1302,20 @@ async fn a_plugin_language_runs_its_debug_adapter_from_the_approved_program() {
     let err = manager.start(godot_launch(&dir), owner).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::PermissionDenied, "{}", err.message);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
+    let root = std::env::temp_dir().join(format!("openidea-flutter-{}", std::process::id()));
+    let app = root.join("app");
+    let tool = root.join("tool");
+    std::fs::create_dir_all(app.join("lib")).unwrap();
+    std::fs::create_dir_all(tool.join("bin")).unwrap();
+    std::fs::write(app.join("pubspec.yaml"), "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n").unwrap();
+    std::fs::write(tool.join("pubspec.yaml"), "name: tool\ndependencies:\n  args: ^2.0.0\n").unwrap();
+    assert!(is_flutter_project(&app, None));
+    assert!(is_flutter_project(&root, Some(&app.join("lib/main.dart"))));
+    assert!(!is_flutter_project(&tool, Some(&tool.join("bin/main.dart"))));
+    assert!(!is_flutter_project(&root, None));
+    std::fs::remove_dir_all(&root).unwrap();
 }

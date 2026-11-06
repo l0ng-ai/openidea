@@ -2,6 +2,7 @@ import type { KnipConfig } from "knip";
 
 const config: KnipConfig = {
   // Entries come from the Vite (index.html), Vitest, Playwright and package.json script plugins.
+  entry: ["e2e/pythonHighlight.fixture.ts"],
   project: [
     "src/**/*.{ts,tsx,css}",
     "!src/editor/core/cm/angular/parser.terms.ts",

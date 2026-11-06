@@ -71,6 +71,62 @@ pub fn context_xml(doc_base: &Path, reload: bool) -> String {
     format!("<Context docBase=\"{}\" reloadable=\"{reload}\" />\n", escape(&doc_base.to_string_lossy()))
 }
 
+/// The web app's own `META-INF/context.xml`, from an exploded directory or a WAR.
+fn app_context_xml(doc_base: &Path) -> Option<String> {
+    if doc_base.is_dir() {
+        return fs::read_to_string(doc_base.join("META-INF/context.xml")).ok();
+    }
+    let mut zip = zip::ZipArchive::new(fs::File::open(doc_base).ok()?).ok()?;
+    let mut text = String::new();
+    zip.by_name("META-INF/context.xml").ok()?.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// The context descriptor for `conf/Catalina/localhost`. Tomcat ignores the app's
+/// `META-INF/context.xml` once a descriptor exists there, so its content (`<Resource>`,
+/// `<Environment>`, `<Valve>`…) is carried over, with `docBase` and `reloadable` set by the IDE.
+pub fn deployed_context_xml(doc_base: &Path, reload: bool) -> String {
+    let Some(app) = app_context_xml(doc_base) else { return context_xml(doc_base, reload) };
+    merge_context_xml(&app, doc_base, reload).unwrap_or_else(|e| {
+        tracing::warn!("ignoring the web app's META-INF/context.xml: {e}");
+        context_xml(doc_base, reload)
+    })
+}
+
+fn merge_context_xml(app: &str, doc_base: &Path, reload: bool) -> IdeResult<String> {
+    let mut reader = Reader::from_str(app);
+    let mut writer = Writer::new(Vec::new());
+    let mut root = false;
+    loop {
+        let event = reader.read_event().map_err(invalid)?;
+        let event = match event {
+            Event::Eof => break,
+            Event::Start(ref tag) | Event::Empty(ref tag) if !root => {
+                if tag.name().as_ref() != "Context" {
+                    return Err(invalid("the root element is not <Context>"));
+                }
+                root = true;
+                let mut new = BytesStart::new("Context");
+                for a in tag.attributes() {
+                    let a = a.map_err(invalid)?;
+                    if !matches!(a.key.as_ref(), "docBase" | "reloadable" | "path") {
+                        new.push_attribute(a);
+                    }
+                }
+                new.push_attribute(("docBase", doc_base.to_string_lossy().as_ref()));
+                new.push_attribute(("reloadable", if reload { "true" } else { "false" }));
+                if matches!(event, Event::Empty(_)) { Event::Empty(new) } else { Event::Start(new) }
+            }
+            e => e,
+        };
+        writer.write_event(event).map_err(invalid)?;
+    }
+    if !root {
+        return Err(invalid("no <Context> element"));
+    }
+    String::from_utf8(writer.into_inner()).map_err(invalid)
+}
+
 pub fn patch_server_xml(xml: &str, http: u16, shutdown: u16, secret: &str) -> IdeResult<String> {
     let mut reader = Reader::from_str(xml);
     let mut writer = Writer::new(Vec::new());
@@ -204,7 +260,7 @@ pub fn explode(war: &Path, destination: &Path, resources_only: bool) -> IdeResul
 }
 
 /// Updates the exploded artifact deployment from the module's own class output directories and
-/// its web resources (`src/main/webapp`), file by file and only what changed, instead of
+/// its web resources ([`web_sources`]), file by file and only what changed, instead of
 /// rebuilding and re-exploding the WAR. `module` and `class_paths` are absolute.
 /// `Ok(false)`: not possible this way (not deployed from the artifact yet, the module's output
 /// isn't on the classpath, or a module it depends on was compiled since the last update, whose
@@ -232,9 +288,10 @@ pub fn sync_outputs(base: &Path, module: &Path, class_paths: &[PathBuf], resourc
     for dir in own {
         sync_tree(dir, dir, &classes, Path::new("WEB-INF/classes"), resources_only, &mut current)?;
     }
-    let webapp = module.join("src/main/webapp");
-    if webapp.is_dir() {
-        sync_tree(&webapp, &webapp, &dest, Path::new(""), resources_only, &mut current)?;
+    for (dir, target) in web_sources(module) {
+        if dir.is_dir() {
+            sync_tree(&dir, &dir, &dest.join(&target), &target, resources_only, &mut current)?;
+        }
     }
     for rel in previous.iter().filter(|p| !current.contains(*p)) {
         let path = dest.join(rel);
@@ -244,6 +301,59 @@ pub fn sync_outputs(base: &Path, module: &Path, class_paths: &[PathBuf], resourc
     }
     fs::write(manifest, serde_json::to_vec(&current).map_err(invalid)?)?;
     Ok(true)
+}
+
+/// The folders whose files the WAR puts at its root (or under the second path): the web app
+/// folder (`src/main/webapp`, maven-war-plugin's `warSourceDirectory`, Gradle's
+/// `webAppDirName` / `webAppDirectory`), then maven-war-plugin's `webResources`.
+pub fn web_sources(module: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let rel = |dir: &str| {
+        let dir = ["${project.basedir}/", "${basedir}/"].iter().find_map(|p| dir.strip_prefix(p)).unwrap_or(dir);
+        module.join(dir.trim())
+    };
+    if let Ok(pom) = fs::read_to_string(module.join("pom.xml"))
+        && let Some(war) = war_plugin(&pom)
+    {
+        let mut out = vec![(rel(tag(war, "warSourceDirectory").unwrap_or("src/main/webapp")), PathBuf::new())];
+        let mut rest = tag_block(war, "webResources").unwrap_or_default();
+        while let Some(start) = rest.find("<resource>") {
+            let end = rest[start..].find("</resource>").map_or(rest.len(), |e| start + e);
+            let resource = &rest[start..end];
+            if let Some(dir) = tag(resource, "directory") {
+                out.push((rel(dir), PathBuf::from(tag(resource, "targetPath").unwrap_or_default())));
+            }
+            rest = &rest[end..];
+        }
+        return out;
+    }
+    let gradle = ["build.gradle", "build.gradle.kts"].iter().find_map(|f| fs::read_to_string(module.join(f)).ok());
+    let web_app_dir = gradle.as_deref().and_then(|text| {
+        text.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .find(|l| l.contains("webAppDirName") || l.contains("webAppDirectory"))
+            .and_then(|l| l.split(['"', '\'']).nth(1).map(str::to_owned))
+    });
+    vec![(rel(web_app_dir.as_deref().unwrap_or("src/main/webapp")), PathBuf::new())]
+}
+
+/// The `<plugin>` element of maven-war-plugin in `pom`, if it is configured there.
+fn war_plugin(pom: &str) -> Option<&str> {
+    let at = pom.find("<artifactId>maven-war-plugin</artifactId>")?;
+    let start = pom[..at].rfind("<plugin>")?;
+    let end = pom[at..].find("</plugin>").map_or(pom.len(), |e| at + e);
+    Some(&pom[start..end])
+}
+
+/// The text of the first `<name>` element in `xml`.
+fn tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    tag_block(xml, name).map(str::trim).filter(|t| !t.is_empty())
+}
+
+fn tag_block<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = xml.find(&open)? + open.len();
+    let end = start + xml[start..].find(&format!("</{name}>"))?;
+    Some(&xml[start..end])
 }
 
 fn modified_since(dir: &Path, since: std::time::SystemTime) -> bool {
@@ -388,7 +498,7 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     let server = patch_server_xml(&fs::read_to_string(home.join("conf/server.xml"))?, port, shutdown, &secret)?;
     fs::write(base.join("conf/server.xml"), server)?;
     let debug = config.extras.params.get("tomcatDebug").is_some_and(|v| v == "true");
-    fs::write(contexts.join(format!("{context}.xml")), context_xml(&doc, !debug))?;
+    fs::write(contexts.join(format!("{context}.xml")), deployed_context_xml(&doc, !debug))?;
     config.env.insert("CATALINA_HOME".into(), home.to_string_lossy().into_owned());
     config.env.insert("CATALINA_BASE".into(), base.to_string_lossy().into_owned());
     if let Some(jre) = config.extras.params.get("jre").filter(|s| !s.trim().is_empty()) {
@@ -446,6 +556,48 @@ mod tests {
             zip.write_all(text.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
+    }
+    #[test]
+    fn keeps_the_apps_own_context_descriptor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Context path=\"/old\" docBase=\"old\" reloadable=\"false\" antiResourceLocking=\"true\">\n  <!-- JNDI -->\n  <Resource name=\"jdbc/x\" auth=\"Container\" type=\"javax.sql.DataSource\" url=\"jdbc:h2:mem:a;b=&amp;c\"/>\n  <Environment name=\"mode\" value=\"dev\" type=\"java.lang.String\"/>\n</Context>\n";
+        let dir = tmp.path().join("web app");
+        fs::create_dir_all(dir.join("META-INF")).unwrap();
+        fs::write(dir.join("META-INF/context.xml"), app).unwrap();
+        let war = tmp.path().join("app.war");
+        archive(&war, &[("META-INF/context.xml", app), ("index.jsp", "")]);
+        for doc in [&dir, &war] {
+            let xml = deployed_context_xml(doc, true);
+            let doc_base = escape(&doc.to_string_lossy());
+            assert!(
+                xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Context antiResourceLocking=\"true\""),
+                "{xml}"
+            );
+            assert!(xml.contains(&format!("docBase=\"{doc_base}\" reloadable=\"true\">")), "{xml}");
+            assert!(!xml.contains("/old") && !xml.contains("\"old\"") && !xml.contains("\"false\""), "{xml}");
+            assert!(xml.contains("<!-- JNDI -->"));
+            assert!(xml.contains("<Resource name=\"jdbc/x\" auth=\"Container\" type=\"javax.sql.DataSource\" url=\"jdbc:h2:mem:a;b=&amp;c\"/>"));
+            assert!(xml.contains("<Environment name=\"mode\""));
+            assert!(xml.trim_end().ends_with("</Context>"));
+        }
+
+        fs::write(dir.join("META-INF/context.xml"), "<Context/>").unwrap();
+        let doc_base = escape(&dir.to_string_lossy());
+        assert_eq!(
+            deployed_context_xml(&dir, false),
+            format!("<Context docBase=\"{doc_base}\" reloadable=\"false\"/>")
+        );
+        // Unreadable or not a context: the IDE's own descriptor, as before.
+        for broken in ["<Context><Resource></Context>", "<Server/>", ""] {
+            fs::write(dir.join("META-INF/context.xml"), broken).unwrap();
+            assert_eq!(deployed_context_xml(&dir, false), context_xml(&dir, false), "{broken}");
+        }
+        let plain = tmp.path().join("plain");
+        fs::create_dir_all(&plain).unwrap();
+        assert_eq!(deployed_context_xml(&plain, true), context_xml(&plain, true));
+        let bare = tmp.path().join("bare.war");
+        archive(&bare, &[("index.jsp", "")]);
+        assert_eq!(deployed_context_xml(&bare, true), context_xml(&bare, true));
     }
     fn config() -> RunConfig {
         RunConfig {
@@ -574,6 +726,83 @@ mod tests {
         fs::File::create(dep.join("Core.class")).unwrap().set_modified(later).unwrap();
         assert!(!sync_outputs(&base, &module, &paths, false).unwrap());
     }
+    #[test]
+    fn web_sources_follow_the_war_plugin_and_gradle_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = tmp.path();
+        let rel = |sources: Vec<(PathBuf, PathBuf)>| -> Vec<(String, String)> {
+            sources
+                .into_iter()
+                .map(|(d, t)| {
+                    let d = d.strip_prefix(module).unwrap().to_string_lossy().replace('\\', "/");
+                    (d, t.to_string_lossy().into_owned())
+                })
+                .collect()
+        };
+        assert_eq!(rel(web_sources(module)), [("src/main/webapp".to_owned(), String::new())]);
+
+        // An Eclipse-style layout: the JSPs come in through webResources.
+        fs::write(
+            module.join("pom.xml"),
+            r#"<project><build><plugins>
+              <plugin><artifactId>maven-compiler-plugin</artifactId></plugin>
+              <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-war-plugin</artifactId>
+                <configuration>
+                  <warSourceDirectory>${basedir}/web</warSourceDirectory>
+                  <webResources>
+                    <resource><directory>WebContent</directory><includes><include>**/*</include></includes></resource>
+                    <resource><directory>extra</directory><targetPath>static</targetPath></resource>
+                  </webResources>
+                </configuration>
+              </plugin>
+            </plugins></build></project>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            rel(web_sources(module)),
+            [
+                ("web".to_owned(), String::new()),
+                ("WebContent".to_owned(), String::new()),
+                ("extra".to_owned(), "static".to_owned())
+            ]
+        );
+
+        fs::remove_file(module.join("pom.xml")).unwrap();
+        fs::write(
+            module.join("build.gradle"),
+            "plugins { id 'war' }\n// webAppDirName = 'old'\nwebAppDirName = 'WebContent'\n",
+        )
+        .unwrap();
+        assert_eq!(rel(web_sources(module)), [("WebContent".to_owned(), String::new())]);
+    }
+
+    #[test]
+    fn updates_web_resources_outside_src_main_webapp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let (base, module) = (root.join("base"), root.join("web"));
+        let (dest, out) = (base.join("deployment"), module.join("target/classes"));
+        for dir in [dest.join("WEB-INF/classes"), out.clone(), module.join("WebContent/jsp")] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(
+            module.join("pom.xml"),
+            "<project><plugin><artifactId>maven-war-plugin</artifactId><configuration><webResources>\
+             <resource><directory>WebContent</directory></resource></webResources></configuration></plugin></project>",
+        )
+        .unwrap();
+        fs::write(dest.join("index.jsp"), "old").unwrap();
+        fs::write(module.join("WebContent/jsp/list.jsp"), "new").unwrap();
+        fs::write(base.join("artifact-path.txt"), "web.war").unwrap();
+
+        assert!(sync_outputs(&base, &module, std::slice::from_ref(&out), true).unwrap());
+        assert_eq!(fs::read_to_string(dest.join("jsp/list.jsp")).unwrap(), "new");
+        // Files the WAR brought that no source here maps to stay.
+        assert_eq!(fs::read_to_string(dest.join("index.jsp")).unwrap(), "old");
+    }
+
     #[test]
     fn deployment_errors_identify_the_checked_path() {
         let tmp = tempfile::tempdir().unwrap();

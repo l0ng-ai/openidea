@@ -115,6 +115,8 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::ViewMessage { .. }
             | PluginEvent::OpenTerminal { .. }
             | PluginEvent::OpenLocation { .. }
+            | PluginEvent::CopyToClipboard { .. }
+            | PluginEvent::OpenUrl { .. }
     )
 }
 

@@ -199,6 +199,12 @@ pub enum PluginEvent {
     /// Plugin languages, or the servers they may start, changed: re-fetch
     /// `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
     LanguagesChanged,
+    /// Copy `text` to the system clipboard.
+    #[serde(rename_all = "camelCase")]
+    CopyToClipboard { plugin_id: String, text: String },
+    /// Open `url` (`http(s)://`) in the system browser.
+    #[serde(rename_all = "camelCase")]
+    OpenUrl { plugin_id: String, url: String },
 }
 
 /// Delivers events to the UI. `client` is the window that invoked the plugin

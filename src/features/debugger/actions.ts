@@ -299,7 +299,10 @@ async function startConfig(arg: unknown) {
   }
   const dotnet = config.kind === "dotnet" && config.debugAdapter === "netcoredbg";
   const prepared = dotnet ? await call(commands.runDotnetResolve(config, true)) : config;
-  const launch = launchConfigFor(prepared, root);
+  // php-debug starts the PHP chosen in Settings unless the command names one.
+  const php =
+    config.debugAdapter === "php-debug" && isTauri() ? await call(commands.sdkPhpEffective()).catch(() => null) : null;
+  const launch = launchConfigFor(prepared, root, php);
   if (!launch) {
     notifications().notify({
       group: "run",
@@ -434,6 +437,30 @@ export function registerDebugActions(): () => void {
           thread = threads[0]?.id ?? 0;
         }
         await report(tx("Pause failed"), call(commands.debugPause(s.id, thread)));
+      },
+    },
+    {
+      id: "debug.hotReload",
+      title: "Hot Reload",
+      category: "Debug",
+      icon: "hot-reload",
+      description: "Flutter: inject the changed sources into the running app",
+      when: "debugSessionRunning && debugSessionDart",
+      run: () => {
+        const s = activeSession();
+        if (s) void report("Hot Reload failed", call(commands.debugHotReload(s.id)));
+      },
+    },
+    {
+      id: "debug.hotRestart",
+      title: "Hot Restart",
+      category: "Debug",
+      icon: "refresh",
+      description: "Flutter: restart the app, discarding its state",
+      when: "debugSessionRunning && debugSessionDart",
+      run: () => {
+        const s = activeSession();
+        if (s) void report("Hot Restart failed", call(commands.debugHotRestart(s.id)));
       },
     },
     step("debug.stepOver", "Step Over", "over", "step-over"),

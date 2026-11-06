@@ -46,9 +46,14 @@
   border-bottom: 1px solid var(--border);
   flex: none;
   min-width: 0;
+  overflow: hidden;
 }
+.header > * {
+  flex: none;
+}
+/* Shrinks ahead of the meters. */
 .title {
-  flex: 0 1 auto;
+  flex: 0 1000 auto;
   min-width: 0;
   font-weight: 600;
   color: var(--fg-strong);
@@ -466,9 +471,20 @@
   min-width: 0;
   color: var(--fg-secondary);
 }
+/* Title, state and answers on one line when they fit; a long title takes its own line and
+   the state and answers go below it, in line with it. */
+.permissionBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 2px 6px;
+}
 /* Up to three lines; the full text is its tooltip. */
 .permissionTitle {
   display: -webkit-box;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   -webkit-box-orient: vertical;
@@ -477,7 +493,7 @@
   overflow-wrap: anywhere;
 }
 .permissionLine > svg,
-.permissionLine > .muted {
+.permissionBody > .muted {
   flex: none;
 }
 .permissionAnswers {
@@ -539,11 +555,17 @@
   white-space: nowrap;
 }
 
+/* Meters that don't fit wrap onto a hidden second row instead of being cut in half. */
 .meters {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 22px;
+  overflow: hidden;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  align-content: flex-start;
+  gap: 0 10px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -552,6 +574,7 @@
 .meter {
   display: inline-flex;
   align-items: center;
+  height: 22px;
   gap: 5px;
 }
 .usageBar {

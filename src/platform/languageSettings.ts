@@ -25,9 +25,10 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
+  configurationDirectory: string;
   languages: string[];
   prefer: boolean;
   runOnSave: boolean;
@@ -35,6 +36,7 @@ interface ExternalFormatterValid {
 
 const DEFAULT_FORMATTER: ExternalFormatterValid = {
   path: "",
+  configurationDirectory: "",
   languages: [
     "markdown",
     "yaml",
@@ -55,21 +57,26 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   runOnSave: false,
 };
 
-/** `languages.php.languageLevel` values; `""` = Auto (from `composer.json`). */
+const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
+  ...DEFAULT_FORMATTER,
+  languages: ["python"],
+};
+
+/** `languages.php.languageLevel` values, newest first; `""` = Auto (from `composer.json`). */
 export const PHP_LANGUAGE_LEVELS = [
   "",
-  "5.6",
-  "7.0",
-  "7.1",
-  "7.2",
-  "7.3",
-  "7.4",
-  "8.0",
-  "8.1",
-  "8.2",
-  "8.3",
-  "8.4",
   "8.5",
+  "8.4",
+  "8.3",
+  "8.2",
+  "8.1",
+  "8.0",
+  "7.4",
+  "7.3",
+  "7.2",
+  "7.1",
+  "7.0",
+  "5.6",
 ] as const;
 
 export interface LanguagesValid {
@@ -81,6 +88,7 @@ export interface LanguagesValid {
     languageLevel: (typeof PHP_LANGUAGE_LEVELS)[number];
     includePaths: string[];
     stubs: string[];
+    phpstanConfig: string;
   };
   rust: {
     toolchain: string;
@@ -98,11 +106,13 @@ export interface LanguagesValid {
   typescript: { version: string };
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
+  ruff: ExternalFormatterValid;
   java: {
     jdk: string;
     jdtlsJdk: string;
     jdtlsVmArgs: string;
     gradle: {
+      linkedProjects: string[] | null;
       jvm: string;
       distribution: "wrapper" | "local";
       home: string;
@@ -115,6 +125,7 @@ export interface LanguagesValid {
       userSettings: string;
       localRepository: string;
       unlinkedProjects: string[];
+      linkedProjects: string[];
       daemon: boolean;
       mvndHome: string;
     };
@@ -150,18 +161,27 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   ruby: { interpreter: "" },
   node: { interpreter: "", packageManager: "" },
-  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [] },
+  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
+  ruff: DEFAULT_RUFF_FORMATTER,
   java: {
     jdk: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
-    gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
-    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [], daemon: false, mvndHome: "" },
+    gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
+    maven: {
+      home: "",
+      userSettings: "",
+      localRepository: "",
+      unlinkedProjects: [],
+      linkedProjects: [],
+      daemon: false,
+      mvndHome: "",
+    },
   },
   markdown: { previewFontSize: null },
 };
@@ -217,11 +237,11 @@ const folders = (v: unknown): string[] =>
 const folderKey = (stored: string) => (stored === "." ? "" : stored);
 const storedFolder = (rel: string) => normalizeFolder(rel) || ".";
 
-function validateFormatter(raw: unknown): ExternalFormatterValid {
-  const d = DEFAULT_FORMATTER;
+function validateFormatter(raw: unknown, d = DEFAULT_FORMATTER): ExternalFormatterValid {
   const f = obj(raw);
   return {
     path: text(f.path, d.path),
+    configurationDirectory: text(f.configurationDirectory, d.configurationDirectory),
     languages: Array.isArray(f.languages)
       ? [...new Set(f.languages.filter((v): v is string => typeof v === "string"))]
       : d.languages,
@@ -261,6 +281,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       languageLevel: oneOf(php.languageLevel, PHP_LANGUAGE_LEVELS, d.php.languageLevel),
       includePaths: strings(php.includePaths),
       stubs: strings(php.stubs),
+      phpstanConfig: text(php.phpstanConfig, d.php.phpstanConfig),
     },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),
@@ -287,11 +308,15 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
+    ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
       gradle: {
+        linkedProjects: Array.isArray(gradle.linkedProjects)
+          ? gradle.linkedProjects.filter((p): p is string => typeof p === "string")
+          : null,
         jvm: text(gradle.jvm, d.java.gradle.jvm),
         distribution: oneOf(gradle.distribution, ["wrapper", "local"] as const, d.java.gradle.distribution),
         home: text(gradle.home, d.java.gradle.home),
@@ -303,6 +328,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
+        linkedProjects: folders(maven.linkedProjects),
         daemon: bool(maven.daemon, d.java.maven.daemon),
         mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
       },

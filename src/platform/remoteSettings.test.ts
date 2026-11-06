@@ -3,6 +3,7 @@ import { CLIENT_SETTINGS_KEYS } from "./clientSettings";
 import { commands, call, type Settings } from "./ipc";
 import { loadSettings, useProject } from "./project";
 import { connectRemote, disableRemote, enableRemote, isRemoteWindow, remoteRouting } from "./remote";
+import { invoke as routedInvoke } from "./tauriCore";
 
 const handlers = vi.hoisted(() => new Map<string, () => void>());
 vi.mock("./ipc", async (original) => ({
@@ -41,7 +42,13 @@ beforeEach(() => {
     cmd === "remote_invoke" ? JSON.stringify(remote) : local,
   );
   Object.assign(window, { __TAURI_INTERNALS__: { invoke, transformCallback: () => 1 } });
-  enableRemote({ sshConfig: "test", root: "/remote", host: "test", commands: [...served] });
+  enableRemote({
+    target: { kind: "ssh", config: "test" },
+    root: "/remote",
+    host: "test",
+    os: "linux",
+    commands: [...served],
+  });
 });
 afterEach(() => {
   disableRemote();
@@ -49,6 +56,33 @@ afterEach(() => {
 });
 
 describe("remote client settings", () => {
+  it.each([
+    { gradle: { dir: "app", projects: [] }, expected: [{ dir: "app", projects: [] }] },
+    {
+      gradle: [
+        { dir: "one", projects: [] },
+        { dir: "two", projects: [] },
+      ],
+      expected: [
+        { dir: "one", projects: [] },
+        { dir: "two", projects: [] },
+      ],
+    },
+    { gradle: null, expected: null },
+  ])("accepts the released and current remote Gradle build models: $gradle", async ({ gradle, expected }) => {
+    for (const command of ["build_model", "build_sync", "gradle_link_projects", "gradle_unlink_projects"]) {
+      enableRemote({
+        target: { kind: "wsl", distro: "Ubuntu" },
+        root: "/remote",
+        host: "Ubuntu",
+        os: "linux",
+        commands: [command],
+      });
+      invoke.mockResolvedValue(JSON.stringify({ gradle, maven: null }));
+      expect(await routedInvoke(command)).toEqual({ gradle: expected, maven: null });
+    }
+  });
+
   it("ends remote routing before a successful local open is published, even at the same path", async () => {
     invoke.mockResolvedValueOnce({ root: "/remote", settings: local });
     await call(commands.openProject("/remote"));
@@ -91,7 +125,7 @@ describe("remote client settings", () => {
     invoke.mockImplementation(async (cmd: string) =>
       cmd === "remote_connect"
         ? {
-            sshConfig: "test",
+            target: { kind: "ssh", config: "test" },
             root: "/remote",
             host: "test",
             commands: [...served],
@@ -101,7 +135,7 @@ describe("remote client settings", () => {
           ? "null"
           : local,
     );
-    await connectRemote("test", "/remote");
+    await connectRemote({ kind: "ssh", config: "test" }, "/remote");
     expect(useProject.getState().settings).toMatchObject({ keymap: "my-map", editor: { tabSize: 2, fontSize: 19 } });
   });
   it("overlays the project snapshot used by the settings window", async () => {

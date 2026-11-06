@@ -537,9 +537,15 @@ impl Documents {
     pub fn edit(&self, doc: DocId, base_version: u32, changes: ChangeSet) -> IdeResult<u32> {
         self.with_doc(doc, |st| {
             if st.read_only {
+                tracing::warn!("edit rejected: {} is read-only", st.path.display());
                 return Err(read_only_error(&st.path));
             }
-            let (applied, edits) = st.doc.apply_detailed(base_version, &changes)?;
+            let (applied, edits) = st.doc.apply_detailed(base_version, &changes).inspect_err(|e| {
+                // A stale version is routine (the UI rebases); anything else makes the editor drop the edit.
+                if e.kind != ErrorKind::OutOfSync {
+                    tracing::warn!("edit of {} rejected: {e}", st.path.display());
+                }
+            })?;
             self.set_dirty(doc, st, true);
             self.notify_changed(doc, st, &applied, &edits);
             Ok(st.doc.version())
@@ -867,17 +873,18 @@ impl Documents {
                     .then(|| st.path.clone())
             })
             .collect();
-        self.reload_from_disk(&paths, force_clean);
+        self.reload_from_disk(&paths, force_clean, true);
     }
 
     /// Re-reads from disk after an external change. Clean documents reload
     /// silently; dirty ones are left alone and reported via `IdeEvent::Notify`.
     /// Changes matching our own last save are ignored.
     pub fn on_disk_changed(&self, paths: &[PathBuf]) {
-        self.reload_from_disk(paths, false);
+        self.reload_from_disk(paths, false, false);
     }
 
-    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool) {
+    /// `dedup`: blind scans skip files whose `(mtime, length)` stamp still matches.
+    fn reload_from_disk(&self, paths: &[PathBuf], force_clean: bool, dedup: bool) {
         for path in paths {
             let Some(id) = self.by_path(path) else { continue };
             let result = self.with_doc(id, |st| {
@@ -886,7 +893,23 @@ impl Documents {
                 }
                 let Ok(meta) = std::fs::metadata(&st.path) else { return Ok(()) };
                 let mtime = ide_vfs::mtime_ms(&meta);
-                if mtime == st.disk_mtime && meta.len() == st.disk_len && (!force_clean || st.dirty) {
+                let unchanged = mtime == st.disk_mtime && meta.len() == st.disk_len;
+                // Blind scans trust the stamp. OS events are authoritative, but they also
+                // echo our own saves: a clean document whose stamp matches is re-checked by
+                // bytes — an external write that preserved both length and mtime differs
+                // from what saving this buffer would write, our own save's echo does not.
+                // Native-to-ascii properties documents and dirty documents keep the stamp
+                // dedup: the former's disk bytes legitimately differ from the buffer text,
+                // the latter warn once per disk state.
+                if unchanged
+                    && (!force_clean || st.dirty)
+                    && (dedup
+                        || st.dirty
+                        || st.native_to_ascii
+                        || ide_vfs::encode(&st.doc.text_for_save(), &st.encoding, st.has_bom)
+                            .map(|bytes| bytes == std::fs::read(&st.path).unwrap_or_default())
+                            .unwrap_or(true))
+                {
                     return Ok(());
                 }
                 if st.dirty {

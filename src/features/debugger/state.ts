@@ -23,12 +23,14 @@ import {
   type ThreadInfo,
   type Variable,
 } from "@/platform/ipc";
+import { confirmTerminate } from "@/workbench/confirmTerminate";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { missingAdapter } from "./missingAdapter";
+import { startFailureMessage } from "./startFailure";
 
 export type SessionStatus = "starting" | "running" | "paused" | "terminated";
 
@@ -44,6 +46,8 @@ export interface DebugSession {
   parent: DebugSessionId | null;
   /** Launch configuration (root sessions), used by Rerun. */
   launch: LaunchConfig | null;
+  /** The program runs in a terminal the IDE gave it: the console types into it while it runs. */
+  programInput?: boolean;
   /** Process the session is attached to (a Run tab's build tool); stopped with the session. */
   process: RunId | null;
   status: SessionStatus;
@@ -327,6 +331,8 @@ export function publishContext() {
   setContext("debugSessionActive", anyLive);
   setContext("debugSessionRunning", s?.status === "running");
   setContext("debugSessionPaused", s?.status === "paused");
+  // Dart and Flutter sessions: Hot Reload / Hot Restart.
+  setContext("debugSessionDart", !!s && rootOf(s).adapter === "dart");
   setContext("debugCanRerun", !!s && !!(rootOf(s).runConfig || rootOf(s).launch));
   setContext(
     "debugCanHotSwap",
@@ -602,7 +608,7 @@ export async function startSession(
       group: "run",
       level: "error",
       title: `Cannot start debugger for ${launch.name}`,
-      body: e instanceof Error ? e.message : String(e),
+      body: startFailureMessage(e),
       key: "debug.start",
     });
     return null;
@@ -630,6 +636,51 @@ export async function stopSession(id: DebugSessionId, options: { stopProcess?: b
   // Detaching leaves an attached JVM running: stop the process it belongs to, like IDEA.
   if (options.stopProcess !== false && root.process != null)
     await call(commands.runStop(root.process)).catch(() => undefined);
+}
+
+/**
+ * Closes a session's tab: a live session is stopped first once the user agrees (the Run
+ * tab's question), then the window forgets it — and its children.
+ */
+export async function closeSessionTab(id: DebugSessionId): Promise<boolean> {
+  const s = useDebug.getState().sessions[id];
+  if (!s) return false;
+  if (isLive(s)) {
+    if (workflowSettings().run.confirmTerminate && !(await confirmTerminate(s.name))) return false;
+    await stopSession(s.id);
+  }
+  removeSession(s.id);
+  return true;
+}
+
+/** Forgets a session and its children; a selected one passes the selection to the tab on its left. */
+export function removeSession(id: DebugSessionId) {
+  const st = useDebug.getState();
+  const gone = new Set<DebugSessionId>([id]);
+  for (const s of Object.values(st.sessions)) if (s.parent === id) gone.add(s.id);
+
+  const order = Object.values(st.sessions).map((s) => s.id);
+  const sessions: Record<number, DebugSession> = {};
+  for (const s of Object.values(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
+  const console = { ...st.console };
+  for (const goneId of gone) delete console[goneId];
+  const at = order.indexOf(id);
+  const neighbour =
+    order
+      .slice(0, at)
+      .reverse()
+      .find((n) => sessions[n]) ??
+    order.slice(at + 1).find((n) => sessions[n]) ??
+    null;
+
+  useDebug.setState({
+    sessions,
+    active: st.active != null && sessions[st.active] ? st.active : neighbour,
+    console,
+  });
+  for (const goneId of gone) owned.delete(goneId);
+  updateExecutionPoint();
+  publishContext();
 }
 
 export async function rerunSession(id: DebugSessionId) {
@@ -896,6 +947,16 @@ export async function setVariableValue(
   return result;
 }
 
+/** Whether the console types into the session's program (it runs, in a terminal the IDE gave it). */
+export function readsProgramInput(s: DebugSession): boolean {
+  return !!s.programInput && s.status === "running";
+}
+
+/** Types `text` into the session's program; its terminal echoes it to the console. */
+export async function sendProgramInput(session: DebugSession, text: string): Promise<void> {
+  await call(commands.debugSendInput(session.id, text));
+}
+
 export async function evaluate(
   expression: string,
   context: "repl" | "watch" | "hover" | "clipboard",
@@ -973,6 +1034,9 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "thread":
       if (s.status === "paused") void loadThreads(id);
+      break;
+    case "programInput":
+      patch(id, { programInput: true });
       break;
     case "breakpointsChanged":
       void refreshStates(event.path);

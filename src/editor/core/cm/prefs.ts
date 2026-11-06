@@ -34,6 +34,8 @@ import {
   selectLineStart,
 } from "@codemirror/commands";
 import { markdownImages } from "./markdownImages";
+import { selectionMarks } from "./selectionMarks";
+import { seamlessSelection } from "./selectionLayer";
 import type { EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
@@ -46,6 +48,7 @@ import {
   selectHumpRight,
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
+import { enterInDocComment } from "./docComment";
 import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 
 // --- soft wraps ---------------------------------------------------------------
@@ -504,6 +507,8 @@ export function caretExtension(prefs: EditorExtras): Extension {
     // Before drawSelection: its measure request must run before the cursor layer redraws.
     a.smoothCaretMovement ? caretGlide : [],
     drawSelection({ cursorBlinkRate: a.caretBlinking ? Math.max(100, Math.min(5000, a.caretBlinkPeriod)) * 2 : 0 }),
+    selectionMarks,
+    seamlessSelection(),
     classes.length ? EditorView.editorAttributes.of({ class: classes.join(" ") }) : [],
   ];
 }
@@ -567,6 +572,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { key: "Home", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
+  if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
   if (!o.readOnly) keys.push({ key: "Enter", run: enterInLineComment });
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });

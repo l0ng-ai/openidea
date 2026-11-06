@@ -626,6 +626,10 @@ export function Tree<T>(props: TreeProps<T>) {
               );
             }
             const isSelected = selected.has(row.key);
+            const prevRow = rows[v.index - 1];
+            const nextRow = rows[v.index + 1];
+            const joinPrev = isSelected && !!prevRow && !prevRow.loading && selected.has(prevRow.key);
+            const joinNext = isSelected && !!nextRow && !nextRow.loading && selected.has(nextRow.key);
             const isLead = v.index === leadIndex;
             const matches = matchMap.get(row.key) ?? null;
             const state: TreeRowState = {
@@ -655,6 +659,8 @@ export function Tree<T>(props: TreeProps<T>) {
                   props.horizontalScroll && styles.wideRow,
                   rowClassName?.(row.node),
                   isSelected && styles.selected,
+                  joinPrev && styles.joinPrev,
+                  joinNext && styles.joinNext,
                   isLead && styles.lead,
                   reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}

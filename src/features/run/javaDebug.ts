@@ -40,8 +40,12 @@ function withProperty(args: readonly string[], key: string, value: string): stri
 export function jdwpLaunch(config: RunConfig): RunConfig | null {
   if (config.kind === "tomcat") return { ...config, params: { ...config.params, tomcatDebug: "true" } };
   const args = config.args;
-  // A single source file (`java Hi.java`): the agent goes before the file.
-  if (config.kind === "java-file") return { ...config, args: [JDWP_AGENT, ...args] };
+  // A single source file (`java Hi.java`): the agent goes before the file. Compiled first
+  // (`javac … && java -cp …`): through `JDK_JAVA_OPTIONS`, which only the `java` launcher reads.
+  if (config.kind === "java-file")
+    return args.length
+      ? { ...config, args: [JDWP_AGENT, ...args] }
+      : { ...config, env: withOption(config.env, "JDK_JAVA_OPTIONS", JDWP_AGENT) };
   if (config.kind === "maven" || /(^|\/)mvnw?(\.cmd)?$/.test(config.command)) {
     if (args.some((a) => a === "spring-boot:run" || /:spring-boot-maven-plugin:[^:]*:run$/.test(a)))
       return { ...config, args: withProperty(args, "spring-boot.run.jvmArguments", JDWP_AGENT) };

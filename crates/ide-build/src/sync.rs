@@ -283,7 +283,12 @@ pub fn sync_maven(
     cancel: &CancellationToken,
     progress: &dyn Fn(SyncProgress),
 ) -> IdeResult<()> {
-    let mut model = maven::load_with_profiles(root, &options.profiles);
+    let mut model = maven::load_with_linked(
+        root,
+        maven::default_local_repo(),
+        &options.profiles,
+        &options.maven_settings.linked_projects,
+    );
     maven::UnlinkedProjects::from_model(&model, &options.maven_settings).filter(&mut model);
     std::fs::create_dir_all(cache_dir)?;
     let mut cache = MavenCache {
@@ -373,8 +378,25 @@ pub fn sync_gradle(
     cancel: &CancellationToken,
     progress: &dyn Fn(SyncProgress),
 ) -> IdeResult<()> {
-    let mut model = gradle::load(root).ok_or_else(|| IdeError::not_found("no Gradle build in this project"))?;
-    std::fs::create_dir_all(cache_dir)?;
+    let model = gradle::load(root).ok_or_else(|| IdeError::not_found("no Gradle build in this project"))?;
+    sync_gradle_model(root, cache_dir, &model, options, cancel, progress)
+}
+
+/// Syncs this exact linked build; another build's task paths and cache cannot interfere.
+pub fn sync_gradle_model(
+    root: &Path,
+    cache_dir: &Path,
+    model: &GradleModel,
+    options: &SyncOptions,
+    cancel: &CancellationToken,
+    progress: &dyn Fn(SyncProgress),
+) -> IdeResult<()> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut model = model.clone();
+    let cache_dir = gradle::cache_dir(cache_dir, &model.dir);
+    std::fs::create_dir_all(&cache_dir)?;
     let init_script = cache_dir.join("openidea-model.gradle");
     std::fs::write(&init_script, MODEL_INIT_SCRIPT)?;
     let mut args: Vec<String> = vec![
@@ -389,14 +411,24 @@ pub fn sync_gradle(
         args.push("--offline".into());
     }
     progress(SyncProgress { message: "Loading Gradle tasks".into(), fraction: None });
-    let out = run(
+    let out = match run(
         options.gradle_command.as_deref().unwrap_or(&model.command),
         &args,
         &root.join(&model.dir),
         &options.env,
         cancel,
         |_| {},
-    )?;
+    ) {
+        Ok(out) => out,
+        Err(_) if cancel.is_cancelled() => return Err(IdeError::cancelled()),
+        Err(error) if error.kind == ide_core::error::ErrorKind::Unavailable => {
+            Output { success: false, text: error.message }
+        }
+        Err(error) => return Err(error),
+    };
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
     let projects = if out.success { parse_reported_projects(&out.text) } else { Vec::new() };
     // Hash the build files of the reported projects, or the model is stale right after the sync.
     gradle::merge_reported_projects(root, &mut model, &projects);
@@ -407,12 +439,127 @@ pub fn sync_gradle(
         tasks: if out.success { gradle::parse_tasks(&out.text) } else { Vec::new() },
         projects,
     };
-    write_cache(cache_dir, GRADLE_CACHE, &cache)
+    write_cache(&cache_dir, GRADLE_CACHE, &cache)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn unavailable_gradle_launchers_are_cached_without_stopping_other_builds() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for dir in ["a", "b"] {
+            std::fs::create_dir(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("build.gradle"), "").unwrap();
+        }
+        let wrapper = root.join("b/gradlew");
+        std::fs::write(&wrapper, "#!/bin/sh\nprintf '%s\\n' 'Build tasks' '-----------' 'healthy - ok'\n").unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = ide_core::settings::GradleSettings {
+            linked_projects: Some(vec!["a".into(), "b".into()]),
+            ..Default::default()
+        };
+        let mut models = gradle::load_linked(root, &settings);
+        models[0].command = root.join("a/missing-gradlew").to_string_lossy().into_owned();
+        let cache = root.join("cache");
+        let run = |model: &GradleModel| {
+            sync_gradle_model(root, &cache, model, &SyncOptions::default(), &CancellationToken::new(), &|_| {})
+        };
+        for model in &models {
+            run(model).unwrap();
+        }
+        let loaded = crate::load_linked(root, &cache, None, &Default::default(), &settings);
+        assert!(loaded.gradle[0].sync_error.as_deref().unwrap().contains("cannot start"));
+        assert!(loaded.gradle[1].sync_error.is_none());
+        assert_eq!(loaded.gradle[1].projects[0].tasks[0].name, "healthy");
+        let bad_wrapper = root.join("a/gradlew");
+        std::fs::write(&bad_wrapper, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&bad_wrapper, std::fs::Permissions::from_mode(0o644)).unwrap();
+        models[0].command = bad_wrapper.to_string_lossy().into_owned();
+        run(&models[0]).unwrap();
+        let loaded = crate::load_linked(root, &cache, None, &Default::default(), &settings);
+        assert!(loaded.gradle[0].sync_error.as_deref().unwrap().contains("cannot start"));
+        assert!(loaded.gradle[1].sync_error.is_none());
+        let blocked_cache = root.join("blocked-cache");
+        std::fs::write(&blocked_cache, "a file cannot contain sync caches").unwrap();
+        assert!(
+            sync_gradle_model(
+                root,
+                &blocked_cache,
+                &models[0],
+                &SyncOptions::default(),
+                &CancellationToken::new(),
+                &|_| {}
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn independent_syncs_do_not_share_tasks_launchers_environments_or_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for dir in ["a", "b"] {
+            let build = root.join(dir);
+            std::fs::create_dir_all(build.join("app")).unwrap();
+            std::fs::write(build.join("settings.gradle"), "include 'app'").unwrap();
+            std::fs::write(build.join("app/build.gradle"), "").unwrap();
+            let report = serde_json::json!({"path": ":app", "dir": build.join("app")});
+            let launcher = build.join("gradlew");
+            std::fs::write(
+                &launcher,
+                format!("#!/bin/sh\npwd > actual-cwd\nprintf '%s' \"$JAVA_HOME\" > actual-env\nprintf '%s\\n' '@openidea-model\t{report}' 'Build tasks' '-----------' 'app:custom{dir} - custom task'\n"),
+            ).unwrap();
+            std::fs::set_permissions(launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let settings = ide_core::settings::GradleSettings {
+            linked_projects: Some(vec!["a".into(), "b".into()]),
+            ..Default::default()
+        };
+        let cache = root.join("cache");
+        let models = gradle::load_linked(root, &settings);
+        for model in &models {
+            let options = SyncOptions {
+                env: BTreeMap::from([("JAVA_HOME".into(), format!("/jdk-{}", model.dir))]),
+                ..Default::default()
+            };
+            sync_gradle_model(root, &cache, model, &options, &CancellationToken::new(), &|_| {}).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(root.join(&model.dir).join("actual-env")).unwrap(),
+                format!("/jdk-{}", model.dir)
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join(&model.dir).join("actual-cwd")).unwrap().trim(),
+                root.join(&model.dir).canonicalize().unwrap().to_string_lossy()
+            );
+        }
+        let load = || crate::load_linked(root, &cache, None, &Default::default(), &settings);
+        let model = load();
+        assert_eq!(model.gradle[0].projects[0].tasks[0].name, "customa");
+        assert_eq!(model.gradle[1].projects[0].tasks[0].name, "customb");
+        assert_ne!(gradle::cache_dir(&cache, "a"), gradle::cache_dir(&cache, "b"));
+        let before = std::fs::read(gradle::cache_dir(&cache, "a").join(GRADLE_CACHE)).unwrap();
+        std::fs::write(root.join("b/gradlew"), "#!/bin/sh\nprintf 'FAILURE: broken b\\n'\nexit 1\n").unwrap();
+        sync_gradle_model(root, &cache, &models[1], &SyncOptions::default(), &CancellationToken::new(), &|_| {})
+            .unwrap();
+        let model = load();
+        assert!(model.gradle[0].sync_error.is_none());
+        assert!(model.gradle[1].sync_error.is_some());
+        assert_eq!(std::fs::read(gradle::cache_dir(&cache, "a").join(GRADLE_CACHE)).unwrap(), before);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(sync_gradle_model(root, &cache, &models[0], &SyncOptions::default(), &cancel, &|_| {}).is_err());
+        assert_eq!(std::fs::read(gradle::cache_dir(&cache, "a").join(GRADLE_CACHE)).unwrap(), before);
+        let unlinked = ide_core::settings::GradleSettings { linked_projects: Some(vec![]), ..Default::default() };
+        assert!(crate::load_linked(root, &cache, None, &Default::default(), &unlinked).gradle.is_empty());
+        assert!(crate::gradle_source_roots(root, &cache, &unlinked).is_empty());
+    }
 
     #[cfg(unix)]
     #[test]
@@ -601,7 +748,7 @@ mod tests {
         write(&projects);
         let first = reported_gradle_projects(&cache_dir);
         assert!(Arc::ptr_eq(&first, &reported_gradle_projects(&cache_dir)), "unchanged: not parsed again");
-        assert_eq!(crate::gradle_external_roots(&root, &cache_dir), [billing]);
+        assert_eq!(crate::gradle_external_roots(&root, &cache_dir, &Default::default()), [billing]);
         write(&projects[..1]);
         assert_eq!(reported_gradle_projects(&cache_dir).len(), 1, "a new sync is read");
         std::fs::remove_file(cache_dir.join(GRADLE_CACHE)).unwrap();

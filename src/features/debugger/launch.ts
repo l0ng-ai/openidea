@@ -314,13 +314,92 @@ function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig
 }
 
 /**
+ * Flutter: `flutter debug_adapter` starts the tool itself, so `program` is the
+ * entry point (`lib/main.dart`) — never the interpreter named by `command`.
+ */
+function flutterLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
+  // A file-scoped config carries the entry point as its last `.dart` argument
+  // (`dart run lib/main.dart`); a user config may name none, which is the
+  // conventional Flutter entry point.
+  const entry = [...rc.args].reverse().find((a) => a.endsWith(".dart")) ?? "lib/main.dart";
+  return {
+    ...base(rc, adapter, cwd),
+    program: join(cwd, entry),
+  };
+}
+
+/**
+ * Flutter add-to-app: the host app is built and installed by its own Gradle
+ * build, so the debugger attaches to the already running app instead of
+ * launching `lib/main.dart` (which would build the module on its own).
+ *
+ * `params.vm-service-uri` pins the VM Service endpoint (`flutter attach
+ * --debug-uri`); without it `flutter attach` discovers the running app on the
+ * device. `params.device` becomes `-d <device>`.
+ */
+function flutterAttach(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
+  const p = rc.params ?? {};
+  const uri = p["vm-service-uri"] || p.vmServiceUri;
+  const device = p.device;
+  // `__flutter` tells the adapter launcher to use `flutter debug_adapter`
+  // whatever the working directory holds (an add-to-app module lives below a
+  // workspace root that has no Flutter dependency of its own). It is removed
+  // before the request reaches the adapter.
+  const extra: Record<string, unknown> = { __flutter: true };
+  if (uri) extra.vmServiceUri = uri;
+  if (device) extra.toolArgs = ["-d", device];
+  return {
+    ...base(rc, adapter, cwd),
+    request: "attach",
+    program: null,
+    extraJson: JSON.stringify(extra),
+  };
+}
+
+const PHP_NAME = /^php(\d+(\.\d+)*)?(\.exe)?$/i;
+
+/**
+ * php-debug runs `runtimeExecutable runtimeArgs program args` and doesn't enable Xdebug: debug mode and
+ * the connection back come from `-d` options, to the free port php-debug picks for `port: 0` (another
+ * IDE may listen on 9003). `php` is the PHP chosen in Settings, used when the command doesn't name one.
+ */
+function phpDebugLaunch(rc: RunConfig, cwd: string, php: string | null): LaunchConfig {
+  const name = rc.command.split(/[\\/]/).pop() ?? rc.command;
+  const runtimeArgs = ["-dxdebug.mode=debug", "-dxdebug.start_with_request=yes", "-dxdebug.client_port=${port}"];
+  let runtime = php;
+  let program: string;
+  let args: string[];
+  if (PHP_NAME.test(name)) {
+    // `php [options] script args`: the options stay with PHP; the script is a file (`artisan`).
+    if (name !== rc.command) runtime = resolveCommand(rc.command, cwd);
+    const at = rc.args.findIndex((a) => !a.startsWith("-"));
+    runtimeArgs.push(...(at < 0 ? rc.args : rc.args.slice(0, at)));
+    program = at < 0 ? "" : join(cwd, rc.args[at]!);
+    args = at < 0 ? [] : rc.args.slice(at + 1);
+  } else {
+    // A PHP script run directly (`vendor/bin/phpunit`; on Windows its `.bat` shim sits beside it).
+    program = resolveCommand(rc.command.replace(/\.bat$/i, ""), cwd);
+    args = [...rc.args];
+  }
+  return {
+    ...base(rc, "php-debug", cwd),
+    program,
+    args,
+    extraJson: JSON.stringify({ port: 0, runtimeArgs, ...(runtime ? { runtimeExecutable: runtime } : {}) }),
+  };
+}
+
+/**
  * The launch configuration that debugs `rc`, or `null` when it has no adapter.
  * `root` is the project root (default working directory).
  */
-export function launchConfigFor(rc: RunConfig, root: string): LaunchConfig | null {
+export function launchConfigFor(rc: RunConfig, root: string, php: string | null = null): LaunchConfig | null {
   const adapter = rc.debugAdapter;
   if (!adapter || debugUnsupportedReason(rc)) return null;
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
+  if (adapter === "dart") {
+    return rc.params?.request === "attach" ? flutterAttach(rc, cwd, adapter) : flutterLaunch(rc, cwd, adapter);
+  }
   if (adapter === "codelldb" || adapter === "lldb-dap") {
     return rc.kind === "cargo" ? cargoLaunch(rc, cwd, adapter) : nativeLaunch(rc, cwd, adapter);
   }
@@ -328,6 +407,7 @@ export function launchConfigFor(rc: RunConfig, root: string): LaunchConfig | nul
   if (adapter === "js-debug") return jsDebugLaunch(rc, cwd);
   if (adapter === "delve") return delveLaunch(rc, cwd, root);
   if (adapter === "godot") return godotLaunch(rc, cwd);
+  if (adapter === "php-debug") return phpDebugLaunch(rc, cwd, php);
   if (adapter === "netcoredbg" && rc.kind === "dotnet") {
     if (!rc.params?.targetPath) return null;
     return {

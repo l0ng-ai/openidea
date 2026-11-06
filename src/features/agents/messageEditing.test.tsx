@@ -256,14 +256,14 @@ describe("session composer submission", () => {
     expect(box).toHaveValue("");
   });
 
-  it("keeps Queue named and leaves Stop unchanged while the agent works", async () => {
+  it("keeps Queue named and shows icon-only Stop actions while the agent works", async () => {
     useAgents.setState({ tasks: new Map([[task.id, { ...task, status: "running" }]]) });
     render(<SessionEditor input={{ kind: "agent-session", key: task.id, data: { task: task.id } }} />);
     const queue = screen.getByRole("button", { name: "Queue" });
     expect(queue.textContent).toBe("");
     expect(queue).toHaveAttribute("data-tooltip", "Queue");
     expect(queue).toBeDisabled();
-    expect(screen.getAllByRole("button", { name: "Stop" }).some((button) => button.textContent === "Stop")).toBe(true);
+    expect(screen.getAllByRole("button", { name: "Stop" }).every((button) => button.textContent === "")).toBe(true);
     await screen.findByText("Original message");
   });
 });

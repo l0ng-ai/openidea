@@ -256,6 +256,17 @@ describe("configurations that ran", () => {
     expect(items).toHaveLength(1);
     expect(items[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
   });
+
+  it("drops a deleted configuration once its run has ended (#1497)", () => {
+    const removed = (id: string) => id === "dev";
+    const ended = runServiceItems([], [session("s1", dev, "finished", 1)], [], ["dev"], {}, [], removed);
+    expect(ended).toEqual([]);
+    const live = runServiceItems([], [session("s1", dev, "running", 1)], [], ["dev"], {}, [], removed);
+    expect(live[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
+    // Never a saved configuration (a build task, an external tool): its finished run stays.
+    const adHoc = runServiceItems([], [session("s2", scratch, "finished", 1)], [], [], {}, [], removed);
+    expect(adHoc[0]!.children!.map((c) => c.key)).toEqual(["run:config:context:file"]);
+  });
 });
 
 describe("embedded web server port", () => {

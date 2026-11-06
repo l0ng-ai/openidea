@@ -1,0 +1,67 @@
+/// OpenIDEA plugin API, version 1.0. Once released, 1.x only adds (new
+/// interfaces, new optional exports; plugins/README.md, "Evolving the plugin
+/// API"); a 2.0 keeps 1.0 running through an adapter in the host.
+///
+/// A plugin is a WebAssembly component targeting the `plugin` world (or
+/// `plugin-syntax`). It runs sandboxed: no filesystem, network, environment
+/// or processes beyond WASI's clocks and randomness; everything else goes
+/// through the imports below, gated by the capabilities granted in
+/// `plugin.toml` (a missing one returns `error::denied`).
+package openidea:plugin@1.1.0;
+
+world plugin {
+    import log;
+    import ui;
+    import storage;
+    import workspace;
+    import editor;
+    import invocation;
+    import vcs;
+    import events;
+    import tasks;
+    import diagnostics;
+    import net;
+    import secrets;
+    import process;
+    import views;
+    import settings;
+
+    export lifecycle;
+    export commands;
+    export event-handler;
+}
+
+/// A plugin that also provides syntax for its languages.
+world plugin-syntax {
+    include plugin;
+    export syntax-provider;
+}
+
+/// A plugin with editor providers (`[[contributes.providers]]`).
+world plugin-providers {
+    include plugin;
+    export providers;
+}
+
+/// A plugin with views or custom editors (`[[contributes.views]]`,
+/// `[[contributes.custom-editors]]`).
+world plugin-views {
+    include plugin;
+    export view-provider;
+}
+
+/// Only the `syntax-provider` export: guests generate it next to `plugin`
+/// (the component tools merge both into one component).
+world syntax {
+    export syntax-provider;
+}
+
+/// Only the `providers` export, generated next to `plugin` like `syntax`.
+world editor-providers {
+    export providers;
+}
+
+/// Only the `view-provider` export, generated next to `plugin` like `syntax`.
+world views-provider {
+    export view-provider;
+}

@@ -594,6 +594,42 @@ fn commit_files_kinds() {
     assert!(repo.commit_files("HEAD").unwrap().len() == 4);
 }
 
+/// Line counts follow the same first-parent diff as the commit's file list, including renames.
+#[test]
+fn diff_numstat_counts_added_deleted_and_renames() {
+    let fx = Fixture::new();
+    fx.write("keep.txt", "a\nb\nc\n");
+    fx.write("mod.txt", "m\n");
+    fx.write("old.txt", "a fairly long line of content\nanother line\nand a third\n");
+    let root = fx.commit_all("root");
+    fx.write("mod.txt", "m\nmore\n");
+    std::fs::remove_file(fx.path("keep.txt")).unwrap();
+    fx.write("fresh.txt", "n1\nn2\n");
+    fx.git(&["mv", "old.txt", "new.txt"]);
+    fx.write("new.txt", "a fairly long line of content\nanother line\nchanged\n");
+    let c = fx.commit_all("changes");
+    let repo = fx.repo();
+
+    let stats = repo.diff_numstat(&root, &c, &[]).unwrap();
+    let find = |p: &str| stats.iter().find(|f| f.path == p).unwrap_or_else(|| panic!("{p}: {stats:#?}"));
+    assert_eq!((find("mod.txt").added, find("mod.txt").removed), (1, 0));
+    assert_eq!((find("keep.txt").added, find("keep.txt").removed), (0, 3));
+    assert_eq!((find("fresh.txt").added, find("fresh.txt").removed), (2, 0));
+    assert_eq!(find("new.txt").old_path.as_deref(), Some("old.txt"));
+    assert_eq!((find("new.txt").added, find("new.txt").removed), (1, 1));
+
+    let only = repo.diff_numstat(&root, &c, &["mod.txt".into()]).unwrap();
+    assert_eq!(only.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), vec!["mod.txt"]);
+    // The log passes both names, which is what lets git still report the rename.
+    let renamed = repo.diff_numstat(&root, &c, &["old.txt".into(), "new.txt".into()]).unwrap();
+    assert_eq!(renamed.len(), 1, "{renamed:#?}");
+    assert_eq!(renamed[0].old_path.as_deref(), Some("old.txt"));
+    assert_eq!((renamed[0].added, renamed[0].removed), (1, 1));
+
+    let created = repo.diff_numstat("4b825dc642cb6eb9a060e54bf8d69288fbee4904", &root, &["mod.txt".into()]).unwrap();
+    assert_eq!((created[0].added, created[0].removed), (1, 0));
+}
+
 /// IDEA's multi-commit Git Log selection: per file, before the first commit touching it ↔
 /// after the last one, contiguous or not.
 #[test]

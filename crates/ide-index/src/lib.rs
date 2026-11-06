@@ -234,6 +234,28 @@ impl ProjectIndex {
         matching::find_files(&d, &matching::Recents { paths: &recent }, query, limit)
     }
 
+    /// Up to `limit` indexed files below `dir` (VCS-ignored ones left out) whose path relative to
+    /// `dir` satisfies `matches`: a file list without walking the disk. `None` while nothing is
+    /// indexed yet (first scan without a cache).
+    pub fn files_matching(&self, dir: &Path, matches: impl Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
+        let d = self.shared.data.read();
+        if d.file_count == 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for file in d.files.iter().flatten().filter(|f| !f.ignored) {
+            if out.len() >= limit {
+                break;
+            }
+            if let Ok(rel) = file.path.strip_prefix(dir)
+                && matches(rel)
+            {
+                out.push(file.path.clone());
+            }
+        }
+        Some(out)
+    }
+
     /// Fuzzy search for folders that hold indexed files; `rel_path` ends in `/`.
     pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         matching::find_dirs(&self.shared.data.read(), query, limit)

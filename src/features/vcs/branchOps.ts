@@ -8,6 +8,7 @@ import { ask } from "@/workbench/messages";
 import { isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
 import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
+import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { runOp, runRemote, saveAll } from "./ops";
 import { conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
@@ -160,6 +161,7 @@ export async function newBranch(from?: string) {
     initial: suggestion,
     mono: true,
     okLabel: "Create",
+    sanitize: cleanUpBranchNameOnTyping,
     validate: validateBranchName,
     validateInitial: true,
     checkbox: { label: "Checkout branch", initial: true },
@@ -236,6 +238,7 @@ export async function renameBranch(name: string) {
     initial: name,
     mono: true,
     okLabel: "Rename",
+    sanitize: cleanUpBranchNameOnTyping,
     validate: (v) => (v.trim() === name ? "Enter a new name" : validateBranchName(v)),
   });
   if (!r) return;
@@ -372,6 +375,7 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
     initial: from ? (from.includes("/") ? shortRemoteName(from) : "") : (useVcs.getState().branch?.head ?? ""),
     mono: true,
     okLabel: "Create",
+    sanitize: cleanUpBranchNameOnTyping,
     validate: validateBranchName,
     validateInitial: true,
     checkbox: { label: "Checkout branch", initial: true },

@@ -51,6 +51,14 @@ export interface GridProps {
   /** The header's filter button (IDEA's local filter); `filtered` marks the columns with one. */
   onFilter?: (col: number, anchor: HTMLElement) => void;
   filtered?: (col: number) => boolean;
+  /** Cells matching the search bar's query. */
+  isMatch?: (row: number, col: number) => boolean;
+  /** The search bar's current match: selected and scrolled into view when it changes. */
+  currentMatch?: { row: number; col: number } | null;
+  /** ⌘F / Ctrl+F in the grid (opens the search bar). */
+  onFind?: () => void;
+  /** Go to Column: a new object selects that column's cell in the current row, scrolls to it and focuses the grid. */
+  revealColumn?: { col: number } | null;
   "aria-label"?: string;
 }
 
@@ -154,6 +162,37 @@ export function Grid(props: GridProps) {
     estimateSize: () => ROW_H,
     overscan: 12,
   });
+  /** Scrolls sideways so column `c` is visible (the first one with the row numbers). */
+  const scrollColumnIntoView = (c: number) => {
+    const el = scrollRef.current;
+    if (!el || c < 0 || c >= widths.length) return;
+    const left = c ? NUM_W + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
+    const right = NUM_W + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
+    if (left < el.scrollLeft) el.scrollLeft = left;
+    else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = Math.min(left, right - el.clientWidth);
+  };
+  const { currentMatch } = props;
+  useEffect(() => {
+    if (!currentMatch) return;
+    const { row, col } = currentMatch;
+    setSel({ r0: row, c0: col, r1: row, c1: col });
+    virtualizer.scrollToIndex(row, { align: "auto" });
+    scrollColumnIntoView(col);
+    // Follows the match only, not the virtualizer's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatch?.row, currentMatch?.col]);
+  const { revealColumn } = props;
+  useEffect(() => {
+    if (!revealColumn || !rowCount) return;
+    const { col } = revealColumn;
+    const row = sel ? Math.min(sel.r1, rowCount - 1) : 0;
+    setSel({ r0: row, c0: col, r1: row, c1: col });
+    virtualizer.scrollToIndex(row, { align: "auto" });
+    scrollColumnIntoView(col);
+    scrollRef.current?.focus({ preventScroll: true });
+    // Runs once per request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealColumn]);
   const totalWidth = useMemo(() => NUM_W + widths.reduce((a, b) => a + b, 0), [widths]);
   const template = `${NUM_W}px ${widths.map((w) => `${w}px`).join(" ")}`;
 
@@ -211,6 +250,11 @@ export function Grid(props: GridProps) {
       copy("tsv", false);
       return;
     }
+    if (mod && e.key.toLowerCase() === "f" && props.onFind) {
+      e.preventDefault();
+      props.onFind();
+      return;
+    }
     if (mod && e.key.toLowerCase() === "a") {
       e.preventDefault();
       if (rowCount && columns.length) setSel({ r0: 0, c0: 0, r1: rowCount - 1, c1: columns.length - 1 });
@@ -235,6 +279,7 @@ export function Grid(props: GridProps) {
     const c = Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1]));
     setSel(e.shiftKey ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
     virtualizer.scrollToIndex(r, { align: "auto" });
+    scrollColumnIntoView(c);
   };
 
   const onCellMouseDown = (e: MouseEvent, r: number, c: number) => {
@@ -466,6 +511,8 @@ export function Grid(props: GridProps) {
                     className={clsx(
                       styles.cell,
                       numeric[c] && styles.cellNumber,
+                      props.isMatch?.(r, c) && styles.cellMatch,
+                      currentMatch?.row === r && currentMatch.col === c && styles.cellMatchCurrent,
                       selected(r, c) && styles.cellSelected,
                       props.isModified?.(r, c) && styles.cellModified,
                     )}

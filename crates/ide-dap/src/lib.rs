@@ -302,6 +302,23 @@ pub struct DebugManager {
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
 }
 
+/// Whether the debugged project depends on the Flutter SDK, so it must go
+/// through `flutter debug_adapter` instead of the plain Dart one.
+///
+/// `dart debug_adapter` cannot start a program that imports `dart:ui`, and only
+/// the Flutter adapter answers `hotReload` / `hotRestart`. `dir` is the launch
+/// `cwd`; the program's own directory is tried first because a module inside a
+/// larger repository has its `pubspec.yaml` above the program, not above `cwd`.
+fn is_flutter_project(dir: &Path, program: Option<&Path>) -> bool {
+    let mut start: Vec<&Path> = program.and_then(Path::parent).into_iter().collect();
+    start.push(dir);
+    start
+        .iter()
+        .filter_map(|d| d.ancestors().take(6).find(|a| a.join("pubspec.yaml").is_file()))
+        .filter_map(|root| std::fs::read_to_string(root.join("pubspec.yaml")).ok())
+        .any(|s| s.contains("sdk: flutter"))
+}
+
 fn no_session(s: DebugSessionId) -> IdeError {
     IdeError::not_found(format!("no debug session {}", s.0))
 }
@@ -570,6 +587,10 @@ impl DebugManager {
         custom_command: impl FnOnce(&str) -> Option<String>,
     ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
+        // An IDE-side marker (never sent to the adapter): the session is a Flutter
+        // one regardless of what the working directory holds.
+        let force_flutter =
+            arguments.as_object_mut().and_then(|o| o.remove("__flutter")).and_then(|v| v.as_bool()).unwrap_or(false);
         let cwd = config
             .cwd
             .clone()
@@ -599,6 +620,15 @@ impl DebugManager {
             };
             if let Some(python) = python {
                 spec.command = python;
+            }
+        }
+        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
+        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
+        // is Flutter-only). Plain Dart projects keep the configured `dart`.
+        if config.adapter == "dart" && spec.command == "dart" {
+            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
+            if force_flutter || is_flutter_project(&cwd, program) {
+                spec.command = "flutter".into();
             }
         }
         let id = DebugSessionId::next();
@@ -1233,6 +1263,29 @@ impl DebugManager {
 
     pub async fn pause(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         self.session(s)?.conn.request_timeout("pause", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        Ok(())
+    }
+
+    /// Types `text` into the terminal the session's program runs in (see [`ide_core::event::DebugEvent::ProgramInput`]).
+    pub fn send_input(&self, s: DebugSessionId, text: &str) -> IdeResult<()> {
+        let session = self.session(s)?;
+        let mut program = session.program.lock();
+        let program = program
+            .as_mut()
+            .ok_or_else(|| IdeError::invalid("The program doesn't read input from the debug console"))?;
+        program.write(text).map_err(|e| IdeError::internal(format!("cannot write to the program: {e}")))
+    }
+
+    /// Flutter's DAP adapter: injects the changed sources into the running app.
+    /// Not part of the DAP standard; adapters that do not know the request reject it.
+    pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotReload", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
+        Ok(())
+    }
+
+    /// Flutter's DAP adapter: restarts the app without preserving state.
+    pub async fn hot_restart(&self, s: DebugSessionId) -> IdeResult<()> {
+        self.session(s)?.conn.request_timeout("hotRestart", json!({ "reason": "manual" }), REQUEST_TIMEOUT).await?;
         Ok(())
     }
 

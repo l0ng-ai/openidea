@@ -4071,7 +4071,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-agent"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4094,7 +4094,7 @@ dependencies = [
 
 [[package]]
 name = "ide-analysis"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ast-grep-core",
  "ide-core",
@@ -4107,9 +4107,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "ide-build"
-version = "0.1.36"
+name = "ide-android"
+version = "0.1.37"
 dependencies = [
+ "ide-core",
+ "serde",
+ "specta",
+ "tempfile",
+ "which",
+]
+
+[[package]]
+name = "ide-build"
+version = "0.1.37"
+dependencies = [
+ "blake3",
  "dirs 6.0.0",
  "dunce",
  "ide-core",
@@ -4123,7 +4135,7 @@ dependencies = [
 
 [[package]]
 name = "ide-clipboard"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -4132,7 +4144,7 @@ dependencies = [
 
 [[package]]
 name = "ide-core"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4149,7 +4161,7 @@ dependencies = [
 
 [[package]]
 name = "ide-coverage"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4163,13 +4175,14 @@ dependencies = [
 
 [[package]]
 name = "ide-dap"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "ide-jsonrpc",
  "ide-language",
  "memchr",
  "parking_lot",
+ "portable-pty",
  "serde",
  "serde_json",
  "specta",
@@ -4181,7 +4194,7 @@ dependencies = [
 
 [[package]]
 name = "ide-db"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "bb8",
  "dirs 6.0.0",
@@ -4207,7 +4220,7 @@ dependencies = [
 
 [[package]]
 name = "ide-docker"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "serde",
@@ -4220,7 +4233,7 @@ dependencies = [
 
 [[package]]
 name = "ide-extension"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4240,7 +4253,7 @@ dependencies = [
 
 [[package]]
 name = "ide-fonts"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "objc2-core-foundation",
  "objc2-core-text",
@@ -4252,7 +4265,7 @@ dependencies = [
 
 [[package]]
 name = "ide-github"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "ide-vcs",
@@ -4265,7 +4278,7 @@ dependencies = [
 
 [[package]]
 name = "ide-host"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "base64 0.22.1",
  "criterion",
@@ -4326,7 +4339,7 @@ dependencies = [
 
 [[package]]
 name = "ide-http"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4344,7 +4357,7 @@ dependencies = [
 
 [[package]]
 name = "ide-index"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "blake3",
  "criterion",
@@ -4366,7 +4379,7 @@ dependencies = [
 
 [[package]]
 name = "ide-jsonrpc"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "encoding_rs",
  "futures",
@@ -4383,7 +4396,7 @@ dependencies = [
 
 [[package]]
 name = "ide-language"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "blake3",
  "criterion",
@@ -4439,7 +4452,7 @@ dependencies = [
 
 [[package]]
 name = "ide-lsp"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "dunce",
  "futures",
@@ -4465,7 +4478,7 @@ dependencies = [
 
 [[package]]
 name = "ide-notebook"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "futures",
  "ide-core",
@@ -4488,7 +4501,7 @@ dependencies = [
 
 [[package]]
 name = "ide-plugin"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "blake3",
  "ide-core",
@@ -4504,11 +4517,12 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wasmtime-wasi",
+ "wat",
 ]
 
 [[package]]
 name = "ide-profiler"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "ide-run",
@@ -4521,7 +4535,7 @@ dependencies = [
 
 [[package]]
 name = "ide-remote"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "globset",
  "ide-core",
@@ -4530,6 +4544,7 @@ dependencies = [
  "ignore",
  "parking_lot",
  "serde",
+ "serde_json",
  "specta",
  "tempfile",
  "tokio",
@@ -4538,7 +4553,7 @@ dependencies = [
 
 [[package]]
 name = "ide-run"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "dunce",
  "encoding_rs",
@@ -4561,7 +4576,7 @@ dependencies = [
 
 [[package]]
 name = "ide-sdk"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "dunce",
  "ide-core",
@@ -4580,7 +4595,7 @@ dependencies = [
 
 [[package]]
 name = "ide-search"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "criterion",
  "globset",
@@ -4600,7 +4615,7 @@ dependencies = [
 
 [[package]]
 name = "ide-spell"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "parking_lot",
@@ -4613,7 +4628,7 @@ dependencies = [
 
 [[package]]
 name = "ide-ssh"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "dirs 6.0.0",
  "flate2",
@@ -4635,7 +4650,7 @@ dependencies = [
 
 [[package]]
 name = "ide-syntax"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "ide-language",
@@ -4650,7 +4665,7 @@ dependencies = [
 
 [[package]]
 name = "ide-terminal"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "libc",
@@ -4663,7 +4678,7 @@ dependencies = [
 
 [[package]]
 name = "ide-text"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "criterion",
  "ide-core",
@@ -4676,7 +4691,7 @@ dependencies = [
 
 [[package]]
 name = "ide-tools"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "flate2",
  "hex",
@@ -4697,7 +4712,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vcs"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "blake3",
  "dunce",
@@ -4718,7 +4733,7 @@ dependencies = [
 
 [[package]]
 name = "ide-vfs"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "chardetng",
  "dunce",
@@ -4740,7 +4755,7 @@ dependencies = [
 
 [[package]]
 name = "ide-web"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "ide-core",
  "open",
@@ -4756,7 +4771,7 @@ dependencies = [
 
 [[package]]
 name = "ide-workspace"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "blake3",
  "dunce",
@@ -6297,7 +6312,7 @@ dependencies = [
 
 [[package]]
 name = "openidea"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -6307,6 +6322,7 @@ dependencies = [
  "gtk",
  "ide-agent",
  "ide-analysis",
+ "ide-android",
  "ide-build",
  "ide-clipboard",
  "ide-core",
@@ -6361,10 +6377,12 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
  "tauri-specta",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
@@ -9964,9 +9982,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-haskell"
-version = "0.23.1"
+version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "977c51e504548cba13fc27cb5a2edab2124cf6716a1934915d07ab99523b05a4"
+checksum = "781de30e0d1ec8e6db4ed799d36ce1cedaf4684374dada45ebe2a8ea44c3f814"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -10304,6 +10322,12 @@ name = "unicode-segmentation"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
+
+[[package]]
+name = "unicode-width"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "universal-hash"
@@ -10823,6 +10847,28 @@ dependencies = [
  "futures",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "wast"
+version = "258.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b912cfe5696dfaae736e344fc82082dbd63609abbaeca3926466c0b10d9fecc"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width",
+ "wasm-encoder",
+]
+
+[[package]]
+name = "wat"
+version = "1.258.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3069154948f5737a8bcd5c55dcdf2c2b59ca776057732e49821167bde268ec6e"
+dependencies = [
+ "wast",
 ]
 
 [[package]]
