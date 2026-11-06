@@ -6342,5 +6342,15 @@
   "Commit message of {id} changed": "已更改 {id} 的提交消息",
   "Commit message change undone": "已撤销提交消息的更改",
   "Drop undone": "已撤销丢弃",
-  "Squash undone": "已撤销压缩"
+  "Squash undone": "已撤销压缩",
+  "Commit and Rebase": "提交并变基",
+  "The operation failed in {failedName}, but succeeded in {succeeded}. Roll those back ({undo}) so the repositories don't diverge?": "操作在 {failedName} 中失败，但在 {succeeded} 中已成功。是否回滚这些仓库（{undo}），以免各仓库分叉？",
+  "Don't Rollback": "不回滚",
+  "Rollback ({repo})": "回滚（{repo}）",
+  "check out the previous branch again": "重新签出之前的分支",
+  "delete branch {name}": "删除分支 {name}",
+  "reset to the commit before the merge": "重置到合并前的提交",
+  "reset to the commit before the rebase": "重置到变基前的提交",
+  "restore branch {name}": "恢复分支 {name}",
+  "Rebased": "已变基"
 }

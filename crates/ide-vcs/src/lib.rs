@@ -593,6 +593,7 @@ mod log_index;
 mod manage;
 mod ops;
 mod patch;
+mod preserve;
 mod refs;
 mod remotes;
 mod repo;
@@ -1153,9 +1154,11 @@ impl Repo {
     pub fn pull(&self, rebase: bool, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         let mode: &[&str] = if rebase { &["--rebase"] } else { &["--no-rebase", "--ff"] };
-        let mut args = vec!["pull", "--progress", "--autostash"];
+        let mut args = vec!["pull", "--progress"];
         args.extend_from_slice(mode);
-        cli::run_streaming(&self.root, &args, cancel, on_output)
+        preserve::around(self, "Local changes saved before update", || {
+            cli::run_streaming(&self.root, &args, cancel, on_output)
+        })
     }
     /// Pushes the current branch. `set_upstream` pushes to the branch's remote (or
     /// `origin`) under the same name and records it as upstream.

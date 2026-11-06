@@ -918,3 +918,45 @@ fn local_changes_come_back_once_a_stopped_rebase_is_continued() {
     assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "f1.txt");
     assert!(fx.git(&["stash", "list"]).is_empty());
 }
+
+#[test]
+fn merge_brings_staged_changes_back_staged() {
+    let (fx, _ids) = linear();
+    let repo = fx.repo();
+    fx.git(&["checkout", "-q", "-b", "side", "HEAD~1"]);
+    fx.write("side.txt", "side\n");
+    fx.git(&["add", "side.txt"]);
+    fx.git(&["commit", "-q", "-m", "side"]);
+    fx.git(&["checkout", "-q", "main"]);
+    fx.write("f1.txt", "staged\n");
+    fx.git(&["add", "f1.txt"]);
+    fx.write("f2.txt", "unstaged\n");
+    repo.merge_with(&["side".to_string()], &MergeOptions::default()).unwrap();
+    assert!(fx.exists("side.txt"));
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "f1.txt");
+    assert_eq!(fx.git(&["diff", "--name-only"]), "f2.txt");
+    assert!(fx.git(&["stash", "list"]).is_empty());
+}
+
+#[test]
+fn local_changes_come_back_after_a_conflicting_merge_is_committed() {
+    let (fx, _ids) = linear();
+    let repo = fx.repo();
+    fx.git(&["checkout", "-q", "-b", "side", "HEAD~1"]);
+    fx.write("f4.txt", "side\n");
+    fx.git(&["add", "f4.txt"]);
+    fx.git(&["commit", "-q", "-m", "side f4"]);
+    fx.git(&["checkout", "-q", "main"]);
+    fx.write("f1.txt", "staged\n");
+    fx.git(&["add", "f1.txt"]);
+    assert!(repo.merge_with(&["side".to_string()], &MergeOptions::default()).is_err());
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("merge"));
+    assert_eq!(fx.read("f1.txt"), "1\n", "put aside while the merge is in progress");
+    fx.write("f4.txt", "both\n");
+    repo.stage(&[fx.path("f4.txt")]).unwrap();
+    repo.commit("Merge side", false, false).unwrap();
+    assert_eq!(repo.branch_info().unwrap().operation, None);
+    assert_eq!(fx.read("f1.txt"), "staged\n");
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "f1.txt");
+    assert!(fx.git(&["stash", "list"]).is_empty());
+}

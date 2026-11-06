@@ -377,6 +377,8 @@ pub(crate) fn commit(
     } else {
         commit_selected(r, &args, stdin, options, encoding)?;
     }
+    // A commit concluding a merge brings back the local changes put aside for it.
+    let _ = crate::preserve::restore(r);
     let repo = r.gix()?;
     Ok(repo.head_id().map_err(gx)?.detach().to_string())
 }
@@ -570,10 +572,13 @@ pub(crate) fn checkout_with(
     let mut args = match switch_plan(r, branch, create, options.diverged)? {
         SwitchPlan::Ahead { local, remote } => return Ok(CheckoutOutcome::LocalBranchAhead { local, remote }),
         SwitchPlan::Rebase { local, remote } => {
-            let out = cli::run_raw(r.root(), &["rebase", "--autostash", &remote, &local], None)?;
+            crate::preserve::save(r, "Local changes saved before checkout")?;
+            let out = cli::run_raw(r.root(), &["rebase", &remote, &local], None)?;
             if out.code == Some(0) {
+                crate::preserve::restore(r)?;
                 return Ok(CheckoutOutcome::Done);
             }
+            crate::preserve::restore(r)?;
             let files = unmerged_paths(r)?;
             if files.is_empty() {
                 return Err(cli::failure(&["rebase"], &out.stderr, &out.stdout, out.code));
@@ -846,11 +851,17 @@ fn check_rev(rev: &str) -> IdeResult<&str> {
 
 /// Local changes are stashed and restored around the merge (IDEA's "save local changes").
 pub(crate) fn merge(r: &Repo, branch: &str) -> IdeResult<()> {
-    run(r.root(), &["merge", "--no-edit", "--autostash", check_rev(branch)?], None).map(|_| ())
+    let branch = check_rev(branch)?;
+    crate::preserve::around(r, "Local changes saved before merge", || {
+        run(r.root(), &["merge", "--no-edit", branch], None).map(|_| ())
+    })
 }
 
 pub(crate) fn rebase(r: &Repo, onto: &str) -> IdeResult<()> {
-    run(r.root(), &["rebase", "--autostash", check_rev(onto)?], None).map(|_| ())
+    let onto = check_rev(onto)?;
+    crate::preserve::around(r, "Local changes saved before rebase", || {
+        run(r.root(), &["rebase", onto], None).map(|_| ())
+    })
 }
 
 pub(crate) fn stash_push(r: &Repo, message: Option<&str>, include_untracked: bool, keep_index: bool) -> IdeResult<()> {

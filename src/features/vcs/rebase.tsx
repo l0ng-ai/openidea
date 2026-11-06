@@ -133,16 +133,20 @@ async function headOf(repo: string | null): Promise<string | null> {
   return (await call(commands.vcsBranchInfo(repo)).catch(() => null))?.headCommit ?? null;
 }
 
-/** The Undo link of a history rewrite's balloon: back to `before` while HEAD is still `after`. */
-function undoLink(repo: string | null, before: string | null, after: string | null, undone: string) {
+/**
+ * The Undo link of a history rewrite's balloon (keyed `key`): back to `before` while HEAD
+ * is still `after`. Once undone, the balloon is replaced by one without the link.
+ */
+function undoLink(repo: string | null, before: string | null, after: string | null, undone: string, key: string) {
   if (!before || !after || before === after) return [];
   return [
     {
       label: "Undo",
       run: () =>
-        void runOp(tx("Undo"), () => call(commands.vcsRestoreHead(repo, before, after)), {
-          success: undone,
-        }).then(() => refreshNow()),
+        void runOp(tx("Undo"), () => call(commands.vcsRestoreHead(repo, before, after))).then((done) => {
+          if (done === undefined) return;
+          notifications().notify({ group: "vcs", level: "info", key, title: undone });
+        }),
     },
   ];
 }
@@ -164,7 +168,8 @@ async function runRebase(
       success: () => (inProgress() === "rebase" ? "Rebase stopped for editing; continue the rebase when done" : done),
       failure: tx("Rebase failed"),
       onError: conflictsInstead,
-      successActions: async () => (inProgress() === "rebase" ? [] : undoLink(repo, before, await headOf(repo), undone)),
+      successActions: async () =>
+        inProgress() === "rebase" ? [] : undoLink(repo, before, await headOf(repo), undone, "vcs.operation"),
     },
     repo,
   );
@@ -182,11 +187,13 @@ export async function editCommitMessage(commit: Commit) {
   );
   if (!change) return;
   await refreshNow();
+  const key = `vcs.reword:${change.after}`;
   notifications().notify({
     group: "vcs",
     level: "info",
+    key,
     title: tx`Commit message of ${short(commit.id)} changed`,
-    actions: undoLink(range.repo, change.before, change.after, tx("Commit message change undone")),
+    actions: undoLink(range.repo, change.before, change.after, tx("Commit message change undone"), key),
   });
 }
 
@@ -286,8 +293,16 @@ export async function squashCommits(commits: Commit[]) {
  * for `target` in the commit interface; the next interactive rebase autosquashes it.
  */
 export function prepareFixup(target: Commit, kind: "fixup" | "squash") {
-  useCommit.setState({ message: `${kind}! ${target.summary}` });
+  useCommit.setState({ message: `${kind}! ${target.summary}`, fixupTarget: target });
   openCommit();
+}
+
+/** Commit and Rebase (after Fixup… / Squash Into…): autosquashes the new commit into `target`. */
+export async function rebaseAfterFixup(target: Commit) {
+  useCommit.setState({ fixupTarget: null });
+  const range = await rangeFrom(target, "rebase");
+  if (!range) return;
+  await runRebase(range.base, toEntries(initialRows(range.commits)), tx("Rebased"), range.repo);
 }
 
 /** Interactively Rebase from Here…: IDEA's rebase dialog for `target..HEAD`. */

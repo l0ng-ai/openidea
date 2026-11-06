@@ -57,7 +57,8 @@ pub(crate) fn merge_sides(r: &Repo) -> IdeResult<MergeSides> {
         Some("cherry-pick") => sides.commit = read("CHERRY_PICK_HEAD").map(short),
         Some("revert") => sides.commit = read("REVERT_HEAD").map(short),
         // Conflicts outside an operation come from restoring stashed changes (Smart
-        // Checkout, update with autostash): stage 2 is the new HEAD, stage 3 the user's.
+        // Checkout, local changes put aside for a merge or update): stage 2 is the new HEAD,
+        // stage 3 the user's.
         None if !crate::write::unmerged_paths(r)?.is_empty() => {
             sides.operation = Some("unstash".into());
             sides.reversed = true;
@@ -129,15 +130,15 @@ pub(crate) fn continue_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(Str
         _ => &["am", "--continue"],
     };
     let result = cli::run_streaming(r.root(), args, cancel, out);
-    finish_rebase(r, out)?;
-    result
+    let finished = finish_operation(r);
+    result.and(finished)
 }
 
 pub(crate) fn abort_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
     let op = sequencer(r)?;
     let result = cli::run_streaming(r.root(), &[op, "--abort"], cancel, out);
-    finish_rebase(r, out)?;
-    result
+    let finished = finish_operation(r);
+    result.and(finished)
 }
 
 pub(crate) fn skip_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
@@ -146,8 +147,8 @@ pub(crate) fn skip_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)
         return Err(IdeError::invalid("a merge cannot be skipped; abort it instead"));
     }
     let result = cli::run_streaming(r.root(), &[op, "--skip"], cancel, out);
-    finish_rebase(r, out)?;
-    result
+    let finished = finish_operation(r);
+    result.and(finished)
 }
 
 /// Merge commits need a mainline (`-m`), which IDEA doesn't offer for cherry-pick / revert.
@@ -337,53 +338,24 @@ pub(crate) fn interactive_rebase(
     let editor = format!("cp {}", quote(&todo_file));
     // Local changes are put aside and restored when the rebase is over, staged ones as
     // staged (git's --autostash would bring them all back unstaged).
-    save_local_changes(r, &work)?;
+    crate::preserve::save(r, "Local changes saved before rebase")?;
     let mut args = vec!["rebase", "--interactive", "--no-autosquash"];
     args.push(base.unwrap_or("--root"));
     let env = [("GIT_SEQUENCE_EDITOR", std::ffi::OsStr::new(&editor))];
     let result = cli::run_streaming_env(r.root(), &args, &env, cancel, out);
     // A stopped rebase still needs the message files for its remaining `exec` lines.
-    finish_rebase(r, out)?;
-    result
+    let finished = finish_operation(r);
+    result.and(finished)
 }
 
-const SAVED_CHANGES: &str = "saved-changes";
-
-/// Stashes the local changes for the rebase run from `work` (`.git/openidea-rebase`).
-fn save_local_changes(r: &Repo, work: &std::path::Path) -> IdeResult<()> {
-    if run(r.root(), &["status", "--porcelain", "--untracked-files=no"], None)?.stdout_str().trim().is_empty() {
+/// Once a rebase / merge / cherry-pick / revert is over, brings back the local changes
+/// put aside for it; the plan files of [`interactive_rebase`] go once it is done.
+pub(crate) fn finish_operation(r: &Repo) -> IdeResult<()> {
+    if r.branch_info()?.operation.is_some() {
         return Ok(());
     }
-    run(r.root(), &["stash", "push", "-q", "-m", "Local changes saved before rebase"], None)?;
-    let id = run(r.root(), &["rev-parse", "stash@{0}"], None)?.stdout_str();
-    std::fs::write(work.join(SAVED_CHANGES), id.trim())?;
-    Ok(())
-}
-
-/// Once the rebase run by [`interactive_rebase`] is over (done or aborted), brings back
-/// the local changes it saved and cleans up; a stopped rebase keeps both for later.
-pub(crate) fn finish_rebase(r: &Repo, out: &dyn Fn(String)) -> IdeResult<()> {
-    let work = r.git_dir.join("openidea-rebase");
-    if !work.exists() || r.branch_info()?.operation.is_some() {
-        return Ok(());
-    }
-    let saved = std::fs::read_to_string(work.join(SAVED_CHANGES)).ok();
-    let _ = std::fs::remove_dir_all(&work);
-    let Some(saved) = saved.map(|s| s.trim().to_string()) else { return Ok(()) };
-    let stashes = run(r.root(), &["stash", "list", "--format=%H"], None)?.stdout_str();
-    let Some(index) = stashes.lines().position(|id| id.trim() == saved) else { return Ok(()) };
-    let entry = format!("stash@{{{index}}}");
-    if cli::run_raw(r.root(), &["stash", "pop", "-q", "--index", &entry], None)?.code == Some(0) {
-        return Ok(());
-    }
-    if unmerged_paths(r)?.is_empty() {
-        let pop = cli::run_raw(r.root(), &["stash", "pop", "-q", &entry], None)?;
-        if pop.code == Some(0) {
-            return Ok(());
-        }
-    }
-    out("Local changes could not be restored cleanly; resolve the conflicts (they are kept in the stash)".into());
-    Ok(())
+    let _ = std::fs::remove_dir_all(r.git_dir.join("openidea-rebase"));
+    crate::preserve::restore(r)
 }
 
 /// Creates a tag on `commit`: annotated when `message` is non-empty, else lightweight.
