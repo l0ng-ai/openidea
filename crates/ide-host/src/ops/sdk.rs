@@ -46,10 +46,21 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
 }
 
 /// The interpreter the project uses: the configured one, else its virtualenv.
-pub fn sdk_python_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core::IpcPath>> {
+pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) -> IdeResult<Option<ide_core::IpcPath>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    Ok(ide_sdk::apply::python_interpreter(&project.root, &project.settings.effective()).map(Into::into))
+    let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|w| {
+        let near = near.as_deref()?;
+        w.projects.into_iter().filter(|root| near.starts_with(root)).max_by_key(|root| root.components().count())
+    });
+    let (root, settings) = match member {
+        Some(root) => {
+            let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&root)).effective();
+            (root, settings)
+        }
+        None => (project.root.clone(), project.settings.effective()),
+    };
+    Ok(ide_sdk::apply::python_interpreter_near(&root, near.as_deref(), &settings).map(Into::into))
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
@@ -232,7 +243,7 @@ pub async fn sdk_python_pip(
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
-    d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window) });
+    d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
     d.add(
         "sdk_php_language_level",
