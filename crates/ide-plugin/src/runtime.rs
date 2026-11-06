@@ -3,7 +3,9 @@
 //! sandbox goes through [`HostApi`], implemented by the host; the imports
 //! themselves are in `wit_host`.
 
-use crate::types::{CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument};
+use crate::types::{
+    CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument, SemanticToken,
+};
 use crate::types::{
     EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
@@ -11,7 +13,9 @@ use crate::types::{
 use crate::types::{
     FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
-use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
+use crate::wit_host::{
+    bindings, indexing_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+};
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -29,12 +33,13 @@ use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
+use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.2";
+pub const API_VERSION: &str = "1.3";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -513,6 +518,7 @@ struct Exports {
     providers: Option<wit_prov::Guest>,
     indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
+    semantic: Option<wit_sem::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -592,6 +598,7 @@ impl Runtime {
         let index_indices = wit_index::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
+        let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -610,9 +617,13 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let semantic = match semantic_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic },
             limits: setup.limits,
             version: setup.version,
         })
@@ -842,6 +853,34 @@ impl Runtime {
             .collect())
     }
 
+    pub fn provide_semantic_tokens(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<SemanticToken>, CallError> {
+        if self.exports.semantic.is_none() {
+            return Err(CallError::missing_export("semantic-tokens-provider"));
+        }
+        let d = wit_sem::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let tokens = self.call(Invocation::default(), timeout, |e, store| {
+            e.semantic.as_ref().expect("checked").call_semantic_tokens(store, &d)
+        })?;
+        Ok(tokens
+            .into_iter()
+            .take(MAX_SEMANTIC_TOKENS)
+            .map(|t| SemanticToken {
+                range: range_from_wit(t.range),
+                kind: clip(t.kind, 32),
+                modifiers: t.modifiers.into_iter().take(MAX_TOKEN_MODIFIERS).map(|m| clip(m, 32)).collect(),
+            })
+            .collect())
+    }
+
     pub fn activate(&mut self) -> Result<(), CallError> {
         let data = self.store.data();
         let ctx = wit_types::Context {
@@ -994,6 +1033,8 @@ impl Runtime {
 
 /// Most items one provider call may return (more are dropped).
 const MAX_PROVIDER_ITEMS: usize = 10_000;
+const MAX_SEMANTIC_TOKENS: usize = 1 << 16;
+const MAX_TOKEN_MODIFIERS: usize = 8;
 
 fn pos_to_wit(p: ide_core::Pos) -> wit_types::Position {
     wit_types::Position { line: p.line, character: p.col }
