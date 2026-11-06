@@ -24,7 +24,7 @@ import { languageSemantics, type SemanticRange } from "./languages";
 
 // Language folders register their semantics by importing this module; lookups
 // elsewhere go through the re-exported `languageSemantics`.
-export { languageSemantics, allLanguageSemantics } from "./languages";
+export { languageSemantics, registeredSemantics } from "./languages";
 // Registers each language's semantics (highlighting hooks, construct docs).
 import "./python";
 import "./php";

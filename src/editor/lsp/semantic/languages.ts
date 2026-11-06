@@ -70,6 +70,6 @@ export function languageSemantics(language: string | null | undefined): Language
 }
 
 /** Every registered provider; language folders register when their module is imported. */
-export function allLanguageSemantics(): LanguageSemantics[] {
+export function registeredSemantics(): LanguageSemantics[] {
   return Object.values(registry);
 }

@@ -21,7 +21,7 @@ import { debounce, docOf, isUnavailable, lspRequest, reportLspError } from "./ls
 import { offsetsToRange } from "./positions";
 import { showHint } from "./hint";
 import { formatLines } from "./format";
-import { allLanguageSemantics } from "./semantic";
+import { registeredSemantics } from "./semantic";
 import { caretAnchor, openPopup, type ListPopupItem, type ListPreview } from "./popupStore";
 import { editPreviewLines } from "./workspaceEdit";
 import { featureBackoff } from "./availability";
@@ -684,7 +684,7 @@ class FloatingBulb {
 const floatingBulb = ViewPlugin.fromClass(FloatingBulb);
 
 export function intentionsExtension(): Extension {
-  const languageProviders = allLanguageSemantics().flatMap((s) => (s.intentions ? [s.intentions] : []));
+  const languageProviders = registeredSemantics().flatMap((s) => (s.intentions ? [s.intentions] : []));
   return [
     bulbField,
     bulbPlugin,
