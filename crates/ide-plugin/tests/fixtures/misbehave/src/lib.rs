@@ -167,6 +167,8 @@ impl providers::Guest for Misbehave {
             kind: Some("quickfix".into()),
             preferred: false,
             edits: Vec::new(),
+            operations: Vec::new(),
+            open: None,
             data: Some("fix".into()),
         }]
     }

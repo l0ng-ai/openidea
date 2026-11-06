@@ -21,6 +21,43 @@ pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(real)
 }
 
+/// Like [`resolve_in_root`] for a path that may not exist yet (a file about to
+/// be created): the part that exists is resolved through symlinks, the rest is
+/// normalised lexically, and the result must stay inside `root`.
+pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() {
+        return Err("empty path".into());
+    }
+    let root = root.canonicalize().map_err(|e| format!("project root unavailable: {e}"))?;
+    let requested = Path::new(path);
+    let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+    let mut lexical = PathBuf::new();
+    for part in joined.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                lexical.pop();
+            }
+            std::path::Component::CurDir => {}
+            part => lexical.push(part),
+        }
+    }
+    let mut missing = Vec::new();
+    let mut existing = lexical.as_path();
+    while !existing.exists() {
+        let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+            return Err(format!("{path}: access outside the project root is not allowed"));
+        };
+        missing.push(name);
+        existing = parent;
+    }
+    let mut real = existing.canonicalize().map_err(|e| format!("{path}: {e}"))?;
+    real.extend(missing.into_iter().rev());
+    if !real.starts_with(&root) {
+        return Err(format!("{path}: access outside the project root is not allowed"));
+    }
+    Ok(real)
+}
+
 /// Reads a UTF-8 file that `resolve_in_root` already approved.
 pub fn read_text(real: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(real).map_err(|e| e.to_string())?;
@@ -60,6 +97,21 @@ mod tests {
         assert!(resolve_in_root(&root, "").is_err());
         assert!(resolve_in_root(&root, "missing.txt").unwrap_err().contains("no such file"));
         assert!(read_text(&resolve_in_root(&root, "src").unwrap()).unwrap_err().contains("not a file"));
+    }
+
+    #[test]
+    fn new_paths_are_confined_to_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let root_real = root.canonicalize().unwrap();
+
+        assert_eq!(resolve_new_in_root(&root, "src/new/a.txt").unwrap(), root_real.join("src/new/a.txt"));
+        assert_eq!(resolve_new_in_root(&root, "src/../b.txt").unwrap(), root_real.join("b.txt"));
+        assert!(resolve_new_in_root(&root, "../x.txt").unwrap_err().contains("outside"));
+        assert!(resolve_new_in_root(&root, "src/../../x.txt").unwrap_err().contains("outside"));
+        assert!(resolve_new_in_root(&root, "/etc/new.txt").is_err());
+        assert!(resolve_new_in_root(&root, "").is_err());
     }
 
     #[cfg(unix)]

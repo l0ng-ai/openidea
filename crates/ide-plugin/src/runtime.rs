@@ -3,7 +3,9 @@
 //! sandbox goes through [`HostApi`], implemented by the host; the imports
 //! themselves are in `wit_host`.
 
-use crate::types::{CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument};
+use crate::types::{
+    CodeAction, CompletionItem, FileOperation, InlineSuggestion, LineMarker, Location, ProviderDocument,
+};
 use crate::types::{
     EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput,
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
@@ -1043,7 +1045,33 @@ fn code_action_from_wit(a: wit_prov::CodeAction) -> CodeAction {
             .into_iter()
             .map(|f| (std::path::PathBuf::from(f.path), f.edits.into_iter().map(edit_from_wit).collect()))
             .collect(),
+        operations: a.operations.into_iter().map(operation_from_wit).collect(),
+        open: a.open.map(std::path::PathBuf::from),
         data: a.data.map(|d| clip(d, 64 << 10)),
+    }
+}
+
+fn operation_from_wit(op: wit_prov::FileOperation) -> FileOperation {
+    match op {
+        wit_prov::FileOperation::Create(c) => {
+            FileOperation::Create { path: c.path.into(), text: c.text, overwrite: c.overwrite }
+        }
+        wit_prov::FileOperation::Rename(r) => FileOperation::Rename { from: r.path.into(), to: r.new_path.into() },
+        wit_prov::FileOperation::Delete(d) => FileOperation::Delete { path: d.path.into() },
+    }
+}
+
+fn operation_to_wit(op: &FileOperation) -> wit_prov::FileOperation {
+    match op {
+        FileOperation::Create { path, text, overwrite } => wit_prov::FileOperation::Create(wit_prov::CreateFile {
+            path: to_ipc(path),
+            text: text.clone(),
+            overwrite: *overwrite,
+        }),
+        FileOperation::Rename { from, to } => {
+            wit_prov::FileOperation::Rename(wit_prov::RenameFile { path: to_ipc(from), new_path: to_ipc(to) })
+        }
+        FileOperation::Delete { path } => wit_prov::FileOperation::Delete(wit_prov::DeleteFile { path: to_ipc(path) }),
     }
 }
 
@@ -1063,6 +1091,8 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
                     .collect(),
             })
             .collect(),
+        operations: a.operations.iter().map(operation_to_wit).collect(),
+        open: a.open.as_deref().map(to_ipc),
         data: a.data.clone(),
     }
 }

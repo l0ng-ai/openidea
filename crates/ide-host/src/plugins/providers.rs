@@ -157,7 +157,7 @@ pub(super) fn secret(_pkg: &Package, decl: toml::Value) -> Result<UiDecl, String
 
 // ---- dispatch ---------------------------------------------------------------
 
-use super::{LoadedPlugin, PluginHost, PluginStatus};
+use super::{LoadedPlugin, PluginEvent, PluginHost, PluginStatus};
 use ide_core::CancellationToken;
 use ide_plugin::{
     ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending,
@@ -309,6 +309,12 @@ impl PluginHost {
         self.code_call(plugin_id, ide_plugin::Invocation::default(), "resolving the code action", move |rt, _| {
             rt.resolve_code_action(&d, &action, timeout)
         })
+    }
+
+    /// Shows `path` in window `client` after a code action of `plugin_id` was applied.
+    pub fn open_file(&self, plugin_id: &str, client: &str, path: ide_core::IpcPath) {
+        let event = PluginEvent::OpenLocation { plugin_id: plugin_id.to_owned(), path, line: 0, column: 0 };
+        self.emit(Some(client), event);
     }
 
     pub fn provide_definition(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<Location> {

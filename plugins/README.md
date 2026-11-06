@@ -397,7 +397,12 @@ can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
 of its label, and bring `additional_edits` elsewhere in the document (an
 import). A code action can leave `edits` empty and set `data`: its edits are
 then computed by `resolve_code_action` when the user picks it, under the
-command budget instead of the 50 ms. Problems (`publish_diagnostics`) can name
+command budget instead of the 50 ms. A code action can also carry
+`operations` (`FileOperation::Create { path, text, overwrite }`, `Rename`,
+`Delete`), applied before its edits as one workspace edit: if any step fails
+nothing changes, one undo reverses all of it, and a path outside the project
+root disables the action. `open` shows a file once the action is applied.
+Problems (`publish_diagnostics`) can name
 the tool that found them (`source`) and be `unnecessary` (faded) or
 `deprecated` (struck through).
 Editor providers run under the edit-path budget: 50 ms, after which the

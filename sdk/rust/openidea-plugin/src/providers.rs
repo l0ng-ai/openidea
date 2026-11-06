@@ -130,7 +130,26 @@ pub struct InlineSuggestion {
     pub replace: Option<Range>,
 }
 
+/// A file change a [`CodeAction`] makes next to its text edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOperation {
+    /// Fails when the file exists, unless `overwrite`.
+    Create {
+        path: String,
+        text: String,
+        overwrite: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+    },
+    /// Deletes the file; undoing the action restores it.
+    Delete {
+        path: String,
+    },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CodeAction {
     pub title: String,
     /// `quickfix`, `refactor`, …
@@ -138,6 +157,12 @@ pub struct CodeAction {
     pub preferred: bool,
     /// (absolute path, edits) per file.
     pub edits: Vec<(String, Vec<TextEdit>)>,
+    /// Applied before `edits`, as one workspace edit with them: if any
+    /// operation or edit fails, nothing is applied. Paths stay inside the
+    /// project root.
+    pub operations: Vec<FileOperation>,
+    /// Opened once the action is applied.
+    pub open: Option<String>,
     /// The plugin's own reference: with it and no `edits`, the edits come
     /// from [`Providers::resolve_code_action`] once the user picks the action.
     pub data: Option<String>,

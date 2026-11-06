@@ -6,6 +6,7 @@ use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
+use std::path::Path;
 
 async fn prepare_actions(
     project: std::sync::Arc<crate::Project>,
@@ -84,7 +85,9 @@ const PLUGIN_SERVER: ServerId = ServerId(0);
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PluginActionRef {
     plugin: String,
-    data: String,
+    data: Option<String>,
+    /// Opened once the action is applied.
+    open: Option<ide_core::IpcPath>,
 }
 
 /// A plugin's `completion-item.kind` (wit/providers.wit lists them).
@@ -358,7 +361,7 @@ pub async fn lsp_code_actions(
     };
     let plugin_actions: Vec<CodeAction> = plugin_actions
         .into_iter()
-        .map(|(plugin, a)| plugin_code_action(&plugin, a))
+        .map(|(plugin, a)| plugin_code_action(&plugin, &project.root, a))
         .filter(|a| {
             only.is_empty()
                 || a.kind.as_ref().is_some_and(|k| only.iter().any(|o| k == o || k.starts_with(&format!("{o}."))))
@@ -374,28 +377,67 @@ pub async fn lsp_code_actions(
     prepare_actions(project, doc, version, actions).await
 }
 
-fn plugin_code_action(plugin: &str, a: ide_plugin::CodeAction) -> CodeAction {
-    // With `data` and no edits, the plugin computes them when the action is picked.
-    let lazy = a.edits.is_empty() && a.data.is_some();
-    let files: Vec<_> = a
-        .edits
-        .into_iter()
-        .map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None })
-        .collect();
-    let data = a
-        .data
-        .filter(|_| lazy)
-        .and_then(|data| serde_json::to_value(PluginActionRef { plugin: plugin.to_owned(), data }).ok());
+fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> CodeAction {
+    // With `data` and nothing to apply, the plugin computes the edits when the action is picked.
+    let lazy = a.edits.is_empty() && a.operations.is_empty() && a.data.is_some();
+    let (files, disabled_reason) = match plugin_file_edits(root, &a) {
+        Ok(files) => (files, None),
+        Err(reason) => (Vec::new(), Some(reason)),
+    };
+    let data = (lazy || a.open.is_some())
+        .then(|| PluginActionRef {
+            plugin: plugin.to_owned(),
+            data: a.data.filter(|_| lazy),
+            open: a.open.map(|p| ide_plugin::resolve_new_in_root(root, &p.to_string_lossy()).unwrap_or(p).into()),
+        })
+        .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
         kind: a.kind,
         is_preferred: a.preferred,
-        disabled_reason: None,
+        disabled_reason,
         edit: (!lazy).then(|| WorkspaceEdit { files, preconditions: Vec::new() }),
         command: None,
         data,
         server: PLUGIN_SERVER,
     }
+}
+
+/// The action's file operations, then its text edits, as one workspace edit's files.
+/// A path outside the project root disables the whole action.
+fn plugin_file_edits(root: &Path, a: &ide_plugin::CodeAction) -> Result<Vec<ide_core::FileEdit>, String> {
+    use ide_core::FileEdit;
+    use ide_plugin::FileOperation;
+    let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
+    let mut files = Vec::new();
+    for operation in &a.operations {
+        match operation {
+            FileOperation::Create { path, text, overwrite } => {
+                let path = confined(path)?;
+                files.push(FileEdit::Create { path: path.clone().into(), overwrite: *overwrite });
+                if !text.is_empty() {
+                    let start = Range::point(Pos::new(0, 0));
+                    files.push(FileEdit::Edit {
+                        path: path.into(),
+                        edits: vec![TextEdit { range: start, new_text: text.clone() }],
+                        version: None,
+                    });
+                }
+            }
+            FileOperation::Rename { from, to } => {
+                files.push(FileEdit::Rename { from: confined(from)?.into(), to: confined(to)?.into() });
+            }
+            FileOperation::Delete { path } => {
+                files.push(FileEdit::Delete { path: confined(path)?.into(), recursive: false });
+            }
+        }
+    }
+    files.extend(a.edits.iter().map(|(path, edits)| FileEdit::Edit {
+        path: path.clone().into(),
+        edits: edits.clone(),
+        version: None,
+    }));
+    Ok(files)
 }
 
 /// A code action resolved by whoever offered it: its language server, or
@@ -414,11 +456,14 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
         kind: action.kind.clone(),
         preferred: action.is_preferred,
         edits: Vec::new(),
-        data: Some(r.data),
+        operations: Vec::new(),
+        open: None,
+        data: r.data,
     };
     let plugin = r.plugin.clone();
     let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending)).await?;
-    Ok(plugin_code_action(&r.plugin, ide_plugin::CodeAction { data: None, ..resolved }))
+    let root = host.project(window)?.root.clone();
+    Ok(plugin_code_action(&r.plugin, &root, ide_plugin::CodeAction { data: None, ..resolved }))
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -469,17 +514,35 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
     } else {
         action
     };
+    if let Some(reason) = &action.disabled_reason {
+        return Err(ide_core::IdeError::invalid(reason.clone()));
+    }
     if let Some(edit) = &action.edit {
         let documents = project.documents.clone();
         let edit = edit.clone();
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
+    open_plugin_action_target(&action, window);
     if let Some(command) = action.command
         && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
     {
         project.lsp.execute_command(doc, command).await?;
     }
     Ok(())
+}
+
+/// Opens the file a plugin's action asked to show, now that the action is applied.
+fn open_plugin_action_target(action: &CodeAction, window: &str) {
+    if action.server != PLUGIN_SERVER {
+        return;
+    }
+    let Some(r) = action.data.clone().and_then(|d| serde_json::from_value::<PluginActionRef>(d).ok()) else {
+        return;
+    };
+    let (Some(path), Some(plugins)) = (r.open, crate::plugins::editor_plugin_host()) else {
+        return;
+    };
+    plugins.open_file(&r.plugin, window, path);
 }
 
 /// A command after a code action's edit that no server provides: what other editors'
@@ -907,16 +970,72 @@ mod tests {
             kind: None,
             preferred: false,
             edits,
+            operations: Vec::new(),
+            open: None,
             data: data.map(str::to_owned),
         };
-        let lazy = plugin_code_action("acme.x", action(Vec::new(), Some("ref")));
+        let root = Path::new("/p");
+        let lazy = plugin_code_action("acme.x", root, action(Vec::new(), Some("ref")));
         assert!(lazy.edit.is_none());
         let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
-        assert_eq!((r.plugin.as_str(), r.data.as_str()), ("acme.x", "ref"));
+        assert_eq!((r.plugin.as_str(), r.data.as_deref()), ("acme.x", Some("ref")));
         // With edits, `data` is the plugin's business: applied as is.
         let edit = TextEdit { range: Range::default(), new_text: "x".into() };
-        let eager = plugin_code_action("acme.x", action(vec![("/a".into(), vec![edit])], Some("ref")));
+        let eager = plugin_code_action("acme.x", root, action(vec![("/a".into(), vec![edit])], Some("ref")));
         assert!(eager.edit.is_some() && eager.data.is_none());
+    }
+
+    #[test]
+    fn a_plugin_action_maps_its_file_operations_before_its_edits_and_stays_in_the_project() {
+        use ide_core::FileEdit;
+        use ide_plugin::FileOperation;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let action = |operations: Vec<FileOperation>| ide_plugin::CodeAction {
+            title: "Create view".into(),
+            kind: Some("quickfix".into()),
+            preferred: false,
+            edits: vec![(root.join("a.txt"), vec![TextEdit { range: Range::default(), new_text: "x".into() }])],
+            operations,
+            open: Some(root.join("views/home.html")),
+            data: None,
+        };
+
+        let created = plugin_code_action(
+            "acme.x",
+            &root,
+            action(vec![
+                FileOperation::Create { path: "views/home.html".into(), text: "<h1/>".into(), overwrite: false },
+                FileOperation::Rename { from: root.join("old.txt"), to: root.join("new.txt") },
+                FileOperation::Delete { path: root.join("gone.txt") },
+            ]),
+        );
+        assert_eq!(created.disabled_reason, None);
+        let files = created.edit.unwrap().files;
+        let home = root.join("views/home.html");
+        assert!(matches!(&files[0], FileEdit::Create { path, overwrite: false } if **path == home));
+        assert!(
+            matches!(&files[1], FileEdit::Edit { path, edits, .. } if **path == home && edits[0].new_text == "<h1/>")
+        );
+        assert!(matches!(&files[2], FileEdit::Rename { to, .. } if **to == root.join("new.txt")));
+        assert!(matches!(&files[3], FileEdit::Delete { recursive: false, .. }));
+        assert!(matches!(&files[4], FileEdit::Edit { path, .. } if **path == root.join("a.txt")));
+        let r: PluginActionRef = serde_json::from_value(created.data.unwrap()).unwrap();
+        assert_eq!((r.data, r.open.map(|p| p.to_path_buf())), (None, Some(home)));
+
+        for outside in [tmp.path().join("evil.txt"), "../evil.txt".into()] {
+            for operation in [
+                FileOperation::Create { path: outside.clone(), text: String::new(), overwrite: false },
+                FileOperation::Rename { from: root.join("old.txt"), to: outside.clone() },
+                FileOperation::Delete { path: outside.clone() },
+            ] {
+                let rejected = plugin_code_action("acme.x", &root, action(vec![operation]));
+                assert!(rejected.disabled_reason.is_some_and(|r| r.contains("outside the project root")));
+                assert!(rejected.edit.unwrap().files.is_empty());
+            }
+        }
     }
 
     #[test]

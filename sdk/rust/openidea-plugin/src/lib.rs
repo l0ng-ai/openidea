@@ -530,7 +530,31 @@ pub mod __rt {
                 .into_iter()
                 .map(|(path, edits)| w::FileEdit { path, edits: edits.into_iter().map(edit_out).collect() })
                 .collect(),
+            operations: a.operations.into_iter().map(operation_out).collect(),
+            open: a.open,
             data: a.data,
+        }
+    }
+
+    fn operation_out(op: p::FileOperation) -> w::FileOperation {
+        match op {
+            p::FileOperation::Create { path, text, overwrite } => {
+                w::FileOperation::Create(w::CreateFile { path, text, overwrite })
+            }
+            p::FileOperation::Rename { from, to } => {
+                w::FileOperation::Rename(w::RenameFile { path: from, new_path: to })
+            }
+            p::FileOperation::Delete { path } => w::FileOperation::Delete(w::DeleteFile { path }),
+        }
+    }
+
+    fn operation_in(op: w::FileOperation) -> p::FileOperation {
+        match op {
+            w::FileOperation::Create(c) => {
+                p::FileOperation::Create { path: c.path, text: c.text, overwrite: c.overwrite }
+            }
+            w::FileOperation::Rename(r) => p::FileOperation::Rename { from: r.path, to: r.new_path },
+            w::FileOperation::Delete(d) => p::FileOperation::Delete { path: d.path },
         }
     }
 
@@ -551,6 +575,8 @@ pub mod __rt {
                     (f.path, edits)
                 })
                 .collect(),
+            operations: a.operations.into_iter().map(operation_in).collect(),
+            open: a.open,
             data: a.data,
         }
     }

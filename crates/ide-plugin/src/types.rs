@@ -384,8 +384,19 @@ pub struct CodeAction {
     pub kind: Option<String>,
     pub preferred: bool,
     pub edits: Vec<(PathBuf, Vec<ide_core::TextEdit>)>,
+    /// Applied before `edits`, in one workspace edit with them.
+    pub operations: Vec<FileOperation>,
+    /// Opened once the action is applied.
+    pub open: Option<PathBuf>,
     /// The plugin's reference: the edits come from `resolve_code_action`.
     pub data: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOperation {
+    Create { path: PathBuf, text: String, overwrite: bool },
+    Rename { from: PathBuf, to: PathBuf },
+    Delete { path: PathBuf },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
