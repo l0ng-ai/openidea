@@ -11,12 +11,23 @@
 //! - [`PhpEngine::definition`]: goto definition for class-like, function and
 //!   constant names (references, declarations and `use` imports, with the
 //!   global fallback of unqualified functions and constants, and `self`,
-//!   `static` and `parent`). Project declarations come from the open buffers
+//!   `static` and `parent`), members (methods, properties, class constants
+//!   and enum cases, through the receiver's type), parameters named by named
+//!   arguments, and variables (their parameter, `use` capture or first
+//!   write); see [`symbol`]. Project declarations come from the open buffers
 //!   and the index; built-in ones from the bundled phpstorm-stubs, written
 //!   once to the engine's cache directory so they open as ordinary files.
+//! - [`PhpEngine::type_definition`]: the class-likes of the type of what the
+//!   caret is on.
+//! - [`PhpEngine::hover`]: signature, type at the caret and PHPDoc as
+//!   Markdown, inherited docblocks included ([`hover`]).
 
+pub mod hover;
+pub(crate) mod symbol;
 #[cfg(test)]
 mod tests;
+
+pub use hover::HoverInfo;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +37,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str, Utf32String};
 
 use crate::engine::PhpEngine;
 use crate::index::{DeclKind, path_key};
-use crate::names::{FileNames, NameKind, RelativeClass, Resolution, fqn_eq};
+use crate::names::{NameKind, fqn_eq};
 use crate::stubs::{BundledStubs, StubSet};
 use crate::summary::{ClassKind, ClassLike, FileSummary, Loc, Param, TypeHint, Visibility};
 
@@ -321,45 +332,38 @@ impl PhpEngine {
         Ok(out.into_iter().map(|(_, _, symbol)| symbol).collect())
     }
 
-    /// Goto definition of the class-like, function or constant name at `pos`
-    /// in an open document. `None` when the engine doesn't hold the document
-    /// or there is no such name at `pos` (another kind of request, for later
-    /// phases); an empty list when the name is declared nowhere.
+    /// Goto definition of what is at `pos` in an open document (see
+    /// [`symbol`]). `None` when the engine doesn't hold the document or the
+    /// caret is on nothing it knows (another kind of request); an empty list
+    /// when the name is declared nowhere.
     pub fn definition(&self, doc: DocId, pos: Pos) -> Option<Vec<Target>> {
         let parsed = self.parsed_document(doc)?;
         let path = self.document_path(doc)?;
-        let names = FileNames::resolve(&parsed);
-        let offset = parsed.line_index().byte(pos);
-        // A caret right after the name counts too.
-        let name = names.at_offset(offset).or_else(|| names.at_offset(offset.checked_sub(1)?))?;
-        if name.kind == NameKind::Namespace {
-            return None;
-        }
         let here = FileSummary::extract(&parsed);
-        let candidates: Vec<String> = match &name.resolution {
-            Resolution::Relative(relative) => {
-                let class = enclosing_class(&here, name.start)?;
-                match relative {
-                    RelativeClass::Self_ | RelativeClass::Static => vec![class.fqn.clone()],
-                    RelativeClass::Parent => vec![class.extends.first()?.clone()],
+        let resolver = self.resolver();
+        let offset = parsed.line_index().byte(pos);
+        let found = self.at_caret(&parsed, &here, &resolver, offset)?;
+        let mut out: Vec<Target> = Vec::new();
+        match found.subject {
+            symbol::Subject::Variable { declarations, .. } => {
+                out.extend(declarations.into_iter().map(|loc| Target { path: path.clone(), range: loc.range }));
+            }
+            symbol::Subject::Decls(decls) => {
+                for decl in &decls {
+                    for target in self.decl_targets(decl, &path, &here) {
+                        if !out.contains(&target) {
+                            out.push(target);
+                        }
+                    }
                 }
             }
-            resolution => resolution.candidates().map(str::to_owned).collect(),
-        };
-        // An unqualified function or constant: the namespaced one when it
-        // exists anywhere, else the global one.
-        for fqn in candidates {
-            let found = self.declarations_of(name.kind, &fqn, &path, &here);
-            if !found.is_empty() {
-                return Some(found);
-            }
         }
-        Some(Vec::new())
+        Some(out)
     }
 
     /// Where `fqn` is declared: in the document itself, in the other files of
     /// the index (their open buffers first), or else in the stubs.
-    fn declarations_of(&self, kind: NameKind, fqn: &str, here: &Path, summary: &FileSummary) -> Vec<Target> {
+    pub(crate) fn declarations_of(&self, kind: NameKind, fqn: &str, here: &Path, summary: &FileSummary) -> Vec<Target> {
         let mut out = Vec::new();
         if let Some((_, loc)) = find_declaration(summary, kind, fqn) {
             out.push(Target { path: here.to_path_buf(), range: loc.range });
@@ -384,7 +388,7 @@ impl PhpEngine {
         out
     }
 
-    fn stub_declaration(&self, kind: NameKind, fqn: &str) -> Option<Target> {
+    pub(crate) fn stub_declaration(&self, kind: NameKind, fqn: &str) -> Option<Target> {
         let stubs = self.stubs();
         let (file, loc) = stub_lookup(&stubs, kind, fqn)?;
         let path = BundledStubs::materialize(&self.stub_dir(), &file)?;

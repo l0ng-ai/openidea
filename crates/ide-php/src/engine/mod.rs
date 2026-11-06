@@ -446,8 +446,30 @@ impl PhpEngine {
     /// The first project declaration of `fqn` that `pick` finds in its
     /// declaring file's summary (open buffers first).
     fn project_declaration<T>(&self, kind: NameKind, fqn: &str, pick: impl Fn(&FileSummary) -> Option<T>) -> Option<T> {
-        let index = self.index()?;
-        index.declarations(kind, fqn).ok()?.into_iter().find_map(|decl| pick(&self.summary(&decl.path()).ok()??))
+        let indexed = self.index().and_then(|index| {
+            let decls = index.declarations(kind, fqn).ok()?;
+            decls.into_iter().find_map(|decl| pick(&self.summary(&decl.path()).ok()??))
+        });
+        indexed.or_else(|| self.open_declaration(fqn, &pick))
+    }
+
+    /// A declaration only an open buffer has (a new file, or one outside
+    /// the indexed folders). Buffers that don't mention the short name are
+    /// skipped without being summarised.
+    fn open_declaration<T>(&self, fqn: &str, pick: &impl Fn(&FileSummary) -> Option<T>) -> Option<T> {
+        let short = fqn.rsplit('\\').next().unwrap_or(fqn).as_bytes();
+        if short.is_empty() {
+            return None;
+        }
+        let documents: Vec<OpenDocument> = self.shared.documents.lock().values().cloned().collect();
+        documents.into_iter().find_map(|document| {
+            let mentions = document.text.as_bytes().windows(short.len()).any(|w| w.eq_ignore_ascii_case(short));
+            if !mentions {
+                return None;
+            }
+            let parsed = self.shared.parses.get_or_parse(document.doc, document.version, || document.text.clone());
+            pick(&FileSummary::extract(&parsed))
+        })
     }
 }
 

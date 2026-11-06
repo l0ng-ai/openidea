@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use ide_core::settings::{PhpEngineKind, Settings};
 use ide_core::{CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, SharedSink};
-use ide_lsp::types::{GotoKind, WorkspaceSymbol};
+use ide_lsp::types::{GotoKind, Hover, Markup, WorkspaceSymbol};
 
 use crate::language_service::Answer;
 use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
@@ -179,8 +179,8 @@ impl DocumentObserver for PhpObserver {
 /// registered for `php` in every project, it answers only while the engine
 /// runs (Settings › PHP › Engine is `Native`); otherwise requests go to
 /// Intelephense. The requests it answers natively are added feature by feature:
-/// so far document and workspace symbols, and goto definition of class-like,
-/// function and constant names.
+/// so far document and workspace symbols, hover, and goto definition and type
+/// definition (names, members, named arguments and variables).
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
 /// The most workspace symbols one query returns.
@@ -208,11 +208,25 @@ impl crate::language_service::LanguageService for PhpService {
         Some(symbols)
     }
 
-    fn goto(&self, doc: DocId, pos: Pos, kind: GotoKind) -> Answer<Vec<Location>> {
-        if !matches!(kind, GotoKind::Definition | GotoKind::Declaration) {
+    fn hover(&self, doc: DocId, pos: Pos, _cancel: &CancellationToken) -> Answer<Option<Hover>> {
+        let engine = self.0.engine()?;
+        if !engine.is_open(doc) {
             return None;
         }
-        let targets = self.0.engine()?.definition(doc, pos)?;
+        let hover = engine.hover(doc, pos).map(|hover| Hover {
+            contents: Markup { kind: "markdown".into(), value: hover.markdown },
+            range: Some(hover.range),
+        });
+        Some(Ok(hover))
+    }
+
+    fn goto(&self, doc: DocId, pos: Pos, kind: GotoKind) -> Answer<Vec<Location>> {
+        let engine = self.0.engine()?;
+        let targets = match kind {
+            GotoKind::Definition | GotoKind::Declaration => engine.definition(doc, pos)?,
+            GotoKind::TypeDefinition => engine.type_definition(doc, pos)?,
+            GotoKind::Implementation => return None,
+        };
         Some(Ok(targets.into_iter().map(|t| Location::file(t.path, t.range)).collect()))
     }
 }

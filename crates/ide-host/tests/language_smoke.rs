@@ -1070,8 +1070,9 @@ async fn php() {
 }
 
 /// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
-/// server: the checks it answers so far, the Structure view and go to definition of class names (in
-/// a `new`, an `extends` and a `use` import). Not ignored: it needs nothing installed.
+/// server: the checks it answers so far, the Structure view, go to definition of class names (in a
+/// `new`, an `extends` and a `use` import), of members and of variables, and hover. Not ignored: it
+/// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
     let smoke = Smoke::start("php", &PHP).await;
@@ -1114,6 +1115,32 @@ async fn php_native() {
             at("src/Support/Collection.php", "final class Collection", "Collection"),
         )
         .await;
+    // Members through the receiver's type, and variables.
+    smoke
+        .definition(
+            at("src/Library.php", "$lent = $book->withAvailability(false);", "withAvailability"),
+            at("src/Model/Book.php", "public function withAvailability", "withAvailability"),
+        )
+        .await;
+    smoke
+        .definition(
+            at("src/Library.php", "$book = $this->find($isbn);", "find"),
+            at("src/Library.php", "public function find(string $isbn)", "find"),
+        )
+        .await;
+    smoke
+        .definition(at("src/Library.php", "return $lent;", "$lent"), at("src/Library.php", "$lent = $book", "$lent"))
+        .await;
+    // Hover: the baseline's function check, a method with its resolved signature, a variable's type.
+    let (over, shows) = PHP.hover;
+    smoke.hover(over, shows).await;
+    smoke
+        .hover(
+            at("src/Library.php", "$lent = $book->withAvailability(false);", "withAvailability"),
+            "public function withAvailability(bool $available)",
+        )
+        .await;
+    smoke.hover(at("src/Library.php", "return $lent;", "$lent"), r"App\Model\Book $lent").await;
     let servers = ops::lsp::lsp_servers(&smoke.host, WINDOW).unwrap_or_default();
     assert!(
         !servers.iter().any(|s| s.name.to_ascii_lowercase().contains("intelephense")),

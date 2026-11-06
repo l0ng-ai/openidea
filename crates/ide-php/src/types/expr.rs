@@ -37,7 +37,7 @@ use std::rc::Rc;
 use mago_span::HasSpan;
 use mago_syntax::cst::{
     Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, Assignment, Call, Class,
-    ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function,
+    ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, DirectVariable, Enum, Expression, Function,
     FunctionLikeParameterList, Interface, MagicConstant, MatchArm, Method, PartialApplication, PartialArgument,
     PartialArgumentList, Program, Return, Trait, Variable, Yield,
 };
@@ -161,13 +161,28 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     /// `self`/`static`/`parent` are not expressions of their own here: the
     /// expression around them is.
     pub fn find(&self, offset: u32) -> Option<(&'a Expression<'a>, Vec<Frame<'a>>)> {
-        let mut finder = Finder { offset, summary: self.summary, frames: Vec::new(), best: None };
+        self.locate(offset).expression
+    }
+
+    /// The innermost expression around `offset` (as [`ExprTypes::find`])
+    /// and the innermost direct variable around it, anywhere it is written
+    /// (expressions, parameters, closure `use` lists, `global` and `static`
+    /// statements, property declarations), each with the scopes it is in.
+    pub fn locate(&self, offset: u32) -> Located<'a> {
+        let mut finder = Finder { offset, summary: self.summary, frames: Vec::new(), best: None, variable: None };
         FindWalker.walk_program(self.program(), &mut finder);
-        finder.best
+        Located { expression: finder.best, variable: finder.variable }
+    }
+
+    /// The type of variable `$name` (without `$`) written or read at byte
+    /// `at` inside `frames`, as [`ExprTypes::type_of`] gives it.
+    pub fn variable_type(&self, name: &[u8], at: u32, frames: &[Frame<'a>]) -> Type {
+        let ty = self.lookup(name, at, frames, true);
+        self.resolver.resolve(&LazyType::Known(ty), &self.context(frames))
     }
 
     /// What `self`, `parent` and `static` mean in `frames`.
-    fn context(&self, frames: &[Frame<'a>]) -> Context {
+    pub fn context(&self, frames: &[Frame<'a>]) -> Context {
         match frames.iter().rev().find_map(|frame| match frame {
             Frame::Class(fqn) => Some(fqn),
             _ => None,
@@ -599,7 +614,7 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     // -------------------------------------------------------------- calls
 
     /// The class named before `::` or after `new`.
-    fn class_ref(&self, expr: &'a Expression<'a>, frames: &[Frame<'a>]) -> Type {
+    pub fn class_ref(&self, expr: &'a Expression<'a>, frames: &[Frame<'a>]) -> Type {
         match expr {
             Expression::Identifier(identifier) => {
                 let name = String::from_utf8_lossy(identifier.value());
@@ -909,12 +924,20 @@ fn falsy_removed(ty: &Type) -> Type {
 
 // ----------------------------------------------------------------- walkers
 
-/// Finds the innermost expression around an offset, tracking scopes.
+/// What [`ExprTypes::locate`] finds around an offset.
+pub struct Located<'a> {
+    pub expression: Option<(&'a Expression<'a>, Vec<Frame<'a>>)>,
+    pub variable: Option<(&'a DirectVariable<'a>, Vec<Frame<'a>>)>,
+}
+
+/// Finds the innermost expression and variable around an offset, tracking
+/// scopes.
 struct Finder<'a> {
     offset: u32,
     summary: &'a FileSummary,
     frames: Vec<Frame<'a>>,
     best: Option<(&'a Expression<'a>, Vec<Frame<'a>>)>,
+    variable: Option<(&'a DirectVariable<'a>, Vec<Frame<'a>>)>,
 }
 
 impl Finder<'_> {
@@ -942,6 +965,12 @@ impl<'a> Walker<'a, 'a, Finder<'a>> for FindWalker {
         let span = expr.span();
         if span.start.offset <= cx.offset && cx.offset <= span.end.offset {
             cx.best = Some((expr, cx.frames.clone()));
+        }
+    }
+
+    fn walk_in_direct_variable(&self, variable: &'a DirectVariable<'a>, cx: &mut Finder<'a>) {
+        if variable.span.start.offset <= cx.offset && cx.offset <= variable.span.end.offset {
+            cx.variable = Some((variable, cx.frames.clone()));
         }
     }
 

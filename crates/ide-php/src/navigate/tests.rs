@@ -279,3 +279,6 @@ fn ranking_prefers_exact_then_prefix_then_shorter() {
     assert!(!ranked.contains(&"unrelated"));
     assert_eq!(rank(&names, "book", 1).len(), 1);
 }
+
+/// Members, variables, named arguments, type definition and hover.
+mod members;

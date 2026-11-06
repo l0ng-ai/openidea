@@ -255,7 +255,7 @@ The design:
 
   Apply them through a provider, and expose the expected values for completion. Tests: the fixture's meta file.
 
-- [ ] Phase 2.9: Hover and goto (members and variables)
+- [x] Phase 2.9: Hover and goto (members and variables)
   - **Hover:** the declaration signature, the resolved type, and PHPDoc rendered as Markdown (inherited docs included).
   - **Goto definition:** members, variables (first assignment or parameter), `parent::`, `self::`, named arguments.
   - **Goto type definition.**
