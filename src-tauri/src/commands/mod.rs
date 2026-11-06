@@ -482,6 +482,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_cancel_task,
         plugin::plugin_view_render,
         plugin::plugin_view_event,
+        plugin::plugin_view_process,
         plugin::plugin_web_page,
         plugin::plugin_web_save_file,
         plugin::plugin_web_read_file,

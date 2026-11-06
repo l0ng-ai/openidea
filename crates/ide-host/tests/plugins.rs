@@ -2647,3 +2647,78 @@ fn detail_id_only_for_services_views() {
     let err = f.host.view_event("hello", "greetings/pod:default/nginx", event, f.inv()).err();
     assert!(err.as_ref().is_none_or(|e| !e.message.contains("declares no view")), "{err:?}");
 }
+
+/// `hello` as a services view that may run `sh`, granted or not.
+#[cfg(unix)]
+fn services_with_sh(f: &Fixture, dir: &Path, grant: bool) {
+    let sh = PathBuf::from("/bin");
+    f.host.set_program_path(Arc::new(move || Some(sh.clone().into_os_string())));
+    let pkg = hello_variant(dir, |t| {
+        t.replace("location = \"right\"", "location = \"services\"").replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = [\"editor.read\", \"editor.write\"]\noptional = [\"process:sh\"]",
+        )
+    });
+    f.install(&pkg);
+    f.host.set_capability("hello", "process:sh", grant).unwrap();
+}
+
+#[cfg(unix)]
+fn stream(
+    f: &Fixture,
+    script: &str,
+    cancel: &ide_core::CancellationToken,
+    on: impl Fn(PluginOutputLine),
+) -> ide_core::IdeResult<Option<i32>> {
+    let args = vec!["-c".to_owned(), script.to_owned()];
+    f.host.stream_view_process("hello", "greetings/pod:a", "sh", args, None, cancel, &on)
+}
+
+#[cfg(unix)]
+#[test]
+fn view_process_streams_lines() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let lines = Mutex::new(Vec::new());
+    let status = stream(&f, "printf 'a\\nb\\n'; printf 'e\\n' >&2", &Default::default(), |l| lines.lock().push(l));
+    assert_eq!(status.unwrap(), Some(0));
+    let mut lines = lines.into_inner();
+    lines.sort_by_key(|l| l.stderr);
+    let line = |stderr: bool, text: &str| PluginOutputLine { stderr, text: text.into() };
+    assert_eq!(lines, [line(false, "a"), line(false, "b"), line(true, "e")]);
+}
+
+#[cfg(unix)]
+#[test]
+fn view_process_needs_the_grant() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), false);
+    let marker = tmp.path().join("ran");
+    let script = format!("touch {}", marker.display());
+    let err = stream(&f, &script, &Default::default(), |_| {}).unwrap_err();
+    assert!(err.message.contains("process:sh"), "{err:?}");
+    assert!(!marker.exists(), "nothing was started");
+    let err = f.host.stream_view_process("hello", "nope/pod:a", "sh", Vec::new(), None, &Default::default(), &|_| {});
+    assert_eq!(err.unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[cfg(unix)]
+#[test]
+fn view_process_cancel_kills_the_child() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let cancel = ide_core::CancellationToken::default();
+    let started = Instant::now();
+    let result = stream(&f, "echo up; sleep 30.4321", &cancel, |l| {
+        if l.text == "up" {
+            cancel.cancel();
+        }
+    });
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    let orphan = || std::process::Command::new("pgrep").args(["-f", "sleep 30.4321"]).status().unwrap().success();
+    assert!(eventually(|| !orphan()), "what the program started is killed too");
+}

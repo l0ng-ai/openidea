@@ -420,6 +420,37 @@ pub async fn plugin_view_event(
     ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc, editor).await
 }
 
+/// Runs the program of a plugin view's `process` body, streaming its output
+/// until it exits or `request` is cancelled; returns the exit code.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn plugin_view_process(
+    window: Window,
+    state: State<'_, AppState>,
+    request: ide_core::RequestId,
+    plugin_id: String,
+    view: String,
+    program: String,
+    args: Vec<String>,
+    on_line: Channel<ide_host::plugins::PluginOutputLine>,
+) -> IdeResult<Option<i32>> {
+    let plugins = state.plugins.clone();
+    let on_line = super::sender(on_line);
+    ide_host::plugins::views::process(
+        &state.host,
+        plugins,
+        window.label(),
+        plugin_id,
+        view,
+        program,
+        args,
+        request,
+        on_line,
+    )
+    .await
+}
+
 /// The page of a plugin's web view or custom editor (`web = …`).
 #[tauri::command]
 #[specta::specta]

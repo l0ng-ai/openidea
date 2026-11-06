@@ -320,6 +320,85 @@ impl PluginApi {
     }
 }
 
+impl PluginApi {
+    /// Runs an approved program until it exits or `cancel` fires, passing
+    /// each output line to `on_line`; returns its exit code.
+    pub(super) fn stream_process(
+        &self,
+        program: &str,
+        args: Vec<String>,
+        cwd: Option<&Path>,
+        cancel: &CancellationToken,
+        on_line: &dyn Fn(super::PluginOutputLine),
+    ) -> Result<Option<i32>, HostError> {
+        use std::io::BufRead;
+        let binary = self.approved_program(program)?;
+        let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
+        let _ = std::fs::create_dir_all(&cwd);
+        let mut cmd = std::process::Command::new(&binary);
+        ide_core::process::prepare(ide_core::process::own_group(&mut cmd));
+        let mut child = cmd
+            .args(&args)
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| HostError::Failed(format!("{}: {e}", binary.display())))?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let read = |pipe: Box<dyn std::io::Read + Send>, stderr: bool| {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
+                    let text = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line)).into_owned();
+                    if tx.send(super::PluginOutputLine { stderr, text }).is_err() {
+                        break;
+                    }
+                }
+            });
+        };
+        if let Some(out) = child.stdout.take() {
+            read(Box::new(out), false);
+        }
+        if let Some(err) = child.stderr.take() {
+            read(Box::new(err), true);
+        }
+        drop(tx);
+        loop {
+            if cancel.is_cancelled() {
+                kill_group(&mut child);
+                return Err(HostError::Cancelled);
+            }
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(line) => on_line(line),
+                // Both pipes closed: the program is done (or detached them).
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+        loop {
+            if let Some(status) = child.try_wait().map_err(failed)? {
+                return Ok(status.code());
+            }
+            if cancel.is_cancelled() {
+                kill_group(&mut child);
+                return Err(HostError::Cancelled);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Kills a program spawned in its own group and what it started. A kill that
+/// lands while the program forks can miss the new process, so the group is
+/// signalled again before the program is reaped (until then its group id
+/// can't be reused).
+fn kill_group(child: &mut std::process::Child) {
+    ide_core::process::kill_tree_of(child.id());
+    std::thread::sleep(Duration::from_millis(50));
+    ide_core::process::kill_tree(child);
+}
+
 fn failed(e: impl std::fmt::Display) -> HostError {
     HostError::Failed(e.to_string())
 }

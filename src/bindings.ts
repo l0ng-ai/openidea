@@ -1042,6 +1042,11 @@ export const commands = {
 	language: string,
 	selections: Range[],
 } | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_view_event", { pluginId, view, event, doc, editor })),
+	/**
+	 *  Runs the program of a plugin view's `process` body, streaming its output
+	 *  until it exits or `request` is cancelled; returns the exit code.
+	 */
+	pluginViewProcess: (request: RequestId, pluginId: string, view: string, program: string, args: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_view_process", { request, pluginId, view, program, args, onLine })),
 	/**  The page of a plugin's web view or custom editor (`web = …`). */
 	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
 	/**
@@ -5720,6 +5725,12 @@ export type PluginInfo = {
 	publisher: string | null,
 	/**  The version an update replaced, to roll back to. */
 	previousVersion: string | null,
+};
+
+/**  A line a view's `process` body printed. */
+export type PluginOutputLine = {
+	stderr: boolean,
+	text: string,
 };
 
 /**  A secret a plugin declares, and whether the user stored it. */

@@ -1,8 +1,8 @@
 //! Declarative views and custom editors as the
-//! window commands `plugin_view_render` / `plugin_view_event` serve them —
+//! window commands `plugin_view_render` / `plugin_view_event` / `plugin_view_process` serve them —
 //! the desktop for local projects, `openidea-server` for remote ones.
 
-use super::{PluginEditor, PluginHost};
+use super::{PluginEditor, PluginHost, PluginOutputLine};
 use ide_core::{DocId, IdeError, IdeResult};
 use ide_plugin::{EditorContext, Invocation, View, ViewEvent, Viewport};
 use std::sync::Arc;
@@ -89,4 +89,30 @@ mod tests {
         assert_eq!(inv.client.as_deref(), Some("main"));
         assert!(view_invocation(&host, "main", None, None).unwrap().editor.is_none());
     }
+}
+
+/// Runs the program of a view's `process` body in the window's project root,
+/// streaming its lines until it exits or request `request` is cancelled.
+#[allow(clippy::too_many_arguments)]
+pub async fn process(
+    host: &crate::Host,
+    plugins: Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+    view: String,
+    program: String,
+    args: Vec<String>,
+    request: ide_core::RequestId,
+    on_line: crate::ops::Channel<PluginOutputLine>,
+) -> IdeResult<Option<i32>> {
+    let cwd = host.project(window).ok().map(|p| p.root.clone());
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        plugins.stream_view_process(&plugin_id, &view, &program, args, cwd, &cancel, &|line| {
+            let _ = on_line.send(line);
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
 }

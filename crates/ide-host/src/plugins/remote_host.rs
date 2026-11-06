@@ -14,7 +14,7 @@
 //! The commands a window needs at run time (`plugin_run_command`,
 //! `plugin_post_events`, `plugin_event_kinds`, `plugin_status_items`,
 //! `plugin_cancel_task`, `plugin_set_active_file`, `plugin_line_markers`,
-//! `plugin_view_render`, `plugin_view_event`)
+//! `plugin_view_render`, `plugin_view_event`, `plugin_view_process`)
 //! carry the desktop commands' names and arguments, so a remote window's UI
 //! routes them here unchanged. Plugin results come back as `plugin`
 //! notifications ([`PluginEventMessage`]); secrets stay in the desktop's
@@ -444,6 +444,25 @@ impl RemotePlugins {
                     c.arg("event")?,
                     c.arg("doc")?,
                     c.arg("editor")?,
+                )
+                .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_view_process", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                super::views::process(
+                    &c.host,
+                    plugins,
+                    &c.window,
+                    c.arg("pluginId")?,
+                    c.arg("view")?,
+                    c.arg("program")?,
+                    c.arg("args")?,
+                    c.arg("request")?,
+                    c.sender("onLine")?,
                 )
                 .await
             }

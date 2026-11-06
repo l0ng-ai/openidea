@@ -6,6 +6,14 @@ pub use ide_plugin::{ActionPerformed, ActionSource, EventKind, NotificationLevel
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+/// A line a view's `process` body printed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginOutputLine {
+    pub stderr: bool,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum PluginSource {

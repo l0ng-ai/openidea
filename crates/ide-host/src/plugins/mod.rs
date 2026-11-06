@@ -57,7 +57,8 @@ use ide_extension::{
 use ide_language::plugin_point::PluginLanguages;
 use ide_language::{LanguageConfig, ProgramPin};
 use ide_plugin::{
-    Actor, ActorError, CANCELLED, CallError, HostApi, Invocation, Limits, PluginEngine, Runtime, RuntimeSetup,
+    Actor, ActorError, CANCELLED, CallError, HostApi, HostError, Invocation, Limits, PluginEngine, Runtime,
+    RuntimeSetup,
 };
 use parking_lot::{Condvar, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -1067,6 +1068,35 @@ impl PluginHost {
         let view = view.to_owned();
         self.code_call(id, invocation, "handling the view's event", move |rt, inv| {
             rt.view_event(&view, event.clone(), inv)
+        })
+    }
+
+    /// Runs `program` for a `process` body of one of the plugin's views,
+    /// streaming its output until it exits or `cancel` fires. Needs the
+    /// plugin's `process:<program>` grant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stream_view_process(
+        &self,
+        id: &str,
+        view: &str,
+        program: &str,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+        cancel: &ide_core::CancellationToken,
+        on_line: &dyn Fn(PluginOutputLine),
+    ) -> IdeResult<Option<i32>> {
+        self.declared_view(id, view)?;
+        let plugin =
+            self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("plugin {id:?}")))?;
+        if matches!(plugin.status(), PluginStatus::Disabled | PluginStatus::NeedsConsent | PluginStatus::Failed) {
+            return Err(IdeError::unavailable(format!("plugin {id:?} is not running")));
+        }
+        let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
+        api.stream_process(program, args, cwd.as_deref(), cancel, on_line).map_err(|e| match e {
+            HostError::Cancelled => IdeError::cancelled(),
+            HostError::NotFound(m) => IdeError::not_found(m),
+            HostError::Invalid(m) => IdeError::invalid(m),
+            e => IdeError::unavailable(e.to_string()),
         })
     }
 
