@@ -207,6 +207,23 @@ fn assign_outer_frame(from: &WebviewWindow, to: &WebviewWindow, _frame: OuterFra
     }
 }
 
+/// Shows `to` in place of `from`, at `from`'s frame.
+fn show_at_frame(from: &WebviewWindow, to: &WebviewWindow) -> IdeResult<()> {
+    let err = |error: tauri::Error| IdeError::internal(error.to_string());
+    // Order the target front in the same AppKit turn as the frame write. A separate `show` runs
+    // after that turn and constrains the titled window, which is the jump. Native fullscreen is
+    // handed over by `copy_frame` instead.
+    #[cfg(target_os = "macos")]
+    if !from.is_fullscreen().map_err(err)? {
+        to.unminimize().map_err(err)?;
+        return crate::macos::present_window_frame(from, to).map_err(err);
+    }
+    copy_frame(from, to)?;
+    to.unminimize().map_err(err)?;
+    to.show().map_err(err)?;
+    to.set_focus().map_err(err)
+}
+
 /// Keeps hidden group members at the selected window's frame. Selecting a tab then only
 /// changes which window is visible instead of moving or resizing one on screen.
 fn sync_member_frames(app: &AppHandle, selected: &str) {
@@ -308,20 +325,7 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
             && previous.selected != target
             && let Some(from) = app.get_webview_window(&previous.selected)
         {
-            #[cfg(target_os = "macos")]
-            {
-                // Order the target front in the same AppKit turn as the frame write. A separate
-                // `show` runs after that turn and constrains the titled window, which is the jump.
-                to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
-                crate::macos::present_window_frame(&from, &to).map_err(|e| IdeError::internal(e.to_string()))?;
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                copy_frame(&from, &to)?;
-                to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
-                to.show().map_err(|e| IdeError::internal(e.to_string()))?;
-                to.set_focus().map_err(|e| IdeError::internal(e.to_string()))?;
-            }
+            show_at_frame(&from, &to)?;
         } else {
             to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
             to.show().map_err(|e| IdeError::internal(e.to_string()))?;
