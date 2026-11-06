@@ -1,6 +1,6 @@
 """Compile and run builder regressions with javac and the compiler shipped by JDT LS.
 
-Usage: python3 plugins/lombok/tests/verify.py /path/to/jdtls /path/to/lombok.jar
+Usage: python3 java/lombok/tests/verify.py /path/to/jdtls /path/to/lombok.jar
 Requires a JDK 21+ on PATH. All generated files stay in a temporary directory.
 """
 

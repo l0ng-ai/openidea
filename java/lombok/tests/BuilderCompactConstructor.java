@@ -42,6 +42,14 @@ public class BuilderCompactConstructor {
         Empty {}
     }
 
+    record Canonical(String name, int count) {
+        @Builder
+        Canonical(String name, int count) {
+            this.name = name.trim();
+            this.count = count;
+        }
+    }
+
     record Explicit(String name, int count) {
         @Builder
         Explicit(String name) { this(name, 7); }
@@ -115,6 +123,7 @@ public class BuilderCompactConstructor {
             throw new AssertionError("non-null check was bypassed");
         } catch (NullPointerException expected) {}
 
+        assert Canonical.builder().name(" test ").count(2).build().equals(new Canonical("test", 2));
         assert Explicit.builder().name("test").build().equals(new Explicit("test", 7));
         assert Ordinary.builder().name("test").build().name.equals("test");
         assert methodBuilder().name("test").build().equals("test");
