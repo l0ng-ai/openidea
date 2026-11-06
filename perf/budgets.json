@@ -32,6 +32,14 @@
     "typingAngular.mainThreadMsPerKey": 30,
     "typingAngular.tbtMs": 50,
 
+    "completion.openMs": 150,
+    "completion.narrowP95Ms": 20,
+    "completion.narrowMissedFramePct": 2,
+    "completion.narrowMainThreadMsPerKey": 35,
+    "completion.arrowP95Ms": 20,
+    "completion.arrowMissedFramePct": 2,
+    "completion.tbtMs": 50,
+
     "keyRepeat.p95Ms": 20,
     "keyRepeat.maxMs": 33,
     "keyRepeat.missedFramePct": 2,

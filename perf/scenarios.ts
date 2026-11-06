@@ -110,6 +110,48 @@ const typingAngular: Scenario = {
   },
 };
 
+/**
+ * Code completion with a language server's 2,000 items: the first letter opens
+ * the popup (after CodeMirror's 100 ms typing delay), each further letter
+ * narrows it, arrows move the selection.
+ */
+const completion: Scenario = {
+  id: "completion",
+  title: "Code completion over 2,000 items",
+  async run(h) {
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { fakeCompletion(n: number): void } }).__openideaPerf.fakeCompletion(2_000),
+    );
+    try {
+      await h.openFile(`${ROOT}/src/completion/Orders.ts`, tsSource(2_000, "completion"));
+      const st = await h.editorState();
+      await h.setCursor(Math.floor((st?.length ?? 0) / 2));
+      await h.parserIdle();
+      await h.page.keyboard.press("End");
+      await h.page.keyboard.press("Enter");
+      const refresh = await h.refreshMs();
+      const openMs = await h.measure(() => h.page.keyboard.press("g"), ".cm-tooltip-autocomplete li", "Result<Order>");
+      const t0 = await h.now();
+      const before = await h.counters();
+      const narrow = await h.typeMeasured("etOrd", 150);
+      const work = Harness.delta(before, await h.counters());
+      const arrows = await h.pressMeasured(Array(20).fill("ArrowDown"), 60);
+      await h.page.keyboard.press("Escape");
+      return {
+        openMs,
+        ...keySummary(narrow, refresh, "narrow"),
+        narrowMainThreadMsPerKey: work.taskMs / 5,
+        ...keySummary(arrows, refresh, "arrow"),
+        tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+      };
+    } finally {
+      await h.page.evaluate(() =>
+        (window as never as { __openideaPerf: { fakeCompletion(n: number): void } }).__openideaPerf.fakeCompletion(0),
+      );
+    }
+  },
+};
+
 /** Held key: auto-repeat at ~30 Hz must never fall behind. */
 const keyRepeat: Scenario = {
   id: "keyRepeat",
@@ -369,6 +411,7 @@ export const SCENARIOS: Scenario[] = [
   typing,
   typingLarge,
   typingAngular,
+  completion,
   keyRepeat,
   scroll,
   tabs,

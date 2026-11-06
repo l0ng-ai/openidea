@@ -8,6 +8,8 @@ import { executeAction } from "@/platform/actions";
 import { bindingsFor } from "@/platform/keymap";
 import { activeEditor } from "@/editor/api";
 import { docBackend, type MemoryBackend } from "@/editor/core/backend";
+import type { CompletionItem, CompletionKind } from "@/bindings";
+import { setInvokeRoute } from "@/platform/tauriCore";
 import { editorService } from "./contributions";
 
 export interface PerfProbe {
@@ -23,6 +25,48 @@ export interface PerfProbe {
   parsing(): boolean;
   /** Document length and caret of the active editor. */
   editorState(): { path: string; length: number; lines: number; head: number } | null;
+  /**
+   * Answers code completion with `items` generated items (a language server's
+   * list); other language server requests report no server. `0` removes it.
+   */
+  fakeCompletion(items: number): void;
+}
+
+const KINDS: CompletionKind[] = [
+  "method",
+  "function",
+  "field",
+  "variable",
+  "class",
+  "interface",
+  "property",
+  "keyword",
+];
+
+function completionItem(i: number): CompletionItem {
+  const kind = KINDS[i % KINDS.length]!;
+  // Shared prefixes so typing narrows the list gradually, like real symbols.
+  const label = `${["get", "set", "create", "update", "find", "to", "is", "on"][i % 8]}${["Order", "Item", "Customer", "Invoice", "Payment", "Status"][(i >> 3) % 6]}${i}`;
+  return {
+    label,
+    labelDetail: kind === "method" || kind === "function" ? "(id: string, options?: Options)" : null,
+    detail: kind === "class" || kind === "interface" ? `com.acme.${label}` : "Promise<Result<Order>>",
+    kind,
+    documentation: null,
+    sortText: String(i).padStart(5, "0"),
+    filterText: null,
+    preselect: false,
+    deprecated: i % 97 === 0,
+    insertText: label,
+    isSnippet: false,
+    replaceRange: null,
+    replaceRangeTab: null,
+    additionalEdits: [],
+    commitCharacters: [],
+    command: null,
+    data: null,
+    server: 1,
+  };
 }
 
 export function installPerfProbe(): () => void {
@@ -44,6 +88,17 @@ export function installPerfProbe(): () => void {
     parsing() {
       const view = activeEditor()?.view;
       return !!view && syntaxParserRunning(view);
+    },
+    fakeCompletion(count) {
+      if (!count) return setInvokeRoute(null);
+      const items = Array.from({ length: count }, (_, i) => completionItem(i));
+      setInvokeRoute((cmd, args) => {
+        if (cmd === "lsp_completion") return Promise.resolve({ isIncomplete: false, items });
+        if (cmd === "lsp_resolve_completion") return Promise.resolve((args as { item: CompletionItem }).item);
+        if (cmd.startsWith("lsp_"))
+          return Promise.reject({ kind: "unavailable", message: "No language server available" });
+        return null;
+      });
     },
     editorState() {
       const e = activeEditor();
