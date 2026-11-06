@@ -5,7 +5,7 @@
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Button, Checkbox, Input, Tree, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, Input, Tree, type SelectOption, type TreeHandle, T } from "@/ui";
 import { fontWeightVars, type CustomColorSchemes, type TextAttributesOverride } from "@/platform/editorSettings";
 import {
   ATTRIBUTES,
@@ -828,7 +828,9 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   }
   // Language pages have their own attributes; keep the editor on a row of this page.
   if (roots.length && !ids.has(selected)) setSelected(firstLeafId(roots));
-  /** Preview click: select the attribute and expand its ancestors. */
+  // Preview clicks reveal the attribute once the ancestors expanded (after the next render).
+  const treeRef = useRef<TreeHandle>(null);
+  const pendingReveal = useRef<string | null>(null);
   const reveal = (attrId: string) => {
     const a = ATTRIBUTES.find((x) => x.id === attrId);
     if (!a) return;
@@ -842,7 +844,13 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
       }
       return next;
     });
+    pendingReveal.current = attrId;
   };
+  useEffect(() => {
+    if (!pendingReveal.current) return;
+    treeRef.current?.reveal(pendingReveal.current);
+    pendingReveal.current = null;
+  });
   const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
   const attr = ATTRIBUTES.find((a) => a.id === selected);
@@ -1025,6 +1033,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
                 isExpandable={(n) => !!n.children?.length}
                 expanded={expanded}
                 onExpandedChange={setExpanded}
+                handleRef={treeRef}
                 multiSelect={false}
                 selected={new Set([selected])}
                 onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
