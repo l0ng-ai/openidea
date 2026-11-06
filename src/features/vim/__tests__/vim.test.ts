@@ -144,6 +144,28 @@ describe("Vim engine", () => {
     view.destroy();
   });
 
+  it("keeps Normal-mode Vim edits in the document", async () => {
+    const transient: boolean[] = [];
+    const view = makeView([
+      vimExtension(),
+      EditorView.updateListener.of((u) => {
+        for (const tr of u.transactions) if (tr.docChanged) transient.push(!!tr.annotation(transientChange));
+      }),
+    ]);
+    const cm = getCM(view)!;
+    // codemirror-vim labels these `input.type.compose` to group them for undo.
+    Vim.handleKey(cm, "x", "user");
+    for (const key of ["w", "c", "i", "w"]) Vim.handleKey(cm, key, "user");
+    await tick();
+    view.dispatch(view.state.replaceSelection("2"));
+    Vim.handleKey(cm, "<Esc>", "user");
+    await tick();
+
+    expect(view.state.doc.toString()).toBe("ne 2\nthree");
+    expect(transient).not.toContain(true);
+    view.destroy();
+  });
+
   it("removes a whole composition whose commit shares text with the preedit", async () => {
     const view = makeView([vimExtension()]);
     const composition = (type: string, data: string) =>
