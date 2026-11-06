@@ -178,7 +178,10 @@ Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
 themes can be applied, settings pages are there — **before** any plugin code
 is loaded. Menus, shortcuts and status bar items refer to the plugin's
-declared commands. A plugin shortcut never takes a keystroke the IDE (or the
+declared commands. Commands of one plugin that share a `category` are shown in
+its context menus under one submenu named after that category (`Arthas` ▸
+_Watch_ / _Trace_ / …); a category with one visible command stays a plain entry.
+A plugin shortcut never takes a keystroke the IDE (or the
 user) already uses; the user can rebind it in the keymap editor.
 
 A `when` clause (on commands and menus) can test whether the open project

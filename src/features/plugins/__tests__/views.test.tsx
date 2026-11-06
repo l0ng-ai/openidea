@@ -249,6 +249,55 @@ describe("plugin menus", () => {
     expect(pluginMenuItems("projectView", ["/p/a"])).toEqual([]);
     off();
   });
+
+  it("groups one plugin's commands that share a category under one submenu", () => {
+    const off = [
+      registerAction({ id: "plugin.p.watch", title: "Watch", category: "Arthas", run: () => {} }),
+      registerAction({ id: "plugin.p.trace", title: "Trace", category: "Arthas", run: () => {} }),
+      registerAction({ id: "plugin.p.single", title: "Single", category: "Other", run: () => {} }),
+    ];
+    const plugin = {
+      id: "p",
+      name: "P",
+      status: "active",
+      enabled: true,
+    } as unknown as Parameters<typeof syncUiContributions>[1][number];
+    syncUiContributions(
+      [
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/watch",
+          decl: { menu: "editor.context", command: "watch" },
+        },
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/trace",
+          decl: { menu: "editor.context", command: "trace" },
+        },
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/single",
+          decl: { menu: "editor.context", command: "single" },
+        },
+      ],
+      [plugin],
+    );
+    expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([
+      {
+        kind: "item",
+        label: "Arthas",
+        submenu: [
+          { kind: "action", action: "plugin.p.watch", arg: undefined },
+          { kind: "action", action: "plugin.p.trace", arg: undefined },
+        ],
+      },
+      { kind: "action", action: "plugin.p.single", arg: undefined },
+    ]);
+    for (const dispose of off) dispose();
+  });
 });
 
 describe("PluginView", () => {
