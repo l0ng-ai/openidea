@@ -638,8 +638,9 @@ impl HostApi for PluginApi {
             .build()
             .map_err(|e| HostError::Invalid(format!("{glob:?}: {e}")))?
             .compile_matcher();
-        // Hidden files and folders are left out, as in the walk below.
-        let visible = |rel: &Path| !rel.iter().any(|c| c.to_str().is_some_and(|c| c.starts_with('.')));
+        // Project scope visits hidden files and folders (`.github`, `.config`):
+        // only `.git` internals stay out, as in the walk below.
+        let visible = |rel: &Path| !rel.iter().any(|c| c == ".git");
         // The project index already lists the files: walking a large tree on every call can take
         // longer than an editor provider's deadline (the plugin is then stopped as crashed).
         if let Some(files) = self
@@ -652,7 +653,13 @@ impl HostApi for PluginApi {
             return Ok(out);
         }
         let mut out = Vec::new();
-        for (n, entry) in ignore::WalkBuilder::new(root).hidden(true).build().flatten().enumerate() {
+        for (n, entry) in ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .filter_entry(|e| e.file_name() != ".git")
+            .build()
+            .flatten()
+            .enumerate()
+        {
             if n >= MAX_WALK || out.len() >= limit {
                 break;
             }
@@ -1057,20 +1064,27 @@ mod tests {
         let api = api(&root, Arc::default());
         *api.shared.workspace.write() = Some(Arc::new(Indexed(
             root.clone(),
-            vec!["src/b/UserMapper.xml", "src/a/OrderMapper.xml", ".idea/workspace.xml", "pom.xml"],
+            vec!["src/b/UserMapper.xml", "src/a/OrderMapper.xml", ".idea/workspace.xml", ".git/index.xml", "pom.xml"],
         )));
         // Listed by the index, not walked: none of these exist on disk.
         assert_eq!(
             api.find_files(&root, "**/*Mapper.xml", 10).unwrap(),
             [to_ipc(&root.join("src/a/OrderMapper.xml")), to_ipc(&root.join("src/b/UserMapper.xml"))]
         );
-        assert_eq!(api.find_files(&root, "**/*.xml", 10).unwrap().len(), 3, "hidden folders are left out");
+        // Hidden folders are visited like any project scope; `.git` internals are not.
+        assert_eq!(api.find_files(&root, "**/*.xml", 10).unwrap().len(), 4);
+        assert_eq!(api.find_files(&root, ".idea/*.xml", 10).unwrap(), [to_ipc(&root.join(".idea/workspace.xml"))]);
         assert_eq!(api.find_files(&root, "**/*.xml", 1).unwrap().len(), 1);
         // Another root: no index covers it, so the disk is walked.
         let other = root.join("other");
-        std::fs::create_dir_all(&other).unwrap();
+        std::fs::create_dir_all(other.join(".config/tool")).unwrap();
         std::fs::write(other.join("a.xml"), "").unwrap();
+        std::fs::write(other.join(".config/tool/index.xml"), "").unwrap();
         assert_eq!(api.find_files(&other, "*.xml", 10).unwrap(), [to_ipc(&other.join("a.xml"))]);
+        assert_eq!(
+            api.find_files(&other, ".config/tool/*.xml", 10).unwrap(),
+            [to_ipc(&other.join(".config/tool/index.xml"))]
+        );
     }
 
     #[test]
