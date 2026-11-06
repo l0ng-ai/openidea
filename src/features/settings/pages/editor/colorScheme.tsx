@@ -39,18 +39,25 @@ interface Node {
   children?: Node[];
 }
 
+/** Tree segments of an attribute: its scope path plus any "›" groups in its display name. */
+function attrSegs(attr: AttributeDef): string[] {
+  const parts = attr.name.split(" › ");
+  return [...attr.path, ...parts.slice(0, -1)];
+}
+
 function buildTree(): Node[] {
   const roots: Node[] = [];
   for (const attr of ATTRIBUTES) {
+    const parts = attr.name.split(" › ");
     let level = roots;
     let key = "";
-    for (const seg of attr.path) {
+    for (const seg of attrSegs(attr)) {
       key += `/${seg}`;
       let n = level.find((x) => x.key === key);
       if (!n) level.push((n = { key, label: seg, children: [] }));
       level = n.children!;
     }
-    level.push({ key: attr.id, label: attr.name, attr });
+    level.push({ key: attr.id, label: parts.at(-1)!, attr });
   }
   return roots;
 }
@@ -767,7 +774,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
     setExpanded((prev) => {
       const next = new Set(prev);
       let key = "";
-      for (const seg of a.path) {
+      for (const seg of attrSegs(a)) {
         key += `/${seg}`;
         next.add(key);
       }
