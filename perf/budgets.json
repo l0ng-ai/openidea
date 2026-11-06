@@ -26,6 +26,12 @@
     "typingLarge.mainThreadMsPerKey": 20,
     "typingLarge.tbtMs": 50,
 
+    "typingAngular.openMs": 200,
+    "typingAngular.p95Ms": 30,
+    "typingAngular.maxMs": 40,
+    "typingAngular.mainThreadMsPerKey": 30,
+    "typingAngular.tbtMs": 50,
+
     "keyRepeat.p95Ms": 20,
     "keyRepeat.maxMs": 33,
     "keyRepeat.missedFramePct": 2,
