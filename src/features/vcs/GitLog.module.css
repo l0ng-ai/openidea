@@ -210,9 +210,11 @@
   cursor: grabbing;
   opacity: 0.6;
 }
-.columnHeading.dropTarget {
-  outline: 1px solid var(--focus-ring);
-  outline-offset: -1px;
+.columnHeading.dropBefore {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.columnHeading.dropAfter {
+  box-shadow: inset -2px 0 0 var(--accent);
 }
 .columnResize {
   position: absolute;

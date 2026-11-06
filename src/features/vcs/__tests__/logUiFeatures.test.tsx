@@ -161,7 +161,7 @@ describe("log controls", () => {
     fireEvent.keyDown(author, { key: "ArrowRight" });
     expect(useLogOptions.getState().columnWidths.author).toBe(140);
     fireEvent.keyDown(author, { key: "ArrowRight", altKey: true });
-    expect(useLogOptions.getState().columnOrder).toEqual(["date", "author"]);
+    expect(useLogOptions.getState().columnOrder).toEqual(["subject", "date", "author", "hash"]);
   });
 
   it("reorders columns by dragging a header onto another", async () => {
@@ -171,18 +171,21 @@ describe("log controls", () => {
     const header = (id: string) => document.querySelector<HTMLElement>(`[data-log-column="${id}"]`)!;
     const author = header("author");
     const date = header("date");
+    date.getBoundingClientRect = () =>
+      ({ left: 100, right: 180, width: 80, top: 0, bottom: 20, height: 20, x: 100, y: 0 }) as DOMRect;
     const elementFromPoint = document.elementFromPoint;
     document.elementFromPoint = () => date;
     try {
       fireEvent.pointerDown(author, { button: 0, clientX: 100, clientY: 10 });
       fireEvent.pointerMove(author, { clientX: 106, clientY: 10 });
-      fireEvent.pointerMove(author, { clientX: 120, clientY: 10 });
+      // Past the midpoint of the date column: the drop goes after it.
+      fireEvent.pointerMove(author, { clientX: 160, clientY: 10 });
+      // In a real browser pointer capture delivers the release to the pressed header.
       fireEvent.pointerUp(author);
     } finally {
       document.elementFromPoint = elementFromPoint;
     }
-    await waitFor(() => expect(useLogOptions.getState().columnOrder[0]).toBe("date"));
-    expect(useLogOptions.getState().columnOrder[1]).toBe("author");
+    await waitFor(() => expect(useLogOptions.getState().columnOrder).toEqual(["subject", "date", "author"]));
   });
 });
 
