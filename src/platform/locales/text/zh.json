@@ -6377,5 +6377,9 @@
   "Force push anyway": "仍然强制推送",
   "Stage and Retry": "暂存并重试",
   "Show Files": "显示文件",
-  "Unable to load image: {path}": "无法加载图片：{path}"
+  "Unable to load image: {path}": "无法加载图片：{path}",
+  "Updates": "更新",
+  "Update source": "更新源",
+  "Where updates are downloaded from. If it can't be reached, the other source is tried.": "从哪里下载更新。无法连接时会改用另一个源。",
+  "CNB (China mirror)": "CNB（国内镜像）"
 }
