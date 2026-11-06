@@ -1,6 +1,6 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, RevisionChange } from "@/bindings";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, type LineEnding } from "@/platform/ipc";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
@@ -219,3 +219,23 @@ export const isWorktree = (s: DiffSide) => s.type === "worktree";
 export const sideFile = (s: DiffSide, path: string): string | null =>
   s.type === "worktree" ? path : s.type === "file" ? s.path : null;
 export const isIndex = (s: DiffSide) => s.type === "rev" && (s.rev === ":0" || s.rev === ":");
+
+/** The dominant line ending of `text` (`lf` for ties and no breaks), like the backend's detection. */
+export function detectLineEnding(text: string): LineEnding {
+  let lf = 0;
+  let crlf = 0;
+  let cr = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 10) lf++;
+    else if (ch === 13) {
+      if (text.charCodeAt(i + 1) === 10) {
+        crlf++;
+        i++;
+      } else cr++;
+    }
+  }
+  return lf >= crlf && lf >= cr ? "lf" : crlf >= cr ? "crLf" : "cr";
+}
+
+export const EOL_BADGE: Record<LineEnding, string> = { lf: "LF", crLf: "CRLF", cr: "CR" };

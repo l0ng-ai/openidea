@@ -51,6 +51,8 @@ import {
 import {
   chainNeighbour,
   diffTitle,
+  detectLineEnding,
+  EOL_BADGE,
   isIndex,
   isWorktree,
   loadSide,
@@ -949,8 +951,19 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
     [],
   );
 
+  const [eolA, eolB] = useMemo(
+    () => [
+      attached?.a ? attached.a.lineEnding() : statics?.a ? detectLineEnding(statics.a) : null,
+      attached?.b ? attached.b.lineEnding() : statics?.b ? detectLineEnding(statics.b) : null,
+    ],
+    [attached, statics],
+  );
+  const eolDiffers = ready && !binary && eolA !== null && eolB !== null && eolA !== eolB;
   const identical =
-    ready && chunkInfo.count === 0 && (attached?.a?.text() ?? statics?.a) === (attached?.b?.text() ?? statics?.b);
+    ready &&
+    chunkInfo.count === 0 &&
+    (attached?.a?.text() ?? statics?.a) === (attached?.b?.text() ?? statics?.b) &&
+    !eolDiffers;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
@@ -1099,6 +1112,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         <div className={styles.labels}>
           <span className={styles.label} title={sideLabel(left)}>
             {sideLabel(left)}
+            {eolDiffers && eolA && <span className={styles.badge}>{EOL_BADGE[eolA]}</span>}
             {editableA && (
               <span className={styles.badge}>
                 <T>editable</T>
@@ -1107,6 +1121,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           </span>
           <span className={styles.label} title={sideLabel(right)}>
             {sideLabel(right)}
+            {eolDiffers && eolB && <span className={styles.badge}>{EOL_BADGE[eolB]}</span>}
             {editableB && (
               <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
             )}
@@ -1115,7 +1130,9 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       ) : (
         <div className={styles.labels}>
           <span className={styles.label}>
-            {sideLabel(left)} → {sideLabel(right)}
+            {sideLabel(left)}
+            {eolDiffers && eolA && <span className={styles.badge}>{EOL_BADGE[eolA]}</span>} → {sideLabel(right)}
+            {eolDiffers && eolB && <span className={styles.badge}>{EOL_BADGE[eolB]}</span>}
           </span>
         </div>
       )}
