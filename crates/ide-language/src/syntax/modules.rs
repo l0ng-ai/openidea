@@ -35,6 +35,7 @@ pub(crate) fn occurrences(tree: &Tree, text: &str, region: &ScriptRegion) -> Vec
                     name: name.to_string(),
                     range: region.shift(local.range(n.start_byte(), n.end_byte())),
                     qualified,
+                    css_class: false,
                 });
             }
             false

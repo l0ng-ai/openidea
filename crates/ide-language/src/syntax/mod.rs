@@ -167,11 +167,35 @@ impl Syntax {
     }
 
     pub fn outline(&self, lang: &LanguageId, text: &str) -> Vec<OutlineItem> {
-        self.analyze(lang, text, |g, tree, text| {
-            let query = g.outline_query()?;
-            Some(outline::outline(g, query, tree, text))
-        })
-        .unwrap_or_default()
+        let mut items = self
+            .analyze(lang, text, |g, tree, text| {
+                let query = g.outline_query()?;
+                Some(outline::outline(g, query, tree, text))
+            })
+            .unwrap_or_default();
+        // Vue SFCs and HTML documents: the markup outline gains the `<script>`
+        // declarations (the HTML grammar's outline has nothing for them) —
+        // this is the Structure view's data, and a .vue file without it only
+        // ever showed markup.
+        if matches!(lang.as_str(), "vue" | "svelte" | "jsp" | "html" | "htm") {
+            let (facts, _) = self.script_analysis(lang, text);
+            let mut decls: Vec<OutlineItem> = facts
+                .decls
+                .into_iter()
+                .map(|d| OutlineItem {
+                    name: d.name,
+                    detail: None,
+                    kind: d.kind,
+                    range: d.range,
+                    selection_range: d.range,
+                    children: Vec::new(),
+                    visibility: None,
+                })
+                .collect();
+            items.append(&mut decls);
+            items.sort_by_key(|i| (i.selection_range.start.line, i.selection_range.start.col));
+        }
+        items
     }
 
     pub fn folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {
@@ -305,9 +329,10 @@ impl Syntax {
             facts.reexports.append(&mut part.reexports);
             occurrences.append(&mut modules::occurrences(&tree, &region.text, &region));
         }
-        // Component tags in the markup.
+        // Component tags and CSS class tokens in the markup.
         if let Some(tree) = self.with_web_tree(lang, text, |_g, _css, tree| tree.clone()) {
             occurrences.append(&mut sfc::component_tags(&tree, text));
+            occurrences.append(&mut sfc::css_class_tokens(&tree, text));
         }
         (facts, occurrences)
     }

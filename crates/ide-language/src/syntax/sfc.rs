@@ -104,6 +104,7 @@ pub(crate) fn component_tags(tree: &Tree, text: &str) -> Vec<CodeOccurrence> {
                 name: pascal_case(name),
                 range: idx.range(n.start_byte(), n.end_byte()),
                 qualified: false,
+                css_class: false,
             });
         }
         true
@@ -120,6 +121,34 @@ fn pascal_case(word: &str) -> String {
             c.next().map_or(String::new(), |f| f.to_uppercase().collect::<String>() + c.as_str())
         })
         .collect()
+}
+
+/// CSS class tokens of the markup's `class` attributes (`class="card active"`
+/// → `card`, `active`): `.card`'s usages, indexed in the CSS namespace.
+pub(crate) fn css_class_tokens(tree: &Tree, text: &str) -> Vec<CodeOccurrence> {
+    let idx = LineIndex::new(text);
+    let mut out = Vec::new();
+    walk(tree.root_node(), &mut |n| {
+        if n.kind() != "attribute" {
+            return true;
+        }
+        let (name, value) = attribute(n, text);
+        if name != "class" || value.is_empty() {
+            return true;
+        }
+        // Every whitespace-separated token is a class usage; the attribute's
+        // own range covers the whole value.
+        for token in value.split_whitespace() {
+            out.push(CodeOccurrence {
+                name: token.to_string(),
+                range: idx.range(n.start_byte(), n.end_byte()),
+                qualified: false,
+                css_class: true,
+            });
+        }
+        true
+    });
+    out
 }
 
 /// An attribute's `(name, value)`; a bare attribute (`setup`) has an empty value.

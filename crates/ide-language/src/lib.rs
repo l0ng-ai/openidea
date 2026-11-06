@@ -376,6 +376,9 @@ pub struct CodeOccurrence {
     /// A member position (`obj.name`): refers to the member, not to a
     /// binding of that name.
     pub qualified: bool,
+    /// A CSS class token from a markup `class` attribute (`.card`'s usages);
+    /// indexed in its own namespace.
+    pub css_class: bool,
 }
 
 /// One `<script>` block of a Vue SFC / HTML document: what

@@ -759,6 +759,7 @@ fn outline_html_css_xml() {
           Field body
             Field div
             Field script
+        Variable a
         ",
     );
     check_outline(
@@ -1518,4 +1519,17 @@ fn script_occurrences_cover_identifiers_and_component_tags() {
     // Ranges are document-absolute: `user` in the template is on line 1.
     let tag = occ.iter().find(|o| o.name == "UserCard").unwrap();
     assert_eq!(tag.range.start.line, 1);
+}
+
+#[test]
+fn outline_of_a_vue_sfc_gains_the_script_declarations() {
+    let src = "<template>\n  <div/>\n</template>\n<script setup lang=\"ts\">\nimport { ref } from 'vue'\nconst user = ref(null)\nfunction load() {}\n</script>\n";
+    let items = syntax().outline(&lang("vue"), src);
+    let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+    assert!(names.contains(&"user") && names.contains(&"load"), "{names:?}");
+    // Document order: the declarations sit after the (empty) markup outline.
+    assert!(items.iter().is_sorted_by_key(|i| i.selection_range.start.line));
+    let load = items.iter().find(|i| i.name == "load").unwrap();
+    assert_eq!(load.kind, SymbolKind::Function);
+    assert_eq!(load.selection_range.start.line, 6);
 }
