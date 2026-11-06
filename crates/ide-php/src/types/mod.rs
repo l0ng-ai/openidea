@@ -27,6 +27,10 @@
 //! `@method`/`@property`, `@mixin`); the [`Resolver`] builds and caches
 //! them and is itself a [`Hierarchy`].
 //!
+//! [`provider::TypeProvider`]s add types for calls and untyped properties
+//! without changing the core (PHPUnit test doubles and `setUp()` fields
+//! built in), ordered in a [`provider::TypeProviders`] registry.
+//!
 //! Written in-house rather than reusing Mago's `codex` types: those are tied
 //! to Mago's own codebase metadata and interner (and `mago-codex` would pull
 //! in the analyzer's dependencies), whereas this engine resolves types lazily
@@ -45,6 +49,7 @@ mod lazy;
 pub mod model;
 pub(crate) mod ops;
 mod parse;
+pub mod provider;
 pub mod resolve;
 mod subtype;
 
@@ -54,6 +59,7 @@ pub use expr::{Defined, ExprTypes, Flow, Frame, VarState, type_at};
 pub use lazy::LazyType;
 pub use model::ClassModel;
 pub use parse::{TypeParseError, parse_doc_type};
+pub use provider::{TypeProvider, TypeProviders};
 pub use resolve::{CallArg, Context, Declarations, Resolver, SummarySet, TemplateParam, TypeCache};
 pub use subtype::{Hierarchy, NoHierarchy};
 

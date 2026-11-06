@@ -5,17 +5,20 @@
 //! declaration (a call, a member access, a constant) becomes a lazy recipe
 //! for the resolver. Variables other than `$this` and the parameters are not
 //! tracked (that is the flow analysis of a later phase): they are `mixed`.
+//! Calls go through the local step of the built-in type providers
+//! ([`TypeProviders::builtin`]), the core one giving the plain recipes.
 
 use mago_syntax::cst::{
-    Access, AnonymousClass, ArrayElement, ArrowFunction, AssignmentOperator, BinaryOperator, Block, Call, Class,
-    ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression, Function, Interface,
-    MagicConstant, MatchArm, Return, Trait, UnaryPrefixOperator, Variable, Yield,
+    Access, AnonymousClass, ArgumentList, ArrayElement, ArrowFunction, Assignment, AssignmentOperator, BinaryOperator,
+    Block, Call, Class, ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum, Expression,
+    Function, Interface, MagicConstant, MatchArm, Return, Trait, UnaryPrefixOperator, Variable, Yield,
 };
 use mago_syntax::walker::Walker;
 
 use crate::names::{NameKind, NameScope, Resolution};
 use crate::types::ops::{Op, is_int, is_string, literal_type, op_type, unary_type};
-use crate::types::{LazyType, Relative, Type};
+use crate::types::provider::{CallKind, CallSite, site_args};
+use crate::types::{LazyType, Relative, Type, TypeProviders};
 
 /// Infers types from expressions in one name scope.
 pub(super) struct Infer<'s> {
@@ -209,30 +212,48 @@ impl Infer<'_> {
     }
 
     fn call(&self, call: &Call<'_>) -> LazyType {
-        let method = |receiver: LazyType, selector: &ClassLikeMemberSelector<'_>| match selector {
+        let method = |kind: CallKind,
+                      receiver: LazyType,
+                      selector: &ClassLikeMemberSelector<'_>,
+                      arguments: &ArgumentList<'_>| match selector {
             ClassLikeMemberSelector::Identifier(name) => {
-                LazyType::MethodReturn { receiver: Box::new(receiver), name: lossy(name.value) }
+                let name = lossy(name.value);
+                let core = || LazyType::MethodReturn { receiver: Box::new(receiver.clone()), name: name.clone() };
+                let args = site_args(self.scope, arguments);
+                let site = CallSite { kind, name: &name, receiver: Some(&receiver), args: &args, core: &core };
+                TypeProviders::builtin().call(&site)
             }
             _ => LazyType::mixed(),
         };
         match call {
             Call::Function(call) => match call.function {
                 Expression::Identifier(identifier) => {
-                    match self.scope.resolve(NameKind::Function, &lossy(identifier.value())).resolution {
+                    let core = match self.scope.resolve(NameKind::Function, &lossy(identifier.value())).resolution {
                         Resolution::Fqn(fqn) => LazyType::FunctionReturn { fqn, fallback: None },
                         Resolution::Fallback { namespaced, global } => {
                             LazyType::FunctionReturn { fqn: namespaced, fallback: Some(global) }
                         }
-                        Resolution::Relative(_) => LazyType::mixed(),
-                    }
+                        Resolution::Relative(_) => return LazyType::mixed(),
+                    };
+                    let LazyType::FunctionReturn { fqn, .. } = &core else { return LazyType::mixed() };
+                    let args = site_args(self.scope, &call.argument_list);
+                    let core_fn = || core.clone();
+                    let site =
+                        CallSite { kind: CallKind::Function, name: fqn, receiver: None, args: &args, core: &core_fn };
+                    TypeProviders::builtin().call(&site)
                 }
                 _ => LazyType::mixed(),
             },
-            Call::Method(call) => method(self.expr_inner(call.object), &call.method),
-            Call::NullSafeMethod(call) => {
-                LazyType::union([method(self.expr_inner(call.object), &call.method), known(Type::Null)])
+            Call::Method(call) => {
+                method(CallKind::Method, self.expr_inner(call.object), &call.method, &call.argument_list)
             }
-            Call::StaticMethod(call) => method(self.class_ref(call.class), &call.method),
+            Call::NullSafeMethod(call) => LazyType::union([
+                method(CallKind::Method, self.expr_inner(call.object), &call.method, &call.argument_list),
+                known(Type::Null),
+            ]),
+            Call::StaticMethod(call) => {
+                method(CallKind::StaticMethod, self.class_ref(call.class), &call.method, &call.argument_list)
+            }
         }
     }
 
@@ -324,4 +345,36 @@ impl<'ast, 'arena, 'i, 's> Walker<'ast, 'arena, Returns<'i, 's>> for ReturnWalke
     fn walk_interface(&self, _: &'ast Interface<'arena>, _: &mut Returns<'i, 's>) {}
     fn walk_trait(&self, _: &'ast Trait<'arena>, _: &mut Returns<'i, 's>) {}
     fn walk_enum(&self, _: &'ast Enum<'arena>, _: &mut Returns<'i, 's>) {}
+}
+
+/// The `$this->name = value` assignments in a method body (outside nested
+/// functions and classes), with the property name.
+pub(super) fn this_assignments<'ast, 'arena>(body: &'ast Block<'arena>) -> Vec<(String, &'ast Expression<'arena>)> {
+    let mut found = Vec::new();
+    AssignmentWalker.walk_block(body, &mut found);
+    found
+}
+
+type Assignments<'ast, 'arena> = Vec<(String, &'ast Expression<'arena>)>;
+
+struct AssignmentWalker;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Assignments<'ast, 'arena>> for AssignmentWalker {
+    fn walk_in_assignment(&self, node: &'ast Assignment<'arena>, cx: &mut Assignments<'ast, 'arena>) {
+        if let AssignmentOperator::Assign(_) = node.operator
+            && let Expression::Access(Access::Property(access)) = node.lhs
+            && let Expression::Variable(Variable::Direct(object)) = access.object
+            && object.name == b"$this"
+            && let ClassLikeMemberSelector::Identifier(name) = &access.property
+        {
+            cx.push((lossy(name.value), node.rhs));
+        }
+    }
+
+    fn walk_anonymous_class(&self, _: &'ast AnonymousClass<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_function(&self, _: &'ast Function<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_class(&self, _: &'ast Class<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_interface(&self, _: &'ast Interface<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_trait(&self, _: &'ast Trait<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_enum(&self, _: &'ast Enum<'arena>, _: &mut Assignments<'ast, 'arena>) {}
 }

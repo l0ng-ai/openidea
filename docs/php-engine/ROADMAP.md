@@ -240,7 +240,7 @@ The design:
 
   Tests: the fixture's `Collection<T>`, and Laravel-style `Collection::map`.
 
-- [ ] Phase 2.7: Type providers
+- [x] Phase 2.7: Type providers
       Add a `TypeProvider` trait with a key, a local step that returns a type or a lazy payload, and a resolve step. Add a registry with ordering. Built-in providers:
   - core, for what the resolver already does
   - PHPUnit: `createMock(X::class)` returns `X&MockObject`, and fields assigned in `setUp` are typed

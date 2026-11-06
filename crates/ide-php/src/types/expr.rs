@@ -12,7 +12,8 @@
 //! - function, method, static and nullsafe calls, calls of closures and
 //!   invokable objects, the pipe operator, and first-class callables
 //!   (`strlen(...)`, `$o->m(...)`, `Foo::m(...)`) as `Closure` with the
-//!   callee's signature;
+//!   callee's signature; calls go through the resolver's type providers
+//!   (the core one answering with the above);
 //! - property, static property, class constant and global constant access,
 //!   `::class`, and array access on shapes, arrays, lists, strings and
 //!   `ArrayAccess` objects (`offsetGet`);
@@ -43,6 +44,7 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use super::ops::{Op, literal_type, op_type, unary_type};
+use super::provider::{CallKind, CallSite, site_args};
 use super::resolve::{CallArg, declared_params};
 use super::{Context, LazyType, Relative, Resolver, Shape, ShapeField, ShapeKey, Signature, SignatureParam, Type};
 use crate::names::{FileNames, NameKind, NameScope, Resolution};
@@ -630,11 +632,15 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                     let name = String::from_utf8_lossy(identifier.value());
                     let resolved = self.scope(identifier.span().start.offset).resolve(NameKind::Function, &name);
                     let args = || self.call_args(&call.argument_list, frames);
-                    resolved
-                        .resolution
-                        .candidates()
-                        .find_map(|fqn| self.resolver.function_call(fqn, &args))
-                        .unwrap_or(Type::Mixed)
+                    let core = || {
+                        resolved
+                            .resolution
+                            .candidates()
+                            .find_map(|fqn| self.resolver.function_call(fqn, &args))
+                            .unwrap_or(Type::Mixed)
+                    };
+                    let Some(fqn) = resolved.resolution.candidates().next() else { return core() };
+                    self.provided(CallKind::Function, fqn, None, &call.argument_list, &core, &context)
                 }
                 callee => {
                     let callable = self.expr(callee, frames);
@@ -644,16 +650,22 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Call::Method(call) => match &call.method {
                 ClassLikeMemberSelector::Identifier(name) => {
                     let receiver = self.expr(call.object, frames);
+                    let name = lossy(name.value);
                     let args = || self.call_args(&call.argument_list, frames);
-                    self.resolver.method_call(&receiver, &lossy(name.value), &args, &context)
+                    let core = || self.resolver.method_call(&receiver, &name, &args, &context);
+                    self.provided(CallKind::Method, &name, Some(&receiver), &call.argument_list, &core, &context)
                 }
                 _ => Type::Mixed,
             },
             Call::NullSafeMethod(call) => match &call.method {
                 ClassLikeMemberSelector::Identifier(name) => {
                     let receiver = self.expr(call.object, frames);
+                    let object = receiver.without_null();
+                    let name = lossy(name.value);
                     let args = || self.call_args(&call.argument_list, frames);
-                    let ty = self.resolver.method_call(&receiver.without_null(), &lossy(name.value), &args, &context);
+                    let core = || self.resolver.method_call(&object, &name, &args, &context);
+                    let ty =
+                        self.provided(CallKind::Method, &name, Some(&object), &call.argument_list, &core, &context);
                     if receiver.is_nullable() { ty.nullable() } else { ty }
                 }
                 _ => Type::Mixed,
@@ -661,11 +673,34 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             Call::StaticMethod(call) => match &call.method {
                 ClassLikeMemberSelector::Identifier(name) => {
                     let class = self.class_ref(call.class, frames);
+                    let name = lossy(name.value);
                     let args = || self.call_args(&call.argument_list, frames);
-                    self.resolver.method_call(&class, &lossy(name.value), &args, &context)
+                    let core = || self.resolver.method_call(&class, &name, &args, &context);
+                    self.provided(CallKind::StaticMethod, &name, Some(&class), &call.argument_list, &core, &context)
                 }
                 _ => Type::Mixed,
             },
+        }
+    }
+
+    /// A call's type from the type providers, in order; `core` is what the
+    /// resolver says on its own.
+    fn provided(
+        &self,
+        kind: CallKind,
+        name: &str,
+        receiver: Option<&Type>,
+        arguments: &'a ArgumentList<'a>,
+        core: &dyn Fn() -> Type,
+        context: &Context,
+    ) -> Type {
+        let receiver = receiver.map(|receiver| LazyType::Known(receiver.clone()));
+        let args = site_args(self.scope(arguments.span().start.offset), arguments);
+        let core = || LazyType::Known(core());
+        let site = CallSite { kind, name, receiver: receiver.as_ref(), args: &args, core: &core };
+        match self.resolver.providers().call(&site) {
+            LazyType::Known(ty) => ty,
+            lazy => self.resolver.resolve(&lazy, context),
         }
     }
 

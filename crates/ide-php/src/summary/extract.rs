@@ -23,8 +23,9 @@ use super::{
 };
 use crate::names::{NameKind, NameScope, Resolution};
 use crate::syntax::ParsedFile;
-use crate::types::{LazyType, Type};
-use infer::{Infer, body_return};
+use crate::types::provider::{Assigned, PropertySite};
+use crate::types::{LazyType, Type, TypeProviders};
+use infer::{Infer, body_return, this_assignments};
 
 mod infer;
 mod phpdoc;
@@ -344,6 +345,54 @@ impl Extractor<'_> {
         class
     }
 
+    /// Types from the type providers for the properties with neither a type
+    /// hint nor `@var`, from what the class's methods assign to them
+    /// (`$this->x = …` in PHPUnit's `setUp()`).
+    fn provided_properties(&self, class: &mut ClassLike, members: &Sequence<'_, ClassLikeMember<'_>>) {
+        let untyped = |property: &Property| {
+            !property.is_promoted
+                && !property.is_static
+                && property.type_hint.is_none()
+                && property.doc.as_ref().is_none_or(|doc| doc.var_type(&property.name).is_none())
+        };
+        if !class.properties.iter().any(untyped) {
+            return;
+        }
+        let mut assigned: Vec<(String, Assigned)> = Vec::new();
+        for member in members {
+            let ClassLikeMember::Method(node) = member else { continue };
+            let MethodBody::Concrete(body) = &node.body else { continue };
+            let start = node.name.span.start.offset;
+            let Some(method) = class.methods.iter().find(|method| method.name_loc.start == start) else { continue };
+            let found = this_assignments(body);
+            if found.is_empty() {
+                continue;
+            }
+            let names: Vec<String> =
+                class.doc.iter().flat_map(|doc| doc.local_type_names()).map(str::to_owned).collect();
+            let infer = self.infer(&method.params, &method.doc, &names);
+            for (property, value) in found {
+                assigned.push((property, Assigned { method: method.name.clone(), ty: infer.expr(value) }));
+            }
+        }
+        for i in 0..class.properties.len() {
+            let property = &class.properties[i];
+            if !untyped(property) {
+                continue;
+            }
+            let own: Vec<Assigned> =
+                assigned.iter().filter(|(name, _)| *name == property.name).map(|(_, a)| a.clone()).collect();
+            if own.is_empty() {
+                continue;
+            }
+            let site =
+                PropertySite { class: &class.fqn, extends: &class.extends, name: &property.name, assigned: &own };
+            if let Some(ty) = TypeProviders::builtin().property(&site) {
+                class.properties[i].default_type = Some(ty);
+            }
+        }
+    }
+
     fn trait_use(&self, node: &AstTraitUse<'_>) -> TraitUse {
         let mut rules = Vec::new();
         if let TraitUseSpecification::Concrete(specification) = &node.specification {
@@ -546,6 +595,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
         class.extends = node.extends.as_ref().map(|extends| cx.class_names(&extends.types)).unwrap_or_default();
         class.implements =
             node.implements.as_ref().map(|implements| cx.class_names(&implements.types)).unwrap_or_default();
+        cx.provided_properties(&mut class, &node.members);
         cx.push_class(class);
     }
 

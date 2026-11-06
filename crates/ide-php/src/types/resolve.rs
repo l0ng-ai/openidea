@@ -40,6 +40,10 @@
 //! `@extends`/`@implements`/`@use`), and a call's own templates inferred from
 //! its arguments ([`Resolver::method_call`], [`Resolver::function_call`],
 //! [`Resolver::instantiate`]). The cache holds the unbound types.
+//!
+//! Type provider payloads ([`LazyType::Provided`]) are completed by the
+//! resolve step of their provider in the resolver's [`TypeProviders`]
+//! (the built-in ones unless [`Resolver::with_providers`] says otherwise).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,6 +52,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use super::model::{self, ClassModel, EnumMethod, EnumProperty, MethodSource, ModelMethod, PropertySource};
+use super::provider::TypeProviders;
 use super::{Hierarchy, LazyType, Relative, SignatureParam, Type};
 use crate::names::{NameKind, fqn_eq};
 use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, TypeHint};
@@ -234,6 +239,7 @@ pub struct Resolver<'a> {
     decls: &'a dyn Declarations,
     cache: &'a TypeCache,
     generation: u64,
+    providers: &'a TypeProviders,
     /// The declarations being resolved.
     stack: RefCell<Vec<Key>>,
     /// Declarations a cycle was cut at (or [`Key::Depth`]), not yet
@@ -251,10 +257,23 @@ impl<'a> Resolver<'a> {
             decls,
             cache,
             generation,
+            providers: TypeProviders::builtin(),
             stack: RefCell::new(Vec::new()),
             cuts: RefCell::new(Vec::new()),
             building: RefCell::new(Vec::new()),
         }
+    }
+
+    /// This resolver with other type providers. The cache must only be
+    /// shared between resolvers with the same providers.
+    pub fn with_providers(mut self, providers: &'a TypeProviders) -> Self {
+        self.providers = providers;
+        self
+    }
+
+    /// The type providers asked for calls and completing payloads.
+    pub fn providers(&self) -> &'a TypeProviders {
+        self.providers
     }
 
     /// Where this resolver looks declarations up.
@@ -430,6 +449,13 @@ impl<'a> Resolver<'a> {
             LazyType::ClassConstant { class, name } => {
                 let class = self.lazy(class, context, next);
                 self.on_members(&class, context, &mut |receiver| self.class_constant_at(receiver, name, next))
+            }
+            LazyType::Provided { key, payload, args, fallback } => {
+                let args: Vec<Type> = args.iter().map(|arg| self.lazy(arg, context, next)).collect();
+                self.providers
+                    .get(key)
+                    .and_then(|provider| provider.resolve(payload, &args, self, context))
+                    .unwrap_or_else(|| self.lazy(fallback, context, next))
             }
             LazyType::Union(members) => Type::union(members.iter().map(|member| self.lazy(member, context, next))),
         }

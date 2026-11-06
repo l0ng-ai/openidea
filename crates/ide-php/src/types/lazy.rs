@@ -37,6 +37,10 @@ pub enum LazyType {
     /// The type of a global constant's value, with the global `fallback` of
     /// an unqualified name inside a namespace.
     Constant { fqn: String, fallback: Option<String> },
+    /// A type provider's payload (see [`super::provider`]): completed by
+    /// the resolve step of provider `key` from `payload` and the resolved
+    /// `args`; `fallback` when that step has no answer.
+    Provided { key: String, payload: String, args: Vec<LazyType>, fallback: Box<LazyType> },
     /// Any of these; at least two members, none of them `Known` only when
     /// all are (those fold into one `Known`).
     Union(Vec<LazyType>),
@@ -103,7 +107,8 @@ impl From<Type> for LazyType {
 
 impl fmt::Display for LazyType {
     /// `int`, `App\f()`, `App\f() ?? f()`, `$this->m()`, `Foo->$p`,
-    /// `Foo::BAR`, `const(App\A ?? A)`, `int | g()`.
+    /// `Foo::BAR`, `const(App\A ?? A)`, `int | g()`,
+    /// `phpunit:double:…($this) ?? $this->createMock()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Known(ty) => write!(f, "{ty}"),
@@ -130,6 +135,20 @@ impl fmt::Display for LazyType {
                 Some(fallback) => write!(f, "const({fqn} ?? {fallback})"),
                 None => write!(f, "const({fqn})"),
             },
+            Self::Provided { key, payload, args, fallback } => {
+                write!(f, "{key}:{payload}(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+                f.write_str(")")?;
+                if **fallback != Self::mixed() {
+                    write!(f, " ?? {fallback}")?;
+                }
+                Ok(())
+            }
             Self::Union(members) => {
                 for (i, member) in members.iter().enumerate() {
                     if i > 0 {

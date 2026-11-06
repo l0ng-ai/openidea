@@ -136,3 +136,10 @@ class Tests\LibraryTest final @17:12-17:23 [17:0-67:1]
   method public testRepositoryFiltersByGenre(): void @43:20-43:48 [43:4-51:5]
   method public testHelpers(): void @53:20-53:31 [53:4-57:5]
   method public testIntentionallyFailing(): void @59:20-59:44 [59:4-66:5]
+== tests/RepositoryDoubleTest.php
+class Tests\RepositoryDoubleTest final @11:12-11:32 [11:0-28:1]
+  extends PHPUnit\Framework\TestCase
+  property private $books @14:12-14:18 [14:4-14:19]
+    ~ type: phpunit:setUp(Tests\RepositoryDoubleTest, phpunit:double:PHPUnit\Framework\MockObject\MockObject:App\Contracts\Repository($this) ?? $this->createMock())
+  method protected setUp(): void @16:23-16:28 [16:4-19:5]
+  method public testFindReturnsTheStubbedBook(): void @21:20-21:49 [21:4-27:5]

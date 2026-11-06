@@ -48,7 +48,7 @@ use crate::syntax::ParsedFile;
 use crate::types::LazyType;
 
 /// Bump whenever a type in this module changes shape.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -234,8 +234,9 @@ pub struct Property {
     pub is_promoted: bool,
     pub type_hint: Option<TypeHint>,
     pub default: Option<String>,
-    /// The type of the default value, for a property with a default but no
-    /// type hint and no `@var`.
+    /// For a property with neither a type hint nor `@var`: the type a type
+    /// provider gives it (PHPUnit: what `setUp()` assigns), else the type of
+    /// its default value.
     pub default_type: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
