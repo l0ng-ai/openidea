@@ -213,6 +213,36 @@ describe("Menu action enablement", () => {
     expect(open).toHaveFocus();
   });
 
+  it("shows the full label as a tooltip only when the row cuts it off", () => {
+    const path = "src  —  D:\\projects\\NetworkAccessApply\\backend\\Wind.NewProject";
+    render(
+      <MenuList
+        items={[
+          { label: path, run: () => undefined },
+          { label: "Open", run: () => undefined },
+        ]}
+        onDone={() => {}}
+      />,
+    );
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.textContent === path ? 400 : 100;
+    });
+    const client = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(200);
+    try {
+      const cut = screen.getByText(/Wind\.NewProject/);
+      fireEvent.pointerEnter(cut);
+      expect(cut).toHaveAttribute("data-tooltip", path);
+      const fits = screen.getByText("Open");
+      fireEvent.pointerEnter(fits);
+      expect(fits).not.toHaveAttribute("data-tooltip");
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
+  });
+
   it("reports a hovered row once and lets the keyboard continue from it", () => {
     const active: string[] = [];
     const item = (label: string) => ({ label, onActive: () => active.push(label), run: () => undefined });

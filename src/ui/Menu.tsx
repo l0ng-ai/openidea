@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
@@ -103,6 +104,13 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
 }
 
 const selectable = (r: Resolved | undefined) => !!r && r.kind === "item" && !r.disabled;
+
+/** Menu rows are one line wide: a label cut by the popup's max width shows its full text as a tooltip. */
+function labelTooltip(e: ReactPointerEvent<HTMLElement>) {
+  const el = e.currentTarget;
+  if (el.scrollWidth > el.clientWidth) el.dataset.tooltip = el.textContent ?? "";
+  else delete el.dataset.tooltip;
+}
 
 interface MenuListProps {
   items: MenuItem[];
@@ -273,7 +281,9 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
               <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>
                 {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
               </span>
-              <span className={styles.label}>{r.label}</span>
+              <span className={styles.label} onPointerEnter={labelTooltip}>
+                {r.label}
+              </span>
               {r.shortcut && <span className={styles.shortcut}>{r.shortcut}</span>}
               {hasSub && <Icon name="chevron-right" size={14} className={styles.subArrow} />}
             </button>
