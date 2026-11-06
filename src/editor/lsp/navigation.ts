@@ -166,7 +166,7 @@ function searchingTitle(name: string | null, count: number): string {
 }
 
 function nameAt(view: EditorView, offset: number): string | null {
-  const word = view.state.wordAt(offset);
+  const word = navigationWord(view, offset);
   return word ? view.state.sliceDoc(word.from, word.to) : null;
 }
 
