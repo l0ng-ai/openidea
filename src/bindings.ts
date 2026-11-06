@@ -820,8 +820,8 @@ export const commands = {
 	sdkProjectLibraries: () => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries")),
 	/**  Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path. */
 	sdkLocateTools: (names: string[], near: string | null) => typedError<LocatedTools, IdeError>(__TAURI_INVOKE("sdk_locate_tools", { names, near })),
-	/**  `base -m venv location`; output lines stream through `on_output`. */
-	sdkPythonCreateVenv: (base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { base, location, request, onOutput })),
+	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
+	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
 	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
@@ -7777,6 +7777,15 @@ export type VcsSettings = {
 	/**  Issue Navigation: commit-message patterns turned into links. */
 	issueNavigation?: IssueLink[],
 };
+
+/**  The tool that creates a new Python environment in "Add Python Interpreter". */
+export type VenvTool = 
+/**  `base -m venv <location>`. */
+"venv" | 
+/**  `uv venv <location> --python <base>` (uv must be on PATH). */
+"uv" | 
+/**  `poetry env use <base>` in the project, then `poetry env info --path`. */
+"poetry";
 
 /**  What a view or custom editor shows. */
 export type View = {

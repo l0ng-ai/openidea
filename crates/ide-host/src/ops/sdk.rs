@@ -186,10 +186,11 @@ pub async fn sdk_locate_tools(
     .map_err(join_err)
 }
 
-/// `base -m venv location`; output lines stream through `on_output`.
+/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
 pub async fn sdk_python_create_venv(
     host: &Host,
     window: &str,
+    tool: ide_sdk::python::VenvTool,
     base: PathBuf,
     location: PathBuf,
     request: RequestId,
@@ -198,7 +199,7 @@ pub async fn sdk_python_create_venv(
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
-        ide_sdk::python::create_venv(&base, &location, &cancel, &|line| {
+        ide_sdk::python::create_venv(tool, &base, &location, &cancel, &|line| {
             let _ = on_output.send(line);
         })
     })
@@ -275,6 +276,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         sdk_python_create_venv(
             &c.host,
             &c.window,
+            c.arg("tool")?,
             c.arg("base")?,
             c.arg("location")?,
             c.arg("request")?,
