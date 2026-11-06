@@ -18,6 +18,7 @@ mod logging;
 mod macos;
 mod menu;
 mod plugin_web;
+mod remote_container;
 mod remote_dev;
 mod remote_wsl;
 

@@ -53,11 +53,15 @@ export function parsePort(text: string): number | null {
 }
 
 export async function forwardPort(port: number): Promise<ForwardedPort | null> {
-  if (useRemote.getState().session?.target.kind === "wsl") {
+  const kind = useRemote.getState().session?.target.kind;
+  if (kind === "wsl" || kind === "devContainer") {
     notifications().notify({
       group: "remote",
       level: "error",
-      title: tx("Forwarding ports is not supported in a WSL project yet"),
+      title:
+        kind === "wsl"
+          ? tx("Forwarding ports is not supported in a WSL project yet")
+          : tx("Forwarding ports is not supported in a dev container yet"),
     });
     return null;
   }
