@@ -90,10 +90,28 @@ async fn resolve_launch(
                 class_paths.push(p);
             }
         }
+        for lib in &settings.project_structure.libraries {
+            let include_scope = match lib.scope {
+                ide_core::settings::DependencyScope::Compile | ide_core::settings::DependencyScope::Runtime => true,
+                ide_core::settings::DependencyScope::Test => test,
+                ide_core::settings::DependencyScope::Provided => false,
+            };
+            if !include_scope {
+                continue;
+            }
+            for entry in &lib.classes {
+                if let Some(resolved) = ide_sdk::apply::setting_path(&project.root, entry) {
+                    let s = resolved.to_string_lossy().into_owned();
+                    if !class_paths.iter().any(|c| same_entry(c, &s, cfg!(windows))) {
+                        class_paths.push(s);
+                    }
+                }
+            }
+        }
         info.class_paths = class_paths;
         let compile_ms = started.elapsed().as_millis() - lsp_ms;
-        // The project JDK, else the JDK jdtls compiles the module against, else one matching its Java version.
-        let project_jdk = ide_sdk::apply::project_jdk(&project.root, &settings);
+        // The module/project JDK, else the JDK jdtls compiles the module against, else one matching its Java version.
+        let project_jdk = ide_sdk::apply::module_jdk(&project.root, &module, &settings);
         let from_jdtls = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
         let java = project_jdk.map(|j| ide_sdk::java::java_executable(&j.home)).or(from_jdtls).or_else(|| {
             // The build model's level includes what the module inherits from its parent POMs.

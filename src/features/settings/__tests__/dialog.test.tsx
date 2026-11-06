@@ -30,6 +30,7 @@ import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
 import { openSettings, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
+import { ProjectStructureDialog } from "../languages/ProjectStructurePage";
 import { SettingsWindow } from "../window/SettingsWindow";
 import dialogStyles from "../dialog/SettingsDialog.module.css";
 import { activate } from "..";
@@ -51,7 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => useSettingsDialog.setState({ open: false }));
+  act(() => useSettingsDialog.setState({ open: false, projectStructureOpen: false }));
   dispose();
 });
 
@@ -471,6 +472,34 @@ describe("Settings dialog", () => {
     const dialog = await openDialog("appearance");
     expect(within(dialog).getByRole("button", { name: "Theme" })).toHaveTextContent("Islands Light");
     expect(within(dialog).getByLabelText("UI font size")).toHaveValue("13");
+  });
+
+  it("opens Project Structure as its own standalone IDEA-style dialog instead of Settings", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(
+      <>
+        <SettingsDialog />
+        <ProjectStructureDialog />
+        <MessagesHost />
+      </>,
+    );
+    await act(async () => {
+      await executeAction("file.projectStructure");
+    });
+    expect(useSettingsDialog.getState().open).toBe(false);
+    expect(useSettingsDialog.getState().projectStructureOpen).toBe(true);
+    const psDialog = screen.getByRole("dialog", { name: "Project Structure" });
+    const nav = within(psDialog).getByRole("navigation", { name: "Project Structure sections" });
+    expect(within(nav).getByText("Project Settings")).toBeInTheDocument();
+    expect(within(nav).getByText("Platform Settings")).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Project" })).toHaveAttribute("aria-current", "page");
+    await act(async () => {
+      fireEvent.click(within(nav).getByRole("button", { name: "Modules" }));
+    });
+    expect(within(nav).getByRole("button", { name: "Modules" })).toHaveAttribute("aria-current", "page");
+    expect(within(psDialog).getByRole("tab", { name: "Sources" })).toBeInTheDocument();
+    expect(within(psDialog).getByRole("tab", { name: "Paths" })).toBeInTheDocument();
+    expect(within(psDialog).getByRole("tab", { name: "Dependencies" })).toBeInTheDocument();
   });
 });
 

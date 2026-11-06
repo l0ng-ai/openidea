@@ -288,7 +288,10 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
             // nothing else gets through. Others handle their own items; Close Tab closes the window.
             let label = match windows::auxiliary(w.label()) {
                 Some((_, parent))
-                    if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
+                    if matches!(
+                        route.action.as_str(),
+                        "app.quit" | "file.settings" | "file.projectStructure" | "file.newProjectsSettings"
+                    ) =>
                 {
                     parent
                 }

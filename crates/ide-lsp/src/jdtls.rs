@@ -41,6 +41,12 @@ const ACCESS_OPTIONS: [&str; 2] = [
     "org.eclipse.jdt.core.compiler.problem.discouragedReference",
 ];
 
+const LEVEL_OPTIONS: [&str; 3] = [
+    "org.eclipse.jdt.core.compiler.source",
+    "org.eclipse.jdt.core.compiler.compliance",
+    "org.eclipse.jdt.core.compiler.codegen.targetPlatform",
+];
+
 /// Keep the source model in protocol settings so jdtls's invisible-project
 /// initialization and configuration use the same roots as workspace builds.
 pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, paths: Option<Vec<String>>) {
@@ -52,6 +58,86 @@ pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, path
         settings["java"]["project"]["sourcePaths"] = json!(paths);
         cfg.settings = Some(settings);
     }
+}
+
+/// Applies Project Structure compiler output path, project libraries (and source attachments),
+/// and Web facet `WEB-INF/lib` directories to jdtls `java.project.*` settings.
+pub fn configure_project_structure(
+    cfg: &mut ide_language::LanguageServerConfig,
+    root: &Path,
+    server_root: &Path,
+    structure: &ide_core::settings::ProjectStructureSettings,
+) {
+    if cfg.name != SERVER {
+        return;
+    }
+    let rel = server_root
+        .strip_prefix(root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .map(|p| if p.is_empty() { ".".to_owned() } else { p });
+    let module_cfg = rel
+        .as_deref()
+        .and_then(|key| structure.modules.get(key))
+        .or_else(|| (server_root == root).then(|| structure.modules.get(".")).flatten());
+    let output_path = module_cfg.map(|m| m.compiler_output.trim()).filter(|s| !s.is_empty()).or_else(|| {
+        let p = structure.compiler_output.trim();
+        (!p.is_empty()).then_some(p)
+    });
+
+    let mut include: Vec<String> = Vec::new();
+    let mut sources = serde_json::Map::new();
+    let normalize = |entry: &str| -> Option<String> {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(trimmed.replace('\\', "/"))
+    };
+    for lib in &structure.libraries {
+        let class_entries: Vec<String> = lib.classes.iter().filter_map(|c| normalize(c)).collect();
+        let source_entries: Vec<String> = lib.sources.iter().filter_map(|s| normalize(s)).collect();
+        for c in &class_entries {
+            if !include.contains(c) {
+                include.push(c.clone());
+            }
+        }
+        if let (Some(first_class), Some(first_src)) = (class_entries.first(), source_entries.first()) {
+            sources.insert(first_class.clone(), json!(first_src));
+        }
+    }
+    for facet in &structure.facets {
+        if facet.kind == "web" {
+            let web_root = facet.web_root.trim().trim_matches(['/', '\\']);
+            let glob = if web_root.is_empty() {
+                "src/main/webapp/WEB-INF/lib/**/*.jar".to_owned()
+            } else {
+                format!("{}/WEB-INF/lib/**/*.jar", web_root.replace('\\', "/"))
+            };
+            if !include.contains(&glob) {
+                include.push(glob);
+            }
+        }
+    }
+
+    if output_path.is_none() && include.is_empty() {
+        return;
+    }
+    let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+    if let Some(output) = output_path {
+        settings["java"]["project"]["outputPath"] = json!(output);
+    }
+    if !include.is_empty() {
+        if !include.iter().any(|p| p == "lib/**/*.jar") {
+            include.insert(0, "lib/**/*.jar".to_owned());
+        }
+        settings["java"]["project"]["referencedLibraries"] = if sources.is_empty() {
+            json!({ "include": include })
+        } else {
+            json!({ "include": include, "sources": sources })
+        };
+    }
+    cfg.settings = Some(settings);
 }
 
 pub(crate) fn source_paths_removed(
@@ -104,11 +190,13 @@ fn compiler_defaults(cfg: &ide_language::LanguageServerConfig) -> Value {
     let Ok(prefs) = std::fs::read_to_string(path) else { return json!({}) };
     let mut options = serde_json::Map::new();
     for line in prefs.lines() {
-        if let Some((key, value)) = line.split_once('=')
-            && ACCESS_OPTIONS.contains(&key.trim())
-            && ["error", "warning", "info", "ignore"].contains(&value.trim())
-        {
-            options.insert(key.trim().into(), json!(value.trim()));
+        if let Some((key, value)) = line.split_once('=') {
+            let (k, v) = (key.trim(), value.trim());
+            if (ACCESS_OPTIONS.contains(&k) && ["error", "warning", "info", "ignore"].contains(&v))
+                || (LEVEL_OPTIONS.contains(&k) && ["1.8", "11", "17", "21", "25"].contains(&v))
+            {
+                options.insert(k.into(), json!(v));
+            }
         }
     }
     Value::Object(options)
@@ -977,5 +1065,68 @@ mod tests {
         assert!(not_imported(&e));
         assert!(missing_bundle(&IdeError::invalid("No delegateCommandHandler for vscode.java.startDebugSession")));
         assert!(!missing_bundle(&e));
+    }
+
+    #[test]
+    fn configure_project_structure_sets_output_referenced_libraries_and_web_facets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib_dir = root.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        let jar_path = lib_dir.join("helper.jar");
+        let src_path = lib_dir.join("helper-sources.jar");
+        std::fs::write(&jar_path, b"").unwrap();
+        std::fs::write(&src_path, b"").unwrap();
+
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: "out/production".into(),
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                name: "helper".into(),
+                classes: vec!["lib/helper.jar".into()],
+                sources: vec!["lib/helper-sources.jar".into()],
+                javadocs: vec![],
+                scope: ide_core::settings::DependencyScope::Compile,
+            }],
+            facets: vec![ide_core::settings::FacetConfig {
+                kind: "web".into(),
+                module: ".".into(),
+                descriptor: "src/main/webapp/WEB-INF/web.xml".into(),
+                web_root: "src/main/webapp".into(),
+            }],
+            ..Default::default()
+        };
+        structure.modules.insert(
+            "submod".into(),
+            ide_core::settings::ModuleStructureSettings {
+                compiler_output: "submod/classes".into(),
+                ..Default::default()
+            },
+        );
+
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut cfg, root, root, &structure);
+
+        let settings = cfg.settings.as_ref().unwrap();
+        assert_eq!(settings.pointer("/java/project/outputPath").and_then(Value::as_str), Some("out/production"));
+        let include = settings
+            .pointer("/java/project/referencedLibraries/include")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(include.iter().any(|p| p.ends_with("lib/helper.jar")));
+        assert!(include.iter().any(|p| p.ends_with("src/main/webapp/WEB-INF/lib/**/*.jar")));
+        let sources = settings.pointer("/java/project/referencedLibraries/sources").and_then(Value::as_object).unwrap();
+        assert!(sources.values().any(|v| v.as_str().is_some_and(|s| s.ends_with("lib/helper-sources.jar"))));
+
+        // Module-specific compiler output overrides project-wide compiler output.
+        let mut sub_cfg: ide_language::LanguageServerConfig =
+            toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut sub_cfg, root, &root.join("submod"), &structure);
+        assert_eq!(
+            sub_cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath").and_then(Value::as_str),
+            Some("submod/classes")
+        );
     }
 }

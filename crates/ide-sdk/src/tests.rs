@@ -1784,3 +1784,57 @@ fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
     settings.languages.python.interpreter = "selected/python".into();
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(root.join("selected/python")));
 }
+
+#[test]
+fn project_structure_module_jdk_language_level_and_external_libraries() {
+    let temp = tempfile::tempdir().unwrap();
+    let root_buf = temp.path().canonicalize().unwrap();
+    let root = root_buf.as_path();
+    let jdk17 = root.join("jdk17");
+    let jdk21 = root.join("jdk21");
+    fake_jdk(&jdk17);
+    fake_jdk(&jdk21);
+
+    let mut settings = Settings::default();
+    settings.languages.java.jdk = jdk17.to_string_lossy().into_owned();
+    settings.languages.java.language_level = "8".into();
+    settings.project_structure.modules.insert(
+        "service".into(),
+        ide_core::settings::ModuleStructureSettings {
+            jdk: jdk21.to_string_lossy().into_owned(),
+            language_level: "21".into(),
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(crate::apply::module_jdk(root, root, &settings).map(|j| j.home), Some(jdk17));
+    assert_eq!(crate::apply::module_jdk(root, &root.join("service"), &settings).map(|j| j.home), Some(jdk21));
+    assert_eq!(crate::apply::effective_java_language_level(root, root, &settings), Some("8"));
+    assert_eq!(crate::apply::effective_java_language_level(root, &root.join("service"), &settings), Some("21"));
+
+    let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+    crate::apply::configure_java_compiler_with_level(&mut cfg, root, &settings.inspections, Some("8"));
+    let prefs_files: Vec<_> = std::fs::read_dir(root.join("lsp/jdtls"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| std::fs::read_to_string(e.path()).unwrap())
+        .collect();
+    assert_eq!(prefs_files.len(), 1);
+    assert!(prefs_files[0].contains("org.eclipse.jdt.core.compiler.source=1.8"));
+    assert!(prefs_files[0].contains("org.eclipse.jdt.core.compiler.compliance=1.8"));
+    assert!(prefs_files[0].contains("org.eclipse.jdt.core.compiler.codegen.targetPlatform=1.8"));
+
+    let lib_dir = root.join("lib");
+    std::fs::create_dir_all(&lib_dir).unwrap();
+    let jar_file = lib_dir.join("servlet-api.jar");
+    std::fs::write(&jar_file, b"").unwrap();
+    settings.project_structure.libraries.push(ide_core::settings::ProjectLibrary {
+        name: "servlet-api".into(),
+        classes: vec!["lib/servlet-api.jar".into()],
+        sources: vec![],
+        javadocs: vec![],
+        scope: ide_core::settings::DependencyScope::Provided,
+    });
+    let groups = crate::libraries::project_libraries(root, &settings, &[]);
+    assert!(groups.iter().any(|g| g.name == "servlet-api" && g.kind == "library" && g.roots.len() == 1));
+}

@@ -144,6 +144,42 @@ pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
     }
 }
 
+/// Module-specific JDK from `projectStructure.modules`, falling back to [`project_jdk`].
+pub fn module_jdk(root: &Path, module: &Path, s: &Settings) -> Option<crate::java::Jdk> {
+    let rel = module
+        .strip_prefix(root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .map(|p| if p.is_empty() { ".".to_owned() } else { p });
+    let module_cfg = rel
+        .as_deref()
+        .and_then(|key| s.project_structure.modules.get(key))
+        .or_else(|| module.file_name().and_then(|n| n.to_str()).and_then(|name| s.project_structure.modules.get(name)))
+        .or_else(|| (module == root).then(|| s.project_structure.modules.get(".")).flatten());
+    if let Some(cfg) = module_cfg
+        && let Some(jdk) = jdk_setting(root, &cfg.jdk)
+    {
+        return jdk.inspect_err(|p| tracing::warn!("module JDK {}", not_a_jdk(p))).ok();
+    }
+    project_jdk(root, s)
+}
+
+/// Effective Java language level (`8`, `11`, `17`, `21`, `25`) for `module`, checking
+/// `projectStructure.modules` first, then `languages.java.languageLevel`.
+pub fn effective_java_language_level<'a>(root: &Path, module: &Path, s: &'a Settings) -> Option<&'a str> {
+    let rel = module
+        .strip_prefix(root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .map(|p| if p.is_empty() { ".".to_owned() } else { p });
+    let module_level = rel
+        .as_deref()
+        .and_then(|key| s.project_structure.modules.get(key))
+        .or_else(|| (module == root).then(|| s.project_structure.modules.get(".")).flatten())
+        .and_then(|m| non_empty(&m.language_level));
+    module_level.or_else(|| non_empty(&s.languages.java.language_level))
+}
+
 /// The JDK chosen to run jdtls (`languages.java.jdtlsJdk`): `Ok(None)` when not
 /// set, `Err` (the message) when it is not a JDK home.
 pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, String> {
@@ -640,16 +676,43 @@ fn missing_serial_version(inspections: &InspectionSettings) -> Option<&'static s
 /// Workspace compiler defaults; Eclipse project preferences still take precedence.
 /// Each variant has its own file, so changing an inspection restarts the server with it.
 pub fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path, inspections: &InspectionSettings) {
+    configure_java_compiler_with_level(cfg, data_dir, inspections, None);
+}
+
+/// Like [`configure_java_compiler`], also applying the Project Structure Java language level
+/// (`source`, `compliance`, `codegen.targetPlatform`) when configured.
+pub fn configure_java_compiler_with_level(
+    cfg: &mut LanguageServerConfig,
+    data_dir: &Path,
+    inspections: &InspectionSettings,
+    language_level: Option<&str>,
+) {
     const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
 org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
     let serial = missing_serial_version(inspections);
-    let (name, content) = match serial {
-        None => ("compiler-defaults.prefs".to_owned(), DEFAULTS.to_owned()),
-        Some(level) => (
-            format!("compiler-defaults-serial-{level}.prefs"),
-            format!("{DEFAULTS}org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"),
-        ),
-    };
+    let normalized_level = language_level.map(str::trim).and_then(|l| match l {
+        "8" | "1.8" => Some(("8", "1.8")),
+        "11" => Some(("11", "11")),
+        "17" => Some(("17", "17")),
+        "21" => Some(("21", "21")),
+        "25" => Some(("25", "25")),
+        _ => None,
+    });
+    let mut stem = "compiler-defaults".to_owned();
+    let mut content = DEFAULTS.to_owned();
+    if let Some(level) = serial {
+        stem.push_str(&format!("-serial-{level}"));
+        content.push_str(&format!("org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"));
+    }
+    if let Some((tag, jdt_ver)) = normalized_level {
+        stem.push_str(&format!("-level-{tag}"));
+        content.push_str(&format!(
+            "org.eclipse.jdt.core.compiler.source={jdt_ver}\n\
+org.eclipse.jdt.core.compiler.compliance={jdt_ver}\n\
+org.eclipse.jdt.core.compiler.codegen.targetPlatform={jdt_ver}\n"
+        ));
+    }
+    let name = format!("{stem}.prefs");
     let file = data_dir.join("lsp/jdtls").join(name);
     let write = || -> ide_core::IdeResult<()> {
         std::fs::create_dir_all(file.parent().expect("compiler preferences directory"))?;
