@@ -268,6 +268,8 @@ pub struct GeneralSettings {
     pub power_save_mode: bool,
     /// File › Rename Project… (project layer): the name shown for the project; empty = its folder name.
     pub project_name: String,
+    /// Where updates come from: `auto` (the CNB mirror for the Chinese UI, else GitHub) | `github` | `cnb`.
+    pub update_source: String,
 }
 
 impl Default for GeneralSettings {
@@ -282,6 +284,7 @@ impl Default for GeneralSettings {
             date_format: DateFormatSettings::default(),
             power_save_mode: false,
             project_name: String::new(),
+            update_source: "auto".into(),
         }
     }
 }

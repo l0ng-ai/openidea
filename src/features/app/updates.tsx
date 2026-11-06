@@ -7,7 +7,7 @@
  * repeated click joins the running check or install instead of starting another.
  */
 import { Channel } from "@tauri-apps/api/core";
-import { t } from "@/platform/i18n";
+import { resolveLocale, t } from "@/platform/i18n";
 import {
   call,
   commands,
@@ -16,6 +16,7 @@ import {
   nextRequestId,
   type UpdateInfo,
   type UpdateProgress,
+  type UpdateSource,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
@@ -28,6 +29,14 @@ export const INSTALL_TASK_ID = "app.update.install";
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** System Settings › Updates › Update source; `auto` picks the CNB mirror for the Chinese UI. */
+export function updateSource(): UpdateSource {
+  const { settings } = useProject.getState();
+  const chosen = settings?.general?.updateSource;
+  if (chosen === "github" || chosen === "cnb") return chosen;
+  return resolveLocale(settings?.appearance?.locale) === "zh" ? "cnb" : "github";
 }
 
 let checking: Promise<void> | null = null;
@@ -56,7 +65,7 @@ async function runCheck() {
       key: UPDATE_KEY,
     });
   try {
-    const r = await Promise.race([call(commands.appCheckUpdate()), abandoned]);
+    const r = await Promise.race([call(commands.appCheckUpdate(updateSource())), abandoned]);
     if (r === "cancelled") return;
     if (!r.enabled) {
       notifications().notify({
@@ -85,7 +94,7 @@ async function runCheck() {
 /** Silent check once per app start; only an available update is shown. */
 export async function checkForUpdatesOnStartup(): Promise<void> {
   if (!isTauri()) return;
-  const update = await commands.appStartupUpdateCheck().catch(() => null);
+  const update = await commands.appStartupUpdateCheck(updateSource()).catch(() => null);
   if (update) notifyUpdate(update);
 }
 
@@ -160,7 +169,7 @@ async function runInstall(version: string) {
   // Replaces the notification whose action is now spent.
   balloon([{ label: t("app.update.cancel"), run: cancel }]);
   try {
-    await call(commands.appInstallUpdate(request, channel));
+    await call(commands.appInstallUpdate(updateSource(), request, channel));
   } catch (e) {
     if (isCancelled(e)) {
       notifications().notify({ level: "info", title: t("app.update.cancelled"), key: UPDATE_KEY });
