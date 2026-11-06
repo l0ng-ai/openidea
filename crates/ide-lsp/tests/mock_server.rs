@@ -1816,23 +1816,57 @@ async fn java_implementations_come_from_sources_first() {
     h.wait_status("jdtls", ServerStatus::Ready).await;
     let s = h.launcher.state("jdtls");
     let uri = uri_of(&path);
-    let at = move |line: u32| json!([{ "uri": uri, "range": {"start":{"line":line,"character":6},"end":{"line":line,"character":7}} }]);
+    let at = move |lines: &[u32]| {
+        lines
+            .iter()
+            .map(|&l| json!({ "uri": uri, "range": {"start":{"line":l,"character":6},"end":{"line":l,"character":7}} }))
+            .collect::<Value>()
+    };
     *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
-        // The sources have an implementation of line 0 only.
-        "workspace/executeCommand" => Some(if params["arguments"][1] == 0 { at(1) } else { json!([]) }),
-        "textDocument/implementation" => Some(at(3)),
+        // Line 0 is declared in the sources; line 2 in a dependency, which implements it on line 3.
+        "workspace/executeCommand" => Some(match params["arguments"][1].as_u64() {
+            Some(0) => json!({ "locations": at(&[1]), "complete": true }),
+            Some(2) => json!({ "locations": at(&[1]), "complete": false }),
+            _ => json!({ "locations": [], "complete": true }),
+        }),
+        "textDocument/implementation" => Some(at(&[3, 1])),
         _ => None,
     }));
+    let lines = |locs: &[ide_core::Location]| locs.iter().map(|l| l.range.start.line).collect::<Vec<_>>();
     let found = h.mgr.goto(doc, Pos::new(0, 10), GotoKind::Implementation).await.unwrap();
-    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![1]);
+    assert_eq!(lines(&found), vec![1]);
+    let markers = h.mgr.implementations(doc, &[Pos::new(0, 10)], Default::default()).await.unwrap();
+    assert_eq!(lines(&markers[0]), vec![1]);
     assert!(s.requested("textDocument/implementation").is_empty(), "no search through the dependencies");
     let asked = s.requested("workspace/executeCommand");
     assert_eq!(asked[0]["command"], "openidea.java.implementations");
     assert_eq!((asked[0]["arguments"][1].clone(), asked[0]["arguments"][2].clone()), (json!(0), json!(10)));
-    // None in the sources: the standard request, with the dependencies.
-    let found = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Implementation).await.unwrap();
-    assert_eq!(found.iter().map(|l| l.range.start.line).collect::<Vec<_>>(), vec![3]);
+
+    // A dependency's type: those in the sources first, then the dependencies' too.
+    let partial = Mutex::new(Vec::new());
+    let found = h
+        .mgr
+        .goto_implementation(doc, Pos::new(2, 6), Default::default(), &|locs| partial.lock().push(lines(&locs)))
+        .await
+        .unwrap();
+    assert_eq!(*partial.lock(), vec![vec![1]]);
+    assert_eq!(lines(&found), vec![1, 3]);
     assert_eq!(s.requested("textDocument/implementation").len(), 1);
+    // Without a receiver for the first ones (gutter markers), just all of them.
+    let found = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Implementation).await.unwrap();
+    assert_eq!(lines(&found), vec![3, 1]);
+    assert_eq!(s.requested("textDocument/implementation").len(), 2);
+
+    // None in the sources: the standard request, with the dependencies.
+    let partial = Mutex::new(Vec::new());
+    let found = h
+        .mgr
+        .goto_implementation(doc, Pos::new(3, 6), Default::default(), &|locs| partial.lock().push(lines(&locs)))
+        .await
+        .unwrap();
+    assert!(partial.lock().is_empty());
+    assert_eq!(lines(&found), vec![3, 1]);
+    assert_eq!(s.requested("textDocument/implementation").len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]

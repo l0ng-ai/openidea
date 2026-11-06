@@ -410,6 +410,12 @@ export const commands = {
 	 */
 	lspImplementations: (request: RequestId, doc: DocId, positions: Pos[]) => typedError<Location[][], IdeError>(__TAURI_INVOKE("lsp_implementations", { request, doc, positions })),
 	/**
+	 *  Go to Implementation of the symbol at `pos`. Implementations found before a
+	 *  slower search for the rest arrive on `on_partial`; the result has them all.
+	 *  Cancel with `cancel_request(request)`.
+	 */
+	lspGotoImplementation: (request: RequestId, doc: DocId, pos: Pos, onPartial: Channel<Location[]>) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto_implementation", { request, doc, pos, onPartial })),
+	/**
 	 *  Contents of a read-only language-server document, including JDT library
 	 *  classes and disk class files. Cached per project.
 	 */

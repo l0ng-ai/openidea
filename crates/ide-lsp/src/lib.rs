@@ -317,6 +317,25 @@ async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<L
 
 const JAVA_IMPLEMENTATIONS: &str = "openidea.java.implementations";
 
+/// The answer of [`JAVA_IMPLEMENTATIONS`]: `complete` when the type is declared in the
+/// sources, so no dependency can implement it.
+#[derive(serde::Deserialize)]
+struct SourceImplementations {
+    locations: Vec<lsp::Location>,
+    complete: bool,
+}
+
+/// Receives the implementations found so far, before a slower search for the rest.
+type Partial<'a> = Option<&'a (dyn Fn(Vec<Location>) + Send + Sync)>;
+
+/// `first`, then those of `more` not in it (same file and start).
+fn merge_locations(first: Vec<Location>, more: Vec<Location>) -> Vec<Location> {
+    let mut seen: HashSet<(PathBuf, Pos)> = first.iter().map(|l| (l.path.to_path_buf(), l.range.start)).collect();
+    let mut out = first;
+    out.extend(more.into_iter().filter(|l| seen.insert((l.path.to_path_buf(), l.range.start))));
+    out
+}
+
 fn goto_method(kind: GotoKind) -> (&'static str, &'static str, &'static str) {
     match kind {
         GotoKind::Definition => ("textDocument/definition", "definitionProvider", "go to definition"),
@@ -1231,7 +1250,22 @@ impl LspManager {
         }
         let (method, cap, feature) = goto_method(kind);
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
-        self.goto_in(&snap, &targets, method, pos, None).await
+        self.goto_in(&snap, &targets, method, pos, None, None).await
+    }
+
+    /// Go to Implementation, with the implementations found first passed to `partial` while
+    /// the search goes on: jdtls answers from the project's sources quickly, then searches every
+    /// dependency jar for a type declared in one. Returns them all, the first ones first.
+    pub async fn goto_implementation(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        cancel: CancellationToken,
+        partial: &(dyn Fn(Vec<Location>) + Send + Sync),
+    ) -> IdeResult<Vec<Location>> {
+        let (method, cap, feature) = goto_method(GotoKind::Implementation);
+        let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
+        self.goto_in(&snap, &targets, method, pos, Some(&cancel), Some(partial)).await
     }
 
     /// Implementations of the symbols at each of `positions` (gutter line
@@ -1248,7 +1282,7 @@ impl LspManager {
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
         let requests = positions.iter().copied().map(|pos| {
             let (snap, targets, cancel) = (&snap, &targets, &cancel);
-            async move { self.goto_in(snap, targets, method, pos, Some(cancel)).await }
+            async move { self.goto_in(snap, targets, method, pos, Some(cancel), None).await }
         });
         let results: Vec<IdeResult<Vec<Location>>> =
             futures::stream::iter(requests).buffered(IMPLEMENTATION_CONCURRENCY).collect().await;
@@ -1261,23 +1295,23 @@ impl LspManager {
         Ok(results.into_iter().map(Result::unwrap_or_default).collect())
     }
 
-    /// jdtls: the implementations in the project's sources (`openidea.java.implementations`).
-    /// Its standard request builds the type hierarchy over every dependency jar too, which takes
-    /// long in a project with many dependencies; empty (or no extension) falls back to it.
+    /// jdtls: the implementations in the project's sources (`openidea.java.implementations`),
+    /// and whether they are all there are. Its standard request builds the type hierarchy over
+    /// every dependency jar too, which takes long in a project with many dependencies.
     async fn java_source_implementations(
         &self,
         snap: &DocSnap,
         t: &Target,
         pos: Pos,
         cancel: Option<&CancellationToken>,
-    ) -> Vec<Location> {
+    ) -> (Vec<Location>, bool) {
         if t.server.name != "jdtls" || !t.caps().commands().iter().any(|c| c == JAVA_IMPLEMENTATIONS) {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let params = snap.pos_params(t, pos);
         let arguments =
             json!([params["textDocument"]["uri"], params["position"]["line"], params["position"]["character"]]);
-        let result: IdeResult<Vec<lsp::Location>> = self
+        let result: IdeResult<SourceImplementations> = self
             .call(
                 t,
                 "workspace/executeCommand",
@@ -1287,10 +1321,16 @@ impl LspManager {
             )
             .await;
         match result {
-            Ok(locs) => convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(locs)),
+            Ok(found) => {
+                let locs =
+                    convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(found.locations));
+                let locs = library_sources(snap, pos, locs).await;
+                self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                (locs, found.complete)
+            }
             Err(e) => {
                 tracing::debug!("{JAVA_IMPLEMENTATIONS}: {}", e.message);
-                Vec::new()
+                (Vec::new(), false)
             }
         }
     }
@@ -1302,15 +1342,22 @@ impl LspManager {
         method: &str,
         pos: Pos,
         cancel: Option<&CancellationToken>,
+        partial: Partial<'_>,
     ) -> IdeResult<Vec<Location>> {
         let mut out = Outcome::new();
         for t in targets.iter().filter(|t| snap.asks(t, pos)) {
+            // Found in the sources before the standard request searches the dependencies too.
+            let mut first = Vec::new();
             if method == "textDocument/implementation" {
-                let locs = self.java_source_implementations(snap, t, pos, cancel).await;
-                if !locs.is_empty() {
-                    let locs = library_sources(snap, pos, locs).await;
-                    self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                let (locs, complete) = self.java_source_implementations(snap, t, pos, cancel).await;
+                if complete && !locs.is_empty() {
                     return Ok(locs);
+                }
+                if let Some(partial) = partial
+                    && !locs.is_empty()
+                {
+                    partial(locs.clone());
+                    first = locs;
                 }
             }
             let r = loading::while_loading(&t.server, cancel, loading::LOADING_WAIT, goto_is_empty, || {
@@ -1328,12 +1375,19 @@ impl LspManager {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
+                    let locs = merge_locations(first, locs);
                     if !locs.is_empty() {
                         return Ok(locs);
                     }
                     out.value = Some(Vec::new());
                 }
+                Ok(None) if !first.is_empty() => return Ok(first),
                 Ok(None) => out.value = Some(Vec::new()),
+                // Those shown stay valid when the rest can't be found.
+                Err(e) if !first.is_empty() && e.kind != ErrorKind::Cancelled => {
+                    tracing::debug!("go to implementation in the dependencies: {}", e.message);
+                    return Ok(first);
+                }
                 Err(e) => out.fail(e),
             }
         }
@@ -1517,7 +1571,9 @@ impl LspManager {
                 return Vec::new();
             }
             let defining = self.ready_targets(&snap.servers, |c| c.has("definitionProvider")).await;
-            self.goto_in(&snap, &defining, "textDocument/definition", pos, Some(&cancel)).await.unwrap_or_default()
+            self.goto_in(&snap, &defining, "textDocument/definition", pos, Some(&cancel), None)
+                .await
+                .unwrap_or_default()
         };
         let (results, declarations) = futures::join!(join_all(requests), declarations);
         let mut out = Outcome::new();
