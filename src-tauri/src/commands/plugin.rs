@@ -325,6 +325,7 @@ pub async fn plugin_run_command(
     command_id: String,
     arg: Option<String>,
     editor: Option<PluginEditor>,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -332,7 +333,7 @@ pub async fn plugin_run_command(
         client: Some(window.label().to_owned()),
         workspace_root: project.as_ref().map(|p| p.root.clone()),
         editor: editor.map(PluginEditor::context),
-        selected_paths: Vec::new(),
+        selected_paths: paths.unwrap_or_default(),
     };
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
 }

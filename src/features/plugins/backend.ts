@@ -150,7 +150,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor) => call(commands.pluginRunCommand(pluginId, commandId, arg, editor)),
+  runCommand: (pluginId, commandId, arg, editor) =>
+    call(commands.pluginRunCommand(pluginId, commandId, arg, editor, null)),
   postEvents: async (events) => {
     await commands.pluginPostEvents(events);
   },
