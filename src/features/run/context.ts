@@ -9,6 +9,8 @@ import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
 import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
+import { typeFor } from "./types";
+import { runTemplate } from "./runTemplates";
 
 export type FileRole = "test" | "main" | "script" | null;
 
@@ -135,9 +137,16 @@ export function projectPython(configs: RunConfig[], relPath?: string): { command
   return null;
 }
 
+/** `python` on Windows (where `python3` is not a command), `python3` elsewhere. */
+function systemPython(): string {
+  return isWindows() ? "python" : "python3";
+}
+
 /**
  * PyCharm runs pytest for a `test_*.py` file even when the project declares no
  * test setup: `python -m pytest`, with the project's interpreter when detected.
+ * The "Edit configuration templates…" › pytest values win over both the
+ * interpreter and the runner arguments, like a template a new config inherits.
  */
 function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null {
   if (!relPath.endsWith(".py")) return null;
@@ -146,11 +155,11 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
     relPath,
   );
   const py = projectPython(owners);
-  return {
+  const base: RunConfig = {
     id: "pytest:implicit",
     name: "pytest",
     kind: "pytest",
-    command: py?.command ?? "python3",
+    command: py?.command ?? systemPython(),
     args: [...(py?.prefix ?? []), "-m", "pytest"],
     cwd: owners[0]?.cwd ?? null,
     module: owners[0]?.module,
@@ -159,6 +168,23 @@ function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null
     isTest: true,
     debugAdapter: "debugpy",
   };
+  return applyPytestTemplate(base);
+}
+
+/**
+ * "Edit configuration templates…" › pytest applied to a gutter/context pytest
+ * configuration: its Command and Runner arguments replace the detected
+ * interpreter (`pixi` + `run pytest`, a venv's `pytest`, …) while the file the
+ * context adds stays the target. Without a template the config is unchanged.
+ */
+function applyPytestTemplate(config: RunConfig): RunConfig {
+  const type = typeFor("pytest");
+  const template = runTemplate("pytest");
+  const params = type && template ? { ...type.defaults, ...template.params } : null;
+  if (!type || !params) return config;
+  const line = type.commandLine(params);
+  if (!line) return config;
+  return { ...config, command: line.command, args: line.args };
 }
 
 /**
@@ -347,7 +373,7 @@ function scriptConfigFor(
   };
   if (relPath.endsWith(".py")) {
     // Reuse the project's interpreter (venv / uv / poetry) when detected.
-    const py = projectPython(configs) ?? { command: "python3", prefix: [] };
+    const py = projectPython(configs) ?? { command: systemPython(), prefix: [] };
     const module = pythonModuleRun(relPath, content, configs);
     if (module)
       return {
