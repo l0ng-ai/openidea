@@ -36,6 +36,10 @@ impl server::Server for Sshd {
 impl server::Handler for Sshd {
     type Error = russh::Error;
 
+    async fn auth_none(&mut self, user: &str) -> Result<Auth, Self::Error> {
+        Ok(if user == "coder" { Auth::Accept } else { Auth::reject() })
+    }
+
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
         Ok(if user == "dev" && password == "secret" { Auth::Accept } else { Auth::reject() })
     }
@@ -291,4 +295,30 @@ async fn upload_reports_a_command_that_stops_reading() {
         .expect("the upload must end when the command exits")
         .unwrap_err();
     assert!(err.message.contains("oops"), "{}", err.message);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn openssh_proxy_command_and_none_authentication() {
+    let mut env = env().await;
+    let config = env._tmp.path().join("ssh_config");
+    std::fs::write(
+        &config,
+        format!(
+            "Host *.coder\n\tStrictHostKeyChecking=no\n\tUserKnownHostsFile=/dev/null\n\tProxyCommand nc 127.0.0.1 {}\n",
+            env.ssh_port
+        ),
+    )
+    .unwrap();
+    env.files.config = Some(config);
+    let target = SshTarget {
+        host: "deng-devbox.coder".into(),
+        port: Some(22),
+        user: "coder".into(),
+        auth: SshAuth::OpenSsh,
+        ..Default::default()
+    };
+    let session = env.connect(&target, None).await.expect("ProxyCommand + none auth should connect");
+    let out = session.exec("uname -srm", None).await.unwrap();
+    assert_eq!(out.stdout_str(), "ran: uname -srm");
 }

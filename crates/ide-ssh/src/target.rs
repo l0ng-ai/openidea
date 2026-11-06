@@ -44,6 +44,9 @@ pub(crate) struct Hop {
     pub port: u16,
     pub user: String,
     pub identity_files: Vec<PathBuf>,
+    pub proxy_command: Option<String>,
+    pub strict_host_key_checking: bool,
+    pub known_hosts: Option<PathBuf>,
 }
 
 impl Hop {
@@ -68,14 +71,394 @@ fn local_user() -> String {
     std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default()
 }
 
+#[derive(Default)]
+struct RawConfig {
+    hostname: Option<String>,
+    user: Option<String>,
+    port: Option<u16>,
+    identity_files: Vec<String>,
+    proxy_jump: Option<String>,
+    proxy_command: Option<String>,
+    strict_host_key_checking: Option<bool>,
+    user_known_hosts_file: Option<String>,
+}
+
+fn strip_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\''))) {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// Splits an `ssh_config` line into `(keyword, rest)`, supporting both whitespace and `=` separators.
+fn split_directive(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let end = line.find(|c: char| c.is_ascii_whitespace() || c == '=')?;
+    let key = &line[..end];
+    let rest = line[end..].trim_start();
+    let rest = rest.strip_prefix('=').map_or(rest, str::trim_start);
+    Some((key, rest))
+}
+
+/// Splits whitespace-delimited arguments while respecting single and double quotes.
+fn split_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut in_token = false;
+    for ch in input.chars() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => cur.push(ch),
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+                in_token = true;
+            }
+            None if ch.is_ascii_whitespace() => {
+                if in_token {
+                    args.push(std::mem::take(&mut cur));
+                    in_token = false;
+                }
+            }
+            None => {
+                cur.push(ch);
+                in_token = true;
+            }
+        }
+    }
+    if in_token {
+        args.push(cur);
+    }
+    args
+}
+
+/// Matches `text` against a glob `pattern` with `*` and `?` wildcards.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star_pi, mut star_ti) = (None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi].eq_ignore_ascii_case(&t[ti])) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_pi = Some(pi);
+            pi += 1;
+            star_ti = ti;
+        } else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// OpenSSH pattern-list matching: any matching `!pattern` rejects, else any matching pattern accepts.
+fn pattern_list_matches<'a>(patterns: impl IntoIterator<Item = &'a str>, candidate: &str) -> bool {
+    let mut matched = false;
+    for raw in patterns {
+        if raw.is_empty() {
+            continue;
+        }
+        if let Some(neg) = raw.strip_prefix('!') {
+            if glob_match(neg, candidate) {
+                return false;
+            }
+        } else if glob_match(raw, candidate) {
+            matched = true;
+        }
+    }
+    matched
+}
+
+/// Expands OpenSSH percent tokens (`%h`, `%H`, `%n`, `%p`, `%r`, `%u`, `%d`, `%%`).
+fn expand_tokens(template: &str, alias: &str, host: &str, port: u16, remote_user: &str, local_user: &str) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars();
+    let home_dir = home().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('%') => out.push('%'),
+            Some('h' | 'H') => out.push_str(host),
+            Some('n') => out.push_str(alias),
+            Some('p') => out.push_str(&port.to_string()),
+            Some('r') => out.push_str(remote_user),
+            Some('u') => out.push_str(local_user),
+            Some('d') => out.push_str(&home_dir),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
+fn eval_match_exec(command: &str) -> bool {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("/bin/sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(command);
+        c
+    };
+    ide_core::process::prepare(&mut cmd);
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+fn eval_match(
+    value: &str,
+    alias: &str,
+    port_override: Option<u16>,
+    user_override: Option<&str>,
+    out: &RawConfig,
+) -> bool {
+    let tokens = split_args(value);
+    if tokens.is_empty() {
+        return false;
+    }
+    let local = local_user();
+    let host = out.hostname.as_deref().unwrap_or(alias);
+    let port = port_override.or(out.port).unwrap_or(22);
+    let user = user_override.map(str::trim).filter(|s| !s.is_empty()).or(out.user.as_deref()).unwrap_or(&local);
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i].as_str();
+        let (raw_key, inline_val) = match tok.split_once('=') {
+            Some((k, v)) => (k, Some(v)),
+            None => (tok, None),
+        };
+        let (negated, key) = match raw_key.strip_prefix('!') {
+            Some(k) => (true, k.to_ascii_lowercase()),
+            None => (false, raw_key.to_ascii_lowercase()),
+        };
+        match key.as_str() {
+            "all" | "canonical" | "final" => {
+                if negated {
+                    return false;
+                }
+                i += 1;
+            }
+            "host" | "originalhost" | "user" | "localuser" | "exec" => {
+                let arg = match inline_val {
+                    Some(v) => {
+                        i += 1;
+                        v
+                    }
+                    None => {
+                        let Some(next) = tokens.get(i + 1) else { return false };
+                        i += 2;
+                        next.as_str()
+                    }
+                };
+                let ok = match key.as_str() {
+                    "host" => pattern_list_matches(arg.split(','), host),
+                    "originalhost" => pattern_list_matches(arg.split(','), alias),
+                    "user" => pattern_list_matches(arg.split(','), user),
+                    "localuser" => pattern_list_matches(arg.split(','), &local),
+                    "exec" => {
+                        let cmd = expand_tokens(arg, alias, host, port, user, &local);
+                        eval_match_exec(&cmd)
+                    }
+                    _ => false,
+                };
+                if ok == negated {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Expands a path pattern that may contain `*` or `?` in its path segments.
+fn expand_include_glob(pattern: &Path) -> Vec<PathBuf> {
+    use std::path::Component;
+    let mut paths = vec![PathBuf::new()];
+    for comp in pattern.components() {
+        match comp {
+            Component::Normal(os) => {
+                let s = os.to_string_lossy();
+                if s.contains('*') || s.contains('?') {
+                    let mut next = Vec::new();
+                    for base in &paths {
+                        let dir = if base.as_os_str().is_empty() { Path::new(".") } else { base.as_path() };
+                        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+                        let mut matched: Vec<PathBuf> = entries
+                            .filter_map(Result::ok)
+                            .filter(|e| glob_match(&s, &e.file_name().to_string_lossy()))
+                            .map(|e| e.path())
+                            .collect();
+                        matched.sort();
+                        next.extend(matched);
+                    }
+                    paths = next;
+                } else {
+                    for p in &mut paths {
+                        p.push(os);
+                    }
+                }
+            }
+            other => {
+                for p in &mut paths {
+                    p.push(other.as_os_str());
+                }
+            }
+        }
+    }
+    paths.into_iter().filter(|p| p.is_file()).collect()
+}
+
+fn parse_config_file(
+    path: &Path,
+    alias: &str,
+    port_override: Option<u16>,
+    user_override: Option<&str>,
+    out: &mut RawConfig,
+    depth: usize,
+) {
+    if depth >= 8 {
+        return;
+    }
+    let Ok(contents) = std::fs::read_to_string(path) else { return };
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut active = true;
+    for line in contents.lines() {
+        let Some((key, value)) = split_directive(line) else { continue };
+        match key.to_ascii_lowercase().as_str() {
+            "host" => {
+                let patterns = split_args(value);
+                active = pattern_list_matches(patterns.iter().map(String::as_str), alias);
+            }
+            "match" => {
+                active = eval_match(value, alias, port_override, user_override, out);
+            }
+            _ if !active => {}
+            "include" => {
+                for raw in split_args(value) {
+                    let expanded = expand(&raw);
+                    let pat = if expanded.is_relative() { base_dir.join(expanded) } else { expanded };
+                    for file in expand_include_glob(&pat) {
+                        parse_config_file(&file, alias, port_override, user_override, out, depth + 1);
+                    }
+                }
+            }
+            "hostname" => {
+                if out.hostname.is_none() {
+                    let raw = strip_quotes(value);
+                    out.hostname = Some(raw.replace("%h", alias).replace("%%", "%"));
+                }
+            }
+            "user" => {
+                if out.user.is_none() {
+                    out.user = Some(strip_quotes(value).to_owned());
+                }
+            }
+            "port" => {
+                if out.port.is_none() {
+                    out.port = strip_quotes(value).parse().ok();
+                }
+            }
+            "identityfile" => {
+                let raw = strip_quotes(value);
+                if !raw.is_empty() && !raw.eq_ignore_ascii_case("none") {
+                    out.identity_files.push(raw.to_owned());
+                }
+            }
+            "proxyjump" => {
+                if out.proxy_jump.is_none() {
+                    out.proxy_jump = Some(strip_quotes(value).to_owned());
+                }
+            }
+            "proxycommand" => {
+                if out.proxy_command.is_none() {
+                    out.proxy_command = Some(strip_quotes(value).to_owned());
+                }
+            }
+            "stricthostkeychecking" => {
+                if out.strict_host_key_checking.is_none() {
+                    let v = strip_quotes(value);
+                    out.strict_host_key_checking =
+                        Some(!matches!(v.to_ascii_lowercase().as_str(), "no" | "off" | "false" | "accept-new"));
+                }
+            }
+            "userknownhostsfile" => {
+                if out.user_known_hosts_file.is_none()
+                    && let Some(first) = split_args(value).into_iter().next()
+                {
+                    out.user_known_hosts_file = Some(first);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// One `~/.ssh/config` lookup (a missing or unreadable file means defaults).
-fn config_hop(config: Option<&Path>, alias: &str) -> (Hop, Option<String>) {
-    let c = config
-        .and_then(|p| russh_config::parse_path(p, alias).ok())
-        .unwrap_or_else(|| russh_config::Config::default(alias));
-    let identity_files = c.host_config.identity_file.clone().unwrap_or_default();
-    let hop = Hop { host: c.host().to_owned(), port: c.port(), user: c.user(), identity_files };
-    (hop, c.host_config.proxy_jump.clone())
+fn config_hop(
+    config: Option<&Path>,
+    alias: &str,
+    port_override: Option<u16>,
+    user_override: Option<&str>,
+) -> (Hop, Option<String>) {
+    let mut raw = RawConfig::default();
+    if let Some(p) = config {
+        parse_config_file(p, alias, port_override, user_override, &mut raw, 0);
+    }
+    let local = local_user();
+    let host = raw.hostname.unwrap_or_else(|| alias.to_owned());
+    let port = port_override.or(raw.port).unwrap_or(22);
+    let user = user_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or(raw.user)
+        .unwrap_or_else(|| local.clone());
+    let identity_files =
+        raw.identity_files.iter().map(|p| expand(&expand_tokens(p, alias, &host, port, &user, &local))).collect();
+    let proxy_command = raw
+        .proxy_command
+        .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("none"))
+        .map(|c| expand_tokens(&c, alias, &host, port, &user, &local));
+    let proxy_jump = raw.proxy_jump.filter(|j| !j.is_empty() && !j.eq_ignore_ascii_case("none"));
+    let (known_hosts, null_known_hosts) = match raw.user_known_hosts_file.as_deref() {
+        Some(kh) if kh.eq_ignore_ascii_case("none") || kh == "/dev/null" || kh.eq_ignore_ascii_case("nul") => {
+            (None, true)
+        }
+        Some(kh) => (Some(expand(&expand_tokens(kh, alias, &host, port, &user, &local))), false),
+        None => (None, false),
+    };
+    let strict_host_key_checking = match raw.strict_host_key_checking {
+        Some(strict) => strict && !null_known_hosts,
+        None => !null_known_hosts,
+    };
+    let hop = Hop { host, port, user, identity_files, proxy_command, strict_host_key_checking, known_hosts };
+    (hop, proxy_jump)
 }
 
 /// `[user@]host[:port]` of a `ProxyJump` entry.
@@ -88,13 +471,7 @@ fn jump_hop(config: Option<&Path>, spec: &str) -> Hop {
         Some((h, p)) if p.parse::<u16>().is_ok() => (h, p.parse().ok()),
         _ => (rest, None),
     };
-    let (mut hop, _) = config_hop(config, host);
-    if let Some(u) = user {
-        hop.user = u.to_owned();
-    }
-    if let Some(p) = port {
-        hop.port = p;
-    }
+    let (hop, _) = config_hop(config, host, port, user);
     hop
 }
 
@@ -104,21 +481,30 @@ pub(crate) fn resolve_hops(target: &SshTarget, config: Option<&Path>) -> IdeResu
     if host.is_empty() {
         return Err(IdeError::invalid("SSH host is empty"));
     }
-    let (mut hop, proxy_jump) = if target.auth == SshAuth::OpenSsh {
-        config_hop(config, host)
+    let user_override = Some(target.user.trim()).filter(|u| !u.is_empty());
+    let (hop, proxy_jump) = if target.auth == SshAuth::OpenSsh {
+        config_hop(config, host, target.port, user_override)
     } else {
-        (Hop { host: host.to_owned(), port: 22, user: local_user(), identity_files: Vec::new() }, None)
+        (
+            Hop {
+                host: host.to_owned(),
+                port: target.port.unwrap_or(22),
+                user: user_override.map(str::to_owned).unwrap_or_else(local_user),
+                identity_files: Vec::new(),
+                proxy_command: None,
+                strict_host_key_checking: true,
+                known_hosts: None,
+            },
+            None,
+        )
     };
-    if let Some(p) = target.port {
-        hop.port = p;
-    }
-    if !target.user.trim().is_empty() {
-        hop.user = target.user.trim().to_owned();
-    }
-    let mut hops: Vec<Hop> = proxy_jump
-        .filter(|j| !j.eq_ignore_ascii_case("none"))
-        .map(|j| j.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| jump_hop(config, s)).collect())
-        .unwrap_or_default();
+    let mut hops: Vec<Hop> = if hop.proxy_command.is_some() {
+        Vec::new()
+    } else {
+        proxy_jump
+            .map(|j| j.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| jump_hop(config, s)).collect())
+            .unwrap_or_default()
+    };
     hops.push(hop);
     Ok(hops)
 }
@@ -171,6 +557,55 @@ mod tests {
         let hops = resolve_hops(&target, Some(&config)).unwrap();
         assert_eq!(hops.iter().map(Hop::label).collect::<Vec<_>>(), ["u@db-bastion:22"]);
         assert!(resolve_hops(&SshTarget::default(), None).is_err());
+    }
+
+    #[test]
+    fn resolves_include_match_equals_and_proxy_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("ssh.d");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            sub.join("coder.conf"),
+            "Host coder-vscode--*\n  ProxyCommand /bin/coder ssh --stdio %h\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n",
+        )
+        .unwrap();
+        let config = tmp.path().join("config");
+        std::fs::write(
+            &config,
+            "Include \"ssh.d/*.conf\"\n\nHost *.coder\n\tConnectTimeout=0\n\tStrictHostKeyChecking=no\n\tUserKnownHostsFile=/dev/null\n\nMatch host *.coder !exec \"false\"\n\tProxyCommand /opt/homebrew/bin/coder --global-config \"/path with spaces/coderv2\" ssh --stdio --hostname-suffix coder %h %p %r\n",
+        )
+        .unwrap();
+
+        let target = SshTarget {
+            host: "deng-devbox.coder".into(),
+            port: Some(22),
+            user: "dengliu".into(),
+            auth: SshAuth::OpenSsh,
+            ..Default::default()
+        };
+        let hops = resolve_hops(&target, Some(&config)).unwrap();
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].host, "deng-devbox.coder");
+        assert_eq!(hops[0].port, 22);
+        assert_eq!(hops[0].user, "dengliu");
+        assert!(!hops[0].strict_host_key_checking);
+        assert_eq!(hops[0].known_hosts, None);
+        assert_eq!(
+            hops[0].proxy_command.as_deref(),
+            Some(
+                "/opt/homebrew/bin/coder --global-config \"/path with spaces/coderv2\" ssh --stdio --hostname-suffix coder deng-devbox.coder 22 dengliu"
+            )
+        );
+
+        let included = SshTarget {
+            host: "coder-vscode--devbox".into(),
+            user: "coder".into(),
+            auth: SshAuth::OpenSsh,
+            ..Default::default()
+        };
+        let hops = resolve_hops(&included, Some(&config)).unwrap();
+        assert_eq!(hops[0].proxy_command.as_deref(), Some("/bin/coder ssh --stdio coder-vscode--devbox"));
+        assert!(!hops[0].strict_host_key_checking);
     }
 
     #[test]
