@@ -115,7 +115,10 @@ mod tests {
 
     #[test]
     fn drops_g1_filler_rows() {
-        assert!(parse_class_histogram(JDK17).rows.iter().all(|r| !r.name.contains("jdk.internal.vm.Filler")));
+        let h = parse_class_histogram(JDK17);
+        assert!(h.rows.iter().all(|r| !r.name.contains("jdk.internal.vm.Filler")));
+        assert_eq!(h.rows.len(), 5);
+        assert_eq!(h.skipped_lines, 0);
     }
 
     #[test]
