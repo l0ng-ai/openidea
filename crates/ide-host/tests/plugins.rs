@@ -810,7 +810,7 @@ fn private_directory_survives_host_restart_and_inactive_uninstall() {
 #[test]
 fn private_paths_work_with_open_location_and_approved_process_arguments() {
     let f = fixture(Limits::default());
-    f.install(&sample("private-dir"));
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
     f.run("test.private-dir", "roundtrip", None).unwrap();
     let path = PathBuf::from(f.run("test.private-dir", "open", None).unwrap().unwrap());
     assert!(f.take_events().iter().any(|(client, event)| client.as_deref() == Some("main")

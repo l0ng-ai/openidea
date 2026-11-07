@@ -184,7 +184,7 @@ mod windows_tests {
             },
             0
         );
-        let result = unsafe {
+        unsafe {
             let mut len = 0;
             while *string.add(len) != 0 {
                 len += 1;
@@ -193,8 +193,7 @@ mod windows_tests {
             LocalFree(string.cast());
             LocalFree(descriptor);
             result
-        };
-        result
+        }
     }
 
     #[test]
