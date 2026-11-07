@@ -850,6 +850,39 @@ async fn connects_to_running_debug_server_over_tcp() {
     assert!(events.lock().iter().any(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Started { .. }, .. })));
 }
 
+#[tokio::test]
+async fn delve_adapter_inherits_the_selected_go_environment() {
+    struct CaptureLauncher {
+        inner: FakeLauncher,
+        env: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl AdapterLauncher for CaptureLauncher {
+        fn launch(&self, spec: AdapterSpec, reuse: Option<u16>) -> LaunchFuture {
+            *self.env.lock() = spec.env.clone();
+            self.inner.launch(spec, reuse)
+        }
+    }
+    let env = Arc::new(Mutex::new(Vec::new()));
+    let launcher =
+        CaptureLauncher { inner: FakeLauncher { log: Arc::default(), script: Script::default() }, env: env.clone() };
+    let manager = DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(launcher));
+    let (owner, _) = recording_owner("main");
+    let config = LaunchConfig {
+        name: "Go".into(),
+        adapter: "delve".into(),
+        request: "launch".into(),
+        program: Some("/project".into()),
+        args: vec![],
+        cwd: None,
+        env: BTreeMap::from([("PATH".into(), "/chosen/go/bin".into()), ("GOROOT".into(), "/chosen/go".into())]),
+        extra_json: Some(json!({"mode":"debug"}).to_string()),
+    };
+    let id = manager.start(config, owner).await.unwrap();
+    assert!(env.lock().contains(&("PATH".into(), "/chosen/go/bin".into())));
+    assert!(env.lock().contains(&("GOROOT".into(), "/chosen/go".into())));
+    manager.stop(id).await.unwrap();
+}
+
 /// Go Remote / Python remote: the adapter runs on another machine (`dlv --headless`,
 /// `debugpy --listen`); `debugServer: "host:port"` connects there instead of spawning one.
 #[tokio::test]

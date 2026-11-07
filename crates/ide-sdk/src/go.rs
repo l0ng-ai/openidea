@@ -127,7 +127,119 @@ fn delve_build_flags(args: &[String], files: bool) -> Value {
     )
 }
 
+/// An explicitly selected Go executable must also be the compiler Delve finds on PATH.
+pub fn prepare_debug_compiler(
+    env: &mut std::collections::BTreeMap<String, String>,
+    extra_json: &Option<String>,
+) -> ide_core::IdeResult<()> {
+    #[cfg(windows)]
+    for key in ["PATH", "GOROOT"] {
+        if let Some(previous) = env.keys().find(|name| name.eq_ignore_ascii_case(key) && name.as_str() != key).cloned()
+        {
+            let value = env.remove(&previous).unwrap();
+            env.entry(key.into()).or_insert(value);
+        }
+    }
+    let extra: Value = extra_json.as_deref().and_then(|value| serde_json::from_str(value).ok()).unwrap_or_default();
+    let Some(executable) = extra["__goExecutable"].as_str().filter(|value| *value != "go" && *value != "go.exe") else {
+        return Ok(());
+    };
+    let path = env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(crate::exec::search_path);
+    let executable = ide_core::process::find_executable(executable, &path)
+        .ok_or_else(|| ide_core::IdeError::unavailable(format!("Go executable not found: {executable}")))?;
+    if !executable.file_name().is_some_and(|name| {
+        if cfg!(windows) {
+            let name = name.to_string_lossy();
+            name.eq_ignore_ascii_case("go") || name.eq_ignore_ascii_case("go.exe")
+        } else {
+            name == "go"
+        }
+    }) {
+        return Err(ide_core::IdeError::invalid("Delve requires a Go SDK executable named go or go.exe"));
+    }
+    if !env.contains_key("GOROOT") {
+        let mut command = std::process::Command::new(&executable);
+        command.args(["env", "GOROOT"]).envs(env.iter());
+        let goroot = crate::exec::query_command(command, std::time::Duration::from_secs(10))
+            .ok_or_else(|| ide_core::IdeError::unavailable("Cannot query the selected Go SDK"))?;
+        env.insert("GOROOT".into(), goroot);
+    }
+    let mut paths = vec![executable.parent().unwrap().to_path_buf()];
+    paths.extend(std::env::split_paths(&path));
+    let path = std::env::join_paths(paths).map_err(|error| ide_core::IdeError::invalid(error.to_string()))?;
+    env.insert("PATH".into(), path.to_string_lossy().into_owned());
+    Ok(())
+}
+
+fn resolve_debug_target(
+    program: &mut Option<String>,
+    env: &std::collections::BTreeMap<String, String>,
+    extra: &mut Value,
+    flags: &mut Vec<String>,
+) -> ide_core::IdeResult<()> {
+    let Some(targets) = extra.get("__goTargets") else { return Ok(()) };
+    let targets: Vec<String> =
+        serde_json::from_value(targets.clone()).map_err(|error| ide_core::IdeError::invalid(error.to_string()))?;
+    let dir = extra["__goBuildDir"]
+        .as_str()
+        .map(std::path::Path::new)
+        .ok_or_else(|| ide_core::IdeError::invalid("Go debug build directory is missing"))?;
+    if targets.iter().any(|target| target.ends_with(".go")) {
+        if !targets.iter().all(|target| target.ends_with(".go")) {
+            return Err(ide_core::IdeError::invalid("Select Go source files or one package for debugging"));
+        }
+        let files: Vec<_> =
+            targets.iter().map(|target| dunce::canonicalize(dir.join(target))).collect::<Result<_, _>>()?;
+        let first = files.first().ok_or_else(|| ide_core::IdeError::invalid("Go debug target is missing"))?;
+        if files.iter().any(|file| file.parent() != first.parent()) {
+            return Err(ide_core::IdeError::invalid("Go source files must be in the same directory"));
+        }
+        *program = Some(first.to_string_lossy().into_owned());
+        flags.extend(files.iter().skip(1).map(|file| file.to_string_lossy().into_owned()));
+        extra["__goSourceArgs"] = json!(true);
+        return Ok(());
+    }
+    let path = env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(crate::exec::search_path);
+    let go = ide_core::process::find_executable("go", &path)
+        .ok_or_else(|| ide_core::IdeError::unavailable("Go executable not found"))?;
+    let mut command = std::process::Command::new(go);
+    command.args(["list", "-find", "-f", "{{.Dir}}"]).current_dir(dir).envs(env.iter());
+    let mut args = flags.iter();
+    while let Some(flag) = args.next() {
+        let name = flag.split('=').next().unwrap_or(flag);
+        if ["-tags", "-mod", "-modfile", "-overlay", "-compiler"].contains(&name) {
+            command.arg(flag);
+            if name == flag
+                && let Some(value) = args.next()
+            {
+                command.arg(value);
+            }
+        } else if ["-race", "-msan", "-asan"].contains(&name) {
+            command.arg(flag);
+        }
+    }
+    command.args(&targets);
+    let output = crate::exec::query_command(command, std::time::Duration::from_secs(10)).ok_or_else(|| {
+        ide_core::IdeError::invalid(format!(
+            "Cannot resolve Go debug target: {}. Check its module path and build flags.",
+            targets.join(" ")
+        ))
+    })?;
+    let mut dirs: Vec<_> = output.lines().filter(|line| !line.trim().is_empty()).collect();
+    dirs.sort();
+    dirs.dedup();
+    if dirs.len() != 1 {
+        return Err(ide_core::IdeError::invalid(format!(
+            "Go debugging requires one package; this target selects {}. Select a package or test instead.",
+            dirs.len()
+        )));
+    }
+    *program = Some(dirs[0].to_owned());
+    Ok(())
+}
+
 pub fn apply_to_debug(
+    program: &mut Option<String>,
     env: &mut std::collections::BTreeMap<String, String>,
     extra_json: &mut Option<String>,
     tags: &GoBuildTags,
@@ -164,6 +276,7 @@ pub fn apply_to_debug(
                 .collect::<Vec<_>>();
             merge_flags(&mut args, &flags);
         }
+        resolve_debug_target(program, env, &mut extra, &mut args)?;
         if let Some(files) = extra.get("__goFiles").and_then(Value::as_array) {
             if extra["mode"] == "test" {
                 if let Some(dir) = files.first().and_then(Value::as_str).and_then(|f| std::path::Path::new(f).parent())
@@ -180,7 +293,8 @@ pub fn apply_to_debug(
         }
         // Delve appends its -o after array build flags; positional source files
         // require the string form so all compiler flags precede the file list.
-        extra["buildFlags"] = delve_build_flags(&args, extra.get("__goFiles").is_some());
+        extra["buildFlags"] =
+            delve_build_flags(&args, extra.get("__goFiles").is_some() || extra["__goSourceArgs"] == true);
     }
     if let Some(output) = extra.get("output").and_then(Value::as_str).and_then(|p| std::path::Path::new(p).parent()) {
         std::fs::create_dir_all(output)?;
@@ -189,6 +303,10 @@ pub fn apply_to_debug(
         map.remove("__goUseTags");
         map.remove("__goToolArgs");
         map.remove("__goFiles");
+        map.remove("__goExecutable");
+        map.remove("__goTargets");
+        map.remove("__goBuildDir");
+        map.remove("__goSourceArgs");
     }
     *extra_json = Some(extra.to_string());
     Ok(())
@@ -198,6 +316,69 @@ pub fn apply_to_debug(
 mod command_tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn debug_targets_resolve_imports_and_reject_multiple_packages() {
+        if crate::exec::which("go").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("go.mod"), "module example.com/debugtargets\ngo 1.22\n").unwrap();
+        for name in ["a", "b"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("lib.go"), "package p\nfunc Value() {}\n").unwrap();
+        }
+        let mut env = BTreeMap::from([("GOWORK".into(), "off".into())]);
+        let launch = |target: &str| {
+            Some(json!({"mode":"test", "__goToolArgs":[], "__goTargets":[target], "__goBuildDir":root}).to_string())
+        };
+        let mut program = None;
+        let mut extra = launch("example.com/debugtargets/a");
+        apply_to_debug(&mut program, &mut env, &mut extra, &GoBuildTags::default()).unwrap();
+        assert_eq!(program.as_deref(), root.join("a").to_str());
+        let value: Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
+        assert!(value.get("__goTargets").is_none());
+        let error = apply_to_debug(&mut program, &mut env, &mut launch("./..."), &GoBuildTags::default()).unwrap_err();
+        assert!(error.to_string().contains("requires one package"), "{error}");
+        std::fs::write(root.join("main.go"), "package main\nfunc main(){helper()}\n").unwrap();
+        std::fs::write(root.join("helper.go"), "package main\nfunc helper(){}\n").unwrap();
+        let mut extra = Some(
+            json!({"mode":"debug","__goBuildDir":root,"__goTargets":["main.go","helper.go"],"__goToolArgs":[]})
+                .to_string(),
+        );
+        apply_to_debug(&mut program, &mut env, &mut extra, &GoBuildTags::default()).unwrap();
+        assert_eq!(program.as_deref(), root.join("main.go").to_str());
+        let value: Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
+        assert_eq!(value["buildFlags"], format!("'{}'", root.join("helper.go").to_string_lossy()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compiler_selection_preserves_case_insensitive_windows_environment_keys() {
+        let mut env =
+            BTreeMap::from([("Path".into(), "explicit path".into()), ("GoRoot".into(), "explicit root".into())]);
+        prepare_debug_compiler(&mut env, &None).unwrap();
+        assert_eq!(env["PATH"], "explicit path");
+        assert_eq!(env["GOROOT"], "explicit root");
+        assert!(!env.contains_key("Path"));
+        assert!(!env.contains_key("GoRoot"));
+    }
+
+    #[test]
+    fn the_selected_go_compiler_precedes_the_existing_path() {
+        let Some(go) = crate::exec::which("go") else {
+            return;
+        };
+        let mut env = BTreeMap::from([("PATH".into(), "/unrelated".into())]);
+        let extra = Some(json!({"__goExecutable":go}).to_string());
+        prepare_debug_compiler(&mut env, &extra).unwrap();
+        assert_eq!(std::env::split_paths(&env["PATH"]).next().as_deref(), go.parent());
+        assert!(!env["GOROOT"].is_empty());
+        env.insert("GOROOT".into(), "explicit".into());
+        prepare_debug_compiler(&mut env, &extra).unwrap();
+        assert_eq!(env["GOROOT"], "explicit");
+    }
 
     #[test]
     fn merges_custom_tags_without_touching_program_arguments() {
@@ -219,12 +400,12 @@ mod command_tests {
         let mut env = BTreeMap::from([("GOOS".into(), "darwin".into())]);
         let mut extra =
             Some(json!({"mode":"test", "__goUseTags":true, "__goToolArgs":["-tags", "explicit"]}).to_string());
-        apply_to_debug(&mut env, &mut extra, &tags).unwrap();
+        apply_to_debug(&mut None, &mut env, &mut extra, &tags).unwrap();
         let extra: Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
         assert_eq!(extra["buildFlags"], json!(["-tags=project,explicit"]));
         assert!(extra.get("__goUseTags").is_none());
         assert_eq!(env["GOOS"], "darwin");
-        assert!(apply_to_debug(&mut env, &mut Some("{".into()), &tags).is_err());
+        assert!(apply_to_debug(&mut None, &mut env, &mut Some("{".into()), &tags).is_err());
     }
 }
 
