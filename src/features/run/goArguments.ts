@@ -34,7 +34,8 @@ export function goTestParts(args: readonly string[]) {
     }
     if (arg.startsWith("-")) {
       flags.push(arg);
-      if (!arg.includes("=") && !BOOLEAN_FLAGS.has(arg) && args[i + 1] !== undefined) flags.push(args[++i]!);
+      if (!arg.includes("=") && !BOOLEAN_FLAGS.has(arg.replace(/^-test\./, "-")) && args[i + 1] !== undefined)
+        flags.push(args[++i]!);
     } else targets.push(arg);
   }
   return { flags, targets, program };

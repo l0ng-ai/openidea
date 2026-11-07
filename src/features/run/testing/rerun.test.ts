@@ -208,6 +208,15 @@ describe("withTestReporting", () => {
 });
 
 describe("Go rerun argument boundaries", () => {
+  it.each(["-test.v", "-test.short", "-test.benchmem", "-test.failfast", "-test.fullpath"])(
+    "does not retain package targets after the boolean flag %s",
+    (flag) => {
+      const config = cfg("go", "go", ["test", flag, "./..."]);
+      const rerun = rerunFailedConfig(config, [["example.com/selected", "TestOnly"]])!;
+      expect(rerun.args).toEqual(["test", flag, "-run", "^TestOnly$", "example.com/selected"]);
+    },
+  );
+
   it("replaces import-path targets without losing flag values or binary arguments", () => {
     const config = cfg("go", "go", ["test", "-tags", "demo", "-run", "old", "example.com/old", "-args", "-test.short"]);
     const rerun = rerunFailedConfig(config, [["example.com/new", "TestChild", "case"]])!;
