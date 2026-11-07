@@ -30,6 +30,7 @@ const session = {
   frames: [],
   selectedFrame: null,
   hits: 1,
+  stops: 0,
   exitCode: null,
   caps: null,
 } as DebugSession;
@@ -144,14 +145,18 @@ describe("MemoryView", () => {
     expect(await screen.findByText(text)).toBeTruthy();
   });
 
-  it("marks the snapshot outdated after another stop, not before one", async () => {
+  it("marks the snapshot outdated after a stop of this session only", async () => {
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
-    render(<MemoryView session={session} />);
+    const { rerender } = render(<MemoryView session={session} />);
     await screen.findByText("Heap$Live");
     const banner = "Taken before the last stop. Refresh to update.";
     expect(screen.queryByText(banner)).toBeNull();
-    act(() => useDebug.setState({ stopSeq: 1 }));
+    // A stop in another session, a value edit or a session switch bump the global counter only.
+    act(() => useDebug.setState({ stopSeq: 5 }));
+    expect(screen.queryByText(banner)).toBeNull();
+    rerender(<MemoryView session={{ ...session, stops: 1 }} />);
     expect(screen.getByText(banner)).toBeTruthy();
+    useDebug.setState({ sessions: { 1: { ...session, stops: 1 } } });
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
     fireEvent.click(screen.getByRole("button", { name: "Refresh Memory View" }));
     await waitFor(() => expect(screen.queryByText(banner)).toBeNull());

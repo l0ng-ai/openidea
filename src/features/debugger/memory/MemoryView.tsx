@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { Checkbox, Icon, IconButton, Input, List, T } from "@/ui";
 import { tx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemoryUnavailable } from "@/platform/ipc";
-import { useDebug, type DebugSession } from "../state";
+import type { DebugSession } from "../state";
 import { DEFAULT_QUERY, isOutdated, refreshMemory, setMemoryQuery, useMemory } from "./memoryState";
 import { formatBytes, formatDelta, visibleRows, type SortKey } from "./rows";
 import styles from "./MemoryView.module.css";
@@ -71,7 +71,6 @@ function ClassRow({ row }: { row: JvmClassRow }) {
 export function MemoryView({ session }: { session: DebugSession }) {
   const id = session.id;
   const entry = useMemory((s) => s.bySession[id]);
-  const stopSeq = useDebug((s) => s.stopSeq);
   const query = entry?.query ?? DEFAULT_QUERY;
   const result = entry?.result ?? null;
   const snapshot = result?.status === "ready" ? result.snapshot : null;
@@ -116,7 +115,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
           {entry.error}
         </div>
       )}
-      {snapshot && entry && isOutdated(entry, stopSeq) && (
+      {snapshot && entry && isOutdated(entry, session.stops) && (
         <div className={styles.banner} role="status">
           <T>Taken before the last stop. Refresh to update.</T>
         </div>

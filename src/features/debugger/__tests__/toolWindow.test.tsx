@@ -49,6 +49,7 @@ const session: DebugSession = {
   frames: [{ id: 7, name: "main", path: "/p/app/main.py", line: 11, column: 0, presentationHint: null }],
   selectedFrame: 7,
   hits: 1,
+  stops: 0,
   exitCode: null,
   caps: null,
 };
@@ -81,6 +82,18 @@ describe("debug tool window", () => {
     act(() => useDebug.setState({ sessions: { 1: withCaps(false) } }));
     expect(screen.queryByText("The program has exited.")).toBeNull();
     expect(screen.getByRole("tab", { name: "Threads & Variables" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps the Memory tab selected when the session pauses", async () => {
+    const caps = { jvmMemory: true } as DebugSession["caps"];
+    useDebug.setState({ sessions: { 1: { ...session, caps, status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    const memory = screen.getByRole("tab", { name: "Memory" });
+    fireEvent.click(memory);
+    expect(await screen.findByText("The program has exited.")).toBeTruthy();
+    act(() => useDebug.setState({ sessions: { 1: { ...session, caps, status: "paused" } } }));
+    expect(memory.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("The program has exited.")).toBeTruthy();
   });
 
   it("says a PHP Remote Debug session listens for Xdebug while nothing is suspended", () => {

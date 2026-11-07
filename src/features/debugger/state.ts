@@ -62,6 +62,8 @@ export interface DebugSession {
   selectedFrame: number | null;
   /** Breakpoint hits in this session. */
   hits: number;
+  /** `stopped` events of this session; unlike the global `stopSeq`, no other session or value edit moves it. */
+  stops: number;
   exitCode: number | null;
   /** What the adapter supports (fetched after start). */
   caps: DebugCapabilities | null;
@@ -189,6 +191,7 @@ function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession 
     frames: [],
     selectedFrame: null,
     hits: 0,
+    stops: 0,
     exitCode: null,
     caps: null,
     ...p,
@@ -1052,6 +1055,7 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
         frames: [],
         selectedFrame: null,
         hits: s.hits + (isBp ? 1 : 0),
+        stops: s.stops + 1,
       });
       useDebug.setState((st) => ({ active: id, stopSeq: st.stopSeq + 1 }));
       publishContext();

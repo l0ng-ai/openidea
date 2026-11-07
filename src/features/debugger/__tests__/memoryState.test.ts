@@ -8,7 +8,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import type { DebugSessionId, JvmMemoryResult } from "@/platform/ipc";
-import { useDebug } from "../state";
+import { useDebug, type DebugSession } from "../state";
 import { forgetMemory, isOutdated, refreshMemory, setMemoryQuery, useMemory } from "../memory/memoryState";
 
 const ID = 7 as DebugSessionId;
@@ -27,15 +27,17 @@ const ready = (totalBytes: number): JvmMemoryResult => ({
 const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
 const fail = (message: string) => Promise.resolve({ status: "error" as const, error: { kind: "internal", message } });
 
+const setStops = (stops: number) => useDebug.setState({ sessions: { [ID]: { id: ID, stops } as DebugSession } });
+
 beforeEach(() => {
   useMemory.setState({ bySession: {} });
-  useDebug.setState({ stopSeq: 0 });
+  useDebug.setState({ sessions: {}, stopSeq: 0 });
   ipc.debugJvmMemoryClasses.mockReset();
 });
 
 describe("refreshMemory", () => {
   it("stores the result and the stop it was taken at", async () => {
-    useDebug.setState({ stopSeq: 4 });
+    setStops(4);
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(ready(10)));
     await refreshMemory(ID);
     const e = useMemory.getState().bySession[ID]!;
@@ -94,12 +96,20 @@ describe("query and staleness", () => {
   });
 
   it("is outdated once another stop happened", async () => {
-    useDebug.setState({ stopSeq: 2 });
+    setStops(2);
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(ready(1)));
     await refreshMemory(ID);
     const e = useMemory.getState().bySession[ID]!;
     expect(isOutdated(e, 2)).toBe(false);
     expect(isOutdated(e, 3)).toBe(true);
+  });
+
+  it("takes the stop count from its own session, not the global counter", async () => {
+    setStops(2);
+    useDebug.setState({ stopSeq: 50 });
+    ipc.debugJvmMemoryClasses.mockReturnValue(ok(ready(1)));
+    await refreshMemory(ID);
+    expect(useMemory.getState().bySession[ID]!.takenAtStop).toBe(2);
   });
 
   it("forgets a session", async () => {

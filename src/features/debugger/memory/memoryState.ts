@@ -7,7 +7,7 @@ export interface MemoryEntry {
   result: JvmMemoryResult | null;
   loading: boolean;
   error: string | null;
-  /** `useDebug.stopSeq` when `result` was taken; compare with the current value to tell the table is stale. */
+  /** The session's `stops` when the request started; compare with the current value to tell the table is stale. */
   takenAtStop: number;
   query: RowQuery;
 }
@@ -38,7 +38,7 @@ export async function refreshMemory(id: DebugSessionId): Promise<void> {
   if (useMemory.getState().bySession[id]?.loading) return;
   const token = Symbol("memory");
   inflight.set(id, token);
-  const stop = useDebug.getState().stopSeq;
+  const stop = useDebug.getState().sessions[id]?.stops ?? 0;
   patchEntry(id, () => ({ loading: true, error: null }));
   try {
     const result = await call(commands.debugJvmMemoryClasses(id));
@@ -59,8 +59,8 @@ export function setMemoryQuery(id: DebugSessionId, patch: Partial<RowQuery>): vo
   patchEntry(id, (e) => ({ query: { ...e.query, ...patch } }));
 }
 
-export function isOutdated(entry: MemoryEntry, stopSeq: number): boolean {
-  return entry.takenAtStop !== stopSeq;
+export function isOutdated(entry: MemoryEntry, sessionStops: number): boolean {
+  return entry.takenAtStop !== sessionStops;
 }
 
 export function forgetMemory(id: DebugSessionId): void {

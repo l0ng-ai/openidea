@@ -74,6 +74,17 @@ describe("execution point state", () => {
     expect(useExecutionPoint.getState()).toMatchObject({ path, line: 9 });
   });
 
+  it("counts stops per session", async () => {
+    adoptSession(2, { adapter: "java-debug" });
+    expect(useDebug.getState().sessions[1]!.stops).toBe(0);
+    stopped();
+    stopped();
+    handleDebugEvent(2, { kind: "stopped", threadId: 1, allThreadsStopped: false, reason: "step", description: null });
+    expect(useDebug.getState().sessions[1]!.stops).toBe(2);
+    expect(useDebug.getState().sessions[2]!.stops).toBe(1);
+    await settle();
+  });
+
   it("clears the old point while a new stack or selected thread is loading", async () => {
     stopped();
     await settle();

@@ -106,6 +106,7 @@ function paused(p: Partial<DebugSession> = {}) {
     ],
     selectedFrame: 71,
     hits: 1,
+    stops: 0,
     exitCode: null,
     caps: caps(),
     ...p,
