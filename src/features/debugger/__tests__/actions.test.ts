@@ -1,10 +1,11 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 
 const ipc = vi.hoisted(() => {
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
   return {
     ok,
+    runStop: vi.fn(() => ok(null)),
     debugStep: vi.fn(() => ok(null)),
     debugResume: vi.fn(() => ok(null)),
     debugForceStepOver: vi.fn(() => ok(null)),
@@ -20,6 +21,16 @@ const ipc = vi.hoisted(() => {
     debugStackTrace: vi.fn(() => ok([])),
     debugThreads: vi.fn(() => ok([])),
     debugScopes: vi.fn(() => ok([])),
+    debugStart: vi.fn((_launch: { extraJson: string | null }) => ok(42)),
+    debugSetBreakpoints: vi.fn(() => ok([])),
+    debugBreakpointStates: vi.fn(() => ok([])),
+    sdkPhpEffective: vi.fn(() => ok<string | null>("/opt/php81/bin/php")),
+    sdkLocateTools: vi.fn((_names: string[], _near: string | null) =>
+      ok({ tools: [{ name: "php", path: "/usr/bin/php" }], compileDir: "/tmp" }),
+    ),
+    sdkPhpXdebug: vi.fn((php: string, _cwd: string | null) =>
+      ok({ php, phpVersion: "8.1.33", xdebug: null as string | null }),
+    ),
   };
 });
 
@@ -49,9 +60,11 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
   };
 });
 
-import { executeAction, getAction } from "@/platform/actions";
+import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
-import type { DebugCapabilities } from "@/platform/ipc";
+import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import { provideNotificationService } from "@/workbench/contributions";
 import { registerDebugActions } from "../actions";
 import { breakpointsOf, loadBreakpoints, toggleBreakpoint } from "../breakpoints/store";
 import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from "../breakpoints/special";
@@ -313,6 +326,82 @@ describe("debugger actions (IDEA parity)", () => {
   });
 });
 
+describe("PHP debugging without Xdebug", () => {
+  const php: RunConfig = {
+    id: "php:index",
+    name: "index.php",
+    kind: "php",
+    command: "php",
+    args: ["index.php"],
+    cwd: null,
+    env: {},
+    detected: true,
+    isTest: false,
+    debugAdapter: "php-debug",
+  };
+  const notify = vi.fn();
+  const settings = vi.fn();
+  let unregister: () => void;
+  beforeEach(() => {
+    useProject.setState({ project: { root: "/p" } as never });
+    provideNotificationService({ notify });
+    unregister = registerActions([{ id: "file.settings", title: "Settings", run: ({ arg }) => settings(arg) }]);
+  });
+  afterEach(() => {
+    unregister();
+    useProject.setState({ project: null });
+  });
+  const runtime = () => JSON.parse(ipc.debugStart.mock.calls[0]![0].extraJson!).runtimeExecutable;
+
+  it("warns that breakpoints are skipped and still starts the session", async () => {
+    await executeAction("debug.startConfig", php);
+    // In the session's folder, where a version manager's shim picks the PHP.
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledWith("/opt/php81/bin/php", "/p");
+    expect(ipc.debugStart).toHaveBeenCalledOnce();
+    expect(runtime()).toBe("/opt/php81/bin/php");
+    expect(notify).toHaveBeenCalledOnce();
+    const n = notify.mock.calls[0]![0];
+    expect(n).toMatchObject({ group: "run", level: "warning", key: "debug.phpXdebug" });
+    expect(n.title).toBe("Xdebug is not loaded in PHP 8.1.33");
+    expect(n.body).toContain("/opt/php81/bin/php");
+    expect(n.body).toContain("Xdebug 3");
+    expect(n.actions.map((a: { label: string }) => a.label)).toEqual(["Open PHP Settings"]);
+    n.actions[0].run();
+    expect(settings).toHaveBeenCalledWith("languages.php");
+  });
+
+  it("does not warn when the PHP loads Xdebug or the check fails", async () => {
+    ipc.sdkPhpXdebug.mockImplementationOnce((p: string) => ipc.ok({ php: p, phpVersion: "8.3.14", xdebug: "3.4.7" }));
+    await executeAction("debug.startConfig", php);
+    ipc.sdkPhpXdebug.mockImplementationOnce(
+      () =>
+        Promise.resolve({
+          status: "error",
+          error: { kind: "unavailable", message: "cannot run", data: null },
+        }) as never,
+    );
+    await executeAction("debug.startConfig", php);
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledTimes(2);
+    expect(ipc.debugStart).toHaveBeenCalledTimes(2);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("checks the php on the search path for the Default interpreter", async () => {
+    ipc.sdkPhpEffective.mockImplementationOnce(() => ipc.ok(null));
+    await executeAction("debug.startConfig", php);
+    expect(ipc.sdkLocateTools).toHaveBeenCalledWith(["php"], null);
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledWith("/usr/bin/php", "/p");
+    expect(runtime()).toBeUndefined();
+    expect(notify.mock.calls[0]![0].body).toContain("/usr/bin/php");
+  });
+
+  it("checks the PHP the command names, in the configuration's working directory", async () => {
+    await executeAction("debug.startConfig", { ...php, command: "/opt/php83/bin/php", cwd: "web" });
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledWith("/opt/php83/bin/php", "/p/web");
+    expect(ipc.sdkLocateTools).not.toHaveBeenCalled();
+  });
+});
+
 describe("output class breakpoint restrictions", () => {
   it.each([
     "debug.toggleBreakpoint",
@@ -331,4 +420,21 @@ describe("output class breakpoint restrictions", () => {
     expect(useSpecialBreakpoints.getState().fields).toHaveLength(0);
     expect(ipc.debugRunTo).not.toHaveBeenCalled();
   });
+});
+
+it("stops the waiting Python container if attaching fails", async () => {
+  useProject.setState({ project: { root: "/p" } as never });
+  ipc.debugStart.mockResolvedValueOnce({
+    status: "error",
+    error: { kind: "internal", message: "connection closed" },
+  } as never);
+  await executeAction("debug.attach", {
+    name: "container",
+    adapter: "debugpy",
+    hostName: "127.0.0.1",
+    port: 41234,
+    remoteRoot: "/app",
+    process: 9,
+  });
+  expect(ipc.runStop).toHaveBeenCalledWith(9);
 });

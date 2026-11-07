@@ -21,6 +21,7 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
+import { MacWindowButtons } from "./MacWindowButtons";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
@@ -235,7 +236,7 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
         ref={ref}
         icon="settings"
         title="IDE and Project Settings"
-        iconSize={18}
+        iconSize={20}
         className={styles.tool}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -263,7 +264,7 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
         action={action.id}
         title={action.title}
         shortcut={shortcutLabel(action.id) ?? (action.id === "navigate.searchEverywhere" ? "⇧⇧" : undefined)}
-        iconSize={18}
+        iconSize={20}
         className={styles.tool}
       />
     </div>
@@ -301,6 +302,7 @@ export function TitleBar({
   if (bare)
     return (
       <header ref={setBar} className={className} {...windowDragRegion} data-titlebar="bare">
+        {overlay && <MacWindowButtons />}
         {frameless && (
           <>
             <MainMenu />
@@ -323,6 +325,7 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
+      {overlay && <MacWindowButtons />}
       {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>

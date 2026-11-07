@@ -18,7 +18,7 @@ import {
   sessionDetail,
   sessionStatus,
 } from "./services";
-import { startedPort } from "./serverPort";
+import { startedPort } from "@/platform/serverPort";
 import { useRun, type RunSession } from "./store";
 import type { DebugServiceSession } from "@/workbench/contributions";
 
@@ -107,6 +107,30 @@ describe("run configurations in Services", () => {
     expect(attached[0]?.detail).toBe("1 running");
     expect(attached[0]?.children).toHaveLength(1);
     expect(attached[0]?.children?.[0]?.detail).toBe(":8080");
+  });
+
+  it("shows the app port of a direct debug session like for Run", () => {
+    const c = config("app", "spring-boot");
+    const d: DebugServiceSession = {
+      id: 1,
+      config: c,
+      status: "running",
+      processId: null,
+      startedAt: 2,
+      httpPort: 8080,
+      stop: async () => {},
+      rerun: null,
+      show: () => {},
+    };
+    expect(runServiceItems([c], [], DEFAULT_TYPES, [], {}, [d])[0]?.children?.[0]).toMatchObject({
+      detail: ":8080",
+      icon: "debug",
+      dim: false,
+    });
+    // A paused debugger still wins over the announced port.
+    expect(
+      runServiceItems([c], [], DEFAULT_TYPES, [], {}, [{ ...d, status: "paused" }])[0]?.children?.[0]?.detail,
+    ).toBe("Suspended");
   });
 
   it("applies display order to detected and saved configurations of every language", () => {

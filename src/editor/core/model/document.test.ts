@@ -231,6 +231,20 @@ describe("DocumentManager + slots", () => {
     expect(slot.currentState().facet(languageFacet)?.name).not.toBe("angular");
   });
 
+  it.each(["ts", "mts", "cts"])("loads Angular inline templates for .%s documents", async (ext) => {
+    const path = `/p/src/app.${ext}`;
+    const { manager } = setup({
+      "/p/angular.json": "{}",
+      [path]: "@Component({ template: `<r-card/>` }) class App {}",
+    });
+    const model = await manager.acquire(path);
+    const slot = new EditorSlot(model, "t1", host);
+    expect(model.getMeta()).toMatchObject({ language: "typescript", uiMode: "Angular TypeScript" });
+    expect(slot.currentState().facet(languageFacet)?.name).toBe("angular-typescript");
+    slot.dispose();
+    manager.stop();
+  });
+
   it("Save All rejects a failed document save after saving the remaining dirty documents", async () => {
     const { backend, manager } = setup({ "/p/a.txt": "a\n", "/p/b.txt": "b\n" }, { files: { autoSave: false } });
     try {

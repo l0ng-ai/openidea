@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbDriver, DbQueryResult, DbTableDetails } from "@/platform/ipc";
 import { ResultsView } from "./ResultsView";
-import { useDatabase, type ResultTab } from "./store";
+import { executeConsole, useDatabase, type ResultTab } from "./store";
 
 const backend = vi.hoisted(() => ({
   driver: "postgres" as DbDriver,
@@ -10,6 +10,7 @@ const backend = vi.hoisted(() => ({
   details: vi.fn(),
   applyEdits: vi.fn(),
   execute: vi.fn(),
+  statements: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -21,6 +22,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbTableDetails: backend.details,
       dbApplyEdits: backend.applyEdits,
       dbExecute: backend.execute,
+      dbStatements: backend.statements,
     },
   };
 });
@@ -79,11 +81,16 @@ function show(text: string, columns: Array<{ name: string }>, rows: (string | nu
     activeResult: tab.id,
     output: [],
     details: {},
+    consoleSchemas: {},
   });
   return tab;
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  backend.statements.mockImplementation((_id: unknown, text: string) =>
+    Promise.resolve({ status: "ok", data: [{ from: 0, to: text.length, text }] }),
+  );
   backend.driver = "postgres";
   backend.readOnly = false;
   backend.details.mockResolvedValue({ status: "ok", data: details });
@@ -125,6 +132,68 @@ describe("editable result grid", () => {
     expect(output).toContain("UPDATE public.users SET name = 'Bob' WHERE id = '1'");
     await screen.findByRole("gridcell", { name: "Ann" });
     expect(useDatabase.getState().results[0]!.id).toBe(tab.id);
+  });
+
+  it.each(["s2", ""])("records the selected schema or connection default: %s", async (schema) => {
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    useDatabase.setState({ consoles: { "console.sql": "pg" }, consoleSchemas: { "console.sql": schema } });
+    await executeConsole("console.sql", "SELECT * FROM users", 0, 0);
+    const expected = schema || "public";
+    expect(backend.execute.mock.calls.at(-1)?.at(-1)).toBe(expected);
+    expect(useDatabase.getState().results.at(-1)?.schema).toBe(expected);
+  });
+
+  it("prevents repeated submission while edits are being applied", async () => {
+    let finish!: (value: { status: string; data: number }) => void;
+    backend.applyEdits.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    await act(async () => render(<ResultsView />));
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add Row" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(backend.applyEdits).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ status: "ok", data: 1 }));
+  });
+
+  it("uses the execution schema even after the console selection changes", async () => {
+    const tab = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    Object.assign(tab, { schema: "s2" });
+    useDatabase.setState({ consoleSchemas: { "console.sql": "s1" } });
+    await act(async () => render(<ResultsView />));
+    expect(backend.details).toHaveBeenCalledWith("pg", "s2", "users");
+    fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+    const input = screen.getByRole("textbox", { name: "Edit name" });
+    fireEvent.change(input, { target: { value: "Changed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+    expect(backend.applyEdits).toHaveBeenCalledWith("pg", "s2", "users", [
+      { kind: "update", key: [{ column: "id", value: "1" }], values: [{ column: "name", value: "Changed" }] },
+    ]);
+    expect(backend.execute.mock.calls.at(-1)?.at(-1)).toBe("s2");
+  });
+
+  it("preserves pending edits and shows the error when submit fails", async () => {
+    backend.applyEdits.mockResolvedValue({ status: "error", error: { kind: "invalid", message: "Duplicate key" } });
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    await act(async () => render(<ResultsView />));
+    fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+    const input = screen.getByRole("textbox", { name: "Edit name" });
+    fireEvent.change(input, { target: { value: "Changed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+    expect(screen.getByRole("gridcell", { name: "Changed" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+    expect(useDatabase.getState().output.some((line) => line.kind === "error" && line.text === "Duplicate key")).toBe(
+      true,
+    );
+    expect(backend.execute).not.toHaveBeenCalled();
   });
 
   it("highlights the edit and reverts it", async () => {
@@ -187,6 +256,26 @@ describe("read-only results with a reason", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
     expect(backend.applyEdits).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unresolved SQL Server table schema read-only", async () => {
+    backend.driver = "sqlServer";
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    await act(async () => render(<ResultsView />));
+    expect(await screen.findByRole("note")).toHaveTextContent(
+      "Read-only: the table schema could not be identified in the result database.",
+    );
+    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
+    expect(backend.details).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake a differently cased quoted column for the PostgreSQL primary key", async () => {
+    show('SELECT "ID", name FROM users', [{ name: "ID" }, { name: "name" }], [["1", "Ann"]]);
+    await act(async () => render(<ResultsView />));
+    expect(await screen.findByRole("note")).toHaveTextContent(
+      "Read-only: the result has no primary key of public.users.",
+    );
+    expect(screen.queryByRole("button", { name: "Submit" })).toBeNull();
   });
 
   it("keeps ClickHouse read-only", async () => {

@@ -11,9 +11,9 @@ import { shortcutLabel } from "@/platform/keymap";
 import { Button, EmptyState, Icon, IconButton, Select, Spinner, Tabs, Tree, showContextMenu, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { ChartView } from "./ChartView";
-import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
-import { buildRowEdits, emptyEdits, hasEdits, type Cell, type PendingEdits } from "./model";
+import { buildRowEdits, emptyEdits, hasEdits, splitTarget, type Cell, type PendingEdits } from "./model";
 import {
   editStatements,
   pkResultColumns,
@@ -38,7 +38,6 @@ import {
   outcomeSummary,
   pageable,
   rerunResult,
-  sourceById,
   targetLabel,
   useDatabase,
   withConnection,
@@ -192,8 +191,8 @@ function Result({ tab }: { tab: ResultTab }) {
   const [extractor, setExtractor] = useState<ExportFormat>("csv");
   const r = tab.outcome.result;
   const columns = useMemo(() => (r ? r.columns.map((c) => ({ name: c.name, type: c.typeName })) : []), [r]);
-  const driver = sourceById(tab.sourceId)?.driver ?? "sqlite";
-  const source = sourceById(tab.sourceId);
+  const source = useDatabase((s) => s.sources.find((source) => source.id === splitTarget(tab.sourceId).id));
+  const driver = source?.driver ?? "sqlite";
 
   // Editing a result in place (like DataGrip): only a plain select of one base
   // table, carrying the table's primary key, on a writable data source.
@@ -201,8 +200,8 @@ function Result({ tab }: { tab: ResultTab }) {
   const editability = useMemo(() => resultEditability(text, driver), [text, driver]);
   const model = useDatabase((s) => s.completion[tab.sourceId]) ?? null;
   const target = useMemo(
-    () => (editability.kind === "editable" ? resolveTarget(editability, model, driver) : null),
-    [editability, model, driver],
+    () => (editability.kind === "editable" ? resolveTarget(editability, model, tab.schema, driver) : null),
+    [editability, model, tab.schema, driver],
   );
   const detailsId = target ? detailsKey(tab.sourceId, target.schema ?? "", target.table) : null;
   const details = useDatabase((s) => (detailsId ? s.details[detailsId] : undefined));
@@ -212,7 +211,13 @@ function Result({ tab }: { tab: ResultTab }) {
     if (target && !details) void loadDetails(tab.sourceId, target.schema ?? "", target.table);
   }, [target, details, tab.sourceId]);
   const resultNames = useMemo(() => r?.columns.map((c) => c.name) ?? [], [r]);
-  const eq = useMemo(() => nameMatcher(driver), [driver]);
+  const eq = useMemo(
+    () =>
+      driver === "postgres" || driver === "oracle"
+        ? (a: string | null | undefined, b: string | null | undefined) => !!a && a === b
+        : nameMatcher(driver),
+    [driver],
+  );
   const sources = useMemo(
     () =>
       editability.kind === "editable"
@@ -260,7 +265,7 @@ function Result({ tab }: { tab: ResultTab }) {
   );
 
   const onEdit = (row: number, col: number, v: Cell) => {
-    if (!sources[col]) return; // an aliased or computed column
+    if (!editable || busy || !sources[col]) return; // an aliased or computed column
     const name = resultNames[col]!;
     setEdits((e) => {
       const next: PendingEdits = { updates: new Map(e.updates), deletes: new Set(e.deletes), inserts: [...e.inserts] };
@@ -288,9 +293,14 @@ function Result({ tab }: { tab: ResultTab }) {
     });
 
   const dirty = hasEdits(edits);
+  const [submitting, setSubmitting] = useState(false);
+  const submitGuard = useRef(false);
+  const busy = submitting || !!tab.busy;
 
   const submit = async () => {
-    if (!r || !target || !pk || !editable) return;
+    if (!r || !target || !pk || !editable || busy || submitGuard.current) return;
+    submitGuard.current = true;
+    setSubmitting(true);
     const list = buildRowEdits(resultNames, r.rows, pk, edits);
     try {
       // The Output log shows what the submit is about to change.
@@ -301,7 +311,7 @@ function Result({ tab }: { tab: ResultTab }) {
       log("result", `${target.table}: ${n} row(s) changed`);
       notifications().notify({ level: "info", title: `${target.table}: ${n} row(s) changed`, key: "db-submit" });
       setEdits(() => emptyEdits());
-      void rerunResult(tab.id);
+      await rerunResult(tab.id);
     } catch (e) {
       log("error", e instanceof Error ? e.message : String(e));
       notifications().notify({
@@ -310,6 +320,9 @@ function Result({ tab }: { tab: ResultTab }) {
         body: e instanceof Error ? e.message : String(e),
         key: "db-submit",
       });
+    } finally {
+      submitGuard.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -327,6 +340,7 @@ function Result({ tab }: { tab: ResultTab }) {
     if (driver === "clickhouse") notice = tx("Use the query console to change ClickHouse data.");
     else if (readOnlySource) notice = tx("Read-only data source.");
     else if (editability.kind === "readonly") notice = readonlyNotice(editability.reason);
+    else if (!target) notice = tx("Read-only: the table schema could not be identified in the result database.");
     else if (details?.status === "error" || (detailsValue && tablePkCount > 0))
       // The result exists but doesn't carry every key column (or the keys are unknown).
       notice = tx`Read-only: the result has no primary key of ${tableLabel}.`;
@@ -339,7 +353,7 @@ function Result({ tab }: { tab: ResultTab }) {
         <IconButton icon="db-table" title="Table" aria-pressed={view === "table"} onClick={() => setView("table")} />
         <IconButton icon="db-chart" title="Chart" aria-pressed={view === "chart"} onClick={() => setView("chart")} />
         <span className={styles.toolbarSeparator} />
-        <IconButton icon="refresh" title="Rerun Query" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
+        <IconButton icon="refresh" title="Rerun Query" disabled={busy} onClick={() => void rerunResult(tab.id)} />
         {view === "table" && (
           <IconButton
             icon="search"
@@ -354,12 +368,13 @@ function Result({ tab }: { tab: ResultTab }) {
             <IconButton
               icon="plus"
               title="Add Row"
+              disabled={busy}
               onClick={() => setEdits((e) => ({ ...e, inserts: [...e.inserts, new Map()] }))}
             />
-            <Button size="small" variant="primary" disabled={!dirty} onClick={() => void submit()}>
+            <Button size="small" variant="primary" disabled={!dirty || busy} onClick={() => void submit()}>
               <T>Submit</T>
             </Button>
-            <Button size="small" disabled={!dirty} onClick={() => setEdits(() => emptyEdits())}>
+            <Button size="small" disabled={!dirty || busy} onClick={() => setEdits(() => emptyEdits())}>
               <T>Revert</T>
             </Button>
           </>
@@ -396,16 +411,17 @@ function Result({ tab }: { tab: ResultTab }) {
               value={value}
               panel={panel}
               onPanelChange={setPanel}
+              copyFormat={copyFormatOf(extractor)}
               searchOpen={searchOpen}
               onSearchOpenChange={setSearchOpen}
               firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
               aria-label={tab.title}
               rowState={(row) => (row >= loaded ? "inserted" : edits.deletes.has(row) ? "deleted" : null)}
               isModified={(row, col) => !!edits.updates.get(row)?.has(resultNames[col]!)}
-              editable={editable}
+              editable={editable && !busy}
               onEdit={onEdit}
               rowMenu={(rows) =>
-                editable
+                editable && !busy
                   ? [
                       { label: "Delete Rows", icon: "trash", run: () => deleteRows(rows) },
                       {
@@ -420,7 +436,7 @@ function Result({ tab }: { tab: ResultTab }) {
                   : []
               }
             />
-            <Pager tab={tab} />
+            <Pager tab={busy ? { ...tab, busy: true } : tab} />
           </div>
         </>
       )}

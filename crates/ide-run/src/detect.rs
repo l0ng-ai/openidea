@@ -7,6 +7,7 @@ pub(crate) mod cmake;
 mod dotnet;
 
 use crate::RunConfig;
+use ide_core::project_roots::expand_members;
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -213,33 +214,6 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
     ide_core::project_roots::children(dir)
 }
 
-/// Expands workspace member patterns one level deep: `dir`, `dir/*`, `dir/**`.
-fn expand_members(root: &Path, patterns: &[String], marker: &str) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    for pattern in patterns {
-        let pattern = pattern.trim().trim_start_matches("./").trim_end_matches('/');
-        if pattern.is_empty() || pattern.starts_with('!') {
-            continue;
-        }
-        let base = pattern.strip_suffix("/**").or_else(|| pattern.strip_suffix("/*"));
-        match base {
-            Some(base) if !base.contains('*') => {
-                dirs.extend(subdirs(&root.join(base)).into_iter().filter(|d| d.join(marker).is_file()))
-            }
-            None if !pattern.contains('*') => {
-                let dir = root.join(pattern);
-                if dir.join(marker).is_file() {
-                    dirs.push(dir);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut seen = HashSet::new();
-    dirs.retain(|d| seen.insert(d.clone()));
-    dirs
-}
-
 fn relative(root: &Path, dir: &Path) -> PathBuf {
     dir.strip_prefix(root).map(Path::to_path_buf).unwrap_or_else(|_| dir.to_path_buf())
 }
@@ -272,33 +246,6 @@ fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>
     }
 }
 
-fn node_workspace_patterns(root: &Path, pkg: &Json) -> Vec<String> {
-    let mut patterns: Vec<String> = Vec::new();
-    let ws = pkg.get("workspaces");
-    let list = ws.and_then(Json::as_array).or_else(|| ws.and_then(|w| w.get("packages")).and_then(Json::as_array));
-    if let Some(list) = list {
-        patterns.extend(list.iter().filter_map(Json::as_str).map(str::to_owned));
-    }
-    if let Some(yaml) = read(&root.join("pnpm-workspace.yaml")) {
-        let mut in_packages = false;
-        for line in yaml.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            if !line.starts_with([' ', '\t', '-']) {
-                in_packages = trimmed.starts_with("packages:");
-                continue;
-            }
-            if in_packages && let Some(item) = trimmed.strip_prefix('-') {
-                let item = item.split(" #").next().unwrap_or_default().trim().trim_matches(['"', '\'']);
-                patterns.push(item.to_owned());
-            }
-        }
-    }
-    patterns
-}
-
 fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
     let mut covered = HashSet::new();
     let projects =
@@ -314,7 +261,7 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
         let rel = relative(root, &dir);
         let label = ide_core::ipc_path::to_ipc(&rel);
         push_scripts(&pkg, pm, (dir != root).then_some(label.as_str()), (dir != root).then_some(rel), out);
-        for member_dir in expand_members(&dir, &node_workspace_patterns(&dir, &pkg), "package.json") {
+        for member_dir in ide_core::project_roots::node_workspace_members(&dir) {
             if !covered.insert(member_dir.clone()) {
                 continue;
             }
@@ -835,6 +782,9 @@ enum PyEnv {
     Runner(&'static str),
     /// A project-local virtualenv directory (relative to root).
     Venv(String),
+    /// A pixi environment directory `.pixi/envs/<env>` (relative to root); tools
+    /// also run as `pixi run …`, the interpreter directly for the debugger.
+    Pixi(String),
     System,
 }
 
@@ -854,7 +804,23 @@ impl PyEnv {
                 return Self::Venv(venv.to_owned());
             }
         }
+        if let Some(env) = Self::pixi_env(root) {
+            return Self::Pixi(env);
+        }
         Self::System
+    }
+
+    /// The first pixi environment `.pixi/envs/<env>` holding a Python, relative
+    /// to the root, in name order.
+    fn pixi_env(root: &Path) -> Option<String> {
+        let envs = root.join(".pixi/envs");
+        let mut dirs: Vec<_> =
+            std::fs::read_dir(&envs).into_iter().flatten().flatten().map(|e| e.path()).filter(|d| d.is_dir()).collect();
+        dirs.sort_by_key(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        dirs.iter()
+            .find(|d| d.join(Self::python_exe()).is_file() || d.join("bin").join(Self::python_exe()).is_file())
+            .and_then(|d| d.strip_prefix(root).ok())
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
     }
 
     fn bin_dir() -> &'static str {
@@ -880,6 +846,18 @@ impl PyEnv {
                 }
             }
             Self::System => (tool.to_owned(), Vec::new()),
+            // A pixi env's executables sit in `bin` (Unix) or `Scripts` (Windows)
+            // like a venv's; else `pixi run` finds the tool.
+            Self::Pixi(v) => {
+                let exe = if cfg!(windows) { format!("{tool}.exe") } else { tool.to_owned() };
+                for bin in ["Scripts", "bin"] {
+                    let rel = format!("{v}/{bin}/{exe}");
+                    if root.join(&rel).is_file() {
+                        return (rel, Vec::new());
+                    }
+                }
+                ("pixi".to_owned(), vec!["run".into(), tool.into()])
+            }
         }
     }
 
@@ -894,7 +872,17 @@ impl PyEnv {
         match self {
             Self::Runner(r) => ((*r).to_owned(), vec!["run".into(), "python".into()]),
             Self::Venv(v) => (format!("{v}/{}/{}", Self::bin_dir(), Self::python_exe()), Vec::new()),
+            Self::Pixi(v) => (Self::pixi_python(v), Vec::new()),
             Self::System => ((if cfg!(windows) { "python" } else { "python3" }).to_owned(), Vec::new()),
+        }
+    }
+
+    /// `<env>/python.exe` (Windows) or `<env>/bin/python` of a pixi environment.
+    fn pixi_python(env: &str) -> String {
+        if cfg!(windows) {
+            format!("{env}/{}", Self::python_exe())
+        } else {
+            format!("{env}/bin/{}", Self::python_exe())
         }
     }
 }
@@ -908,6 +896,9 @@ pub(crate) fn project_python(root: &Path) -> (String, Vec<String>) {
         if root.join(&rel).is_file() {
             return (rel, Vec::new());
         }
+    }
+    if let Some(env) = PyEnv::pixi_env(root) {
+        return (PyEnv::pixi_python(&env), Vec::new());
     }
     PyEnv::detect(root).python()
 }
@@ -943,8 +934,9 @@ fn uses_pytest(root: &Path) -> bool {
 fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
     let markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini", "manage.py"];
     let env = PyEnv::detect(root);
-    // A project virtualenv marks a Python project too (scripts + tests without packaging files).
-    let venv = matches!(env, PyEnv::Venv(_));
+    // A project virtualenv or pixi environment marks a Python project too
+    // (scripts + tests without packaging files).
+    let venv = matches!(env, PyEnv::Venv(_) | PyEnv::Pixi(_));
     if !venv && !markers.iter().any(|m| root.join(m).is_file()) {
         return;
     }
@@ -1003,10 +995,15 @@ fn is_composer_event(name: &str) -> bool {
     name.starts_with("pre-") || name.starts_with("post-") || name == "command"
 }
 
-/// The PHPUnit entry point: the project's `vendor/bin/phpunit`, else a global `phpunit`.
-fn phpunit_command(root: &Path) -> String {
-    let bin = if cfg!(windows) { "vendor/bin/phpunit.bat" } else { "vendor/bin/phpunit" };
-    if root.join(bin).is_file() { bin.to_owned() } else { "phpunit".to_owned() }
+/// The PHPUnit entry point: the project's `vendor/bin/pest` or `vendor/bin/phpunit`, else a global `phpunit`.
+fn phpunit_command(root: &Path) -> (String, &'static str) {
+    for (runner, label) in [("pest", "Pest"), ("phpunit", "PHPUnit")] {
+        let bin = format!("vendor/bin/{runner}{}", if cfg!(windows) { ".bat" } else { "" });
+        if root.join(&bin).is_file() {
+            return (bin, label);
+        }
+    }
+    ("phpunit".to_owned(), "PHPUnit")
 }
 
 /// Composer projects (`composer.json`) and PHPUnit suites (`phpunit.xml`, `phpunit.xml.dist`).
@@ -1040,8 +1037,14 @@ fn detect_php(root: &Path, out: &mut Vec<RunConfig>) {
         );
         out.push(if name == "test" { c.test() } else { c });
     }
-    if phpunit_xml.is_some() || requires("phpunit/phpunit") || root.join("vendor/bin/phpunit").is_file() {
-        let mut c = config("phpunit", "PHPUnit", "phpunit", &phpunit_command(root), &[]).test().debug("php-debug");
+    if phpunit_xml.is_some()
+        || requires("phpunit/phpunit")
+        || requires("pestphp/pest")
+        || root.join("vendor/bin/phpunit").is_file()
+        || root.join("vendor/bin/pest").is_file()
+    {
+        let (command, label) = phpunit_command(root);
+        let mut c = config("phpunit", label, "phpunit", &command, &[]).test().debug("php-debug");
         // A configuration file with a non-default name must be passed explicitly.
         let named = phpunit_xml.as_deref().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned());
         if let Some(file) = named.filter(|f| f == "phpunit.dist.xml") {

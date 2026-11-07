@@ -89,11 +89,30 @@ describe("resultEditability", () => {
     expect(readonly("UPDATE users SET id = 1")).toBe("plain");
     expect(readonly("DELETE FROM users")).toBe("plain");
     expect(readonly("TABLE users", "postgres")).toBe("plain");
-    // A `UNION`-like name inside a subquery in the select list stays editable shape? No: the
-    // union check is top level only; the subquery's `FROM` is at depth 1.
-    const e = editable("SELECT (SELECT max(id) FROM logs) AS m, id FROM users");
-    // The aliased column is an expression; the aggregate is inside a subquery, not top level.
-    expect(e.items).toEqual([{ kind: "expression" }, { kind: "column", qualifier: null, name: "id" }]);
+  });
+
+  it.each([
+    "SELECT id, (SELECT name FROM logs LIMIT 1) FROM users",
+    "SELECT * FROM users WHERE id IN (SELECT id FROM logs)",
+    "SELECT id, coalesce(sum(id), 0) FROM users",
+    "SELECT id, (row_number() OVER ()) FROM users",
+    "SELECT * FROM db.public.users",
+    "SELECT * FROM users WHERE id > 0; SELECT * FROM logs",
+  ])("refuses ambiguous provenance: %s", (sql) => {
+    expect(resultEditability(sql, "postgres").kind).toBe("readonly");
+  });
+
+  it.each([
+    "SELECT id, name FROM users /*!50000 UNION SELECT id, name FROM admins */",
+    "SELECT id, name FROM users /*M! UNION SELECT id, name FROM admins */",
+  ])("rejects executable comments: %s", (sql) => {
+    expect(resultEditability(sql, "mysql").kind).toBe("readonly");
+  });
+
+  it("folds unquoted identifiers per dialect and preserves quoted case", () => {
+    expect(editable("SELECT ID FROM PUBLIC.USERS").table).toBe("users");
+    expect(editable('SELECT "ID" FROM "Users"').table).toBe("Users");
+    expect(editable("SELECT id FROM users", "oracle").table).toBe("USERS");
   });
 
   it("keeps aliased columns and expressions read-only per column", () => {
@@ -131,26 +150,44 @@ describe("resolveTarget", () => {
 
   it("keeps a known schema.table", () => {
     const e = editable("SELECT * FROM public.users");
-    expect(resolveTarget(e, model, "postgres")).toEqual({ schema: "public", table: "users", alias: null });
+    expect(resolveTarget(e, model)).toEqual({ schema: "public", table: "users", alias: null });
   });
 
-  it("reads `alias.table` as `table alias` when only the first name is a table", () => {
+  it("preserves explicit qualification even with incomplete completion metadata", () => {
     const e = editable("SELECT * FROM public.users");
-    expect(resolveTarget(e, { ...model, tables: model.tables.slice(1) }, "postgres")).toEqual({
+    expect(resolveTarget(e, { ...model, tables: model.tables.slice(1) })).toEqual({
       schema: "public",
-      table: "public",
-      alias: "users",
+      table: "users",
+      alias: null,
     });
+  });
+
+  it.each(["postgres", "mysql", "oracle"] as const)("uses the execution schema for %s", (driver) => {
+    const e = editable("SELECT * FROM users u", driver);
+    expect(resolveTarget(e, model, "s2")?.schema).toBe("s2");
+    expect(resolveTarget(e, model)?.schema).toBe("public");
   });
 
   it("passes an unknown schema.table through", () => {
     const e = editable("SELECT * FROM nope.missing");
-    expect(resolveTarget(e, model, "postgres")).toEqual({ schema: "nope", table: "missing", alias: null });
+    expect(resolveTarget(e, model)).toEqual({ schema: "nope", table: "missing", alias: null });
+  });
+
+  it("refuses unresolved defaults and SQL Server database/schema ambiguity", () => {
+    expect(resolveTarget(editable("SELECT * FROM users"), model, "")).toBeNull();
+    expect(resolveTarget(editable("SELECT * FROM users"), model, "public", "sqlServer")).toBeNull();
+    const explicit = editable("SELECT * FROM dbo.users");
+    expect(resolveTarget(explicit, model, "other_database", "sqlServer")).toBeNull();
+    expect(resolveTarget(explicit, model, "public", "sqlServer")).toEqual({
+      schema: "dbo",
+      table: "users",
+      alias: null,
+    });
   });
 
   it("does not touch unqualified or explicitly aliased names", () => {
     const e = editable("SELECT * FROM users u");
-    expect(resolveTarget(e, null, "postgres")).toEqual({ schema: null, table: "users", alias: "u" });
+    expect(resolveTarget(e, null)).toEqual({ schema: null, table: "users", alias: "u" });
   });
 });
 
@@ -196,6 +233,11 @@ describe("resultColumnSources", () => {
 });
 
 describe("pkResultColumns", () => {
+  it("refuses duplicate result labels that could shadow a primary key", () => {
+    expect(pkResultColumns(["id"], [null, "id", "name"], ["id", "id", "name"], eq)).toBeNull();
+    expect(pkResultColumns(["id"], ["id", "name"], ["id", "ID"], eq)).toBeNull();
+  });
+
   it("collects the result columns of every key column, or null when one is missing", () => {
     expect(pkResultColumns(["id"], ["id", "name"], ["id", "name"], eq)).toEqual(["id"]);
     expect(pkResultColumns(["id", "tenant"], ["tenant", "name", "id"], ["tenant", "name", "id"], eq)).toEqual([

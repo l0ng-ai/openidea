@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
@@ -49,6 +49,14 @@ pub(crate) struct Session {
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
     pub terminated: AtomicBool,
+    /// Set by a second Stop: the one waiting for the program kills it instead.
+    pub stop_force: AtomicBool,
+    /// `systemProcessId` from the adapter's `process` event: the program being debugged.
+    pub debuggee_pid: AtomicI64,
+    /// Pids signalled for the current stop: the reported pid and everything it started (an
+    /// adapter may report the launcher shell, whose child is the program).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub stop_pids: parking_lot::Mutex<Vec<i32>>,
     /// Breakpoints replaced for run to cursor / force stepping, restored on the next stop.
     pub pending_restore: Mutex<PendingRestore>,
     /// Adapter breakpoint id → (file, index in the stored list).
@@ -96,6 +104,9 @@ impl Session {
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
             terminated: AtomicBool::new(false),
+            stop_force: AtomicBool::new(false),
+            debuggee_pid: AtomicI64::new(0),
+            stop_pids: parking_lot::Mutex::new(Vec::new()),
             pending_restore: Mutex::default(),
             breakpoint_ids: Mutex::new(HashMap::new()),
             resolved_paths: Mutex::new(HashMap::new()),
@@ -275,6 +286,108 @@ impl Session {
     }
 }
 
+/// How long Stop waits for a launched program to exit before reporting the session ended.
+pub(crate) const DEBUGGEE_EXIT_WAIT: Duration = Duration::from_secs(10);
+
+/// The program and everything it started: an adapter may report the launcher shell, whose
+/// child is the debugged program, so stopping only the reported pid leaves the program alive.
+#[cfg(unix)]
+fn process_tree(pid: i32) -> Vec<i32> {
+    use std::collections::HashMap;
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else {
+        return vec![pid];
+    };
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let (Some(p), Some(parent)) = (it.next(), it.next()) else { continue };
+        let (Ok(p), Ok(parent)) = (p.parse::<i32>(), parent.parse::<i32>()) else { continue };
+        children.entry(parent).or_default().push(p);
+    }
+    let mut tree = vec![pid];
+    let mut at = 0;
+    while at < tree.len() {
+        if let Some(kids) = children.get(&tree[at]) {
+            tree.extend(kids.iter().copied());
+        }
+        at += 1;
+    }
+    tree
+}
+
+/// Asks the program itself to exit (`force` = SIGKILL) without ending the adapter session:
+/// its output keeps flowing over DAP while it shuts down. The first call remembers the pid
+/// tree, because the reported pid may die before its program does.
+pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
+    let pid = s.debuggee_pid.load(Ordering::Acquire);
+    if pid <= 0 {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let mut known = s.stop_pids.lock();
+        if known.is_empty() {
+            *known = process_tree(pid as i32);
+        }
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // Children first: the shell that started the program would otherwise reparent it.
+        for p in known.iter().rev() {
+            // SAFETY: plain syscall on the processes this session started.
+            unsafe {
+                libc::kill(*p, signal);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T"]);
+        if force {
+            cmd.arg("/F");
+        }
+        let _ = cmd.status();
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (pid, force);
+}
+
+/// Waits until the program a `launch` session started is gone; a second Stop kills it.
+pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
+    if !terminate || s.request != "launch" {
+        return;
+    }
+    let pid = s.debuggee_pid.load(Ordering::Acquire);
+    if pid <= 0 {
+        return;
+    }
+    tracing::info!(session = s.id.0, pid, "stop: waiting for the debugged program to exit");
+    #[cfg(unix)]
+    {
+        use std::time::Instant;
+        let targets = {
+            let known = s.stop_pids.lock();
+            if known.is_empty() { process_tree(pid as i32) } else { known.clone() }
+        };
+        let alive = || targets.iter().any(|p| unsafe { libc::kill(*p, 0) } == 0);
+        let deadline = Instant::now() + DEBUGGEE_EXIT_WAIT;
+        while alive() {
+            if s.stop_force.swap(false, Ordering::AcqRel) {
+                signal_debuggee(s, true);
+            }
+            if Instant::now() >= deadline {
+                // The program ignored the terminate: do not leave it running.
+                signal_debuggee(s, true);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+}
+
 // java-debug and Windows netcoredbg need native separators for source lookup.
 // Keep DAP path mode, but normalize Windows drive and UNC paths.
 fn is_windows_source_path(path: &str) -> bool {
@@ -370,7 +483,17 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                 return;
             }
             let output = str_("output").unwrap_or_default();
+            if tracing::enabled!(tracing::Level::DEBUG) && mgr.stopping.lock().contains_key(&s.id) {
+                tracing::debug!(session = ?s.id, bytes = output.len(), "output during stop");
+            }
             s.emit(DebugEvent::Output { category, output });
+        }
+        // The program the adapter started: Stop must wait for it, not for the adapter's reply.
+        // `process` is the DAP event; java-debug announces the same thing as `processid`.
+        "process" | "processid" => {
+            if let Some(pid) = int("systemProcessId").or_else(|| int("processId")).filter(|p| *p > 0) {
+                s.debuggee_pid.store(pid, Ordering::Release);
+            }
         }
         "thread" => s.emit(DebugEvent::Thread {
             thread_id: int("threadId").unwrap_or(0),
@@ -390,12 +513,18 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         }
         "exited" => {}
         "terminated" => {
-            if !s.terminated.swap(true, Ordering::AcqRel) {
-                s.emit(DebugEvent::Terminated);
-            }
+            let first = !s.terminated.swap(true, Ordering::AcqRel);
             let mgr = mgr.clone();
             let s = s.clone();
-            tokio::spawn(async move { mgr.shutdown(&s, false).await });
+            // Waiting here would stop reading the adapter: it keeps sending the program's last
+            // output while the program exits. Wait off the reader task, then report the end.
+            tokio::spawn(async move {
+                if first {
+                    wait_for_debuggee(&s, true).await;
+                    s.emit(DebugEvent::Terminated);
+                }
+                mgr.shutdown(&s, false).await;
+            });
         }
         "capabilities" => {
             if let Some(new) = body.get("capabilities").and_then(Value::as_object) {

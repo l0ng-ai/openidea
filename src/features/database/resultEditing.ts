@@ -9,8 +9,13 @@
 import type { DbCellValue, DbCompletion, DbDriver, DbRowEdit } from "@/platform/ipc";
 import { quoteIdent } from "./sql/complete";
 import { CLAUSE_WORDS, functions } from "./sql/dialect";
-import { findTable } from "./sql/resolve";
 import { identName, lex, type Token } from "./sql/lexer";
+
+const sqlName = (token: Token, driver: DbDriver): string => {
+  const name = identName(token);
+  if (token.kind === "quoted") return name;
+  return driver === "postgres" ? name.toLowerCase() : driver === "oracle" ? name.toUpperCase() : name;
+};
 
 /** One select list item. */
 export type SelectItem =
@@ -86,19 +91,21 @@ const chainLength = (tokens: readonly Token[]): number => {
 };
 
 /** One select list item: an identifier chain, plain or ending in `.*`, or an expression. */
-const selectItemOf = (item: readonly Token[]): SelectItem => {
+const selectItemOf = (item: readonly Token[], driver: DbDriver): SelectItem => {
   if (item.length === 1 && isStar(item[0])) return { kind: "star", qualifier: null };
   if (item.length >= 3 && isStar(item.at(-1)) && item.at(-2)!.text === "." && item.at(-2)!.kind === "punct") {
     const chain = item.slice(0, -2);
     const n = chainLength(chain);
-    return n === chain.length && n > 0 ? { kind: "star", qualifier: identName(chain.at(-1)!) } : { kind: "expression" };
+    return n === chain.length && n > 0
+      ? { kind: "star", qualifier: sqlName(chain.at(-1)!, driver) }
+      : { kind: "expression" };
   }
   const n = chainLength(item);
   if (n !== item.length || n === 0) return { kind: "expression" };
   return n === 1
-    ? { kind: "column", qualifier: null, name: identName(item[0]!) }
+    ? { kind: "column", qualifier: null, name: sqlName(item[0]!, driver) }
     : // `a.b` / `a.b.c`: the qualifier is the ident before the last dot.
-      { kind: "column", qualifier: identName(item.at(-3)!), name: identName(item.at(-1)!) };
+      { kind: "column", qualifier: sqlName(item.at(-3)!, driver), name: sqlName(item.at(-1)!, driver) };
 };
 
 /**
@@ -106,10 +113,21 @@ const selectItemOf = (item: readonly Token[]): SelectItem => {
  * table and the select list, or `readonly` with the reason.
  */
 export function resultEditability(text: string, driver: DbDriver): ResultEditability {
-  const all = lex(text, driver).tokens;
-  // A parenthesized statement (`(SELECT …)`) is still one select.
-  let start = 0;
-  while (all[start]?.kind === "punct" && all[start]!.text === "(") start++;
+  const lexed = lex(text, driver);
+  if (driver === "mysql" && lexed.comments.some((c) => /^\/\*(?:!|M!)/i.test(text.slice(c.from, c.to))))
+    return readonly("plain");
+  const all = lexed.tokens;
+  if (all.some((t) => t.kind === "word" && SET_OPS.has(t.upper))) return readonly("setOp");
+  if (all.at(-1)?.text === ";") all.pop();
+  if (
+    all.some(
+      (t, i) =>
+        (t.kind === "word" && (t.upper === "SELECT" || t.upper === "WITH") && i > 0) ||
+        (t.kind === "punct" && t.text === ";"),
+    )
+  )
+    return readonly("plain");
+  const start = 0;
   const t0 = all[start];
   if (!t0 || t0.kind !== "word" || t0.upper !== "SELECT") return readonly("plain");
   const aggregates = aggregatesOf(driver);
@@ -123,34 +141,19 @@ export function resultEditability(text: string, driver: DbDriver): ResultEditabi
       if (tok.text === "(") depth++;
       else if (tok.text === ")") depth--;
     }
+    if (tok.kind === "word" && (tok.upper === "OVER" || tok.upper === "WINDOW")) return readonly("aggregated");
+    if (tok.kind === "word" && aggregates.has(tok.upper) && all[j + 1]?.text === "(") return readonly("aggregated");
     if (depth !== 0 || tok.kind !== "word") continue;
     const w = tok.upper;
-    if (SET_OPS.has(w)) return readonly("setOp");
     if (j === start + 1 && w === "DISTINCT") return readonly("aggregated");
     if (w === "INTO") return readonly("plain");
-    if (w === "GROUP" || w === "HAVING" || w === "WINDOW") return readonly("aggregated");
-    // A window function (`row_number() OVER …`) groups its rows like an aggregate.
-    if (w === "OVER") return readonly("aggregated");
+    if (w === "GROUP" || w === "HAVING") return readonly("aggregated");
     if (w === "FROM" && from < 0) from = j;
   }
   if (from < 0) return readonly("plain");
 
-  // The select list: a top-level aggregate makes every row a group (ones inside
-  // a scalar subquery leave the rows as they are).
   const selectList = all.slice(start + 1, from);
   if (!selectList.length) return readonly("plain");
-  depth = 0;
-  for (let j = 0; j < selectList.length; j++) {
-    const tok = selectList[j]!;
-    if (tok.kind === "punct") {
-      if (tok.text === "(") depth++;
-      else if (tok.text === ")") depth--;
-      continue;
-    }
-    const open = selectList[j + 1];
-    if (depth === 0 && tok.kind === "word" && aggregates.has(tok.upper) && open?.kind === "punct" && open.text === "(")
-      return readonly("aggregated");
-  }
 
   // Select items: top-level commas separate them.
   const items: SelectItem[] = [];
@@ -166,7 +169,7 @@ export function resultEditability(text: string, driver: DbDriver): ResultEditabi
     if (!ends && !(itemDepth === 0 && tok!.kind === "punct" && tok!.text === ",")) continue;
     const item = selectList.slice(itemStart, j);
     itemStart = j + 1;
-    if (item.length) items.push(selectItemOf(item));
+    if (item.length) items.push(selectItemOf(item, driver));
   }
   if (!items.length) return readonly("plain");
 
@@ -190,16 +193,16 @@ export function resultEditability(text: string, driver: DbDriver): ResultEditabi
   while (item.at(-1)?.kind === "punct" && item.at(-1)!.text === ";") item.pop();
   if (!item.length || item[0]!.kind === "punct") return readonly("plain"); // a derived table or a parenthesized join
   const n = chainLength(item);
-  if (!n) return readonly("plain");
+  if (!n || n > 3) return readonly("plain");
   let at = n;
   let alias: string | null = null;
   if (item[at]?.kind === "word" && item[at]!.upper === "AS") {
     at++;
     if (!isIdent(item[at])) return readonly("plain");
-    alias = identName(item[at]!);
+    alias = sqlName(item[at]!, driver);
     at++;
   } else if (isIdent(item[at])) {
-    alias = identName(item[at]!);
+    alias = sqlName(item[at]!, driver);
     at++;
   }
   if (at < item.length) {
@@ -211,32 +214,24 @@ export function resultEditability(text: string, driver: DbDriver): ResultEditabi
   return {
     kind: "editable",
     // The ident before the last one (`public.users`, `db.schema.table`; dots are part of `n`).
-    schema: n >= 3 ? identName(item[n - 3]!) : null,
-    table: identName(item[n - 1]!),
+    schema: n >= 3 ? sqlName(item[n - 3]!, driver) : null,
+    table: sqlName(item[n - 1]!, driver),
     alias,
     items,
   };
 }
 
-/**
- * The base table of an editable result against the data source's model: an
- * unqualified name resolves to the model's default schema, and when
- * `schema.table` names no known table but `schema` alone does, the first name
- * was the table and the second its alias (a dialect without schemas). An
- * unknown `schema.table` passes through, to let the details fetch fail.
- */
+/** Resolve unqualified names in the schema used to execute this result. */
 export function resolveTarget(
   e: Extract<ResultEditability, { kind: "editable" }>,
   model: DbCompletion | null,
-  driver: DbDriver,
-): { schema: string | null; table: string; alias: string | null } {
-  const fallback = model?.defaultSchema ?? null;
-  if (e.alias !== null) return { schema: e.schema ?? fallback, table: e.table, alias: e.alias };
-  if (e.schema === null) return { schema: fallback, table: e.table, alias: null };
-  if (findTable(model, e.schema, e.table, driver)) return { schema: e.schema, table: e.table, alias: null };
-  return findTable(model, null, e.schema, driver)
-    ? { schema: fallback, table: e.schema, alias: e.table }
-    : { schema: e.schema, table: e.table, alias: null };
+  schema?: string,
+  driver: DbDriver = "postgres",
+): { schema: string | null; table: string; alias: string | null } | null {
+  // SQL Server switches databases, but table details and edits take a table schema.
+  if (driver === "sqlServer" && (e.schema === null || (schema && schema !== model?.defaultSchema))) return null;
+  if (e.schema === null && schema === "") return null;
+  return { schema: e.schema ?? (schema || model?.defaultSchema || null), table: e.table, alias: e.alias };
 }
 
 /**
@@ -258,7 +253,9 @@ export function resultColumnSources(
     const pending = items.length - i - 1;
     if (r >= resultNames.length) break;
     if (item.kind === "column") {
-      sources[r++] = item.name;
+      const name = tableColumns?.find((c) => eq(c, item.name)) ?? (tableColumns ? null : item.name);
+      sources[r] = name && eq(resultNames[r], name) ? name : null;
+      r++;
     } else if (item.kind === "expression") {
       r++;
     } else {
@@ -284,7 +281,8 @@ export function pkResultColumns(
   resultNames: readonly string[],
   eq: (a: string | null | undefined, b: string | null | undefined) => boolean,
 ): string[] | null {
-  if (!tablePk.length) return null;
+  if (!tablePk.length || resultNames.some((name, i) => resultNames.slice(0, i).some((other) => eq(name, other))))
+    return null;
   const out: string[] = [];
   for (const key of tablePk) {
     const at = sources.findIndex((s) => s !== null && eq(s, key));

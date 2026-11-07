@@ -1,13 +1,13 @@
 import { compoundChildren } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import type { DebugRunSession } from "@/workbench/contributions";
-import { rerunSession, sessionsOf, stopSession, useRun, type RunSession } from "./store";
+import { rerunSession, sessionsOf, stopSession, useRun, type RunSession, isLive } from "./store";
 
 /** Selection, never tool-window focus or an unrelated process, determines the primary target. */
 export function selectedTarget(selectedId: string | null, runs: RunSession[], debug: DebugRunSession[]) {
   const candidates = [
     ...runs
-      .filter((s) => (s.status === "running" || s.status === "starting") && s.config.id === selectedId)
+      .filter((s) => isLive(s) && s.config.id === selectedId)
       .map((s) => ({
         name: s.config.name,
         startedAt: s.startedAt,

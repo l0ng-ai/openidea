@@ -71,6 +71,19 @@ pub fn sdk_php_effective(host: &Host, window: &str) -> IdeResult<Option<ide_core
     Ok(ide_sdk::apply::setting_path(&project.root, &settings.languages.php.interpreter).map(Into::into))
 }
 
+/// The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
+/// project root).
+pub async fn sdk_php_xdebug(
+    host: &Host,
+    window: &str,
+    php: PathBuf,
+    cwd: Option<PathBuf>,
+) -> IdeResult<ide_sdk::php::PhpXdebug> {
+    host.require_trust(window)?;
+    let cwd = cwd.or_else(|| host.project(window).ok().map(|p| p.root.clone()));
+    tokio::task::spawn_blocking(move || ide_sdk::php::xdebug(&php, cwd.as_deref())).await.map_err(join_err)?
+}
+
 /// The PHP language level of the project `path` belongs to (a workspace member, by path, as
 /// the language server configuration picks it).
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
@@ -136,25 +149,56 @@ pub async fn sdk_php_composer_install(
 
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
-pub async fn sdk_project_libraries(host: &Host, window: &str) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
+pub async fn sdk_project_libraries(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    on_groups: Channel<Vec<ide_sdk::libraries::LibraryGroup>>,
+) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    tokio::task::spawn_blocking(move || {
-        let model = crate::ops::build::load(&root, &cache, &settings);
-        let deps: Vec<ide_sdk::libraries::BuildDependency> = ide_build::dependency_coordinates(&root, &model)
-            .into_iter()
-            .map(|c| ide_sdk::libraries::BuildDependency {
-                gradle: c.gradle,
-                group: c.group_id,
-                artifact: c.artifact_id,
-                version: c.version,
+    let cancel = host.begin_project_request(window, request);
+    let libraries = {
+        let (root, settings, cancel, on_groups) = (root.clone(), settings.clone(), cancel.clone(), on_groups.clone());
+        tokio::task::spawn_blocking(move || {
+            ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
+                let _ = on_groups.send(groups);
             })
-            .collect();
-        ide_sdk::libraries::project_libraries(&root, &settings, &deps)
-    })
-    .await
-    .map_err(join_err)
+        })
+    };
+    let dependencies = {
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let model = crate::ops::build::load(&root, &cache, &settings);
+            let deps: Vec<ide_sdk::libraries::BuildDependency> = ide_build::dependency_coordinates(&root, &model)
+                .into_iter()
+                .map(|c| ide_sdk::libraries::BuildDependency {
+                    gradle: c.gradle,
+                    group: c.group_id,
+                    artifact: c.artifact_id,
+                    version: c.version,
+                })
+                .collect();
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let groups = ide_sdk::libraries::dependency_groups(&root, &settings, &deps);
+            if !cancel.is_cancelled() {
+                let _ = on_groups.send(groups.clone());
+            }
+            groups
+        })
+    };
+    let (libraries, dependencies) = tokio::join!(libraries, dependencies);
+    host.end_request(request);
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    Ok(ide_sdk::libraries::merge_groups([libraries.map_err(join_err)?, dependencies.map_err(join_err)?].concat()))
 }
 
 /// Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path.
@@ -173,10 +217,11 @@ pub async fn sdk_locate_tools(
     .map_err(join_err)
 }
 
-/// `base -m venv location`; output lines stream through `on_output`.
+/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
 pub async fn sdk_python_create_venv(
     host: &Host,
     window: &str,
+    tool: ide_sdk::python::VenvTool,
     base: PathBuf,
     location: PathBuf,
     request: RequestId,
@@ -185,7 +230,7 @@ pub async fn sdk_python_create_venv(
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
-        ide_sdk::python::create_venv(&base, &location, &cancel, &|line| {
+        ide_sdk::python::create_venv(tool, &base, &location, &cancel, &|line| {
             let _ = on_output.send(line);
         })
     })
@@ -245,6 +290,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
+    d.add("sdk_php_xdebug", |c| async move { sdk_php_xdebug(&c.host, &c.window, c.arg("php")?, c.arg("cwd")?).await });
     d.add(
         "sdk_php_language_level",
         |c| async move { sdk_php_language_level(&c.host, &c.window, c.arg("path")?).await },
@@ -253,7 +299,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "sdk_php_composer_install",
         |c| async move { sdk_php_composer_install(&c.host, &c.window, c.arg("path")?).await },
     );
-    d.add("sdk_project_libraries", |c| async move { sdk_project_libraries(&c.host, &c.window).await });
+    d.add("sdk_project_libraries", |c| async move {
+        sdk_project_libraries(&c.host, &c.window, c.arg("request")?, c.sender("onGroups")?).await
+    });
     d.add("sdk_locate_tools", |c| async move {
         sdk_locate_tools(&c.host, &c.window, c.arg("names")?, c.arg("near")?).await
     });
@@ -261,6 +309,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         sdk_python_create_venv(
             &c.host,
             &c.window,
+            c.arg("tool")?,
             c.arg("base")?,
             c.arg("location")?,
             c.arg("request")?,

@@ -1,6 +1,15 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
 import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
-import { call, commands, isCancelled, isTauri, nextRequestId, type RunConfig, type RunId } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isCancelled,
+  isTauri,
+  nextRequestId,
+  type LaunchConfig,
+  type RunConfig,
+  type RunId,
+} from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
@@ -22,7 +31,14 @@ import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
-import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
+import {
+  isPythonAttachTarget,
+  isRemoteConfig,
+  pythonAttachConfig,
+  REMOTE_JVM,
+  remoteAttachConfig,
+  remoteJvmTarget,
+} from "./remote";
 import {
   activeSession,
   resumeExecution,
@@ -36,6 +52,7 @@ import {
   startSession,
   startPreparedSession,
   stopSession,
+  stopAssociatedProcess,
   useDebug,
   type DebugSession,
 } from "./state";
@@ -313,10 +330,34 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
+  const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
   await startSession(launch, { runConfig: origin ?? config });
+  await xdebugCheck;
+}
+
+/**
+ * A PHP without the Xdebug extension ignores the `-dxdebug.*` options php-debug starts it with: the
+ * script runs past every breakpoint. Warns, without holding the session back (a command may load
+ * Xdebug itself with `-dzend_extension=`).
+ */
+async function warnWithoutXdebug(launch: LaunchConfig) {
+  const runtime = (JSON.parse(launch.extraJson ?? "{}") as { runtimeExecutable?: string }).runtimeExecutable;
+  // Without one, php-debug runs the `php` on the search path.
+  const php = runtime ?? (await call(commands.sdkLocateTools(["php"], null)).catch(() => null))?.tools[0]?.path;
+  // In the session's folder: a version manager's `php` shim picks the PHP from it.
+  const probe = php ? await call(commands.sdkPhpXdebug(php, launch.cwd)).catch(() => null) : null;
+  if (!probe || probe.xdebug) return;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    key: "debug.phpXdebug",
+    title: `Xdebug is not loaded in PHP ${probe.phpVersion}`,
+    body: tx`${probe.php} runs without Xdebug, so breakpoints are skipped. Install Xdebug 3 for this PHP or choose another PHP interpreter.`,
+    actions: [{ label: "Open PHP Settings", run: () => void executeAction("file.settings", "languages.php") }],
+  });
 }
 
 export function registerDebugActions(): () => void {
@@ -351,6 +392,8 @@ export function registerDebugActions(): () => void {
       title: "Attach Debugger",
       category: "Debug",
       hidden: true,
+      // Also debugpy to a Python program in a run target's container
+      // (arg: { name, adapter: "debugpy", hostName, port, remoteRoot, process }).
       description:
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
@@ -358,13 +401,18 @@ export function registerDebugActions(): () => void {
           tx("Cannot attach the debugger"),
           (async () => {
             const root = useProject.getState().project?.root;
-            if (!root || !isJavaAttachTarget(arg)) return;
-            const launch = await javaAttachConfig(arg, root);
-            await startSession(launch, {
+            if (!root) return;
+            let launch: LaunchConfig;
+            if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
+            else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
+            else return;
+            const session = await startSession(launch, {
               process: (arg.process ?? null) as RunId | null,
               runConfig: arg.runConfig,
               rerunnable: false,
             });
+            if (session == null && isPythonAttachTarget(arg) && arg.process != null)
+              await stopAssociatedProcess(arg.process);
           })(),
         ),
     },

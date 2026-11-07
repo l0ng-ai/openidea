@@ -8,18 +8,26 @@ import type {
   ActiveTheme,
   CapabilityInfo,
   CatalogPlugin,
+  CommitAnswer,
+  CommitSelection,
   Consent,
   EventKind,
   InstalledIntellijTheme,
   InstallPreview,
   IntellijThemeSource,
   MarketPlugin,
+  PluginCommitCheckRef,
+  PluginCommitCheckResult,
+  PluginContextKey,
   PluginEditor,
+  PluginEndpoint,
   PluginEvent,
   PluginInfo,
-  PluginsSnapshot,
+  PluginOutputLine,
   PluginSecretState,
+  PluginsSnapshot,
   PluginStatusItem,
+  ServiceTab,
   UiContribution,
   View,
   ViewEvent,
@@ -27,7 +35,7 @@ import type {
   WorkbenchEvent,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { call, commands, IpcError, isTauri } from "@/platform/ipc";
+import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorContext } from "./editorContext";
 
 export interface PluginsBackend {
@@ -53,6 +61,7 @@ export interface PluginsBackend {
     commandId: string,
     arg: string | null,
     editor: PluginEditor | null,
+    paths: string[],
   ): Promise<string | null>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
@@ -60,7 +69,14 @@ export interface PluginsBackend {
   eventKinds(): Promise<EventKind[]>;
   /** Plugin status bar items (later changes arrive as `statusItemChanged`). */
   statusItems(): Promise<PluginStatusItem[]>;
+  contextKeys(): Promise<PluginContextKey[]>;
   cancelTask(taskId: string): Promise<void>;
+  /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
+  answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
+  /** This window's answer to a plugin's `commitRequested`. */
+  answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** Runs plugins' before-commit checks on what `selection` commits. */
+  commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
   marketUrl(): Promise<string | null>;
@@ -84,6 +100,24 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  /** The Services pane of node `key` of a plugin's services view. */
+  serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
+  /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
+  endpoints(pluginId: string): Promise<PluginEndpoint[]>;
+  /**
+   * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
+   * lines until it exits (`onExit`) or the returned stop function is called.
+   */
+  serviceLog(
+    pluginId: string,
+    view: string,
+    key: string,
+    tab: string,
+    on: ReadonlySet<string>,
+    onLine: (line: PluginOutputLine) => void,
+    onError: (message: string) => void,
+    onExit: (code: number | null) => void,
+  ): () => void;
   /** The URL of a web view's page (`web = …`), under the `openidea-plugin` scheme. */
   webPageUrl(pluginId: string, view: string): Promise<string>;
   /** Save dialog for a web view's `openidea.saveFile`; the path written, or `null` when cancelled. */
@@ -150,15 +184,24 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor) => call(commands.pluginRunCommand(pluginId, commandId, arg, editor)),
+  runCommand: (pluginId, commandId, arg, editor, paths) =>
+    call(commands.pluginRunCommand(pluginId, commandId, arg, editor, paths)),
   postEvents: async (events) => {
     await commands.pluginPostEvents(events);
   },
   eventKinds: () => commands.pluginEventKinds(),
   statusItems: () => commands.pluginStatusItems(),
+  contextKeys: () => commands.pluginContextKeys(),
   cancelTask: async (taskId) => {
     await commands.pluginCancelTask(taskId);
   },
+  answerPrompt: async (promptId, answer) => {
+    await commands.pluginAnswerPrompt(promptId, answer);
+  },
+  answerCommit: async (requestId, answer) => {
+    await commands.pluginAnswerCommit(requestId, answer);
+  },
+  commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
   setMarketUrl: async (url) => {
@@ -193,6 +236,17 @@ export const tauriPluginsBackend: PluginsBackend = {
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
   viewEvent: async (pluginId, view, event, doc) => {
     await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
+  },
+  serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
+  endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
+  serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
+    const request = nextRequestId();
+    const channel = new Channel<PluginOutputLine>();
+    channel.onmessage = onLine;
+    call(commands.pluginServiceLog(request, pluginId, view, key, tab, [...on], channel)).then(onExit, (e: unknown) => {
+      if (!isCancelled(e)) onError(e instanceof Error ? e.message : String(e));
+    });
+    return () => void commands.cancelRequest(request);
   },
   webPageUrl: async (pluginId, view) => {
     const page = await call(commands.pluginWebPage(pluginId, view));
@@ -300,6 +354,7 @@ function samplePlugins(): PluginInfo[] {
     authors: ["OpenIDEA contributors"],
     homepage: null,
     changeNotes: null,
+    icon: null,
     source: "installed" as const,
     enabled: true,
     error: null,
@@ -377,6 +432,7 @@ export function sampleCatalog(): CatalogPlugin[] {
       authors: p.authors,
       homepage: p.homepage,
       changeNotes: `${p.version} — first release.`,
+      icon: null,
       path: `plugins/${p.id}`,
       hasCode: p.hasCode,
       capabilities: p.capabilities.map((c) => ({ ...c, granted: false })),
@@ -488,7 +544,14 @@ export function createMemoryPluginsBackend(
       if (commandId === "word-count") {
         if (!activeFile) throw new IpcError({ kind: "internal", message: "no file is open in the editor" });
         const name = activeFile.split("/").pop() ?? activeFile;
-        emit({ type: "notification", pluginId, level: "info", title: `Word count: ${name}`, body: "(simulated)" });
+        emit({
+          type: "notification",
+          pluginId,
+          level: "info",
+          title: `Word count: ${name}`,
+          body: "(simulated)",
+          actions: [],
+        });
         return null;
       }
       throw new IpcError({ kind: "internal", message: `unknown command: ${commandId}` });
@@ -496,7 +559,9 @@ export function createMemoryPluginsBackend(
     postEvents: async () => {},
     eventKinds: async () => [],
     statusItems: async () => [],
+    contextKeys: async () => [],
     cancelTask: async () => {},
+    answerPrompt: async () => {},
     market: async () => [],
     marketUrl: async () => marketUrl,
     setMarketUrl: async (url) => {
@@ -526,6 +591,14 @@ export function createMemoryPluginsBackend(
       status: null,
     }),
     viewEvent: async () => {},
+    serviceDetail: async () => [],
+    endpoints: async () => [],
+    answerCommit: async () => {},
+    commitChecks: async () => [],
+    serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
+      onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);
+      return () => {};
+    },
     webPageUrl: async (pluginId, view) => {
       throw new IpcError({ kind: "unavailable", message: `${pluginId} · ${view}: web views need the desktop app` });
     },

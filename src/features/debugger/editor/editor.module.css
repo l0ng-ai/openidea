@@ -144,6 +144,31 @@
   user-select: none;
 }
 
+.inlineValuePart {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.inlineValuePart:hover {
+  text-decoration: underline;
+}
+
+.inlineShow {
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.inlineShow:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
 /* Data Views › Show value tooltip on mouse hover. */
 .valueTooltip {
   max-width: 520px;
