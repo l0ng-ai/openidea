@@ -1,0 +1,121 @@
+//! Finding the JVM behind an attach session by its JDWP port.
+
+use crate::session::Session;
+use serde_json::Value;
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+/// One try of the scan at attach time, and the limit per socket within it: a silent socket's
+/// query thread lives that long, so a longer per-socket limit piles threads up across tries.
+const ATTACH_SCAN_TRY: Duration = Duration::from_millis(500);
+const ATTACH_SCAN_INTERVAL: Duration = Duration::from_millis(150);
+/// The JVM's attach socket can appear a little after the JDWP "Listening" banner, which is
+/// when the IDE attaches.
+const ATTACH_SCAN_WINDOW: Duration = Duration::from_secs(3);
+/// The single scan a refresh makes while the attach-time one found nothing.
+pub(super) const RESCAN_PER_SOCKET: Duration = Duration::from_secs(1);
+pub(super) const RESCAN_BUDGET: Duration = Duration::from_secs(2);
+
+/// JDWP port of an attach to this machine (`hostName` loopback or absent): only such a JVM has
+/// an attach socket the IDE can find.
+pub(crate) fn local_jdwp_port(arguments: &Value) -> Option<u16> {
+    let local = match arguments.get("hostName") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(host)) => {
+            let host = host.trim();
+            let ip = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+            host.eq_ignore_ascii_case("localhost") || ip.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        }
+        Some(_) => false,
+    };
+    let port = match arguments.get("port")? {
+        Value::Number(n) => n.as_u64().and_then(|p| u16::try_from(p).ok()),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    };
+    port.filter(|&p| local && p != 0)
+}
+
+/// Looks for the JVM behind a local attach in the background, so a JVM that never opens an
+/// attach socket does not hold the attach up.
+pub(crate) fn find_attached_jvm(session: &Arc<Session>, port: u16) {
+    let _ = session.jdwp_port.set(port);
+    let find = move || ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY);
+    drop(watch_for_attached_jvm(session, find, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW));
+}
+
+/// Retries `find` for the session's `jvm_pid`, holding the session weakly so an ended session
+/// is not kept alive.
+pub(crate) fn watch_for_attached_jvm<F>(
+    session: &Arc<Session>,
+    find: F,
+    interval: Duration,
+    window: Duration,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn() -> Option<u32> + Clone + Send + 'static,
+{
+    let weak = Arc::downgrade(session);
+    tokio::spawn(async move {
+        let gate = || match weak.upgrade() {
+            Some(s) if !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed() => {
+                if s.jvm_pid.load(Ordering::Acquire) > 0 {
+                    ScanGate::Ended
+                } else if s.suspended.load(Ordering::Acquire) {
+                    // The scan queries this JVM too, and a suspended JDK below 17 hangs on it.
+                    ScanGate::Wait
+                } else {
+                    ScanGate::Scan
+                }
+            }
+            _ => ScanGate::Ended,
+        };
+        let Some(pid) = retry_find(find, gate, interval, window).await else {
+            tracing::debug!("no local JVM found for the JDWP attach yet");
+            return;
+        };
+        if let Some(s) = weak.upgrade() {
+            let _ = s.jvm_pid.compare_exchange(0, i64::from(pid), Ordering::AcqRel, Ordering::Acquire);
+        }
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ScanGate {
+    Scan,
+    /// Skip this try but keep the window open.
+    Wait,
+    Ended,
+}
+
+/// Calls `find` on a blocking thread, on each try `gate` allows, until it returns a pid, `gate`
+/// reports the end or `window` has passed.
+pub(crate) async fn retry_find<F>(
+    find: F,
+    gate: impl Fn() -> ScanGate,
+    interval: Duration,
+    window: Duration,
+) -> Option<u32>
+where
+    F: Fn() -> Option<u32> + Clone + Send + 'static,
+{
+    let deadline = tokio::time::Instant::now() + window;
+    loop {
+        match gate() {
+            ScanGate::Ended => break,
+            ScanGate::Wait => {}
+            ScanGate::Scan => {
+                if let Ok(Some(pid)) = tokio::task::spawn_blocking(find.clone()).await {
+                    return Some(pid);
+                }
+            }
+        }
+        if tokio::time::Instant::now() + interval >= deadline {
+            break;
+        }
+        tokio::time::sleep(interval).await;
+    }
+    None
+}
