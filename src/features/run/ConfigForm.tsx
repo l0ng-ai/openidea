@@ -252,6 +252,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   }
 
   const compound = config.kind === COMPOUND;
+  const buildPolicyApplies = (c: RunConfig) => isJvmApplication(c) || c.kind === "maven" || c.kind === "gradle";
   // Compound and debug-only types (Remote JVM Debug) start no process of their own.
   const noProcess = compound || !!type?.debugOnly;
   const params = compound ? {} : formParams(config, type);
@@ -290,7 +291,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         (id) =>
           (!compound || id === "beforeLaunch") &&
           (id !== "emulateTerminal" || terminal || !!config.emulateTerminal) &&
-          (id !== "buildPolicy" || isJvmApplication(config)),
+          (id !== "buildPolicy" || buildPolicyApplies(config)),
       )
       .map((id): MenuItem => ({
         label: OPTION_LABELS[id],
@@ -637,7 +638,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
             </>
           )}
 
-          {isShown("buildPolicy") && isJvmApplication(config) && (
+          {isShown("buildPolicy") && buildPolicyApplies(config) && (
             <Field label="Build" hint="Before launch build for this Java configuration">
               <Select
                 value={config.buildPolicy ?? "automatic"}
