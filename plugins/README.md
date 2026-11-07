@@ -1049,6 +1049,54 @@ web page: start bash without the optional grant to see refusal, grant
 `process:bash` in Settings → Plugins, then send commands and resize or stop it.
 This API is a web bridge extension; existing WIT signatures are unchanged.
 
+### Streaming log editor tabs (API 1.3)
+
+A web view can open a read-only editor tab backed by an authorized process:
+
+```js
+openidea.postMessage(JSON.stringify({
+  op: "open-log-tab",
+  key: "server-output",
+  title: "Server logs",
+  program: "my-server",
+  baseArgs: ["logs"],
+  toggles: [{ id: "verbose", label: "Verbose", args: ["--verbose"] }],
+}));
+```
+
+Declare `engines.openidea = "^1.3"` and `process:my-server` in the manifest.
+The install permission prompt and exact pinned executable, trusted project cwd,
+session caps and lifecycle rules are the same as for web frame PTYs. The tab
+uses the backend PTY API, never a shell fallback. It supplies no environment
+overrides; the environment is inherited. A shell requires its own explicit grant.
+
+`program` is required. `baseArgs` and `toggles` default to empty arrays; `title`
+defaults to the program. Each toggle has a unique `id`, a plugin-localized
+`label`, and `args` appended after `baseArgs` in declaration order. Changing a
+toggle terminates the previous process and replaces the stream. `key` defaults
+to the title and is scoped to the calling plugin and view; reopening the same
+key focuses its existing tab. Titles are at most 256 characters, keys 128,
+and at most 32 toggles have ids of 64 and labels of 128 characters. The combined
+arguments must fit the PTY limits above. `cwd` and `env` are refused. Invalid or
+ungranted requests send `log-error { error }` through `openidea.onMessage`;
+backend start errors appear in the tab.
+
+The viewer supports selection/copy, soft wrap, Find, font zoom and Clear. It
+retains at most 5,000 lines and 1 Mi UTF-16 code units, including partial lines.
+Output is acknowledged only after rendering; the PTY bridge's 256 Ki pending
+output cap also applies. Tabs are read-only, never dirty and not restored on
+restart. Recently used tabs keep streaming while hidden under the editor's
+five-tab retention limit; evicting a hidden tab stops its process. Closing the
+tab, disabling/updating the plugin, changing grants, switching projects or
+closing the window stops it, including a pending spawn.
+
+The built fixture `crates/ide-plugin/tests/fixtures/web-log` exercises permission
+refusal, continuous Unicode output and a plugin-defined Verbose toggle. On Unix,
+grant its optional `process:bash` permission and use its Log Probe tool window.
+Its `Log Probe: Open Stream` and `Log Probe: Try Undeclared Program` commands
+also ask the sandboxed page to open a tab, exercising the Wasm-to-page bridge.
+This extends the web bridge without changing released WIT signatures.
+
 ### Translations
 
 A package translates its own text with `locales/<tag>.json`, one file per language

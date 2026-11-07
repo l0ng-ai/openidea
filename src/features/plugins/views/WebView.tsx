@@ -16,15 +16,17 @@
  * - passes on IDE shortcuts it doesn't handle itself (Save, Close…).
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Channel } from "@tauri-apps/api/core";
 import { tx } from "@/platform/i18n";
-import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
+import { editorService } from "@/workbench/contributions";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
 import { FRAME_TAG, frameTheme, frameThemeMessage } from "./frame";
+import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
+import { logTabData } from "./logTab";
+import { webPtyBackend } from "./ptyBackend";
 import { onViewMessage } from "./viewStore";
 import { ptyBridge } from "./ptyBridge";
 import styles from "./PluginView.module.css";
@@ -156,29 +158,28 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
 
   useEffect(() => {
     let dialog = false;
+    const handleLogTabMessage = (rawText: string): boolean => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-log-tab") return false;
+      try {
+        const data = logTabData(pluginId, view, parsed, rawText.length);
+        void editorService().openInput({
+          kind: PLUGIN_LOG_EDITOR_KIND,
+          key: `pluginLog:${JSON.stringify([pluginId, view, data.key ?? data.title])}`,
+          data,
+        });
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "log-error", error: errorText(err) }) });
+      }
+      return true;
+    };
     const createPtys = () =>
-      ptyBridge(
-        pluginId,
-        {
-          spawn: async (command, output) => {
-            const current = usePlugins.getState().plugins.find((p) => p.id === pluginId);
-            if (
-              !isTauri() ||
-              !current?.enabled ||
-              !current.capabilities.some((c) => c.id === `process:${command.program}` && c.granted)
-            )
-              throw new Error(tx`Cannot start PTY: process:${command.program} capability not granted.`);
-            const channel = new Channel<string>();
-            channel.onmessage = output;
-            return call(commands.pluginWebPtySpawn(pluginId, view, command, channel));
-          },
-          write: (id, data) => call(commands.termWrite(id, data)),
-          resize: (id, cols, rows) => call(commands.termResize(id, cols, rows)),
-          kill: (id) => call(commands.termKill(id)),
-          onExit: (listener) => onIdeEvent("terminalExited", (ev) => listener(ev.terminal, ev.code)),
-        },
-        (message) => post({ text: JSON.stringify(message) }),
-      );
+      ptyBridge(pluginId, webPtyBackend(pluginId, view), (message) => post({ text: JSON.stringify(message) }));
     let ptys = createPtys();
     const resetPtys = () => {
       ptys.close();
@@ -272,6 +273,7 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
           (err: unknown) => post({ reply: id, error: errorText(err) }),
         );
       } else if (typeof m.text === "string") {
+        if (handleLogTabMessage(m.text)) return;
         if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()

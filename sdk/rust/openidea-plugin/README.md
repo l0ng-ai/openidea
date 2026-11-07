@@ -30,3 +30,9 @@ tests can call `MockHost::refresh_diagnostics` and inspect
 
 See [the diagnostics contract and limits](../../../plugins/README.md#diagnostics-while-typing)
 and the [real Wasm fixture](../../../crates/ide-plugin/tests/fixtures/diagnostics).
+
+API 1.3 also adds `open-log-tab` to the web bridge: a generic read-only editor
+tab streams output from a granted process, with plugin-defined argument toggles.
+It uses the same backend authorization and bounded PTY transport. See the
+[protocol and lifecycle](../../../plugins/README.md#streaming-log-editor-tabs-api-13)
+and the [built fixture](../../../crates/ide-plugin/tests/fixtures/web-log).

@@ -114,6 +114,80 @@ async fn kmp_lsp_java_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires jdtls on PATH and a compatible JDK"]
+async fn java_searches_skip_indexed_sources_but_keep_exclusions_outside_scope() {
+    use ide_lsp::types::HierarchyDirection;
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    let root = dunce::canonicalize(root).unwrap();
+    std::fs::create_dir_all(root.join("src/demo/excluded")).unwrap();
+    std::fs::write(root.join(".project"), "<projectDescription><name>search-scope</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>").unwrap();
+    std::fs::write(root.join(".classpath"), "<classpath><classpathentry kind=\"src\" path=\"src\" excluding=\"demo/excluded/**\"/><classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/><classpathentry kind=\"output\" path=\"bin\"/></classpath>").unwrap();
+    let source = "package demo; public class Target { public static void target() {} }";
+    let path = root.join("src/demo/Target.java");
+    let caller = root.join("src/demo/Caller.java");
+    let decoy = root.join("src/demo/Decoy.java");
+    let excluded = root.join("src/demo/excluded/Excluded.java");
+    let outside = root.join("Outside.java");
+    std::fs::write(&path, source).unwrap();
+    std::fs::write(&caller, "package demo; class Caller { void call() { Target.target(); } }").unwrap();
+    // A source file mentioning the name without a usage, too large for transient opening.
+    std::fs::write(&decoy, format!("package demo; class Decoy {{ void target() {{}} }}\n/*{}*/", " ".repeat(1 << 20)))
+        .unwrap();
+    std::fs::write(&excluded, "package demo.excluded; class Excluded {}").unwrap();
+    std::fs::write(&outside, "class Outside {}").unwrap();
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_JDTLS") {
+        server.command = bin;
+    }
+    server.args.extend(["-data".into(), dir.path().join("metadata").to_string_lossy().into_owned()]);
+    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../java/java-usages/openidea-java-usages.jar");
+    server
+        .initialization_options
+        .as_mut()
+        .unwrap()
+        .as_table_mut()
+        .unwrap()
+        .insert("bundles".into(), toml::Value::Array(vec![toml::Value::String(bundle.to_string_lossy().into_owned())]));
+    let (mgr, _) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
+    mgr.java_build(&path, &Default::default()).await.unwrap();
+    let uri = ide_lsp::path_to_uri_string;
+    let covered = retry("imported source scope", Duration::from_secs(120), || async {
+        mgr.jdtls_command(
+            &path,
+            "openidea.workspace.coveredFiles",
+            vec![json!([uri(&caller), uri(&decoy), uri(&excluded), uri(&outside),])],
+        )
+        .await
+        .ok()
+        .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+    })
+    .await;
+    assert_eq!(covered, json!([uri(&caller), uri(&decoy)]));
+    mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+        files: vec![caller.clone(), decoy.clone()],
+        limit_hit: false,
+    }));
+    let at = Pos::new(0, source.find("target()").unwrap() as u32);
+    let refs = mgr.references_streaming(doc, at, false, true, false, Default::default(), None).await.unwrap();
+    assert_eq!(refs.locations.len(), 1);
+    assert!(refs.locations[0].path.ends_with("Caller.java"));
+    assert_eq!(refs.incomplete, None, "the indexed decoy must not be transiently opened");
+    let calls = mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    assert_eq!(calls.items.len(), 1);
+    assert!(calls.items[0].path.ends_with("Caller.java"));
+    assert_eq!(calls.incomplete, None);
+    mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires jdtls on PATH and a compatible JDK"]
 async fn lombok_generated_members_appear_in_document_symbols() {
     let dir = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(dir.path()).unwrap();
