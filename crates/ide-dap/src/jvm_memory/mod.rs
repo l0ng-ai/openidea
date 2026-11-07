@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use scan::watch_for_attached_jvm;
 pub(crate) use scan::{find_attached_jvm, local_jdwp_port};
 use snapshot::{AttachProbe, JdkProbe, take_snapshot};

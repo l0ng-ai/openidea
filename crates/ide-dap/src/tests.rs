@@ -1704,6 +1704,7 @@ async fn local_attach_remembers_its_jdwp_port() {
 }
 
 /// Scans counted by a fake `find_jvm_by_jdwp_port` that always finds pid 4242.
+#[cfg(unix)]
 fn counting_find() -> (Arc<std::sync::atomic::AtomicUsize>, impl Fn() -> Option<u32> + Clone + Send + 'static) {
     let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = scans.clone();
