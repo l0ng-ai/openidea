@@ -117,6 +117,13 @@ impl Watcher {
         self.polling.as_deref()
     }
 
+    /// A watch failure past startup (the OS watch limit ran out mid-tree):
+    /// directories past the limit never sync (issue #1915). `None` while every
+    /// directory has a live watch.
+    pub fn unwatched_reason(&self) -> Option<String> {
+        self.inner.state.exhausted.lock().clone()
+    }
+
     /// Replaces the exclude globs (Settings › Project Structure / File Types
     /// changed): later events below newly excluded folders are dropped. In
     /// per-directory mode, folders no longer excluded are watched once they change.
@@ -163,6 +170,7 @@ impl Watcher {
             queue: Mutex::default(),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
+            exhausted: Mutex::new(None),
         });
         let weak: Weak<DirState> = Arc::downgrade(&state);
         let watcher = W::new(
@@ -234,8 +242,9 @@ const MAX_WATCHES_HINT: &str = "the inotify watch limit is exhausted (fs.inotify
 /// instance per watcher (`EMFILE`, os error 24) or one watch per directory
 /// (`ENOSPC`, mapped by notify to [`ErrorKind::MaxFilesWatch`]). A bare OS
 /// error sends users off to search engines otherwise (issue #788).
-fn watcher_error(what: &str, error: notify::Error) -> IdeError {
-    let hint = match error.kind {
+/// The fix hint when an OS watch limit is hit, or `None` for other errors.
+fn watch_limit_hint(error: &notify::Error) -> Option<&'static str> {
+    match error.kind {
         ErrorKind::MaxFilesWatch => Some(MAX_WATCHES_HINT),
         ErrorKind::Io(ref e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(24) => Some(
             "the inotify instance limit is exhausted (fs.inotify.max_user_instances); raise it, e.g. \
@@ -243,8 +252,11 @@ fn watcher_error(what: &str, error: notify::Error) -> IdeError {
         ),
         ErrorKind::Io(ref e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(28) => Some(MAX_WATCHES_HINT),
         _ => None,
-    };
-    match hint {
+    }
+}
+
+fn watcher_error(what: &str, error: notify::Error) -> IdeError {
+    match watch_limit_hint(&error) {
         Some(hint) => io_error(format!("{what}: {error}; {hint}")),
         None => io_error(format!("{what}: {error}")),
     }
@@ -259,6 +271,10 @@ struct DirState {
     queue: Mutex<Vec<(notify::Event, Instant)>>,
     wake: Condvar,
     stop: AtomicBool,
+    /// Set when a `watch()` call reports the OS watch limit (inotify
+    /// `ENOSPC`/`EMFILE`): later directories are never seen, so the project is
+    /// silently stale past that point — surfaced via [`Watcher::unwatched_reason`].
+    exhausted: Mutex<Option<String>>,
 }
 
 impl DirState {
@@ -362,7 +378,15 @@ impl DirState {
                 true
             }
             Err(e) => {
-                tracing::debug!("cannot watch {}: {e}", dir.display());
+                if let Some(hint) = watch_limit_hint(&e) {
+                    tracing::warn!("cannot watch {}: {e}", dir.display());
+                    // Recorded, not delivered: the watch may fail after start,
+                    // on the debounce thread — the UI picks it up via
+                    // `unwatched_reason()`.
+                    *self.exhausted.lock() = Some(format!("cannot watch {}: {e}; {hint}", dir.display()));
+                } else {
+                    tracing::debug!("cannot watch {}: {e}", dir.display());
+                }
                 false
             }
         }
@@ -1319,5 +1343,63 @@ mod tests {
         assert!(watcher_error("cannot watch /proj", max_files).message.contains("max_user_watches"));
         let other = notify::Error::io(std::io::Error::from_raw_os_error(13));
         assert!(!watcher_error("cannot start file watcher", other).message.contains("inotify"));
+    }
+
+    /// Watch calls succeed until `budget` is spent, then `ENOSPC` — mirrors
+    /// `fs.inotify.max_user_watches` running out part-way through a tree.
+    struct ExhaustedWatcher {
+        budget: std::sync::atomic::AtomicUsize,
+    }
+
+    impl notify::Watcher for ExhaustedWatcher {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self { budget: std::sync::atomic::AtomicUsize::new(3) })
+        }
+
+        fn watch(&mut self, _dir: &Path, _: RecursiveMode) -> notify::Result<()> {
+            if self.budget.fetch_sub(1, Ordering::SeqCst) == 0 {
+                return Err(notify::Error::new(ErrorKind::MaxFilesWatch));
+            }
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn kind() -> WatcherKind {
+            WatcherKind::NullWatcher
+        }
+    }
+
+    /// #1915: a watch refused mid-tree must not stay silent — the limit is
+    /// reported through `unwatched_reason` so the UI can warn like the
+    /// polling fallback does.
+    #[test]
+    fn unwatched_reason_reports_the_watch_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        for d in ["a", "b", "c", "d"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let filter = EventFilter::new(root.clone(), &[]);
+        let (excludes, rules) = (filter.excludes.clone(), filter.gitignore.clone());
+        let (tx, _rx) = std::sync::mpsc::channel::<FsBatch>();
+        let emit: Emit = Arc::new(move |b| {
+            let _ = tx.send(b.clone());
+        });
+        let inner = Watcher::start_queued::<ExhaustedWatcher>(
+            &root,
+            filter,
+            emit,
+            WatchMode::PerDirectory,
+            notify::Config::default(),
+        )
+        .unwrap();
+        let watcher = Watcher { inner, excludes, rules, polling: None };
+        assert!(watcher.polling().is_none(), "the OS watcher did start");
+        let reason = watcher.unwatched_reason().expect("watch limit must be reported");
+        assert!(reason.contains("max_user_watches"), "{reason}");
+        assert!(reason.contains("cannot watch"), "{reason}");
     }
 }
