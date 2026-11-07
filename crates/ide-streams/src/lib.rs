@@ -12,7 +12,7 @@ mod qualify_tables;
 mod resolve;
 mod trace;
 
-pub use catalog::OpRole;
+pub use catalog::{OpRole, step_kind};
 pub use chain::*;
 pub use decode::*;
 pub use facts::{Adjustment, Capture, ChainFacts, TextEdit, TypeQuery};

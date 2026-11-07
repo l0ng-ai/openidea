@@ -34,6 +34,14 @@ pub(crate) fn op_role(name: &str) -> Option<OpRole> {
     })
 }
 
+/// `None` for names that are not intermediate steps (modifiers, terminals, unknown calls).
+pub fn step_kind(op: &str) -> Option<StepKind> {
+    match op_role(op)? {
+        OpRole::Step { link } => Some(link),
+        _ => None,
+    }
+}
+
 /// Whether evaluating a stream-producing expression a second time is safe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SourceCheck {
@@ -119,6 +127,14 @@ mod tests {
         assert_eq!(op_role("collect"), Some(OpRole::Terminal { void: false }));
         assert_eq!(op_role("iterator"), Some(OpRole::LazyTerminal));
         assert_eq!(op_role("orElse"), None);
+    }
+
+    #[test]
+    fn step_kinds() {
+        assert_eq!(step_kind("mapMulti"), Some(StepKind::Sync));
+        assert_eq!(step_kind("sorted"), Some(StepKind::Reorder));
+        assert_eq!(step_kind("parallel"), None);
+        assert_eq!(step_kind("collect"), None);
     }
 
     #[test]
