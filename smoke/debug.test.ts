@@ -41,6 +41,8 @@ interface Case {
   evaluate: [string, RegExp];
   /** A server: the breakpoint is in this request's handler, and the session is stopped at the end. */
   request?: string;
+  /** JVM languages: the live instances of a class the paused program holds (Memory tab). */
+  memory?: { className: string; instances: number };
 }
 
 const CASES: Record<string, Case> = {
@@ -81,6 +83,7 @@ const CASES: Record<string, Case> = {
     file: "src/main/java/com/example/orders/App.java",
     variable: "book",
     evaluate: ["book.size()", /^3$/],
+    memory: { className: "com.example.orders.OrderBook", instances: 1 },
   },
   kotlin: {
     fixture: "kotlin-gradle",
@@ -227,6 +230,19 @@ async function smoke(language: string) {
 
   const value = await evaluate(c.evaluate[0], "repl", s);
   expect(value.value, c.evaluate[0]).toMatch(c.evaluate[1]);
+
+  if (c.memory) {
+    const memory = await call(commands.debugJvmMemoryClasses(s.id));
+    if (memory.status === "ready") {
+      const row = memory.snapshot.rows.find((r) => r.name === c.memory!.className);
+      expect(row?.instances, `${c.memory.className} in the histogram\n${shown()}`).toBe(c.memory.instances);
+    } else {
+      // Attaching to a suspended JVM older than 17 hangs, so the backend refuses it by design.
+      const { reason } = memory;
+      const refused = reason.kind === "unsafeWhileSuspended" && reason.javaMajor < 17;
+      expect(refused, `memory unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
+    }
+  }
 
   // Python 3.12 reports a conditional expression's line twice: Step Over may stop on it
   // (and its breakpoint) again.
