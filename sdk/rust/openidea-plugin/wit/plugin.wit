@@ -67,6 +67,12 @@ world plugin-hover {
     export hover-provider;
 }
 
+/// A plugin with inlay hints (`inlay-hints` under `[[contributes.providers]]`).
+world plugin-inlay-hints {
+    include plugin;
+    export inlay-hints-provider;
+}
+
 /// A plugin whose views show in the Services tool window
 /// (`location = "services"`): their nodes' detail pane.
 world plugin-details {
@@ -107,6 +113,11 @@ world semantic-tokens {
 
 world hover {
     export hover-provider;
+}
+
+/// Only the `inlay-hints-provider` export, generated next to `plugin` like `syntax`.
+world inlay-hints {
+    export inlay-hints-provider;
 }
 
 /// Only the `detail-provider` export, generated next to `plugin` like `syntax`.

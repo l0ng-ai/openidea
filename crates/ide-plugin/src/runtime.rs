@@ -5,7 +5,7 @@
 
 use crate::types::{
     CodeAction, CommitDraft, CommitProblem, CompletionItem, InlineSuggestion, LineMarker, Location, PluginHover,
-    ProviderDocument, SemanticToken,
+    PluginInlayHint, ProviderDocument, SemanticToken,
 };
 use crate::types::{
     EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
@@ -16,8 +16,8 @@ use crate::types::{
     ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, commit_checks_bindings, details_bindings, hover_bindings, indexing_bindings, providers_bindings,
-    semantic_bindings, syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, details_bindings, hover_bindings, indexing_bindings, inlay_bindings,
+    providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -39,6 +39,7 @@ use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
 use details_bindings::openidea::plugin::detail_types as wit_dt;
 use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
+use inlay_bindings::exports::openidea::plugin::inlay_hints_provider as wit_inlay;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
@@ -545,6 +546,7 @@ struct Exports {
     details: Option<wit_detail::Guest>,
     hover: Option<wit_hover::Guest>,
     commit_checks: Option<wit_cc::Guest>,
+    inlay: Option<wit_inlay::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -628,6 +630,7 @@ impl Runtime {
         let detail_indices = wit_detail::GuestIndices::new(&pre).ok();
         let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
+        let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -662,9 +665,24 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let inlay = match inlay_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer, semantic, details, hover, commit_checks },
+            exports: Exports {
+                plugin,
+                syntax,
+                providers,
+                views,
+                indexer,
+                semantic,
+                details,
+                hover,
+                commit_checks,
+                inlay,
+            },
             limits: setup.limits,
             version: setup.version,
         })
@@ -943,6 +961,40 @@ impl Runtime {
         Ok(hover
             .filter(|h| !h.markdown.trim().is_empty())
             .map(|h| PluginHover { markdown: clip(h.markdown, MAX_HOVER_BYTES), range: h.range.map(range_from_wit) }))
+    }
+
+    pub fn provide_inlay_hints(
+        &mut self,
+        doc: &ProviderDocument,
+        range: ide_core::Range,
+        timeout: Duration,
+    ) -> Result<Vec<PluginInlayHint>, CallError> {
+        if self.exports.inlay.is_none() {
+            return Err(CallError::missing_export("inlay-hints-provider"));
+        }
+        let d = wit_inlay::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let r = wit_types::Range { start: pos_to_wit(range.start), end: pos_to_wit(range.end) };
+        let hints = self.call(Invocation::default(), timeout, |e, store| {
+            e.inlay.as_ref().expect("checked").call_inlay_hints(store, &d, r)
+        })?;
+        Ok(hints
+            .into_iter()
+            .filter(|h| !h.label.trim().is_empty())
+            .take(MAX_PROVIDER_ITEMS)
+            .map(|h| PluginInlayHint {
+                position: ide_core::Pos::new(h.position.line, h.position.character),
+                label: clip(h.label, 256),
+                kind: clip(h.kind, 32),
+                tooltip: h.tooltip.map(|t| clip(t, 1024)),
+                padding_left: h.padding_left,
+                padding_right: h.padding_right,
+            })
+            .collect())
     }
 
     pub fn activate(&mut self) -> Result<(), CallError> {
