@@ -17,7 +17,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
+import type { CommitSelection, FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -677,6 +677,53 @@ export const maybeEditorService = (): EditorService | undefined => services.edit
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
 
 /**
+ * The commit being prepared (the Commit tool window or dialog), for plugins:
+ * provided by the vcs feature.
+ */
+export interface CommitService {
+  /**
+   * What Commit would commit now, per repository (unsaved editors saved first, as
+   * Commit does); `null` without a repository.
+   */
+  selection(): Promise<CommitSelection | null>;
+  /** Replaces the message if the draft is still at `revision`; false when it changed. */
+  setMessage(revision: number, message: string): boolean;
+}
+
+let commitServiceImpl: CommitService | undefined;
+export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
+export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+/** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
+export interface ContributedCommitCheck {
+  /** Stable key (`<plugin id>/<check id>`), stored when the check is turned off. */
+  key: string;
+  title: string;
+}
+
+/** A problem a contributed check reported (or why the check could not run). */
+export interface ContributedCommitProblem {
+  title: string;
+  message: string;
+  path?: string;
+  /** 0-based. */
+  line?: number;
+}
+
+export interface CommitCheckProvider {
+  checks(): ContributedCommitCheck[];
+  /** Runs the checks `keys` on what `selection` commits. */
+  run(selection: CommitSelection, keys: string[]): Promise<ContributedCommitProblem[]>;
+}
+
+export const useCommitCheckProviders = create<{ providers: CommitCheckProvider[] }>(() => ({ providers: [] }));
+
+export function registerCommitCheckProvider(p: CommitCheckProvider): () => void {
+  useCommitCheckProviders.setState((s) => ({ providers: [...s.providers, p] }));
+  return () => useCommitCheckProviders.setState((s) => ({ providers: s.providers.filter((x) => x !== p) }));
+}
+
+/**
  * Handles a pointer drag dropped on the editor content: features register handlers for
  * their own drag types (e.g. an agent task dragged from the tool window) without the
  * editor depending on them. The editor shows its center drop-zone for accepted types.
@@ -980,13 +1027,18 @@ export type ContextMenuId =
   | "new";
 
 /**
- * Entries of the native main menu's open slots (src-tauri/src/menu.rs
- * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ * Entries of open menu slots: the native main menu's (src-tauri/src/menu.rs
+ * `Entry::Dynamic`, e.g. `pluginTools` at the end of Tools) and in-app toolbars
+ * (`commitMessage`, above the commit message). Each runs `action`.
  */
 export interface MenuSlotItem {
   action: string;
   arg?: string | null;
   label: string;
+  /** Icon name, for toolbar slots. */
+  icon?: string;
+  /** Shown only while this `when` clause holds (toolbar slots). */
+  when?: string | null;
 }
 
 export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));

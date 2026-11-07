@@ -210,6 +210,40 @@ pub struct RepositoryStatus {
     pub changed_files: u32,
 }
 
+/// A file a pending commit changes (WIT `commit.commit-change`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitChange {
+    pub repository: String,
+    pub path: String,
+    pub old_path: Option<String>,
+    /// `added`, `modified`, `deleted`, `renamed`, `copied` or `type-changed`.
+    pub status: String,
+    /// `git diff` of the included changes; `None` for binary content.
+    pub diff: Option<String>,
+    pub truncated: bool,
+}
+
+/// What Commit would commit (WIT `commit.commit-draft`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDraft {
+    pub revision: u64,
+    pub message: String,
+    pub amend: bool,
+    pub changes: Vec<CommitChange>,
+}
+
+/// A problem a plugin's before-commit check reported (WIT `commit-checker.commit-problem`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitProblem {
+    pub message: String,
+    /// Absolute path of the file it is in, if any (IPC form).
+    pub path: Option<String>,
+    pub range: Option<ide_core::Range>,
+}
+
 /// Resource limits and supervision policy for plugin code.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
