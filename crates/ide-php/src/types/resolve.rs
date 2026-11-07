@@ -57,6 +57,7 @@ use super::{Hierarchy, LazyType, Relative, SignatureParam, Type};
 use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
 use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, LaravelFacts, TypeHint};
+use crate::symfony::{SymfonyConfig, SymfonyProject};
 
 mod generics;
 
@@ -111,6 +112,12 @@ pub trait Declarations {
     fn laravel(&self) -> LaravelFacts {
         LaravelFacts::default()
     }
+    /// The Symfony configuration and the `#[Route]` names and repository
+    /// entities of the project. The [`Resolver`] caches them per
+    /// modification counter.
+    fn symfony(&self) -> SymfonyProject {
+        SymfonyProject::default()
+    }
 }
 
 /// [`Declarations`] over a fixed set of summaries, the first declaration
@@ -118,11 +125,13 @@ pub trait Declarations {
 #[derive(Clone, Debug, Default)]
 pub struct SummarySet {
     pub summaries: Vec<FileSummary>,
+    /// The Symfony configuration the set answers with (none by default).
+    pub symfony_config: SymfonyConfig,
 }
 
 impl SummarySet {
     pub fn new(summaries: Vec<FileSummary>) -> Self {
-        Self { summaries }
+        Self { summaries, symfony_config: SymfonyConfig::default() }
     }
 }
 
@@ -150,6 +159,10 @@ impl Declarations for SummarySet {
 
     fn laravel(&self) -> LaravelFacts {
         LaravelFacts::merge(self.summaries.iter().map(|summary| &summary.laravel))
+    }
+
+    fn symfony(&self) -> SymfonyProject {
+        SymfonyProject::new(self.symfony_config.clone(), self.summaries.iter().map(|summary| (None, &summary.symfony)))
     }
 }
 
@@ -186,6 +199,8 @@ struct CacheState {
     meta: Option<Arc<PhpStormMeta>>,
     /// The merged Laravel facts.
     laravel: Option<Arc<LaravelFacts>>,
+    /// The Symfony configuration and facts.
+    symfony: Option<Arc<SymfonyProject>>,
 }
 
 impl CacheState {
@@ -196,6 +211,7 @@ impl CacheState {
             self.models.clear();
             self.meta = None;
             self.laravel = None;
+            self.symfony = None;
             self.generation = generation;
         }
         self
@@ -263,6 +279,18 @@ impl TypeCache {
 
     fn insert_laravel(&self, generation: u64, facts: Arc<LaravelFacts>) {
         self.state.lock().at(generation).laravel = Some(facts);
+    }
+
+    fn symfony(&self, generation: u64) -> Option<Arc<SymfonyProject>> {
+        let state = self.state.lock();
+        if state.generation != generation {
+            return None;
+        }
+        state.symfony.clone()
+    }
+
+    fn insert_symfony(&self, generation: u64, project: Arc<SymfonyProject>) {
+        self.state.lock().at(generation).symfony = Some(project);
     }
 }
 
@@ -350,6 +378,17 @@ impl<'a> Resolver<'a> {
         let facts = Arc::new(self.decls.laravel());
         self.cache.insert_laravel(self.generation, facts.clone());
         facts
+    }
+
+    /// The project's Symfony configuration, `#[Route]` names and
+    /// repository entities, cached for the modification counter.
+    pub fn symfony(&self) -> Arc<SymfonyProject> {
+        if let Some(project) = self.cache.symfony(self.generation) {
+            return project;
+        }
+        let project = Arc::new(self.decls.symfony());
+        self.cache.insert_symfony(self.generation, project.clone());
+        project
     }
 
     /// The type a lazy type stands for, `self`/`parent` (and `static`/

@@ -96,7 +96,7 @@ impl Extractor<'_> {
     }
 
     /// `Foo::class`, as the FQN.
-    fn class_constant_name(&self, expr: &Expression<'_>) -> Option<String> {
+    pub(super) fn class_constant_name(&self, expr: &Expression<'_>) -> Option<String> {
         let Expression::Access(Access::ClassConstant(access)) = expr else { return None };
         let ClassLikeConstantSelector::Identifier(constant) = &access.constant else { return None };
         if !constant.value.eq_ignore_ascii_case(b"class") {

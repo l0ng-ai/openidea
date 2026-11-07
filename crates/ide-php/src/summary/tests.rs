@@ -226,6 +226,82 @@ class NotDoctrine {}
         [Some("App\\Repository\\ProductRepository"), Some("App\\Repository\\TagRepository"), None, None]
     );
     assert!(shape(source).contains(&"  repository App\\Repository\\ProductRepository".to_owned()));
+    let entities: Vec<(&str, &str)> =
+        summary.symfony.repositories.iter().map(|known| (known.repository.as_str(), known.entity.as_str())).collect();
+    assert_eq!(
+        entities,
+        [
+            ("App\\Repository\\ProductRepository", "App\\Entity\\Product"),
+            ("App\\Repository\\TagRepository", "App\\Entity\\Tag"),
+        ]
+    );
+}
+
+#[test]
+fn repository_constructors_name_their_entity() {
+    let source = r#"<?php
+namespace App\Repository;
+use App\Entity\Post;
+use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
+use Doctrine\Persistence\ManagerRegistry;
+
+class PostRepository extends ServiceEntityRepository {
+    public function __construct(ManagerRegistry $registry) {
+        parent::__construct($registry, Post::class);
+    }
+}
+class NotARepository extends \App\Base {
+    public function __construct($registry) { parent::__construct($registry, Post::class); }
+}
+"#;
+    let summary = summarize(source);
+    assert_eq!(
+        summary.symfony.repositories,
+        [RepositoryEntity {
+            repository: "App\\Repository\\PostRepository".to_owned(),
+            entity: "App\\Entity\\Post".to_owned()
+        }]
+    );
+    assert!(
+        shape(source).contains(&"symfony repository App\\Repository\\PostRepository => App\\Entity\\Post".to_owned())
+    );
+}
+
+#[test]
+fn route_attributes_record_their_names() {
+    let source = r#"<?php
+namespace App\Controller;
+use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Routing\Annotation\Route as OldRoute;
+
+#[Route('/blog', name: 'blog_')]
+class BlogController {
+    #[Route('/', name: 'index')]
+    public function index() {}
+    #[Route('/{slug}', 'show', methods: ['GET'])]
+    public function show() {}
+    #[Route('/unnamed')]
+    public function unnamed() {}
+    public function plain() {}
+}
+class LegacyController {
+    #[OldRoute(path: '/legacy', name: 'legacy')]
+    public function legacy() {}
+    #[\Other\Route('/x', name: 'not_a_route')]
+    public function other() {}
+}
+"#;
+    let summary = summarize(source);
+    let routes: Vec<(&str, Option<&str>)> =
+        summary.symfony.routes.iter().map(|route| (route.name.as_str(), route.path.as_deref())).collect();
+    assert_eq!(
+        routes,
+        [("blog_index", Some("/blog/")), ("blog_show", Some("/blog/{slug}")), ("legacy", Some("/legacy"))]
+    );
+    // The name's location is the text inside the quotes.
+    let index = &summary.symfony.routes[0];
+    assert_eq!(&source[index.loc.start as usize..index.loc.end as usize], "index");
+    assert!(shape(source).contains(&"symfony route 'blog_index' /blog/".to_owned()), "{:?}", shape(source));
 }
 
 #[test]

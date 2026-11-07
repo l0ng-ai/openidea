@@ -31,6 +31,7 @@ use infer::{Infer, body_return, this_assignments};
 mod infer;
 mod laravel;
 mod phpdoc;
+mod symfony;
 
 /// Doctrine's entity mapping attribute.
 const DOCTRINE_ENTITY: &str = "Doctrine\\ORM\\Mapping\\Entity";
@@ -40,6 +41,7 @@ pub(super) fn extract(file: &ParsedFile) -> FileSummary {
         file,
         scope: NameScope::global(),
         summary: FileSummary { schema: SCHEMA_VERSION, has_errors: file.has_errors(), ..FileSummary::default() },
+        repository_scope: None,
     };
     SummaryWalker.walk_program(file.program(), &mut cx);
     cx.summary
@@ -55,7 +57,7 @@ pub(crate) fn inline_vars(file: &ParsedFile, scope: &NameScope, start: u32) -> V
     if !has_var {
         return Vec::new();
     }
-    let cx = Extractor { file, scope: scope.clone(), summary: FileSummary::default() };
+    let cx = Extractor { file, scope: scope.clone(), summary: FileSummary::default(), repository_scope: None };
     let Some(doc) = cx.doc_at(start, &[]) else { return Vec::new() };
     doc.vars.into_iter().map(|var| (var.name, var.ty)).collect()
 }
@@ -169,6 +171,9 @@ struct Extractor<'f> {
     file: &'f ParsedFile,
     scope: NameScope,
     summary: FileSummary,
+    /// The class being walked when it extends a `…Repository` class (its
+    /// `parent::__construct()` may name its entity).
+    repository_scope: Option<String>,
 }
 
 impl Extractor<'_> {
@@ -662,7 +667,15 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
             node.implements.as_ref().map(|implements| cx.class_names(&implements.types)).unwrap_or_default();
         cx.provided_properties(&mut class, &node.members);
         cx.model_casts(&class.fqn, &node.members);
+        cx.routes(&node.attribute_lists, &node.members);
+        cx.entity_repository(&class.fqn, class.repository.as_deref());
+        cx.repository_scope =
+            class.extends.first().filter(|parent| symfony::extends_repository(parent)).map(|_| class.fqn.clone());
         cx.push_class(class);
+    }
+
+    fn walk_out_class(&self, _: &'ast Class<'arena>, cx: &mut Extractor<'f>) {
+        cx.repository_scope = None;
     }
 
     fn walk_in_interface(&self, node: &'ast Interface<'arena>, cx: &mut Extractor<'f>) {
@@ -717,6 +730,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
     fn walk_in_static_method_call(&self, node: &'ast StaticMethodCall<'arena>, cx: &mut Extractor<'f>) {
         cx.static_binding(node.class, &node.method, &node.argument_list);
         cx.migration(node.class, &node.method, &node.argument_list);
+        cx.repository_constructor(node.class, &node.method, &node.argument_list);
     }
 
     fn walk_in_function_call(&self, node: &'ast FunctionCall<'arena>, cx: &mut Extractor<'f>) {

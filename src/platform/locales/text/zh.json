@@ -6203,6 +6203,8 @@
   "Void function returns a value": "void 函数返回了值",
   "Never-returning function returns": "never 函数返回了",
   "Deprecated symbol": "已弃用的符号",
+  "Undefined route": "未定义的路由",
+  "Reports Symfony route names passed to path(), url(), generateUrl(), redirectToRoute() or a URL generator's generate() that no #[Route] attribute or config/routes*.yaml file defines.": "报告传给 path()、url()、generateUrl()、redirectToRoute() 或 URL 生成器的 generate() 的 Symfony 路由名称中，没有任何 #[Route] 特性或 config/routes*.yaml 文件定义的名称。",
   "Reports classes, interfaces, traits and enums that no file of the project, its include paths or the PHP stubs declares. Names checked with class_exists() first are not reported.": "报告项目文件、包含路径和 PHP 存根中都没有声明的类、接口、trait 和枚举。先用 class_exists() 检查过的名称不报告。",
   "Reports calls to functions that no file or stub declares. Calls checked with function_exists() first are not reported.": "报告对任何文件或存根都没有声明的函数的调用。先用 function_exists() 检查过的调用不报告。",
   "Reports constants that no const statement, define() call or stub declares.": "报告没有任何 const 语句、define() 调用或存根声明的常量。",

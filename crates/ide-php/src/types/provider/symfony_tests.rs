@@ -1,5 +1,9 @@
+use std::path::Path;
+
 use crate::summary::FileSummary;
+use crate::symfony::SymfonyConfig;
 use crate::syntax::ParsedFile;
+use crate::types::provider::{ArgumentOf, KnownKind};
 use crate::types::{Context, Resolver, SummarySet, Type, TypeCache, TypeProviders, type_at};
 
 const CARET: &str = "/*|*/";
@@ -82,7 +86,26 @@ namespace Doctrine\Bundle\DoctrineBundle\Repository {
      * @template T of object
      * @template-extends \Doctrine\ORM\EntityRepository<T>
      */
-    class ServiceEntityRepository extends \Doctrine\ORM\EntityRepository {}
+    class ServiceEntityRepository extends \Doctrine\ORM\EntityRepository {
+        public function __construct(\Doctrine\Persistence\ManagerRegistry $registry, string $entityClass) {}
+    }
+}
+namespace Symfony\Component\Routing\Generator {
+    interface UrlGeneratorInterface {
+        public function generate(string $name, array $parameters = []): string;
+    }
+}
+namespace Symfony\Component\Routing\Attribute {
+    #[\Attribute]
+    class Route {
+        public function __construct(string|array|null $path = null, ?string $name = null) {}
+    }
+}
+namespace Symfony\Bundle\FrameworkBundle\Controller {
+    abstract class AbstractController {
+        protected function generateUrl(string $route, array $parameters = []): string { return ''; }
+        protected function redirectToRoute(string $route, array $parameters = []): object { return new \stdClass(); }
+    }
 }
 "#;
 
@@ -113,6 +136,10 @@ namespace App\Entity {
     }
     #[ORM\Entity(repositoryClass: \App\Repository\LegacyRepository::class)]
     class Legacy {}
+    #[ORM\Entity]
+    class Post {
+        private string $title = '';
+    }
 }
 namespace App\Repository {
     use App\Entity\Product;
@@ -123,15 +150,32 @@ namespace App\Repository {
         /** @return Product[] */
         public function findByName(string $name): array { return []; }
     }
-    /** A repository without generics: its entity isn't known. */
+    /** A repository without generics: its entity's mapping names it. */
     class LegacyRepository extends ServiceEntityRepository {}
+    /** A repository without generics naming its entity to the parent. */
+    class PostRepository extends ServiceEntityRepository {
+        public function __construct(\Doctrine\Persistence\ManagerRegistry $registry) {
+            parent::__construct($registry, \App\Entity\Post::class);
+        }
+    }
+    /** A repository whose entity nothing names. */
+    class OrphanRepository extends ServiceEntityRepository {}
+}
+namespace App\Controller {
+    use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+    use Symfony\Component\Routing\Attribute\Route;
+    #[Route('/blog', name: 'blog_')]
+    class BlogController extends AbstractController {
+        #[Route('/{slug}', name: 'show')]
+        public function show() {}
+    }
 }
 "#;
 
 const HEADER: &str = "<?php
 namespace Main;
 use App\\Entity\\{Product, Tag, Legacy};
-use App\\Repository\\ProductRepository;
+use App\\Repository\\{ProductRepository, PostRepository, OrphanRepository};
 use App\\Service\\Mailer;
 use Doctrine\\ORM\\{EntityManagerInterface, EntityRepository};
 use Doctrine\\Persistence\\ManagerRegistry;
@@ -153,12 +197,18 @@ fn summaries(libs: &[&str], main: &ParsedFile) -> SummarySet {
 
 /// The type at the caret in `HEADER` + `body`, the `libs` declared too.
 fn type_in(libs: &[&str], body: &str) -> String {
+    type_with(libs, &SymfonyConfig::default(), body)
+}
+
+/// [`type_in`] with a Symfony configuration.
+fn type_with(libs: &[&str], config: &SymfonyConfig, body: &str) -> String {
     let source = format!("{HEADER}{body}");
     let offset = source.find(CARET).unwrap_or_else(|| panic!("no caret in {source}"));
     let source = source.replacen(CARET, "", 1);
     let file = ParsedFile::parse("main.php", source.as_str());
     assert!(!file.has_errors(), "{source}: {:?}", file.errors());
-    let decls = summaries(libs, &file);
+    let mut decls = summaries(libs, &file);
+    decls.symfony_config = config.clone();
     let cache = TypeCache::new();
     let resolver = Resolver::new(&decls, &cache, 1);
     type_at(&file, &resolver, offset as u32).map(|ty| ty.to_string()).unwrap_or_else(|| "<none>".to_owned())
@@ -256,11 +306,16 @@ fn doctrine_repository_finders() {
                 "/** @param EntityRepository<Tag> $r */\nfunction f(EntityRepository $r) { $r->findOneByLabel('a')/*|*/; }",
                 "?App\\Entity\\Tag",
             ),
-            // A repository whose entity isn't known stays unknown.
+            // Repositories without generics: the entity whose mapping names
+            // the repository, or the one its constructor names.
             (
                 "function f(EntityManagerInterface $em) { $em->getRepository(Legacy::class)->findOneByName('a')/*|*/; }",
-                "mixed",
+                "?App\\Entity\\Legacy",
             ),
+            ("function f(PostRepository $r) { $r->findOneByTitle('a')/*|*/; }", "?App\\Entity\\Post"),
+            ("function f(PostRepository $r) { $r->findAll()/*|*/; }", "list<App\\Entity\\Post>"),
+            // A repository whose entity isn't known stays unknown.
+            ("function f(OrphanRepository $r) { $r->findOneByName('a')/*|*/; }", "mixed"),
             // Not a repository.
             ("function f(Mailer $m) { $m->findOneByName('a')/*|*/; }", "mixed"),
         ],
@@ -317,6 +372,89 @@ fn repository_magic_finders_are_members() {
     );
     let tags = Type::generic("Doctrine\\ORM\\EntityRepository", vec![Type::named("App\\Entity\\Tag")]);
     assert_eq!(names(&tags), ["findByLabel", "findOneByLabel", "countByLabel"]);
-    assert!(names(&Type::named("App\\Repository\\LegacyRepository")).is_empty());
+    assert!(names(&Type::named("App\\Repository\\LegacyRepository")).is_empty(), "Legacy has no fields");
+    assert_eq!(
+        names(&Type::named("App\\Repository\\PostRepository")),
+        ["findByTitle", "findOneByTitle", "countByTitle"]
+    );
+    assert!(names(&Type::named("App\\Repository\\OrphanRepository")).is_empty());
     assert!(names(&Type::named("App\\Service\\Mailer")).is_empty());
+}
+
+const SERVICES: &str = "\
+services:
+    mailer.default:
+        class: App\\Service\\Mailer
+    mailer: '@mailer.default'
+    App\\Contract\\Sender: '@mailer.default'
+    unknown.class: { class: App\\Missing }
+";
+
+fn config() -> SymfonyConfig {
+    let mut config = SymfonyConfig::default();
+    config.add_services(Path::new("config/services.yaml"), SERVICES);
+    config.add_routes(Path::new("config/routes.yaml"), "home:\n    path: /\nabout: { path: /about }\n");
+    config
+}
+
+#[test]
+fn container_get_by_configured_id() {
+    let config = config();
+    let cases = [
+        ("function f(ContainerInterface $c) { $c->get('mailer.default')/*|*/; }", "App\\Service\\Mailer"),
+        ("function f(Psr $c) { $c->get('mailer')/*|*/; }", "App\\Service\\Mailer"),
+        ("function f(Psr $c) { $c->get('mailer')->send('a')/*|*/; }", "bool"),
+        // An interface id aliasing a service: the service's class.
+        ("function f(Psr $c) { $c->get(\\App\\Contract\\Sender::class)/*|*/; }", "App\\Service\\Mailer"),
+        // A class nothing declares is still named.
+        ("function f(Psr $c) { $c->get('unknown.class')/*|*/; }", "App\\Missing"),
+        ("function f(Psr $c) { $c->get('not.configured')/*|*/; }", "mixed"),
+        ("function f(Psr $c) { $c->get(Mailer::class)/*|*/; }", "App\\Service\\Mailer"),
+    ];
+    for (body, expected) in cases {
+        assert_eq!(type_with(INSTALLED, &config, body), expected, "{body}");
+    }
+    // Without the framework bundle the configuration says nothing.
+    assert_eq!(type_with(&[LIBRARIES, APP], &config, "function f(Psr $c) { $c->get('mailer')/*|*/; }"), "mixed");
+}
+
+/// The route names argument 0 of `call` accepts, with the declarations of
+/// `libs` and `config`.
+fn routes(libs: &[&str], config: SymfonyConfig, call: ArgumentOf<'_>) -> Option<Vec<(String, Option<String>)>> {
+    let file = ParsedFile::parse("main.php", "<?php\n");
+    let mut decls = summaries(libs, &file);
+    decls.symfony_config = config;
+    let cache = TypeCache::new();
+    let resolver = Resolver::new(&decls, &cache, 1);
+    let known = TypeProviders::builtin().known_strings(call, 0, &resolver, &Context::default())?;
+    assert_eq!(known.kind, KnownKind::Route);
+    Some(known.values.into_iter().map(|value| (value.value, value.detail)).collect())
+}
+
+#[test]
+fn route_names_of_the_configuration_and_the_attributes() {
+    let controller = Type::named("App\\Controller\\BlogController");
+    let generator = Type::named("Symfony\\Component\\Routing\\Generator\\UrlGeneratorInterface");
+    let all = Some(vec![
+        ("home".to_owned(), Some("/".to_owned())),
+        ("about".to_owned(), Some("/about".to_owned())),
+        ("blog_show".to_owned(), Some("/blog/{slug}".to_owned())),
+    ]);
+    assert_eq!(routes(INSTALLED, config(), ArgumentOf::Function("Main\\path")), all);
+    assert_eq!(routes(INSTALLED, config(), ArgumentOf::Function("url")), all);
+    let method = |receiver, name| ArgumentOf::Method { receiver, name };
+    assert_eq!(routes(INSTALLED, config(), method(&controller, "generateUrl")), all);
+    assert_eq!(routes(INSTALLED, config(), method(&controller, "redirectToRoute")), all);
+    assert_eq!(routes(INSTALLED, config(), method(&generator, "generate")), all);
+    // Other calls, receivers and arguments.
+    let mailer = Type::named("App\\Service\\Mailer");
+    assert_eq!(routes(INSTALLED, config(), method(&mailer, "generateUrl")), None);
+    assert_eq!(routes(INSTALLED, config(), method(&controller, "generate")), None);
+    assert_eq!(routes(INSTALLED, config(), ArgumentOf::Function("strlen")), None);
+    // The attributes alone are enough.
+    let attributes = routes(INSTALLED, SymfonyConfig::default(), ArgumentOf::Function("path"));
+    assert_eq!(attributes, Some(vec![("blog_show".to_owned(), Some("/blog/{slug}".to_owned()))]));
+    // No route at all, or no framework bundle: nothing is known.
+    assert_eq!(routes(&[LIBRARIES, FRAMEWORK_BUNDLE], SymfonyConfig::default(), ArgumentOf::Function("path")), None);
+    assert_eq!(routes(&[LIBRARIES, APP], config(), ArgumentOf::Function("path")), None);
 }

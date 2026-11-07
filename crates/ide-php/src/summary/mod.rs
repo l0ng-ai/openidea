@@ -36,9 +36,11 @@
 mod extract;
 mod laravel;
 mod render;
+mod symfony;
 
 pub(crate) use extract::{inline_vars, type_hint};
 pub use laravel::{Binding, Cast, Column, LaravelFacts, ModelCasts, Table};
+pub use symfony::{RepositoryEntity, RouteAttribute, SymfonyFacts};
 
 use std::fmt;
 
@@ -55,9 +57,9 @@ use crate::types::LazyType;
 /// variables; 8: hash-notation types and assertion tags; 9: Laravel
 /// provider payloads and `getFacadeAccessor()` values; 10: Laravel
 /// bindings, migrations and casts; 11: locations of casts and
-/// columns; 12: Doctrine repository classes of entities), so stored
-/// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 12;
+/// columns; 12: Doctrine repository classes of entities; 13: Symfony
+/// routes and repository entities), so stored summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -85,6 +87,9 @@ pub struct FileSummary {
     /// Container bindings, migrations and model casts, for the Laravel
     /// type provider.
     pub laravel: LaravelFacts,
+    /// `#[Route]` names and repository entities, for the Symfony type
+    /// provider.
+    pub symfony: SymfonyFacts,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

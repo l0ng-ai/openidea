@@ -34,6 +34,7 @@ export const PHP_INSPECTION_GROUPS = [
   "Unused code",
   "Control flow",
   "Language level",
+  "Frameworks",
 ] as const;
 
 /** In the engine's order. */
@@ -197,6 +198,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     group: "Language level",
     description:
       "Reports uses of classes, functions, methods, properties and constants marked @deprecated or #[\\Deprecated], shown struck through.",
+  },
+  {
+    code: "PhpUndefinedRoute",
+    name: "Undefined route",
+    group: "Frameworks",
+    description:
+      "Reports Symfony route names passed to path(), url(), generateUrl(), redirectToRoute() or a URL generator's generate() that no #[Route] attribute or config/routes*.yaml file defines.",
   },
 ];
 

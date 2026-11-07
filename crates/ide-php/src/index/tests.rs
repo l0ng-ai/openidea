@@ -362,6 +362,24 @@ fn laravel_files_are_listed() {
     assert_eq!(index.laravel_files().unwrap(), [p.path("migration.php")]);
 }
 
+#[test]
+fn symfony_files_are_listed() {
+    const CONTROLLER: &str = "<?php\nuse Symfony\\Component\\Routing\\Attribute\\Route;\nclass C { #[Route('/', name: 'home')] function home() {} }\n";
+    const ENTITY: &str =
+        "<?php\nuse Doctrine\\ORM\\Mapping\\Entity;\n#[Entity(repositoryClass: R::class)]\nclass E {}\n";
+    let p = Project::new(&[("Model.php", MODEL), ("Controller.php", CONTROLLER), ("Entity.php", ENTITY)]);
+    let index = PhpIndex::open(&p.cache()).unwrap();
+    index.sync(&p.files(), &token()).unwrap();
+    assert_eq!(index.symfony_files().unwrap(), [p.path("Controller.php"), p.path("Entity.php")]);
+    assert!(index.laravel_files().unwrap().is_empty());
+
+    // A file without routes any more leaves the list.
+    p.write("Controller.php", "<?php\nclass C {}\n");
+    p.bump_mtime("Controller.php", 10);
+    index.sync(&p.files(), &token()).unwrap();
+    assert_eq!(index.symfony_files().unwrap(), [p.path("Entity.php")]);
+}
+
 fn word_files(index: &PhpIndex, word: &str) -> Vec<String> {
     let files = index.files_with_word(word).unwrap();
     files.iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect()

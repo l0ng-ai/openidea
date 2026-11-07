@@ -467,7 +467,7 @@ The design:
 
   Turn them on when `symfony/framework-bundle` is present. Tests: snippets.
 
-- [ ] Phase 7.2.b: Symfony services.yaml ids and route names
+- [x] Phase 7.2.b: Symfony services.yaml ids and route names
       Phase 7.2 types `get()` for class ids (autowiring), `getRepository()` (through the entity's `repositoryClass`) and the repository finders, all from PHP summaries. What it left needs files that aren't PHP, so it needs an index of the project's Symfony config (rebuilt on watcher batches, like the Laravel facts):
   - service ids from `config/services.yaml` (and `services_*.yaml`, imports): `id: { class: … }`, `id: '@other'` aliases, `App\Foo: ~` and resource-loaded classes, so `$container->get('mailer.default')` is typed
   - route names from `#[Route(name: …)]` attributes on controllers and from `config/routes*.yaml`: completion of the name argument of `path()`, `url()`, `generateUrl()` and `redirectToRoute()`, and an inspection for unknown names

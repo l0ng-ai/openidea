@@ -26,8 +26,9 @@
 //!   namespace adds its `use` import (a fully qualified name when the short
 //!   name is taken by another import).
 //! - call arguments: named arguments (`name: `) for the parameters not passed
-//!   yet, the `expectedArguments` values of `.phpstorm.meta.php`, and the
-//!   cases of an enum-typed parameter.
+//!   yet, the `expectedArguments` values of `.phpstorm.meta.php`, the
+//!   values a type provider knows (Symfony route names), and the cases of
+//!   an enum-typed parameter.
 //! - `match` arms: the enum cases (or literal values) of the subject not
 //!   covered yet.
 //! - array keys (`$a['` / `$a[`): the keys of the array's shapes.
@@ -56,7 +57,7 @@ use crate::navigate::{enclosing_class, rank, short_name};
 use crate::signature::Callee;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::ParsedFile;
-use crate::types::provider::MagicTarget;
+use crate::types::provider::{ArgumentOf, MagicTarget};
 use crate::types::{ClassModel, Context, ExprTypes, Frame, PROBE_VARIABLE, Resolver, SignatureParam, Type};
 
 /// The name put in place of the word being completed.
@@ -1089,6 +1090,19 @@ impl<'e, 'r> Collector<'e, 'r> {
                     self.push(Self::item(text, CompletionKind::Value), 0);
                 }
             }
+        }
+        // Values a type provider knows (route names).
+        let call = match callee {
+            Callee::Function(fqn) => ArgumentOf::Function(fqn),
+            Callee::Method { receiver, name } => ArgumentOf::Method { receiver, name },
+        };
+        let known = self.resolver.providers().known_strings(call, site.index, self.resolver, context);
+        for value in known.map(|known| known.values).unwrap_or_default() {
+            let escaped = value.value.replace('\\', "\\\\").replace('\'', "\\'");
+            let mut item = Self::item(value.value.clone(), CompletionKind::Value);
+            item.insert_text = if in_string { escaped } else { format!("'{escaped}'") };
+            item.detail = value.detail;
+            self.push(item, 0);
         }
         // The cases of an enum-typed parameter.
         if !in_string {

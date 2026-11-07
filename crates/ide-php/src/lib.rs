@@ -37,6 +37,9 @@
 //! - [`meta`]: `.phpstorm.meta.php` directives ([`meta::PhpStormMeta`]):
 //!   return-type overrides and exit points applied through a type provider,
 //!   expected argument and return values for completion.
+//! - [`symfony`]: a Symfony project's YAML configuration (services, routes)
+//!   and its merge with the `#[Route]` names and repository entities of the
+//!   summaries ([`symfony::SymfonyProject`]).
 //! - [`complete`]: context-aware code completion
 //!   ([`complete::Completions`]): members, variables, keywords, names with
 //!   auto-import, named arguments, expected values, enum cases and array
@@ -79,6 +82,7 @@ pub mod semantic;
 pub mod signature;
 pub mod stubs;
 pub mod summary;
+pub mod symfony;
 pub mod syntax;
 pub mod types;
 

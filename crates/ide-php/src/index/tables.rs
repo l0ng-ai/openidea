@@ -21,7 +21,8 @@ pub(super) const SHORT_NAMES: MultiDef = MultimapTableDefinition::new("short_nam
 pub(super) const SUBCLASSES: MultiDef = MultimapTableDefinition::new("subclasses");
 pub(super) const NAMESPACES: MultiDef = MultimapTableDefinition::new("namespaces");
 /// [`META_FILES_KEY`] → the files with `.phpstorm.meta.php` directives;
-/// [`LARAVEL_FILES_KEY`] → the files with Laravel facts.
+/// [`LARAVEL_FILES_KEY`] → the files with Laravel facts;
+/// [`SYMFONY_FILES_KEY`] → the files with Symfony facts.
 pub(super) const META_FILES: MultiDef = MultimapTableDefinition::new("meta_files");
 
 /// lower-case word → the [`file_id`]s of the files containing it.
@@ -38,6 +39,10 @@ pub const META_FILES_KEY: &str = "phpstorm_meta";
 /// The key of [`META_FILES`] listing the files with Laravel bindings,
 /// migrations or casts.
 pub const LARAVEL_FILES_KEY: &str = "laravel";
+
+/// The key of [`META_FILES`] listing the files with `#[Route]` names or
+/// repository entities.
+pub const SYMFONY_FILES_KEY: &str = "symfony";
 
 const MULTIMAPS: [MultiDef; 5] = [FQNS, SHORT_NAMES, SUBCLASSES, NAMESPACES, META_FILES];
 
@@ -121,6 +126,10 @@ fn entries(file: &str, summary: &FileSummary) -> Vec<Entry> {
     if !summary.laravel.is_empty() {
         let decl = Decl { kind: DeclKind::Namespace, fqn: String::new(), file: file.to_owned(), index: 0 };
         out.push(Entry { table: 4, key: LARAVEL_FILES_KEY.to_owned(), decl });
+    }
+    if !summary.symfony.is_empty() {
+        let decl = Decl { kind: DeclKind::Namespace, fqn: String::new(), file: file.to_owned(), index: 0 };
+        out.push(Entry { table: 4, key: SYMFONY_FILES_KEY.to_owned(), decl });
     }
     // Every namespace that holds a declaration is a child of its parent,
     // up to the global namespace.

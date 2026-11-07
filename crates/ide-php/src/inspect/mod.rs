@@ -14,7 +14,8 @@
 //!   members and parameters; [`control`]: unreachable statements, missing
 //!   returns, `void` functions returning a value and `never` functions
 //!   returning; [`level`]: syntax newer than the project's PHP version and
-//!   uses of deprecated symbols); [`PhpEngine::set_inspections`] replaces the
+//!   uses of deprecated symbols; [`routes`]: Symfony route names no route
+//!   defines); [`PhpEngine::set_inspections`] replaces the
 //!   set, and [`PhpEngine::configure_inspections`] builds it from the
 //!   settings ([`InspectionConfig`]: the inspection profile in effect, where
 //!   the engine's inspections are `lsp:php:<Id>`, turned off or with their
@@ -51,6 +52,7 @@ pub(crate) mod fixes;
 pub(crate) mod intentions;
 pub mod level;
 pub mod members;
+pub mod routes;
 pub(crate) mod runner;
 pub mod suppress;
 #[cfg(test)]
@@ -143,6 +145,7 @@ impl Inspections {
             Arc::new(control::NeverReturn),
             Arc::new(level::LanguageLevel),
             Arc::new(level::Deprecation),
+            Arc::new(routes::UndefinedRoute),
         ])
     }
 

@@ -25,6 +25,10 @@
 //! and from the index otherwise. Every document edit and watcher batch bumps
 //! the [modification counter](PhpEngine::modification_count) that the type
 //! cache of [`PhpEngine::resolver`] is dropped on.
+//!
+//! A Symfony project's YAML configuration ([`SymfonyConfig`]) is read from
+//! `config/` on first use and kept until a rescan or a watcher batch that
+//! touches a YAML file.
 
 #[cfg(test)]
 mod tests;
@@ -48,6 +52,7 @@ use crate::names::{NameKind, fqn_eq};
 use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
 use crate::stubs::{BundledStubs, StubFilter, StubSet};
 use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, LaravelFacts};
+use crate::symfony::{SymfonyConfig, SymfonyProject};
 use crate::syntax::{ParseCache, ParsedFile};
 use crate::types::{ClassModel, Declarations, Resolver, Type, TypeCache};
 
@@ -163,6 +168,9 @@ struct Shared {
     inspections: Arc<Runner>,
     /// The settings `inspection_set` was built from.
     inspection_config: Mutex<InspectionConfig>,
+    /// The project's Symfony configuration, read on first use; dropped
+    /// when a YAML file changes.
+    symfony_config: Mutex<Option<Arc<SymfonyConfig>>>,
 }
 
 impl PhpEngine {
@@ -197,6 +205,7 @@ impl PhpEngine {
             inspection_set: RwLock::new(Inspections::builtin()),
             inspections: Arc::default(),
             inspection_config: Mutex::new(InspectionConfig::default()),
+            symfony_config: Mutex::new(None),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -337,6 +346,7 @@ impl PhpEngine {
 
     /// Loads the layout again and brings the indexes up to date.
     pub fn rescan(&self) {
+        *self.shared.symfony_config.lock() = None;
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
         let mut q = self.shared.queue.lock();
         q.rescan = true;
@@ -349,6 +359,12 @@ impl PhpEngine {
     /// A watcher batch: files created or modified, and files or folders
     /// removed. Paths that can't matter (other languages) are dropped here.
     pub fn files_changed(&self, changed: &[PathBuf], removed: &[PathBuf]) {
+        if changed.iter().chain(removed).any(|p| is_yaml_path(p) || p.ends_with("config")) {
+            // The Symfony configuration is read again on next use.
+            *self.shared.symfony_config.lock() = None;
+            self.shared.modification.fetch_add(1, Ordering::SeqCst);
+            self.shared.inspect_open_documents();
+        }
         let changed: Vec<PathBuf> = changed
             .iter()
             .filter(|p| is_php_path(p) || is_manifest_name(p) || p.is_dir())
@@ -429,6 +445,18 @@ impl PhpEngine {
     pub fn open_document(&self, path: &Path) -> Option<OpenDocument> {
         let path = normalize(path);
         self.shared.documents.lock().values().find(|d| d.path == path).cloned()
+    }
+
+    /// The project's Symfony configuration (`config/*.yaml`), read once
+    /// until a YAML file changes.
+    pub fn symfony_config(&self) -> Arc<SymfonyConfig> {
+        if let Some(config) = self.shared.symfony_config.lock().clone() {
+            return config;
+        }
+        let root = self.shared.layout_config.lock().root.clone();
+        let config = Arc::new(SymfonyConfig::load(&root));
+        *self.shared.symfony_config.lock() = Some(config.clone());
+        config
     }
 
     /// Every open document.
@@ -663,6 +691,27 @@ impl Declarations for PhpEngine {
         summaries.sort_by(|a, b| a.0.cmp(&b.0));
         LaravelFacts::merge_located(summaries.iter().map(|(path, summary)| (Some(path.as_path()), &summary.laravel)))
     }
+
+    /// The configuration, then the facts of the indexed files that have
+    /// some (their open buffers first) and of open buffers not indexed
+    /// yet, in path order.
+    fn symfony(&self) -> SymfonyProject {
+        let indexed = self.index().and_then(|index| index.symfony_files().ok()).unwrap_or_default();
+        let mut summaries: Vec<(PathBuf, Arc<FileSummary>)> =
+            indexed.iter().filter_map(|path| Some((path.clone(), self.shared_summary(path).ok()??))).collect();
+        let open: Vec<OpenDocument> = self.shared.documents.lock().values().cloned().collect();
+        for document in open {
+            if !indexed.contains(&document.path) {
+                let summary = self.open_summary(&document);
+                if !summary.symfony.is_empty() {
+                    summaries.push((document.path.clone(), summary));
+                }
+            }
+        }
+        summaries.sort_by(|a, b| a.0.cmp(&b.0));
+        let config = SymfonyConfig::clone(&self.symfony_config());
+        SymfonyProject::new(config, summaries.iter().map(|(path, summary)| (Some(path.as_path()), &summary.symfony)))
+    }
 }
 
 /// `.phpstorm.meta.php`, or a file inside a `.phpstorm.meta.php` directory.
@@ -674,6 +723,10 @@ impl Drop for PhpEngine {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+fn is_yaml_path(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()), Some("yaml" | "yml"))
 }
 
 fn is_manifest_name(path: &Path) -> bool {

@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use super::{
     ClassLike, ConstantKind, DocBlock, DocTemplate, DocType, FileSummary, LaravelFacts, Loc, Param, Property,
-    PropertyAccess, TraitRule, TypeHint, Variance, Visibility,
+    PropertyAccess, SymfonyFacts, TraitRule, TypeHint, Variance, Visibility,
 };
 use crate::meta::{MetaDirectives, MetaValue, OverrideKind};
 use crate::types::LazyType;
@@ -57,7 +57,19 @@ pub(super) fn render(summary: &FileSummary) -> String {
     }
     meta(&mut out, &summary.meta);
     laravel(&mut out, &summary.laravel);
+    symfony(&mut out, &summary.symfony);
     out
+}
+
+/// Symfony routes and repository entities, one per line.
+fn symfony(out: &mut String, facts: &SymfonyFacts) {
+    for route in &facts.routes {
+        let path = route.path.as_deref().map(|path| format!(" {path}")).unwrap_or_default();
+        let _ = writeln!(out, "symfony route '{}'{path} {}", route.name, name_loc(route.loc));
+    }
+    for known in &facts.repositories {
+        let _ = writeln!(out, "symfony repository {} => {}", known.repository, known.entity);
+    }
 }
 
 /// Laravel bindings, migrated tables and casts, one per line.

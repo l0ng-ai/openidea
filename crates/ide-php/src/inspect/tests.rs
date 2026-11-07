@@ -390,6 +390,7 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpNeverFunctionReturns",
             "PhpLanguageLevel",
             "PhpDeprecation",
+            "PhpUndefinedRoute",
         ]
     );
 }

@@ -2,8 +2,9 @@
 //!
 //! - **Container:** `$container->get(Foo::class)` (and `get('App\Foo')`) on
 //!   a PSR or Symfony container is `Foo`: with autowiring, a service's id is
-//!   its class name. Ids that only `config/services.yaml` defines aren't
-//!   known yet.
+//!   its class name. Ids `config/services.yaml` defines
+//!   ([`crate::symfony::SymfonyConfig`]) are the class their definition
+//!   makes, through aliases and parents: `get('mailer.default')`.
 //! - **Doctrine:** `getRepository(Product::class)` on an object manager or
 //!   a manager registry is the repository class the entity names
 //!   (`#[ORM\Entity(repositoryClass: ProductRepository::class)]`), else
@@ -14,6 +15,15 @@
 //!   `findAll()`, `findBy()` and `findBy{Field}()` are `list<Product>`, and
 //!   `count()` and `countBy{Field}()` are `int`. Declared and documented
 //!   types win: the provider only answers where they don't name a class.
+//!   A repository without generics gets its entity from the entity whose
+//!   mapping names it, or from its `parent::__construct($registry,
+//!   Product::class)` ([`crate::summary::SymfonyFacts`]).
+//! - **Routes** ([`TypeProvider::known_strings`]): the first argument of
+//!   `path()` and `url()`, of `generateUrl()` and `redirectToRoute()` on a
+//!   controller and of `generate()` on a URL generator is one of the route
+//!   names of `config/routes*.yaml` and the `#[Route]` attributes, for
+//!   completion and the `PhpUndefinedRoute` inspection. Nothing is known
+//!   (and so nothing reported) while the project has no named route.
 //! - **Members** ([`TypeProvider::magic_members`]): on such a repository,
 //!   `findBy{Field}`, `findOneBy{Field}` and `countBy{Field}` for each of
 //!   the entity's properties.
@@ -24,7 +34,10 @@
 //! documentation and their MIT source (`EntityRepository::__call`,
 //! `ObjectManager::getRepository`).
 
-use super::{CallKind, CallSite, MagicMember, MagicTarget, TypeProvider, provided};
+use super::{
+    ArgumentOf, CallKind, CallSite, KnownKind, KnownString, KnownStrings, MagicMember, MagicTarget, TypeProvider,
+    provided,
+};
 use crate::types::{Context, LazyType, Resolver, Type};
 
 const FRAMEWORK_BUNDLE: &str = "Symfony\\Bundle\\FrameworkBundle\\FrameworkBundle";
@@ -34,6 +47,15 @@ const OBJECT_MANAGER: &str = "Doctrine\\Persistence\\ObjectManager";
 const MANAGER_REGISTRY: &str = "Doctrine\\Persistence\\ManagerRegistry";
 const OBJECT_REPOSITORY: &str = "Doctrine\\Persistence\\ObjectRepository";
 const ENTITY_REPOSITORY: &str = "Doctrine\\ORM\\EntityRepository";
+const ABSTRACT_CONTROLLER: &str = "Symfony\\Bundle\\FrameworkBundle\\Controller\\AbstractController";
+const URL_GENERATOR: &str = "Symfony\\Component\\Routing\\Generator\\UrlGeneratorInterface";
+
+/// Functions taking a route name first (Twig's, sometimes defined in PHP).
+const ROUTE_FUNCTIONS: [&str; 2] = ["path", "url"];
+/// Controller methods taking a route name first.
+const ROUTE_METHODS: [&str; 2] = ["generateUrl", "redirectToRoute"];
+/// Every call name whose route argument is known.
+const ROUTE_CALLS: &[&str] = &["path", "url", "generateUrl", "redirectToRoute", "generate"];
 
 /// What a repository method returns, by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,15 +113,24 @@ impl SymfonyProvider {
         })
     }
 
-    /// The service `get()` returns for an id naming a class.
+    /// The service `get()` returns: the class the configuration's
+    /// definition of the id makes, else the class the id names.
     fn service(resolver: &Resolver<'_>, class: &str, string: &str) -> Option<Type> {
+        let id = if class.is_empty() { string } else { class };
+        let configured = resolver.symfony().config.service_class(id);
+        if let Some(configured) = configured.filter(|configured| !configured.eq_ignore_ascii_case(id)) {
+            let configured = configured.trim_start_matches('\\');
+            return Some(match resolver.class_model(configured) {
+                Some(model) => Type::named(model.fqn()),
+                None => Type::named(configured),
+            });
+        }
         if !class.is_empty() {
             return Some(match resolver.class_model(class) {
                 Some(model) => Type::named(model.fqn()),
                 None => Type::named(class),
             });
         }
-        // A string id that isn't a class: a services.yaml id, not known yet.
         let model = resolver.class_model(string.trim_start_matches('\\'))?;
         Some(Type::named(model.fqn()))
     }
@@ -143,7 +174,55 @@ impl SymfonyProvider {
                 return entity;
             }
         }
+        // A repository without generics: what the entities' mappings and
+        // the repositories' constructors say.
+        let project = resolver.symfony();
+        for model in resolver.class_models(receiver, context) {
+            let mut class = Some(model);
+            for _ in 0..8 {
+                let Some(current) = class else { break };
+                if let Some(entity) = project.entity_of(current.fqn()) {
+                    return Some(
+                        resolver.class_model(entity).map_or_else(|| entity.to_owned(), |e| e.fqn().to_owned()),
+                    );
+                }
+                class = current.class.extends.first().and_then(|parent| resolver.class_model(parent));
+            }
+        }
         None
+    }
+
+    /// See [`TypeProvider::known_strings`].
+    fn routes(call: ArgumentOf<'_>, index: usize, resolver: &Resolver<'_>, context: &Context) -> Option<KnownStrings> {
+        if index != 0 {
+            return None;
+        }
+        let takes_route = match call {
+            ArgumentOf::Function(fqn) => {
+                ROUTE_FUNCTIONS.iter().any(|name| name.eq_ignore_ascii_case(call.name()))
+                    && resolver.declarations().function(fqn).is_none()
+            }
+            ArgumentOf::Method { receiver, name } => {
+                (ROUTE_METHODS.iter().any(|known| known.eq_ignore_ascii_case(name))
+                    && Self::is_a(resolver, receiver, context, &[ABSTRACT_CONTROLLER]))
+                    || (name.eq_ignore_ascii_case("generate")
+                        && Self::is_a(resolver, receiver, context, &[URL_GENERATOR]))
+            }
+        };
+        if !takes_route {
+            return None;
+        }
+        let project = resolver.symfony();
+        if project.routes.is_empty() {
+            return None;
+        }
+        let mut values: Vec<KnownString> = Vec::new();
+        for route in &project.routes {
+            if !values.iter().any(|known| known.value == route.name) {
+                values.push(KnownString { value: route.name.clone(), detail: route.path.clone() });
+            }
+        }
+        Some(KnownStrings { kind: KnownKind::Route, values })
     }
 
     /// The resolve step of a call: `args` are the receiver and what the
@@ -273,6 +352,23 @@ impl TypeProvider for SymfonyProvider {
             return Vec::new();
         }
         Self::members_of(resolver, receiver, context)
+    }
+
+    fn known_string_calls(&self) -> &'static [&'static str] {
+        ROUTE_CALLS
+    }
+
+    fn known_strings(
+        &self,
+        call: ArgumentOf<'_>,
+        index: usize,
+        resolver: &Resolver<'_>,
+        context: &Context,
+    ) -> Option<KnownStrings> {
+        if !Self::installed(resolver) {
+            return None;
+        }
+        Self::routes(call, index, resolver, context)
     }
 }
 
