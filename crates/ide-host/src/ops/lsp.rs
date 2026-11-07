@@ -520,11 +520,13 @@ fn validate_indexed_symbol(
 }
 
 fn merge_indexed_references(mut server: References, symbol: &crate::plugins::navigation::IndexedSymbol) -> References {
-    let mut seen: std::collections::HashSet<_> = server.locations.iter().cloned().collect();
+    let key =
+        |location: &Location| (dunce::simplified(&location.path).to_path_buf(), location.range, location.uri.clone());
+    let mut seen: std::collections::HashSet<_> = server.locations.iter().map(key).collect();
     for file in &symbol.files {
         for range in &file.ranges {
             let location = Location::file(file.path.clone(), *range);
-            if seen.insert(location.clone()) {
+            if seen.insert(key(&location)) {
                 server.locations.push(location);
             }
         }
@@ -922,17 +924,17 @@ fn merge_indexed_rename(
     let server = std::mem::take(&mut renamed.edit.files);
     let mut additions: Vec<Vec<FileEdit>> = vec![vec![]; server.len() + 1];
     for file in &symbol.files {
-        let mut path = file.path.clone();
+        let mut path = dunce::simplified(&file.path).to_path_buf();
         let mut at = server.len();
         for (index, operation) in server.iter().enumerate() {
             match operation {
-                FileEdit::Edit { path: target, .. } if target.0 == path => {
+                FileEdit::Edit { path: target, .. } if dunce::simplified(target) == path.as_path() => {
                     at = index;
                     break;
                 }
                 FileEdit::Rename { from, to } => {
-                    if let Ok(suffix) = path.strip_prefix(&from.0) {
-                        path = to.join(suffix);
+                    if let Ok(suffix) = path.strip_prefix(dunce::simplified(from)) {
+                        path = dunce::simplified(to).join(suffix);
                     }
                 }
                 _ => {}
@@ -1345,8 +1347,14 @@ mod tests {
                 ranges: vec![range, other],
             }],
         };
-        let location = Location::file(shared.clone(), range);
-        let native_location = Location::file(native.clone(), range);
+        // Native file URIs have ordinary Windows paths; index snapshots retain
+        // canonical verbatim paths. Both identify the same file and edit batch.
+        let server_shared = dunce::simplified(&shared).to_path_buf();
+        let server_native = dunce::simplified(&native).to_path_buf();
+        #[cfg(windows)]
+        assert_ne!(shared, server_shared);
+        let location = Location::file(server_shared.clone(), range);
+        let native_location = Location::file(server_native.clone(), range);
         let merged = merge_indexed_references(
             References {
                 locations: vec![location.clone(), native_location.clone()],
@@ -1366,7 +1374,7 @@ mod tests {
         };
         let mut renamed = Renamed {
             edit: WorkspaceEdit {
-                files: vec![edit(shared.clone().into(), range), edit(native.clone().into(), range)],
+                files: vec![edit(server_shared.clone().into(), range), edit(server_native.into(), range)],
                 ..Default::default()
             },
             incomplete: Some(ReferencesIncomplete::FilesSkipped),
@@ -1388,12 +1396,13 @@ mod tests {
         // A class rename may move its file before editing the new path. Indexed
         // anchors still describe the original file and must join that text batch.
         let moved = root.join("moved.idx");
+        let server_moved = dunce::simplified(&moved).to_path_buf();
         let mut renamed = Renamed {
             edit: WorkspaceEdit {
                 files: vec![
-                    FileEdit::Rename { from: shared.clone().into(), to: moved.clone().into() },
+                    FileEdit::Rename { from: server_shared.into(), to: server_moved.clone().into() },
                     FileEdit::Edit {
-                        path: moved.clone().into(),
+                        path: server_moved.into(),
                         version: None,
                         edits: vec![TextEdit { range, new_text: "moved".into() }],
                     },
