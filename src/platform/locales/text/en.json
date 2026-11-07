@@ -1,4 +1,6 @@
 {
+  "Overwrite existing branch": "Overwrite existing branch",
+  "Branch '{n}' already exists": "Branch '{n}' already exists",
   "Cannot copy reference": "Cannot copy reference",
   "Decompiled assembly (read-only).": "Decompiled assembly (read-only).",
   "Connect through:": "Connect through:",
@@ -55,5 +57,6 @@
   "Recommended": "Recommended",
   "No preview": "No preview",
   "Running in the background": "Running in the background",
-  "Couldn't stop the background task": "Couldn't stop the background task"
+  "Couldn't stop the background task": "Couldn't stop the background task",
+  "Branch '{name}'": "Branch '{name}'"
 }

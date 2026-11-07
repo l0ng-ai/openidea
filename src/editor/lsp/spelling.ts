@@ -134,11 +134,15 @@ async function changeTo(view: EditorView, typo: PlacedTypo) {
   });
 }
 
-/** Typo quick fixes at the caret (⌥↵), or none. */
+/**
+ * Typo quick fixes at the caret (⌥↵), or none. Dictionary saves write
+ * settings, so they are offered in read-only documents too (library sources,
+ * stubs); only the in-place correction needs a writable file.
+ */
 export function spellingIntentions(view: EditorView): ListPopupItem[] {
   const doc = docOf(view);
   const sel = view.state.selection.main;
-  if (!doc || doc.readOnly || !sel.empty || !spellingEnabled()) return [];
+  if (!doc || !sel.empty || !spellingEnabled()) return [];
   const typo = typoAt(view.state, sel.head);
   if (!typo) return [];
   const hasProject = !!useProject.getState().project;
@@ -162,15 +166,20 @@ export function spellingIntentions(view: EditorView): ListPopupItem[] {
     { kind: "separator" },
     ...intentionControls({ id: SPELLING_INSPECTION, name: "Typo" }),
   ];
+  const change: ListPopupItem[] = doc.readOnly
+    ? []
+    : [
+        {
+          id: "spelling.change",
+          label: typo.context === "code" ? "Typo: Rename to…" : "Typo: Change to…",
+          icon: "bulb-fix",
+          emphasis: true,
+          run: () => changeTo(view, typo),
+          submenu: saveSubmenu,
+        },
+      ];
   return [
-    {
-      id: "spelling.change",
-      label: typo.context === "code" ? "Typo: Rename to…" : "Typo: Change to…",
-      icon: "bulb-fix",
-      emphasis: true,
-      run: () => changeTo(view, typo),
-      submenu: saveSubmenu,
-    },
+    ...change,
     {
       id: "spelling.save",
       label: tx`Save '${typo.word}' to dictionary`,
