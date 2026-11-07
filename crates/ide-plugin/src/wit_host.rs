@@ -762,7 +762,7 @@ impl events::Host for StoreData {
         {
             return Ok(Err(e));
         }
-        self.host.subscribe(kind, true);
+        self.host.subscribe(kind);
         Ok(Ok(()))
     }
 
@@ -774,7 +774,7 @@ impl events::Host for StoreData {
     }
 
     fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
-        self.host.unsubscribe_paths(&kind);
+        self.host.unsubscribe(&kind);
         Ok(())
     }
 }

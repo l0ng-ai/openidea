@@ -421,9 +421,8 @@ The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 
 API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
 (`events.subscribe-paths`). The host matches project-relative globs before
-queueing an event or waking an idle plugin. `file-saved` works the same way;
-`files-changed` filters can also be registered for the filesystem event producer
-(see #1948). Patterns use `/`, `*` stays within a directory, and `**` crosses
+queueing an event or waking an idle plugin. `file-saved` works the same way.
+Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
 parent traversal and malformed patterns fail without replacing the old filter.
 

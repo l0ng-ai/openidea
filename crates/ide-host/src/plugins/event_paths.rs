@@ -4,7 +4,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use ide_plugin::{EventKind, HostError, WorkbenchEvent};
 use std::{
     collections::{BTreeSet, HashMap},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 #[derive(Clone, Default)]
@@ -21,10 +21,8 @@ pub(super) struct PathFilter {
 
 impl PathFilter {
     pub fn new(kind: &str, globs: Vec<String>) -> Result<Self, HostError> {
-        if !matches!(kind, "file-opened" | "file-saved" | "files-changed") {
-            return Err(HostError::Invalid(
-                "subscribe-paths supports file-opened, file-saved and files-changed".into(),
-            ));
+        if !matches!(kind, "file-opened" | "file-saved") {
+            return Err(HostError::Invalid("subscribe-paths supports file-opened and file-saved".into()));
         }
         if globs.len() > 64 {
             return Err(HostError::Invalid("at most 64 event path globs".into()));
@@ -66,10 +64,10 @@ impl Subscriptions {
     pub fn remove(&mut self, plugin: &str) -> bool {
         self.kinds.remove(plugin).is_some() | self.paths.remove(plugin).is_some()
     }
-    pub fn set(&mut self, plugin: &str, kind: EventKind, on: bool) -> bool {
+    /// Subscribes to every event of `kind`, dropping its path filter.
+    pub fn set(&mut self, plugin: &str, kind: EventKind) -> bool {
         let removed = self.paths.get_mut(plugin).is_some_and(|filters| filters.remove(kind.name()).is_some());
-        let kinds = self.kinds.entry(plugin.to_owned()).or_default();
-        (if on { kinds.insert(kind) } else { kinds.remove(&kind) }) | removed
+        self.kinds.entry(plugin.to_owned()).or_default().insert(kind) | removed
     }
     pub fn set_paths(&mut self, plugin: &str, kind: &str, filter: PathFilter) -> bool {
         let mut changed = false;
@@ -88,18 +86,6 @@ impl Subscriptions {
 }
 
 impl PluginHost {
-    /// Applies a registered path filter to a batch. The files-changed producer
-    /// can use the same matcher as individual editor events (no filter: keep all).
-    pub fn filter_event_paths(&self, plugin: &str, kind: &str, root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
-        let filter = self.shared.subscriptions.lock().paths.get(plugin).and_then(|p| p.get(kind)).cloned();
-        let Some(filter) = filter else { return paths.to_vec() };
-        let root = ide_plugin::resolve_real(root);
-        if !self.shared.workspace().is_some_and(|w| w.projects().iter().any(|r| ide_plugin::resolve_real(r) == root)) {
-            return vec![];
-        }
-        paths.iter().filter(|path| filter.matches(&root, path)).cloned().collect()
-    }
-
     pub(super) fn filter_path_events(
         &self,
         plugin: &LoadedPlugin,
@@ -155,7 +141,7 @@ mod tests {
         assert!(PathFilter::new("editor-focused", vec!["*".into()]).is_err());
         assert!(PathFilter::new("file-saved", vec!["*".into(); 65]).is_err());
         assert!(PathFilter::new("file-saved", vec!["./".repeat(513)]).is_err());
-        assert!(PathFilter::new("files-changed", vec![]).is_ok());
+        assert!(PathFilter::new("file-saved", vec![]).is_ok());
     }
 
     #[test]
@@ -180,10 +166,10 @@ mod tests {
         assert!(subs.kinds["plugin"].contains(&EventKind::FileOpened));
         subs.set_paths("plugin", "file-opened", PathFilter::new("file-opened", vec![]).unwrap());
         assert!(subs.paths["plugin"]["file-opened"].globs.is_empty());
-        subs.set("plugin", EventKind::FileOpened, true);
+        subs.set("plugin", EventKind::FileOpened);
         assert!(subs.paths["plugin"].is_empty());
-        subs.set_paths("plugin", "files-changed", PathFilter::new("files-changed", vec!["*".into()]).unwrap());
-        assert!(subs.unsubscribe("plugin", "files-changed"));
+        subs.set_paths("plugin", "file-saved", PathFilter::new("file-saved", vec!["*".into()]).unwrap());
+        assert!(subs.unsubscribe("plugin", "file-saved"));
         assert!(subs.remove("plugin"));
         assert!(subs.paths.is_empty() && subs.kinds.is_empty());
     }

@@ -22,10 +22,6 @@ impl Plugin for Fixture {
                 host::storage::set("filter", glob)?;
                 Ok(None)
             }
-            "batch" => {
-                host::subscribe_paths("files-changed", &[arg.unwrap_or("**/*.yaml")])?;
-                Ok(None)
-            }
             "all" => {
                 host::subscribe(EventKind::FileOpened)?;
                 Ok(None)

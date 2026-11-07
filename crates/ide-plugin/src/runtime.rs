@@ -177,16 +177,11 @@ pub trait HostApi: Send + Sync {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError>;
-    fn subscribe(&self, kind: EventKind, on: bool);
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
-        let _ = (kind, globs);
-        Err(HostError::Invalid("path subscriptions are unavailable".into()))
-    }
-    fn unsubscribe_paths(&self, kind: &str) {
-        if let Some(kind) = EventKind::parse(kind) {
-            self.subscribe(kind, false);
-        }
-    }
+    /// Delivers every event of `kind`, dropping its path filter.
+    fn subscribe(&self, kind: EventKind);
+    /// Delivers `kind` (`file-opened`, `file-saved`) only for paths matching `globs`.
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
+    fn unsubscribe(&self, kind: &str);
     /// Starts a progress indicator; cancelling it from the UI cancels `cancel`.
     fn task_begin(&self, client: Option<&str>, title: String, cancellable: bool, cancel: CancellationToken) -> u64;
     fn task_report(&self, id: u64, done: u32, total: Option<u32>, message: Option<String>);

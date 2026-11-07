@@ -3618,12 +3618,6 @@ fn path_filtered_events_do_not_wake_idle_plugins_and_recheck_queued_filters() {
     deliver(vec![WorkbenchEvent::FileOpened(other)]);
     assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
 
-    f.run("test.path-events", "batch", Some("config/*.yaml")).unwrap();
-    let paths = vec![f.project.join("config/app.yaml"), f.project.join("src/main.rs")];
-    assert_eq!(f.host.filter_event_paths("test.path-events", "files-changed", &f.project, &paths), paths[..1]);
-    f.host.set_workspace(None);
-    assert!(f.host.filter_event_paths("test.path-events", "files-changed", &f.project, &paths).is_empty());
-    f.host.set_workspace(Some(f.workspace.clone()));
     f.host.set_enabled("test.path-events", false).unwrap();
     assert!(!f.host.event_kinds().contains(&WorkbenchEvent::FileOpened(String::new()).kind()));
 }

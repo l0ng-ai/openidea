@@ -1166,8 +1166,8 @@ impl HostApi for PluginApi {
         })
     }
 
-    fn subscribe(&self, kind: EventKind, on: bool) {
-        if self.shared.subscriptions.lock().set(self.id(), kind, on) {
+    fn subscribe(&self, kind: EventKind) {
+        if self.shared.subscriptions.lock().set(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1180,7 +1180,7 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
-    fn unsubscribe_paths(&self, kind: &str) {
+    fn unsubscribe(&self, kind: &str) {
         if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }

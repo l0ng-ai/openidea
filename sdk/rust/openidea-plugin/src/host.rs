@@ -804,7 +804,7 @@ pub fn locale() -> String {
     imp::locale()
 }
 
-/// Subscribe to project-relative path globs for file-opened, file-saved or files-changed.
+/// Subscribe to project-relative path globs for file-opened or file-saved.
 /// Replaces the previous filter. Empty globs pause delivery; `subscribe` restores all paths.
 /// Requires `events`. Register during activation before the events you want to observe.
 pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
