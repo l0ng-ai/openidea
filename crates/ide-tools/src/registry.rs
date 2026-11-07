@@ -368,7 +368,8 @@ pub static TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "intelephense",
-        display: "Intelephense (PHP)",
+        // Only needed when Settings › PHP selects it instead of the built-in engine.
+        display: "Intelephense (PHP fallback)",
         kind: LanguageServer,
         commands: &["intelephense"],
         method: Method::Npm { packages: &["intelephense"] },

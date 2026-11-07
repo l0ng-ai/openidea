@@ -422,7 +422,7 @@ The design:
 
   Add them to `perf/budgets.json` and the `pnpm perf:rust` runner, then optimise until they pass. Also measure memory against Intelephense.
 
-- [ ] Phase 6.4: Switch to the native engine
+- [x] Phase 6.4: Switch to the native engine
       This needed a product decision (`needs-decision`): keep Intelephense as an optional fallback, or remove it.
       **Decided (2026-11-07, by the project owner): make the native engine the default and keep Intelephense as an optional fallback.** Users can still pick Intelephense in `PhpSettings.engine`; it is no longer the default. Do not remove it.
   1. Default `PhpSettings.engine` to Native, for new and existing settings that never chose an engine.

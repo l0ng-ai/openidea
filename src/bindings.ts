@@ -5390,9 +5390,12 @@ export type PathCompletion = {
 	dir: boolean,
 };
 
-/**  Settings › PHP › Engine. */
+/**
+ *  Settings › PHP › Engine. Only the keys a user sets are stored, so settings that never
+ *  chose an engine get the default.
+ */
 export type PhpEngineKind = 
-/**  The Intelephense language server. */
+/**  The Intelephense language server: the optional fallback. */
 "intelephense" | 
 /**  The built-in engine: indexes the project in-process. */
 "native";
@@ -5416,8 +5419,8 @@ export type PhpSettings = {
 	 */
 	stubs?: string[],
 	/**
-	 *  Which engine answers code insight for PHP: the Intelephense language server
-	 *  or the built-in native engine (`ide-php`).
+	 *  Which engine answers code insight for PHP: the built-in native engine (`ide-php`,
+	 *  the default) or the Intelephense language server as a fallback.
 	 */
 	engine?: PhpEngineKind,
 };

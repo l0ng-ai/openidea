@@ -118,8 +118,8 @@ const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
 );
 
 const PHP_ENGINE_OPTIONS: SelectOption[] = [
-  { value: "intelephense", label: "Intelephense", detail: "language server" },
-  { value: "native", label: "Built-in", detail: "experimental" },
+  { value: "native", label: "Built-in", detail: "default" },
+  { value: "intelephense", label: "Intelephense", detail: "language server, fallback" },
 ];
 
 export function PhpPage() {
@@ -135,10 +135,10 @@ export function PhpPage() {
       <Section>
         <Row
           label="Code insight engine"
-          hint="Which engine answers completion, navigation and inspections in PHP files: the Intelephense language server, or the engine built into OpenIDEA, which indexes the project itself. With the built-in engine Intelephense is not started."
+          hint="Which engine answers completion, navigation and inspections in PHP files: the engine built into OpenIDEA, which indexes the project itself, or the Intelephense language server as a fallback (npm i -g intelephense). Intelephense is started only when it is selected."
         >
           <Select
-            value={engine || "intelephense"}
+            value={engine || "native"}
             options={PHP_ENGINE_OPTIONS}
             onChange={setEngine}
             aria-label="Code insight engine"

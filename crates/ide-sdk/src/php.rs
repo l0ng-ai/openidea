@@ -1,6 +1,10 @@
 //! The PHP language level: the one chosen in Settings › PHP, else the one the root
 //! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
 //! the Intelephense storage that goes with it; and the stub sets and include paths Intelephense indexes.
+//!
+//! The native engine (the default, `ide-php`) reads the level, stub sets and include paths
+//! too. The Intelephense settings ([`configure_intelephense_storage`], [`intelephense_stubs`])
+//! serve the fallback: Intelephense runs only when Settings › PHP › Engine selects it.
 
 use crate::apply::{merge, merge_init_options, setting_path};
 use ide_core::settings::Settings;

@@ -200,24 +200,62 @@ async fn the_native_engine_keeps_the_php_language_servers_stopped() {
     host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     assert!(project.services.get(&LanguageId::new("php")).is_some(), "the engine is registered for PHP");
-    ops::project::set_settings(&host, "main", SettingsScope::Project, "languages.php.engine", "\"native\"").unwrap();
 
+    // The native engine is the default: no setting is needed.
     let doc = ops::doc::open(&host, "main", root.join("src").join("Foo.php")).await.unwrap();
     assert_eq!(doc.language.as_str(), "php");
-    // The engine answers nothing yet (phase 1.10): requests fall through to an
-    // LSP path without PHP servers.
     let _ = ops::lsp::lsp_hover(&host, "main", ide_core::RequestId(1), doc.id, Pos { line: 3, col: 7 }).await;
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
         let servers = ops::lsp::lsp_servers(&host, "main").unwrap();
         assert!(
-            !servers.iter().any(|s| s.name == "intelephense" || s.name == "phpactor"),
+            !servers.iter().any(|s| s.name == "intelephense"),
             "{:?}",
             servers.iter().map(|s| &s.name).collect::<Vec<_>>()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     host.close_project("main");
+}
+
+/// Settings › PHP › Engine set to Intelephense: the native engine stops and the
+/// Intelephense fallback of `languages/php.toml` serves PHP (listed even when it
+/// isn't installed); back to Native, it goes away again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn switching_to_the_intelephense_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("shop");
+    write(&root.join("composer.json"), r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#);
+    write(&root.join("src/Foo.php"), "<?php\nnamespace App;\n\nclass Foo {}\n");
+    let host = host(&base.join("app"));
+    host.trust.decide(&root, true, false).unwrap();
+    let project = host.open_project("main", &root).unwrap();
+    let doc = ops::doc::open(&host, "main", root.join("src").join("Foo.php")).await.unwrap();
+    let intelephense_listed = || ops::lsp::lsp_servers(&host, "main").unwrap().iter().any(|s| s.name == "intelephense");
+    until("the native engine", || project.php.engine().is_some()).await;
+    assert!(!intelephense_listed());
+
+    ops::project::set_settings(&host, "main", SettingsScope::Project, "languages.php.engine", "\"intelephense\"")
+        .unwrap();
+    until("the native engine to stop", || project.php.engine().is_none()).await;
+    let pos = Pos { line: 3, col: 7 };
+    let _ = ops::lsp::lsp_hover(&host, "main", ide_core::RequestId(1), doc.id, pos).await;
+    until("the Intelephense fallback", intelephense_listed).await;
+
+    ops::project::set_settings(&host, "main", SettingsScope::Project, "languages.php.engine", "\"native\"").unwrap();
+    until("the native engine again", || project.php.engine().is_some()).await;
+    until("Intelephense to stop", || !intelephense_listed()).await;
+    host.close_project("main");
+}
+
+/// Polls until `done` (settings apply asynchronously).
+async fn until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// One format request: the range, tab size, spaces or not, and line length.

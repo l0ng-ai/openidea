@@ -85,12 +85,8 @@ async fn native_engine_indexes_a_php_project_until_ready() {
     let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
     let host = host(&base.join("app"), events.clone());
 
-    // Intelephense is the default: no engine.
+    // The native engine is the default: it starts with the project and indexes in the background.
     let project = host.open_project("main", &root).unwrap();
-    assert!(project.php.engine().is_none());
-
-    // Switching to the native engine starts it; it indexes in the background.
-    set_engine(&host, "native");
     until("the engine to start", || project.php.engine().is_some()).await;
     let engine = project.php.engine().unwrap();
     assert!(engine.wait_idle(WAIT));
@@ -121,7 +117,7 @@ async fn native_engine_indexes_a_php_project_until_ready() {
     std::fs::remove_file(root.join("src/Service/Mailer.php")).unwrap();
     until("the deleted interface to leave the index", || !has_class(&engine, "App\\Service\\Mailer")).await;
 
-    // Back to Intelephense: the engine stops and leaves the server list.
+    // Switching to the Intelephense fallback: the engine stops and leaves the server list.
     set_engine(&host, "intelephense");
     until("the engine to stop", || project.php.engine().is_none()).await;
     assert_eq!(engine.status().state, EngineState::Stopped);
@@ -152,7 +148,6 @@ async fn native_engine_stays_inactive_without_php() {
     let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
     let host = host(&base.join("app"), events.clone());
     let project = host.open_project("main", &root).unwrap();
-    set_engine(&host, "native");
     until("the engine to start", || project.php.engine().is_some()).await;
     let engine = project.php.engine().unwrap();
     assert!(engine.wait_idle(WAIT));

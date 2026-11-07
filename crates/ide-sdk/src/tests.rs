@@ -1528,10 +1528,15 @@ fn the_native_php_engine_replaces_the_php_language_servers() {
     use crate::apply::language_servers;
     use ide_core::settings::{LanguageServerSettings, PhpEngineKind};
 
-    let defined = [server("intelephense"), server("phpactor")];
+    let defined = [server("intelephense")];
     let names = |v: Vec<LanguageServerConfig>| v.into_iter().map(|c| c.name).collect::<Vec<_>>();
     let mut s = Settings::default();
-    assert_eq!(names(language_servers("php", &defined, &s)), ["intelephense", "phpactor"], "Intelephense by default");
+    assert_eq!(s.languages.php.engine, PhpEngineKind::Native, "the native engine by default");
+    assert!(language_servers("php", &defined, &s).is_empty(), "no PHP server by default");
+
+    // The Intelephense fallback, when the setting selects it.
+    s.languages.php.engine = PhpEngineKind::Intelephense;
+    assert_eq!(names(language_servers("php", &defined, &s)), ["intelephense"]);
 
     s.languages.php.engine = PhpEngineKind::Native;
     // Settings for a defined server don't bring it back; a server the user added stays.

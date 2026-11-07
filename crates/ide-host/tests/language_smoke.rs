@@ -1063,10 +1063,27 @@ const PHP: Checks = Checks {
     file_move: None,
 };
 
+/// The Intelephense fallback: Settings › PHP › Engine set to Intelephense (the native engine is
+/// the default).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "language smoke: needs intelephense"]
 async fn php() {
-    smoke("php", PHP).await;
+    let smoke = Smoke::start("php", &PHP).await;
+    ops::project::set_settings(
+        &smoke.host,
+        WINDOW,
+        ide_workspace::settings::SettingsScope::Project,
+        "languages.php.engine",
+        "\"intelephense\"",
+    )
+    .unwrap();
+    let project = smoke.host.project(WINDOW).unwrap();
+    smoke
+        .retry("native engine stopped", smoke.warm_up, || async {
+            project.php.engine().map_or(Ok(()), |_| Err("running"))
+        })
+        .await;
+    smoke.run(&PHP).await;
 }
 
 /// The baseline's checklist with the checks Intelephense leaves to its Premium licence filled in:
@@ -1102,8 +1119,8 @@ const PHP_NATIVE: Checks = Checks {
     ..PHP
 };
 
-/// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
-/// server. It first checks what goes beyond the baseline: the Structure view's PHP signatures, go
+/// The native engine (the default of Settings › PHP › Engine: nothing is set) on the same fixture,
+/// with no language server. It first checks what goes beyond the baseline: the Structure view's PHP signatures, go
 /// to definition of class names (in a `new`, an `extends` and a `use` import), of members and of
 /// variables, Find Usages of a class, hover on members and variables, the auto-import quick fix
 /// being preferred, syntax-error diagnostics, inlay hints and a class rename that renames its file.
@@ -1113,14 +1130,6 @@ const PHP_NATIVE: Checks = Checks {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
     let smoke = Smoke::start("php", &PHP_NATIVE).await;
-    ops::project::set_settings(
-        &smoke.host,
-        WINDOW,
-        ide_workspace::settings::SettingsScope::Project,
-        "languages.php.engine",
-        "\"native\"",
-    )
-    .unwrap();
     let project = smoke.host.project(WINDOW).unwrap();
     let engine =
         smoke.retry("native engine", smoke.warm_up, || async { project.php.engine().ok_or("not started") }).await;

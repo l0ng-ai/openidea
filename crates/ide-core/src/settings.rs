@@ -722,19 +722,20 @@ pub struct PhpSettings {
     /// Intelephense stub sets loaded on top of its defaults and the `ext-*` entries of
     /// `composer.json` (`wordpress`).
     pub stubs: Vec<String>,
-    /// Which engine answers code insight for PHP: the Intelephense language server
-    /// or the built-in native engine (`ide-php`).
+    /// Which engine answers code insight for PHP: the built-in native engine (`ide-php`,
+    /// the default) or the Intelephense language server as a fallback.
     pub engine: PhpEngineKind,
 }
 
-/// Settings › PHP › Engine.
+/// Settings › PHP › Engine. Only the keys a user sets are stored, so settings that never
+/// chose an engine get the default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum PhpEngineKind {
-    /// The Intelephense language server.
-    #[default]
+    /// The Intelephense language server: the optional fallback.
     Intelephense,
     /// The built-in engine: indexes the project in-process.
+    #[default]
     Native,
 }
 

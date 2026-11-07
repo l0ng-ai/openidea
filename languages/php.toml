@@ -8,23 +8,17 @@ indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "PHP"
 tree-sitter = "php"
 
+# The built-in engine (`ide-php`) answers code insight for PHP by default. Intelephense is the
+# fallback: it runs only when Settings › PHP › Code insight engine selects it
+# (`ide_sdk::apply::language_servers`).
 [[language-servers]]
 name = "intelephense"
 command = "intelephense"
 args = ["--stdio"]
-root-markers = ["composer.json", ".phpactor.json", "index.php"]
+root-markers = ["composer.json", "index.php"]
 install-hint = "npm i -g intelephense"
 # Intelephense applies the PHP version only to documents it parses after reading it.
 resync-on-configuration = true
-
-[[language-servers]]
-name = "phpactor"
-# Alternative: used only when the server above is not installed.
-fallback = true
-command = "phpactor"
-args = ["language-server"]
-root-markers = ["composer.json", ".phpactor.json"]
-install-hint = "Install phpactor (https://phpactor.readthedocs.io/en/master/usage/standalone.html)"
 
 [debugger]
 adapter = "php-debug"
