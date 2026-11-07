@@ -74,6 +74,7 @@ pub(crate) struct Session {
     progress: Mutex<HashMap<String, TaskId>>,
     pub kotlin_relay: Mutex<Option<crate::kotlin_jdwp::StartupRelay>>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
+    pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
 }
 
 /// Adapters that only match files by their resolved path: Godot maps a script to
@@ -124,6 +125,7 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             kotlin_relay: Mutex::new(None),
             kotlin_mirror: Mutex::new(None),
+            jvm_memory: tokio::sync::Mutex::default(),
         }
     }
 

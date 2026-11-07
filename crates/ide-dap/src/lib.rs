@@ -13,6 +13,7 @@ pub mod attach;
 mod cargo;
 pub mod connection;
 pub mod jdwp;
+mod jvm_memory;
 pub mod kotlin;
 mod kotlin_jdwp;
 mod session;
@@ -22,6 +23,7 @@ use connection::{Connection, DapError};
 use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
+pub use jvm_memory::*;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -126,6 +128,8 @@ pub struct DebugCapabilities {
     pub log_points: bool,
     /// HotSwap ("Reload Changed Classes"): java-debug's `redefineClasses` request.
     pub hot_code_replace: bool,
+    /// [`DebugManager::jvm_memory_classes`] can answer for this session.
+    pub jvm_memory: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -510,6 +514,7 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         hit_conditional_breakpoints: has("supportsHitConditionalBreakpoints"),
         log_points: has("supportsLogPoints"),
         hot_code_replace: false,
+        jvm_memory: false,
     }
 }
 
@@ -1534,7 +1539,15 @@ impl DebugManager {
         let session = self.session(s)?;
         let mut caps = capabilities_from(&session.caps.lock());
         caps.hot_code_replace = HOT_CODE_REPLACE_ADAPTERS.contains(&session.adapter.as_str());
+        caps.jvm_memory = jvm_memory::jvm_memory_supported(&session.adapter, &session.request);
         Ok(caps)
+    }
+
+    /// Class table of the session's JVM (`GC.class_histogram -all`), with deltas against
+    /// the session's previous snapshot.
+    pub async fn jvm_memory_classes(&self, s: DebugSessionId) -> IdeResult<JvmMemoryResult> {
+        let session = self.session(s)?;
+        jvm_memory::session_classes(session).await
     }
 
     /// HotSwap: reloads the classes compiled since the session started (or since the

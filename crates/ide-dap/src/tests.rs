@@ -1646,3 +1646,37 @@ async fn continued_event_clears_suspended() {
     h.wait_event(|e| matches!(e, DebugEvent::Continued { .. })).await;
     assert!(!is_suspended(&h, id));
 }
+
+fn java_config(request: &str) -> LaunchConfig {
+    LaunchConfig { adapter: "java-debug".into(), request: request.into(), extra_json: None, ..config() }
+}
+
+#[tokio::test]
+async fn attach_session_is_not_launched_by_ide() {
+    let h = harness(Script::default());
+    let id = h.start(java_config("attach")).await.unwrap();
+    assert!(!h.manager.capabilities(id).unwrap().jvm_memory);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NotLaunchedByIde }
+    );
+
+    let id = h.start(config()).await.unwrap();
+    assert!(!h.manager.capabilities(id).unwrap().jvm_memory);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NotLaunchedByIde }
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unknown_pid_reports_no_jvm_process() {
+    let h = harness(Script::default());
+    let id = h.start(java_config("launch")).await.unwrap();
+    assert!(h.manager.capabilities(id).unwrap().jvm_memory);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess }
+    );
+}
