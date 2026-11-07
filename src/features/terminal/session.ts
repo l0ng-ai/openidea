@@ -57,8 +57,6 @@ export interface SessionSnapshot {
   commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
-  /** True while the viewport is pinned to the newest output. */
-  follow: boolean;
 }
 
 export interface SessionOptions {
@@ -73,6 +71,11 @@ export interface SessionOptions {
    * `shell`: it is a shell (a predefined session), so shell integration still applies.
    */
   command?: { program: string; args: string[]; shell?: boolean };
+  /**
+   * Restored tabs only: the project root, used when `cwd` no longer exists
+   * (deleted since the last run, see `resolveStartCwd`).
+   */
+  fallbackRoot?: string;
 }
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
@@ -169,6 +172,21 @@ export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>
   notifications().notify({ level: "warning", title: "File not found", body: link.path });
 }
 
+/**
+ * A tab restored from the last session may remember a directory that has since
+ * been deleted. The backend would silently start such a shell in $HOME; when a
+ * `fallbackRoot` (the project root) is given, start there instead.
+ */
+export async function resolveStartCwd(cwd: string, fallbackRoot: string | undefined): Promise<string> {
+  if (!fallbackRoot || cwd === fallbackRoot) return cwd;
+  try {
+    if ((await call(commands.fsEntryKind(cwd))) === "dir") return cwd;
+  } catch {
+    /* deleted or unreachable */
+  }
+  return fallbackRoot;
+}
+
 export class TerminalSession {
   readonly key: string;
   readonly host: HTMLDivElement;
@@ -210,7 +228,6 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       cwd: opts.cwd,
-      follow: true,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -284,11 +301,6 @@ export class TerminalSession {
         if (workflowSettings().terminal.mouseReporting) return false;
         const modes = params.map((p) => (Array.isArray(p) ? p[0] : p) ?? 0);
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
-      }),
-      // Track scroll position: follow when the user scrolls back to the bottom.
-      this.term.onScroll(() => {
-        const atBottom = this.isAtBottom();
-        if (atBottom !== this.snapshot.follow) this.update({ follow: atBottom });
       }),
     );
     this.disposables.push(
@@ -533,10 +545,12 @@ export class TerminalSession {
       const [shellPath, ...shellArgs] = parseShellCommand(t.shellPath, hostOs() === "windows");
       const shell = custom ? custom.program : shellPath;
       const args = custom ? custom.args : shellArgs;
+      const cwd = await resolveStartCwd(this.opts.cwd, this.opts.fallbackRoot);
+      if (cwd !== this.opts.cwd) this.update({ cwd });
       const info = await call(
         commands.termSpawn(
           {
-            cwd: this.opts.cwd,
+            cwd,
             shell: shell ?? null,
             args,
             env: { ...t.env },
@@ -656,16 +670,6 @@ export class TerminalSession {
 
   clear() {
     this.term.clear();
-  }
-
-  isAtBottom(): boolean {
-    return this.term.buffer.active.viewportY >= this.term.buffer.active.baseY;
-  }
-
-  /** Sets the follow flag; when turning it on also scrolls to the bottom. */
-  setFollow(follow: boolean) {
-    if (follow) this.term.scrollToBottom();
-    if (follow !== this.snapshot.follow) this.update({ follow });
   }
 
   /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */

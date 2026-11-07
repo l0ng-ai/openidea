@@ -136,9 +136,13 @@ pub async fn lsp_resolve_class_file(
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Cancel with `cancel_request(request)`.
+/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
+/// are not searched; with it, those found in the sources arrive on `on_partial` before
+/// the slower search for the rest, and the result has them all. Cancel with
+/// `cancel_request(request)`.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn lsp_references(
     window: Window,
     state: State<'_, AppState>,
@@ -147,7 +151,10 @@ pub async fn lsp_references(
     pos: Pos,
     include_declaration: bool,
     project_wide: bool,
+    libraries: bool,
+    on_partial: tauri::ipc::Channel<References>,
 ) -> IdeResult<References> {
+    let on_partial = super::sender(on_partial);
     ide_host::ops::lsp::lsp_references(
         &state.host,
         window.label(),
@@ -156,6 +163,8 @@ pub async fn lsp_references(
         pos,
         include_declaration,
         project_wide,
+        libraries,
+        on_partial,
     )
     .await
 }

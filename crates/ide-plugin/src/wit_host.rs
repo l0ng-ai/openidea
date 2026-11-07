@@ -2,9 +2,11 @@
 //! types and the implementation of every import. Capabilities are checked
 //! here; a missing one returns `error::denied` (the plugin can degrade).
 
-use crate::runtime::{StoreData, clip};
+use crate::runtime::{MAX_TITLE, StoreData, clip};
 use crate::sandbox;
-use crate::types::{EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, net_host};
+use crate::types::{
+    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, PickItem, Prompt, StatusItem, net_host,
+};
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use std::path::{Path, PathBuf};
@@ -133,6 +135,8 @@ const MAX_DIAGNOSTICS: usize = 5_000;
 const MAX_REQUEST_BODY: usize = 8 << 20;
 const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
+const MAX_PICK_ITEMS: usize = 5000;
+const MAX_PICK_KEY: usize = 256;
 
 type Fallible<T> = wasmtime::Result<Result<T, wit::Error>>;
 
@@ -212,6 +216,52 @@ impl log::Host for StoreData {
     }
 }
 
+impl StoreData {
+    /// Asks the user and waits; the wait doesn't count against the call's
+    /// wall-clock budget.
+    fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
+        self.require_interactive()?;
+        let client = self.invocation.client.clone();
+        let started = Instant::now();
+        let answer = self.host.ask(client.as_deref(), prompt, &self.cancel.token());
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        answer.map_err(to_wit)
+    }
+
+    fn pick_prompt(
+        &mut self,
+        title: String,
+        items: Vec<ui::PickItem>,
+        multiple: bool,
+    ) -> Result<Option<Vec<String>>, wit::Error> {
+        if items.len() > MAX_PICK_ITEMS {
+            return Err(wit::Error::Invalid(format!("more than {MAX_PICK_ITEMS} items")));
+        }
+        if items.iter().any(|i| i.key.len() > MAX_PICK_KEY) {
+            return Err(wit::Error::Invalid(format!("an item key is longer than {MAX_PICK_KEY} bytes")));
+        }
+        let items = items
+            .into_iter()
+            .map(|i| PickItem {
+                key: i.key,
+                label: clip(i.label, MAX_TITLE),
+                description: i.description.map(|d| clip(d, 1024)),
+            })
+            .collect();
+        self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
+    }
+
+    /// Dialogs belong to commands and events; rendering and providers have no one to ask.
+    fn require_interactive(&self) -> Result<(), wit::Error> {
+        if self.interactive {
+            return Ok(());
+        }
+        Err(wit::Error::Invalid("can only ask the user from a command or event".into()))
+    }
+}
+
 impl ui::Host for StoreData {
     fn show_notification(
         &mut self,
@@ -244,6 +294,36 @@ impl ui::Host for StoreData {
         Ok(())
     }
 
+    fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
+        let valid_key =
+            (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+        if !valid_key {
+            return Ok(Err(wit::Error::Invalid(format!("context key {key:?}: expected 1-64 of A-Za-z0-9_-"))));
+        }
+        // Kept as JSON text, which the windows parse into their context.
+        let json = match value {
+            ui::ContextValue::Flag(b) => b.to_string(),
+            ui::ContextValue::Number(n) if n.fract() == 0.0 && n.abs() < 9e15 => (n as i64).to_string(),
+            ui::ContextValue::Number(n) => match serde_json::Number::from_f64(n) {
+                Some(n) => n.to_string(),
+                None => return Ok(Err(wit::Error::Invalid("context value: not a finite number".into()))),
+            },
+            ui::ContextValue::Text(t) if t.len() <= 1024 => serde_json::Value::String(t).to_string(),
+            ui::ContextValue::Text(_) => {
+                return Ok(Err(wit::Error::Invalid("context value: text longer than 1024 bytes".into())));
+            }
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_context(client.as_deref(), &key, Some(json)).map_err(to_wit))
+    }
+
+    fn remove_context(&mut self, key: String) -> wasmtime::Result<()> {
+        let client = self.invocation.client.clone();
+        // Nothing to remove under an invalid key.
+        let _ = self.host.set_context(client.as_deref(), &key, None);
+        Ok(())
+    }
+
     fn copy_to_clipboard(&mut self, text: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Clipboard) {
             return Ok(Err(e));
@@ -260,6 +340,25 @@ impl ui::Host for StoreData {
         }
         let client = self.invocation.client.clone();
         Ok(self.host.open_url(client.as_deref(), trimmed.to_owned()).map_err(to_wit))
+    }
+
+    fn pick(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<String>> {
+        let answer = self.pick_prompt(title, items, false);
+        Ok(answer.map(|keys| keys.and_then(|keys| keys.into_iter().next())))
+    }
+
+    fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
+        Ok(self.pick_prompt(title, items, true))
+    }
+
+    fn input(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
+        let prompt = Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)) };
+        Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
+    }
+
+    fn confirm(&mut self, title: String, body: String) -> Fallible<bool> {
+        let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(body, 16 << 10) };
+        Ok(self.ask(prompt).map(|answer| answer.is_some()))
     }
 }
 
@@ -417,6 +516,10 @@ impl invocation::HostInvocation for StoreData {
             Some(ctx) => Ok(Some(self.push(EditorRes { ctx })?)),
             None => Ok(None),
         }
+    }
+
+    fn selected_paths(&mut self, _this: Resource<InvocationRes>) -> wasmtime::Result<Vec<String>> {
+        Ok(self.invocation.selected_paths.iter().take(MAX_FIND as usize).map(|p| to_ipc(p)).collect())
     }
 
     fn drop(&mut self, rep: Resource<InvocationRes>) -> wasmtime::Result<()> {
@@ -649,6 +752,14 @@ impl views::Host for StoreData {
         Ok(())
     }
 
+    fn reveal(&mut self, view: String) -> Fallible<()> {
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.reveal_view(client.as_deref(), &clip(view, 64)).map_err(to_wit))
+    }
+
     fn post_message(&mut self, view: String, message: String) -> Fallible<()> {
         if message.len() > MAX_VIEW_MESSAGE {
             return Ok(Err(wit::Error::Invalid(format!("messages are limited to {MAX_VIEW_MESSAGE} bytes"))));
@@ -700,6 +811,13 @@ const MAX_VIEW_MESSAGE: usize = 1 << 20;
 pub(crate) mod indexing_bindings {
     wasmtime::component::bindgen!({
         world: "indexing", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+pub(crate) mod semantic_bindings {
+    wasmtime::component::bindgen!({
+        world: "semantic-tokens", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }

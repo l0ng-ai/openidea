@@ -2,7 +2,7 @@
 //! language servers, run configurations and terminals.
 
 use crate::discover::{project_venv_python, workspace_tsdk};
-use crate::exec::{path_with, search_path};
+use crate::exec::{path_with, search_path, which};
 use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
@@ -64,7 +64,8 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 }
 
 /// The project interpreter: the configured one, else a project virtualenv
-/// (`.venv`, `venv`, …) in the project root, else the Python the project pins for mise / asdf.
+/// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
+/// root, else the Python the project pins for mise / asdf.
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     setting_path(root, &s.languages.python.interpreter)
         .or_else(|| project_venv_python(root))
@@ -370,8 +371,8 @@ pub fn gradle_env(
     env
 }
 
-/// Maven options from settings, placed before the goals: `-s <settings.xml>`
-/// and `-Dmaven.repo.local=<dir>`.
+/// Maven options from settings, placed before the goals: `-s <settings.xml>`,
+/// `-Dmaven.repo.local=<dir>` and `-T <count>` (the thread count).
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     let m = &s.languages.java.maven;
     let mut out = Vec::new();
@@ -381,6 +382,9 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     if let Some(dir) = setting_path(root, &m.local_repository) {
         out.push(format!("-Dmaven.repo.local={}", dir.to_string_lossy()));
     }
+    if let Some(threads) = m.thread_count() {
+        out.extend(["-T".to_owned(), threads.to_owned()]);
+    }
     out
 }
 
@@ -388,7 +392,7 @@ fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
     let mut prefixes = vec![0];
     let mut i = 0;
     while let Some(arg) = args.get(i) {
-        if arg == "-s" && args.get(i + 1).is_some() {
+        if (arg == "-s" || arg == "-T") && args.get(i + 1).is_some() {
             i += 2;
         } else if arg.starts_with("-Dmaven.repo.local=") {
             i += 1;
@@ -798,6 +802,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 json!({ "settings": { "java": { "configuration": { "maven": { "userSettings": file } } } } }),
             );
         }
+        // m2e resolves and downloads into `maven.repo.local`; without it the
+        // embedded Maven falls back to ~/.m2 even when the IDE's own `mvn`
+        // runs honor the configured local repository. A `-Dmaven.repo.local`
+        // the user put in their own jdtls VM options wins.
+        if let Some(repo) = maven_local_repository(root, s) {
+            let arg = format!("-Dmaven.repo.local={}", repo.to_string_lossy());
+            let taken = cfg.args.iter().enumerate().any(|(i, a)| {
+                let value = a
+                    .strip_prefix("--jvm-arg=")
+                    .or_else(|| (i > 0 && cfg.args[i - 1] == "--jvm-arg").then_some(a.as_str()));
+                value.is_some_and(|a| a.split('=').next() == Some("-Dmaven.repo.local"))
+            });
+            if !taken {
+                cfg.args.push(format!("--jvm-arg={arg}"));
+            }
+        }
     }
 
     if let Some(lib) = tsdk(server_root, s).or_else(|| tsdk(root, s)) {
@@ -817,6 +837,14 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
+        cfg.tsserver_project_extras.extensions = vec![vue::EXTENSION.into()];
+    }
+    if name == "vtsls"
+        && cfg.tsserver_project
+        && !server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file())
+    {
+        let node = node_dir(root, s).map(|d| d.join(exe("node"))).filter(|p| p.is_file()).or_else(|| which("node"));
+        cfg.tsserver_project_extras.paths = vue::cli_paths(server_root, node.as_deref());
     }
     if name == vue::SERVER {
         configure_vue_typescript(cfg, root, server_root, s);
@@ -916,6 +944,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
@@ -1018,22 +1047,28 @@ fn is_python_command(cmd: &str) -> bool {
 
 const PY_RUNNERS: [&str; 3] = ["uv", "poetry", "pdm"];
 
-/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`).
+/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`,
+/// `-T <count>`).
 fn maven_option_groups(options: &[String]) -> Vec<&[String]> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < options.len() {
-        let n = if options[i] == "-s" { 2.min(options.len() - i) } else { 1 };
+        let n = if options[i] == "-s" || options[i] == "-T" { 2.min(options.len() - i) } else { 1 };
         groups.push(&options[i..i + n]);
         i += n;
     }
     groups
 }
 
-/// Whether `args` set what `group` sets: a user settings file, or the local repository.
+/// Whether `args` set what `group` sets: a user settings file, the local
+/// repository, or the thread count.
 fn sets_maven_option(args: &[String], group: &[String]) -> bool {
     match group.first().map(String::as_str) {
         Some("-s") => args.iter().any(|a| a == "-s" || a == "--settings" || a.starts_with("--settings=")),
+        // `-T 4`, `--threads 4`, `-T4` and `--threads=4` all set the thread count.
+        Some("-T") => args.iter().any(|a| {
+            a == "-T" || a == "--threads" || a.starts_with("--threads=") || (a.starts_with("-T") && a.len() > 2)
+        }),
         Some(flag) => {
             let key = flag.split_once('=').map_or(flag, |(k, _)| k);
             args.iter().any(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k) == key)

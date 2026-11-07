@@ -1,14 +1,14 @@
 //! [`HostApi`] for one plugin's code: what its imports reach in the IDE.
 //! Capabilities were checked by the runtime before any of this runs.
 
-use super::{PluginEvent, PluginEventSink};
+use super::{PluginContextKey, PluginEvent, PluginEventSink};
 use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
-    EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel, ProcessOutput, RepositoryStatus,
-    StatusItem,
+    EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel, ProcessOutput, Prompt,
+    RepositoryStatus, StatusItem,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -22,6 +22,10 @@ const MAX_STORAGE: usize = 1 << 20;
 const MAX_KEY: usize = 256;
 /// Most status bar items per plugin.
 const MAX_STATUS_ITEMS: usize = 8;
+const MAX_CONTEXT_KEYS: usize = 100;
+
+/// (window or `None` for every window, plugin, key).
+type ContextKey = (Option<String>, String, String);
 
 /// What plugins see of the open projects; provided by the app
 /// ([`super::PluginHost::set_workspace`]), over [`crate::Host`] on the desktop.
@@ -146,6 +150,12 @@ struct TaskEntry {
     cancelled: bool,
 }
 
+/// A question a plugin's call waits on.
+struct PromptEntry {
+    plugin: String,
+    answer: std::sync::mpsc::SyncSender<Option<Vec<String>>>,
+}
+
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
@@ -154,8 +164,15 @@ pub(super) struct Shared {
     pub data_dir: PathBuf,
     tasks: Mutex<HashMap<u64, TaskEntry>>,
     next_task: AtomicU64,
+    prompts: Mutex<HashMap<u64, PromptEntry>>,
+    /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
+    prompts_blocked: Mutex<BTreeSet<String>>,
+    next_prompt: AtomicU64,
     /// (plugin, item id) → item, for windows opened later.
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
+    /// (scope, plugin, key) → JSON value.
+    contexts: Mutex<BTreeMap<ContextKey, String>>,
+    closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
     /// plugin → files it shows problems for, withdrawn when it stops.
@@ -183,7 +200,12 @@ impl Shared {
             data_dir,
             tasks: Mutex::default(),
             next_task: AtomicU64::new(1),
+            prompts: Mutex::default(),
+            prompts_blocked: Mutex::default(),
+            next_prompt: AtomicU64::new(1),
             status: Mutex::default(),
+            contexts: Mutex::default(),
+            closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
         })
@@ -226,6 +248,34 @@ impl Shared {
         self.status.lock().iter().map(|((p, id), item)| (p.clone(), id.clone(), item.clone())).collect()
     }
 
+    pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
+        let contexts = self.contexts.lock();
+        let mut keys: BTreeMap<(&str, &str), &str> = BTreeMap::new();
+        for ((_, plugin, key), value) in contexts.iter().filter(|((s, ..), _)| s.is_none()) {
+            keys.insert((plugin, key), value);
+        }
+        if let Some(client) = client {
+            for ((_, plugin, key), value) in contexts.iter().filter(|((s, ..), _)| s.as_deref() == Some(client)) {
+                keys.insert((plugin, key), value);
+            }
+        }
+        keys.into_iter()
+            .map(|((p, k), v)| PluginContextKey { plugin_id: p.to_owned(), key: k.to_owned(), value: v.to_owned() })
+            .collect()
+    }
+
+    /// Drops the context keys scoped to window `client` (it closed), without events, and
+    /// refuses further writes for it (late commands) until [`Self::reopen_client`].
+    pub fn forget_client(&self, client: &str) {
+        self.closed_clients.lock().insert(client.to_owned());
+        self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
+    }
+
+    /// A window labelled `client` is being created (labels are reused after a close).
+    pub fn reopen_client(&self, client: &str) {
+        self.closed_clients.lock().remove(client);
+    }
+
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
@@ -239,6 +289,19 @@ impl Shared {
         };
         for id in removed {
             self.sink.emit(None, PluginEvent::StatusItemChanged { plugin_id: plugin.to_owned(), id, item: None });
+        }
+        self.withdraw_prompts(plugin);
+        let removed: Vec<(Option<String>, String)> = {
+            let mut contexts = self.contexts.lock();
+            let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
+            for key in &keys {
+                contexts.remove(key);
+            }
+            keys.into_iter().map(|(scope, _, key)| (scope, key)).collect()
+        };
+        for (scope, key) in removed {
+            self.sink
+                .emit(scope.as_deref(), PluginEvent::ContextChanged { plugin_id: plugin.to_owned(), key, value: None });
         }
         let tasks: Vec<u64> = self.tasks.lock().iter().filter(|(_, t)| t.plugin == plugin).map(|(id, _)| *id).collect();
         for id in tasks {
@@ -263,6 +326,40 @@ impl Shared {
         t.cancelled = true;
         t.cancel.cancel();
         true
+    }
+
+    /// Closes the prompts `plugin` waits on: the calls waiting for the user
+    /// wake up cancelled (dropping the senders).
+    fn withdraw_prompts(&self, plugin: &str) {
+        let ids: Vec<u64> = {
+            let mut prompts = self.prompts.lock();
+            let ids: Vec<u64> = prompts.iter().filter(|(_, p)| p.plugin == plugin).map(|(id, _)| *id).collect();
+            for id in &ids {
+                prompts.remove(id);
+            }
+            ids
+        };
+        for id in ids {
+            self.sink.emit(None, PluginEvent::PromptClosed { prompt_id: id.to_string() });
+        }
+    }
+
+    /// `plugin` is about to be stopped: withdraws its prompts, and its queued
+    /// calls can't open new ones (they'd keep the stop waiting) until
+    /// [`allow_prompts`](Self::allow_prompts).
+    pub fn block_prompts(&self, plugin: &str) {
+        self.prompts_blocked.lock().insert(plugin.to_owned());
+        self.withdraw_prompts(plugin);
+    }
+
+    pub fn allow_prompts(&self, plugin: &str) {
+        self.prompts_blocked.lock().remove(plugin);
+    }
+
+    /// The user answered (`Some`) or dismissed (`None`) a prompt.
+    pub fn answer_prompt(&self, id: u64, answer: Option<Vec<String>>) -> bool {
+        let Some(prompt) = self.prompts.lock().remove(&id) else { return false };
+        prompt.answer.send(answer).is_ok()
     }
 
     fn end_task(&self, id: u64) {
@@ -343,6 +440,52 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
+    fn ask(
+        &self,
+        client: Option<&str>,
+        prompt: Prompt,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Vec<String>>, HostError> {
+        let client = from_window(client, "ask the user")?;
+        let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
+        let (answer, answers) = std::sync::mpsc::sync_channel(1);
+        {
+            let blocked = self.shared.prompts_blocked.lock();
+            if blocked.contains(self.id()) {
+                return Err(HostError::Cancelled);
+            }
+            self.shared.prompts.lock().insert(id, PromptEntry { plugin: self.id().to_owned(), answer });
+        }
+        let prompt_id = id.to_string();
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::PromptRequested { plugin_id: self.id().to_owned(), prompt_id: prompt_id.clone(), prompt },
+        );
+        loop {
+            match answers.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => return Ok(answer),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !cancel.is_cancelled() => {}
+                Err(_) => {
+                    self.shared.prompts.lock().remove(&id);
+                    self.shared.sink.emit(Some(client), PluginEvent::PromptClosed { prompt_id });
+                    return Err(HostError::Cancelled);
+                }
+            }
+        }
+    }
+
+    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
+        let client = from_window(client, "reveal a view")?;
+        let declared = self.shared.ui.items(super::ui_points::VIEWS, Some(self.id())).iter().any(|i| i.key == view);
+        if !declared {
+            return Err(HostError::NotFound(format!("the plugin declares no view {view:?}")));
+        }
+        self.shared
+            .sink
+            .emit(Some(client), PluginEvent::RevealView { plugin_id: self.id().to_owned(), view: view.to_owned() });
+        Ok(())
+    }
+
     fn status_item(&self, id: &str, item: Option<StatusItem>) {
         let key = (self.id().to_owned(), id.to_owned());
         {
@@ -369,6 +512,37 @@ impl HostApi for PluginApi {
         self.shared
             .sink
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
+    }
+
+    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
+        let map_key = (client.map(str::to_owned), self.id().to_owned(), key.to_owned());
+        {
+            let mut contexts = self.shared.contexts.lock();
+            if client.is_some_and(|c| self.shared.closed_clients.lock().contains(c)) {
+                return Ok(());
+            }
+            match &value {
+                Some(value) => {
+                    if contexts.get(&map_key) == Some(value) {
+                        return Ok(());
+                    }
+                    let count = contexts.keys().filter(|(_, p, _)| p == self.id()).count();
+                    if !contexts.contains_key(&map_key) && count >= MAX_CONTEXT_KEYS {
+                        return Err(HostError::Invalid(format!("more than {MAX_CONTEXT_KEYS} context keys")));
+                    }
+                    contexts.insert(map_key, value.clone());
+                }
+                None => {
+                    if contexts.remove(&map_key).is_none() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        self.shared
+            .sink
+            .emit(client, PluginEvent::ContextChanged { plugin_id: self.id().to_owned(), key: key.to_owned(), value });
+        Ok(())
     }
 
     fn projects(&self) -> Vec<PathBuf> {
@@ -464,8 +638,9 @@ impl HostApi for PluginApi {
             .build()
             .map_err(|e| HostError::Invalid(format!("{glob:?}: {e}")))?
             .compile_matcher();
-        // Hidden files and folders are left out, as in the walk below.
-        let visible = |rel: &Path| !rel.iter().any(|c| c.to_str().is_some_and(|c| c.starts_with('.')));
+        // Project scope visits hidden files and folders (`.github`, `.config`):
+        // only `.git` internals stay out, as in the walk below.
+        let visible = |rel: &Path| !rel.iter().any(|c| c == ".git");
         // The project index already lists the files: walking a large tree on every call can take
         // longer than an editor provider's deadline (the plugin is then stopped as crashed).
         if let Some(files) = self
@@ -478,7 +653,13 @@ impl HostApi for PluginApi {
             return Ok(out);
         }
         let mut out = Vec::new();
-        for (n, entry) in ignore::WalkBuilder::new(root).hidden(true).build().flatten().enumerate() {
+        for (n, entry) in ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .filter_entry(|e| e.file_name() != ".git")
+            .build()
+            .flatten()
+            .enumerate()
+        {
             if n >= MAX_WALK || out.len() >= limit {
                 break;
             }
@@ -883,20 +1064,27 @@ mod tests {
         let api = api(&root, Arc::default());
         *api.shared.workspace.write() = Some(Arc::new(Indexed(
             root.clone(),
-            vec!["src/b/UserMapper.xml", "src/a/OrderMapper.xml", ".idea/workspace.xml", "pom.xml"],
+            vec!["src/b/UserMapper.xml", "src/a/OrderMapper.xml", ".idea/workspace.xml", ".git/index.xml", "pom.xml"],
         )));
         // Listed by the index, not walked: none of these exist on disk.
         assert_eq!(
             api.find_files(&root, "**/*Mapper.xml", 10).unwrap(),
             [to_ipc(&root.join("src/a/OrderMapper.xml")), to_ipc(&root.join("src/b/UserMapper.xml"))]
         );
-        assert_eq!(api.find_files(&root, "**/*.xml", 10).unwrap().len(), 3, "hidden folders are left out");
+        // Hidden folders are visited like any project scope; `.git` internals are not.
+        assert_eq!(api.find_files(&root, "**/*.xml", 10).unwrap().len(), 4);
+        assert_eq!(api.find_files(&root, ".idea/*.xml", 10).unwrap(), [to_ipc(&root.join(".idea/workspace.xml"))]);
         assert_eq!(api.find_files(&root, "**/*.xml", 1).unwrap().len(), 1);
         // Another root: no index covers it, so the disk is walked.
         let other = root.join("other");
-        std::fs::create_dir_all(&other).unwrap();
+        std::fs::create_dir_all(other.join(".config/tool")).unwrap();
         std::fs::write(other.join("a.xml"), "").unwrap();
+        std::fs::write(other.join(".config/tool/index.xml"), "").unwrap();
         assert_eq!(api.find_files(&other, "*.xml", 10).unwrap(), [to_ipc(&other.join("a.xml"))]);
+        assert_eq!(
+            api.find_files(&other, ".config/tool/*.xml", 10).unwrap(),
+            [to_ipc(&other.join(".config/tool/index.xml"))]
+        );
     }
 
     #[test]

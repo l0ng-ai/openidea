@@ -73,7 +73,7 @@ fn dedupe_by_real_path(paths: Vec<(PathBuf, &'static str)>) -> Vec<(PathBuf, &'s
 /// Project-local virtualenv directories checked by auto-detection, in order.
 pub(crate) const PROJECT_VENVS: [&str; 4] = [".venv", "venv", "env", ".env"];
 
-/// `<root>/<venv>/bin/python` of the first project virtualenv.
+/// `<root>/<venv>/bin/python` of the first project virtualenv or pixi environment.
 pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
     PROJECT_VENVS
         .iter()
@@ -81,6 +81,11 @@ pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
         .filter(|v| v.join("pyvenv.cfg").is_file())
         .map(|v| v.join(bin_dir()).join(exe("python")))
         .find(|p| p.is_file())
+        .or_else(|| {
+            subdirs(&root.join(".pixi/envs")).iter().find_map(|env| {
+                [env.join(exe("python")), env.join("bin").join(exe("python"))].into_iter().find(|p| p.is_file())
+            })
+        })
 }
 
 /// `/usr/bin/python3` on macOS is a stub that opens an installer dialog when
@@ -108,6 +113,14 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
             let dir = root.join(v);
             if dir.join("pyvenv.cfg").is_file() {
                 found.push((dir.join(bin_dir()).join(exe("python")), "venv"));
+            }
+        }
+        // pixi environments (`.pixi/envs/<env>`), which are no virtualenvs.
+        for env in subdirs(&root.join(".pixi/envs")) {
+            let python =
+                [env.join(exe("python")), env.join("bin").join(exe("python"))].into_iter().find(|p| p.is_file());
+            if let Some(python) = python {
+                found.push((python, "pixi"));
             }
         }
     }
@@ -215,6 +228,10 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
                 .map(|n| n.to_string_lossy().into_owned());
             format!("Python {short} (conda: {})", env.unwrap_or_default())
         }
+        (None, "pixi") => {
+            let env = pixi_env_name(path).unwrap_or_default();
+            format!("Python {short} (pixi: {env})")
+        }
         (None, "pyenv") => format!("Python {short} (pyenv)"),
         (None, tool @ ("uv" | "mise" | "asdf")) => format!("Python {short} ({tool})"),
         _ => format!("Python {short}"),
@@ -224,9 +241,24 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
         name: label,
         version: Some(version),
         source: source.to_owned(),
-        home: venv.or_else(|| path.parent().and_then(Path::parent).map(Path::to_path_buf)).map(Into::into),
+        home: venv
+            .or_else(|| (source == "pixi").then(|| pixi_env_home(path)).flatten())
+            .or_else(|| path.parent().and_then(Path::parent).map(Path::to_path_buf))
+            .map(Into::into),
         extra: None,
     })
+}
+
+/// `.pixi/envs/<env>` of a pixi interpreter (`<env>/python`, `<env>/bin/python`).
+fn pixi_env_home(python: &Path) -> Option<PathBuf> {
+    let dir = python.parent()?;
+    let env = if dir.file_name().is_some_and(|n| n == "bin") { dir.parent()? } else { dir };
+    (env.parent()?.file_name()? == "envs" && env.parent()?.parent()?.file_name()? == ".pixi").then(|| env.to_path_buf())
+}
+
+/// The name of a pixi interpreter's environment (`<env>` of `.pixi/envs/<env>`).
+fn pixi_env_name(python: &Path) -> Option<String> {
+    pixi_env_home(python)?.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
 fn pyvenv_version(python: &Path) -> Option<String> {
@@ -779,5 +811,36 @@ mod maven_path_tests {
         assert_eq!(launcher, dunce::canonicalize(real.path().join("bin/mvn.cmd")).unwrap());
         let home = launcher.parent().and_then(Path::parent).and_then(maven_home).unwrap();
         assert_eq!(home, dunce::canonicalize(real.path()).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod pixi_tests {
+    use super::*;
+
+    #[test]
+    fn a_pixi_env_is_a_project_python_and_an_sdk_home() {
+        let root = tempfile::tempdir().unwrap();
+        let env = root.path().join(".pixi/envs/default");
+        let bin = if cfg!(windows) { env.clone() } else { env.join("bin") };
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join(exe("python"));
+        std::fs::write(&python, "").unwrap();
+
+        assert_eq!(project_venv_python(root.path()), Some(python.clone()));
+        assert_eq!(pixi_env_home(&python), Some(env.clone()));
+        assert_eq!(pixi_env_name(&python).as_deref(), Some("default"));
+
+        // A second env sorts after; the first with a Python wins.
+        let other = root.path().join(".pixi/envs/aaa-empty");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(project_venv_python(root.path()), Some(python));
+    }
+
+    #[test]
+    fn non_pixi_paths_have_no_pixi_home() {
+        assert_eq!(pixi_env_home(Path::new("/usr/bin/python3")), None);
+        assert_eq!(pixi_env_home(Path::new("/p/.venv/bin/python")), None);
+        assert_eq!(pixi_env_home(Path::new("/p/envs/x/bin/python")), None);
     }
 }

@@ -17,6 +17,14 @@ import { defineViewUiPoints, pluginSettingsPageId } from "./uiPoints";
 import { isLive, runPluginCommand } from "./store";
 import styles from "./PluginsPage.module.css";
 
+/** Unpacks an action argument: a bare path, or a menu's `{ path, paths }`. */
+export function commandArgs(arg: unknown): [string | null, string[]] {
+  if (typeof arg === "string") return [arg, []];
+  const { path, paths } = (arg ?? {}) as { path?: unknown; paths?: unknown };
+  if (typeof path !== "string" || !Array.isArray(paths)) return [null, []];
+  return [path, paths.filter((p): p is string => typeof p === "string")];
+}
+
 export const pluginActionId = (pluginId: string, commandId: string) => `plugin.${pluginId}.${commandId}`;
 
 interface CommandDecl {
@@ -148,7 +156,8 @@ export function defineBuiltinUiPoints(): () => void {
           keywords: ["plugin", plugin.name, pluginId],
           description: tx`From plugin ${plugin.name}`,
           run: async ({ arg }) => {
-            await runPluginCommand(pluginId, decl.id, typeof arg === "string" ? arg : null);
+            const [path, paths] = commandArgs(arg);
+            await runPluginCommand(pluginId, decl.id, path, paths);
           },
         }),
       Details: CommandsDetails,

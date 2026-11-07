@@ -3,15 +3,19 @@
 //! sandbox goes through [`HostApi`], implemented by the host; the imports
 //! themselves are in `wit_host`.
 
-use crate::types::{CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument};
 use crate::types::{
-    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput,
+    CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument, SemanticToken,
+};
+use crate::types::{
+    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
     FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
-use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
+use crate::wit_host::{
+    bindings, indexing_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+};
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -29,12 +33,13 @@ use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
+use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.2";
+pub const API_VERSION: &str = "1.3";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -55,8 +60,32 @@ pub trait HostApi: Send + Sync {
         let _ = (client, url);
         Ok(())
     }
+    /// Shows `prompt` in `client`'s window and waits for the answer until the
+    /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
+    /// text (`Input`, one element) or any value (`Confirm`: OK); `None` when
+    /// dismissed.
+    fn ask(
+        &self,
+        client: Option<&str>,
+        prompt: Prompt,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Vec<String>>, HostError> {
+        let _ = (client, prompt, cancel);
+        Ok(None)
+    }
+    /// Brings the plugin's declared view to the front in `client`'s window.
+    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
+        let _ = (client, view);
+        Ok(())
+    }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
+    /// for window `client` (every window if `None`).
+    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
+        let _ = (client, key, value);
+        Ok(())
+    }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
     /// Unsaved text of an open editor's file.
@@ -358,6 +387,8 @@ pub struct StoreData {
     pub(crate) granted: Vec<Capability>,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
+    /// The running call is a command or an event, so it may ask the user.
+    pub(crate) interactive: bool,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
@@ -487,6 +518,7 @@ struct Exports {
     providers: Option<wit_prov::Guest>,
     indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
+    semantic: Option<wit_sem::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -538,6 +570,7 @@ impl Runtime {
             granted: setup.granted,
             host: setup.host,
             invocation: Invocation::default(),
+            interactive: false,
             open_tasks: Vec::new(),
             last_report: None,
         };
@@ -565,6 +598,7 @@ impl Runtime {
         let index_indices = wit_index::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
+        let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -583,9 +617,13 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let semantic = match semantic_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic },
             limits: setup.limits,
             version: setup.version,
         })
@@ -815,6 +853,34 @@ impl Runtime {
             .collect())
     }
 
+    pub fn provide_semantic_tokens(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<SemanticToken>, CallError> {
+        if self.exports.semantic.is_none() {
+            return Err(CallError::missing_export("semantic-tokens-provider"));
+        }
+        let d = wit_sem::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let tokens = self.call(Invocation::default(), timeout, |e, store| {
+            e.semantic.as_ref().expect("checked").call_semantic_tokens(store, &d)
+        })?;
+        Ok(tokens
+            .into_iter()
+            .take(MAX_SEMANTIC_TOKENS)
+            .map(|t| SemanticToken {
+                range: range_from_wit(t.range),
+                kind: clip(t.kind, 32),
+                modifiers: t.modifiers.into_iter().take(MAX_TOKEN_MODIFIERS).map(|m| clip(m, 32)).collect(),
+            })
+            .collect())
+    }
+
     pub fn activate(&mut self) -> Result<(), CallError> {
         let data = self.store.data();
         let ctx = wit_types::Context {
@@ -837,6 +903,7 @@ impl Runtime {
     ) -> Result<Option<String>, CallError> {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -887,6 +954,7 @@ impl Runtime {
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -900,6 +968,7 @@ impl Runtime {
         let events: Vec<wit_events::Event> = events.into_iter().take(MAX_BATCH).map(event_to_wit).collect();
         self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let r = e.plugin.openidea_plugin_event_handler().call_handle(
                 &mut *store,
                 &events,
@@ -936,6 +1005,7 @@ impl Runtime {
         let result = f(&self.exports, &mut self.store);
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
+        data.interactive = false;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
             data.host.task_end(id);
@@ -963,6 +1033,8 @@ impl Runtime {
 
 /// Most items one provider call may return (more are dropped).
 const MAX_PROVIDER_ITEMS: usize = 10_000;
+const MAX_SEMANTIC_TOKENS: usize = 1 << 16;
+const MAX_TOKEN_MODIFIERS: usize = 8;
 
 fn pos_to_wit(p: ide_core::Pos) -> wit_types::Position {
     wit_types::Position { line: p.line, character: p.col }

@@ -126,6 +126,7 @@ const EXT_LANG: Record<string, string> = {
   kt: "kotlin",
   kts: "kotlin",
   java: "java",
+  cs: "csharp",
   py: "python",
   gd: "gdscript",
   go: "go",

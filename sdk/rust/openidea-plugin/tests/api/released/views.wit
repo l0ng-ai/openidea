@@ -1,4 +1,4 @@
-package openidea:plugin@1.1.0;
+package openidea:plugin@1.2.0;
 
 /// Declarative views: tool windows declared
 /// under `[[contributes.views]]` and custom editors under
@@ -127,6 +127,9 @@ interface views {
     /// The view (or every custom editor of that id) shows outdated content:
     /// the IDE renders it again.
     refresh: func(view: string);
+    /// Brings one of the plugin's own views to the front in the window the
+    /// current command or event came from; `invalid` outside one.
+    reveal: func(view: string) -> result<_, error>;
     /// Sends a message to the script of a view's `html` body.
     post-message: func(view: string, message: string) -> result<_, error>;
     /// Opens a terminal tab in the window the call came from, running

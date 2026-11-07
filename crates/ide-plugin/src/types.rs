@@ -28,6 +28,8 @@ pub struct Invocation {
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
     pub editor: Option<EditorContext>,
+    /// Files and folders the command was run on.
+    pub selected_paths: Vec<PathBuf>,
 }
 
 /// A failed host call, as the plugin sees it (WIT `types.error`).
@@ -64,6 +66,27 @@ pub struct StatusItem {
     pub tooltip: Option<String>,
     /// One of the plugin's commands, run on click.
     pub command: Option<String>,
+}
+
+/// An entry of a plugin's `pick` or `pick-many`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PickItem {
+    pub key: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Prompt {
+    #[serde(rename_all = "camelCase")]
+    QuickPick { title: String, items: Vec<PickItem>, multiple: bool },
+    #[serde(rename_all = "camelCase")]
+    Input { prompt: String, value: Option<String> },
+    #[serde(rename_all = "camelCase")]
+    Confirm { title: String, message: String },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -394,6 +417,13 @@ pub struct LineMarker {
     pub icon: Option<String>,
     pub tooltip: String,
     pub target: Option<Location>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticToken {
+    pub range: ide_core::Range,
+    pub kind: String,
+    pub modifiers: Vec<String>,
 }
 
 // ---- declarative views (wit/views.wit) ---------------------------------------

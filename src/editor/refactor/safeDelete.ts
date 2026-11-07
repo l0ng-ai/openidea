@@ -10,6 +10,7 @@
  * Files (project view): references to the file's top-level symbols from other
  * files, when the language server can answer (`fileUsages`).
  */
+import { Channel } from "@tauri-apps/api/core";
 import type { EditorView } from "@codemirror/view";
 import type { Text } from "@codemirror/state";
 import type { LocalSymbol, Location, OutlineItem, Pos, Range, SyntaxNode } from "@/bindings";
@@ -254,7 +255,7 @@ async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Prom
   if (target.local)
     return target.local.references.filter((r) => outside(ctx.path, r)).map((range) => ({ path: ctx.path, range }));
   const { locations: refs } = await lspRequest(() =>
-    commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true),
+    commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true, false, new Channel()),
   );
   return refs.filter((l) => outside(l.path, l.range));
 }
@@ -554,7 +555,15 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
             // Every symbol of every file: the server's own scope (a project search each would be too slow).
             refs = (
               await lspRequest(() =>
-                commands.lspReferences(nextRequestId(), doc, item.selection_range.start, false, false),
+                commands.lspReferences(
+                  nextRequestId(),
+                  doc,
+                  item.selection_range.start,
+                  false,
+                  false,
+                  false,
+                  new Channel(),
+                ),
               )
             ).locations;
           } catch (e) {

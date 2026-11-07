@@ -23,7 +23,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, useGitLogChecks, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -81,7 +81,7 @@ import {
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
-import { currentRepo, loadBranches, repoName, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import { branchMenu, inRepo, tagMenu } from "./branchMenu";
 import {
@@ -1089,6 +1089,7 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
         toggle("Date", o, "showDate"),
         toggle("Hash", o, "showHash"),
         toggle("Signature", o, "showSignature"),
+        toggle("GitHub Commit Checks", o, "showGitHubChecks"),
         { kind: "separator" },
         toggle("Column Headers", o, "showColumnHeaders"),
       ],
@@ -1214,6 +1215,7 @@ function CommitList() {
     });
   }, [all]);
   const opts = useLogOptions();
+  const ChecksCell = useGitLogChecks((s) => s.cell);
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
   const { expanded: expandedFragments, collapsed: collapsedFragments, merges: expandedMerges } = fragments;
@@ -1241,10 +1243,32 @@ function CommitList() {
       ...(opts.showSignature
         ? [{ id: "signature", title: "Signature", width: 100, render: (c: Commit) => <CommitSignature commit={c} /> }]
         : []),
+      ...(opts.showGitHubChecks && ChecksCell
+        ? [
+            {
+              id: "github-checks",
+              title: "GitHub Commit Checks",
+              width: 44,
+              render: (c: Commit) => {
+                const root = commitRepo(c) ?? currentRepoRoot();
+                return root && !(c as RepoCommit).readOnly ? <ChecksCell root={root} revision={c.id} /> : null;
+              },
+            },
+          ]
+        : []),
     ];
     const order = [...new Set([...opts.columnOrder, ...builtins.map((c) => c.id)])];
     return builtins.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-  }, [opts.showAuthor, opts.showDate, opts.showHash, opts.showSignature, opts.commitTimestamp, opts.columnOrder]);
+  }, [
+    opts.showAuthor,
+    opts.showDate,
+    opts.showHash,
+    opts.showSignature,
+    opts.showGitHubChecks,
+    opts.commitTimestamp,
+    opts.columnOrder,
+    ChecksCell,
+  ]);
   const user = useGitLog((s) => s.user);
   const headCommit = useVcs((s) => s.branch?.headCommit ?? null);
   const branches = useVcs((s) => s.branches);

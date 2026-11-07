@@ -38,6 +38,7 @@ fn server(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
@@ -113,6 +114,26 @@ fn jdtls_vm_args() {
     let mut cfg = server("jdtls");
     configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
     assert_eq!(cfg.args, ["--jvm-arg=-Xmx2g", "--jvm-arg=-javaagent:/opt/lombok.jar"]);
+}
+
+#[test]
+fn jdtls_honors_the_configured_maven_local_repository() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("m2-repo");
+    let mut s = Settings::default();
+    s.languages.java.maven.local_repository = repo.to_string_lossy().into_owned();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(cfg.args, [format!("--jvm-arg=-Dmaven.repo.local={}", repo.to_string_lossy())]);
+    // A `-Dmaven.repo.local` the user put in their own jdtls VM options wins.
+    s.languages.java.jdtls_vm_args = "-Xmx2g -Dmaven.repo.local=/user/repo".into();
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(cfg.args, ["--jvm-arg=-Xmx2g", "--jvm-arg=-Dmaven.repo.local=/user/repo"]);
+    // Unset: jdtls keeps m2e's own default (no arg at all).
+    let mut cfg = server("jdtls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &Settings::default());
+    assert!(cfg.args.iter().all(|a| !a.contains("maven.repo.local")));
 }
 
 #[test]
@@ -269,6 +290,41 @@ fn project_jdk_and_maven_settings() {
 
     s.languages.java.jdk = "missing".into();
     assert_eq!(project_jdk(tmp.path(), &s), None);
+}
+
+#[test]
+fn maven_options_carry_the_thread_count_into_the_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    assert!(maven_options(tmp.path(), &s).is_empty(), "empty settings add nothing");
+
+    s.languages.java.maven.user_settings = "m2/settings.xml".into();
+    s.languages.java.maven.local_repository = "m2/repo".into();
+    s.languages.java.maven.threads = "4".into();
+    let settings_file = tmp.path().join("m2/settings.xml").to_string_lossy().into_owned();
+    let repo = tmp.path().join("m2/repo").to_string_lossy().into_owned();
+    assert_eq!(
+        maven_options(tmp.path(), &s),
+        ["-s", settings_file.as_str(), &format!("-Dmaven.repo.local={repo}"), "-T", "4"]
+    );
+
+    // A core multiplier passes through; anything Maven would reject is dropped
+    // rather than failing every build.
+    s.languages.java.maven.threads = "2.5C".into();
+    assert!(maven_options(tmp.path(), &s).ends_with(&["-T".to_owned(), "2.5C".to_owned()]));
+    s.languages.java.maven.threads = "abc".into();
+    assert!(!maven_options(tmp.path(), &s).iter().any(|a| a == "-T"));
+
+    // Run configurations get the options ahead of the goals, once per launch.
+    s.languages.java.maven.threads = "2C".into();
+    let mut configs = vec![run("maven", "./mvnw", &["package"]), run("maven", "./mvnw", &["-T", "8", "package"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let args: Vec<String> = configs[0].args.clone();
+    assert_eq!(args[args.len() - 3..].join(" "), "-T 2C package", "the settings' thread count leads the goals");
+    let args: Vec<String> = configs[1].args.clone();
+    assert_eq!(args[args.len() - 3..].join(" "), "-T 8 package", "the configuration's own -T wins");
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].args.iter().filter(|a| a.as_str() == "-T").count(), 1, "applied once");
 }
 
 #[test]
@@ -662,6 +718,82 @@ fn venv_creation_ignores_modules_in_the_working_directory() {
     args.push("--without-pip".into());
     crate::exec::stream(&python, &args, Some(shadow.path()), &[], &Default::default(), &|_| {}).unwrap();
     assert!(location.join("pyvenv.cfg").is_file());
+}
+
+#[test]
+fn env_tools_are_reported_missing_before_they_run() {
+    // Without uv / Poetry on PATH the error names the install, not a spawn failure.
+    let dir = tempfile::tempdir().unwrap();
+    let location = dir.path().join(".venv");
+    let base = dir.path().join("python");
+    fn none(_: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+    let uv = crate::python::create_venv_with(
+        crate::python::VenvTool::Uv,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(uv.message.contains("uv is not installed"), "{}", uv.message);
+    let poetry = crate::python::create_venv_with(
+        crate::python::VenvTool::Poetry,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(poetry.message.contains("Poetry is not installed"), "{}", poetry.message);
+    let conda = crate::python::create_venv_with(
+        crate::python::VenvTool::Conda,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(conda.message.contains("conda is not installed"), "{}", conda.message);
+    // An existing environment is refused before any tool runs.
+    std::fs::create_dir_all(&location).unwrap();
+    std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
+    let again = crate::python::create_venv_with(
+        crate::python::VenvTool::Uv,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(again.message.contains("already contains a virtual environment"), "{}", again.message);
+}
+
+#[test]
+fn an_existing_conda_environment_is_not_recreated() {
+    // `conda-meta/` marks a conda prefix: refuse before `conda create` would fail obscurely.
+    let dir = tempfile::tempdir().unwrap();
+    let location = dir.path().join("envs").join("ds");
+    let base = dir.path().join("python");
+    std::fs::create_dir_all(location.join("conda-meta")).unwrap();
+    fn none(_: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+    let err = crate::python::create_venv_with(
+        crate::python::VenvTool::Conda,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(err.message.contains("already contains a conda environment"), "{}", err.message);
 }
 
 #[test]
