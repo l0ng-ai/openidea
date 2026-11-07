@@ -427,6 +427,12 @@ pub struct SemanticToken {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginHover {
+    pub markdown: String,
+    pub range: Option<ide_core::Range>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginInlayHint {
     pub position: ide_core::Pos,
     pub label: String,

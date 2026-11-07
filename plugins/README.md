@@ -34,7 +34,7 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, inlay-hints
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, inlay-hints
 ```
 
 The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.3.0`, world
@@ -402,7 +402,7 @@ declaration matches the file's language are called (and loaded):
 
 ```toml
 [[contributes.providers]]
-kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "inlay-hints"
+kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
@@ -456,6 +456,26 @@ A token covers part of one line and carries an LSP token kind (`TokenKind`:
 the language server's semantic tokens and win where they overlap one, so the
 editor's colour scheme styles them like the server's. They are asked again
 after each edit, under the edit-path budget; at most 65,536 per document.
+
+#### Hover
+
+The `hover` kind (API 1.3) adds Markdown to the hover of documents of the
+declared languages, here too including languages the plugin doesn't
+contribute. Register with `register_plugin!(MyPlugin, hover)` and implement
+`openidea_plugin::hover::HoverProvider`:
+
+```rust
+impl HoverProvider for MyPlugin {
+    fn hover(&mut self, doc: &Document, at: Position) -> Option<Hover> {
+        Some(Hover::new("**orders.index** · `GET /orders`"))
+    }
+}
+```
+
+The host asks the language server and the plugins together, under the
+edit-path budget, and shows the server's hover first, then each plugin's
+below a rule. `range`, when given, is the text the hover describes (used when
+the server names none). At most 64 KiB of Markdown per plugin.
 
 #### Inlay hints
 

@@ -4,7 +4,7 @@
 //! themselves are in `wit_host`.
 
 use crate::types::{
-    CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, PluginInlayHint, ProviderDocument,
+    CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, PluginHover, PluginInlayHint, ProviderDocument,
     SemanticToken,
 };
 use crate::types::{
@@ -16,8 +16,8 @@ use crate::types::{
     ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, services_bindings,
-    syntax_bindings, views_bindings,
+    bindings, hover_bindings, indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings,
+    services_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -34,6 +34,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
+use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use inlay_bindings::exports::openidea::plugin::inlay_hints_provider as wit_inlay;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
@@ -526,6 +527,7 @@ struct Exports {
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
     services: Option<wit_svc::Guest>,
+    hover: Option<wit_hover::Guest>,
     inlay: Option<wit_inlay::Guest>,
 }
 
@@ -608,6 +610,7 @@ impl Runtime {
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
         let service_indices = wit_svc::GuestIndices::new(&pre).ok();
+        let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
@@ -635,13 +638,17 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let hover = match hover_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         let inlay = match inlay_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services, inlay },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services, hover, inlay },
             limits: setup.limits,
             version: setup.version,
         })
@@ -899,6 +906,29 @@ impl Runtime {
             .collect())
     }
 
+    pub fn provide_hover(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Option<PluginHover>, CallError> {
+        if self.exports.hover.is_none() {
+            return Err(CallError::missing_export("hover-provider"));
+        }
+        let d = wit_hover::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let hover = self.call(Invocation::default(), timeout, |e, store| {
+            e.hover.as_ref().expect("checked").call_hover(store, &d, pos_to_wit(at))
+        })?;
+        Ok(hover
+            .filter(|h| !h.markdown.trim().is_empty())
+            .map(|h| PluginHover { markdown: clip(h.markdown, MAX_HOVER_BYTES), range: h.range.map(range_from_wit) }))
+    }
+
     pub fn provide_inlay_hints(
         &mut self,
         doc: &ProviderDocument,
@@ -1110,6 +1140,7 @@ impl Runtime {
 const MAX_PROVIDER_ITEMS: usize = 10_000;
 const MAX_SEMANTIC_TOKENS: usize = 1 << 16;
 const MAX_TOKEN_MODIFIERS: usize = 8;
+const MAX_HOVER_BYTES: usize = 64 * 1024;
 
 fn pos_to_wit(p: ide_core::Pos) -> wit_types::Position {
     wit_types::Position { line: p.line, character: p.col }

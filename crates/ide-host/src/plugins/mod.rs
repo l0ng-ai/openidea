@@ -16,6 +16,7 @@
 //! projects) and folders linked with `openidea-plugin link` (`links.json`).
 
 mod api;
+mod hover;
 mod icon_extensions;
 mod icon_patterns;
 mod icon_settings;
@@ -39,6 +40,7 @@ pub mod views;
 pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
 };

@@ -61,6 +61,11 @@ world plugin-semantic-tokens {
     export semantic-tokens-provider;
 }
 
+world plugin-hover {
+    include plugin;
+    export hover-provider;
+}
+
 world plugin-inlay-hints {
     include plugin;
     export inlay-hints-provider;
@@ -96,6 +101,10 @@ world indexing {
 
 world semantic-tokens {
     export semantic-tokens-provider;
+}
+
+world hover {
+    export hover-provider;
 }
 
 world inlay-hints {
