@@ -1,4 +1,12 @@
 {
+  "Native server declined rename": "语言服务器拒绝重命名",
+  "document is too large or is not a regular file": "文档过大或不是普通文件",
+  "document is too large": "文档过大",
+  "decoded document is too large": "解码后的文档过大",
+  "May be incomplete: the language server could not check this name": "结果可能不完整：语言服务器无法检查此名称",
+  "indexed document changed; wait for indexing and try again": "索引文档已更改，请等待索引完成后重试",
+  "indexed name is not on a UTF-16 character boundary": "索引名称未位于 UTF-16 字符边界上",
+  "Plugin indexes are still updating; try again shortly": "插件索引仍在更新，请稍后重试",
   "CMake Configure": "CMake 配置",
   "CMake Build": "CMake 构建",
   "CTest": "CTest 测试",

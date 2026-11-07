@@ -52,6 +52,15 @@ describe("Find Usages fallback", () => {
     expect(cmd.syntaxLocals).not.toHaveBeenCalled();
   });
 
+  it("keeps indexed results and names a failed language-server query accurately", async () => {
+    const usage = { path: "/p/a.ts", range: r(1, 0, 1) };
+    cmd.lspReferences.mockReturnValueOnce(ok({ locations: [usage], incomplete: "serverFailed" }));
+    const result = await fetchUsages(caret);
+    expect(result.groups[0]!.usages).toHaveLength(1);
+    expect(result.note).toBe("May be incomplete: the language server could not check this name");
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+  });
+
   it("searches project-wide under the given request and says when results may be incomplete", async () => {
     const usage = { path: "/p/a.ts", range: r(1, 0, 1) };
     cmd.lspReferences.mockReturnValueOnce(ok({ locations: [usage], incomplete: "indexing" }));
