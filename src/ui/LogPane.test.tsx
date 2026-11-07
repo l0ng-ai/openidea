@@ -45,6 +45,15 @@ afterEach(() => {
 });
 
 describe("LogPane", () => {
+  it("drops output that arrives after the source was stopped", () => {
+    const s = source();
+    const { unmount } = render(<LogPane start={s.start} sourceKey="a" live ariaLabel="Log" />);
+    const late = s.start.mock.calls.at(-1)![0];
+    unmount();
+    expect(() => late({ text: "late", stderr: false })).not.toThrow();
+    expect(frames).toHaveLength(0);
+  });
+
   it("says when the program finished, after its last lines", () => {
     const s = source();
     render(<LogPane start={s.start} sourceKey="a" live ariaLabel="Log" />);

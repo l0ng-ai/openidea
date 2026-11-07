@@ -66,6 +66,8 @@ function LogStream(
   useEffect(() => {
     let buffer: LogLine[] = [];
     let frame = 0;
+    // Output that arrives after the stop (a source that already ran) is dropped.
+    let stopped = false;
     const flush = () => {
       frame = 0;
       const add = buffer;
@@ -77,17 +79,20 @@ function LogStream(
     };
     const stop = source.current.start(
       (line) => {
+        if (stopped) return;
         buffer.push({ stderr: line.stderr, text: line.text.replace(ANSI, "") });
         frame ||= requestAnimationFrame(flush);
       },
-      setError,
+      (message) => !stopped && setError(message),
       source.current.on,
       (code) => {
+        if (stopped) return;
         flush();
         setExit(code);
       },
     );
     return () => {
+      stopped = true;
       cancelAnimationFrame(frame);
       stop();
     };
