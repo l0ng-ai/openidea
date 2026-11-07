@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(unix)]
 use crate::properties::parse_properties;
 #[cfg(unix)]
 use std::{
