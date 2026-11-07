@@ -1,6 +1,7 @@
 import { Transaction, type Text } from "@codemirror/state";
 import { ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
-import type { CodeAction, Diagnostic, TextEdit, WorkspaceEdit } from "@/bindings";
+import type { CodeAction, Diagnostic, FileEdit, TextEdit, WorkspaceEdit } from "@/bindings";
+import { ipcPath } from "@/platform/paths";
 import { commands, IpcError, nextRequestId } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
 import { registerAction } from "@/platform/actions";
@@ -49,6 +50,72 @@ export function pastedImport(actions: readonly CodeAction[]): CodeAction | null 
       !/^import (?:all|missing)\b/i.test(a.title),
   );
   return imports.length === 1 ? imports[0]! : null;
+}
+
+interface LspTextEdit {
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  newText: string;
+}
+
+function lspEditsOf(arg: unknown): [string, number | null, LspTextEdit[]][] | null {
+  if (!arg || typeof arg !== "object") return [];
+  const edit = arg as {
+    changes?: Record<string, LspTextEdit[]>;
+    documentChanges?: { textDocument?: { uri: string; version?: number | null }; edits?: LspTextEdit[] }[];
+  };
+  if (edit.documentChanges) {
+    const out: [string, number | null, LspTextEdit[]][] = [];
+    for (const change of edit.documentChanges) {
+      if (!change.textDocument || !change.edits) return null;
+      out.push([change.textDocument.uri, change.textDocument.version ?? null, change.edits]);
+    }
+    return out;
+  }
+  return edit.changes ? Object.entries(edit.changes).map(([uri, edits]) => [uri, null, edits]) : [];
+}
+
+function uriPath(uri: string): string | null {
+  if (!uri.startsWith("file:")) return null;
+  const path = decodeURIComponent(new URL(uri).pathname);
+  return ipcPath(/^\/[A-Za-z]:/.test(path) ? path.slice(1) : path);
+}
+
+/**
+ * Some servers (typescript-language-server) send an import fix as a command
+ * carrying an LSP WorkspaceEdit instead of an `edit`; lift it into one when it
+ * only edits `path`, so it merges and applies like any other fix.
+ */
+export function withCommandEdit(action: CodeAction, path: string): CodeAction {
+  if (action.edit || !action.command) return action;
+  const files: FileEdit[] = [];
+  for (const raw of action.command.arguments as unknown[]) {
+    let arg = raw;
+    if (typeof raw === "string") {
+      try {
+        arg = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+    }
+    const docs = lspEditsOf(arg);
+    if (!docs) return action;
+    for (const [uri, version, edits] of docs) {
+      if (uriPath(uri) !== ipcPath(path)) return action;
+      files.push({
+        kind: "edit",
+        path,
+        version,
+        edits: edits.map((e) => ({
+          range: {
+            start: { line: e.range.start.line, col: e.range.start.character },
+            end: { line: e.range.end.line, col: e.range.end.character },
+          },
+          new_text: e.newText,
+        })),
+      });
+    }
+  }
+  return files.length ? { ...action, edit: { files } } : action;
 }
 
 /** Merge edits computed against one snapshot, keeping their content/version guards. */
@@ -236,6 +303,7 @@ const importsOnPastePlugin = ViewPlugin.fromClass(
           if (!this.current(p)) return;
           let fix = pastedImport(actions);
           if (!fix) continue;
+          fix = withCommandEdit(fix, doc.path);
           if (!fix.edit)
             fix = await abortable(
               lspRequest(
@@ -245,6 +313,7 @@ const importsOnPastePlugin = ViewPlugin.fromClass(
               p.abort.signal,
             );
           if (!this.current(p)) return;
+          fix = withCommandEdit(fix, doc.path);
           if (!pastedImport([fix]) || !mergePastedImports(doc.path, [fix])) continue;
           if (imports.some((a) => JSON.stringify(a.edit) === JSON.stringify(fix.edit))) continue;
           if (mergePastedImports(doc.path, [...imports, fix])) imports.push(fix);

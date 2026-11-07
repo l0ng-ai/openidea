@@ -33,7 +33,13 @@ vi.mock("@/platform/ipc", async (orig) => {
     },
   };
 });
-import { importsOnPasteExtension, mergePastedImports, pastedDiagnostics, pastedImport } from "./importsOnPaste";
+import {
+  importsOnPasteExtension,
+  mergePastedImports,
+  pastedDiagnostics,
+  pastedImport,
+  withCommandEdit,
+} from "./importsOnPaste";
 import { lspDoc } from "./lsp";
 import { closePopup, openPopup, useLspPopup } from "./popupStore";
 import { useProject } from "@/platform/project";
@@ -456,5 +462,48 @@ describe("imports on paste", () => {
     await settle();
     expect(useLspPopup.getState().popup?.kind).toBe("list");
     expect(mocks.apply).not.toHaveBeenCalled();
+  });
+});
+
+describe("withCommandEdit", () => {
+  const path = "/p/src/cart.ts";
+  const action = (args: unknown[]): CodeAction => ({
+    title: 'Update import from "./money.ts"',
+    kind: "quickfix",
+    isPreferred: false,
+    disabledReason: null,
+    edit: null,
+    command: { title: "", command: "_typescript.applyWorkspaceEdit", arguments: args as string[] },
+    data: null,
+    server: 2,
+  });
+  const lspEdit = {
+    documentChanges: [
+      {
+        textDocument: { uri: "file:///p/src/cart.ts", version: 6 },
+        edits: [
+          { range: { start: { line: 0, character: 26 }, end: { line: 0, character: 26 } }, newText: "formatMoney, " },
+        ],
+      },
+    ],
+  };
+
+  it("lifts a command's LSP workspace edit for the pasted file", () => {
+    expect(withCommandEdit(action([lspEdit]), path).edit).toEqual({
+      files: [
+        {
+          kind: "edit",
+          path,
+          version: 6,
+          edits: [{ range: { start: { line: 0, col: 26 }, end: { line: 0, col: 26 } }, new_text: "formatMoney, " }],
+        },
+      ],
+    });
+  });
+
+  it("leaves commands that touch other files or carry no edit alone", () => {
+    const other = { changes: { "file:///p/src/money.ts": lspEdit.documentChanges[0]!.edits } };
+    expect(withCommandEdit(action([other]), path).edit).toBeNull();
+    expect(withCommandEdit(action(["not json"]), path).edit).toBeNull();
   });
 });
