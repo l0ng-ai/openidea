@@ -217,3 +217,90 @@ async fn native_engine_updates_namespaces_and_imports_when_a_file_moves() {
     }
     host.close_project("main");
 }
+
+/// Runs Inspect Code over `scope`, returning the diagnostic codes per file
+/// (relative path) and the summary.
+async fn inspect_code(
+    host: &Host,
+    scope: ide_search::SearchScope,
+) -> (std::collections::BTreeMap<String, Vec<String>>, ops::analysis::InspectSummary, u32) {
+    let events: Arc<Mutex<Vec<ops::analysis::InspectEvent>>> = Arc::default();
+    let sink = events.clone();
+    ops::analysis::inspect_code(
+        host,
+        "main",
+        ide_core::RequestId(7),
+        scope,
+        ops::Channel::new(move |e| sink.lock().push(e)),
+    )
+    .await
+    .unwrap();
+    let mut files = std::collections::BTreeMap::new();
+    let (mut summary, mut total) = (None, 0);
+    for event in events.lock().drain(..) {
+        match event {
+            ops::analysis::InspectEvent::Started { total: t } => total = t,
+            ops::analysis::InspectEvent::File { file, .. } => {
+                let codes = file.diagnostics.into_iter().map(|d| d.code.unwrap_or_else(|| "syntax".into())).collect();
+                files.insert(file.rel_path.replace('\\', "/"), codes);
+            }
+            ops::analysis::InspectEvent::Done { summary: s } => summary = Some(s),
+        }
+    }
+    (files, summary.expect("done"), total)
+}
+
+/// Inspect Code sends PHP files to the native engine while it runs (after
+/// indexing, with unsaved buffers), and the inspection profile in effect
+/// turns its inspections off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspect_code_runs_the_native_engine_over_php_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("shop");
+    write(&root.join("composer.json"), r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#);
+    write(&root.join("src/Foo.php"), "<?php\nnamespace App;\n\nclass Foo {}\n");
+    write(&root.join("src/Bar.php"), "<?php\nnamespace App;\n\nnew Foo();\nnew Missing();\n");
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    let src = || ide_search::SearchScope::Directory { path: root.join("src").into() };
+
+    // Run right away: Inspect Code waits for the index (no `Missing` before it
+    // knows `Foo`).
+    let (files, summary, total) = inspect_code(&host, src()).await;
+    assert_eq!(total, 2);
+    assert_eq!(files["src/Bar.php"], ["PhpUndefinedClass"], "{files:?}");
+    assert_eq!(files["src/Foo.php"], Vec::<String>::new());
+    assert_eq!((summary.files, summary.problems, summary.skipped, summary.failed), (2, 1, 0, 0));
+    assert!(!summary.cancelled);
+
+    // An open file is inspected as edited.
+    let bar = root.join("src").join("Bar.php");
+    let doc = ops::doc::open(&host, "main", bar.clone()).await.unwrap();
+    let at = doc.text.find("new Missing();").unwrap() as u32;
+    let changes = ChangeSet { changes: vec![TextChange { from: at, to: at + 14, insert: "$x = ;".into() }] };
+    ops::doc::edit(&host, "main", doc.id, doc.version, changes).unwrap();
+    let (files, _, _) = inspect_code(&host, src()).await;
+    assert_eq!(files["src/Bar.php"].first().map(String::as_str), Some("syntax"), "{files:?}");
+    assert!(!files["src/Bar.php"].contains(&"PhpUndefinedClass".to_owned()));
+    ops::doc::close(&host, "main", doc.id).unwrap();
+
+    // Turned off in the inspection profile in effect (Default, IDE level).
+    ops::project::set_settings(
+        &host,
+        "main",
+        SettingsScope::Global,
+        "inspections.default",
+        r#"{"lsp:php:PhpUndefinedClass":{"enabled":false}}"#,
+    )
+    .unwrap();
+    until("the inspection to be turned off", || !engine.inspections().ids().contains(&"PhpUndefinedClass")).await;
+    let (files, summary, _) = inspect_code(&host, src()).await;
+    assert_eq!(files["src/Bar.php"], Vec::<String>::new());
+    assert_eq!(summary.problems, 0);
+    host.close_project("main");
+}

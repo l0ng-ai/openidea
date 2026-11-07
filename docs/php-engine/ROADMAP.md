@@ -365,7 +365,7 @@ The design:
 
   Each one comes with a test of the before and after text.
 
-- [ ] Phase 4.10: Inspect Code and settings
+- [x] Phase 4.10: Inspect Code and settings
   - Batch Inspect Code over a scope through the engine, next to `crates/ide-lsp/src/inspect.rs`, with the same result shape.
   - Settings › PHP › Inspections: enable or disable each inspection and set its severity, with text in `en` and `zh`.
 

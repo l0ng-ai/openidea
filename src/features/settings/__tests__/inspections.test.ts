@@ -71,6 +71,7 @@ describe("inspections tree", () => {
       "General",
       "JavaScript",
       "Other",
+      "PHP",
       "Proofreading",
       "Python",
       "SQL",

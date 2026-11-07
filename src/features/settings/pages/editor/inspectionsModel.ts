@@ -8,6 +8,7 @@ import {
   INSPECTION_LEVELS,
   codeInspectionId,
   customProfileId,
+  inspectionOptions,
   newProfileKey,
   overridesOf,
   producerInspectionId,
@@ -22,6 +23,7 @@ import {
   type SeenCode,
 } from "@/platform/inspections";
 import { tx } from "@/platform/i18n";
+import { PHP_INSPECTIONS, PHP_PRODUCER, phpInspectionId } from "@/platform/phpInspections";
 
 export interface InspectionNode {
   /** Unique in the tree (a server serving several languages appears under each). */
@@ -71,8 +73,38 @@ function serverNode(
   };
 }
 
+/** The built-in PHP engine and its inspections (with any other code it was seen reporting). */
+function phpEngineNode(seen: readonly SeenCode[]): InspectionNode {
+  const id = producerInspectionId(PHP_PRODUCER);
+  const known = new Set(PHP_INSPECTIONS.map((i) => i.code));
+  const other = serverNode(
+    "PHP",
+    PHP_PRODUCER,
+    seen.filter((c) => !known.has(c.code)),
+    "PHP",
+  ).children;
+  return {
+    key: `PHP/${id}`,
+    id,
+    name: "Built-in engine",
+    description:
+      'Problems the built-in PHP engine reports (Settings › PHP › Code insight engine: Built-in). Severity "As reported" keeps the level the engine assigns; an inspection below can override it.',
+    children: [
+      ...PHP_INSPECTIONS.map((i) => ({
+        key: `PHP/${phpInspectionId(i.code)}`,
+        id: phpInspectionId(i.code),
+        name: i.name,
+        description: i.description,
+        children: [],
+      })),
+      ...other,
+    ],
+  };
+}
+
 /**
  * The inspection tree: one group per language that has language servers, the
+ * built-in PHP engine under PHP, the
  * built-in checks under their category, and servers known only from seen
  * diagnostics or stored overrides under "Other", plugins (`plugin:<id>`,
  * named by `names`) under "Plugins". Groups sort by name.
@@ -117,7 +149,8 @@ export function buildInspectionTree(
       g.children.push(serverNode(l.name, s, [...(codes.get(s)?.values() ?? [])], servedBy.get(s)!.join(", ")));
     }
   }
-  const builtinProducers = new Set(BUILTIN_INSPECTIONS.map((b) => b.producer));
+  group("PHP").children.push(phpEngineNode([...(codes.get(PHP_PRODUCER)?.values() ?? [])]));
+  const builtinProducers = new Set([...BUILTIN_INSPECTIONS.map((b) => b.producer), PHP_PRODUCER]);
   for (const b of BUILTIN_INSPECTIONS) {
     group(b.group).children.push({
       key: `${b.group}/${b.id}`,
@@ -193,7 +226,7 @@ export function setLevel(o: ProfileOverrides, id: string, level: InspectionLevel
 
 /** Sets option `key` of inspection `id` (dropped again when back to its default). */
 export function setOption(o: ProfileOverrides, id: string, key: string, value: boolean): ProfileOverrides {
-  const fallback = BUILTIN_INSPECTIONS.find((b) => b.id === id)?.options?.find((x) => x.key === key)?.default ?? true;
+  const fallback = inspectionOptions(id)?.find((x) => x.key === key)?.default ?? true;
   const options: Record<string, boolean> = { ...o[id]?.options };
   if (value === fallback) delete options[key];
   else options[key] = value;
@@ -237,6 +270,7 @@ export const INSPECTION_KEYWORDS = [
   "process literals",
   "process comments",
   ...BUILTIN_INSPECTIONS.map((b) => b.name),
+  ...PHP_INSPECTIONS.map((i) => i.name),
   ...INSPECTION_LEVELS.map((l) => l.label),
 ];
 

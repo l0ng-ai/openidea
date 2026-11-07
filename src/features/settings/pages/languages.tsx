@@ -4,6 +4,8 @@
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { PhpInspectionsPage } from "../languages/PhpInspectionsPage";
+import { PHP_INSPECTIONS } from "@/platform/phpInspections";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage } from "../languages/FormatterPage";
 import { ProjectStructurePage } from "../languages/ProjectStructurePage";
@@ -159,6 +161,23 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "phpbrew",
     ],
     component: PhpPage,
+  },
+  {
+    id: "languages.php.inspections",
+    // Stored in the inspection profile in effect, which picks its own level (as Editor › Inspections).
+    title: "Inspections",
+    group: LANGUAGES_GROUP,
+    order: 403.25,
+    keywords: [
+      "php inspections",
+      "inspection profile",
+      "severity",
+      "strict",
+      "type checks",
+      "built-in engine",
+      ...PHP_INSPECTIONS.map((i) => i.name),
+    ],
+    component: PhpInspectionsPage,
   },
   {
     id: "languages.ruby",

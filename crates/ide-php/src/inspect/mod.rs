@@ -15,7 +15,11 @@
 //!   returns, `void` functions returning a value and `never` functions
 //!   returning; [`level`]: syntax newer than the project's PHP version and
 //!   uses of deprecated symbols); [`PhpEngine::set_inspections`] replaces the
-//!   set (tests, and the settings of phase 4.10).
+//!   set, and [`PhpEngine::configure_inspections`] builds it from the
+//!   settings ([`InspectionConfig`]: the inspection profile in effect, where
+//!   the engine's inspections are `lsp:php:<Id>`, turned off or with their
+//!   type checks set to strict).
+//! - [`PhpEngine::inspect_file`] inspects any file, for batch Inspect Code.
 //! - [`PhpEngine::inspect`] runs every inspection over an open document,
 //!   drops the problems a `@noinspection` comment suppresses
 //!   ([`suppress`]), and gives them as IDE diagnostics (`source: "php"`,
@@ -55,10 +59,13 @@ pub mod undefined;
 pub mod unused;
 pub mod variables;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use ide_core::inspection_settings::InspectionOverride;
+use ide_core::settings::Settings;
 use ide_core::{CancellationToken, Diagnostic, DocId, Range, Severity, TextEdit, WorkspaceEdit};
 
 use crate::engine::PhpEngine;
@@ -98,6 +105,19 @@ impl Inspections {
 
     /// The engine's own inspections, the call and type checks in `mode`.
     pub fn builtin_with(mode: TypeCheckMode) -> Self {
+        Self::builtin_modes(&|_| mode)
+    }
+
+    /// The engine's own inspections as the settings configure them: the
+    /// disabled ones left out, the call and type checks each in its mode.
+    pub fn configured(config: &InspectionConfig) -> Self {
+        let all = Self::builtin_modes(&|id| config.mode(id));
+        Self::new(all.list.into_iter().filter(|i| config.enabled(i.id())).collect())
+    }
+
+    /// The engine's own inspections, each call and type check in the mode
+    /// `mode` gives for its id.
+    fn builtin_modes(mode: &dyn Fn(&'static str) -> TypeCheckMode) -> Self {
         Self::new(vec![
             Arc::new(undefined::UndefinedClass),
             Arc::new(undefined::UndefinedFunction),
@@ -107,11 +127,11 @@ impl Inspections {
             Arc::new(members::UndefinedClassConstant),
             Arc::new(variables::UndefinedVariable),
             Arc::new(variables::UnusedVariable),
-            Arc::new(calls::ArgumentCount { mode }),
-            Arc::new(calls::NamedArgument { mode }),
-            Arc::new(calls::ArgumentType { mode }),
-            Arc::new(calls::ReturnType { mode }),
-            Arc::new(calls::PropertyType { mode }),
+            Arc::new(calls::ArgumentCount { mode: mode("PhpMethodParametersCountMismatch") }),
+            Arc::new(calls::NamedArgument { mode: mode("PhpUnknownNamedArgument") }),
+            Arc::new(calls::ArgumentType { mode: mode("PhpParams") }),
+            Arc::new(calls::ReturnType { mode: mode("PhpIncompatibleReturnType") }),
+            Arc::new(calls::PropertyType { mode: mode("PhpFieldAssignmentTypeMismatch") }),
             Arc::new(unused::UnusedImport),
             Arc::new(unused::UnusedPrivateMethod),
             Arc::new(unused::UnusedPrivateField),
@@ -150,6 +170,65 @@ impl Inspections {
 impl std::fmt::Debug for Inspections {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list().entries(self.ids()).finish()
+    }
+}
+
+/// The inspection id the profile (Settings › Editor › Inspections) stores
+/// the engine's settings under: the engine's diagnostics arrive from the
+/// producer `php`, so `lsp:php` is all of them and `lsp:php:<Id>` one
+/// inspection (`producerInspectionId` / `codeInspectionId` in
+/// `src/platform/inspections.ts`).
+pub const PROFILE_ID: &str = "lsp:php";
+
+/// The option that turns a call or type inspection to
+/// [`TypeCheckMode::Strict`] (Settings › PHP › Inspections).
+pub const STRICT_OPTION: &str = "strict";
+
+/// What the settings change about the engine's inspections. The severities
+/// the profile sets are applied by the UI, like those of every other
+/// producer; the engine leaves out the disabled inspections, which then
+/// cost nothing, and runs the type checks in their mode.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InspectionConfig {
+    /// Every inspection is off (`lsp:php` disabled).
+    pub all_disabled: bool,
+    /// Ids of the inspections turned off.
+    pub disabled: BTreeSet<String>,
+    /// Ids of the call and type inspections in strict mode.
+    pub strict: BTreeSet<String>,
+}
+
+impl InspectionConfig {
+    /// From the overrides of an inspection profile.
+    pub fn from_profile(overrides: &BTreeMap<String, InspectionOverride>) -> Self {
+        let mut config = Self {
+            all_disabled: overrides.get(PROFILE_ID).is_some_and(|o| o.enabled == Some(false)),
+            ..Self::default()
+        };
+        let prefix = format!("{PROFILE_ID}:");
+        for (key, o) in overrides {
+            let Some(id) = key.strip_prefix(&prefix) else { continue };
+            if o.enabled == Some(false) {
+                config.disabled.insert(id.to_owned());
+            }
+            if o.options.as_ref().and_then(|options| options.get(STRICT_OPTION)) == Some(&true) {
+                config.strict.insert(id.to_owned());
+            }
+        }
+        config
+    }
+
+    /// From the profile in effect in `settings`.
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self::from_profile(settings.inspections.active_overrides())
+    }
+
+    pub fn enabled(&self, id: &str) -> bool {
+        !self.all_disabled && !self.disabled.contains(id)
+    }
+
+    pub fn mode(&self, id: &str) -> TypeCheckMode {
+        if self.strict.contains(id) { TypeCheckMode::Strict } else { TypeCheckMode::Lenient }
     }
 }
 
@@ -388,14 +467,53 @@ impl PhpEngine {
         }
     }
 
+    /// Applies the inspection settings (the profile in effect). Open
+    /// documents are inspected again only when the configuration changed.
+    pub fn configure_inspections(&self, config: InspectionConfig) {
+        {
+            let mut current = self.shared_inspection_config().lock();
+            if *current == config {
+                return;
+            }
+            *current = config.clone();
+        }
+        self.set_inspections(Inspections::configured(&config));
+    }
+
     /// Runs every inspection over the current version of an open document.
     /// `None` when the engine doesn't hold it or `cancel` fired.
     pub fn inspect(&self, doc: DocId, cancel: &CancellationToken) -> Option<Inspected> {
         let document = self.open_documents().into_iter().find(|d| d.doc == doc)?;
         let parsed = self.parse_open(&document);
+        let (diagnostics, problems) = self.run_inspections(&parsed, &document.path, cancel)?;
+        Some(Inspected { doc, version: document.version, path: document.path.clone(), diagnostics, problems })
+    }
+
+    /// Batch Inspect Code: the diagnostics of the file `path`, whose text is
+    /// `text` (the file on disk; when the engine holds the file as an open
+    /// document, its buffer and background result are used instead). Run
+    /// it once indexing finished, or the checks that need other files stay
+    /// quiet. `None` when `cancel` fired.
+    pub fn inspect_file(&self, path: &Path, text: &str, cancel: &CancellationToken) -> Option<Vec<Diagnostic>> {
+        if let Some(document) = self.open_document(path) {
+            return self.inspected(document.doc).map(|inspected| inspected.diagnostics.clone());
+        }
+        let path = crate::project::normalize(path);
+        let parsed = ParsedFile::parse(&path.to_string_lossy(), text);
+        self.run_inspections(&parsed, &path, cancel).map(|(diagnostics, _)| diagnostics)
+    }
+
+    /// The parser's syntax errors and the problems of every inspection, the
+    /// suppressed ones dropped.
+    fn run_inspections(
+        &self,
+        parsed: &ParsedFile,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Option<(Vec<Diagnostic>, Vec<Problem>)> {
         let inspections = self.inspections();
-        let cx = InspectionContext::new(self, &parsed, &document.path, cancel);
-        let mut problems = Problems::new(&parsed);
+        let cx = InspectionContext::new(self, parsed, path, cancel);
+        let mut problems = Problems::new(parsed);
         for inspection in inspections.iter() {
             if cancel.is_cancelled() {
                 return None;
@@ -404,7 +522,7 @@ impl PhpEngine {
             let before = problems.items.len();
             let ran = catch_unwind(AssertUnwindSafe(|| inspection.check(&cx, &mut problems)));
             if ran.is_err() {
-                tracing::warn!("php inspection {} panicked on {}", inspection.id(), document.path.display());
+                tracing::warn!("php inspection {} panicked on {}", inspection.id(), path.display());
                 problems.items.truncate(before);
             }
         }
@@ -413,11 +531,10 @@ impl PhpEngine {
         }
         let mut problems = problems.items;
         if !problems.is_empty() {
-            let suppressions = Suppressions::scan(&parsed);
+            let suppressions = Suppressions::scan(parsed);
             problems.retain(|p| !suppressions.suppresses(p.inspection, p.start));
             for problem in &mut problems {
-                if let Some(fix) = suppressions.suppress_fix(&parsed, &document.path, problem.inspection, problem.start)
-                {
+                if let Some(fix) = suppressions.suppress_fix(parsed, path, problem.inspection, problem.start) {
                     problem.fixes.push(fix);
                 }
             }
@@ -425,7 +542,7 @@ impl PhpEngine {
         problems.sort_by_key(|p| (p.start, p.end));
         let mut diagnostics = parsed.diagnostics();
         diagnostics.extend(problems.iter().map(Problem::to_diagnostic));
-        Some(Inspected { doc, version: document.version, path: document.path.clone(), diagnostics, problems })
+        Some((diagnostics, problems))
     }
 
     /// The latest inspection of the document's current version: the

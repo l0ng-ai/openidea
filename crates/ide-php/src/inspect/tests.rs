@@ -444,3 +444,6 @@ mod level_tests;
 
 #[path = "fixes_tests.rs"]
 mod fixes_tests;
+
+#[path = "settings_tests.rs"]
+mod settings_tests;

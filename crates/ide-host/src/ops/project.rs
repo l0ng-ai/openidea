@@ -203,8 +203,8 @@ pub fn set_settings(
         });
     }
     // Settings › PHP › Engine starts or stops the native engine; include paths and
-    // excluded folders rescan it.
-    let php = ["languages", "languages.php", "files", "projectStructure"]
+    // excluded folders rescan it; the inspection profile configures its inspections.
+    let php = ["languages", "languages.php", "files", "projectStructure", "inspections"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
     if php {

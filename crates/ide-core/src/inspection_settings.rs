@@ -36,6 +36,26 @@ impl Default for InspectionSettings {
     }
 }
 
+impl InspectionSettings {
+    /// The overrides of the profile in effect: the chosen one when it exists,
+    /// else `Default` (as `effectiveProfileId` / `overridesOf` in
+    /// `src/platform/inspections.ts` with a project open).
+    pub fn active_overrides(&self) -> &BTreeMap<String, InspectionOverride> {
+        let custom = |level: &str, key: &str| match level {
+            "ide" => self.ide_profiles.get(key),
+            "project" => self.project_profiles.get(key),
+            _ => None,
+        };
+        match self.profile.as_str() {
+            "project" => &self.project,
+            other => other
+                .split_once(':')
+                .and_then(|(level, key)| custom(level, key))
+                .map_or(&self.default, |p| &p.overrides),
+        }
+    }
+}
+
 /// A named profile made with Copy.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -110,5 +130,26 @@ mod tests {
         assert!(!s.default["builtin:spelling"].options.as_ref().unwrap()["processCode"]);
         let back: InspectionSettings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn the_active_profile_falls_back_to_default() {
+        let s: InspectionSettings = serde_json::from_str(
+            r#"{"default":{"a":{"enabled":false}},"project":{"b":{"enabled":false}},
+                "ideProfiles":{"strict":{"name":"Strict","overrides":{"c":{"enabled":false}}}},
+                "projectProfiles":{"team":{"name":"Team","overrides":{"d":{"enabled":false}}}}}"#,
+        )
+        .unwrap();
+        let active = |profile: &str| {
+            let s = InspectionSettings { profile: profile.into(), ..s.clone() };
+            s.active_overrides().keys().cloned().collect::<Vec<_>>()
+        };
+        assert_eq!(active("default"), ["a"]);
+        assert_eq!(active("project"), ["b"]);
+        assert_eq!(active("ide:strict"), ["c"]);
+        assert_eq!(active("project:team"), ["d"]);
+        assert_eq!(active("ide:gone"), ["a"]);
+        assert_eq!(active("project:strict"), ["a"]);
+        assert_eq!(active("nonsense"), ["a"]);
     }
 }

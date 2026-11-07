@@ -41,8 +41,8 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, Ser
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::index::{IndexStats, PhpIndex};
-use crate::inspect::Inspections;
 use crate::inspect::runner::Runner;
+use crate::inspect::{InspectionConfig, Inspections};
 use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
 use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
@@ -158,6 +158,8 @@ struct Shared {
     /// The inspections run over open documents, and their background run.
     inspection_set: RwLock<Inspections>,
     inspections: Arc<Runner>,
+    /// The settings `inspection_set` was built from.
+    inspection_config: Mutex<InspectionConfig>,
 }
 
 impl PhpEngine {
@@ -190,6 +192,7 @@ impl PhpEngine {
             stubs: Mutex::new((config.stubs, None)),
             inspection_set: RwLock::new(Inspections::builtin()),
             inspections: Arc::default(),
+            inspection_config: Mutex::new(InspectionConfig::default()),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -405,6 +408,11 @@ impl PhpEngine {
     /// The inspection set and the background run.
     pub(crate) fn shared_inspections(&self) -> (&RwLock<Inspections>, &Arc<Runner>) {
         (&self.shared.inspection_set, &self.shared.inspections)
+    }
+
+    /// The settings the inspections were last configured with.
+    pub(crate) fn shared_inspection_config(&self) -> &Mutex<InspectionConfig> {
+        &self.shared.inspection_config
     }
 
     /// Whether the engine holds `doc` as an open document.

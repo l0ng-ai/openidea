@@ -1,5 +1,6 @@
-//! Code analysis over a scope of files: Inspect Code (batch LSP diagnostics),
-//! Locate Duplicates and Search / Replace Structurally (`ide-analysis`).
+//! Code analysis over a scope of files: Inspect Code (batch LSP diagnostics, and
+//! the native PHP engine's), Locate Duplicates and Search / Replace Structurally
+//! (`ide-analysis`).
 //!
 //! Scopes are Find in Files scopes; excluded roots are never analysed. Every
 //! command takes a UI-allocated `RequestId` and is cancelled via `cancel_request`.
@@ -121,7 +122,9 @@ pub struct StructuralLanguage {
 }
 
 /// Inspect Code: diagnostics of every file in `scope` that a language server
-/// serves. Files stream through `on_event` as they finish; ends with `Done`.
+/// serves, or the native PHP engine while it runs (Settings › PHP › Engine is
+/// `Native`; its PHP files aren't sent to a language server). Files stream
+/// through `on_event` as they finish; ends with `Done`.
 pub async fn inspect_code(
     host: &Host,
     window: &str,
@@ -144,18 +147,49 @@ pub async fn inspect_code(
         }
     };
     let total_in_scope = files.len() as u32;
+    let php = project.php.engine();
+    let (engine_files, files): (Vec<SourceFile>, Vec<SourceFile>) =
+        files.into_iter().partition(|f| php.is_some() && ide_php::project::is_php_path(&f.path));
     let rel: std::collections::HashMap<_, _> = files
         .iter()
         .filter(|f| project.lsp.serves_path(&f.path))
         .map(|f| (f.path.clone(), f.rel_path.clone()))
         .collect();
-    let mut summary = InspectSummary { skipped: total_in_scope - rel.len() as u32, ..Default::default() };
-    let _ = on_event.send(InspectEvent::Started { total: rel.len() as u32 });
+    let inspected = (rel.len() + engine_files.len()) as u32;
+    let mut summary = InspectSummary { skipped: total_in_scope - inspected, ..Default::default() };
+    let _ = on_event.send(InspectEvent::Started { total: inspected });
+
+    let tally = Arc::new(Mutex::new(summary.clone()));
+    let done = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    if let Some(engine) = php.filter(|_| !engine_files.is_empty()) {
+        let (project, cancel, tally, done, on_event) =
+            (project.clone(), cancel.clone(), tally.clone(), done.clone(), on_event.clone());
+        let _ = blocking(move || {
+            inspect_with_engine(&project, &engine, engine_files, &cancel, &|file, outcome| {
+                let done = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let mut t = tally.lock();
+                let diagnostics = match outcome {
+                    Some(items) => {
+                        t.files += 1;
+                        t.problems += items.len() as u32;
+                        items
+                    }
+                    None => {
+                        t.skipped += 1;
+                        Vec::new()
+                    }
+                };
+                drop(t);
+                let file = InspectedFile { path: IpcPath(file.path), rel_path: file.rel_path, diagnostics };
+                let _ = on_event.send(InspectEvent::File { file, done });
+            });
+            Ok(())
+        })
+        .await;
+    }
 
     let mut paths: Vec<_> = rel.keys().cloned().collect();
     paths.sort();
-    let tally = Mutex::new(summary.clone());
-    let done = std::sync::atomic::AtomicU32::new(0);
     let docs = Arc::new(DocumentsHost(project.documents.clone()));
     project
         .lsp
@@ -186,11 +220,43 @@ pub async fn inspect_code(
         })
         .await;
     host.end_request(request);
-    summary = tally.into_inner();
+    summary = tally.lock().clone();
     summary.cancelled = cancel.is_cancelled();
     summary.elapsed_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
     let _ = on_event.send(InspectEvent::Done { summary });
     Ok(())
+}
+
+/// Inspects PHP files with the native engine, once it finished indexing (the
+/// checks that need other files stay quiet before), reporting each through
+/// `on_file`: its diagnostics, or `None` when it can't be read as text (binary
+/// or too large). The text is the unsaved buffer of an open file. Stops when
+/// cancelled.
+fn inspect_with_engine(
+    project: &Project,
+    engine: &ide_php::engine::PhpEngine,
+    files: Vec<SourceFile>,
+    cancel: &CancellationToken,
+    on_file: &dyn Fn(SourceFile, Option<Vec<Diagnostic>>),
+) {
+    while !engine.wait_idle(std::time::Duration::from_millis(200)) {
+        if cancel.is_cancelled() {
+            return;
+        }
+    }
+    for file in files {
+        if cancel.is_cancelled() {
+            return;
+        }
+        let diagnostics = match load(project, &project.languages, &file.path) {
+            Some((_, text)) => match engine.inspect_file(&file.path, &text, cancel) {
+                Some(items) => Some(items),
+                None => return,
+            },
+            None => None,
+        };
+        on_file(file, diagnostics);
+    }
 }
 
 /// Locate Duplicates over the files of `scope`.

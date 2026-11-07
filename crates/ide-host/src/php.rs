@@ -26,6 +26,7 @@ use ide_lsp::types::{
 use crate::language_service::Answer;
 use ide_php::complete::{Completion, CompletionData};
 use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
+use ide_php::inspect::InspectionConfig;
 use ide_php::project::LayoutConfig;
 use ide_php::stubs::StubFilter;
 use ide_text::AppliedChange;
@@ -80,7 +81,8 @@ impl PhpEngineSlot {
 
     /// Starts the engine when the settings ask for it (feeding it the PHP
     /// documents already open), stops it when they don't, and passes changed
-    /// include paths or excluded folders to a running one.
+    /// include paths, excluded folders, language level and inspection
+    /// settings (the inspection profile in effect) to a running one.
     pub fn apply(&self, settings: &Settings) {
         let _switching = self.switching.lock();
         let config = layout_config(&self.root, settings);
@@ -89,6 +91,7 @@ impl PhpEngineSlot {
             (true, Some(engine)) => {
                 engine.set_layout_config(config);
                 engine.set_stub_filter(StubFilter::from_settings(&self.root, settings));
+                engine.configure_inspections(InspectionConfig::from_settings(settings));
             }
             (true, None) => {
                 let engine = match PhpEngine::open(
@@ -105,6 +108,7 @@ impl PhpEngineSlot {
                         return;
                     }
                 };
+                engine.configure_inspections(InspectionConfig::from_settings(settings));
                 *self.engine.write() = Some(engine.clone());
                 for doc in self.documents.open_documents() {
                     if let Ok(info) = self.documents.snapshot(doc)
