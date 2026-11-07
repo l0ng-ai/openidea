@@ -20,8 +20,12 @@ pub async fn sdk_detect(window: Window, state: State<'_, AppState>, kind: SdkKin
 /// The interpreter the project uses: the configured one, else its virtualenv.
 #[tauri::command]
 #[specta::specta]
-pub fn sdk_python_effective(window: Window, state: State<'_, AppState>) -> IdeResult<Option<ide_core::IpcPath>> {
-    ide_host::ops::sdk::sdk_python_effective(&state.host, window.label())
+pub fn sdk_python_effective(
+    window: Window,
+    state: State<'_, AppState>,
+    near: Option<PathBuf>,
+) -> IdeResult<Option<ide_core::IpcPath>> {
+    ide_host::ops::sdk::sdk_python_effective(&state.host, window.label(), near)
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
@@ -29,6 +33,19 @@ pub fn sdk_python_effective(window: Window, state: State<'_, AppState>) -> IdeRe
 #[specta::specta]
 pub fn sdk_php_effective(window: Window, state: State<'_, AppState>) -> IdeResult<Option<ide_core::IpcPath>> {
     ide_host::ops::sdk::sdk_php_effective(&state.host, window.label())
+}
+
+/// The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
+/// project root).
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_php_xdebug(
+    window: Window,
+    state: State<'_, AppState>,
+    php: PathBuf,
+    cwd: Option<PathBuf>,
+) -> IdeResult<ide_sdk::php::PhpXdebug> {
+    ide_host::ops::sdk::sdk_php_xdebug(&state.host, window.label(), php, cwd).await
 }
 
 /// The PHP language level of the project `path` belongs to: the effective one and Auto's.
@@ -76,12 +93,13 @@ pub async fn sdk_locate_tools(
     ide_host::ops::sdk::sdk_locate_tools(&state.host, window.label(), names, near).await
 }
 
-/// `base -m venv location`; output lines stream through `on_output`.
+/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
 #[tauri::command]
 #[specta::specta]
 pub async fn sdk_python_create_venv(
     window: Window,
     state: State<'_, AppState>,
+    tool: ide_sdk::python::VenvTool,
     base: PathBuf,
     location: PathBuf,
     request: RequestId,
@@ -90,6 +108,7 @@ pub async fn sdk_python_create_venv(
     ide_host::ops::sdk::sdk_python_create_venv(
         &state.host,
         window.label(),
+        tool,
         base,
         location,
         request,

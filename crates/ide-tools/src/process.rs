@@ -263,6 +263,15 @@ fn curl_takes_revoke_best_effort(version: &str) -> bool {
     (major, minor) >= (7, 70) && first.split_whitespace().any(|w| w.eq_ignore_ascii_case("schannel"))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Request {
+    Get,
+    /// Adoptium uses 404 as well as an empty array for absent platform builds.
+    GetOrEmptyOn404,
+    /// Headers, then the URL redirects ended at.
+    Head,
+}
+
 /// HTTP via the system `curl` (shipped with macOS, Windows 10+ and every
 /// mainstream Linux), so the IDE carries no TLS stack of its own.
 pub struct Http {
@@ -336,26 +345,39 @@ impl Http {
         self.get_text_limited(url, None, cancel)
     }
 
+    /// Where `url` ends up after redirects (a HEAD request).
+    pub fn effective_url(&self, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
+        let out = self.get_text_response(url, None, Request::Head, cancel)?;
+        Ok(out.trim_end().rsplit('\n').next().unwrap_or_default().trim().to_owned())
+    }
+
     /// GETs `url` as text, failing when the response is larger than `max_bytes`.
     pub fn get_text_limited(&self, url: &str, max_bytes: Option<u64>, cancel: &CancellationToken) -> IdeResult<String> {
-        self.get_text_response(url, max_bytes, false, cancel)
+        self.get_text_response(url, max_bytes, Request::Get, cancel)
     }
 
     /// Adoptium uses 404 as well as an empty array for absent platform builds.
     pub fn get_text_or_empty_on_404(&self, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
-        self.get_text_response(url, None, true, cancel)
+        self.get_text_response(url, None, Request::GetOrEmptyOn404, cancel)
     }
 
     fn get_text_response(
         &self,
         url: &str,
         max_bytes: Option<u64>,
-        empty_on_404: bool,
+        request: Request,
         cancel: &CancellationToken,
     ) -> IdeResult<String> {
         let (mut cmd, token) = self.base(url, cancel)?;
-        if empty_on_404 {
-            cmd.args(["--write-out", "\n%{http_code}"]);
+        let empty_on_404 = request == Request::GetOrEmptyOn404;
+        match request {
+            Request::Get => {}
+            Request::GetOrEmptyOn404 => {
+                cmd.args(["--write-out", "\n%{http_code}"]);
+            }
+            Request::Head => {
+                cmd.args(["--head", "--write-out", "\n%{url_effective}"]);
+            }
         }
         if let Some(max) = max_bytes {
             cmd.arg("--max-filesize").arg(max.to_string());

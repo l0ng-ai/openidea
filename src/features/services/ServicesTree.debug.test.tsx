@@ -101,6 +101,14 @@ it("shows debug output/state, pins actions, and does not rebuild the tree for st
   expect(d.stop).toHaveBeenCalledOnce();
 });
 
+it("shows the service port announced by a debug session's application", () => {
+  adoptSession(1, { runConfig: config });
+  appendConsole(1, "stdout", "Tomcat started on port 8080 (http) with context path '/'\n");
+  useDebugRunSessions.setState({ serviceSessions: [summary(1, { httpPort: 8080 })] });
+  render(<ServicesTreeView />);
+  expect(within(screen.getByRole("tree")).getByText(":8080")).toBeTruthy();
+});
+
 it("keeps the other parallel instance alive and then displays it", async () => {
   adoptSession(1);
   adoptSession(2);

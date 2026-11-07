@@ -1,0 +1,52 @@
+name: CNB mirror
+
+# Copies a published release to cnb.cool/l0ng-ai/openidea, the updater's CNB source
+# (scripts/cnb-mirror.ts). Release runs it after publishing; run it by hand to mirror
+# an existing tag again. Skipped without the CNB_TOKEN secret.
+on:
+  workflow_call:
+    inputs:
+      tag: { type: string, required: true }
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release to mirror (e.g. v0.1.38)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cnb-mirror-${{ inputs.tag }}
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TAG: ${{ inputs.tag }}
+      CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check token
+        id: token
+        run: |
+          if [ -z "$CNB_TOKEN" ]; then
+            echo "::notice::CNB_TOKEN unset: not mirroring $TAG"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v5
+        if: steps.token.outputs.skip != 'true'
+        with: { sparse-checkout: scripts }
+      - uses: actions/setup-node@v5
+        if: steps.token.outputs.skip != 'true'
+        with: { node-version: 22 }
+      - name: Download release
+        if: steps.token.outputs.skip != 'true'
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D assets
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json body,isPrerelease > assets/release.json
+          du -sh assets
+      - name: Upload to CNB
+        if: steps.token.outputs.skip != 'true'
+        run: node scripts/cnb-mirror.ts "$TAG" assets

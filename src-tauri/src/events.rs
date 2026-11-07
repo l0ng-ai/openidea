@@ -1,5 +1,5 @@
 use ide_core::{EventSink, IdeEvent};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 
 /// Name of the single backend → UI event. Payload: [`IdeEvent`].
 pub const IDE_EVENT: &str = "ide://event";
@@ -38,8 +38,31 @@ pub struct TauriSink {
     pub window: Option<String>,
 }
 
+/// A debug session stopped on a breakpoint: bounce/flash the taskbar icon
+/// (IDEA) unless the user is already looking at an OpenIDEA window. The focus
+/// check and the request both touch the windowing system, so they run on the
+/// main thread; `emit` itself can come from any debug worker thread.
+fn flash_taskbar_unless_focused(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if crate::application_focus::application_active(&handle) {
+            return;
+        }
+        for window in handle.webview_windows().values() {
+            let _ = window.request_user_attention(Some(UserAttentionType::Informational));
+        }
+    });
+}
+
 impl EventSink for TauriSink {
     fn emit(&self, event: IdeEvent) {
+        if matches!(
+            &event,
+            IdeEvent::Debug { event: ide_core::event::DebugEvent::Stopped { reason, .. }, .. }
+            if matches!(reason.as_str(), "breakpoint" | "function breakpoint")
+        ) {
+            flash_taskbar_unless_focused(&self.app);
+        }
         let result = match &self.window {
             Some(label) => {
                 for target in crate::windows::document_windows(&self.app, label) {

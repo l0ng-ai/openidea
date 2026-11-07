@@ -338,7 +338,15 @@ export function forgetRemote(target: RemoteTarget, path: string) {
 }
 
 // Any way of leaving the remote project (Close Project, opening a local one) ends remote routing.
-useProject.subscribe((s) => {
+useProject.subscribe((s, prev) => {
   const session = useRemote.getState().session;
-  if (session && !s.opening && s.project?.root !== session.root) disableRemote();
+  if (!session || s.opening) return;
+  // Only a window whose project was the session's root can leave it. Auxiliary windows
+  // (comparison, deployment) hold no project of their own — they ride their parent's
+  // session, and a settings-only update (the comparison window keeps just the settings)
+  // must not drop the routing: its next commands would run here instead of on the host,
+  // where no project is open (`open_project` / `light_edit_open` / `close_project` end
+  // the session themselves, see `route`).
+  if (prev.project?.root !== session.root || s.project?.root === session.root) return;
+  disableRemote();
 });

@@ -235,7 +235,7 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
         ref={ref}
         icon="settings"
         title="IDE and Project Settings"
-        iconSize={18}
+        iconSize={20}
         className={styles.tool}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -263,7 +263,7 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
         action={action.id}
         title={action.title}
         shortcut={shortcutLabel(action.id) ?? (action.id === "navigate.searchEverywhere" ? "⇧⇧" : undefined)}
-        iconSize={18}
+        iconSize={20}
         className={styles.tool}
       />
     </div>

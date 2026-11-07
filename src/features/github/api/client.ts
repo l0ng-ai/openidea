@@ -37,11 +37,13 @@ export function graphqlData<T>(text: string): T {
 }
 
 /** Runs a document from `queries.ts` with `variables` (undefined values are dropped). */
-export async function graphql<T>(doc: string, variables: Record<string, unknown> = {}): Promise<T> {
+export async function graphql<T>(
+  doc: string,
+  variables: Record<string, unknown> = {},
+  root: string | null = current?.root ?? null,
+): Promise<T> {
   const body = JSON.stringify({ query: withFragments(doc), variables: definedOnly(variables) });
-  const text = await call(
-    commands.ghApi(current?.root ?? null, { method: "POST", endpoint: "graphql", body, paginate: false }),
-  );
+  const text = await call(commands.ghApi(root, { method: "POST", endpoint: "graphql", body, paginate: false }));
   return graphqlData<T>(text);
 }
 

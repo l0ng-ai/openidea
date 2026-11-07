@@ -121,6 +121,9 @@ pub struct Server {
     pub external_project: tokio::sync::Mutex<crate::external_project::State>,
     pub external_diagnostics: std::sync::atomic::AtomicBool,
     pub external_refresh_queued: std::sync::atomic::AtomicBool,
+    /// The instance whose just registered external project is loading, until an open file's
+    /// diagnostics arrive (0: none).
+    pub external_loading: std::sync::atomic::AtomicU64,
 }
 
 impl Server {
@@ -157,6 +160,7 @@ impl Server {
             external_project: tokio::sync::Mutex::new(Default::default()),
             external_diagnostics: std::sync::atomic::AtomicBool::new(false),
             external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
+            external_loading: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -412,7 +416,8 @@ impl Server {
         *self.loading.lock() == Some(true)
     }
 
-    /// Records `experimental/serverStatus`: `quiescent` false while the project loads.
+    /// Records `experimental/serverStatus`: `quiescent` false while the project loads (also
+    /// set while vtsls loads an external project, see `external_project`).
     pub fn set_loading(&self, sink: &SharedSink, loading: bool) {
         if self.loading.lock().replace(loading) == Some(loading) {
             return;
@@ -533,6 +538,7 @@ impl Server {
 
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
         *self.loading.lock() = None;
+        self.external_loading.store(0, std::sync::atomic::Ordering::Release);
         self.progress.lock().drain().map(|(_, p)| (p.task, p.title)).collect()
     }
 

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 
 const ipc = vi.hoisted(() => {
@@ -20,6 +20,16 @@ const ipc = vi.hoisted(() => {
     debugStackTrace: vi.fn(() => ok([])),
     debugThreads: vi.fn(() => ok([])),
     debugScopes: vi.fn(() => ok([])),
+    debugStart: vi.fn((_launch: { extraJson: string | null }) => ok(42)),
+    debugSetBreakpoints: vi.fn(() => ok([])),
+    debugBreakpointStates: vi.fn(() => ok([])),
+    sdkPhpEffective: vi.fn(() => ok<string | null>("/opt/php81/bin/php")),
+    sdkLocateTools: vi.fn((_names: string[], _near: string | null) =>
+      ok({ tools: [{ name: "php", path: "/usr/bin/php" }], compileDir: "/tmp" }),
+    ),
+    sdkPhpXdebug: vi.fn((php: string, _cwd: string | null) =>
+      ok({ php, phpVersion: "8.1.33", xdebug: null as string | null }),
+    ),
   };
 });
 
@@ -49,11 +59,13 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
   };
 });
 
-import { executeAction, getAction } from "@/platform/actions";
+import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
-import type { DebugCapabilities } from "@/platform/ipc";
+import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import { provideNotificationService } from "@/workbench/contributions";
 import { registerDebugActions } from "../actions";
-import { breakpointsOf, loadBreakpoints } from "../breakpoints/store";
+import { breakpointsOf, loadBreakpoints, toggleBreakpoint } from "../breakpoints/store";
 import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from "../breakpoints/special";
 import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
@@ -253,6 +265,21 @@ describe("debugger actions (IDEA parity)", () => {
     expect(opened.at(-1)).toEqual({ path: "/p/app.py", focus: true });
   });
 
+  it("puts no new breakpoint on a blank line", async () => {
+    for (const action of ["debug.toggleBreakpoint", "debug.toggleTemporaryBreakpoint"]) {
+      for (const line of [1, 2]) {
+        caret("/p/a.py", "python", "x = 1\n\n   \ny = 2", line);
+        await executeAction(action);
+      }
+      expect(breakpointsOf("/p/a.py"), action).toHaveLength(0);
+    }
+    // One placed before the line went blank can still be toggled off.
+    toggleBreakpoint("/p/a.py", 1);
+    caret("/p/a.py", "python", "x = 1\n\n   \ny = 2", 1);
+    await executeAction("debug.toggleBreakpoint");
+    expect(breakpointsOf("/p/a.py")).toHaveLength(0);
+  });
+
   it("toggles temporary, method and field breakpoints at the caret", async () => {
     caret("/p/a.py", "python", "x = 1\ndef run():\n  pass", 0);
     await executeAction("debug.toggleTemporaryBreakpoint");
@@ -295,6 +322,82 @@ describe("debugger actions (IDEA parity)", () => {
     };
     await executeAction("debug.evaluate");
     expect(useOverlays.getState().evaluate?.expression).toBe("total = order.items\nfor i in x:");
+  });
+});
+
+describe("PHP debugging without Xdebug", () => {
+  const php: RunConfig = {
+    id: "php:index",
+    name: "index.php",
+    kind: "php",
+    command: "php",
+    args: ["index.php"],
+    cwd: null,
+    env: {},
+    detected: true,
+    isTest: false,
+    debugAdapter: "php-debug",
+  };
+  const notify = vi.fn();
+  const settings = vi.fn();
+  let unregister: () => void;
+  beforeEach(() => {
+    useProject.setState({ project: { root: "/p" } as never });
+    provideNotificationService({ notify });
+    unregister = registerActions([{ id: "file.settings", title: "Settings", run: ({ arg }) => settings(arg) }]);
+  });
+  afterEach(() => {
+    unregister();
+    useProject.setState({ project: null });
+  });
+  const runtime = () => JSON.parse(ipc.debugStart.mock.calls[0]![0].extraJson!).runtimeExecutable;
+
+  it("warns that breakpoints are skipped and still starts the session", async () => {
+    await executeAction("debug.startConfig", php);
+    // In the session's folder, where a version manager's shim picks the PHP.
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledWith("/opt/php81/bin/php", "/p");
+    expect(ipc.debugStart).toHaveBeenCalledOnce();
+    expect(runtime()).toBe("/opt/php81/bin/php");
+    expect(notify).toHaveBeenCalledOnce();
+    const n = notify.mock.calls[0]![0];
+    expect(n).toMatchObject({ group: "run", level: "warning", key: "debug.phpXdebug" });
+    expect(n.title).toBe("Xdebug is not loaded in PHP 8.1.33");
+    expect(n.body).toContain("/opt/php81/bin/php");
+    expect(n.body).toContain("Xdebug 3");
+    expect(n.actions.map((a: { label: string }) => a.label)).toEqual(["Open PHP Settings"]);
+    n.actions[0].run();
+    expect(settings).toHaveBeenCalledWith("languages.php");
+  });
+
+  it("does not warn when the PHP loads Xdebug or the check fails", async () => {
+    ipc.sdkPhpXdebug.mockImplementationOnce((p: string) => ipc.ok({ php: p, phpVersion: "8.3.14", xdebug: "3.4.7" }));
+    await executeAction("debug.startConfig", php);
+    ipc.sdkPhpXdebug.mockImplementationOnce(
+      () =>
+        Promise.resolve({
+          status: "error",
+          error: { kind: "unavailable", message: "cannot run", data: null },
+        }) as never,
+    );
+    await executeAction("debug.startConfig", php);
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledTimes(2);
+    expect(ipc.debugStart).toHaveBeenCalledTimes(2);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("checks the php on the search path for the Default interpreter", async () => {
+    ipc.sdkPhpEffective.mockImplementationOnce(() => ipc.ok(null));
+    await executeAction("debug.startConfig", php);
+    expect(ipc.sdkLocateTools).toHaveBeenCalledWith(["php"], null);
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledWith("/usr/bin/php", "/p");
+    expect(runtime()).toBeUndefined();
+    expect(notify.mock.calls[0]![0].body).toContain("/usr/bin/php");
+  });
+
+  it("checks the PHP the command names, in the configuration's working directory", async () => {
+    await executeAction("debug.startConfig", { ...php, command: "/opt/php83/bin/php", cwd: "web" });
+    expect(ipc.sdkPhpXdebug).toHaveBeenCalledWith("/opt/php83/bin/php", "/p/web");
+    expect(ipc.sdkLocateTools).not.toHaveBeenCalled();
   });
 });
 

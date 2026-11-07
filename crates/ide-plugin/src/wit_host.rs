@@ -2,9 +2,11 @@
 //! types and the implementation of every import. Capabilities are checked
 //! here; a missing one returns `error::denied` (the plugin can degrade).
 
-use crate::runtime::{StoreData, clip};
+use crate::runtime::{MAX_TITLE, StoreData, clip};
 use crate::sandbox;
-use crate::types::{EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, StatusItem, net_host};
+use crate::types::{
+    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, PickItem, Prompt, StatusItem, net_host,
+};
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use std::path::{Path, PathBuf};
@@ -40,6 +42,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -67,6 +70,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -94,6 +98,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -107,8 +112,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks, types as wit, ui,
-    vcs, views, workspace,
+    commit, diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks,
+    types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -133,6 +138,8 @@ const MAX_DIAGNOSTICS: usize = 5_000;
 const MAX_REQUEST_BODY: usize = 8 << 20;
 const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
+const MAX_PICK_ITEMS: usize = 5000;
+const MAX_PICK_KEY: usize = 256;
 
 type Fallible<T> = wasmtime::Result<Result<T, wit::Error>>;
 
@@ -212,6 +219,52 @@ impl log::Host for StoreData {
     }
 }
 
+impl StoreData {
+    /// Asks the user and waits; the wait doesn't count against the call's
+    /// wall-clock budget.
+    fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
+        self.require_interactive()?;
+        let client = self.invocation.client.clone();
+        let started = Instant::now();
+        let answer = self.host.ask(client.as_deref(), prompt, &self.cancel.token());
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        answer.map_err(to_wit)
+    }
+
+    fn pick_prompt(
+        &mut self,
+        title: String,
+        items: Vec<ui::PickItem>,
+        multiple: bool,
+    ) -> Result<Option<Vec<String>>, wit::Error> {
+        if items.len() > MAX_PICK_ITEMS {
+            return Err(wit::Error::Invalid(format!("more than {MAX_PICK_ITEMS} items")));
+        }
+        if items.iter().any(|i| i.key.len() > MAX_PICK_KEY) {
+            return Err(wit::Error::Invalid(format!("an item key is longer than {MAX_PICK_KEY} bytes")));
+        }
+        let items = items
+            .into_iter()
+            .map(|i| PickItem {
+                key: i.key,
+                label: clip(i.label, MAX_TITLE),
+                description: i.description.map(|d| clip(d, 1024)),
+            })
+            .collect();
+        self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
+    }
+
+    /// Dialogs belong to commands and events; rendering and providers have no one to ask.
+    fn require_interactive(&self) -> Result<(), wit::Error> {
+        if self.interactive {
+            return Ok(());
+        }
+        Err(wit::Error::Invalid("can only ask the user from a command or event".into()))
+    }
+}
+
 impl ui::Host for StoreData {
     fn show_notification(
         &mut self,
@@ -244,6 +297,36 @@ impl ui::Host for StoreData {
         Ok(())
     }
 
+    fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
+        let valid_key =
+            (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
+        if !valid_key {
+            return Ok(Err(wit::Error::Invalid(format!("context key {key:?}: expected 1-64 of A-Za-z0-9_-"))));
+        }
+        // Kept as JSON text, which the windows parse into their context.
+        let json = match value {
+            ui::ContextValue::Flag(b) => b.to_string(),
+            ui::ContextValue::Number(n) if n.fract() == 0.0 && n.abs() < 9e15 => (n as i64).to_string(),
+            ui::ContextValue::Number(n) => match serde_json::Number::from_f64(n) {
+                Some(n) => n.to_string(),
+                None => return Ok(Err(wit::Error::Invalid("context value: not a finite number".into()))),
+            },
+            ui::ContextValue::Text(t) if t.len() <= 1024 => serde_json::Value::String(t).to_string(),
+            ui::ContextValue::Text(_) => {
+                return Ok(Err(wit::Error::Invalid("context value: text longer than 1024 bytes".into())));
+            }
+        };
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_context(client.as_deref(), &key, Some(json)).map_err(to_wit))
+    }
+
+    fn remove_context(&mut self, key: String) -> wasmtime::Result<()> {
+        let client = self.invocation.client.clone();
+        // Nothing to remove under an invalid key.
+        let _ = self.host.set_context(client.as_deref(), &key, None);
+        Ok(())
+    }
+
     fn copy_to_clipboard(&mut self, text: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::Clipboard) {
             return Ok(Err(e));
@@ -260,6 +343,36 @@ impl ui::Host for StoreData {
         }
         let client = self.invocation.client.clone();
         Ok(self.host.open_url(client.as_deref(), trimmed.to_owned()).map_err(to_wit))
+    }
+
+    fn pick(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<String>> {
+        let answer = self.pick_prompt(title, items, false);
+        Ok(answer.map(|keys| keys.and_then(|keys| keys.into_iter().next())))
+    }
+
+    fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
+        Ok(self.pick_prompt(title, items, true))
+    }
+
+    fn input(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
+        let prompt =
+            Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)), multiline: false };
+        Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
+    }
+
+    fn input_multiline(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
+        let prompt =
+            Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)), multiline: true };
+        Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
+    }
+
+    fn confirm(&mut self, title: String, body: String) -> Fallible<bool> {
+        let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(body, 16 << 10) };
+        Ok(self.ask(prompt).map(|answer| answer.is_some()))
+    }
+
+    fn locale(&mut self) -> wasmtime::Result<String> {
+        Ok(self.host.locale())
     }
 }
 
@@ -322,12 +435,66 @@ impl workspace::HostProject for StoreData {
         let root = self.table.get(&this)?.root.clone();
         let real = match sandbox::resolve_in_root(&root, &path) {
             Ok(real) => real,
-            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
         };
         if let Some(text) = self.host.buffer_text(&real) {
             return Ok(Ok(text));
         }
         Ok(sandbox::read_text(&real).map_err(wit::Error::Failed))
+    }
+
+    fn exists(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<bool> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        match sandbox::inside_root(&root, &path) {
+            Err(e) => Ok(Err(wit::Error::Invalid(e))),
+            Ok(false) => {
+                Ok(Err(wit::Error::Invalid(format!("{path}: access outside the project root is not allowed"))))
+            }
+            Ok(true) => {
+                let requested = Path::new(&path);
+                let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+                Ok(Ok(joined.exists()))
+            }
+        }
+    }
+
+    fn stat(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<workspace::FileStat> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
+        };
+        let meta = match std::fs::symlink_metadata(&real) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Err(wit::Error::NotFound(format!("{path}: no such file"))));
+            }
+            Err(e) => return Ok(Err(wit::Error::Failed(e.to_string()))),
+        };
+        let kind = if meta.is_file() {
+            workspace::FileKind::File
+        } else if meta.is_dir() {
+            workspace::FileKind::Directory
+        } else if meta.is_symlink() {
+            workspace::FileKind::Symlink
+        } else {
+            workspace::FileKind::Other
+        };
+        let modified =
+            meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+        Ok(Ok(workspace::FileStat { kind, size: meta.len(), modified }))
     }
 
     fn find_files(&mut self, this: Resource<ProjectRes>, glob: String, limit: u32) -> Fallible<Vec<String>> {
@@ -419,6 +586,10 @@ impl invocation::HostInvocation for StoreData {
         }
     }
 
+    fn selected_paths(&mut self, _this: Resource<InvocationRes>) -> wasmtime::Result<Vec<String>> {
+        Ok(self.invocation.selected_paths.iter().take(MAX_FIND as usize).map(|p| to_ipc(p)).collect())
+    }
+
     fn drop(&mut self, rep: Resource<InvocationRes>) -> wasmtime::Result<()> {
         // Owned by the host for the duration of the call.
         let _ = rep;
@@ -465,6 +636,62 @@ impl vcs::Host for StoreData {
         }
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
+    }
+}
+
+impl commit::Host for StoreData {
+    fn pending_commit(&mut self) -> Fallible<Option<commit::CommitDraft>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        // Waiting for the window (saving, diffing) doesn't count against the call's budget.
+        let client = self.invocation.client.clone();
+        let started = Instant::now();
+        let draft = self.host.pending_commit(client.as_deref(), &self.cancel.token());
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        Ok(draft.map(|d| d.map(commit_draft_to_wit)).map_err(to_wit))
+    }
+
+    fn set_commit_message(&mut self, revision: u64, message: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::VcsWrite) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        if message.len() > MAX_COMMIT_MESSAGE {
+            return Ok(Err(wit::Error::Invalid(format!("a commit message is at most {MAX_COMMIT_MESSAGE} bytes"))));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_commit_message(client.as_deref(), revision, message).map_err(to_wit))
+    }
+}
+
+/// Longest commit message a plugin may set.
+const MAX_COMMIT_MESSAGE: usize = 64 << 10;
+
+pub(crate) fn commit_draft_to_wit(d: crate::types::CommitDraft) -> commit::CommitDraft {
+    commit::CommitDraft {
+        revision: d.revision,
+        message: d.message,
+        amend: d.amend,
+        changes: d
+            .changes
+            .into_iter()
+            .map(|c| commit::CommitChange {
+                repository: c.repository,
+                path: c.path,
+                old_path: c.old_path,
+                status: c.status,
+                diff: c.diff,
+                truncated: c.truncated,
+            })
+            .collect(),
     }
 }
 
@@ -649,6 +876,14 @@ impl views::Host for StoreData {
         Ok(())
     }
 
+    fn reveal(&mut self, view: String) -> Fallible<()> {
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.reveal_view(client.as_deref(), &clip(view, 64)).map_err(to_wit))
+    }
+
     fn post_message(&mut self, view: String, message: String) -> Fallible<()> {
         if message.len() > MAX_VIEW_MESSAGE {
             return Ok(Err(wit::Error::Invalid(format!("messages are limited to {MAX_VIEW_MESSAGE} bytes"))));
@@ -700,6 +935,54 @@ const MAX_VIEW_MESSAGE: usize = 1 << 20;
 pub(crate) mod indexing_bindings {
     wasmtime::component::bindgen!({
         world: "indexing", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+/// The optional `detail-provider` export.
+pub(crate) mod details_bindings {
+    wasmtime::component::bindgen!({
+        world: "details", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
+/// The optional `commit-checker` export.
+pub(crate) mod commit_checks_bindings {
+    wasmtime::component::bindgen!({
+        world: "commit-checks", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+        },
+    });
+}
+
+pub(crate) mod semantic_bindings {
+    wasmtime::component::bindgen!({
+        world: "semantic-tokens", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+pub(crate) mod hover_bindings {
+    wasmtime::component::bindgen!({
+        world: "hover", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+pub(crate) mod inlay_bindings {
+    wasmtime::component::bindgen!({
+        world: "inlay-hints", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }

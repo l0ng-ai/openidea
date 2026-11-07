@@ -161,6 +161,8 @@
   min-height: 0;
   overflow: auto;
   outline: none;
+  /* Rows coming and going while scrolling relay out the list alone, not the workbench. */
+  contain: strict;
 }
 .row {
   position: absolute;

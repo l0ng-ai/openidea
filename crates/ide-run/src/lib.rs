@@ -14,6 +14,7 @@ mod process;
 pub mod python_path;
 pub mod ruby_preload;
 pub mod ruby_reporter;
+pub mod scope;
 pub mod tomcat;
 mod utf8;
 pub mod which;
@@ -76,7 +77,8 @@ fn is_true(b: &bool) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunExtras {
-    /// Module supplying a JVM application's classpath; empty means the project root.
+    /// Owning module, independent of the working directory; also supplies a JVM application's classpath.
+    /// Empty means the project root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub module: Option<String>,
