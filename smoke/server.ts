@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 
 const PROTOCOL_VERSION = 2;
 const WINDOW = "main";
-// The server allows host.shutdown() ten seconds after EOF.
+// Allow the server's ten-second host shutdown plus scheduling and I/O overhead.
 const SHUTDOWN_TIMEOUT_MS = 15_000;
 
 // Not `new URL(…, import.meta.url)`: the jsdom environment's `URL` isn't Node's.
@@ -33,7 +33,7 @@ function treeKill(pid: number | undefined): Promise<void> {
   });
 }
 
-/** Wait for both a group and its leader to disappear (signal 0 only checks). */
+/** Poll for group/leader disappearance until timeoutMs elapses. */
 async function waitForGroupExit(pid: number, timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   for (;;) {
@@ -41,7 +41,8 @@ async function waitForGroupExit(pid: number, timeoutMs = 5000): Promise<void> {
       try {
         process.kill(target, 0);
         return true;
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
         return false;
       }
     });
@@ -89,17 +90,19 @@ async function ownedProcesses(pid: number): Promise<ProcessInfo[]> {
 /** Revalidate identities so a group id reused during shutdown is never signalled. */
 async function killOwnedGroups(owned: ProcessInfo[]): Promise<number[]> {
   const current = await processTable();
+  const identities = new Map(owned.map((row) => [row.pid, row]));
   const groups = new Set<number>();
   for (const row of current) {
-    if (owned.some((old) => old.pid === row.pid && old.group === row.group && old.started === row.started)) {
+    const old = identities.get(row.pid);
+    if (old?.group === row.group && old.started === row.started) {
       groups.add(row.group);
     }
   }
   for (const group of groups) {
     try {
       process.kill(-group, "SIGKILL");
-    } catch {
-      /* Already gone. */
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
     }
   }
   return [...groups];
@@ -212,8 +215,19 @@ export class Server {
           if (pid !== undefined) owned.push(...(await ownedProcesses(pid)));
           for (const group of await killOwnedGroups(owned)) killedGroups.add(group);
         }
-        // The ChildProcess handle still owns this PID if group discovery failed.
-        if (running()) this.child.kill("SIGKILL");
+        // While the handle is running, its dedicated group cannot have been reused.
+        // Preserve inherited-group cleanup even when ps is unavailable.
+        if (running()) {
+          if (process.platform !== "win32" && pid !== undefined && !killedGroups.has(pid)) {
+            try {
+              process.kill(-pid, "SIGKILL");
+              killedGroups.add(pid);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+            }
+          }
+          this.child.kill("SIGKILL");
+        }
         await exited;
       }
     }

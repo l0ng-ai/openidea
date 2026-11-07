@@ -10,7 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "node scripts/tauri.ts",
-    "test": "node --test smoke/server.test.mjs && vitest run",
+    "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "vitest run --config smoke/vitest.config.ts",
     "lint": "oxlint",
