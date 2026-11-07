@@ -868,11 +868,7 @@ impl tasks::Host for StoreData {
         let id = self.host.task_begin(self.client(), clip(title, crate::runtime::MAX_TITLE), cancellable, token);
         self.open_tasks.push(id);
         // The call may now run for the background budget.
-        let extended = self.call_started + self.limits.background;
-        if extended > self.deadline {
-            self.deadline = extended;
-            self.timeout = self.limits.background;
-        }
+        self.renew_background(self.call_started);
         self.push(TaskRes { id })
     }
 }
@@ -887,6 +883,10 @@ impl tasks::HostTask for StoreData {
     ) -> wasmtime::Result<()> {
         let id = self.table.get(&this)?.id;
         let now = Instant::now();
+        // A task that is still reporting is still working: the call gets another
+        // background budget, so long work isn't cut off at the first deadline
+        // while a task that goes quiet still is.
+        self.renew_background(now);
         // At most ~10 updates per second reach the UI.
         if self.last_report.is_none_or(|t| now.duration_since(t).as_millis() >= 100) || total.is_some_and(|t| done >= t)
         {
@@ -898,6 +898,8 @@ impl tasks::HostTask for StoreData {
 
     fn is_cancelled(&mut self, this: Resource<TaskRes>) -> wasmtime::Result<bool> {
         let id = self.table.get(&this)?.id;
+        // Asking whether to stop is the same sign of life as reporting is.
+        self.renew_background(Instant::now());
         Ok(self.cancel.token().is_cancelled() || self.host.task_cancelled(id))
     }
 
@@ -910,6 +912,17 @@ impl tasks::HostTask for StoreData {
 }
 
 impl StoreData {
+    /// Lets the running call reach `from` plus the background budget (the
+    /// longer of it and what was left), so a task that keeps saying it is alive
+    /// isn't cut off at the first deadline.
+    fn renew_background(&mut self, from: Instant) {
+        let extended = from + self.limits.background;
+        if extended > self.deadline {
+            self.deadline = extended;
+            self.timeout = self.limits.background;
+        }
+    }
+
     /// What is left of the running call's wall-clock budget (host operations
     /// can't be interrupted by the epoch callback, so they get this as timeout).
     fn remaining(&self) -> Duration {

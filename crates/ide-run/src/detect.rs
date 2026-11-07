@@ -62,7 +62,7 @@ pub(crate) fn detect_with_profiles(
                 config.id = scope.id(&config.id);
                 config.name = scope.name(&config.name);
                 for task in &mut config.extras.before_launch {
-                    if task.kind == "run" {
+                    if matches!(task.kind.as_str(), "run" | "build") && !task.target.is_empty() {
                         task.target = scope.id(&task.target);
                     }
                 }
