@@ -5535,6 +5535,11 @@ export type MavenSettings = {
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
 	/**
+	 *  Maven JDK home; empty = the Project JDK. Used by Maven builds and run configs,
+	 *  apart from the JDK that runs the IDE and jdtls.
+	 */
+	jdk?: string,
+	/**
 	 *  Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
 	 *  its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
 	 */

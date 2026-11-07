@@ -915,6 +915,9 @@ pub struct MavenSettings {
     pub user_settings: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
+    /// Maven JDK home; empty = the Project JDK. Used by Maven builds and run configs,
+    /// apart from the JDK that runs the IDE and jdtls.
+    pub jdk: String,
     /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
     /// its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
     pub daemon: bool,

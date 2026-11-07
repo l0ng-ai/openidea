@@ -36,11 +36,17 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         &settings.languages.java.gradle,
     );
     let jdk = ide_sdk::apply::project_jdk(root, settings);
+    // Maven has its own JDK setting; empty inherits the Project JDK.
+    let maven_jdk = if settings.languages.java.maven.jdk.trim().is_empty() {
+        jdk.clone()
+    } else {
+        ide_sdk::java::jdk_at(Path::new(&settings.languages.java.maven.jdk)).or_else(|| jdk.clone())
+    };
     if let Some(m) = &mut model.maven {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);
         for p in &mut m.projects {
-            p.env = java_env(jdk.as_ref(), p.java_version);
+            p.env = java_env(maven_jdk.as_ref(), p.java_version);
             if let Some(mvn) = &mvn {
                 p.command = mvn.to_string_lossy().into_owned();
             }
@@ -689,6 +695,31 @@ mod gradle_settings_tests {
         assert!(ide_build::gradle::load_linked(&root, &settings).is_empty());
         assert!(root.join("a/settings.gradle").is_file());
         assert!(root.join("b/settings.gradle").is_file());
+    }
+
+    #[test]
+    fn maven_jdk_setting_overrides_the_project_jdk_for_maven_builds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><groupId>demo</groupId><artifactId>app</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        let jdk = |name: &str| {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("release"), "JAVA_VERSION=\"17\"\n").unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            home
+        };
+        let project = jdk("project-jdk");
+        let maven = jdk("maven-jdk");
+        let mut settings = Settings::default();
+        settings.languages.java.jdk = project.to_string_lossy().into_owned();
+        settings.languages.java.maven.jdk = maven.to_string_lossy().into_owned();
+        let model = load(&root, &root.join("cache"), &settings);
+        assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], maven.to_string_lossy());
     }
 
     #[test]

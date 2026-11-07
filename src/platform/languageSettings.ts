@@ -175,6 +175,7 @@ export interface LanguagesValid {
       home: string;
       userSettings: string;
       localRepository: string;
+      jdk: string;
       unlinkedProjects: string[];
       linkedProjects: string[];
       daemon: boolean;
@@ -241,6 +242,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       home: "",
       userSettings: "",
       localRepository: "",
+      jdk: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
@@ -398,6 +400,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         home: text(maven.home, d.java.maven.home),
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
+        jdk: text(maven.jdk, d.java.maven.jdk),
         unlinkedProjects: folders(maven.unlinkedProjects),
         linkedProjects: folders(maven.linkedProjects),
         daemon: bool(maven.daemon, d.java.maven.daemon),

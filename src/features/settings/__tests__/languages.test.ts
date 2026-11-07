@@ -42,6 +42,7 @@ describe("languages settings", () => {
       home: "/opt/maven",
       userSettings: "",
       localRepository: "",
+      jdk: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
