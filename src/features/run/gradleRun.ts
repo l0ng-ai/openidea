@@ -116,7 +116,10 @@ const isGradleCommand = (config: Pick<RunConfig, "kind" | "command">) =>
   config.kind === "gradle" || /(^|[/\\])gradlew?(\.bat)?$/.test(config.command);
 
 /** `config` with the init script (`script`) that reports each test as it runs, for a Gradle test run. */
-export function withTestEvents<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T, script: string): T {
+export function withGradleInitScript<T extends Pick<RunConfig, "kind" | "command" | "args">>(
+  config: T,
+  script: string,
+): T {
   if (!isGradleCommand(config) || config.args.includes(script)) return config;
   return { ...config, args: ["--init-script", script, ...config.args] };
 }
@@ -128,18 +131,18 @@ export function withTestEvents<T extends Pick<RunConfig, "kind" | "command" | "a
 export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<T> {
   if (!isTauri() || !config.isTest || !isGradleCommand(config)) return config;
   try {
-    return withTestEvents(config, await writeScript("openidea-gradle-tests", TESTS_SCRIPT));
+    return withGradleInitScript(config, await writeScript("openidea-gradle-tests", TESTS_SCRIPT));
   } catch (e) {
     console.warn("Gradle test init script not written", e);
     return config;
   }
 }
 
-/** Gives a direct Gradle BootRun a dynamic JDWP port for the forked application JVM. */
+/** Gives a direct Gradle JavaExec (`run`, `bootRun`) a dynamic JDWP port for the forked JVM. */
 export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<T> {
-  if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)bootRun$/.test(a))) return config;
+  if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)(bootRun|run)$/.test(a))) return config;
   try {
-    return withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+    return withGradleInitScript(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
   } catch (e) {
     console.warn("Gradle BootRun init script not written", e);
     return config;
@@ -187,7 +190,7 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
   return delegatedGradleConfig(config, module, { ...ctx, script, configurationCache });
 }
 
-/** The wrapper's Gradle is 8.1+ (a local or PATH Gradle's version is not known here). */
+/** Whether this Gradle command is 8.1+, from its wrapper properties or versioned local directory. */
 export async function supportsConfigurationCache(ctx: Pick<DelegationContext, "root" | "gradle">): Promise<boolean> {
   // A wrapper reports its version in gradle-wrapper.properties; a local distribution
   // often names the version in its directory (`.../gradle-8.10/bin/gradle`).

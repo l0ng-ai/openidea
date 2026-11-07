@@ -15,9 +15,13 @@ if (target != null) {
             p.tasks.register('openideaRun', JavaExec) { t ->
                 t.description = 'Runs a main class for OpenIDEA.'
                 def sourceSet = System.getProperty('openidea.run.sourceSet', 'main')
-                t.classpath = p.sourceSets.getByName(sourceSet).runtimeClasspath
-                // JavaExec does not infer the classpath's build dependencies; compile first.
-                if (System.getProperty('openidea.run.noErrorCheck') != 'true') {
+                def noErrorCheck = System.getProperty('openidea.run.noErrorCheck') == 'true'
+                // Gradle infers build dependencies from a FileCollection's `builtBy`; use plain
+                // files for "Build, no error check" so a failed compile does not block JavaExec.
+                t.classpath = noErrorCheck
+                    ? p.files(p.sourceSets.getByName(sourceSet).runtimeClasspath.files)
+                    : p.sourceSets.getByName(sourceSet).runtimeClasspath
+                if (!noErrorCheck) {
                     t.dependsOn(p.tasks.named(sourceSet == 'test' ? 'testClasses' : 'classes'))
                 }
                 t.mainClass.set(System.getProperty('openidea.run.main'))

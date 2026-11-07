@@ -178,6 +178,8 @@ export async function javaLaunchConfig(
       classPaths,
       modulePaths: info.modulePaths,
       projectName: project,
+      // HotSwap builds the Java module, not the working directory.
+      projectRoot: join(root, module),
       javaExec: resolved.command === "java" ? undefined : resolved.command,
       vmArgs: joinJavaArgs([...consoleVmArgs(rc), ...parsed.vmArgs]),
       args: joinJavaArgs(parsed.programArgs),
@@ -237,6 +239,7 @@ export async function javaAttachConfig(target: JavaAttachTarget, root: string): 
       port: target.port,
       timeout: 30_000,
       projectName: project,
+      projectRoot: target.module ? join(root, target.module) : root,
     }),
   };
 }

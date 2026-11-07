@@ -823,7 +823,7 @@ export async function startRun(
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (delegated) launch = delegated;
     else if (isJvmApplication(launch)) {
-      const resolved = await resolveJvmApplication(sessionId, launch);
+      const resolved = await resolveJvmApplication(sessionId, launch, options.chain ?? []);
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
       if (!resolved) {
         patchSession(sessionId, {
@@ -895,7 +895,11 @@ function revealSession(sessionId: string) {
  * Builds the module (jdtls workspace build) and resolves `${classpath}` and the
  * project JDK of a Java application configuration. Null (and a console message) on failure.
  */
-async function resolveJvmApplication(sessionId: string, config: RunConfig): Promise<RunConfig | null> {
+async function resolveJvmApplication(
+  sessionId: string,
+  config: RunConfig,
+  chain: readonly string[] = [],
+): Promise<RunConfig | null> {
   const say = (text: string, kind: OutputChunk["kind"] = "system") => {
     enqueue(sessionId, { kind, text } as OutputChunk);
     flush(sessionId);
@@ -911,11 +915,22 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
   const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
   try {
+    const root = useProject.getState().project?.root ?? "";
+    // Build Project saved all documents when it ran; a dirty editor since then means
+    // its receipt no longer proves the inputs are the same, so do not skip the build.
+    let dirty = false;
+    try {
+      dirty = !!maybeEditorService()?.dirtyDocumentIds?.().length;
+    } catch {
+      /* no editor service */
+    }
+    if (dirty) clearProjectBuild();
     const { info, resolved } = await prepareJavaLaunch(config, {
       request: request.id,
       signal: request.controller.signal,
       report: say,
-      projectBuild: consumeProjectBuild(useProject.getState().project?.root ?? ""),
+      // A Build Project receipt is used once for a top-level launch; compound children share it.
+      projectBuild: consumeProjectBuild(root, chain.length === 0),
       saveAll: async () => {
         await maybeEditorService()?.saveAll();
       },

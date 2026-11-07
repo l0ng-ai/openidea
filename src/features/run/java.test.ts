@@ -351,6 +351,8 @@ describe("debugging build tool configurations", () => {
     const gradleTest = jdwpLaunch(cfg({ id: "gt", kind: "gradle", args: ["test"], isTest: true }))!;
     expect(gradleTest.args).toContain(DELEGATED_DEBUG);
     expect(gradleTest.args).not.toContain("--debug-jvm");
+    const gradleRun = jdwpLaunch(cfg({ id: "gr", kind: "gradle", args: ["run"] }))!;
+    expect(gradleRun.args).toContain(DELEGATED_DEBUG);
     expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"] }))).toBeNull();
     expect(jdwpLaunch(cfg({ id: "n", kind: "npm", args: ["test"] }))).toBeNull();
   });

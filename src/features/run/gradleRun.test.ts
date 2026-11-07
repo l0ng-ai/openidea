@@ -5,7 +5,7 @@ import {
   DELEGATED_DEBUG,
   delegatedGradleConfig,
   gradleDelegation,
-  withTestEvents,
+  withGradleInitScript,
   supportsConfigurationCache,
   wrapperGradleVersion,
 } from "./gradleRun";
@@ -158,7 +158,7 @@ describe("Build and run using: Gradle", () => {
     expect(run.params).toBeUndefined();
   });
 
-  it("gives Gradle BootRun a dynamic JDWP port when debugging", () => {
+  it("gives JavaExec and BootRun a dynamic JDWP port when debugging", () => {
     expect(BOOT_SCRIPT).toContain("openidea.run.debug");
     expect(BOOT_SCRIPT).toContain("address=127.0.0.1:0");
   });
@@ -203,20 +203,19 @@ describe("Gradle test runs", () => {
   const script = "/tmp/openidea-gradle-tests.gradle";
   it("add the init script that reports each test", () => {
     expect(
-      withTestEvents({ kind: "gradle", command: "./gradlew", args: ["test", "--tests", "*OrderTest"] }, script).args,
+      withGradleInitScript({ kind: "gradle", command: "./gradlew", args: ["test", "--tests", "*OrderTest"] }, script)
+        .args,
     ).toEqual(["--init-script", script, "test", "--tests", "*OrderTest"]);
-    expect(withTestEvents({ kind: "shell", command: "C:\\w\\gradlew.bat", args: ["test"] }, script).args).toEqual([
-      "--init-script",
-      script,
-      "test",
-    ]);
+    expect(withGradleInitScript({ kind: "shell", command: "C:\\w\\gradlew.bat", args: ["test"] }, script).args).toEqual(
+      ["--init-script", script, "test"],
+    );
   });
 
   it("leave other runs and an added script alone", () => {
     const maven = { kind: "maven", command: "./mvnw", args: ["test"] };
-    expect(withTestEvents(maven, script)).toBe(maven);
-    const twice = withTestEvents({ kind: "gradle", command: "gradle", args: ["test"] }, script);
-    expect(withTestEvents(twice, script)).toBe(twice);
+    expect(withGradleInitScript(maven, script)).toBe(maven);
+    const twice = withGradleInitScript({ kind: "gradle", command: "gradle", args: ["test"] }, script);
+    expect(withGradleInitScript(twice, script)).toBe(twice);
   });
 });
 

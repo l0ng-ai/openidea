@@ -83,7 +83,8 @@ async function runTask(task: BeforeLaunchTask, config: RunConfig, chain: readonl
     case "build": {
       if (!getAction(BUILD_ACTION)) return "Building is not available";
       if (!(await executeAction(BUILD_ACTION, { activate: false }))) return "A build is already running";
-      if (getContext()[BUILD_STATUS] !== "success") return "Build failed";
+      const status = getContext()[BUILD_STATUS];
+      if (status !== "success") return status === "cancelled" ? "Build cancelled" : "Build failed";
       recordProjectBuild(useProject.getState().project?.root ?? "");
       return null;
     }
@@ -91,12 +92,14 @@ async function runTask(task: BeforeLaunchTask, config: RunConfig, chain: readonl
       if (!getAction("build.buildModule")) return "Building is not available";
       if (!target.trim()) return "No module";
       if (!(await executeAction("build.buildModule", target))) return "A build is already running";
-      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
+      const status = getContext()[BUILD_STATUS];
+      return status === "success" ? null : status === "cancelled" ? "Build cancelled" : "Build failed";
     }
     case "buildArtifacts": {
       if (!getAction("build.buildArtifacts")) return "Building is not available";
       if (!(await executeAction("build.buildArtifacts"))) return "A build is already running";
-      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
+      const status = getContext()[BUILD_STATUS];
+      return status === "success" ? null : status === "cancelled" ? "Build cancelled" : "Build failed";
     }
     case "run": {
       if (chain.includes(target)) return "The before launch tasks run in a cycle";

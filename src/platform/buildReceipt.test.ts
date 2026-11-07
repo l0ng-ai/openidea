@@ -12,6 +12,15 @@ describe("Before launch build receipt", () => {
     expect(consumeProjectBuild("/p")).toBe(false);
   });
 
+  it("is one-shot for a top-level launch but reusable by compound children", () => {
+    recordProjectBuild("/p");
+    expect(consumeProjectBuild("/p", true)).toBe(true);
+    expect(consumeProjectBuild("/p")).toBe(false);
+    recordProjectBuild("/p");
+    expect(consumeProjectBuild("/p")).toBe(true);
+    expect(consumeProjectBuild("/p")).toBe(true);
+  });
+
   it("does not cover another project", () => {
     recordProjectBuild("/p");
     expect(consumeProjectBuild("/other")).toBe(false);

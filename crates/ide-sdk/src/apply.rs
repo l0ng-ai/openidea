@@ -1138,10 +1138,6 @@ fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
     args.splice(0..0, missing);
 }
 
-/// Points run configurations at the selected toolchains: Python configs use the
-/// project interpreter, npm scripts the chosen package manager and Node.js,
-/// cargo / go configs the selected toolchain, Maven / Gradle the project JDK
-/// (and Maven the configured home and options).
 /// The JDK for Maven builds and run configurations: `maven.jdk` when set and valid,
 /// else the Project JDK.
 pub fn maven_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
@@ -1149,6 +1145,10 @@ pub fn maven_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
     configured.and_then(|home| crate::java::jdk_at(&home)).or_else(|| project_jdk(root, s))
 }
 
+/// Points run configurations at the selected toolchains: Python configs use the
+/// project interpreter, npm scripts the chosen package manager and Node.js,
+/// cargo / go configs the selected toolchain, Maven / Gradle the project JDK
+/// (and Maven the configured home and options).
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
     let explicit_python = setting_path(root, &s.languages.python.interpreter);
     let pm = non_empty(&s.languages.node.package_manager);

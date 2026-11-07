@@ -94,6 +94,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
       console: "internalConsole",
       shortenCommandLine: "none",
       projectName: "p",
+      projectRoot: "/p/api",
     });
   });
 
@@ -178,6 +179,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
       hostName: "127.0.0.1",
       port: 5005,
       projectName: "p",
+      projectRoot: "/p",
     });
   });
 });

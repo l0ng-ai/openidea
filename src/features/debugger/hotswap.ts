@@ -8,6 +8,7 @@
 import {
   call,
   commands,
+  isCancelled,
   isTauri,
   nextRequestId,
   type DebugEvent,
@@ -85,7 +86,7 @@ export function hotSwapModule(session: DebugSession): string {
       /* not JSON: fall back */
     }
   }
-  return session.launch?.cwd ?? "";
+  return session.runConfig?.module || session.launch?.cwd || "";
 }
 
 /** Compiles (unless `build` is false) and reloads changed classes into every Java debug session. */
@@ -96,6 +97,7 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
     return;
   }
   quietUntil = Date.now() + 60_000;
+  let cancelledRun = false;
   try {
     if (build) {
       try {
@@ -110,12 +112,13 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
         let status: "cancelled" | "failed" | "succeeded" | "withErrors" | null = null;
         try {
           status = await call(commands.javaBuildWorkspace(module, request));
-        } catch {
-          status = null;
+        } catch (e) {
+          status = isCancelled(e) ? "cancelled" : null;
         } finally {
           if (activeBuild === request) activeBuild = null;
         }
         if (status === "cancelled") {
+          cancelledRun = true;
           notifications().notify({ group: "run", level: "info", key: KEY, title: "Hot Swap cancelled" });
           return;
         }
@@ -145,7 +148,9 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
     const m = hotSwapMessage(changed.size, errors);
     notifications().notify({ group: "run", key: KEY, ...m });
   } finally {
-    quietUntil = Date.now() + 2_000;
+    // A cancelled compile can still make java-debug report BUILD_COMPLETE; keep suppressing
+    // that stale event instead of offering to reload classes that were never redefined.
+    quietUntil = Date.now() + (cancelledRun ? 60_000 : 2_000);
   }
 }
 

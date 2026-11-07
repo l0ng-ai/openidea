@@ -34,6 +34,7 @@ import {
   hotSwapFailureBody,
   hotSwapMenuItems,
   hotSwapMessage,
+  hotSwapModule,
   onHotCodeReplace,
   reloadChangedClasses,
 } from "../hotswap";
@@ -84,6 +85,15 @@ describe("HotSwap", () => {
     useDebug.setState({ sessions: { 2: session(2, false) }, active: 2 });
     publishContext();
     expect(getContext().debugCanHotSwap).toBe(false);
+  });
+
+  it("builds the Java module from launch metadata instead of the working directory", () => {
+    const launched = {
+      ...session(1, true),
+      launch: { ...session(1, true).launch!, extraJson: JSON.stringify({ projectRoot: "/p/api" }) },
+    };
+    expect(hotSwapModule(launched)).toBe("/p/api");
+    expect(hotSwapModule(session(1, true))).toBe("/p/app");
   });
 
   it("offers the reload in the editor menu of a Java file while a session can reload classes", () => {

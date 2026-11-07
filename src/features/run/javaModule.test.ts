@@ -4,7 +4,7 @@ import { recordProjectBuild } from "@/platform/buildReceipt";
 import { useProject } from "@/platform/project";
 import { findJavaModule, prepareJavaLaunch } from "@/platform/javaLaunch";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { provideNotificationService } from "@/workbench/contributions";
+import { provideEditorService, provideNotificationService } from "@/workbench/contributions";
 import { applicationConfig } from "./application";
 import { resetRuns, runtime, saveUserConfigs, startRun } from "./store";
 import { applicationType } from "./jvmTypes";
@@ -65,6 +65,7 @@ const config: RunConfig = {
 beforeEach(() => {
   vi.clearAllMocks();
   provideNotificationService({ notify: vi.fn() });
+  provideEditorService({ dirtyDocumentIds: () => [], saveAll: async () => {} } as never);
 });
 afterEach(() => {
   resetRuns();
@@ -128,6 +129,16 @@ it("reuses a successful Before launch Build Project instead of building again", 
   recordProjectBuild("/p");
   await startRun({ ...config, module: "app" }, undefined, undefined, { prepared: true });
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "noBuild", expect.any(Number));
+  useProject.setState({ project: null });
+});
+
+it("does not reuse a Build Project receipt after a dirty editor", async () => {
+  useProject.setState({ project: { root: "/p" } as never });
+  recordProjectBuild("/p");
+  provideEditorService({ dirtyDocumentIds: () => [1], saveAll: async () => {} } as never);
+  await startRun({ ...config, module: "app" }, undefined, undefined, { prepared: true });
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
+  provideEditorService({ dirtyDocumentIds: () => [] } as never);
   useProject.setState({ project: null });
 });
 

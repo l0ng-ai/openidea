@@ -676,8 +676,6 @@ impl Resolver {
     }
 }
 
-/// Files and source/resource trees consumed by a launch build. Unresolved custom
-/// roots disable reuse rather than silently omitting an input.
 /// Files of a resolved dependency in the local repository: its jar (or other type) and
 /// POM. A SNAPSHOT jar replaced without a POM change must still invalidate a launch
 /// fingerprint, so the artifact itself is an input.
@@ -686,8 +684,15 @@ fn dependency_inputs(dep: &MavenDependency, repo: &Path, out: &mut Vec<PathBuf>)
         return;
     }
     if let Some(version) = &dep.version {
+        // Group/artifact/version come from a POM; never let a crafted value escape the
+        // local repository path.
+        let safe = |part: &str| !part.is_empty() && part != "." && part != ".." && !part.contains(['/', '\\']);
+        let group = dep.group_id.split('.').collect::<Vec<_>>();
+        if !group.iter().all(|part| safe(part)) || !safe(&dep.artifact_id) || !safe(version) {
+            return;
+        }
         let mut base = repo.to_path_buf();
-        for part in dep.group_id.split('.') {
+        for part in group {
             base.push(part);
         }
         base.push(&dep.artifact_id);
@@ -710,6 +715,8 @@ fn dependency_inputs(dep: &MavenDependency, repo: &Path, out: &mut Vec<PathBuf>)
     }
 }
 
+/// Files and source/resource trees consumed by a launch build. Unresolved custom
+/// roots disable reuse rather than silently omitting an input.
 pub(crate) fn launch_inputs(
     root: &Path,
     projects: &[&MavenProject],

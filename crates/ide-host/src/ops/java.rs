@@ -71,7 +71,7 @@ async fn resolve_launch(
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
         let built = if delegated {
-            let outputs = project.java_launch_snapshots.lock().build(
+            let outputs = match project.java_launch_snapshots.lock().build(
                 &project.root,
                 &model,
                 &module,
@@ -79,14 +79,30 @@ async fn resolve_launch(
                 ide_sdk::apply::maven_local_repository(&project.root, &settings),
                 full,
                 &cancel,
-            )?;
+            ) {
+                Ok(outputs) => outputs,
+                // "Build, no error check": keep the last usable classpath instead of
+                // turning a compile failure into a failed launch.
+                Err(_) if policy == BuildPolicy::MakeAndContinueOnErrors && !cancel.is_cancelled() => {
+                    info.build = Some(JavaBuildStatus::Failed);
+                    return Ok(info);
+                }
+                Err(e) => return Err(e),
+            };
             let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
             info.build = Some(JavaBuildStatus::Succeeded);
             info.errors.clear();
             info.error_count = 0;
             copies
         } else if external {
-            compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?
+            match compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel) {
+                Ok(paths) => paths,
+                Err(_) if policy == BuildPolicy::MakeAndContinueOnErrors && !cancel.is_cancelled() => {
+                    info.build = Some(JavaBuildStatus::Failed);
+                    Vec::new()
+                }
+                Err(e) => return Err(e),
+            }
         } else {
             Vec::new()
         };
@@ -254,7 +270,7 @@ pub async fn java_build_workspace(
     let project = host.project(window)?;
     let module = project.root.join(module);
     // HotSwap may cancel the compile (the request id is allocated by the caller).
-    let cancel = request.map_or_else(CancellationToken::new, |id| host.begin_request(id));
+    let cancel = request.map_or_else(CancellationToken::new, |id| host.begin_project_request(window, id));
     let result = project.lsp.java_build(&module, false, &cancel).await;
     if let Some(id) = request {
         host.end_request(id);
