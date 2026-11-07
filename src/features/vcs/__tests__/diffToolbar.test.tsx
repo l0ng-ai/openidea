@@ -36,6 +36,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
     Promise.resolve({
       path,
       text: () => working,
+      lineEnding: () => "lf",
       readOnly: false,
       extension: [],
       save: () => Promise.resolve(),
@@ -92,6 +93,15 @@ describe("Diff toolbar", () => {
     probe.mockResolvedValue({ status: "ok", data: { size: 3, binary: false, tooLarge: false } });
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(screen.queryByText("Binary files cannot be shown as text")).toBeNull());
+  });
+
+  it("reports a line-separator-only difference instead of no differences", async () => {
+    texts.HEAD = "a\r\n";
+    texts.abc123 = "a\n";
+    render(<DiffEditor input={input} />);
+    expect(await screen.findByText("Contents differ only in line separators")).toBeInTheDocument();
+    expect(screen.queryByText("No differences")).toBeNull();
+    expect(screen.queryByText("Contents are identical")).toBeNull();
   });
 
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {

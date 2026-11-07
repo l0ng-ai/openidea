@@ -63,6 +63,14 @@
   flex: 1;
   min-height: 0;
 }
+.branchDetail {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  vertical-align: middle;
+}
 
 /* filters */
 .filters {

@@ -30,6 +30,7 @@ import {
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView } from "@codemirror/view";
 import type { LanguageDescription } from "@codemirror/language";
+import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
 
@@ -635,6 +636,8 @@ export interface DocumentAttachment {
   doc: number;
   /** Current document text; build the view's state from it. */
   text(): string;
+  /** The document's line ending (detected on load, as the status bar shows). */
+  lineEnding(): LineEnding;
   /** The document's language mode name (backend-assigned, as the editor tabs use). */
   uiMode(): string | null;
   readOnly: boolean;

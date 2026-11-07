@@ -85,6 +85,7 @@ import { clearConsole, useVcsConsole } from "./ops";
 import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import { branchMenu, inRepo, tagMenu } from "./branchMenu";
+import { BranchSync } from "./BranchSync";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -345,11 +346,16 @@ export function LogView() {
 
 // --- branches ---------------------------------------------------------------
 
-function branchDetail(n: BranchTreeNode): string | undefined {
+function branchDetail(n: BranchTreeNode): ReactNode {
   const b = n.branch;
   if (!b) return undefined;
-  const sync = [b.behind > 0 ? `↓${b.behind}` : "", b.ahead > 0 ? `↑${b.ahead}` : ""].filter(Boolean).join(" ");
-  return [b.current ? tx("current") : "", sync].filter(Boolean).join("  ") || undefined;
+  if (!b.current && b.behind <= 0 && b.ahead <= 0) return undefined;
+  return (
+    <span className={styles.branchDetail}>
+      {b.current && <span>{tx("current")}</span>}
+      <BranchSync behind={b.behind} ahead={b.ahead} />
+    </span>
+  );
 }
 
 export function BranchesPanel() {
