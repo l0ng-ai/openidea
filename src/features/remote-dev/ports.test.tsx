@@ -14,7 +14,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
 }));
 
 import { PortsView } from "./PortsView";
-import { parsePort, usePorts } from "./ports";
+import { forwardPort, parsePort, usePorts } from "./ports";
 
 ipc.remoteForwardedPorts.mockImplementation(async () => [...forwarded]);
 ipc.remoteForwardPort.mockImplementation(async (remotePort: number) => {
@@ -85,4 +85,21 @@ describe("restoring forwarded ports", () => {
     expect(savedPorts()).toEqual([]);
     useRemote.setState({ session: null });
   });
+});
+
+it("doesn't forward ports of a dev container yet", async () => {
+  const { useRemote } = await import("@/platform/remote");
+  ipc.remoteForwardPort.mockClear();
+  useRemote.setState({
+    session: {
+      target: { kind: "devContainer", folder: "/w/app", config: "" },
+      root: "/workspaces/app",
+      host: "app",
+      os: "linux",
+      commands: [],
+    },
+  });
+  expect(await forwardPort(8080)).toBeNull();
+  expect(ipc.remoteForwardPort).not.toHaveBeenCalled();
+  useRemote.setState({ session: null });
 });

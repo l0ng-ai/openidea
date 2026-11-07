@@ -39,6 +39,8 @@ export function stageLabel(stage: RemoteStage): string {
   switch (stage) {
     case "connecting":
       return "Connecting to the host…";
+    case "container":
+      return "Starting the dev container…";
     case "checking":
       return "Checking the IDE backend on the host…";
     case "downloading":
