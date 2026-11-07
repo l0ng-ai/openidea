@@ -27,6 +27,8 @@ mod state;
 mod theme_frame;
 #[cfg(target_os = "macos")]
 mod titlebar;
+#[cfg(any(target_os = "macos", test))]
+mod trackpad;
 mod window_groups;
 #[cfg(any(windows, test))]
 mod window_work_area;
@@ -188,6 +190,8 @@ pub fn run() {
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
+        #[cfg(target_os = "macos")]
+        trackpad::observe(app.handle());
         app.manage(menu_state);
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
