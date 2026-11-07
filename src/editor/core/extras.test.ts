@@ -87,3 +87,12 @@ it.each(["indentBlock", "indentEachLine"] as const)(
     expect(v.state.selection.main.head).toBe(10 + text.length + 1);
   },
 );
+
+it.each([true, false])("handles an empty plain-text clipboard with line-wise flag %s", async (linewise) => {
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "" } });
+  if (linewise) recordClipboard("", true);
+  view.dispatch({ selection: { anchor: 3 } });
+  await pasteAsPlainText(view);
+  expect(view.state.doc.toString()).toBe(linewise ? "\ntarget" : "target");
+  expect(view.state.selection.main.head).toBe(linewise ? 4 : 3);
+});

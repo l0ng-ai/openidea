@@ -5,7 +5,7 @@ import { structure } from "@/editor/structure";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
 import { executeAction } from "@/platform/actions";
-import { clipboardHistory, recordClipboard } from "./clipboardHistory";
+import { clipboardHistory, isLinewiseClipboardText, recordClipboard } from "./clipboardHistory";
 import { openPasteHistory } from "./view/PasteHistoryDialog";
 import { dispatchPaste } from "./cm/clipboard";
 import { unwrapOptions, type ChainNode, type UnwrapOption } from "./cm/unwrap";
@@ -107,7 +107,7 @@ export async function pasteAsPlainText(view: EditorView) {
     hint("Cannot read the clipboard");
     return;
   }
-  if (!text) return;
+  if (!text && !isLinewiseClipboardText(text)) return;
   dispatchPaste(view, text, "input.pastePlain");
   view.focus();
 }
