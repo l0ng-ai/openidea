@@ -204,6 +204,11 @@ pub fn load_text(path: &Path) -> IdeResult<LoadedText> {
     encoding::load_text(path)
 }
 
+/// Loads a regular file with editor decoding, bounding both disk and decoded bytes.
+pub fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
+    encoding::load_text_bounded(path, fallback, max_bytes)
+}
+
 /// Like [`load_text`], but text that is neither valid UTF-8 nor marked by a BOM
 /// is decoded as `fallback` (the configured project encoding) instead of guessed.
 pub fn load_text_with_fallback(path: &Path, fallback: Option<&str>) -> IdeResult<LoadedText> {
