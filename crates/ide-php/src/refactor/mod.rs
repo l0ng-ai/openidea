@@ -27,6 +27,8 @@
 //!   [`signature`].
 //! - **Inline variable / method / function** (`refactor.inline.*`): see
 //!   [`inline`].
+//! - **Pull members up / push members down** (not code actions: the
+//!   editor's hierarchy dialog asks for them): see [`hierarchy`].
 //!
 //! The new name comes from the expression ([`names`], the conventions of
 //! the frontend's `src/editor/refactor/names.ts`) and is numbered when
@@ -35,6 +37,9 @@
 //! it in place afterwards with its own suggestions. The rules are our own,
 //! after IntelliJ's documented Introduce Variable / Constant behaviour.
 
+pub mod hierarchy;
+#[cfg(test)]
+mod hierarchy_tests;
 mod inline;
 mod method;
 pub(crate) mod names;

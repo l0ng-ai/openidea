@@ -20,8 +20,9 @@ use ide_core::{
 };
 use ide_lsp::types::{
     CallHierarchy, CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, FormatOptions,
-    GotoKind, HierarchyDirection, HierarchyItem, Hover, InlayHint, InlayKind, Markup, References, Renamed,
-    SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
+    GotoKind, HierarchyChoice, HierarchyClass, HierarchyDirection, HierarchyItem, HierarchyMember, HierarchyMemberKind,
+    HierarchyMembers, HierarchyRefactored, HierarchyRefactoring, Hover, InlayHint, InlayKind, Markup, ProblemSeverity,
+    RefactoringProblem, References, Renamed, SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -201,7 +202,8 @@ impl DocumentObserver for PhpObserver {
 /// hierarchies, rename, the reference updates of file moves, the
 /// code actions (inspection quick-fixes, auto-import fixes, Optimize
 /// Imports, the refactorings, and Change Signature resolved with the
-/// dialog's new signature) and Reformat Code. Diagnostics don't go through it: the engine inspects open
+/// dialog's new signature), Pull Members Up / Push Members Down and
+/// Reformat Code. Diagnostics don't go through it: the engine inspects open
 /// documents in the background and publishes them itself.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
@@ -497,6 +499,85 @@ impl crate::language_service::LanguageService for PhpService {
         Some(Ok(CodeAction { edit: Some(edit), data: None, ..action.clone() }))
     }
 
+    /// Pull Members Up / Push Members Down for PHP classes (the dialog the
+    /// Java extension's flow uses).
+    fn hierarchy_members(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        kind: HierarchyRefactoring,
+        cancel: &CancellationToken,
+    ) -> Answer<HierarchyMembers> {
+        use ide_php::refactor::hierarchy::MovableKind;
+        let engine = self.0.engine()?;
+        let info = match engine.hierarchy_members(doc, pos, engine_hierarchy(kind), cancel)? {
+            Ok(info) => info,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok(HierarchyMembers {
+            class_name: info.class_name,
+            targets: info
+                .targets
+                .into_iter()
+                .map(|t| HierarchyClass {
+                    id: t.id,
+                    name: t.name,
+                    qualified_name: t.qualified_name,
+                    interface: t.interface,
+                })
+                .collect(),
+            members: info
+                .members
+                .into_iter()
+                .map(|m| HierarchyMember {
+                    id: m.id,
+                    label: m.label,
+                    kind: match m.kind {
+                        MovableKind::Field => HierarchyMemberKind::Field,
+                        MovableKind::Method => HierarchyMemberKind::Method,
+                    },
+                    selected: m.selected,
+                    abstractable: m.abstractable,
+                })
+                .collect(),
+        }))
+    }
+
+    fn hierarchy_refactor(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        kind: HierarchyRefactoring,
+        target: Option<&str>,
+        choices: &[HierarchyChoice],
+        cancel: &CancellationToken,
+    ) -> Answer<HierarchyRefactored> {
+        use ide_php::refactor::hierarchy::{HierarchyChoice as Choice, ProblemSeverity as Severity};
+        let engine = self.0.engine()?;
+        let choices: Vec<Choice> =
+            choices.iter().map(|c| Choice { id: c.id.clone(), make_abstract: c.make_abstract }).collect();
+        let moved = match engine.hierarchy_refactor(doc, pos, engine_hierarchy(kind), target, &choices, cancel)? {
+            Ok(moved) => moved,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok(HierarchyRefactored {
+            problems: moved
+                .problems
+                .into_iter()
+                .map(|p| RefactoringProblem {
+                    severity: match p.severity {
+                        Severity::Info => ProblemSeverity::Info,
+                        Severity::Warning => ProblemSeverity::Warning,
+                        Severity::Error => ProblemSeverity::Error,
+                        Severity::Fatal => ProblemSeverity::Fatal,
+                    },
+                    message: p.message,
+                })
+                .collect(),
+            edit: moved.edit,
+        }))
+    }
+
     /// Moving PHP files inside the autoload roots updates their namespace,
     /// references and imports (and renames a class named after its file).
     fn will_rename_files(&self, moves: &[(PathBuf, PathBuf)], cancel: &CancellationToken) -> Answer<WorkspaceEdit> {
@@ -518,6 +599,14 @@ fn code_action(action: ide_php::imports::ImportAction, server: ide_core::ServerI
         command: None,
         data: None,
         server,
+    }
+}
+
+fn engine_hierarchy(kind: HierarchyRefactoring) -> ide_php::refactor::hierarchy::HierarchyKind {
+    use ide_php::refactor::hierarchy::HierarchyKind;
+    match kind {
+        HierarchyRefactoring::PullUp => HierarchyKind::PullUp,
+        HierarchyRefactoring::PushDown => HierarchyKind::PushDown,
     }
 }
 

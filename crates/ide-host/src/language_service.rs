@@ -114,6 +114,32 @@ pub trait LanguageService: Send + Sync {
         None
     }
 
+    /// Pull Members Up / Push Members Down: the class at `pos` and what can move.
+    fn hierarchy_members(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        kind: HierarchyRefactoring,
+        cancel: &CancellationToken,
+    ) -> Answer<HierarchyMembers> {
+        None
+    }
+
+    /// Checks moving `choices` (to `target`, for pull up) and computes the
+    /// edit without applying it.
+    #[allow(clippy::too_many_arguments)]
+    fn hierarchy_refactor(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        kind: HierarchyRefactoring,
+        target: Option<&str>,
+        choices: &[HierarchyChoice],
+        cancel: &CancellationToken,
+    ) -> Answer<HierarchyRefactored> {
+        None
+    }
+
     fn prepare_rename(&self, doc: DocId, pos: Pos) -> Answer<Option<Range>> {
         None
     }

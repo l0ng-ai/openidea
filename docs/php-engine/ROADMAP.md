@@ -388,7 +388,7 @@ The design:
 - [x] Phase 5.5: Change signature
       Add, remove, reorder and rename parameters, change defaults, and update call sites across the hierarchy. This needs the UI the catalog already maps; check `src/editor/refactor/catalog.ts` and add a dialog if none exists (text in `en` and `zh`). Tests: before and after text, and a frontend test for the dialog.
 
-- [ ] Phase 5.6: Pull members up / push members down
+- [x] Phase 5.6: Pull members up / push members down
       Use the existing `lsp_hierarchy_members` / `lsp_hierarchy_refactor` flow (as used for Java), with the engine as the provider for PHP classes. Tests: before and after text.
 
 - [ ] Phase 5.7: Generate code

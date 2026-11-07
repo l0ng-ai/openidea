@@ -591,7 +591,14 @@ pub async fn lsp_hierarchy_members(
 ) -> IdeResult<HierarchyMembers> {
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = project.lsp.hierarchy_members(doc, pos, kind, cancel).await;
+    let native = {
+        let cancel = cancel.clone();
+        ask(&project, doc, move |s| s.hierarchy_members(doc, pos, kind, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.hierarchy_members(doc, pos, kind, cancel).await,
+    };
     host.end_request(request);
     result
 }
@@ -612,7 +619,14 @@ pub async fn lsp_hierarchy_refactor(
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
     let cancel = host.begin_request(request);
-    let result = project.lsp.hierarchy_refactor(doc, pos, kind, target, choices, cancel).await;
+    let native = {
+        let (target, choices, cancel) = (target.clone(), choices.clone(), cancel.clone());
+        ask(&project, doc, move |s| s.hierarchy_refactor(doc, pos, kind, target.as_deref(), &choices, &cancel)).await
+    };
+    let result = match native {
+        Some(result) => result,
+        None => project.lsp.hierarchy_refactor(doc, pos, kind, target, choices, cancel).await,
+    };
     host.end_request(request);
     let mut refactored = result?;
     blocking(move || {

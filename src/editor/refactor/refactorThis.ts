@@ -42,8 +42,11 @@ import { safeDelete } from "./safeDelete";
 import { startHierarchyRefactoring } from "./hierarchy";
 import { startChangeSignature } from "./changeSignature";
 
-/** Languages whose server runs the class-hierarchy refactorings (the app-owned JDT extension). */
-const HIERARCHY_LANGUAGES = new Set(["java"]);
+/**
+ * Languages with the class-hierarchy refactorings: Java (the app-owned JDT extension) and PHP (the
+ * native engine; with Intelephense the request says no server provides it).
+ */
+const HIERARCHY_LANGUAGES = new Set(["java", "php"]);
 
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =

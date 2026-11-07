@@ -370,3 +370,50 @@ async fn change_signature_is_resolved_by_the_native_engine() {
     assert!(cart.contains("echo total(1.5, 2);"), "{cart}");
     host.close_project("main");
 }
+
+/// Pull Members Up through the hierarchy dispatch: the native engine lists
+/// the class's members and destinations, and computes the edit moving the
+/// chosen ones into the parent class in another file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pull_members_up_is_answered_by_the_native_engine() {
+    use ide_lsp::types::{HierarchyChoice, HierarchyRefactoring};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("zoo");
+    write(&root.join("composer.json"), r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#);
+    write(&root.join("src/Animal.php"), "<?php\nnamespace App;\n\nclass Animal\n{\n}\n");
+    let dog = "<?php\nnamespace App;\n\nclass Dog extends Animal\n{\n    public function bark(): string\n    {\n        return 'woof';\n    }\n}\n";
+    write(&root.join("src/Dog.php"), dog);
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    assert!(project.php.engine().unwrap().wait_idle(WAIT));
+
+    let doc = ops::doc::open(&host, "main", root.join("src/Dog.php")).await.unwrap();
+    let at = ide_core::Pos::new(5, 21);
+    let kind = HierarchyRefactoring::PullUp;
+    let info = ops::lsp::lsp_hierarchy_members(&host, "main", ide_core::RequestId(4), doc.id, at, kind).await.unwrap();
+    assert_eq!(info.class_name, "Dog");
+    assert_eq!(info.targets.len(), 1);
+    assert_eq!(info.targets[0].qualified_name, r"App\Animal");
+    assert_eq!(info.members.len(), 1);
+    assert!(info.members[0].selected);
+
+    let choices = vec![HierarchyChoice { id: info.members[0].id.clone(), make_abstract: false }];
+    let target = Some(info.targets[0].id.clone());
+    let refactored =
+        ops::lsp::lsp_hierarchy_refactor(&host, "main", ide_core::RequestId(5), doc.id, at, kind, target, choices)
+            .await
+            .unwrap();
+    assert!(refactored.problems.is_empty());
+    let edit = refactored.edit.expect("an edit");
+    assert_eq!(edit.files.len(), 2);
+    ops::lsp::apply_workspace_edit(&host, "main", edit).await.unwrap();
+    let text = project.documents.snapshot(doc.id).unwrap().text;
+    assert!(!text.contains("bark"), "{text}");
+    let animal = std::fs::read_to_string(root.join("src/Animal.php")).unwrap();
+    assert!(animal.contains("public function bark(): string"), "{animal}");
+    host.close_project("main");
+}
