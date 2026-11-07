@@ -5,7 +5,7 @@
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Button, Checkbox, Input, Tree, type SelectOption, T } from "@/ui";
+import { Button, Checkbox, Input, Tree, type SelectOption, type TreeHandle, T } from "@/ui";
 import { fontWeightVars, type CustomColorSchemes, type TextAttributesOverride } from "@/platform/editorSettings";
 import {
   ATTRIBUTES,
@@ -13,6 +13,8 @@ import {
   overrideDeclarations,
   effectiveScheme,
   resolvedSchemeTokens,
+  resolvedAttribute,
+  CLEAR_COLOR,
   listSchemes,
   customSchemes,
   type AttributeDef,
@@ -21,12 +23,14 @@ import { HEX_COLOR } from "../../model/schema";
 import { Row, Select } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import { editorPage } from "./kit";
+import type { PageSpec } from "../spec";
 import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
 import { parseIcls, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx } from "@/platform/i18n";
+import { selectPage } from "../../model/staging";
 
 type Overrides = Record<string, Record<string, TextAttributesOverride>>;
 
@@ -37,23 +41,69 @@ interface Node {
   children?: Node[];
 }
 
+/** Tree segments of an attribute: its scope path plus any "›" groups in its display name. */
+function attrSegs(attr: AttributeDef): string[] {
+  const parts = attr.name.split(" › ");
+  return [...attr.path, ...parts.slice(0, -1)];
+}
+
+/** Tree keys of every ancestor group of an attribute, from the scope root down. */
+function ancestorKeys(attr: AttributeDef): string[] {
+  const keys: string[] = [];
+  let key = "";
+  for (const seg of attrSegs(attr)) {
+    key += `/${seg}`;
+    keys.push(key);
+  }
+  return keys;
+}
+
 function buildTree(): Node[] {
   const roots: Node[] = [];
   for (const attr of ATTRIBUTES) {
+    const parts = attr.name.split(" › ");
     let level = roots;
     let key = "";
-    for (const seg of attr.path) {
+    for (const seg of attrSegs(attr)) {
       key += `/${seg}`;
       let n = level.find((x) => x.key === key);
       if (!n) level.push((n = { key, label: seg, children: [] }));
       level = n.children!;
     }
-    level.push({ key: attr.id, label: attr.name, attr });
+    level.push({ key: attr.id, label: parts.at(-1)!, attr });
   }
   return roots;
 }
 
 const TREE = buildTree();
+
+/** Roots of one page's attribute tree, in JetBrains fashion: scopes are pages, not tree panes. */
+function pageTree(scopes: readonly string[]): Node[] {
+  return TREE.filter((n) => scopes.includes(n.label));
+}
+
+function firstLeafId(nodes: readonly Node[]): string {
+  const n = nodes[0]!;
+  return n.attr ? n.attr.id : firstLeafId(n.children!);
+}
+
+function treeIds(nodes: readonly Node[], out = new Set<string>()): Set<string> {
+  for (const n of nodes) {
+    if (n.attr) out.add(n.attr.id);
+    if (n.children) treeIds(n.children, out);
+  }
+  return out;
+}
+
+/** Settings sub-page that owns an attribute, for preview clicks that cross pages. */
+function attrPageId(attr: AttributeDef): string {
+  return `editor.colorScheme.${
+    attr.path[0] === "Language Defaults" ? "language-defaults" : attr.path[0]!.toLowerCase()
+  }`;
+}
+
+/** Preview click on another sub-page: the target page selects and reveals the attribute. */
+let crossPageReveal: string | null = null;
 
 /**
  * CSS custom properties of a scheme plus pending overrides (for the preview); with
@@ -87,72 +137,670 @@ function previewVars(
 
 /** Text styled like an attribute in the preview. */
 function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
-  if (!attr?.token) return attr?.fg ? { color: `var(${attr.fg})` } : {};
+  if (!attr?.token)
+    return {
+      ...(attr?.fg ? { color: `var(${attr.fg})` } : null),
+      ...(attr?.bg ? { backgroundColor: `var(${attr.bg})` } : null),
+    };
   if (attr.italicOnly)
     return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
   const t = attr.token;
+  const italic = t === "comment" ? "var(--syn-comment-style)" : attr.defaultItalic ? "italic" : "inherit";
+  const bold = attr.defaultBold ? "var(--fw-code-bold, 700)" : "inherit";
+  const effect = attr.defaultEffect === "underline" ? "underline" : "none";
   return {
     color: `var(--syn-${t})`,
-    fontWeight: `var(--syn-${t}-bold, inherit)` as CSSProperties["fontWeight"],
-    fontStyle: `var(--syn-${t}-italic, ${t === "comment" ? "var(--syn-comment-style)" : t === "doc-comment" || t === "docstring" ? "italic" : "inherit"})`,
+    fontWeight: `var(--syn-${t}-bold, ${bold})` as CSSProperties["fontWeight"],
+    fontStyle: `var(--syn-${t}-italic, ${italic})`,
     backgroundColor: `var(--syn-${t}-bg, transparent)`,
-    textDecoration: `var(--syn-${t}-effect, none)`,
+    textDecoration: `var(--syn-${t}-effect, ${effect})`,
     // WebKit takes a decoration with a style or colour only through the prefixed property.
-    ...({ WebkitTextDecoration: `var(--syn-${t}-effect, none)` } as CSSProperties),
+    ...({ WebkitTextDecoration: `var(--syn-${t}-effect, ${effect})` } as CSSProperties),
   };
 }
 
 const A = (id: string) => ATTRIBUTES.find((a) => a.id === id);
 
 type Seg = [string, string?];
-const SAMPLE: Seg[][] = [
-  [["# OpenIDEA color scheme preview", "lineComment"]],
-  [["import ", "keyword"], ["os"]],
-  [["@dataclass", "pyDecorator"]],
-  [["class ", "keyword"], ["Greeter", "className"], [":"]],
-  [['    """Says hello."""', "pyDocstring"]],
-  [
-    ["    MAX_RETRIES", "constant"],
-    [" = ", "operator"],
-    ["3", "number"],
-  ],
-  [["    static_field", "staticSymbol"], [" = 3"]],
-  [["    python_field", "pyStaticSymbol"], [" = 3"]],
-  [
-    ["    def ", "keyword"],
-    ["greet", "functionDeclaration"],
-    ["("],
-    ["self", "pySelf"],
-    [", "],
-    ["name", "parameter"],
-    ["):"],
-  ],
-  [
-    ["        text", "identifier"],
-    [" = ", "operator"],
-    ['"Hello, ', "string"],
-    ["\\n", "escape"],
-    ['"', "string"],
-    [" + name"],
-  ],
-  [["        "], ["print", "pyBuiltin"], ["(text, "], ["end", "pyKeywordArg"], ["="], ['""', "string"], [")"]],
-  [["        return ", "keyword"], ["len", "functionCall"], ["(text)"]],
-  [["# TODO: localize", "todo"]],
-];
+interface CodeSample {
+  code: Seg[][];
+  /** Line shown with the caret-row background. */
+  caret?: number;
+}
+
+/** One sample per page, each covering as much of that scope's token set as possible. */
+const SAMPLES: Record<string, CodeSample> = {
+  General: {
+    code: [
+      [["# General: text, gutter, hints and matches", "lineComment"]],
+      [
+        ["TODO", "todo"],
+        [" check the wave decorations below", "text"],
+      ],
+      [
+        ["erroneous", "error"],
+        ["   ", "text"],
+        ["suspicious", "warning"],
+        ["   ", "text"],
+        ["could be const", "weakWarning"],
+        ["   ", "text"],
+        ["legacyCall", "unused"],
+      ],
+      [
+        ["bad\u203dchar", "invalid"],
+        ["   \u00b7   ", "whitespaces"],
+        ["\u2192 indent guides \u2192", "indentGuide"],
+      ],
+      [
+        ["const", "inlay"],
+        [" name", "text"],
+        [" = ", "operator"],
+        ["value", "text"],
+        ["   ", "text"],
+        ["\u2026", "folded"],
+        [" folded region ", "folded"],
+        ["\u2026", "folded"],
+      ],
+      [
+        ["search hit ", "text"],
+        ["token", "searchResult"],
+        [" and current ", "text"],
+        ["token", "searchResultCurrent"],
+      ],
+      [
+        ["matched ", "text"],
+        ["()", "matchedBrace"],
+        ["   identifier under caret ", "text"],
+        ["name", "identifierUnderCaret"],
+        [" / ", "text"],
+        ["name", "identifierUnderCaretWrite"],
+      ],
+    ],
+  },
+  Debugger: {
+    code: [
+      [["# Debugger: inline values and breakpoint rows", "lineComment"]],
+      [
+        ["len", "inlineValue"],
+        [" = ", "text"],
+        ["3", "text"],
+        ["    ", "text"],
+        ["name", "inlineValue"],
+        [" = ", "text"],
+        ['"world"', "string"],
+      ],
+      [
+        ["return", "keyword"],
+        [" len(text)", "text"],
+      ],
+    ],
+    caret: 2,
+  },
+  "Language Defaults": {
+    code: [
+      [["# Language Defaults", "lineComment"]],
+      [["@Entity", "metadata"]],
+      [
+        ["class ", "keyword"],
+        ["Session", "className"],
+        [" implements ", "keyword"],
+        ["Runnable", "className"],
+        [" {", "operator"],
+      ],
+      [
+        ["  /**", "docComment"],
+        [" doc comment ", "docComment"],
+        ["@param", "docComment"],
+        [" id", "docComment"],
+        [" */", "docComment"],
+      ],
+      [
+        ["  static", "staticSymbol"],
+        [" MAX", "constant"],
+        [" = ", "operator"],
+        ["0xff", "number"],
+        [";", "operator"],
+      ],
+      [
+        ["  field", "field"],
+        [" = ", "operator"],
+        ['"a', "string"],
+        ["\\n", "escape"],
+        ["\\t", "escape"],
+        ["z", "string"],
+        ['\\"', "escape"],
+        ['"', "string"],
+        [";", "operator"],
+      ],
+      [
+        ["  def ", "keyword"],
+        ["greet", "functionDeclaration"],
+        ["(", "operator"],
+        ["name", "parameter"],
+        [", ", "operator"],
+        ["GLOBAL", "globalVariable"],
+        ["):", "operator"],
+      ],
+      [
+        ["    ", "text"],
+        ["greet", "functionCall"],
+        ["(", "operator"],
+        ["predefined", "predefined"],
+        [", ", "operator"],
+        ["local", "identifier"],
+        [")", "operator"],
+      ],
+      [
+        ["    x", "identifier"],
+        [" = ", "operator"],
+        ["[", "bracket1"],
+        ["(", "bracket2"],
+        ["{", "bracket3"],
+        ["1", "number"],
+        ["}", "bracket3"],
+        [")", "bracket2"],
+        ["]", "bracket1"],
+        [";", "operator"],
+      ],
+      [
+        ["    s1", "semantic1"],
+        [" s2", "semantic2"],
+        [" s3", "semantic3"],
+        [" s4", "semantic4"],
+        [" s5", "semantic5"],
+      ],
+      [
+        ["    <", "operator"],
+        ["div", "markupTag"],
+        [" ", "text"],
+        ["class", "markupAttribute"],
+        ["=", "operator"],
+        ['"row"', "string"],
+        [">", "operator"],
+        ["\u2026", "text"],
+        ["</", "operator"],
+        ["div", "markupTag"],
+        [">", "operator"],
+      ],
+      [["}", "operator"]],
+    ],
+  },
+  Python: {
+    caret: 4,
+    code: [
+      [
+        ["import ", "keyword"],
+        ["os", "pyStaticSymbol"],
+      ],
+      [
+        ["MAX_RETRIES", "pyConstant"],
+        [" = ", "operator"],
+        ["3", "number"],
+      ],
+      [],
+      [
+        ["@decorator", "pyDecorator"],
+        ["(", "pyParentheses"],
+        ["param", "pyKeywordArg"],
+        ["=", "operator"],
+        ["1", "number"],
+        [")", "pyParentheses"],
+      ],
+      [
+        ["def ", "keyword"],
+        ["f", "functionDeclaration"],
+        ["(", "pyParentheses"],
+        ["x", "parameter"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [['    """', "pyDocstring"]],
+      [["    Syntax Highlighting Demo", "pyDocstring"]],
+      [["    @param x Parameter", "pyDocstring"]],
+      [],
+      [["    Semantic highlighting:", "pyDocstring"]],
+      [["    Generated spectrum to pick colors for local variables and parameters:", "pyDocstring"]],
+      [
+        ["     ", "pyDocstring"],
+        ["Color#1 ", "semantic1"],
+        ["SC1.1 SC1.2 SC1.3 SC1.4 ", "semantic1"],
+        ["Color#2 ", "semantic2"],
+        ["SC2.1 SC2.2 SC2.3 SC2.4 ", "semantic2"],
+        ["Color#3", "semantic3"],
+      ],
+      [
+        ["     ", "pyDocstring"],
+        ["Color#3 ", "semantic3"],
+        ["SC3.1 SC3.2 SC3.3 SC3.4 ", "semantic3"],
+        ["Color#4 ", "semantic4"],
+        ["SC4.1 SC4.2 SC4.3 SC4.4 ", "semantic4"],
+        ["Color#5", "semantic5"],
+      ],
+      [['    """', "pyDocstring"]],
+      [],
+      [
+        ["    def ", "keyword"],
+        ["nested_func", "pyNestedFunction"],
+        ["(", "pyParentheses"],
+        ["y", "parameter"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [
+        ["        ", "text"],
+        ["print", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        ["y", "identifier"],
+        [" + ", "operator"],
+        ["1", "number"],
+        [")", "pyParentheses"],
+      ],
+      [],
+      [
+        ["    s", "pyLocalVariable"],
+        [" = ", "operator"],
+        ["(", "pyParentheses"],
+        ['"Test"', "string"],
+        [", ", "operator"],
+        ["2", "number"],
+        ["+", "operator"],
+        ["3", "number"],
+        [", ", "operator"],
+        ["{", "pyBraces"],
+        ["'a'", "string"],
+        [": ", "operator"],
+        ["'b'", "string"],
+        ["}", "pyBraces"],
+        [",", "operator"],
+      ],
+      [
+        ["         ", "text"],
+        ["f", "pyFString"],
+        ["'{", "pyFString"],
+        ["x", "parameter"],
+        ["!s:", "pyFormat"],
+        ["{", "pyFormat"],
+        ['"^10"', "string"],
+        ["}", "pyFormat"],
+        ["}'", "pyFString"],
+        [", ", "operator"],
+        ["f", "pyFString"],
+        ['"{', "pyFString"],
+        ["1", "number"],
+        [":", "pyFString"],
+        ["01d", "pyFormat"],
+        ['}"', "pyFString"],
+        [")", "pyParentheses"],
+        ["  ", "text"],
+        ["# Comment", "lineComment"],
+      ],
+      [
+        ["    ", "text"],
+        ["f", "functionCall"],
+        ["(", "pyParentheses"],
+        ["s", "pyLocalVariable"],
+        ["[", "pyBrackets"],
+        ["0", "number"],
+        ["]", "pyBrackets"],
+        [".", "operator"],
+        ["lower", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        [")", "pyParentheses"],
+        [")", "pyParentheses"],
+      ],
+      [
+        ["    ", "text"],
+        ["nested_func", "functionCall"],
+        ["(", "pyParentheses"],
+        ["42", "number"],
+        [")", "pyParentheses"],
+      ],
+      [],
+      [
+        ["class ", "keyword"],
+        ["Foo", "className"],
+        [":", "operator"],
+      ],
+      [
+        ["    tags", "pyClassAttribute"],
+        [": ", "text"],
+        ["List", "pyAnnotation"],
+        ["[", "pyBrackets"],
+        ["str", "pyAnnotation"],
+        ["]", "pyBrackets"],
+      ],
+      [],
+      [
+        ["    def ", "keyword"],
+        ["__init__", "pyPredefinedDefinition"],
+        ["(", "pyParentheses"],
+        ["self", "pySelf"],
+        [": ", "text"],
+        ["Foo", "pyAnnotation"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [
+        ["        byte_string", "pyLocalVariable"],
+        [": ", "text"],
+        ["bytes", "pyAnnotation"],
+        [" = ", "operator"],
+        ["b'newline:", "pyBytes"],
+        ["\\n", "escape"],
+        [" also newline:", "pyBytes"],
+        ["\\x0a", "escape"],
+        ["'", "pyBytes"],
+      ],
+      [
+        ["        text_string", "pyLocalVariable"],
+        [" = ", "operator"],
+        ['u"Cyrillic Я is ', "string"],
+        ["\\u042f", "escape"],
+        [". Oops: ", "string"],
+        ["\\u042g", "weakWarning"],
+        ['"', "string"],
+      ],
+      [
+        ["        ", "text"],
+        ["self", "pySelf"],
+        [".", "operator"],
+        ["make_sense", "pyMethodCall"],
+        ["(", "pyParentheses"],
+        ["whatever", "pyKeywordArg"],
+        ["=", "operator"],
+        ["1", "number"],
+        [")", "pyParentheses"],
+      ],
+      [],
+      [["@property", "pyDecorator"]],
+      [
+        ["    def ", "keyword"],
+        ["alias", "pyProperty"],
+        ["(", "pyParentheses"],
+        ["self", "pySelf"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [
+        ["        return ", "keyword"],
+        ["self", "pySelf"],
+        [".", "operator"],
+        ["sense", "pyInstanceAttribute"],
+      ],
+      [],
+      [
+        ["    def ", "keyword"],
+        ["make_sense", "functionDeclaration"],
+        ["[", "pyBrackets"],
+        ["T", "pyTypeParameter"],
+        ["]", "pyBrackets"],
+        ["(", "pyParentheses"],
+        ["self", "pySelf"],
+        [", ", "operator"],
+        ["whatever", "parameter"],
+        [": ", "text"],
+        ["T", "pyAnnotation"],
+        [")", "pyParentheses"],
+        [":", "operator"],
+      ],
+      [
+        ["        ", "text"],
+        ["self", "pySelf"],
+        [".", "operator"],
+        ["sense", "pyInstanceAttribute"],
+        [" = ", "operator"],
+        ["whatever", "parameter"],
+      ],
+      [],
+      [
+        ["x", "pyGlobalVariable"],
+        [" = ", "operator"],
+        ["len", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        ['"abc"', "string"],
+        [")", "pyParentheses"],
+      ],
+      [
+        ["type ", "keyword"],
+        ["my_int", "pyGlobalVariable"],
+        [" = ", "operator"],
+        ["int", "pyBuiltin"],
+      ],
+      [
+        ["print", "pyPredefinedUsage"],
+        ["(", "pyParentheses"],
+        ["f", "functionCall"],
+        [".", "operator"],
+        ["__doc__", "pyInstanceAttribute"],
+        [")", "pyParentheses"],
+      ],
+    ],
+  },
+  Markdown: {
+    code: [
+      [["# Heading level one", "mdHeading"]],
+      [["## Heading level two", "mdHeading"]],
+      [
+        ["Inline ", "text"],
+        ["`code`", "mdCode"],
+        [" and ", "text"],
+        ["[link](https://example.com)", "mdLink"],
+        [" text", "text"],
+      ],
+      [
+        ["<", "operator"],
+        ["em", "markupTag"],
+        [">", "operator"],
+        ["emphasis", "text"],
+        ["</", "operator"],
+        ["em", "markupTag"],
+        [">", "operator"],
+      ],
+      [
+        ["- ", "operator"],
+        ["list item ", "text"],
+        ["`x`", "mdCode"],
+      ],
+    ],
+  },
+  RegExp: {
+    code: [
+      [["# Regular expressions", "lineComment"]],
+      [
+        ["^[a-z]", "regexp"],
+        ["+", "operator"],
+        ["(\\d{2,3})", "regexp"],
+        ["?", "operator"],
+        ["$", "regexp"],
+      ],
+      [
+        ["(?P<year>", "regexp"],
+        ["\\d{4}", "regexp"],
+        [")", "regexp"],
+        ["-", "operator"],
+        ["(\\d{2})", "regexp"],
+      ],
+      [
+        ["\\bword\\b", "regexp"],
+        [" | ", "operator"],
+        ["[[:alpha:]]", "regexp"],
+      ],
+    ],
+  },
+  Java: {
+    code: [
+      [["// Java", "java.lineComment"]],
+      [["@Override", "java.metadata"]],
+      [
+        ["public class ", "java.keyword"],
+        ["Greeter", "java.className"],
+        [" {", "java.operator"],
+      ],
+      [
+        ["    private static final ", "java.keyword"],
+        ["int", "java.keyword"],
+        [" MAX", "java.constant"],
+        [" = ", "java.operator"],
+        ["3", "java.number"],
+        [";", "java.operator"],
+      ],
+      [
+        ["    private ", "java.keyword"],
+        ["String", "java.className"],
+        [" name", "java.field"],
+        [" = ", "java.operator"],
+        ['"a', "java.string"],
+        ["\\n", "java.escape"],
+        ['"', "java.string"],
+        [";", "java.operator"],
+      ],
+      [["    /** doc comment */", "java.docComment"]],
+      [
+        ["    public ", "java.keyword"],
+        ["void", "java.keyword"],
+        ["greet", "java.functionDeclaration"],
+        ["(", "java.operator"],
+        ["String", "java.className"],
+        [" name", "java.parameter"],
+        [")", "java.operator"],
+        [" {", "java.operator"],
+      ],
+      [
+        ["        ", "text"],
+        ["System", "java.predefined"],
+        [".", "java.operator"],
+        ["out", "java.field"],
+        [".", "java.operator"],
+        ["println", "java.functionCall"],
+        ["(", "java.operator"],
+        ["name", "java.identifier"],
+        [")", "java.operator"],
+        [";", "java.operator"],
+      ],
+      [
+        ["        ", "text"],
+        ["Greeter", "java.className"],
+        [".", "java.operator"],
+        ["MAX", "java.staticSymbol"],
+      ],
+      [["    }", "java.operator"]],
+      [["}", "java.operator"]],
+    ],
+  },
+  Kotlin: {
+    code: [
+      [["// Kotlin", "kotlin.lineComment"]],
+      [["@JvmStatic", "kotlin.metadata"]],
+      [
+        ["class ", "kotlin.keyword"],
+        ["Greeter", "kotlin.className"],
+        ["(", "kotlin.operator"],
+        ["val", "kotlin.keyword"],
+        [" name", "kotlin.parameter"],
+        [": ", "text"],
+        ["String", "kotlin.className"],
+        [")", "kotlin.operator"],
+        [" {", "kotlin.operator"],
+      ],
+      [
+        ["    companion ", "kotlin.keyword"],
+        ["object", "kotlin.keyword"],
+        [" {", "kotlin.operator"],
+        [" const ", "kotlin.keyword"],
+        ["val", "kotlin.keyword"],
+        [" MAX", "kotlin.constant"],
+        [" = ", "kotlin.operator"],
+        ["3", "kotlin.number"],
+        [" }", "kotlin.operator"],
+      ],
+      [
+        ["    fun ", "kotlin.keyword"],
+        ["greet", "kotlin.functionDeclaration"],
+        ["(", "kotlin.operator"],
+        ["name", "kotlin.parameter"],
+        [": ", "text"],
+        ["String", "kotlin.className"],
+        ["): ", "text"],
+        ["String", "kotlin.className"],
+        [" = ", "kotlin.operator"],
+        ['"a', "kotlin.string"],
+        ["\\n", "kotlin.escape"],
+        ['"', "kotlin.string"],
+      ],
+      [
+        ["    ", "text"],
+        ["println", "kotlin.predefined"],
+        ["(", "kotlin.operator"],
+        ["name", "kotlin.identifier"],
+        [")", "kotlin.operator"],
+      ],
+      [["}", "kotlin.operator"]],
+    ],
+  },
+  PHP: {
+    code: [
+      [["<?php", "php.scriptTag"]],
+      [
+        ["#[", "php.metadata"],
+        ["Attr", "php.metadata"],
+        ["]", "php.metadata"],
+      ],
+      [
+        ["class ", "php.keyword"],
+        ["Greeter", "php.className"],
+        [" {", "php.brackets"],
+      ],
+      [
+        ["    private static ", "php.keyword"],
+        ["int", "php.className"],
+        [" $max", "php.staticField"],
+        [" = ", "php.operator"],
+        ["3", "php.number"],
+        [";", "php.separator"],
+      ],
+      [
+        ["    public function ", "php.keyword"],
+        ["greet", "php.functionDeclaration"],
+        ["(", "php.brackets"],
+        ["string", "php.className"],
+        [" $name", "php.parameter"],
+        ["): ", "text"],
+        ["string", "php.className"],
+        [" {", "php.brackets"],
+      ],
+      [
+        ["        ", "text"],
+        ["return", "php.keyword"],
+        [" ", "text"],
+        ['"hi', "php.string"],
+        ["\\n", "php.escape"],
+        ['"', "php.string"],
+        ["  ", "text"],
+        ["$name", "php.identifier"],
+        [";", "php.separator"],
+      ],
+      [["    }", "php.brackets"]],
+      [["}", "php.brackets"]],
+    ],
+  },
+};
 
 function AttributeEditor({
   attr,
+  inherited,
   value,
   onChange,
 }: {
   attr: AttributeDef;
+  inherited: TextAttributesOverride;
   value: TextAttributesOverride | undefined;
   onChange: (v: TextAttributesOverride | undefined) => void;
 }) {
   const v = value ?? {};
   const set = (patch: Partial<TextAttributesOverride>) => {
     const next: TextAttributesOverride = { ...v, ...patch };
-    for (const k of Object.keys(next) as Array<keyof TextAttributesOverride>) if (next[k] === undefined) delete next[k];
+    for (const k of Object.keys(next) as Array<keyof TextAttributesOverride>)
+      if (next[k] === undefined || next[k] === inherited[k]) delete next[k];
     onChange(Object.keys(next).length ? next : undefined);
   };
   return (
@@ -160,8 +808,8 @@ function AttributeEditor({
       {attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
-            checked={v.italic ?? attr.defaultItalic ?? true}
-            onChange={(b) => set({ italic: b === (attr.defaultItalic ?? true) ? undefined : b })}
+            checked={v.italic ?? inherited.italic ?? attr.defaultItalic ?? true}
+            onChange={(b) => set({ italic: b === (inherited.italic ?? attr.defaultItalic ?? true) ? undefined : b })}
             label="Italic"
           />
         </div>
@@ -169,49 +817,88 @@ function AttributeEditor({
       {attr.token && !attr.italicOnly && (
         <>
           <div className={styles.attrRow}>
-            <Checkbox checked={!!v.bold} onChange={(b) => set({ bold: b || undefined })} label="Bold" />
-            <Checkbox checked={!!v.italic} onChange={(b) => set({ italic: b || undefined })} label="Italic" />
+            <Checkbox
+              checked={v.bold ?? inherited.bold ?? false}
+              onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
+              label="Bold"
+            />
+            <Checkbox
+              checked={v.italic ?? inherited.italic ?? false}
+              onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
+              label="Italic"
+            />
           </div>
         </>
       )}
-      {attr.fg && <ColorRow label="Foreground" value={v.foreground} onChange={(c) => set({ foreground: c })} />}
-      {(attr.bg || (attr.token && !attr.italicOnly)) && (
-        <ColorRow label="Background" value={v.background} onChange={(c) => set({ background: c })} />
+      {attr.fg && (
+        <ColorRow
+          label="Foreground"
+          value={v.foreground}
+          inherited={inherited.foreground}
+          onChange={(c) => set({ foreground: c })}
+        />
       )}
-      {attr.effect && <ColorRow label="Effects" value={v.effectColor} onChange={(c) => set({ effectColor: c })} />}
+      {(attr.bg || (attr.token && !attr.italicOnly)) && (
+        <ColorRow
+          label="Background"
+          value={v.background}
+          inherited={inherited.background}
+          onChange={(c) => set({ background: c })}
+        />
+      )}
+      {attr.effect && (
+        <ColorRow
+          label="Effects"
+          value={v.effectColor}
+          inherited={inherited.effectColor}
+          onChange={(c) => set({ effectColor: c })}
+        />
+      )}
       {attr.token && !attr.italicOnly && (
-        <div className={styles.attrRow}>
-          <Checkbox
-            checked={!!v.effect && v.effect !== "none"}
-            onChange={(b) =>
-              set({ effect: b ? "underline" : undefined, effectColor: b ? (v.effectColor ?? "#808080") : undefined })
-            }
-            label="Effects"
-          />
-          {v.effect && v.effect !== "none" && (
-            <>
-              <Select
-                value={v.effect}
-                options={[
-                  { value: "underline", label: "Underscored" },
-                  { value: "wave", label: "Underwaved" },
-                  { value: "strikeout", label: "Strikeout" },
-                ]}
-                onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
-                aria-label="Effect"
-              />
+        <>
+          <div className={styles.attrRow}>
+            <Checkbox
+              checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
+              onChange={(b) =>
+                set({
+                  effect: b
+                    ? inherited.effect && inherited.effect !== "none"
+                      ? inherited.effect
+                      : "underline"
+                    : inherited.effect && inherited.effect !== "none"
+                      ? "none"
+                      : undefined,
+                  effectColor: b ? v.effectColor : undefined,
+                })
+              }
+              label="Effects"
+            />
+            {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
               <ColorInput
-                value={v.effectColor ?? "#808080"}
+                value={v.effectColor ?? inherited.effectColor ?? "#808080"}
                 onChange={(c) => set({ effectColor: c ?? "#808080" })}
                 label="Effect color"
               />
-            </>
+            )}
+          </div>
+          {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
+            <Select
+              value={(v.effect ?? inherited.effect)!}
+              options={[
+                { value: "underline", label: "Underscored" },
+                { value: "wave", label: "Underwaved" },
+                { value: "strikeout", label: "Strikeout" },
+              ]}
+              onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
+              className={styles.effectSelect}
+              aria-label="Effect"
+            />
           )}
-        </div>
+        </>
       )}
       {!attr.italicOnly && (
         <div className={styles.inherited}>
-          <T>Unchecked values are inherited from the scheme.</T>
+          <T>The controls show the scheme's actual appearance; changes override it.</T>
         </div>
       )}
     </div>
@@ -257,21 +944,39 @@ function ColorInput({
 function ColorRow({
   label,
   value,
+  inherited,
   onChange,
 }: {
   label: string;
   value: string | undefined;
+  inherited: string | undefined;
   onChange: (c: string | undefined) => void;
 }) {
+  const cleared = value === CLEAR_COLOR;
+  const shown = cleared ? undefined : (value ?? inherited);
   return (
     <div className={styles.attrRow}>
-      <Checkbox checked={value !== undefined} onChange={(on) => onChange(on ? "#808080" : undefined)} label={label} />
-      {value !== undefined && <ColorInput value={value} onChange={onChange} label={label} />}
+      <Checkbox
+        checked={shown !== undefined}
+        onChange={(on) =>
+          onChange(
+            on
+              ? cleared
+                ? (inherited ?? "#808080")
+                : (shown ?? "#808080")
+              : inherited !== undefined
+                ? CLEAR_COLOR
+                : undefined,
+          )
+        }
+        label={label}
+      />
+      {shown !== undefined && <ColorInput value={shown} onChange={onChange} label={label} />}
     </div>
   );
 }
 
-function ColorSchemePage() {
+function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landing?: boolean }) {
   const [scheme, setScheme] = useSetting<string>("editor.colorScheme", "global");
   const [overrides, setOverrides] = useSetting<Overrides>("editor.colorOverrides", "global");
   const [weight] = useSetting<number>("editor.fontWeight");
@@ -280,14 +985,73 @@ function ColorSchemePage() {
   const customs = useMemo(() => customSchemes(rawCustoms), [rawCustoms]);
   const [report, setReport] = useState("");
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<string>("keyword");
+  // One scope per page: the scope's own name is the page, not a tree level.
+  const roots = useMemo(() => pageTree(scopes)[0]?.children ?? [], [scopes]);
+  const ids = useMemo(() => treeIds(roots), [roots]);
+  // A preview click on another sub-page starts this page on that attribute.
+  const crossReveal =
+    crossPageReveal && ids.has(crossPageReveal) ? ATTRIBUTES.find((x) => x.id === crossPageReveal) : undefined;
+  const [selected, setSelected] = useState<string>(() => crossReveal?.id ?? "keyword");
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    crossReveal ? new Set(ancestorKeys(crossReveal)) : new Set(),
+  );
+  const [expandedFor, setExpandedFor] = useState(scopes);
+  if (expandedFor !== scopes) {
+    // Scope pages share this component; restart expansion on page switch.
+    setExpandedFor(scopes);
+    setExpanded(new Set(roots.filter((n) => n.children?.length).map((n) => n.key)));
+  }
+  // Language pages have their own attributes; keep the editor on a row of this page.
+  if (roots.length && !ids.has(selected)) setSelected(firstLeafId(roots));
+  // Preview clicks reveal the attribute once the ancestors expanded (after the next render).
+  const treeRef = useRef<TreeHandle>(null);
+  const pendingReveal = useRef<string | null>(null);
+  const reveal = (attrId: string) => {
+    const a = ATTRIBUTES.find((x) => x.id === attrId);
+    if (!a) return;
+    setSelected(attrId);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      for (const key of ancestorKeys(a)) next.add(key);
+      return next;
+    });
+    pendingReveal.current = attrId;
+  };
+  useEffect(() => {
+    if (pendingReveal.current) {
+      treeRef.current?.reveal(pendingReveal.current);
+      pendingReveal.current = null;
+    } else if (crossReveal) {
+      treeRef.current?.reveal(crossReveal.id);
+    }
+    crossPageReveal = null;
+  });
   const id = effectiveScheme(scheme, undefined, customs);
   const mine = overrides?.[id];
+  /** Keys of every group containing an overridden attribute, so the blue marks the path to the root. */
+  const modifiedKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const attrId of Object.keys(mine ?? {})) {
+      const a = ATTRIBUTES.find((x) => x.id === attrId);
+      if (!a) continue;
+      let key = "";
+      for (const seg of attrSegs(a)) {
+        key += `/${seg}`;
+        keys.add(key);
+      }
+    }
+    return keys;
+  }, [mine]);
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const language = attr?.language;
+  const inherited = useMemo(() => (attr ? resolvedAttribute(id, attr.id, customs) : {}), [id, attr, customs]);
   const vars = useMemo(
     () => ({ ...previewVars(id, mine, customs, language), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
     [id, mine, customs, language, weight, boldFontWeight],
+  );
+  const baseVars = useMemo(
+    () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
+    [id, mine, customs, weight, boldFontWeight],
   );
   const update = (attrId: string, v: TextAttributesOverride | undefined) => {
     const next: Overrides = { ...(overrides ?? {}) };
@@ -299,6 +1063,7 @@ function ColorSchemePage() {
     setOverrides(next);
   };
   const schemes = listSchemes(customs);
+  const sample = SAMPLES[scopes[0] ?? ""] ?? SAMPLES["Language Defaults"]!;
   const schemeName = schemes.find((s) => s.id === id)?.name ?? id;
   const options: SelectOption[] = [
     { value: "theme-default", label: "Theme default" },
@@ -436,55 +1201,118 @@ function ColorSchemePage() {
       {scheme === "theme-default" && (
         <div className={styles.note}>{tx`Follows the IDE theme: currently ${schemeName}.`}</div>
       )}
-      <div className={styles.schemeBody}>
-        <div className={styles.attrTree}>
-          <Tree<Node>
-            aria-label="Color scheme attributes"
-            roots={TREE}
-            getKey={(n) => n.key}
-            getLabel={(n) => n.label}
-            getChildren={(n) => n.children}
-            isExpandable={(n) => !!n.children}
-            defaultExpanded={["/Language Defaults", "/General", "/General/Code"]}
-            multiSelect={false}
-            selected={new Set([selected])}
-            onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
-            getColor={(n) => (n.attr && mine?.[n.attr.id] ? "var(--accent)" : undefined)}
-            speedSearch
-          />
-        </div>
-        {attr ? (
-          <AttributeEditor
-            key={`${id}/${attr.id}`}
-            attr={attr}
-            value={mine?.[attr.id]}
-            onChange={(v) => update(attr.id, v)}
-          />
-        ) : (
-          <div />
-        )}
-      </div>
-      <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
-        {SAMPLE.map((line, i) => (
-          <div key={i} className={`${styles.previewLine} ${i === 6 ? styles.previewCaretLine : ""}`}>
-            <span className={styles.previewGutter}>{i + 1}</span>
-            <code>
-              {line.map(([text, attrId], j) => (
-                <span
-                  key={j}
-                  style={tokenStyle(attrId ? A(attrId) : undefined)}
-                  className={attrId ? styles.clickable : undefined}
-                  onClick={attrId ? () => setSelected(attrId) : undefined}
-                >
-                  {text}
-                </span>
-              ))}
-            </code>
+      {landing ? (
+        <nav className={styles.schemeLinks} aria-label={tx("Color scheme pages")}>
+          {SCHEME_SUBPAGES.map((p) => (
+            <button key={p.id} type="button" className={styles.schemeLink} onClick={() => selectPage(p.id)}>
+              {tx(p.title)}
+            </button>
+          ))}
+        </nav>
+      ) : (
+        <>
+          <div className={styles.schemeBody} style={baseVars}>
+            <div className={styles.attrTree}>
+              <Tree<Node>
+                aria-label="Color scheme attributes"
+                roots={roots}
+                getKey={(n) => n.key}
+                getLabel={(n) => n.label}
+                getChildren={(n) => n.children}
+                isExpandable={(n) => !!n.children?.length}
+                expanded={expanded}
+                onExpandedChange={setExpanded}
+                handleRef={treeRef}
+                multiSelect={false}
+                selected={new Set([selected])}
+                onSelectionChange={(_s, lead) => lead?.attr && setSelected(lead.attr.id)}
+                renderNode={(n) => (
+                  <span
+                    className={`${styles.treeLabel} ${(n.attr ? mine?.[n.attr.id] : modifiedKeys.has(n.key)) ? styles.attrModified : ""}`}
+                  >
+                    {n.label}
+                  </span>
+                )}
+                speedSearch
+              />
+            </div>
+            {attr ? (
+              <div className={styles.attrPanel}>
+                <AttributeEditor
+                  key={`${id}/${attr.id}`}
+                  attr={attr}
+                  inherited={inherited}
+                  value={mine?.[attr.id]}
+                  onChange={(v) => update(attr.id, v)}
+                />
+              </div>
+            ) : (
+              <div />
+            )}
           </div>
-        ))}
-      </pre>
+          <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
+            {sample.code.map((line, i) => (
+              <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
+                <span className={styles.previewGutter}>{i + 1}</span>
+                <code>
+                  {line.map(([text, attrId], j) => {
+                    const attr = attrId !== undefined ? A(attrId) : undefined;
+                    const inPage = attr !== undefined && ids.has(attrId!);
+                    return (
+                      <span
+                        key={j}
+                        style={tokenStyle(attr)}
+                        className={attr ? styles.clickable : undefined}
+                        onClick={
+                          attr
+                            ? () => {
+                                if (inPage) reveal(attrId!);
+                                else {
+                                  crossPageReveal = attrId!;
+                                  selectPage(attrPageId(attr));
+                                }
+                              }
+                            : undefined
+                        }
+                      >
+                        {text}
+                      </span>
+                    );
+                  })}
+                </code>
+              </div>
+            ))}
+          </pre>
+        </>
+      )}
     </div>
   );
+}
+
+const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
+  (s) => !["General", "Debugger", "Language Defaults"].includes(s),
+);
+
+/** Sub-pages linked from the Color Scheme landing page, in sidebar order. */
+const SCHEME_SUBPAGES = [
+  { id: "editor.colorScheme.general", title: "General" },
+  { id: "editor.colorScheme.language-defaults", title: "Language Defaults" },
+  { id: "editor.colorScheme.debugger", title: "Debugger" },
+  ...LANGUAGES.map((l) => ({ id: `editor.colorScheme.${l.toLowerCase()}`, title: l })),
+];
+
+/** The scope chooser, import/export buttons and preview are identical on every sub-page. */
+function colorSchemeSection(scopes: readonly string[]) {
+  return {
+    items: [
+      {
+        t: "custom" as const,
+        label: "Scheme",
+        keywords: ATTRIBUTES.filter((a) => scopes.includes(a.path[0]!)).map((a) => a.name),
+        component: () => <ColorSchemePage scopes={scopes} />,
+      },
+    ],
+  };
 }
 
 export const COLOR_SCHEME_PAGE = editorPage({
@@ -500,27 +1328,76 @@ export const COLOR_SCHEME_PAGE = editorPage({
     "background",
     "bold",
     "italic",
-    "rainbow",
     ...SCHEMES.map((s) => s.name),
   ],
   sections: [
-    { items: [{ t: "custom", label: "Scheme", keywords: ATTRIBUTES.map((a) => a.name), component: ColorSchemePage }] },
     {
-      title: "Language Defaults",
       items: [
         {
-          t: "check",
-          key: "editor.semanticHighlighting",
-          label: "Semantic highlighting",
-          hint: "Local variables and parameters get a colour derived from their name (needs a language server).",
-        },
-        {
-          t: "check",
-          key: "editor.rainbowBrackets",
-          label: "Rainbow brackets",
-          hint: "Color (), [] and {} by nesting depth; unmatched brackets use the error color.",
+          t: "custom" as const,
+          label: "Scheme",
+          keywords: SCHEMES.map((s) => s.name),
+          component: () => <ColorSchemePage scopes={[]} landing />,
         },
       ],
     },
   ],
 });
+
+/** JetBrains layout: scopes and languages live in the settings tree under Color Scheme, one page each. */
+export const COLOR_SCHEME_PAGES: PageSpec[] = [
+  COLOR_SCHEME_PAGE,
+  editorPage({
+    id: "editor.colorScheme.general",
+    title: "General",
+    order: 1,
+    projectScope: false,
+    keywords: ATTRIBUTES.filter((a) => a.path[0] === "General").map((a) => a.name),
+    sections: [colorSchemeSection(["General"])],
+  }),
+  editorPage({
+    id: "editor.colorScheme.language-defaults",
+    title: "Language Defaults",
+    order: 2,
+    projectScope: false,
+    keywords: ["semantic highlighting", "rainbow"],
+    sections: [
+      colorSchemeSection(["Language Defaults"]),
+      {
+        title: "Language Defaults",
+        items: [
+          {
+            t: "check",
+            key: "editor.semanticHighlighting",
+            label: "Semantic highlighting",
+            hint: "Local variables and parameters get a colour derived from their name (needs a language server).",
+          },
+          {
+            t: "check",
+            key: "editor.rainbowBrackets",
+            label: "Rainbow brackets",
+            hint: "Color (), [] and {} by nesting depth; unmatched brackets use the error color.",
+          },
+        ],
+      },
+    ],
+  }),
+  editorPage({
+    id: "editor.colorScheme.debugger",
+    title: "Debugger",
+    order: 3,
+    projectScope: false,
+    keywords: ["breakpoint", "inline values"],
+    sections: [colorSchemeSection(["Debugger"])],
+  }),
+  ...LANGUAGES.map((language, i) =>
+    editorPage({
+      id: `editor.colorScheme.${language.toLowerCase()}`,
+      title: language,
+      order: 4 + i,
+      projectScope: false,
+      keywords: ATTRIBUTES.filter((a) => a.path[0] === language).map((a) => a.name),
+      sections: [colorSchemeSection([language])],
+    }),
+  ),
+];
