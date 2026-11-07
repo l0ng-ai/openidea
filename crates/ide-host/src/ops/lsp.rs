@@ -631,18 +631,22 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
     Ok(())
 }
 
+/// The plugin and the file its action asks to show once applied.
+fn plugin_action_open(action: &CodeAction) -> Option<(String, ide_core::IpcPath)> {
+    if action.server != PLUGIN_SERVER {
+        return None;
+    }
+    let r = action.data.clone().and_then(|d| serde_json::from_value::<PluginActionRef>(d).ok())?;
+    Some((r.plugin, r.open?))
+}
+
 /// Opens the file a plugin's action asked to show, now that the action is applied.
 fn open_plugin_action_target(action: &CodeAction, window: &str) {
-    if action.server != PLUGIN_SERVER {
-        return;
-    }
-    let Some(r) = action.data.clone().and_then(|d| serde_json::from_value::<PluginActionRef>(d).ok()) else {
+    let (Some((plugin, path)), Some(plugins)) = (plugin_action_open(action), crate::plugins::editor_plugin_host())
+    else {
         return;
     };
-    let (Some(path), Some(plugins)) = (r.open, crate::plugins::editor_plugin_host()) else {
-        return;
-    };
-    plugins.open_file(&r.plugin, window, path);
+    plugins.open_file(&plugin, window, path);
 }
 
 /// A command after a code action's edit that no server provides: what other editors'
@@ -924,6 +928,8 @@ pub async fn lsp_execute_code_action(
             return Err(ide_core::IdeError::cancelled());
         }
         let edited = action.edit.is_some();
+        // A plugin's action may name a file to show once applied; the caller opens it.
+        let open = plugin_action_open(&action).map(|(_, path)| path);
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
@@ -939,7 +945,7 @@ pub async fn lsp_execute_code_action(
                 .execute_action_command(doc, action.server, command, answers, cancel)
                 .await
                 .map(|paths| paths.into_iter().map(ide_core::IpcPath::from).collect()),
-            None => Ok(Vec::new()),
+            None => Ok(open.into_iter().collect()),
         }
     }
     .await;
