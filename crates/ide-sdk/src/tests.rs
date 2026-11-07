@@ -293,6 +293,92 @@ fn project_jdk_and_maven_settings() {
 }
 
 #[test]
+fn maven_runner_jre_overrides_the_project_jdk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    for name in ["project-jdk", "runner-jdk", "next-jdk"] {
+        fake_jdk(&root.join(name));
+    }
+    let mut settings: Settings = serde_json::from_value(serde_json::json!({
+        "languages": { "java": {
+            "jdk": "project-jdk",
+            "maven": { "runnerJre": "runner-jdk" }
+        } }
+    }))
+    .unwrap();
+    for runner in ["", "runner-jdk", "runner-jdk/bin", "runner-jdk/bin/java"] {
+        settings.languages.java.maven.runner_jre =
+            if runner.ends_with("java") { format!("runner-jdk/bin/{}", exe("java")) } else { runner.into() };
+        let expected = root.join(if runner.is_empty() { "project-jdk" } else { "runner-jdk" });
+        assert_eq!(crate::apply::maven_build_env(&root, &settings, Some(8))["JAVA_HOME"], expected.to_string_lossy());
+        for (detected, is_test, debug) in
+            [(true, false, false), (false, false, false), (true, true, false), (true, true, true)]
+        {
+            let mut config = run("maven", "mvn", &["test"]);
+            config.detected = detected;
+            config.is_test = is_test;
+            if debug {
+                config.env.insert(
+                    "MAVEN_OPTS".into(),
+                    "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005".into(),
+                );
+            }
+            let mut configs =
+                [config.clone(), run("gradle", "gradle", &["build"]), run("tomcat", "catalina", &["run"])];
+            apply_to_run_configs(&mut configs, &root, &settings);
+            assert_eq!(configs[0].env["JAVA_HOME"], expected.to_string_lossy());
+            for other in &configs[1..] {
+                assert_eq!(other.env["JAVA_HOME"], root.join("project-jdk").to_string_lossy());
+            }
+            let saved = without_derived(&configs[0], &root, &settings);
+            assert!(!saved.env.contains_key("JAVA_HOME"));
+            let mut next_settings = settings.clone();
+            next_settings.languages.java.maven.runner_jre = "next-jdk".into();
+            let mut next = saved;
+            crate::apply::prepare_maven_run(&mut next, &root, &next_settings);
+            assert_eq!(next.env["JAVA_HOME"], root.join("next-jdk").to_string_lossy());
+            config.env.insert("JAVA_HOME".into(), "explicit-jdk".into());
+            apply_to_run_configs(std::slice::from_mut(&mut config), &root, &settings);
+            assert_eq!(config.env["JAVA_HOME"], "explicit-jdk");
+        }
+    }
+    settings.languages.java.jdk.clear();
+    settings.languages.java.maven.runner_jre.clear();
+    assert!(crate::apply::maven_build_env(&root, &settings, None).is_empty());
+    for release in [8, 17, 21] {
+        let installed = crate::java::installed_jdks();
+        let expected = crate::java::pick_jdk(&installed, Some(release));
+        assert_eq!(crate::apply::maven_jdk(&root, &settings, Some(release)).as_ref(), expected);
+    }
+}
+
+#[test]
+fn maven_daemon_uses_the_runner_jre_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    for major in [8, 21] {
+        let home = root.join(format!("jdk{major}"));
+        fake_jdk(&home);
+        std::fs::write(home.join("release"), format!("JAVA_VERSION=\"{major}\"\n")).unwrap();
+    }
+    let mvn = root.join("maven/bin").join(if cfg!(windows) { "mvn.cmd" } else { "mvn" });
+    let mvnd = root.join("mvnd/bin").join(if cfg!(windows) { "mvnd.cmd" } else { "mvnd" });
+    for path in [&mvn, &mvnd] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+    let mut settings = Settings::default();
+    settings.languages.java.maven.home = "maven".into();
+    settings.languages.java.maven.mvnd_home = "mvnd".into();
+    settings.languages.java.maven.daemon = true;
+    for (project, runner, expected) in [(8, 21, &mvnd), (21, 8, &mvn)] {
+        settings.languages.java.jdk = format!("jdk{project}");
+        settings.languages.java.maven.runner_jre = format!("jdk{runner}");
+        assert_eq!(maven_command(&root, &settings).as_ref(), Some(expected));
+    }
+}
+
+#[test]
 fn maven_options_carry_the_thread_count_into_the_command_line() {
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
