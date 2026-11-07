@@ -1,4 +1,4 @@
-import { EditorSelection, Facet, Prec } from "@codemirror/state";
+import { EditorSelection, Facet, Prec, type EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { pasteClipboardFiles, readClipboardText } from "@/platform/clipboard";
 import { isRemoteWindow } from "@/platform/remote";
@@ -6,6 +6,10 @@ import { isLinewiseClipboardText } from "../clipboardHistory";
 import { isMarkdown, relativeImagePath } from "./markdownImages";
 
 export const clipboardDocumentPath = Facet.define<string, string>({ combine: (paths) => paths[0] ?? "" });
+
+export function filterCopiedText(state: EditorState, text: string): string {
+  return state.facet(EditorView.clipboardOutputFilter).reduce((value, filter) => filter(value, state), text);
+}
 
 function clipboardFileFormatter(view: EditorView): ((paths: string[]) => string) | undefined {
   const path = view.state.facet(clipboardDocumentPath);

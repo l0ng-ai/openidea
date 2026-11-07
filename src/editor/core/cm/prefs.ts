@@ -50,6 +50,8 @@ import {
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInDocComment } from "./docComment";
 import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { stringClipboard } from "./stringClipboard";
+import { filterCopiedText } from "./clipboard";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -352,6 +354,8 @@ const richCopy = EditorView.domEventHandlers({
     const sel = view.state.selection;
     if (sel.ranges.length !== 1 || sel.main.empty || !e.clipboardData) return false;
     const { from, to } = sel.main;
+    const text = view.state.sliceDoc(from, to);
+    if (filterCopiedText(view.state, text) !== text) return false;
     try {
       const html = richTextHtml(view, from, to);
       e.clipboardData.clearData();
@@ -545,6 +549,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!g.dragAndDrop) out.push(noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
   if (g.richTextCopy) out.push(richCopy);
+  if (k.escapeOnPaste) out.push(stringClipboard(o.language));
   if (!o.readOnly && (k.reformatOnPaste === "indentBlock" || k.reformatOnPaste === "indentEachLine"))
     out.push(pasteReindentFilter(k.reformatOnPaste));
 

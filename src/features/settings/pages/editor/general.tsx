@@ -673,6 +673,11 @@ const SMART_KEYS = editorPage({
             { value: "indentEachLine", label: "Indent Each Line" },
           ],
         },
+        {
+          t: "check",
+          key: `${P}.smartKeys.escapeOnPaste`,
+          label: "Escape text on paste in string literals",
+        },
       ],
     },
     {

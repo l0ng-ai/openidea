@@ -1,4 +1,5 @@
 {
+  "Escape text on paste in string literals": "粘贴到字符串字面量时转义文本",
   "Cannot copy reference": "无法复制引用",
   "Group actions": "分组操作",
   "New Project Group": "新建项目组",
