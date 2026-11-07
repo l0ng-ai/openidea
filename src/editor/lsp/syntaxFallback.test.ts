@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { EditorState, Text } from "@codemirror/state";
+import { EditorState, StateEffect, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { IdeError, Locals, NodeAt, Range, SymbolMatch, SyntaxNode } from "@/bindings";
 
@@ -47,6 +47,7 @@ const { startRename, renameNamePart } = await import("./rename");
 const { lspDoc } = await import("./lsp");
 const { invalidateConfigurationNavigation } = await import("./configurationNavigation");
 const { useLspPopup, closePopup } = await import("./popupStore");
+const { inplaceRenameExtension, inplaceSession } = await import("./inplaceRename");
 
 const r = (line: number, col: number, endCol: number): Range => ({ start: { line, col }, end: { line, col: endCol } });
 const node = (kind: string, range: Range, field: string | null = null): SyntaxNode => ({
@@ -588,6 +589,51 @@ describe("rename wiring", () => {
       expect(view.state.doc.toString()).toBe("mesage = 'hello'\nprint(mesage)");
       expect(document.querySelector(".cm-lsp-hint")?.textContent).toContain("Cannot rename safely");
     });
+  });
+
+  it.each(["dialog", "cancel"])("does not revive an older preparation after the current %s", async (finish) => {
+    let release!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspPrepareRename.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 6, 7)));
+    const view = editor("const x = 1;", "typescript", 6);
+    view.dispatch({ effects: StateEffect.appendConfig.of(inplaceRenameExtension()) });
+    const older = startRename(view);
+    await vi.waitFor(() => expect(cmd.lspPrepareRename).toHaveBeenCalledTimes(1));
+    await startRename(view);
+    expect(inplaceSession(view.state)?.oldName).toBe("x");
+    await startRename(view);
+    expect(useLspPopup.getState().popup?.kind).toBe("rename");
+    if (finish === "cancel") closePopup();
+    release({ status: "ok", data: r(0, 6, 7) });
+    await older;
+    expect(inplaceSession(view.state)).toBeNull();
+    expect(useLspPopup.getState().popup?.kind ?? null).toBe(finish === "dialog" ? "rename" : null);
+  });
+
+  it.each(["text", "document"])("drops pending preparation when the editor %s changes", async (change) => {
+    let release!: (value: Awaited<R<unknown>>) => void;
+    cmd.lspPrepareRename.mockReturnValueOnce(new Promise((resolve) => (release = resolve)));
+    const view = editor("const x = 1;", "typescript", 6);
+    view.dispatch({ effects: StateEffect.appendConfig.of(inplaceRenameExtension()) });
+    const pending = startRename(view);
+    await vi.waitFor(() => expect(cmd.lspPrepareRename).toHaveBeenCalledTimes(1));
+    if (change === "text") view.dispatch({ changes: { from: 6, to: 7, insert: "other" } });
+    else
+      view.setState(
+        EditorState.create({
+          doc: view.state.doc,
+          extensions: [
+            lspDoc.of({ doc: 8, path: "/p/other.ts", language: "typescript", uiMode: null, readOnly: false }),
+            inplaceRenameExtension(),
+          ],
+        }),
+      );
+    const before = view.state.doc.toString();
+    release({ status: "ok", data: r(0, 6, 7) });
+    await pending;
+    expect(inplaceSession(view.state)).toBeNull();
+    expect(useLspPopup.getState().popup).toBeNull();
+    expect(view.state.doc.toString()).toBe(before);
   });
 
   it("renames the file itself when no server covers it (a plain text file)", async () => {

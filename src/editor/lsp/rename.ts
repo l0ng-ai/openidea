@@ -72,9 +72,16 @@ async function hasSyntaxErrors(doc: number): Promise<boolean> {
   }
 }
 
+const renamePreparations = new WeakMap<EditorView, object>();
+
 export async function startRename(view: EditorView) {
   const doc = docOf(view);
   if (!doc) return;
+  const preparation = {};
+  renamePreparations.set(view, preparation);
+  const before = view.state.doc;
+  const current = () =>
+    renamePreparations.get(view) === preparation && view.state.doc === before && docOf(view) === doc;
   // ⇧F6 while renaming in place: the dialog with more options, keeping what was typed.
   const session = inplaceSession(view.state);
   if (session) {
@@ -87,19 +94,22 @@ export async function startRename(view: EditorView) {
     return;
   }
   await whenSynced(view);
+  if (!current()) return;
   const head = view.state.selection.main.head;
   const pos = offsetToPos(view.state.doc, head);
-  if (!(await prepareIndexes(view, doc.path))) return;
+  if (!(await prepareIndexes(view, doc.path)) || !current()) return;
   let range;
   try {
     range = await lspRequest(() => commands.lspPrepareRename(doc.doc, pos));
+    if (!current()) return;
   } catch (e) {
+    if (!current()) return;
     if (isCancelled(e)) return;
     if (e instanceof IpcError && (e.kind === "outOfSync" || e.kind === "invalidInput")) {
       reportLspError(view, e, true);
       return;
     }
-    if (await startSyntaxRename(view, doc, pos, e)) return;
+    if (await startSyntaxRename(view, doc, pos, e, current)) return;
     // No server covers this file (a plain text file): Shift+F6 renames the file, like IDEA.
     if (isNoServer(e) && (await executeAction("project.rename"))) return;
     reportLspError(view, e, true);
@@ -107,7 +117,9 @@ export async function startRename(view: EditorView) {
   }
   if (!range) {
     // A normal "can't rename" is respected; over broken code the server may just have given up.
-    if ((await hasSyntaxErrors(doc.doc)) && (await startSyntaxRename(view, doc, pos))) return;
+    if ((await hasSyntaxErrors(doc.doc)) && current() && (await startSyntaxRename(view, doc, pos, undefined, current)))
+      return;
+    if (!current()) return;
     showHint(view, "This element can't be renamed");
     return;
   }
@@ -128,7 +140,7 @@ export async function startRename(view: EditorView) {
   // IDEA renames in place by default: occurrences in this file follow live.
   const state = view.state;
   const others = await linkedOccurrences(view, doc.doc, pos, { from, to }, oldName);
-  if (view.state.doc !== state.doc) return;
+  if (view.state.doc !== state.doc || !current()) return;
   const keys = shortcutLabel("refactor.rename");
   startInplaceRename(view, {
     primary: { from, to },
@@ -314,15 +326,23 @@ async function syntaxPlan(view: EditorView, doc: EditorDocContext, pos: Pos): Pr
 }
 
 /** Opens the rename popup for a syntax-based local rename. False when the fallback can't help. */
-async function startSyntaxRename(view: EditorView, doc: EditorDocContext, pos: Pos, cause?: unknown): Promise<boolean> {
+async function startSyntaxRename(
+  view: EditorView,
+  doc: EditorDocContext,
+  pos: Pos,
+  cause: unknown,
+  current: () => boolean,
+): Promise<boolean> {
   let result;
   try {
     await whenSynced(view);
     result = await planLocalRename(doc, pos);
   } catch (e) {
+    if (!current()) return true;
     if (!isCancelled(e)) console.debug("[syntax] rename fallback", e);
     return false;
   }
+  if (!current()) return true;
   if (result.kind === "unsupported") return false;
   if (result.kind === "refused") {
     const reason = isUnavailable(cause) ? unavailableText(cause) : cause instanceof Error ? cause.message : null;
