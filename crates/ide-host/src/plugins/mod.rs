@@ -2586,7 +2586,13 @@ mod tests {
         for mode in 0..5 {
             let (actor, _) = host.ensure_active(&plugin, None).unwrap();
             let cancel = ide_core::CancellationToken::new();
-            let panic = |_: &mut Runtime| -> Result<(), CallError> { panic!("host call panic") };
+            let next_actor = actor.clone();
+            let (queued_tx, queued_rx) = std::sync::mpsc::channel();
+            let panic = move |_: &mut Runtime| -> Result<(), CallError> {
+                let pending = next_actor.submit(None, |_| Ok("must not run")).unwrap();
+                queued_tx.send(pending).unwrap();
+                panic!("host call panic")
+            };
             let result = match mode {
                 0 => actor.call(None, panic),
                 1 => actor.call_cancellable(&cancel, Duration::ZERO, panic),
@@ -2609,6 +2615,10 @@ mod tests {
                     rx.recv_timeout(Duration::from_secs(5)).expect("actor must reply")
                 }
             };
+            if mode < 4 {
+                let queued = queued_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(matches!(queued.wait(), Err(ActorError::Stopped)), "poisoned runtime must not run queued work");
+            }
             actor.stop(true);
             if mode < 4 {
                 assert!(
