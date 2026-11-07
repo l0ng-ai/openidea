@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IpcError, type RunConfig } from "@/platform/ipc";
+import { recordProjectBuild } from "@/platform/buildReceipt";
+import { useProject } from "@/platform/project";
 import { findJavaModule, prepareJavaLaunch } from "@/platform/javaLaunch";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { provideNotificationService } from "@/workbench/contributions";
@@ -96,6 +98,14 @@ const launchInfo = (build: "succeeded" | "failed" | "withErrors") => ({
 it.each(["noBuild", "rebuild"] as const)("passes the %s build policy to the resolver", async (buildPolicy) => {
   await startRun({ ...config, module: "app", buildPolicy });
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, buildPolicy, expect.any(Number));
+});
+
+it("reuses a successful Before launch Build Project instead of building again", async () => {
+  useProject.setState({ project: { root: "/p" } as never });
+  recordProjectBuild("/p");
+  await startRun({ ...config, module: "app" });
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "noBuild", expect.any(Number));
+  useProject.setState({ project: null });
 });
 
 it("does not start a configuration whose build failed", async () => {

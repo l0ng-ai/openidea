@@ -25,6 +25,7 @@ import {
   parseJavaArgs,
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
+import { consumeProjectBuild } from "@/platform/buildReceipt";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -902,6 +903,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       request: request.id,
       signal: request.controller.signal,
       report: say,
+      projectBuild: consumeProjectBuild(useProject.getState().project?.root ?? ""),
       saveAll: async () => {
         await maybeEditorService()?.saveAll();
       },

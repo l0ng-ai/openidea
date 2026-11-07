@@ -3,10 +3,10 @@
  * common ones, the options added through "Modify options" (⌥M) and the
  * Before launch list.
  */
-import { parseJavaArgs } from "@/platform/javaLaunch";
+import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import clsx from "clsx";
-import { isTauri, type BeforeLaunchTask, type RunConfig } from "@/platform/ipc";
+import { isTauri, type BeforeLaunchTask, type BuildPolicy, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { relativePath, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
@@ -75,12 +75,13 @@ export type OptionId =
   | "showOnStdout"
   | "showOnStderr"
   | "beforeLaunch"
+  | "buildPolicy"
   | "openToolWindow"
   | "focusToolWindow"
   | "isTest"
   | "emulateTerminal";
 
-const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set(["stdinFile", "envFiles", "outputFile", "beforeLaunch"]);
+const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set(["stdinFile", "envFiles", "outputFile", "beforeLaunch", "buildPolicy"]);
 
 const OPTION_LABELS: Record<OptionId, string> = {
   allowParallel: "Allow multiple instances",
@@ -90,6 +91,7 @@ const OPTION_LABELS: Record<OptionId, string> = {
   showOnStdout: "Show console when a message is printed to stdout",
   showOnStderr: "Show console when a message is printed to stderr",
   beforeLaunch: "Add before launch task",
+  buildPolicy: "Build",
   openToolWindow: "Open run/debug tool window when started",
   focusToolWindow: "Focus run/debug tool window when started",
   isTest: "Show results in the test runner",
@@ -100,7 +102,7 @@ const OPTION_GROUPS: ReadonlyArray<{ label: string; options: OptionId[]; process
   { label: "Operating System", options: ["allowParallel", "stdinFile", "envFiles", "emulateTerminal"], process: true },
   { label: "Logs", options: ["outputFile", "showOnStdout", "showOnStderr"], process: true },
   { label: "Test", options: ["isTest"], process: true },
-  { label: "Before Launch", options: ["beforeLaunch", "openToolWindow", "focusToolWindow"], process: false },
+  { label: "Before Launch", options: ["buildPolicy", "beforeLaunch", "openToolWindow", "focusToolWindow"], process: false },
 ];
 
 /** Whether the option currently has a (non-default) value. */
@@ -120,6 +122,8 @@ export function optionSet(config: RunConfig, id: OptionId, openByDefault: boolea
       return !!config.showOnStderr;
     case "beforeLaunch":
       return !!config.beforeLaunch?.length;
+    case "buildPolicy":
+      return (config.buildPolicy ?? "automatic") !== "automatic";
     case "openToolWindow":
       return config.openToolWindow ?? openByDefault;
     case "focusToolWindow":
@@ -144,6 +148,8 @@ export function optionPatch(id: OptionId, on: boolean): Partial<RunConfig> {
       return { outputFile: null };
     case "beforeLaunch":
       return { beforeLaunch: [] };
+    case "buildPolicy":
+      return { buildPolicy: on ? "automatic" : null };
     case "showOnStdout":
       return { showOnStdout: on };
     case "showOnStderr":
@@ -158,6 +164,14 @@ export function optionPatch(id: OptionId, on: boolean): Partial<RunConfig> {
       return { emulateTerminal: on };
   }
 }
+
+const BUILD_POLICY_OPTIONS: SelectOption[] = [
+  { value: "automatic", label: "Automatic (incremental)" },
+  { value: "make", label: "Build (Make)" },
+  { value: "rebuild", label: "Rebuild" },
+  { value: "noBuild", label: "No build" },
+  { value: "makeAndContinueOnErrors", label: "Build, no error check" },
+];
 
 export interface ConfigFormProps {
   config: RunConfig;
@@ -274,7 +288,9 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     ...g.options
       .filter(
         (id) =>
-          (!compound || id === "beforeLaunch") && (id !== "emulateTerminal" || terminal || !!config.emulateTerminal),
+          (!compound || id === "beforeLaunch") &&
+          (id !== "emulateTerminal" || terminal || !!config.emulateTerminal) &&
+          (id !== "buildPolicy" || isJvmApplication(config)),
       )
       .map((id): MenuItem => ({
         label: OPTION_LABELS[id],
@@ -613,6 +629,17 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
             />
           </Field>
         </>
+      )}
+
+      {isShown("buildPolicy") && isJvmApplication(config) && (
+        <Field label="Build" hint="Before launch build for this Java configuration">
+          <Select
+            value={config.buildPolicy ?? "automatic"}
+            options={BUILD_POLICY_OPTIONS}
+            onChange={(v) => update({ buildPolicy: v === "automatic" ? null : (v as BuildPolicy) })}
+            aria-label="Build"
+          />
+        </Field>
       )}
 
       {isShown("beforeLaunch") && (

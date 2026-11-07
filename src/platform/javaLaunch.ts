@@ -187,6 +187,8 @@ export interface JavaPreparation {
   policy?: BuildPolicy;
   /** Saves open documents first, as IDEA's Before launch does. */
   saveAll?: () => Promise<void>;
+  /** A successful Before launch "Build Project" already built this project for this launch. */
+  projectBuild?: boolean;
 }
 
 /** The build the launch would do: the configuration's policy, else incremental. */
@@ -199,7 +201,9 @@ export class JavaBuildFailedError extends Error {}
 
 export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPreparation) {
   const { signal, report } = preparation;
-  const policy = preparation.policy ?? buildPolicyOf(config);
+  const requested = preparation.policy ?? buildPolicyOf(config);
+  // Reuse the project build only when nothing more specific was asked for.
+  const policy = preparation.projectBuild && requested === "automatic" ? "noBuild" : requested;
   signal.throwIfAborted();
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);

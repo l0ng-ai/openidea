@@ -96,6 +96,22 @@ describe("configuration types", () => {
     expect(formParams(saved)).toMatchObject({ mainClass: "a.Main", module: "." });
   });
 
+  it("sets the before launch build policy of a Java configuration", async () => {
+    const type = typeFor("application")!;
+    const config = withParams(newConfigOfType(type, []), {
+      ...newConfigOfType(type, []).params,
+      mainClass: "a.Main",
+    });
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    fireEvent.click(await screen.findByText("Build"));
+    expect(screen.getByRole("button", { name: "Build" }).textContent).toContain("Automatic");
+    fireEvent.click(screen.getByRole("button", { name: "Build" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Rebuild" }));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ buildPolicy: "rebuild" }));
+  });
+
   it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
     const type = typeFor(kind)!;
     const original = newConfigOfType(type, []);

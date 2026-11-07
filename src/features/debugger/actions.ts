@@ -28,6 +28,7 @@ import {
 import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
+import { consumeProjectBuild } from "@/platform/buildReceipt";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
@@ -260,7 +261,12 @@ async function startJavaConfig(config: RunConfig, root: string, origin: RunConfi
         ?.saveAll()
         .catch(() => undefined);
       signal.throwIfAborted();
-      return await javaLaunchConfig(config, root, { request, signal, report });
+      return await javaLaunchConfig(config, root, {
+        request,
+        signal,
+        report,
+        projectBuild: consumeProjectBuild(root),
+      });
     } finally {
       signal.removeEventListener("abort", cancel);
     }
