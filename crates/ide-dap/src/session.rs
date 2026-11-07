@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
@@ -53,6 +53,14 @@ pub(crate) struct Session {
     pub stop_force: AtomicBool,
     /// `systemProcessId` from the adapter's `process` event: the program being debugged.
     pub debuggee_pid: AtomicI64,
+    /// The JVM an app-launched (Kotlin) session started. Separate from `debuggee_pid`, which
+    /// decides how Stop signals the program and is 0 for Kotlin.
+    pub jvm_pid: AtomicI64,
+    /// True from a `stopped` event until `continued` or a successful resume/step request.
+    /// Never cleared elsewhere: a stale `true` only makes a later check refuse.
+    pub suspended: AtomicBool,
+    /// Counts `stopped` events so a request's late reply cannot clear a newer stop.
+    stop_seq: AtomicU64,
     /// Pids signalled for the current stop: the reported pid and everything it started (an
     /// adapter may report the launcher shell, whose child is the program).
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -106,6 +114,9 @@ impl Session {
             terminated: AtomicBool::new(false),
             stop_force: AtomicBool::new(false),
             debuggee_pid: AtomicI64::new(0),
+            jvm_pid: AtomicI64::new(0),
+            suspended: AtomicBool::new(false),
+            stop_seq: AtomicU64::new(0),
             stop_pids: parking_lot::Mutex::new(Vec::new()),
             pending_restore: Mutex::default(),
             breakpoint_ids: Mutex::new(HashMap::new()),
@@ -113,6 +124,24 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             kotlin_relay: Mutex::new(None),
             kotlin_mirror: Mutex::new(None),
+        }
+    }
+
+    fn mark_stopped(&self) {
+        self.stop_seq.fetch_add(1, Ordering::AcqRel);
+        self.suspended.store(true, Ordering::Release);
+    }
+
+    /// Call before sending a resume-like request and pass the result to [`Self::mark_resumed`].
+    pub fn resume_ticket(&self) -> u64 {
+        self.stop_seq.load(Ordering::Acquire)
+    }
+
+    /// Clears `suspended` after a successful resume-like request, unless the program already
+    /// stopped again (its `stopped` event can overtake the reply).
+    pub fn mark_resumed(&self, ticket: u64) {
+        if self.stop_seq.load(Ordering::Acquire) == ticket {
+            self.suspended.store(false, Ordering::Release);
         }
     }
 
@@ -292,7 +321,7 @@ pub(crate) const DEBUGGEE_EXIT_WAIT: Duration = Duration::from_secs(10);
 /// The program and everything it started: an adapter may report the launcher shell, whose
 /// child is the debugged program, so stopping only the reported pid leaves the program alive.
 #[cfg(unix)]
-fn process_tree(pid: i32) -> Vec<i32> {
+pub(crate) fn process_tree(pid: i32) -> Vec<i32> {
     use std::collections::HashMap;
     let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else {
         return vec![pid];
@@ -465,6 +494,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             s.emit(DebugEvent::Initialized);
         }
         "stopped" => {
+            s.mark_stopped();
             mgr.restore_breakpoints(s).await;
             s.emit(DebugEvent::Stopped {
                 thread_id: int("threadId").unwrap_or(0),
@@ -473,10 +503,13 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                 all_threads_stopped: body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false),
             });
         }
-        "continued" => s.emit(DebugEvent::Continued {
-            thread_id: int("threadId").unwrap_or(0),
-            all_threads_continued: body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true),
-        }),
+        "continued" => {
+            s.suspended.store(false, Ordering::Release);
+            s.emit(DebugEvent::Continued {
+                thread_id: int("threadId").unwrap_or(0),
+                all_threads_continued: body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true),
+            });
+        }
         "output" => {
             let category = str_("category").unwrap_or_else(|| "console".into());
             if category == "telemetry" {
@@ -723,6 +756,18 @@ fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream
     });
 }
 
+/// The attach listener must be on the command line before the user's arguments, which may
+/// override it; the memory view needs it because the JVM is started by the IDE, not attached to.
+fn kotlin_jvm_args(user: Vec<String>) -> Vec<String> {
+    if !ide_jvm_attach::wants_listener_flag(&user.join(" ")) {
+        return user;
+    }
+    let mut args = Vec::with_capacity(user.len() + 1);
+    args.push(ide_jvm_attach::START_LISTENER_FLAG.to_owned());
+    args.extend(user);
+    args
+}
+
 /// Launch with the IDE's resolved runtime and classpath; the adapter only attaches.
 pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) -> ide_core::IdeResult<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
@@ -738,7 +783,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
         std::env::join_paths(strings("classPaths")).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let mut cmd = tokio::process::Command::new(java);
     ide_core::process::prepare(cmd.as_std_mut());
-    cmd.args(strings("vmArguments"))
+    cmd.args(kotlin_jvm_args(strings("vmArguments")))
         .arg(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}"))
         .arg("-cp")
         .arg(classpath);
@@ -767,6 +812,9 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
         }
     }
     let mut child = cmd.spawn()?;
+    if let Some(pid) = child.id() {
+        s.jvm_pid.store(i64::from(pid), Ordering::Release);
+    }
     if let Some(err) = child.stderr.take() {
         forward_output(s, err, "stderr");
     }
@@ -792,4 +840,21 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
     args["port"] = json!(port);
     args["timeout"] = json!(10000);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kotlin_jvm_args;
+
+    #[test]
+    fn kotlin_launch_starts_attach_listener_first() {
+        assert_eq!(
+            kotlin_jvm_args(vec!["-Xmx1g".into()]),
+            vec!["-XX:+StartAttachListener".to_string(), "-Xmx1g".into()]
+        );
+        assert_eq!(
+            kotlin_jvm_args(vec!["-XX:+DisableAttachMechanism".into()]),
+            vec!["-XX:+DisableAttachMechanism".to_string()]
+        );
+    }
 }

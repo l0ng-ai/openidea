@@ -1349,7 +1349,9 @@ impl DebugManager {
 
     pub async fn resume(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        let ticket = session.resume_ticket();
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        session.mark_resumed(ticket);
         let all = body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: all });
         Ok(())
@@ -1390,7 +1392,9 @@ impl DebugManager {
             StepKind::Out => "stepOut",
         };
         let session = self.session(s)?;
+        let ticket = session.resume_ticket();
         session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        session.mark_resumed(ticket);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())
     }
@@ -1488,10 +1492,12 @@ impl DebugManager {
     /// Step into a specific call of the current line (Smart Step Into).
     pub async fn step_in_target(&self, s: DebugSessionId, thread_id: i64, target_id: i64) -> IdeResult<()> {
         let session = self.session(s)?;
+        let ticket = session.resume_ticket();
         session
             .conn
             .request_timeout("stepIn", json!({ "threadId": thread_id, "targetId": target_id }), REQUEST_TIMEOUT)
             .await?;
+        session.mark_resumed(ticket);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())
     }

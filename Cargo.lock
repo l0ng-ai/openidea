@@ -4215,6 +4215,7 @@ dependencies = [
  "futures",
  "ide-core",
  "ide-jsonrpc",
+ "ide-jvm-attach",
  "ide-language",
  "libc",
  "memchr",

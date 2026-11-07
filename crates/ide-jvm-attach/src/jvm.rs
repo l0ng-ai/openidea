@@ -1,7 +1,7 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
-/// Passed before the user's JVM arguments so a deliberate `-XX:-StartAttachListener` still wins.
+/// Placed before the user's JVM arguments, and only added when `wants_listener_flag` is true.
 pub const START_LISTENER_FLAG: &str = "-XX:+StartAttachListener";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +38,10 @@ pub fn java_version_of(pid: u32) -> Option<JavaVersion> {
         let exe = std::fs::canonicalize(exe_path(pid)?).ok()?;
         // `<jdk>/bin/java`, or `<jdk>/jre/bin/java` on JDK 8.
         let home = exe.parent()?.parent()?;
-        [Some(home), home.parent()].into_iter().flatten().find_map(|dir| {
+        // Only climb out of `jre/`, so a JDK without its own `release` cannot pick up an
+        // unrelated file in a shared parent such as `/usr/lib/jvm`.
+        let outer = if home.file_name().is_some_and(|n| n == "jre") { home.parent() } else { None };
+        [Some(home), outer].into_iter().flatten().find_map(|dir| {
             let contents = std::fs::read_to_string(dir.join("release")).ok()?;
             parse_release(&contents)
         })

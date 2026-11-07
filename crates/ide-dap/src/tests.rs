@@ -33,6 +33,8 @@ struct Script {
     supports_terminate: bool,
     /// Answer `setBreakpoints` only once this many are waiting (a client that waits for each never gets one).
     hold_set_breakpoints: usize,
+    /// Send a `continued` event right after the first `stopped` one.
+    continued_after_stop: bool,
 }
 
 impl Default for Script {
@@ -47,6 +49,7 @@ impl Default for Script {
             output_after_terminate: false,
             supports_terminate: true,
             hold_set_breakpoints: 0,
+            continued_after_stop: false,
         }
     }
 }
@@ -197,6 +200,9 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(
                     json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
                 );
+                if script.continued_after_stop {
+                    send!(json!({"type": "event", "event": "continued", "body": {"threadId": 1}}));
+                }
                 send!(
                     json!({"type": "event", "event": "breakpoint", "body": {"reason": "changed", "breakpoint": {"id": 1, "verified": false, "message": "moved", "line": 9, "source": {"path": script.source_path}}}})
                 );
@@ -1607,4 +1613,36 @@ fn delve_leftovers_are_removed_without_touching_other_files() {
         assert!(dir.join(name).exists(), "{name} should stay");
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn is_suspended(h: &Harness, id: DebugSessionId) -> bool {
+    h.manager.session(id).unwrap().suspended.load(std::sync::atomic::Ordering::Acquire)
+}
+
+#[tokio::test]
+async fn stopped_event_marks_session_suspended() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(is_suspended(&h, id));
+}
+
+#[tokio::test]
+async fn resume_clears_suspended_without_continued_event() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    // The fake adapter ends the session after `continue`, so keep the session alive here.
+    let session = h.manager.session(id).unwrap();
+    assert!(session.suspended.load(std::sync::atomic::Ordering::Acquire));
+    h.manager.resume(id, 1).await.unwrap();
+    assert!(!session.suspended.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[tokio::test]
+async fn continued_event_clears_suspended() {
+    let h = harness(Script { continued_after_stop: true, ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Continued { .. })).await;
+    assert!(!is_suspended(&h, id));
 }
