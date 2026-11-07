@@ -62,6 +62,11 @@ fn local_types(t: &SyntaxTree, parent: Node, prefix: &str, out: &mut Vec<String>
 
 /// `None` when nothing the file can see declares `simple`; a `java.lang`
 /// type comes back as it is.
+///
+/// The order only approximates the JLS: same-package types in other files
+/// are unknown here, so they do not shadow the wildcard tables and
+/// `java.lang`; member types do not shadow single imports; and a file type
+/// matches by its last segment, the first such type winning.
 pub(crate) fn qualify_type(simple: &str, file: &FileImports) -> Option<String> {
     if let Some(single) = file.single.iter().find(|s| s.rsplit('.').next() == Some(simple)) {
         return Some(single.clone());

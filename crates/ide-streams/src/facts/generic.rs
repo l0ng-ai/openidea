@@ -101,7 +101,13 @@ impl<'t> Collector<'_, 't> {
     }
 
     fn uses_in(&self, n: Node<'t>, name: &str, out: &mut Vec<Node<'t>>) {
-        if n.kind() == "identifier" && self.text(n) == name && is_variable_use(n) {
+        // A cast is not assignable.
+        let assigned = n.parent().is_some_and(|p| match p.kind() {
+            "assignment_expression" => p.child_by_field_name("left") == Some(n),
+            "update_expression" => true,
+            _ => false,
+        });
+        if n.kind() == "identifier" && self.text(n) == name && is_variable_use(n) && !assigned {
             out.push(n);
         }
         let mut cursor = n.walk();

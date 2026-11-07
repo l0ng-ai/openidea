@@ -7,8 +7,9 @@ impl<'t> Collector<'_, 't> {
     /// Rule 7: the evaluator stores a primitive element of `new Object[]{..}`
     /// unboxed outside lambdas, and a `(Object)` cast does not help.
     pub(super) fn box_primitives(&mut self, array: Node<'t>) {
-        let is_object = array.child_by_field_name("type").is_some_and(|t| self.text(t) == "Object")
-            && array.child_by_field_name("dimensions").is_some_and(|d| self.text(d) == "[]");
+        let is_object =
+            array.child_by_field_name("type").is_some_and(|t| matches!(self.text(t), "Object" | "java.lang.Object"))
+                && array.child_by_field_name("dimensions").is_some_and(|d| self.text(d) == "[]");
         let Some(init) = array.child_by_field_name("value").filter(|_| is_object) else { return };
         let mut cursor = init.walk();
         for element in init.named_children(&mut cursor) {
@@ -35,6 +36,11 @@ impl<'t> Collector<'_, 't> {
             }
             "character_literal" => Some("Character"),
             "true" | "false" => Some("Boolean"),
+            // Only over a literal: `-c` of a `char` or `byte` is an `int`.
+            "unary_expression" if element.child_by_field_name("operator").is_some_and(|o| self.text(o) == "-") => {
+                let operand = element.child_by_field_name("operand")?;
+                operand.kind().ends_with("_literal").then(|| self.box_class(operand)).flatten()
+            }
             "identifier" => {
                 let ty = visible_local(self.t, element, self.member, text)?.ty?;
                 match self.text(ty) {

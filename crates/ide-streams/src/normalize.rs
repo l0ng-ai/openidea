@@ -108,7 +108,9 @@ struct Alias {
 /// Rule 3's alias for `capture`; `None` when a hint shows it needs none.
 fn alias(capture: &Capture, hints: &TypeHints) -> Result<Option<Alias>, Rejection> {
     let name = capture.name.clone();
-    let hint = capture.query.and_then(|id| hints.0.get(&id)).map(|h| h.trim()).filter(|h| !h.is_empty());
+    // jdtls names some types Java cannot write: `capture#1-of ?`, `<anonymous Foo>`.
+    let writable = |h: &&str| !h.is_empty() && !h.contains('#') && !h.starts_with('<');
+    let hint = capture.query.and_then(|id| hints.0.get(&id)).map(|h| h.trim()).filter(writable);
     let aliased = |ty: &str| Alias {
         erasure: capture.erasure.clone().unwrap_or_else(|| erasure(ty)),
         cast: Some(ty.into()),

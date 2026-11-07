@@ -506,3 +506,74 @@ fn hover_text_gives_the_declared_type() {
         Some("List<Integer>")
     );
 }
+
+#[test]
+fn record_frames_keep_package_qualified_names() {
+    let qualified =
+        "Stream.of(x).map(v -> ((java.util.function.Function<Integer, Integer>) w -> w + 1).apply(v)).count()";
+    assert_eq!(
+        in_point("", qualified).unwrap().plain_text(),
+        "java.util.stream.Stream.of(x).map(v -> ((java.util.function.Function<Integer, Integer>) w -> w + 1).apply(v)).count()"
+    );
+    let src = POINT
+        .replace("{IMPORTS}", "")
+        .replace("Object f(List<Integer> nums)", "Object f(java.util.List<Integer> nums)")
+        .replace("{CHAIN}", "nums.stream().map(v -> nums.size()).count()");
+    assert_eq!(
+        normalize(&chain_in(&src, "Point"), &TypeHints::default()).unwrap().plain_text(),
+        "java.util.List __c_nums = nums; nums.stream().map(v -> ((java.util.List<Integer>) __c_nums).size()).count()"
+    );
+    assert_eq!(
+        in_point("", "Stream.of((Object) x).map(v -> v instanceof java.util.List q ? q.size() : 0).count()")
+            .unwrap()
+            .plain_text(),
+        "java.util.stream.Stream.of((Object) x).map(v -> v instanceof java.util.List ? ((java.util.List) v).size() : 0).count()"
+    );
+    let generic = POINT
+        .replace("{IMPORTS}", "")
+        .replace("Object f(List<Integer> nums)", "<T extends java.lang.Comparable<T>> Object f(List<T> nums, T best)")
+        .replace("{CHAIN}", "nums.stream().filter(t -> t.compareTo(best) > 0).count()");
+    assert_eq!(
+        normalize(&chain_in(&generic, "Point"), &TypeHints::default()).unwrap().plain_text(),
+        "nums.stream().filter(t -> ((java.lang.Comparable) t).compareTo(best) > 0).count()"
+    );
+}
+
+#[test]
+fn negative_literals_and_qualified_object_arrays_are_boxed() {
+    assert_eq!(
+        plain("Arrays.asList(new Object[]{ -1, -5L, -1.5 }).stream().count()").unwrap(),
+        "Arrays.asList(new Object[]{ Integer.valueOf(-1), Long.valueOf(-5L), Double.valueOf(-1.5) }).stream().count()"
+    );
+    assert_eq!(
+        plain("Arrays.asList(new java.lang.Object[]{ 1, -x() }).stream().count()").unwrap(),
+        "Arrays.asList(new java.lang.Object[]{ Integer.valueOf(1), -x() }).stream().count()"
+    );
+}
+
+#[test]
+fn assigned_element_parameters_are_not_cast() {
+    assert_eq!(
+        generic(
+            "<T extends Comparable<T>>",
+            "xs.stream().filter(t -> { t = best; return t.compareTo(best) > 0; }).count()"
+        )
+        .plain_text(),
+        "xs.stream().filter(t -> { t = best; return ((Comparable) t).compareTo(best) > 0; }).count()"
+    );
+}
+
+#[test]
+fn hints_java_cannot_write_are_ignored() {
+    let raw =
+        "var list = new ArrayList<>(nums);\n        Object r = nums.stream().peek(x -> list.add(x)).count(); // HERE";
+    for hint in ["ArrayList<capture#1-of ?>", "<anonymous java.util.ArrayList<Integer>>"] {
+        assert_eq!(
+            norm(&in_f(raw), &[(0, hint)]).unwrap().plain_text(),
+            "ArrayList __c_list = list; nums.stream().peek(x -> __c_list.add(x)).count()",
+            "{hint}"
+        );
+    }
+    let of = "var xs = List.of(1, 2);\n        Object r = nums.stream().filter(x -> xs.contains(x)).count(); // HERE";
+    assert_eq!(norm(&in_f(of), &[(0, "List<capture#2-of ?>")]), Err(Rejection::MissingTypeHint { name: "xs".into() }));
+}

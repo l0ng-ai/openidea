@@ -51,6 +51,9 @@ impl<'t> Collector<'_, 't> {
     /// A dotted type name such as a bound's erasure (`Map.Entry`), qualified by its first segment.
     pub(super) fn dotted_type(&mut self, name: &str) -> Option<String> {
         let (first, rest) = name.split_once('.').map_or((name, None), |(first, rest)| (first, Some(rest)));
+        if rest.is_some() && self.is_package(first) {
+            return Some(name.into());
+        }
         let first = self.spelled(first)?;
         Some(rest.map_or(first.clone(), |rest| format!("{first}.{rest}")))
     }
@@ -68,12 +71,19 @@ impl<'t> Collector<'_, 't> {
     /// A simple type name, not a type variable, `var`, or a member type after `.`.
     fn names_a_type(&self, n: Node) -> bool {
         let name = self.text(n);
-        let declares_or_follows = n.parent().is_some_and(|p| match p.kind() {
+        let not_a_type = n.parent().is_some_and(|p| match p.kind() {
             "type_parameter" => true,
-            "scoped_type_identifier" => p.named_child(0) != Some(n),
+            "scoped_type_identifier" => p.named_child(0) != Some(n) || self.is_package(name),
             _ => false,
         });
-        name != "var" && !declares_or_follows && !self.type_params.iter().any(|p| p == name)
+        name != "var" && !not_a_type && !self.type_params.iter().any(|p| p == name)
+    }
+
+    /// The head of an already qualified name (`java` in `java.util.List`):
+    /// lowercase and not a type the file can see.
+    fn is_package(&self, head: &str) -> bool {
+        let resolves = self.imports.as_ref().is_some_and(|imports| qualify_type(head, imports).is_some());
+        head.starts_with(char::is_lowercase) && !resolves
     }
 
     pub(super) fn type_identifier(&mut self, n: Node<'t>) {
