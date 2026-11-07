@@ -59,6 +59,7 @@ impl DependencyVersionSource for GoModules {
             .env("GIT_TERMINAL_PROMPT", "0")
             .args(["list", "-m", "-versions", "-f", "{{range .Versions}}{{println .}}{{end}}", "--", package]);
         let query = cancel.child_token();
+        // Fetches run on Host::blocking's Tokio pool, which keeps a runtime current.
         let deadline = tokio::spawn({
             let query = query.clone();
             async move {
@@ -71,6 +72,10 @@ impl DependencyVersionSource for GoModules {
         Ok(go::listed_versions(&output?))
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "dependencies/go_tests.rs"]
+mod go_tests;
 
 fn go_source(project: &crate::Project, config_dir: &Path, path: &Path) -> IdeResult<GoModules> {
     let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|workspace| {
