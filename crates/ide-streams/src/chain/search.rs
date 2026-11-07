@@ -1,8 +1,6 @@
-use super::{
-    ChainFacts, ChainOp, ChainRoot, ChainSearch, FrameShape, RejectedChain, Rejection, StopContext, StreamChain,
-};
-use crate::OpRole;
+use super::{ChainOp, ChainRoot, ChainSearch, FrameShape, RejectedChain, Rejection, StopContext, StreamChain};
 use crate::catalog::{SourceCheck, classify_source, op_role};
+use crate::{OpRole, facts};
 use ide_syntax::SyntaxTree;
 use tree_sitter::Node;
 
@@ -15,9 +13,9 @@ const METHOD_SCOPES: &[&str] = &[
     "field_declaration",
     "constant_declaration",
 ];
-pub(super) const TYPE_BODIES: &[&str] =
+pub(crate) const TYPE_BODIES: &[&str] =
     &["class_body", "interface_body", "enum_body", "enum_body_declarations", "annotation_type_body"];
-pub(super) const TYPE_DECLARATIONS: &[&str] = &[
+pub(crate) const TYPE_DECLARATIONS: &[&str] = &[
     "class_declaration",
     "record_declaration",
     "enum_declaration",
@@ -206,7 +204,7 @@ impl<'t> Finder<'_, 't> {
         match (self.frame(scope), shape) {
             (Err(frame), _) => search.rejected.push(reject(Rejection::UnsupportedFrame { frame })),
             (Ok(_), Err(reason)) => search.rejected.push(reject(reason)),
-            (Ok(frame), Ok(parts)) => search.chains.push(self.chain(parts, frame)),
+            (Ok(frame), Ok(parts)) => search.chains.push(self.chain(parts, scope, frame)),
         }
         true
     }
@@ -273,7 +271,7 @@ impl<'t> Finder<'_, 't> {
         classify_source(receiver.map(|r| self.text(r).trim()), self.name(call), literal)
     }
 
-    fn chain(&self, parts: Parts<'t>, frame: FrameShape) -> StreamChain {
+    fn chain(&self, parts: Parts<'t>, scope: Node<'t>, frame: FrameShape) -> StreamChain {
         let Parts { terminal, sources, ops } = parts;
         let root = sources[0].0;
         let start = terminal.start_byte();
@@ -294,9 +292,9 @@ impl<'t> Finder<'_, 't> {
             },
             ops: ops.iter().map(|c| op(*c)).collect(),
             terminal: op(terminal),
-            frame,
             warnings: self.warnings(&sources, &ops),
-            facts: ChainFacts::default(),
+            facts: facts::collect(self.t, terminal, scope, &frame),
+            frame,
         }
     }
 

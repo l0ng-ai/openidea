@@ -2,7 +2,9 @@ mod frame;
 mod search;
 mod warnings;
 
-use crate::OpRole;
+pub(crate) use search::{TYPE_BODIES, TYPE_DECLARATIONS};
+
+use crate::{ChainFacts, OpRole};
 use ide_core::{CancellationToken, Range};
 use ide_syntax::{Snapshot, StructureResult, StructureService};
 use serde::{Deserialize, Serialize};
@@ -139,11 +141,6 @@ pub enum Rejection {
         name: String,
     },
 }
-
-/// Normalisation facts gathered while the tree is at hand.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ChainFacts {}
 
 /// Calls that only share a terminal's name (`Collectors.toList()`, the
 /// `forEach` in `s.toList().forEach(..)`) appear in neither list.
