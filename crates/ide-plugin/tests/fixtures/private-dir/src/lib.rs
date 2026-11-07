@@ -23,6 +23,16 @@ impl Plugin for PrivateDir {
                 }
                 host::fs::read_file(&path).map(Some)
             }
+            "large-cache" => {
+                let bytes = vec![b'x'; 8 << 20];
+                let mut total = 0;
+                for index in 0..10 {
+                    let file = format!("{dir}/cache-{index}.bin");
+                    host::fs::write_bytes(&file, &bytes)?;
+                    total += host::fs::stat(&file)?.size;
+                }
+                Ok(Some(total.to_string()))
+            }
             "read" => host::fs::read_file(arg.unwrap_or(&path)).map(Some),
             "write" => host::fs::write_file(arg.unwrap_or(&path), "fake replacement\n").map(|()| None),
             "open" => host::open_location(&path, 0, 0).map(|()| Some(path)),

@@ -33,6 +33,10 @@ title = "Open fake private content"
 id = "process"
 title = "Read private content with approved cat"
 
+[[contributes.commands]]
+id = "large-cache"
+title = "Write private cache larger than storage"
+
 [[contributes.providers]]
 kinds = ["completion"]
 languages = ["private-fixture"]

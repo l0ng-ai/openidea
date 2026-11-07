@@ -685,13 +685,18 @@ fn a_reporting_task_outlives_its_background_budget() {
 
 #[test]
 fn private_directory_is_owned_persistent_and_removed_on_uninstall() {
-    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    let f = fixture(Limits {
+        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_millis(100)),
+        ..Limits::default()
+    });
     let pkg = sample("private-dir");
-    f.install(&pkg);
+    f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
     let run = |cmd: &str, arg: Option<&str>| f.host.run_command("test.private-dir", cmd, arg, Invocation::default());
     let dir = PathBuf::from(run("directory", None).unwrap().unwrap());
     assert!(!dir.starts_with(f.installed("test.private-dir")));
     assert_eq!(run("roundtrip", None).unwrap().as_deref(), Some("fake private data\n"));
+    assert_eq!(run("large-cache", None).unwrap().as_deref(), Some("83886080"));
     let file = dir.join("fake-secret.txt");
     #[cfg(unix)]
     {
@@ -713,7 +718,7 @@ fn private_directory_is_owned_persistent_and_removed_on_uninstall() {
     let manifest = other_pkg.join("plugin.toml");
     let text = std::fs::read_to_string(&manifest).unwrap().replace("test.private-dir", "test.private-dir-other");
     std::fs::write(manifest, text).unwrap();
-    f.install(&other_pkg);
+    f.host.install_from_dir(&other_pkg, &Consent::default()).unwrap();
     f.host.run_command("test.private-dir-other", "roundtrip", None, Invocation::default()).unwrap();
     let other_dir = PathBuf::from(
         f.host.run_command("test.private-dir-other", "directory", None, Invocation::default()).unwrap().unwrap(),
@@ -762,14 +767,14 @@ fn private_directory_is_owned_persistent_and_removed_on_uninstall() {
     f.host.uninstall("test.private-dir").unwrap();
     assert!(!dir.exists());
     assert!(other_dir.join("fake-secret.txt").exists());
-    f.install(&pkg);
+    f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
     assert!(run("read", None).unwrap_err().message.contains("no such file"));
 }
 
 #[test]
 fn private_directory_is_available_to_providers_without_a_project() {
     let f = fixture(Limits::default());
-    f.install(&sample("private-dir"));
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
     f.host.set_workspace(None);
     f.host.run_command("test.private-dir", "roundtrip", None, Invocation::default()).unwrap();
     let doc = ide_plugin::ProviderDocument {
@@ -788,7 +793,7 @@ fn private_directory_is_available_to_providers_without_a_project() {
 #[test]
 fn private_directory_survives_host_restart_and_inactive_uninstall() {
     let f = fixture(Limits::default());
-    f.install(&sample("private-dir"));
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
     f.run("test.private-dir", "roundtrip", None).unwrap();
     let dir = PathBuf::from(f.run("test.private-dir", "directory", None).unwrap().unwrap());
     f.host.shutdown();
