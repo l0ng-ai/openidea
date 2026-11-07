@@ -122,6 +122,10 @@ struct MenuDecl {
     when: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     view: Option<String>,
+    /// Groups the plugin's entries of one context menu that name the same
+    /// submenu under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    submenu: Option<String>,
 }
 
 pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
@@ -135,6 +139,13 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
     if let Some(w) = &d.when {
         validate_when(w).map_err(|e| format!("contributes.menus: {e}"))?;
+    }
+    if let Some(submenu) = &d.submenu {
+        if !d.menu.ends_with(".context") {
+            return Err(format!("contributes.menus: `submenu` is only for context menus, not {:?}", d.menu));
+        }
+        title(MENUS, submenu)?;
+        pkg.manifest.needs_api("contributes.menus: submenu", 3)?;
     }
     let key = match (d.menu == VIEW_ITEM_MENU, &d.view) {
         (true, None) => return Err(format!("contributes.menus: {VIEW_ITEM_MENU} needs `view`")),

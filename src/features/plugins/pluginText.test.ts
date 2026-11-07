@@ -56,6 +56,11 @@ describe("localizeContributions", () => {
     });
   });
 
+  it("translates a context menu entry's submenu label", () => {
+    const items = [item("a", "menus", { id: "m", menu: "editor.context", command: "x", submenu: "Refresh" })];
+    expect(localizeContributions(items, { a: fr })[0]!.decl).toMatchObject({ submenu: "Actualiser" });
+  });
+
   it("gives a tools menu entry the translated title of its command", () => {
     const items = [
       item("a", "commands", { id: "x", title: "Refresh" }),

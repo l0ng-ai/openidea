@@ -715,7 +715,7 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
-    fn notify_with_actions(
+    fn notify(
         &self,
         client: Option<&str>,
         level: NotificationLevel,
@@ -723,37 +723,15 @@ impl HostApi for PluginApi {
         body: String,
         actions: Vec<ide_plugin::NotificationAction>,
     ) -> Result<(), HostError> {
-        if actions.len() > 3 {
-            return Err(HostError::Invalid("a notification accepts at most three actions".into()));
-        }
-        let commands = self.shared.ui.items("commands", Some(self.id()));
-        for action in &actions {
-            if action.label.trim().is_empty()
-                || action.label.len() > 256
-                || action.label.chars().any(char::is_control)
-                || action.command.is_empty()
-                || action.command.len() > 64
-                || action.argument.as_ref().is_some_and(|a| a.len() > 64 << 10)
-            {
-                return Err(HostError::Invalid(
-                    "notification action exceeds its label, command or argument limits".into(),
-                ));
-            }
-            if !commands.iter().any(|c| c.key == action.command) {
-                return Err(HostError::NotFound(format!("the plugin declares no command {:?}", action.command)));
+        if !actions.is_empty() {
+            let commands = self.shared.ui.items("commands", Some(self.id()));
+            if let Some(a) = actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
+                return Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command)));
             }
         }
-        self.shared.sink.emit(
-            client,
-            PluginEvent::NotificationWithActions { plugin_id: self.id().to_owned(), level, title, body, actions },
-        );
+        let plugin_id = self.id().to_owned();
+        self.shared.sink.emit(client, PluginEvent::Notification { plugin_id, level, title, body, actions });
         Ok(())
-    }
-
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String) {
-        self.shared
-            .sink
-            .emit(client, PluginEvent::Notification { plugin_id: self.id().to_owned(), level, title, body });
     }
 
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
@@ -765,6 +743,14 @@ impl HostApi for PluginApi {
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let client = from_window(client, "open a URL")?;
         self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
+    }
+
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let client = from_window(client, "open a project")?;
+        self.shared
+            .sink
+            .emit(Some(client), PluginEvent::OpenProject { plugin_id: self.id().to_owned(), path, new_window });
         Ok(())
     }
 
@@ -1457,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_actions_are_bounded_and_belong_to_the_plugin() {
+    fn notification_actions_run_the_plugins_own_commands() {
         let tmp = tempfile::tempdir().unwrap();
         let api = api(tmp.path(), Arc::default());
         let _command = api.shared.ui.insert(ide_extension::UiContribution {
@@ -1466,44 +1452,15 @@ mod tests {
             key: "run".into(),
             decl: serde_json::json!({}),
         });
-        let action = ide_plugin::NotificationAction {
+        let action = |command: &str| ide_plugin::NotificationAction {
             label: "Run".into(),
-            command: "run".into(),
+            command: command.into(),
             argument: Some("a\nb".into()),
         };
-        for count in 0..=3 {
-            api.notify_with_actions(
-                Some("second"),
-                NotificationLevel::Info,
-                "Done".into(),
-                "".into(),
-                vec![action.clone(); count],
-            )
-            .unwrap();
-        }
-        assert!(
-            api.notify_with_actions(None, NotificationLevel::Info, "".into(), "".into(), vec![action.clone(); 4])
-                .is_err()
-        );
-        for invalid in [
-            ide_plugin::NotificationAction { command: "other.command".into(), ..action.clone() },
-            ide_plugin::NotificationAction { command: "x".repeat(65), ..action.clone() },
-            ide_plugin::NotificationAction { label: " ".into(), ..action.clone() },
-            ide_plugin::NotificationAction { label: "Run\nagain".into(), ..action.clone() },
-            ide_plugin::NotificationAction { label: "x".repeat(257), ..action.clone() },
-            ide_plugin::NotificationAction { argument: Some("x".repeat((64 << 10) + 1)), ..action.clone() },
-        ] {
-            assert!(
-                api.notify_with_actions(
-                    Some("main"),
-                    NotificationLevel::Info,
-                    "".into(),
-                    "".into(),
-                    vec![action.clone(), invalid]
-                )
-                .is_err()
-            );
-        }
+        let notify = |actions| api.notify(Some("main"), NotificationLevel::Info, "Done".into(), "".into(), actions);
+        notify(vec![]).unwrap();
+        notify(vec![action("run")]).unwrap();
+        assert!(matches!(notify(vec![action("run"), action("other.command")]), Err(HostError::NotFound(_))));
     }
 
     #[test]

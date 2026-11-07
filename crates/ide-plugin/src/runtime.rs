@@ -4,20 +4,20 @@
 //! themselves are in `wit_host`.
 
 use crate::types::{
-    CodeAction, CommitDraft, CommitProblem, CompletionItem, InlineSuggestion, LineMarker, Location, PluginHover,
-    PluginInlayHint, ProviderDocument, SemanticToken,
+    CodeAction, CommitDraft, CommitProblem, CompletionItem, FileOperation, InlineSuggestion, LineMarker, Location,
+    PluginHover, PluginInlayHint, ProviderDocument, SemanticToken,
 };
 use crate::types::{
     EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
-    FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, View, ViewBody, ViewButton, ViewEvent,
-    ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
+    FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
+    ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, commit_checks_bindings, details_bindings, hover_bindings, indexing_bindings, inlay_bindings,
-    providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, details_bindings, file_actions_bindings, hover_bindings, indexing_bindings,
+    inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -37,6 +37,7 @@ use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
 use details_bindings::openidea::plugin::detail_types as wit_dt;
+use file_actions_bindings::exports::openidea::plugin::file_actions as wit_fa;
 use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use inlay_bindings::exports::openidea::plugin::inlay_hints_provider as wit_inlay;
@@ -59,17 +60,15 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
-    fn notify_with_actions(
+    /// Shows a notification; `actions` name commands the plugin declares.
+    fn notify(
         &self,
-        _client: Option<&str>,
-        _level: NotificationLevel,
-        _title: String,
-        _body: String,
-        _actions: Vec<crate::NotificationAction>,
-    ) -> Result<(), HostError> {
-        Err(HostError::Invalid("notification actions are unavailable".into()))
-    }
+        client: Option<&str>,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<crate::NotificationAction>,
+    ) -> Result<(), HostError>;
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
         let _ = (client, text);
         Ok(())
@@ -77,6 +76,10 @@ pub trait HostApi: Send + Sync {
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let _ = (client, url);
         Ok(())
+    }
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let _ = (client, path, new_window);
+        Err(HostError::Invalid("opening projects is unavailable".into()))
     }
     /// Shows `prompt` in `client`'s window and waits for the answer until the
     /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
@@ -553,6 +556,7 @@ struct Exports {
     syntax: Option<wit_syntax::Guest>,
     providers: Option<wit_prov::Guest>,
     indexer: Option<wit_index::Guest>,
+    file_actions: Option<wit_fa::Guest>,
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
     details: Option<wit_detail::Guest>,
@@ -636,6 +640,7 @@ impl Runtime {
         let plugin_indices = bindings::PluginIndices::new(&pre).map_err(api_hint)?;
         let syntax_indices = wit_syntax::GuestIndices::new(&pre).ok();
         let index_indices = wit_index::GuestIndices::new(&pre).ok();
+        let file_action_indices = wit_fa::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
@@ -654,6 +659,10 @@ impl Runtime {
             None => None,
         };
         let indexer = match index_indices {
+            Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
+        let file_actions = match file_action_indices {
             Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
@@ -694,6 +703,7 @@ impl Runtime {
                 hover,
                 commit_checks,
                 inlay,
+                file_actions,
             },
             limits: setup.limits,
             version: setup.version,
@@ -876,9 +886,23 @@ impl Runtime {
         selection: ide_core::Range,
         timeout: Duration,
     ) -> Result<Vec<CodeAction>, CallError> {
-        let d = doc_to_wit(doc);
-        let actions = self.provider_call(timeout, |p, s| p.call_code_actions(s, &d, range_to_wit(selection)))?;
-        Ok(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(code_action_from_wit).collect())
+        let mut out = Vec::new();
+        if self.exports.providers.is_some() {
+            let d = doc_to_wit(doc);
+            let actions = self.provider_call(timeout, |p, s| p.call_code_actions(s, &d, range_to_wit(selection)))?;
+            out.extend(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(code_action_from_wit));
+        }
+        if self.exports.file_actions.is_some() {
+            let d = file_action_doc(doc);
+            let actions = self.call(Invocation::default(), timeout, |e, store| {
+                e.file_actions.as_ref().expect("checked").call_code_actions(store, &d, range_to_wit(selection))
+            })?;
+            out.extend(actions.into_iter().take(MAX_PROVIDER_ITEMS).map(file_action_from_wit));
+        }
+        if out.is_empty() && self.exports.providers.is_none() {
+            return Err(CallError::missing_export("providers"));
+        }
+        Ok(out)
     }
 
     /// The edits of an action `provide_code_actions` returned with `data`.
@@ -888,6 +912,17 @@ impl Runtime {
         action: &CodeAction,
         timeout: Duration,
     ) -> Result<CodeAction, CallError> {
+        if action.file_action {
+            if self.exports.file_actions.is_none() {
+                return Err(CallError::missing_export("file-actions"));
+            }
+            let d = file_action_doc(doc);
+            let a = file_action_to_wit(action);
+            let resolved = self.call(Invocation::default(), timeout, |e, store| {
+                e.file_actions.as_ref().expect("checked").call_resolve(store, &d, &a)
+            })?;
+            return resolved.map(file_action_from_wit).map_err(|e| CallError::Guest(e.into()));
+        }
         let d = doc_to_wit(doc);
         let a = code_action_to_wit(action);
         let resolved = self.provider_call(timeout, |p, s| p.call_resolve_code_action(s, &d, &a))?;
@@ -1291,7 +1326,10 @@ fn code_action_from_wit(a: wit_prov::CodeAction) -> CodeAction {
             .into_iter()
             .map(|f| (std::path::PathBuf::from(f.path), f.edits.into_iter().map(edit_from_wit).collect()))
             .collect(),
+        operations: Vec::new(),
+        open: None,
         data: a.data.map(|d| clip(d, 64 << 10)),
+        file_action: false,
     }
 }
 
@@ -1312,6 +1350,82 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
             })
             .collect(),
         data: a.data.clone(),
+    }
+}
+
+const MAX_FILE_OPERATIONS: usize = 1000;
+
+fn file_action_doc(doc: &ProviderDocument) -> wit_fa::Document {
+    wit_fa::Document {
+        path: to_ipc(&doc.path),
+        language: doc.language.clone(),
+        version: doc.version,
+        text: doc.text.clone(),
+    }
+}
+
+fn file_action_from_wit(a: wit_fa::FileAction) -> CodeAction {
+    CodeAction {
+        title: clip(a.title, MAX_TITLE),
+        kind: a.kind.map(|k| clip(k, 64)),
+        preferred: a.preferred,
+        edits: a
+            .edits
+            .into_iter()
+            .map(|f| (std::path::PathBuf::from(f.path), f.edits.into_iter().map(edit_from_wit).collect()))
+            .collect(),
+        operations: a.operations.into_iter().take(MAX_FILE_OPERATIONS).map(operation_from_wit).collect(),
+        open: a.open.map(std::path::PathBuf::from),
+        data: a.data.map(|d| clip(d, 64 << 10)),
+        file_action: true,
+    }
+}
+
+fn file_action_to_wit(a: &CodeAction) -> wit_fa::FileAction {
+    wit_fa::FileAction {
+        title: a.title.clone(),
+        kind: a.kind.clone(),
+        preferred: a.preferred,
+        operations: a
+            .operations
+            .iter()
+            .map(|op| match op {
+                FileOperation::Create { path, text, overwrite } => wit_fa::FileOperation::Create(wit_fa::CreateFile {
+                    path: to_ipc(path),
+                    text: text.clone(),
+                    overwrite: *overwrite,
+                }),
+                FileOperation::Rename { from, to } => {
+                    wit_fa::FileOperation::Rename(wit_fa::RenameFile { path: to_ipc(from), new_path: to_ipc(to) })
+                }
+                FileOperation::Delete { path } => {
+                    wit_fa::FileOperation::Delete(wit_fa::DeleteFile { path: to_ipc(path) })
+                }
+            })
+            .collect(),
+        edits: a
+            .edits
+            .iter()
+            .map(|(path, edits)| wit_fa::FileEdit {
+                path: to_ipc(path),
+                edits: edits
+                    .iter()
+                    .map(|e| wit_types::TextEdit { range: range_to_wit(e.range), text: e.new_text.clone() })
+                    .collect(),
+            })
+            .collect(),
+        open: a.open.as_deref().map(to_ipc),
+        data: a.data.clone(),
+    }
+}
+
+fn operation_from_wit(op: wit_fa::FileOperation) -> FileOperation {
+    match op {
+        wit_fa::FileOperation::Create(c) => {
+            FileOperation::Create { path: c.path.into(), text: c.text, overwrite: c.overwrite }
+        }
+        wit_fa::FileOperation::Rename(r) => FileOperation::Rename { from: r.path.into(), to: r.new_path.into() },
+        wit_fa::FileOperation::Delete(d) => FileOperation::Delete { path: d.path.into() },
     }
 }
 
@@ -1363,12 +1477,54 @@ fn service_tab_from_wit(t: wit_dt::Tab) -> ServiceTab {
     ServiceTab { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), body }
 }
 
+/// A `table` body carried by the `other` case (the sortable variant, plugins/
+/// README.md §10): the usual table fields as JSON plus `sort`, the column the
+/// plugin orders by and the direction, or null. Anything unparsable degrades
+/// like a body this host doesn't know.
+fn sortable_table_from_json(data: &str) -> Option<ViewTable> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Json {
+        #[serde(default)]
+        columns: Vec<String>,
+        #[serde(default)]
+        total_rows: u32,
+        #[serde(default)]
+        first_row: u32,
+        #[serde(default)]
+        rows: Vec<Vec<String>>,
+        #[serde(default)]
+        editable: bool,
+        #[serde(default)]
+        sort: Option<TableSort>,
+    }
+    let json: Json = serde_json::from_str(data).ok()?;
+    Some(ViewTable {
+        columns: json.columns.into_iter().take(1000).map(|c| clip(c, MAX_TITLE)).collect(),
+        total_rows: json.total_rows,
+        first_row: json.first_row,
+        rows: json
+            .rows
+            .into_iter()
+            .take(MAX_TABLE_ROWS as usize)
+            .map(|r| r.into_iter().take(1000).map(|c| clip(c, MAX_CELL)).collect())
+            .collect(),
+        editable: json.editable,
+        sortable: true,
+        sort: json.sort,
+    })
+}
+
 fn view_from_wit(v: wit_vt::View) -> View {
     let body = match v.body {
         wit_vt::Body::Message(m) => ViewBody::Message(clip(m, 16 << 10)),
-        wit_vt::Body::Other(e) => {
-            ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64)))
-        }
+        wit_vt::Body::Other(e) => match e.kind.as_str() {
+            "table" => match sortable_table_from_json(&e.data) {
+                Some(t) => ViewBody::Table(t),
+                None => ViewBody::Message("This view needs a newer version of OpenIDEA (table).".into()),
+            },
+            _ => ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64))),
+        },
         wit_vt::Body::Tree(items) => ViewBody::Tree(
             items
                 .into_iter()
@@ -1427,6 +1583,9 @@ fn view_from_wit(v: wit_vt::View) -> View {
                 .map(|r| r.into_iter().take(1000).map(|c| clip(c, MAX_CELL)).collect())
                 .collect(),
             editable: t.editable,
+            // The plain body predates sortable headers; `other` kind `table` opts in.
+            sortable: false,
+            sort: None,
         }),
         wit_vt::Body::Html(h) => ViewBody::Html(clip(h, MAX_HTML)),
     };
@@ -1460,6 +1619,12 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
         ViewEvent::InsertRow { before } => W::InsertRow(before),
         ViewEvent::DeleteRows { rows } => W::DeleteRows(rows),
         ViewEvent::Message { text } => W::Message(text),
+        // A sortable table's header click, as an `other` view-event (plugins/
+        // README.md §10): the SDKs decode the kinds they know.
+        ViewEvent::Sort { column, descending } => W::Other(wit_types::Extension {
+            kind: "sort".into(),
+            data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
+        }),
     }
 }
 
@@ -1482,6 +1647,8 @@ mod tests {
                 kind: None,
                 preferred: false,
                 edits: vec![(path.into(), Vec::new())],
+                operations: Vec::new(),
+                open: None,
                 data: None,
             };
             assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
@@ -1504,5 +1671,42 @@ mod tests {
         ])));
         let ViewBody::Form(fields) = form.body else { panic!("a form") };
         assert_eq!(fields.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), ["name"], "unknown fields are left out");
+    }
+
+    #[test]
+    fn a_sortable_table_arrives_through_other() {
+        let view = |data: &str| wit_vt::View {
+            toolbar: Vec::new(),
+            body: wit_vt::Body::Other(wit_types::Extension { kind: "table".into(), data: data.into() }),
+            status: None,
+        };
+        let shown = view_from_wit(view(
+            r#"{"columns":["ext","files"],"totalRows":3,"firstRow":1,"rows":[["rs","2"],["md","1"]],
+                "editable":false,"sort":{"column":1,"descending":true}}"#,
+        ));
+        let ViewBody::Table(t) = shown.body else { panic!("{shown:?}") };
+        assert_eq!(t.columns, ["ext".to_owned(), "files".into()]);
+        assert_eq!((t.total_rows, t.first_row, t.editable), (3, 1, false));
+        assert!(t.sortable, "a `table` through `other` opts the headers in");
+        assert_eq!(t.sort, Some(TableSort { column: 1, descending: true }));
+
+        // No sort yet: still clickable headers, just no arrow.
+        let fresh = view_from_wit(view(
+            r#"{"columns":["a"],"totalRows":0,"firstRow":0,"rows":[],"editable":false,"sort":null}"#,
+        ));
+        let ViewBody::Table(t) = fresh.body else { panic!("{fresh:?}") };
+        assert!(t.sortable);
+        assert_eq!(t.sort, None);
+
+        // Broken JSON degrades like any body the host doesn't know.
+        let broken = view_from_wit(view("{not json"));
+        assert!(matches!(broken.body, ViewBody::Message(_)), "{broken:?}");
+    }
+
+    #[test]
+    fn a_sort_click_leaves_as_an_other_extension() {
+        let wit = event_to_wit_view(ViewEvent::Sort { column: 2, descending: true });
+        let wit_vt::ViewEvent::Other(e) = wit else { panic!("{wit:?}") };
+        assert_eq!((e.kind.as_str(), e.data.as_str()), ("sort", r#"{"column":2,"descending":true}"#));
     }
 }

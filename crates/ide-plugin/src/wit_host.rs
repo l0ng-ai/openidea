@@ -154,6 +154,14 @@ pub(crate) fn to_wit(e: HostError) -> wit::Error {
     }
 }
 
+fn notification_level(level: wit::NotificationLevel) -> NotificationLevel {
+    match level {
+        wit::NotificationLevel::Info => NotificationLevel::Info,
+        wit::NotificationLevel::Warning => NotificationLevel::Warning,
+        wit::NotificationLevel::Error => NotificationLevel::Error,
+    }
+}
+
 /// A guest's `error` as text (`denied: net:example.com`, `stale`, …).
 impl From<wit::Error> for crate::runtime::GuestError {
     fn from(e: wit::Error) -> Self {
@@ -272,22 +280,23 @@ impl ui::Host for StoreData {
         title: String,
         body: String,
         actions: Vec<ui::NotificationAction>,
-    ) -> wasmtime::Result<()> {
-        let level = match level {
-            wit::NotificationLevel::Info => NotificationLevel::Info,
-            wit::NotificationLevel::Warning => NotificationLevel::Warning,
-            wit::NotificationLevel::Error => NotificationLevel::Error,
-        };
-        let actions = actions
-            .into_iter()
-            .map(|a| crate::NotificationAction { label: a.label, command: a.command, argument: a.argument })
-            .collect();
-        if let Err(error) =
-            self.host.notify_with_actions(self.client(), level, clip(title, MAX_TITLE), clip(body, 16 << 10), actions)
-        {
-            tracing::warn!(%error, "plugin notification rejected");
+    ) -> Fallible<()> {
+        const MAX_ACTIONS: usize = 3;
+        if actions.len() > MAX_ACTIONS {
+            return Ok(Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions"))));
         }
-        Ok(())
+        let mut checked = Vec::with_capacity(actions.len());
+        for a in actions {
+            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+                return Ok(Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label))));
+            }
+            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                return Ok(Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into())));
+            }
+            checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
+        }
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        Ok(self.host.notify(self.client(), notification_level(level), title, body, checked).map_err(to_wit))
     }
 
     fn show_notification(
@@ -296,13 +305,9 @@ impl ui::Host for StoreData {
         title: String,
         body: String,
     ) -> wasmtime::Result<()> {
-        let level = match level {
-            wit::NotificationLevel::Info => NotificationLevel::Info,
-            wit::NotificationLevel::Warning => NotificationLevel::Warning,
-            wit::NotificationLevel::Error => NotificationLevel::Error,
-        };
-        let max = crate::runtime::MAX_TITLE;
-        self.host.notify(self.client(), level, clip(title, max), clip(body, 16 << 10));
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        // A plain notification has nothing the host could refuse.
+        let _ = self.host.notify(self.client(), notification_level(level), title, body, Vec::new());
         Ok(())
     }
 
@@ -374,12 +379,35 @@ impl ui::Host for StoreData {
         Ok(answer.map(|keys| keys.and_then(|keys| keys.into_iter().next())))
     }
 
+    fn pick_directory(&mut self, title: String, initial: Option<String>) -> Fallible<Option<String>> {
+        if let Some(path) = &initial
+            && let Err(error) = validate_ui_path(path)
+        {
+            return Ok(Err(error));
+        }
+        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
         Ok(self.pick_prompt(title, items, true))
     }
 
     fn input(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
-        let prompt = Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)) };
+        let prompt =
+            Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)), multiline: false };
+        Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
+    }
+
+    fn input_multiline(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
+        let prompt =
+            Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)), multiline: true };
         Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
     }
 
@@ -424,6 +452,14 @@ impl storage::Host for StoreData {
 }
 
 impl workspace::Host for StoreData {
+    fn open_project(&mut self, path: String, new_window: bool) -> Fallible<()> {
+        if let Err(error) = self.require_interactive().and_then(|_| validate_ui_path(&path)) {
+            return Ok(Err(error));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_project(client.as_deref(), path, new_window).map_err(to_wit))
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -1002,4 +1038,41 @@ pub(crate) mod inlay_bindings {
         world: "inlay-hints", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
+}
+
+/// The optional `file-actions` export.
+pub(crate) mod file_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "file-actions-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+/// Paths belong to the UI machine, which can have a different OS than the plugin host.
+fn validate_ui_path(path: &str) -> Result<(), wit::Error> {
+    let b = path.as_bytes();
+    let absolute = path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (b.first().is_some_and(u8::is_ascii_alphabetic)
+            && b.get(1) == Some(&b':')
+            && matches!(b.get(2), Some(b'/' | b'\\')));
+    if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
+        return Err(wit::Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod project_ui_tests {
+    use super::validate_ui_path;
+    #[test]
+    fn validates_ui_paths_without_using_the_plugin_hosts_os() {
+        for path in ["/work/repo", "C:/work/repo", r"C:\work\repo", r"\\server\share\repo"] {
+            assert!(validate_ui_path(path).is_ok(), "{path:?}");
+        }
+        for path in ["repo", "C:repo", "/bad\npath", ""] {
+            assert!(validate_ui_path(path).is_err(), "{path:?}");
+        }
+        assert!(validate_ui_path(&format!("/{}", "x".repeat(8192))).is_err());
+    }
 }

@@ -1,0 +1,18 @@
+# Test fixture: a tool window whose table the plugin sorts itself — the IDE
+# makes the column headers clickable (`other` body, kind `table`) and sends
+# `other` view-events, kind `sort`, which the plugin decodes and answers with
+# the rows in the asked order.
+id = "tables"
+name = "Tables"
+version = "0.1.0"
+description = "Test fixture: a sortable table the plugin sorts itself."
+authors = ["OpenIDEA contributors"]
+engines.openidea = "^1.0"
+wasm = "dist/plugin.wasm"
+activation = ["on-view:tables"]
+
+[[contributes.views]]
+id = "tables"
+title = "Tables"
+icon = "plugin"
+location = "right"

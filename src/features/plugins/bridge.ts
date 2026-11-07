@@ -283,23 +283,18 @@ export function handlePluginEvent(e: PluginEvent) {
     case "updatesAvailable":
       announceUpdates(e.updates);
       break;
-    case "notification":
-    case "notificationWithActions": {
+    case "notification": {
       const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;
       notifications().notify({
         group: "plugins",
         level: e.level,
         title: e.title || name,
         body: e.body || undefined,
-        actions:
-          e.type === "notificationWithActions"
-            ? e.actions.map((a) => ({
-                label: a.label,
-                run: () => {
-                  void runPluginCommand(e.pluginId, a.command, a.argument);
-                },
-              }))
-            : undefined,
+        verbatim: true,
+        actions: e.actions.map((a) => ({
+          label: a.label,
+          run: () => void runPluginCommand(e.pluginId, a.command, a.argument),
+        })),
       });
       break;
     }

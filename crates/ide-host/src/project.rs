@@ -193,6 +193,7 @@ impl Host {
                             &effective.project_structure,
                         ),
                     );
+                    ide_lsp::jdtls::configure_project_structure(cfg, root, server_root, &effective.project_structure);
                     let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&data_dir, "java-debug")
                         .into_iter()
                         .chain(ide_sdk::java::usages_bundle(&data_dir))
@@ -213,13 +214,19 @@ impl Host {
                         cfg.launch_error = Some(e);
                         None
                     });
-                    ide_sdk::apply::configure_java_compiler(cfg, &data_dir, &effective.inspections);
+                    let lang_level = ide_sdk::apply::effective_java_language_level(root, server_root, &effective);
+                    ide_sdk::apply::configure_java_compiler_with_level(
+                        cfg,
+                        &data_dir,
+                        &effective.inspections,
+                        lang_level,
+                    );
                     ide_sdk::java::configure_jdtls(
                         cfg,
                         server_root,
                         &data_dir,
                         &jdks,
-                        ide_sdk::apply::project_jdk(root, &effective).as_ref(),
+                        ide_sdk::apply::module_jdk(root, server_root, &effective).as_ref(),
                         server_jdk.as_ref(),
                         min_java,
                         &bundles,

@@ -540,7 +540,14 @@ export function createMemoryPluginsBackend(
       if (commandId === "word-count") {
         if (!activeFile) throw new IpcError({ kind: "internal", message: "no file is open in the editor" });
         const name = activeFile.split("/").pop() ?? activeFile;
-        emit({ type: "notification", pluginId, level: "info", title: `Word count: ${name}`, body: "(simulated)" });
+        emit({
+          type: "notification",
+          pluginId,
+          level: "info",
+          title: `Word count: ${name}`,
+          body: "(simulated)",
+          actions: [],
+        });
         return null;
       }
       throw new IpcError({ kind: "internal", message: `unknown command: ${commandId}` });

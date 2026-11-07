@@ -153,6 +153,7 @@ export function defineBuiltinUiPoints(): () => void {
           category: decl.category ?? plugin.name,
           icon: "package",
           when: decl.when ?? undefined,
+          verbatim: true,
           keywords: ["plugin", plugin.name, pluginId],
           description: tx`From plugin ${plugin.name}`,
           run: async ({ arg }) => {

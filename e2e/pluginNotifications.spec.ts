@@ -16,7 +16,7 @@ test("plugin notification actions run their command and dismiss the balloon", as
     const bridgePath = "/src/features/plugins/bridge.ts";
     const { handlePluginEvent } = await import(/* @vite-ignore */ bridgePath);
     handlePluginEvent({
-      type: "notificationWithActions",
+      type: "notification",
       pluginId: "hello",
       level: "info",
       title: "Build complete",

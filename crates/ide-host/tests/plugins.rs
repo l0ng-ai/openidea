@@ -1981,6 +1981,35 @@ fn official_csv_editor_edits_the_shared_document() {
 }
 
 #[test]
+fn context_menu_entries_can_name_a_submenu() {
+    fn with_menu(version: &'static str, extra: &'static str) -> impl Fn(&str) -> String {
+        move |m: &str| {
+            let m = m.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = \"{version}\""));
+            format!("{m}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n")
+        }
+    }
+    let f = fixture(Limits::default());
+    let dir = tempfile::tempdir().unwrap();
+    let ok = hello_variant(dir.path(), with_menu("^1.3", "menu = \"editor.context\"\nsubmenu = \"Words\""));
+    assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
+    let submenus: Vec<_> =
+        f.host.ui_items("menus").into_iter().filter_map(|i| i.decl["submenu"].as_str().map(str::to_owned)).collect();
+    assert_eq!(submenus, ["Words"]);
+    f.host.uninstall("hello").unwrap();
+
+    for (version, extra, message) in [
+        ("^1.3", "menu = \"tools\"\nsubmenu = \"Words\"", "only for context menus"),
+        ("^1.3", "menu = \"editor.context\"\nsubmenu = \" \"", "titles are"),
+        ("^1.2", "menu = \"editor.context\"\nsubmenu = \"Words\"", "1.3"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(dir.path(), with_menu(version, extra));
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{extra}: {}", err.message);
+    }
+}
+
+#[test]
 fn view_item_menus_name_a_declared_view() {
     /// The menu is new in API 1.2.
     fn api_1_2(m: &str) -> String {
@@ -2083,6 +2112,45 @@ fn sample_plugin_tool_window_with_a_tree() {
     for point in ["menus", "keymaps", "statusBar", "views"] {
         assert!(f.host.ui_items(point).is_empty(), "{point}");
     }
+}
+
+/// The tables fixture sorts its own rows: a `table` body sent through `other`
+/// opts the headers in, and a header click leaves as an `other` view-event
+/// (kind `sort`) the plugin decodes and answers with the rows in the asked
+/// order (plugins/README.md §10: released types stay, `other` carries new
+/// cases).
+#[test]
+fn sortable_plugin_table_round_trips_sort_events() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("tables"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    let table = |f: &Fixture| match f.host.render_view("tables", "tables", None, f.inv()).unwrap().body {
+        ide_plugin::ViewBody::Table(t) => t,
+        other => panic!("{other:?}"),
+    };
+    // No sort yet: headers are clickable, rows in the plugin's own order.
+    let t = table(&f);
+    assert_eq!((t.columns.clone(), t.total_rows), (vec!["ext".to_owned(), "files".into()], 4));
+    assert_eq!((t.sortable, t.sort), (true, None), "a `table` through `other` opts the headers in");
+    assert_eq!(t.rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>(), ["rs", "md", "java", "toml"]);
+
+    f.take_events();
+    let sort = |f: &Fixture, descending| {
+        f.host.view_event("tables", "tables", ide_plugin::ViewEvent::Sort { column: 1, descending }, f.inv()).unwrap();
+        assert!(f.take_events().into_iter().any(
+            |(_, e)| matches!(e, PluginEvent::ViewChanged { ref plugin_id, ref view } if plugin_id == "tables" && view == "tables")
+        ));
+        table(f)
+    };
+
+    // The plugin reports the sort it ordered by, with the rows to match.
+    let t = sort(&f, false);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: false }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["3", "9", "12", "20"]);
+    let t = sort(&f, true);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: true }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["20", "12", "9", "3"]);
 }
 
 /// Regex Tester: an `html` body its script talks to; the plugin answers in
@@ -2310,8 +2378,13 @@ fn commands_ask_the_user_and_reveal_their_views() {
 
     let (result, prompt) = run_and_answer(&f, "input", Some("Main"), Some(&["Other"]), none);
     assert_eq!(result.unwrap().as_deref(), Some("Other"));
-    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()) });
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()), multiline: false });
     assert_eq!(run_and_answer(&f, "input", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "input-multiline", Some("one\ntwo"), Some(&["a\nb"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("a\nb"));
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("one\ntwo".into()), multiline: true });
+    assert_eq!(run_and_answer(&f, "input-multiline", None, None, none).0.unwrap().as_deref(), Some("none"));
 
     let (result, prompt) = run_and_answer(&f, "confirm", None, Some(&[]), none);
     assert_eq!(result.unwrap().as_deref(), Some("true"));
@@ -2331,7 +2404,7 @@ fn commands_ask_the_user_and_reveal_their_views() {
     // Without a window there is nothing to attach the dialog to.
     f.take_events();
     let no_window = Invocation { client: None, ..f.inv() };
-    for cmd in ["pick", "input", "confirm"] {
+    for cmd in ["pick", "input", "input-multiline", "confirm"] {
         let err = f.host.run_command("jobs", cmd, None, no_window.clone()).unwrap_err().message;
         assert!(err.contains("from a command the user invoked"), "{cmd}: {err}");
     }
@@ -2878,6 +2951,30 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
     assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
 
+    // File operations come from the `file-actions` export, next to the providers' own.
+    let mut actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default()).into_iter();
+    let (_, action) = actions.next().expect("offered");
+    let (plugin, later) = actions.next().expect("a lazy one too");
+    let dir = f.project.clone();
+    assert_eq!(action.title, "Reorganise");
+    assert_eq!(
+        action.operations,
+        vec![
+            ide_plugin::FileOperation::Create { path: dir.join("created.txt"), text: "hello".into(), overwrite: false },
+            ide_plugin::FileOperation::Rename { from: dir.join("old.txt"), to: dir.join("renamed.txt") },
+            ide_plugin::FileOperation::Delete { path: dir.join("gone.txt") },
+        ]
+    );
+    assert_eq!(action.open, Some(dir.join("created.txt")));
+    // Listed with `data` only: `resolve` on the same export computes its operations.
+    assert!(later.file_action && later.operations.is_empty() && later.data.is_some());
+    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later).unwrap();
+    assert_eq!(
+        resolved.operations,
+        vec![ide_plugin::FileOperation::Create { path: dir.join("later.txt"), text: "later".into(), overwrite: false }]
+    );
+    assert!(f.host.provide_code_actions(&doc("rich"), ide_core::Range::default()).is_empty());
+
     // A kind this IDE doesn't know is refused, not a trap.
     let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
     assert!(err.message.contains("no event kind"), "{}", err.message);
@@ -3268,7 +3365,7 @@ fn notification_actions_keep_commands_and_window_scope() {
         .take_events()
         .into_iter()
         .filter_map(|(client, event)| match event {
-            PluginEvent::NotificationWithActions { plugin_id, actions, .. } => Some((client, plugin_id, actions)),
+            PluginEvent::Notification { plugin_id, actions, .. } => Some((client, plugin_id, actions)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -3279,8 +3376,46 @@ fn notification_actions_keep_commands_and_window_scope() {
     assert_eq!(notifications[0].2[0].command, "context");
     assert_eq!(notifications[0].2[0].argument.as_deref(), Some("notification-action=1\nvalue"));
     for invalid in ["four", "unknown"] {
-        f.run("jobs", "notify-actions", Some(invalid)).unwrap();
-        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::NotificationWithActions { .. })));
+        let error = f.run("jobs", "notify-actions", Some(invalid)).unwrap_err();
+        assert!(error.contains(if invalid == "four" { "at most 3" } else { "declares no command" }), "{error}");
+        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::Notification { .. })));
     }
-    assert_eq!(f.status("jobs"), PluginStatus::Active, "invalid notifications do not crash the plugin");
+    assert_eq!(f.status("jobs"), PluginStatus::Active, "a refused notification leaves the plugin running");
+}
+
+#[test]
+fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, prompt) =
+        run_and_answer(&f, "pick-directory", Some("C:/work"), Some(&["C:/work/repo"]), Duration::from_millis(700));
+    assert_eq!(result.unwrap().as_deref(), Some("C:/work/repo"));
+    assert_eq!(prompt, Prompt::PickDirectory { title: "Clone target".into(), initial: Some("C:/work".into()) });
+    assert_eq!(run_and_answer(&f, "pick-directory", None, None, Duration::ZERO).0.unwrap().as_deref(), Some("none"));
+    assert!(run_and_answer(&f, "pick-directory", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.run("jobs", "pick-directory", Some("relative")).is_err());
+    for (cmd, new_window) in [("open-project", false), ("open-project-new", true)] {
+        f.take_events();
+        let inv = Invocation { client: Some("second".into()), ..f.inv() };
+        f.host.run_command("jobs", cmd, Some("C:/work/repo"), inv).unwrap();
+        let requests = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenProject { plugin_id, path, new_window } => Some((client, plugin_id, path, new_window)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requests, vec![(Some("second".into()), "jobs".into(), "C:/work/repo".into(), new_window)]);
+        let error = f.host.run_command("jobs", cmd, Some("/work/repo"), Invocation::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{error:?}");
+    }
+    assert!(f.host.run_command("jobs", "pick-directory", None, Invocation::default()).is_err());
+    for path in ["relative", "/bad\npath", ""] {
+        f.take_events();
+        assert!(f.run("jobs", "open-project", Some(path)).is_err());
+        assert!(!f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::OpenProject { .. })));
+    }
 }

@@ -172,13 +172,12 @@ pub enum PluginEvent {
     /// once per set of versions).
     UpdatesAvailable { updates: Vec<PluginUpdate> },
     #[serde(rename_all = "camelCase")]
-    Notification { plugin_id: String, level: NotificationLevel, title: String, body: String },
-    #[serde(rename_all = "camelCase")]
-    NotificationWithActions {
+    Notification {
         plugin_id: String,
         level: NotificationLevel,
         title: String,
         body: String,
+        /// Buttons running the plugin's own commands (`ui.notify`).
         actions: Vec<ide_plugin::NotificationAction>,
     },
     /// A plugin's status bar item was set (`item`) or removed.
@@ -230,6 +229,9 @@ pub enum PluginEvent {
     /// Open `url` (`http(s)://`) in the system browser.
     #[serde(rename_all = "camelCase")]
     OpenUrl { plugin_id: String, url: String },
+    /// A window command/event requests the normal File > Open flow.
+    #[serde(rename_all = "camelCase")]
+    OpenProject { plugin_id: String, path: String, new_window: bool },
     /// A command waits for the user's answer: show `prompt`, then report it with
     /// `plugin_answer_prompt(prompt_id, …)`.
     #[serde(rename_all = "camelCase")]

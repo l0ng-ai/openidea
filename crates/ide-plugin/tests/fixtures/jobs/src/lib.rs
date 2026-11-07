@@ -67,12 +67,7 @@ impl Plugin for Jobs {
                             .argument(format!("notification-action={}\nvalue", i + 1))
                     })
                     .collect::<Vec<_>>();
-                host::notify_with_actions(
-                    NotificationLevel::Info,
-                    "Choose an action",
-                    "A plugin notification",
-                    &actions,
-                );
+                host::notify_with_actions(NotificationLevel::Info, "Choose an action", "A plugin notification", &actions)?;
                 Ok(None)
             }
             "copy" => {
@@ -81,6 +76,11 @@ impl Plugin for Jobs {
             }
             "open-url" => {
                 host::open_url(arg.unwrap_or_default())?;
+                Ok(None)
+            }
+            "pick-directory" => Ok(Some(host::pick_directory("Clone target", arg)?.unwrap_or_else(|| "none".into()))),
+            "open-project" | "open-project-new" => {
+                host::open_project(arg.unwrap_or_default(), id == "open-project-new")?;
                 Ok(None)
             }
             "pick" | "pick-many" => {
@@ -97,6 +97,7 @@ impl Plugin for Jobs {
                 Ok(Some(picked.map_or("none".to_owned(), |keys| keys.join(","))))
             }
             "input" => Ok(Some(host::input("Name", arg)?.unwrap_or_else(|| "none".to_owned()))),
+            "input-multiline" => Ok(Some(host::input_multiline("Name", arg)?.unwrap_or_else(|| "none".to_owned()))),
             "confirm" => Ok(Some(host::confirm("Delete", "Really?")?.to_string())),
             "reveal" => host::reveal_view(arg.unwrap_or_default()).map(|()| None),
             "selection" => {
