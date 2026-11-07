@@ -38,6 +38,16 @@ pub fn plan(root: &Path, config: &RunConfig) -> IdeResult<Option<Plan>> {
         root.join(get("outputDir"))
     };
     std::fs::create_dir_all(&output)?;
+    let run_after_build = get("runAfterBuild") == "true";
+    if !run_after_build {
+        // Go requires a directory output for patterns containing several main packages.
+        // Preserve explicit -o values, including Go's platform-specific special paths.
+        if !build.args.iter().any(|arg| arg == "-o" || arg.starts_with("-o=")) {
+            let directory = format!("{}{sep}", output.to_string_lossy(), sep = std::path::MAIN_SEPARATOR);
+            build.args.splice(1..1, ["-o".into(), directory]);
+        }
+        return Ok(Some(Plan { build, run: None }));
+    }
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     config.id.hash(&mut hash);
     let mut binary = output.join(format!("go-app-{:x}{}", hash.finish(), std::env::consts::EXE_SUFFIX));

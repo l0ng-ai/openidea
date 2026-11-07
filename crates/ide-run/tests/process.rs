@@ -632,6 +632,50 @@ fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
 }
 
 #[test]
+fn go_build_only_supports_multiple_packages_and_explicit_output() {
+    let h = harness();
+    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        return;
+    };
+    std::fs::write(h.root.path().join("go.mod"), "module example.com/buildall\ngo 1.22\n").unwrap();
+    for name in ["one", "two"] {
+        let dir = h.root.path().join("cmd").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.go"), "package main\nfunc main() {}\n").unwrap();
+    }
+    let mut config = cfg("go-build-only", &go.to_string_lossy(), &["build", "./..."]);
+    config.kind = "go".into();
+    config.extras.params = BTreeMap::from([
+        ("goKind".into(), "build".into()),
+        ("scope".into(), "package".into()),
+        ("target".into(), "./...".into()),
+        ("runAfterBuild".into(), "false".into()),
+        ("outputDir".into(), "compiled output".into()),
+    ]);
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("compiled output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    std::fs::create_dir_all(h.root.path().join("explicit output")).unwrap();
+    config.args = vec!["build".into(), "-o=explicit output/".into(), "./...".into()];
+    let plan = ide_run::go::plan(h.root.path(), &config).unwrap().unwrap();
+    assert_eq!(plan.build.args, config.args);
+    assert!(plan.run.is_none());
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("explicit output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    config.args = vec!["build".into(), "-o".into(), "one-binary".into(), "./cmd/one".into()];
+    assert_eq!(ide_run::go::plan(h.root.path(), &config).unwrap().unwrap().build.args, config.args);
+}
+
+#[test]
 fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     let h = harness();
     let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
