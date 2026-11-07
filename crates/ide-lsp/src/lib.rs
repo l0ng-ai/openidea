@@ -1475,7 +1475,20 @@ impl LspManager {
         };
         let native =
             self.native_references(doc, pos, include_declaration, project_wide, libraries, cancel.clone(), partial);
-        let (configuration, result) = futures::join!(configuration, native);
+        futures::pin_mut!(configuration, native);
+        let (configuration, result) = match futures::future::select(configuration, native).await {
+            futures::future::Either::Left((configuration, native)) => (configuration, native.await),
+            futures::future::Either::Right((result, configuration)) => {
+                // The configuration index is rebuilt after Java changes, which takes seconds in a
+                // project with many dependencies: the usages found meanwhile are shown first.
+                if let (Some(partial), Ok(found)) = (partial, &result)
+                    && !found.locations.is_empty()
+                {
+                    partial(found.clone());
+                }
+                (configuration.await, result)
+            }
+        };
         let configuration = configuration?;
         let mut result = result?;
         if let Some(configuration) = configuration {
