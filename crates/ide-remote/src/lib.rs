@@ -2,6 +2,7 @@
 //! configurations on run targets ([`target`]; Docker and Compose ones in [`docker`]).
 
 pub mod deploy;
+pub mod devcontainer;
 pub mod docker;
 pub mod import;
 pub mod mapping;

@@ -208,5 +208,12 @@
   "Read-only: the result combines several queries (UNION / INTERSECT / EXCEPT).": "Read-only: the result combines several queries (UNION / INTERSECT / EXCEPT).",
   "Read-only: the result is not a plain select from a single table.": "Read-only: the result is not a plain select from a single table.",
   "Read-only: the result has no primary key of {tableLabel}.": "Read-only: the result has no primary key of {tableLabel}.",
-  "Read-only: the table schema could not be identified in the result database.": "Read-only: the table schema could not be identified in the result database."
+  "Read-only: the table schema could not be identified in the result database.": "Read-only: the table schema could not be identified in the result database.",
+  "Starting the dev container…": "Starting the dev container…",
+  "Command-line tool": "Command-line tool",
+  "Forwarding ports is not supported in a dev container yet": "Forwarding ports is not supported in a dev container yet",
+  "Could not reopen the project in a container": "Could not reopen the project in a container",
+  "Reopen in Container": "Reopen in Container",
+  "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.": "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.",
+  "devcontainer up exited with {status}": "devcontainer up exited with {status}"
 }
