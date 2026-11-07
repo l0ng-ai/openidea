@@ -1620,12 +1620,17 @@ impl Task {
     /// Blocks the calling (blocking-pool) thread until the user answers.
     fn ask_permission(self: &Arc<Self>, params: &Value) -> Value {
         let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
+        let (questions, by_index) = asked_questions(params);
         let title = params
             .pointer("/toolCall/title")
             .and_then(Value::as_str)
             .filter(|t| !t.is_empty())
             .unwrap_or("The agent asks for permission")
             .to_owned();
+        // An agent that answers by index titles its request "Ask user N question(s)"; its
+        // first question says what it wants, as the Claude Code adapter titles its own.
+        let title =
+            if by_index { questions.first().map(|question| question.question.clone()).unwrap_or(title) } else { title };
         // A subagent's request is answered in the task's conversation, named after the subagent.
         let session = params.get("sessionId").and_then(Value::as_str);
         let title = match session.and_then(|s| self.state.lock().conversation.label(s)) {
@@ -1647,10 +1652,6 @@ impl Task {
                     .collect()
             })
             .unwrap_or_default();
-        let questions: Vec<AgentQuestion> = params
-            .pointer("/toolCall/_meta/questions")
-            .and_then(|questions| serde_json::from_value(questions.clone()).ok())
-            .unwrap_or_default();
         let asked: Vec<String> = questions.iter().map(|question| question.question.clone()).collect();
         let (tx, rx) = std::sync::mpsc::channel();
         let entry =
@@ -1664,7 +1665,7 @@ impl Task {
             .as_deref()
             .filter(|_| !asked.is_empty())
             .and_then(|reply| serde_json::from_str::<serde_json::Map<String, Value>>(reply).ok());
-        let name = match answers {
+        let name = match &answers {
             Some(answers) => asked
                 .iter()
                 .filter_map(|question| answers.get(question))
@@ -1690,6 +1691,31 @@ impl Task {
         if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
             self.set_status(AgentStatus::Running, None);
         }
+        // An agent that answers by index reads the answers beside the outcome, keyed by
+        // question index, with its Submit option chosen; anything less cancels the request.
+        if by_index {
+            let submit = options.iter().find(|option| option.kind == "allow_once").or_else(|| options.first());
+            return match (answers.as_ref(), submit) {
+                (Some(answers), Some(submit)) => {
+                    let picked: serde_json::Map<String, Value> = asked
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, question)| {
+                            let items = answers.get(question)?;
+                            let answer = match items {
+                                Value::Array(items) => {
+                                    items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+                                }
+                                item => item.as_str().unwrap_or_default().to_owned(),
+                            };
+                            Some((index.to_string(), json!(answer)))
+                        })
+                        .collect();
+                    json!({ "outcome": { "outcome": "selected", "optionId": submit.id }, "answers": picked })
+                }
+                _ => json!({ "outcome": { "outcome": "cancelled" } }),
+            };
+        }
         match answer {
             Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option } }),
             None => json!({ "outcome": { "outcome": "cancelled" } }),
@@ -1703,7 +1729,10 @@ impl Task {
         }
         let mut pending = self.permissions.lock();
         for entry in s.conversation.main.entries.iter().rev() {
-            if let AgentEntry::Permission { id, options, chosen: None, .. } = entry
+            // A request with questions is never satisfied by a bypass: its Submit option
+            // would answer with no answers.
+            if let AgentEntry::Permission { id, options, questions, chosen: None, .. } = entry
+                && questions.is_empty()
                 && let Some(option) = options.iter().find(|o| o.kind == "allow_once")
                 && let Some(reply) = pending.remove(id)
             {
@@ -1766,6 +1795,23 @@ impl Handler for Client {
 fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
     prompt.text = prompt.text.trim().to_owned();
     (!prompt.text.is_empty() || !prompt.images.is_empty() || !prompt.files.is_empty()).then_some(prompt)
+}
+
+/// The questions a permission request asks, and whether they answer by question index.
+/// The Claude Code adapter carries them as `_meta.questions`, answered as the option id;
+/// Qwen Code (ACP) as `_meta.qwenQuestions`, answered with `answers` keyed by index beside
+/// the id of its Submit option.
+fn asked_questions(params: &Value) -> (Vec<AgentQuestion>, bool) {
+    for (pointer, by_index) in [("/toolCall/_meta/questions", false), ("/toolCall/_meta/qwenQuestions", true)] {
+        if let Some(questions) = params
+            .pointer(pointer)
+            .and_then(|questions| serde_json::from_value::<Vec<AgentQuestion>>(questions.clone()).ok())
+            .filter(|questions| !questions.is_empty())
+        {
+            return (questions, by_index);
+        }
+    }
+    (Vec::new(), false)
 }
 
 /// ACP content blocks: the text, each file (embedded when its text is in `contents`, else
