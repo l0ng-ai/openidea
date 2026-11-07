@@ -278,7 +278,13 @@ export function handlePluginEvent(e: PluginEvent) {
       break;
     case "notification": {
       const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;
-      notifications().notify({ group: "plugins", level: e.level, title: e.title || name, body: e.body || undefined });
+      notifications().notify({
+        group: "plugins",
+        level: e.level,
+        title: e.title || name,
+        body: e.body || undefined,
+        verbatim: true,
+      });
       break;
     }
     case "themeChanged":

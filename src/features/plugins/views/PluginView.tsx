@@ -17,7 +17,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import {
   Checkbox,
   EmptyState,
@@ -54,7 +54,16 @@ export interface PluginViewProps {
 const OVERSCAN = 50;
 const ROW_HEIGHT = 24;
 
-export function PluginView({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
+/** Plugin text is shown as written: the plugin translates it through its own catalog. */
+export function PluginView(props: PluginViewProps) {
+  return (
+    <VerbatimTextContext.Provider value={true}>
+      <PluginViewContent {...props} />
+    </VerbatimTextContext.Provider>
+  );
+}
+
+function PluginViewContent({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
   const [rendered, setContent] = useState<View | null>(null);
   const t = usePluginT(pluginId);
   const content = useMemo(() => rendered && localizeView(rendered, t), [rendered, t]);
