@@ -423,11 +423,12 @@ The design:
   Add them to `perf/budgets.json` and the `pnpm perf:rust` runner, then optimise until they pass. Also measure memory against Intelephense.
 
 - [ ] Phase 6.4: Switch to the native engine
-      This needs a product decision (`needs-decision`): keep Intelephense as an optional fallback for one release, or remove it. If the decision isn't recorded in this paragraph, block the phase. Once decided:
-  1. Default `PhpSettings.engine` to Native.
-  2. Update `languages/php.toml`.
-  3. Adapt `crates/ide-sdk/src/php.rs`, removing the Intelephense-only settings or keeping them for the fallback.
-  4. Update the tool registry and the smoke tests.
+      This needed a product decision (`needs-decision`): keep Intelephense as an optional fallback, or remove it.
+      **Decided (2026-11-07, by the project owner): make the native engine the default and keep Intelephense as an optional fallback.** Users can still pick Intelephense in `PhpSettings.engine`; it is no longer the default. Do not remove it.
+  1. Default `PhpSettings.engine` to Native, for new and existing settings that never chose an engine.
+  2. Update `languages/php.toml` so Intelephense stays available as the fallback server, used only when the engine setting selects it. Remove phpactor unless something still depends on it.
+  3. Adapt `crates/ide-sdk/src/php.rs`, keeping the Intelephense settings the fallback needs.
+  4. Update the tool registry and the smoke tests: the PHP smoke runs on Native by default, and a test covers switching to the Intelephense fallback.
 
 - [ ] Phase 6.5: Documentation close-out
       Update the user docs (Settings › PHP, features) and the README's language table. Write an architecture note for contributors (`docs/php-engine/architecture.md`).
