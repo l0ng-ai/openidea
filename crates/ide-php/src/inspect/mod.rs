@@ -609,6 +609,15 @@ impl PhpEngine {
             let (start, end) = parsed.line_index().byte_range(range);
             out.extend(crate::refactor::extract_actions(self, &parsed, &path, start, end, only));
         }
+        if [crate::refactor::INLINE_VARIABLE, crate::refactor::INLINE_METHOD, crate::refactor::INLINE_FUNCTION]
+            .iter()
+            .any(|kind| wanted(only, kind))
+        {
+            let parsed = self.parsed_document(doc)?;
+            let path = self.document_path(doc)?;
+            let (start, end) = parsed.line_index().byte_range(range);
+            out.extend(crate::refactor::inline_actions(self, &parsed, &path, start, end, only));
+        }
         Some(out)
     }
 

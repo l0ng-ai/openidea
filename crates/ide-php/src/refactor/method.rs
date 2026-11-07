@@ -69,12 +69,12 @@ const NEW_NAME: &str = "extracted";
 type Env = BTreeMap<Vec<u8>, VarState>;
 
 /// Variables every scope has.
-const SUPERGLOBALS: &[&str] =
+pub(super) const SUPERGLOBALS: &[&str] =
     &["GLOBALS", "_SERVER", "_GET", "_POST", "_FILES", "_COOKIE", "_SESSION", "_REQUEST", "_ENV"];
 
 /// Where the selection is.
 #[derive(Clone, Copy)]
-enum Scope<'a> {
+pub(super) enum Scope<'a> {
     Method(&'a Method<'a>),
     Function(&'a Function<'a>),
     TopLevel,
@@ -82,31 +82,31 @@ enum Scope<'a> {
 
 /// One use of a variable.
 #[derive(Clone)]
-struct Occurrence<'a> {
+pub(super) struct Occurrence<'a> {
     /// Without `$`.
-    name: String,
+    pub(super) name: String,
     /// The `$`.
-    offset: u32,
+    pub(super) offset: u32,
     /// The arrow functions it is inside (their flows record it).
-    arrows: Vec<&'a ArrowFunction<'a>>,
+    pub(super) arrows: Vec<&'a ArrowFunction<'a>>,
 }
 
 /// What a walk over some code found.
 #[derive(Default)]
-struct Walk<'a> {
-    occurrences: Vec<Occurrence<'a>>,
-    uses_this: bool,
+pub(super) struct Walk<'a> {
+    pub(super) occurrences: Vec<Occurrence<'a>>,
+    pub(super) uses_this: bool,
     /// Spans of `return` statements.
-    returns: Vec<(u32, u32)>,
+    pub(super) returns: Vec<(u32, u32)>,
     /// Something that can't move into another function.
-    refused: bool,
+    pub(super) refused: bool,
     /// Assignments, `++`/`--`.
-    writes: bool,
+    pub(super) writes: bool,
     /// Spans of string literals (their lines aren't re-indented).
-    strings: Vec<(u32, u32)>,
+    pub(super) strings: Vec<(u32, u32)>,
 }
 
-fn lossy(bytes: &[u8]) -> String {
+pub(super) fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -119,7 +119,7 @@ fn loop_level(level: Option<&Expression<'_>>) -> Option<u64> {
 }
 
 impl<'a> Walk<'a> {
-    fn of(nodes: impl IntoIterator<Item = Node<'a, 'a>>) -> Self {
+    pub(super) fn of(nodes: impl IntoIterator<Item = Node<'a, 'a>>) -> Self {
         let mut walk = Walk::default();
         for node in nodes {
             walk.node(node, 0, &mut Vec::new());
@@ -232,7 +232,7 @@ impl<'a> Walk<'a> {
 
 /// The enclosing scope and its index in `nodes`; `None` inside closures,
 /// arrow functions, anonymous classes and interfaces.
-fn scope_of<'a>(nodes: &[Node<'a, 'a>]) -> Option<(Scope<'a>, usize)> {
+pub(super) fn scope_of<'a>(nodes: &[Node<'a, 'a>]) -> Option<(Scope<'a>, usize)> {
     for (i, node) in nodes.iter().enumerate().rev() {
         match node {
             Node::Closure(_) | Node::ArrowFunction(_) | Node::AnonymousClass(_) => return None,
@@ -280,19 +280,19 @@ fn selected_statements<'a>(
 }
 
 /// `$x = …;` assigning the whole variable with `=`: its name.
-fn plain_assignment<'a>(statement: &'a Statement<'a>) -> Option<(&'a [u8], &'a Assignment<'a>)> {
+pub(super) fn plain_assignment<'a>(statement: &'a Statement<'a>) -> Option<(&'a [u8], &'a Assignment<'a>)> {
     let Statement::Expression(statement) = statement else { return None };
     let Expression::Assignment(assignment) = statement.expression else { return None };
     let Expression::Variable(Variable::Direct(variable)) = assignment.lhs else { return None };
     matches!(assignment.operator, AssignmentOperator::Assign(_)).then_some((variable.name, assignment))
 }
 
-fn is_static(method: &Method<'_>) -> bool {
+pub(super) fn is_static(method: &Method<'_>) -> bool {
     method.modifiers.iter().any(|modifier| matches!(modifier, Modifier::Static(_)))
 }
 
 /// The names in first-use order, once each.
-fn first_use_order<'o>(occurrences: impl IntoIterator<Item = &'o Occurrence<'o>>) -> Vec<String> {
+pub(super) fn first_use_order<'o>(occurrences: impl IntoIterator<Item = &'o Occurrence<'o>>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for occurrence in occurrences {
         if !out.contains(&occurrence.name) {
@@ -306,7 +306,7 @@ fn first_use_order<'o>(occurrences: impl IntoIterator<Item = &'o Occurrence<'o>>
 /// starts on to `indent` (the first line gets `indent` too). Lines inside
 /// strings and lines not starting with the old indentation stay as they
 /// are.
-fn reindent(text: &str, start: u32, end: u32, indent: &str, strings: &[(u32, u32)]) -> String {
+pub(super) fn reindent(text: &str, start: u32, end: u32, indent: &str, strings: &[(u32, u32)]) -> String {
     let old = line_indent(text, start);
     let mut out = String::from(indent);
     let mut at = start as usize;

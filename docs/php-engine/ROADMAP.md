@@ -382,7 +382,7 @@ The design:
 - [x] Phase 5.3: Extract method
       `refactor.extract.function` / method. It finds the parameters and return values from the flow graph, handles `$this` and static context, and adds the return type. Tests: before and after text, including multiple outputs (returned as an array or a list()) and early returns, which are refused.
 
-- [ ] Phase 5.4: Inline
+- [x] Phase 5.4: Inline
       Inline a variable (single assignment) and inline a method or function, handling parameters and returns. Tests: before and after text.
 
 - [ ] Phase 5.5: Change signature

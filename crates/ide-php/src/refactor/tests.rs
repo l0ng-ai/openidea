@@ -24,11 +24,20 @@ struct Project {
 
 impl Project {
     fn new(version: PhpVersion) -> Self {
+        Self::with_files(version, &[])
+    }
+
+    /// A project with more files under `src/` (indexed before the engine
+    /// is ready).
+    fn with_files(version: PhpVersion, files: &[(&str, &str)]) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap();
         let root = base.join("project");
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/consts.php"), "<?php\nnamespace App;\n\nconst TAKEN = 1;\n").unwrap();
+        for (name, text) in files {
+            std::fs::write(root.join("src").join(name), text).unwrap();
+        }
         let sink: SharedSink = Arc::new(|_: IdeEvent| {});
         let config = EngineConfig {
             cache_dir: base.join("cache").join(CACHE_SUBDIR),
@@ -76,6 +85,16 @@ impl Project {
     /// Extract method or function, whichever is offered.
     fn method(&mut self, marked: &str) -> Option<String> {
         self.extract(marked, EXTRACT_METHOD).or_else(|| self.extract(marked, EXTRACT_FUNCTION))
+    }
+
+    /// Inline variable.
+    fn inline_variable(&mut self, marked: &str) -> Option<String> {
+        self.extract(marked, INLINE_VARIABLE)
+    }
+
+    /// Inline method or function, whichever is offered.
+    fn inline_call(&mut self, marked: &str) -> Option<String> {
+        self.extract(marked, INLINE_METHOD).or_else(|| self.extract(marked, INLINE_FUNCTION))
     }
 }
 
@@ -520,4 +539,217 @@ fn extract_method_is_refused_where_control_or_variables_would_change() {
     assert!(found.contains("    extracted($a);\n"), "{found}");
     // Not when only other kinds are asked for.
     assert!(p.actions("<?php\n$a = 1;\n/*|*/echo $a;/*|*/\n", EXTRACT_VARIABLE).is_empty());
+}
+
+// ------------------------------------------------------------ inline
+
+#[test]
+fn inline_a_variable_into_every_read() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    // A stable value goes into every read, in parentheses where needed;
+    // the caret may be on the assignment or on a read.
+    let before = method("        $limit/*|*/ = 10 + 5;\n        echo $limit;\n        return $limit * 2;");
+    let after = method("        echo 10 + 5;\n        return (10 + 5) * 2;");
+    assert_eq!(p.inline_variable(&before).as_deref(), Some(after.as_str()));
+    let before = method("        $limit = 10 + 5;\n        echo $limit;\n        return /*|*/$limit * 2;");
+    assert_eq!(p.inline_variable(&before).as_deref(), Some(after.as_str()));
+    // Into arrow functions, and as an argument (no parentheses).
+    assert_eq!(
+        p.inline_variable(&method(
+            "        $k = 2;\n        $items = array_map(fn ($v) => $v * $k, $items);\n        return max(/*|*/$k, 1);"
+        ))
+        .as_deref(),
+        Some(method("        $items = array_map(fn ($v) => $v * 2, $items);\n        return max(2, 1);").as_str())
+    );
+    // A call goes into its one read in the next statement.
+    assert_eq!(
+        p.inline_variable(&method("        $count = count($items);\n        return /*|*/$count + 1;")).as_deref(),
+        Some(method("        return count($items) + 1;").as_str())
+    );
+    assert_eq!(
+        p.inline_variable(&method(
+            "        $c/*|*/ = $cart->total();\n        if ($c > 1) {\n            return 1;\n        }\n        return 0;"
+        ))
+        .as_deref(),
+        Some(method("        if ($cart->total() > 1) {\n            return 1;\n        }\n        return 0;").as_str())
+    );
+    // Top-level code.
+    assert_eq!(
+        p.inline_variable("<?php\n$a = 'x';\n$b/*|*/ = $a . 'y';\necho $b;\n").as_deref(),
+        Some("<?php\n$a = 'x';\necho $a . 'y';\n")
+    );
+}
+
+#[test]
+fn inline_variable_is_refused_where_the_value_would_change() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let refused = [
+        // A call read twice, later than the next statement, in a loop or a branch.
+        "        $c/*|*/ = count($items);\n        echo $c;\n        return $c;",
+        "        $c/*|*/ = count($items);\n        echo 1;\n        return $c;",
+        "        $c/*|*/ = count($items);\n        foreach ($items as $i) {\n            echo $c;\n        }\n        return 1;",
+        "        $c/*|*/ = count($items);\n        if ($items) {\n            echo $c;\n        }\n        return 1;",
+        "        $c/*|*/ = count($items);\n        return $items && $c;",
+        // Written again, a parameter, read before or undefined.
+        "        $x/*|*/ = 1;\n        $x += 2;\n        return $x;",
+        "        $x/*|*/ = 1;\n        $x++;\n        return $x;",
+        "        foreach ($items as $x) {\n        }\n        $x/*|*/ = 1;\n        return $x;",
+        "        return count($it/*|*/ems);",
+        "        if ($cart) {\n            $x = 1;\n        }\n        return $x/*|*/;",
+        // A read that must stay a variable.
+        "        $x/*|*/ = 1;\n        return isset($x) ? 1 : 0;",
+        "        $x/*|*/ = [];\n        $x[] = 1;\n        return 1;",
+        "        $x/*|*/ = 1;\n        $f = function () use ($x) {\n            return $x;\n        };\n        return $f();",
+        "        $x/*|*/ = 1;\n        return \"n $x\";",
+        "        $x/*|*/ = [1];\n        sort($x);\n        return 1;",
+        // What the value reads changes in between.
+        "        $a = 1;\n        $b/*|*/ = $a;\n        $a = 2;\n        return $b;",
+        // Variables the flow can't follow.
+        "        $x/*|*/ = 1;\n        return compact('x');",
+        "        $x/*|*/ = 1;\n        extract($items);\n        return $x;",
+        // Not assigned by a statement of its own; never read; `$this`.
+        "        return ($x/*|*/ = 1) + $x;",
+        "        $x/*|*/ = 1;\n        return 0;",
+        "        return $th/*|*/is;",
+    ];
+    for body in refused {
+        let marked = method(body);
+        assert_eq!(p.inline_variable(&marked), None, "{marked}");
+    }
+}
+
+#[test]
+fn inline_a_method_whose_body_is_one_return() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let class = |call: &str| {
+        format!(
+            "<?php\nclass Shop\n{{\n    private int $rate = 2;\n\n    public function total(array $items): int\n    {{\n        {call}\n    }}\n\n    private function double(int $n): int\n    {{\n        return $n * $this->rate;\n    }}\n}}\n"
+        )
+    };
+    // Stable arguments are substituted.
+    assert_eq!(
+        p.inline_call(&class("return $this->dou/*|*/ble(3) + 1;")).as_deref(),
+        Some(class("return (3 * $this->rate) + 1;").as_str())
+    );
+    // Others are assigned first.
+    assert_eq!(
+        p.inline_call(&class("return $this->/*|*/double(count($items)) + 1;")).as_deref(),
+        Some(class("$n = count($items);\n        return ($n * $this->rate) + 1;").as_str())
+    );
+    // A static method through `self::`, and one without `$this` called on
+    // another object.
+    let statics = "<?php\nfinal class Money\n{\n    public static function cents(int $v): int\n    {\n        return $v * 100;\n    }\n\n    public function f(Money $m): int\n    {\n        return self::/*|*/cents(2) + $m->cents(3);\n    }\n}\n";
+    assert_eq!(
+        p.inline_call(statics).as_deref(),
+        Some(statics.replace("self::/*|*/cents(2) + $m->cents(3)", "(2 * 100) + $m->cents(3)").as_str())
+    );
+    let other = statics.replace("self::/*|*/cents(2) + $m->cents(3)", "self::cents(2) + $m->ce/*|*/nts(3)");
+    assert_eq!(
+        p.inline_call(&other).as_deref(),
+        Some(statics.replace("self::/*|*/cents(2) + $m->cents(3)", "self::cents(2) + (3 * 100)").as_str())
+    );
+}
+
+#[test]
+fn inline_a_function_into_a_statement() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let greet = "<?php\nfunction greet(string $name): string\n{\n    $message = 'Hello ' . $name;\n    $message .= '!';\n    return $message;\n}\n\n";
+    // Statements before the return; a local the caller also uses is renamed.
+    assert_eq!(
+        p.inline_call(&format!(
+            "{greet}function run(): void\n{{\n    $message = 'x';\n    $out = /*|*/greet('Ann');\n    echo $message, $out;\n}}\n"
+        ))
+        .as_deref(),
+        Some(
+            format!(
+                "{greet}function run(): void\n{{\n    $message = 'x';\n    $message1 = 'Hello ' . 'Ann';\n    $message1 .= '!';\n    $out = $message1;\n    echo $message, $out;\n}}\n"
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(
+        p.inline_call(&format!("{greet}function run(string $who): string\n{{\n    return gr/*|*/eet($who);\n}}\n"))
+            .as_deref(),
+        Some(
+            format!(
+                "{greet}function run(string $who): string\n{{\n    $message = 'Hello ' . $who;\n    $message .= '!';\n    return $message;\n}}\n"
+            )
+            .as_str()
+        )
+    );
+    // A body without a value, as a statement; a last bare `return;` goes.
+    let log = "<?php\nfunction log_it(string $m): void\n{\n    if ($m === '') {\n        echo '-';\n    }\n    echo $m, PHP_EOL;\n    return;\n}\n\n";
+    assert_eq!(
+        p.inline_call(&format!("{log}function run($x): void\n{{\n    /*|*/log_it($x);\n    echo 1;\n}}\n")).as_deref(),
+        Some(
+            format!(
+                "{log}function run($x): void\n{{\n    if ($x === '') {{\n        echo '-';\n    }}\n    echo $x, PHP_EOL;\n    echo 1;\n}}\n"
+            )
+            .as_str()
+        )
+    );
+    // Defaults and named arguments; an unused argument still runs.
+    let scale = "<?php\nfunction scale(int $v, int $by = 2, $unused = null): int\n{\n    return $v * $by;\n}\n";
+    assert_eq!(
+        p.inline_call(&format!("{scale}$r = /*|*/scale(by: 3, v: 5);\n")).as_deref(),
+        Some(format!("{scale}$r = 5 * 3;\n").as_str())
+    );
+    assert_eq!(
+        p.inline_call(&format!("{scale}$s = /*|*/scale(4);\n")).as_deref(),
+        Some(format!("{scale}$s = 4 * 2;\n").as_str())
+    );
+    assert_eq!(
+        p.inline_call(&format!("{scale}$t = /*|*/scale(4, 1, print('x'));\n")).as_deref(),
+        Some(format!("{scale}print('x');\n$t = 4 * 1;\n").as_str())
+    );
+    // A call statement whose value isn't needed.
+    assert_eq!(
+        p.inline_call(&format!("{scale}/*|*/scale(1);\necho 2;\n")).as_deref(),
+        Some(format!("{scale}echo 2;\n").as_str())
+    );
+}
+
+#[test]
+fn inlined_names_are_qualified_for_another_namespace() {
+    let util = "<?php\nnamespace App\\Util;\n\nuse App\\Model\\Item;\n\nfunction make(int $n): Item\n{\n    return new Item(strlen('a') + $n);\n}\n";
+    let item = "<?php\nnamespace App\\Model;\n\nclass Item\n{\n    public function __construct(public int $n) {}\n}\n";
+    let mut p = Project::with_files(PhpVersion::LATEST, &[("Util.php", util), ("Item.php", item)]);
+    assert_eq!(
+        p.inline_call("<?php\nnamespace App;\n\n$x = Util\\/*|*/make(1);\n").as_deref(),
+        Some("<?php\nnamespace App;\n\n$x = new \\App\\Model\\Item(\\strlen('a') + 1);\n")
+    );
+}
+
+#[test]
+fn inline_call_is_refused_where_behaviour_would_change() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let refused = [
+        // Recursion, early returns, generators, static variables, func_get_args().
+        "<?php\nfunction f($n)\n{\n    return f($n - 1);\n}\necho /*|*/f(1);\n",
+        "<?php\nfunction f($n)\n{\n    if ($n) {\n        return 1;\n    }\n    return 2;\n}\n$a = /*|*/f(1);\n",
+        "<?php\nfunction f()\n{\n    yield 1;\n}\n$a = /*|*/f();\n",
+        "<?php\nfunction f()\n{\n    static $n = 0;\n    return ++$n;\n}\n$a = /*|*/f();\n",
+        "<?php\nfunction f()\n{\n    return func_get_args();\n}\n$a = /*|*/f(1);\n",
+        // Statements before the value, or no value, where an expression is needed.
+        "<?php\nfunction f($n)\n{\n    $m = $n + 1;\n    return $m;\n}\necho /*|*/f(1);\n",
+        "<?php\nfunction f($n)\n{\n    echo $n;\n}\n$a = /*|*/f(1);\n",
+        // By-reference and variadic parameters, spread, extra and missing arguments.
+        "<?php\nfunction f(&$n)\n{\n    return $n;\n}\n$a = /*|*/f($b);\n",
+        "<?php\nfunction f(...$n)\n{\n    return $n;\n}\n$a = /*|*/f(1, 2);\n",
+        "<?php\nfunction f($n)\n{\n    return $n;\n}\n$a = /*|*/f(...[1]);\n",
+        "<?php\nfunction f($n)\n{\n    return $n;\n}\n$a = /*|*/f(1, 2);\n",
+        "<?php\nfunction f($n)\n{\n    return $n;\n}\n$a = /*|*/f();\n",
+        // Stubs.
+        "<?php\n$a = /*|*/strlen('x');\n",
+        // Overridden methods, `$this` from outside, receivers that run code,
+        // nullsafe calls, interface methods.
+        "<?php\nclass A\n{\n    public function v()\n    {\n        return 1;\n    }\n\n    public function w()\n    {\n        return $this->/*|*/v();\n    }\n}\n\nclass B extends A\n{\n    public function v()\n    {\n        return 2;\n    }\n}\n",
+        "<?php\nclass A\n{\n    private $r = 1;\n\n    public function v()\n    {\n        return $this->r;\n    }\n}\n\nclass C\n{\n    public function w(A $a)\n    {\n        return $a->/*|*/v();\n    }\n}\n",
+        "<?php\nfinal class A\n{\n    public function v()\n    {\n        return 1;\n    }\n\n    public function me(): A\n    {\n        return $this;\n    }\n\n    public function w()\n    {\n        return $this->me()->/*|*/v();\n    }\n}\n",
+        "<?php\nfinal class A\n{\n    public function v()\n    {\n        return 1;\n    }\n\n    public function w(?A $a)\n    {\n        return $a?->/*|*/v();\n    }\n}\n",
+        "<?php\ninterface I\n{\n    public function v();\n}\n\nfunction g(I $i)\n{\n    return $i->/*|*/v();\n}\n",
+    ];
+    for marked in refused {
+        assert_eq!(p.inline_call(marked), None, "{marked}");
+    }
 }
