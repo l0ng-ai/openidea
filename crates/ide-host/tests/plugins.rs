@@ -361,6 +361,9 @@ fn read_file_is_confined_to_the_project() {
     let err = f.run("misbehave", "read", Some("src/../../secret.txt")).unwrap_err();
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
+    // A missing path inside the project is `not-found`, like the mock reports.
+    let err = f.run("misbehave", "read", Some("src/missing.txt")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
     // Without a project there is nothing to read.
     let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
@@ -1528,13 +1531,50 @@ fn official_key_promoter() {
     assert_eq!(tips.len(), 1, "{tips:?}");
     assert_eq!(tips[0].0.as_deref(), Some("main"), "shown in the window the actions came from");
     assert!(tips[0].1.contains("Ctrl+D") && tips[0].2.contains("3 times"), "{tips:?}");
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.key-promoter/storage.json")).unwrap();
-    assert!(stored.contains("\"count:code.duplicate\":\"3\""), "{stored}");
+    let stored = stored(&f, "openidea.key-promoter");
+    assert!(stored.contains(&("count:code.duplicate".into(), "3".into())), "{stored:?}");
 
     // Uninstalling removes its data.
     f.host.uninstall("openidea.key-promoter").unwrap();
     assert!(!f.plugins_dir.join(".data/openidea.key-promoter").exists());
     assert!(f.host.event_kinds().is_empty());
+}
+
+#[test]
+fn storage_keeps_multimegabyte_indexes_after_idle_reclaim_and_removes_them_on_uninstall() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/storage");
+    f.install(&pkg);
+    f.run("test.storage", "save", None).unwrap();
+    assert_eq!(f.host.instances(), 1);
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.reclaims, 1);
+    assert_eq!(f.run("test.storage", "load", None).unwrap().as_deref(), Some("4194304"));
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.activations, 2);
+    let storage_dir = f.plugins_dir.join(".data/test.storage");
+    assert_eq!(std::fs::read_dir(storage_dir.join("storage")).unwrap().count(), 1, "one file per key");
+    f.host.uninstall("test.storage").unwrap();
+    assert!(!storage_dir.exists());
+    f.install(&pkg);
+    assert!(f.run("test.storage", "load", None).unwrap_err().contains("missing index"));
+}
+
+/// A plugin's stored entries (key, value), read from its files.
+fn stored(f: &Fixture, plugin: &str) -> Vec<(String, String)> {
+    let dir = f.plugins_dir.join(".data").join(plugin).join("storage");
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let bytes = std::fs::read(e.unwrap().path()).unwrap();
+            let len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+            let key = String::from_utf8(bytes[2..2 + len].to_vec()).unwrap();
+            (key, String::from_utf8(bytes[2 + len..].to_vec()).unwrap())
+        })
+        .collect();
+    entries.sort();
+    entries
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -1601,8 +1641,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
         )
     );
     assert!(events.iter().any(|(_, e)| matches!(e, PluginEvent::TaskEnded { .. })));
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.git-toolbox/storage.json")).unwrap();
-    assert!(stored.contains("last-fetch:"), "{stored}");
+    let stored = stored(&f, "openidea.git-toolbox");
+    assert!(stored.iter().any(|(key, _)| key.starts_with("last-fetch:")), "{stored:?}");
 }
 
 /// Restricted Mode: git does not run in an untrusted project (no fetch).
@@ -1941,6 +1981,35 @@ fn official_csv_editor_edits_the_shared_document() {
 }
 
 #[test]
+fn context_menu_entries_can_name_a_submenu() {
+    fn with_menu(version: &'static str, extra: &'static str) -> impl Fn(&str) -> String {
+        move |m: &str| {
+            let m = m.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = \"{version}\""));
+            format!("{m}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n")
+        }
+    }
+    let f = fixture(Limits::default());
+    let dir = tempfile::tempdir().unwrap();
+    let ok = hello_variant(dir.path(), with_menu("^1.3", "menu = \"editor.context\"\nsubmenu = \"Words\""));
+    assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
+    let submenus: Vec<_> =
+        f.host.ui_items("menus").into_iter().filter_map(|i| i.decl["submenu"].as_str().map(str::to_owned)).collect();
+    assert_eq!(submenus, ["Words"]);
+    f.host.uninstall("hello").unwrap();
+
+    for (version, extra, message) in [
+        ("^1.3", "menu = \"tools\"\nsubmenu = \"Words\"", "only for context menus"),
+        ("^1.3", "menu = \"editor.context\"\nsubmenu = \" \"", "titles are"),
+        ("^1.2", "menu = \"editor.context\"\nsubmenu = \"Words\"", "1.3"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(dir.path(), with_menu(version, extra));
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{extra}: {}", err.message);
+    }
+}
+
+#[test]
 fn view_item_menus_name_a_declared_view() {
     /// The menu is new in API 1.2.
     fn api_1_2(m: &str) -> String {
@@ -2270,8 +2339,13 @@ fn commands_ask_the_user_and_reveal_their_views() {
 
     let (result, prompt) = run_and_answer(&f, "input", Some("Main"), Some(&["Other"]), none);
     assert_eq!(result.unwrap().as_deref(), Some("Other"));
-    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()) });
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()), multiline: false });
     assert_eq!(run_and_answer(&f, "input", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "input-multiline", Some("one\ntwo"), Some(&["a\nb"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("a\nb"));
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("one\ntwo".into()), multiline: true });
+    assert_eq!(run_and_answer(&f, "input-multiline", None, None, none).0.unwrap().as_deref(), Some("none"));
 
     let (result, prompt) = run_and_answer(&f, "confirm", None, Some(&[]), none);
     assert_eq!(result.unwrap().as_deref(), Some("true"));
@@ -2291,7 +2365,7 @@ fn commands_ask_the_user_and_reveal_their_views() {
     // Without a window there is nothing to attach the dialog to.
     f.take_events();
     let no_window = Invocation { client: None, ..f.inv() };
-    for cmd in ["pick", "input", "confirm"] {
+    for cmd in ["pick", "input", "input-multiline", "confirm"] {
         let err = f.host.run_command("jobs", cmd, None, no_window.clone()).unwrap_err().message;
         assert!(err.contains("from a command the user invoked"), "{cmd}: {err}");
     }
@@ -2377,6 +2451,46 @@ web = "panel/index.html"
     let assets = f.host.assets("panel-icon", "viewIcon/panel").unwrap();
     assert_eq!(assets.len(), 1);
     assert!(assets[0].1.contains("<rect"));
+}
+
+#[test]
+fn a_package_ships_translations_in_locales() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = |id: &str, catalogs: &[(&str, &str)]| {
+        let pkg = tmp.path().join(id);
+        std::fs::create_dir_all(pkg.join("locales")).unwrap();
+        for (name, text) in catalogs {
+            std::fs::write(pkg.join("locales").join(name), text).unwrap();
+        }
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                "id = \"{id}\"\nname = \"Words\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n\n\
+                 [[contributes.commands]]\nid = \"count\"\ntitle = \"Count Words\"\n"
+            ),
+        )
+        .unwrap();
+        pkg
+    };
+
+    for bad in ["{", "[]", r#"{"Count Words": 1}"#] {
+        let pkg = package("bad-catalog", &[("fr.json", bad)]);
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "{bad}");
+    }
+
+    let pkg = package("words", &[("fr.json", r#"{"Count Words": "Compter les mots"}"#), ("zh-CN.json", "{}")]);
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let item = f.host.ui_items("locales").into_iter().find(|i| i.plugin_id == "words").expect("the catalogs");
+    assert_eq!(item.decl["tags"], serde_json::json!(["fr", "zh-CN"]));
+    let assets = f.host.assets("words", "locale/fr").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("Compter les mots"));
+
+    let other = f.install(&package("other", &[]));
+    assert!(other.error.is_none(), "{:?}", other.error);
+    assert!(f.host.assets("other", "locale/").unwrap().is_empty());
 }
 
 /// A plugin with web views and no code: its pages and their files are

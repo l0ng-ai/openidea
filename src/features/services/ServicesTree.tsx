@@ -5,7 +5,6 @@
  */
 import { useEffect, useMemo, useRef } from "react";
 import clsx from "clsx";
-import { setContext } from "@/platform/context";
 import { useTxTemplate, tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
@@ -208,15 +207,10 @@ export function ServicesTreeView() {
       ) : (
         <SplitGroup orientation="horizontal" className={styles.split}>
           <SplitPanel defaultSize="40%" minSize="160px">
-            <div
-              className={styles.tree}
-              onFocus={(e) =>
-                setContext(SERVICES_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")
-              }
-              onBlur={() => setContext(SERVICES_VIEW_FOCUS, false)}
-            >
+            <div className={styles.tree}>
               <Tree<ServiceTreeItem>
                 key={location}
+                focusContext={SERVICES_VIEW_FOCUS}
                 reorder={reorder}
                 roots={roots}
                 getKey={(n) => n.key}

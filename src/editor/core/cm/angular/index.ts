@@ -7,6 +7,8 @@
  * parsed as one, and folding blocks.
  */
 import { LRLanguage, LanguageSupport, foldService, matchBrackets, syntaxTree } from "@codemirror/language";
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { html } from "@codemirror/lang-html";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import { styleTags, tags as t } from "@lezer/highlight";
@@ -230,9 +232,40 @@ const blockFolding = foldService.of((state, lineStart, lineEnd) => {
   return null;
 });
 
+const selfCloseTags = EditorView.inputHandler.of((view, from, to, text, insertTransaction) => {
+  const { state } = view;
+  if (view.composing || state.readOnly || from !== to || text !== "/") return false;
+  const heads = state.selection.ranges
+    .filter((range) => {
+      if (!range.empty || !angularLanguage.isActiveAt(state, range.head, -1)) return false;
+      const node = syntaxTree(state).resolveInner(range.head, -1);
+      return node.name === "TagName" && node.to === range.head && node.parent?.name === "OpenTag";
+    })
+    .map((range) => range.head);
+  if (!heads.length) return false;
+  const base = insertTransaction();
+  const mappedHeads = new Set(heads.map((head) => base.changes.mapPos(head, 1)));
+  const closing = base.state.changeByRange((range) => {
+    if (!range.empty || !mappedHeads.has(range.head) || base.state.sliceDoc(range.head - 1, range.head) !== "/")
+      return { range };
+    return {
+      range: EditorSelection.cursor(range.head + 1),
+      changes: {
+        from: range.head,
+        to: range.head + (base.state.sliceDoc(range.head, range.head + 1) === ">" ? 1 : 0),
+        insert: ">",
+      },
+    };
+  });
+  if (closing.changes.empty) return false;
+  view.dispatch([base, base.state.update(closing, { userEvent: "input.type", scrollIntoView: true })]);
+  return true;
+});
+
 export function angular(): LanguageSupport {
   return new LanguageSupport(angularLanguage, [
     baseHTML.support,
+    selfCloseTags,
     blockFolding,
     baseHTML.language.data.of({
       closeBrackets: { brackets: ["[", "{", '"'] },

@@ -11,6 +11,7 @@ import { methodAt } from "../breakpoints/symbols";
 import { activeSession, addWatch, removeWatch, revealFrame, sessionSupports, setVariableValue } from "../state";
 import { blurDebugView, focusDebugView } from "./focusedView";
 import { classifyValue, oneLine, sortVariables } from "../values";
+import { valueText } from "../valueText";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./VariablesView.module.css";
 
@@ -270,6 +271,25 @@ export function VariablesView({
   const canWatch = (n: VarNode) =>
     session != null && n.kind === "var" && n.container > 0 && sessionSupports("dataBreakpoints");
 
+  const copyValue = async (node: VarNode) => {
+    let text = node.value;
+    if (session != null && node.reference > 0) {
+      try {
+        text = await valueText(node, (ref) => call(commands.debugVariables(session, ref)));
+      } catch (e) {
+        notifications().notify({
+          group: "run",
+          level: "error",
+          key: "debug.copyValue",
+          title: "Cannot copy the value",
+          body: e instanceof Error ? e.message : String(e),
+        });
+        return;
+      }
+    }
+    await navigator.clipboard?.writeText(text);
+  };
+
   const onContextMenu = (node: VarNode | null, _sel: Set<string>, e: React.MouseEvent) => {
     if (!node || node.kind === "message") return;
     e.preventDefault();
@@ -281,7 +301,7 @@ export function VariablesView({
       );
     if (node.kind === "watch") items.push({ label: "Remove Watch", icon: "minus", run: () => removeWatch(node.name) });
     if (node.kind !== "scope") {
-      items.push({ label: "Copy Value", icon: "copy", run: () => void navigator.clipboard?.writeText(node.value) });
+      items.push({ label: "Copy Value", icon: "copy", run: () => void copyValue(node) });
       items.push({ label: "Copy Name", run: () => void navigator.clipboard?.writeText(node.name) });
       if (node.kind === "var" && node.evaluateName)
         items.push({ label: "Add to Watches", icon: "eye", run: () => addWatch(node.evaluateName!) });

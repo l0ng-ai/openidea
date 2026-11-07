@@ -218,7 +218,7 @@ function StripeHandle({
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     const origin = e.clientX;
-    const icons = parseFloat(getComputedStyle(stripe).getPropertyValue("--stripe-icon-button")) || 28;
+    const icons = parseFloat(getComputedStyle(stripe).getPropertyValue("--stripe-icon-button")) || 30;
     const start = names ? width : icons;
     const cursor = document.body.style.cursor;
     document.body.style.cursor = "col-resize";
@@ -418,7 +418,7 @@ function StripeButton({
       {...tooltipAttrs(tw.title, shortcut)}
     >
       <span className={styles.stripeIcon}>
-        <Icon name={tw.icon} size={18} />
+        <Icon name={tw.icon} size={20} />
         {tw.useBadge && <StripeBadge useBadge={tw.useBadge} />}
       </span>
       {showName && (
@@ -459,7 +459,7 @@ function StripeMore({ windows }: { windows: ToolWindowContribution[] }) {
         onClick={() => setOpen((v) => !v)}
         {...tooltipAttrs("More Tool Windows")}
       >
-        <Icon name="more-horizontal" size={18} />
+        <Icon name="more-horizontal" size={20} />
       </button>
       <Menu
         open={open}
@@ -522,7 +522,7 @@ export function ToolWindowStripe({
           <StripeButton tw={w} active={isActive(w)} focused={focused === w.id} side={side} showName={showNames} />
         </div>
       ))}
-      <div className={styles.stripeSlot}>{indicator(slot, null)}</div>
+      <div className={clsx(styles.stripeSlot, styles.stripeSlotEnd)}>{indicator(slot, null)}</div>
     </div>
   );
 

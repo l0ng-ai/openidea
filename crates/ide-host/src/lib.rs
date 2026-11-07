@@ -248,7 +248,7 @@ impl Host {
             vec![project.notebooks.clone()],
             project.kotlin_bridge.iter().cloned().collect(),
             Some(project.lsp.clone()),
-            Some((self.debugger.clone(), window.to_owned())),
+            Some((self.debugger.clone(), window.to_owned(), project.root.clone())),
             Some(project),
         ))
     }
@@ -261,7 +261,7 @@ impl Host {
         notebooks: Vec<Arc<notebook::NotebookService>>,
         bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
         lsp: Option<Arc<ide_lsp::LspManager>>,
-        debug: Option<(Arc<ide_dap::DebugManager>, String)>,
+        debug: Option<(Arc<ide_dap::DebugManager>, String, std::path::PathBuf)>,
         retired: Option<Arc<Project>>,
     ) -> std::thread::JoinHandle<()> {
         for bridge in &bridges {
@@ -286,8 +286,9 @@ impl Host {
                 if let Some(lsp) = lsp {
                     lsp.shutdown_all().await;
                 }
-                if let Some((debug, key)) = debug {
+                if let Some((debug, key, root)) = debug {
                     debug.stop_key(&key).await;
+                    debug.stop_under(&root).await;
                 }
             });
             if let Some(retired) = retired {

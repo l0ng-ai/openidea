@@ -33,6 +33,7 @@ import {
 import { pluginsBackend } from "../backend";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
+import { localizeView, usePluginT } from "../pluginText";
 import { onViewMessage, useViewRevision } from "./viewStore";
 import styles from "./PluginView.module.css";
 
@@ -54,7 +55,9 @@ const OVERSCAN = 50;
 const ROW_HEIGHT = 24;
 
 export function PluginView({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
-  const [content, setContent] = useState<View | null>(null);
+  const [rendered, setContent] = useState<View | null>(null);
+  const t = usePluginT(pluginId);
+  const content = useMemo(() => rendered && localizeView(rendered, t), [rendered, t]);
   const [error, setError] = useState<string | null>(null);
   const [viewport, setViewport] = useState<Viewport | null>(null);
   const pluginRevision = useViewRevision(pluginId, view);

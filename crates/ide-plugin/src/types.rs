@@ -77,14 +77,15 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
-/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`).
+/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+/// `ui.input-multiline`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Prompt {
     #[serde(rename_all = "camelCase")]
     QuickPick { title: String, items: Vec<PickItem>, multiple: bool },
     #[serde(rename_all = "camelCase")]
-    Input { prompt: String, value: Option<String> },
+    Input { prompt: String, value: Option<String>, multiline: bool },
     #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
 }
@@ -208,6 +209,40 @@ pub struct RepositoryStatus {
     pub behind: u32,
     pub operation: Option<String>,
     pub changed_files: u32,
+}
+
+/// A file a pending commit changes (WIT `commit.commit-change`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitChange {
+    pub repository: String,
+    pub path: String,
+    pub old_path: Option<String>,
+    /// `added`, `modified`, `deleted`, `renamed`, `copied` or `type-changed`.
+    pub status: String,
+    /// `git diff` of the included changes; `None` for binary content.
+    pub diff: Option<String>,
+    pub truncated: bool,
+}
+
+/// What Commit would commit (WIT `commit.commit-draft`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDraft {
+    pub revision: u64,
+    pub message: String,
+    pub amend: bool,
+    pub changes: Vec<CommitChange>,
+}
+
+/// A problem a plugin's before-commit check reported (WIT `commit-checker.commit-problem`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitProblem {
+    pub message: String,
+    /// Absolute path of the file it is in, if any (IPC form).
+    pub path: Option<String>,
+    pub range: Option<ide_core::Range>,
 }
 
 /// Resource limits and supervision policy for plugin code.
@@ -426,6 +461,22 @@ pub struct SemanticToken {
     pub modifiers: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginHover {
+    pub markdown: String,
+    pub range: Option<ide_core::Range>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginInlayHint {
+    pub position: ide_core::Pos,
+    pub label: String,
+    pub kind: String,
+    pub tooltip: Option<String>,
+    pub padding_left: bool,
+    pub padding_right: bool,
+}
+
 // ---- declarative views (wit/views.wit) ---------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -505,7 +556,7 @@ pub struct View {
     pub status: Option<String>,
 }
 
-/// A tab of the Services pane of a plugin's node (`service-provider.detail`).
+/// A tab of the Services pane of a plugin's node (`detail-provider.detail`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceTab {

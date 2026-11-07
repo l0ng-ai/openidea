@@ -25,6 +25,7 @@ export * from "./Popup";
 export * from "./Menu";
 export * from "./Dialog";
 export * from "./Splitter";
+export { Scrollbar, hideNativeScrollbar } from "./Scrollbar";
 export * from "./SourcePreview";
 export * from "./Feedback";
 export * from "./HighlightedText";

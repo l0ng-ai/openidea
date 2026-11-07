@@ -5,7 +5,16 @@
  * batches.
  */
 import { create } from "zustand";
-import type { EventKind, PluginContextKey, PluginEvent, Prompt, StatusItem, WorkbenchEvent } from "@/bindings";
+import type {
+  CommitAnswer,
+  CommitRequest,
+  EventKind,
+  PluginContextKey,
+  PluginEvent,
+  Prompt,
+  StatusItem,
+  WorkbenchEvent,
+} from "@/bindings";
 import { onEditorEvent } from "@/editor/api";
 import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
@@ -14,11 +23,17 @@ import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import { maybeEditorService, registerStatusItem, toolWindowService } from "@/workbench/contributions";
+import {
+  maybeCommitService,
+  maybeEditorService,
+  registerStatusItem,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
+import { usePluginT } from "./pluginText";
 import { bumpView, deliverViewMessage, pluginToolWindowId } from "./views/viewStore";
 import { runPluginCommand, usePlugins } from "./store";
 
@@ -67,16 +82,21 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const running = usePluginStatusItems((s) => s.items.get(itemKey));
   const declared = useDeclaredStatusItems((s) => s.items.get(itemKey));
   const entry = running ?? declared;
+  const t = usePluginT(entry?.pluginId ?? "");
   if (!entry) return null;
   const { pluginId, item } = entry;
   const command = item.command;
+  // Declared items were translated with their declaration.
+  const translate = running ? t : (text: string) => text;
+  const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
+  const text = translate(item.text);
   return (
     <BarButton
-      tooltip={item.tooltip ?? undefined}
-      aria-label={item.tooltip ?? item.text}
+      tooltip={tooltip}
+      aria-label={tooltip ?? text}
       onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
     >
-      {item.text}
+      {text}
     </BarButton>
   );
 }
@@ -307,6 +327,7 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
         initial: prompt.value ?? "",
         validate: () => null,
         keepWhitespace: true,
+        multiline: prompt.multiline,
         signal,
       });
       return text === null ? null : [text];
@@ -324,6 +345,28 @@ async function answerPrompt(promptId: string, prompt: Prompt) {
   if (controller.signal.aborted) return;
   await pluginsBackend()
     .answerPrompt(promptId, answer)
+    .catch(() => {});
+}
+
+/** Answers a plugin's request to this window's Commit view (`commit` API). */
+async function answerCommit(requestId: string, request: CommitRequest) {
+  const commit = maybeCommitService();
+  let answer: CommitAnswer;
+  try {
+    if (request.kind === "selection") {
+      const selection = commit ? await commit.selection() : null;
+      answer = selection ? { kind: "selection", selection } : { kind: "noRepository" };
+    } else if (!commit) {
+      answer = { kind: "noRepository" };
+    } else {
+      answer = commit.setMessage(request.revision, request.message) ? { kind: "done" } : { kind: "stale" };
+    }
+  } catch {
+    // The selection could not be read (e.g. a file vanished): the plugin sees a stale draft.
+    answer = { kind: "stale" };
+  }
+  await pluginsBackend()
+    .answerCommit(requestId, answer)
     .catch(() => {});
 }
 
@@ -369,6 +412,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "promptClosed":
       openPrompts.get(e.promptId)?.abort();
       openPrompts.delete(e.promptId);
+      return true;
+    case "commitRequested":
+      void answerCommit(e.requestId, e.request);
       return true;
     case "revealView":
       toolWindowService().show(pluginToolWindowId(e.pluginId, e.view), true);
