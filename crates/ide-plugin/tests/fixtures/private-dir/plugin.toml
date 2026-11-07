@@ -1,0 +1,38 @@
+id = "test.private-dir"
+name = "Private directory fixture"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = []
+optional = ["process:cat"]
+
+[[contributes.commands]]
+id = "directory"
+title = "Private directory"
+
+[[contributes.commands]]
+id = "roundtrip"
+title = "Write fake private content"
+
+[[contributes.commands]]
+id = "read"
+title = "Read file"
+
+[[contributes.commands]]
+id = "write"
+title = "Write file"
+
+[[contributes.commands]]
+id = "open"
+title = "Open fake private content"
+
+[[contributes.commands]]
+id = "process"
+title = "Read private content with approved cat"
+
+[[contributes.providers]]
+kinds = ["completion"]
+languages = ["private-fixture"]

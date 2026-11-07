@@ -253,6 +253,10 @@ pub trait HostApi: Send + Sync {
     /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
     /// `max` bounds the bytes read.
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
+    /// The plugin's private directory, independent of the current invocation.
+    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
+        Err(HostError::Failed("private plugin storage is unavailable".into()))
+    }
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.
