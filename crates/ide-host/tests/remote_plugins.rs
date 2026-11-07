@@ -299,7 +299,7 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     until("the job's terminal", 5, || {
         client.plugin_events.lock().iter().any(|m| {
             m.window.as_deref() == Some("main")
-                && matches!(&m.event, PluginEvent::OpenTerminal { program, .. } if program.0.starts_with(bin.canonicalize().unwrap()))
+                && matches!(&m.event, PluginEvent::OpenTerminal { program, .. } if program.0.starts_with(&bin))
         })
     })
     .await;
