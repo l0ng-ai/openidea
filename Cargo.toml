@@ -46,6 +46,7 @@ ide-notebook = { path = "crates/ide-notebook" }
 ide-extension = { path = "crates/ide-extension" }
 ide-plugin = { path = "crates/ide-plugin" }
 ide-jvm-attach = { path = "crates/ide-jvm-attach" }
+ide-streams = { path = "crates/ide-streams" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }

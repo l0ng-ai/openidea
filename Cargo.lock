@@ -4699,6 +4699,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-streams"
+version = "0.1.38"
+dependencies = [
+ "ide-core",
+ "ide-language",
+ "ide-syntax",
+ "insta",
+ "serde",
+ "serde_json",
+ "specta",
+ "thiserror 2.0.21",
+ "tokio",
+ "tree-sitter",
+]
+
+[[package]]
 name = "ide-syntax"
 version = "0.1.38"
 dependencies = [
