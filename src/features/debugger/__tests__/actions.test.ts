@@ -60,7 +60,7 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
   };
 });
 
-import { executeAction, getAction, registerActions } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled, registerActions } from "@/platform/actions";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
 import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -255,6 +255,17 @@ describe("debugger actions (IDEA parity)", () => {
     await executeAction("debug.memory.refresh");
     await settle();
     expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledWith(3);
+  });
+
+  it("offers Refresh Memory View only for a live session of a JVM", () => {
+    const refresh = getAction("debug.memory.refresh")!;
+    expect(refresh.when).toBe("debugHasJvmMemory");
+    paused({ adapter: "debugpy", caps: caps({ jvmMemory: false }) });
+    expect(isActionEnabled(refresh)).toBe(false);
+    paused({ caps: caps({ jvmMemory: true }) });
+    expect(isActionEnabled(refresh)).toBe(true);
+    paused({ status: "terminated", caps: caps({ jvmMemory: true }) });
+    expect(isActionEnabled(refresh)).toBe(false);
   });
 
   it("Show Execution Point reveals the top frame with focus", async () => {

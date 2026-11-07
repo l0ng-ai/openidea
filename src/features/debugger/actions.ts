@@ -435,7 +435,7 @@ export function registerDebugActions(): () => void {
       category: "Debug",
       icon: "refresh",
       keywords: ["memory", "heap", "instances", "classes"],
-      when: "debugSessionActive",
+      when: "debugHasJvmMemory",
       run: () => {
         const s = activeSession();
         if (s && sessionSupports("jvmMemory", s)) void refreshMemory(s.id);

@@ -353,6 +353,8 @@ export function publishContext() {
     "debugCanHotSwap",
     Object.values(useDebug.getState().sessions).some((x) => isLive(x) && !!x.caps?.hotCodeReplace),
   );
+  // Refresh Memory View acts on the selected session only.
+  setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
 }
 
 // --- console -----------------------------------------------------------------
