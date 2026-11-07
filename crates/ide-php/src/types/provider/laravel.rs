@@ -31,15 +31,23 @@
 //! and static calls on a class; instance calls on builders are typed when
 //! the expression is.
 //!
-//! Not yet: `@property` from `$casts`/`casts()` and migrations, and the
-//! bindings that service providers register (phase 7.1.b).
+//! - **Attributes:** a model property nothing else types is the attribute
+//!   of that name: its cast (`$casts` or `casts()`: built-in casts, enums,
+//!   cast classes through their `get()`), else the column migrations give
+//!   the model's table (`$table`, else the snake-case plural of the class
+//!   name), nullable when the column is.
+//! - **Bindings:** besides the core aliases, `app('id')`, `make('id')` and
+//!   facade accessors resolve ids that service providers bind
+//!   (`$this->app->singleton('id', …)`; see
+//!   [`LaravelFacts`](crate::summary::LaravelFacts)).
 //!
 //! The behaviour follows Laravel's public documentation and its MIT source
 //! (`Facade::__callStatic`, `Model::__call`, `Builder::__call`,
 //! `Application::registerCoreContainerAliases`).
 
 use super::{CallKind, CallSite, TypeProvider, provided};
-use crate::types::{Context, LazyType, Resolver, Type};
+use crate::summary::ClassKind;
+use crate::types::{ClassModel, Context, LazyType, Resolver, Type};
 
 const APPLICATION: &str = "Illuminate\\Foundation\\Application";
 const CONTAINER: &str = "Illuminate\\Contracts\\Container\\Container";
@@ -52,6 +60,21 @@ const COLLECTION: &str = "Illuminate\\Database\\Eloquent\\Collection";
 const ATTRIBUTE: &str = "Illuminate\\Database\\Eloquent\\Casts\\Attribute";
 const RELATIONS: &str = "Illuminate\\Database\\Eloquent\\Relations\\";
 const RELATION: &str = "Illuminate\\Database\\Eloquent\\Relations\\Relation";
+const SUPPORT_COLLECTION: &str = "Illuminate\\Support\\Collection";
+const CARBON: &str = "Illuminate\\Support\\Carbon";
+const CARBON_IMMUTABLE: &str = "Carbon\\CarbonImmutable";
+
+/// Laravel's castable classes and the type of the attribute they cast to.
+const CAST_CLASSES: &[(&str, &str)] = &[
+    ("Illuminate\\Database\\Eloquent\\Casts\\AsCollection", SUPPORT_COLLECTION),
+    ("Illuminate\\Database\\Eloquent\\Casts\\AsEncryptedCollection", SUPPORT_COLLECTION),
+    ("Illuminate\\Database\\Eloquent\\Casts\\AsArrayObject", "Illuminate\\Database\\Eloquent\\Casts\\ArrayObject"),
+    (
+        "Illuminate\\Database\\Eloquent\\Casts\\AsEncryptedArrayObject",
+        "Illuminate\\Database\\Eloquent\\Casts\\ArrayObject",
+    ),
+    ("Illuminate\\Database\\Eloquent\\Casts\\AsStringable", "Illuminate\\Support\\Stringable"),
+];
 
 /// Model methods defining a relation, and the relation class they return
 /// (in [`RELATIONS`]).
@@ -163,14 +186,34 @@ impl LaravelProvider {
             .map(|model| model.fqn().to_owned())
     }
 
-    /// The class a container binding name stands for: a core alias, or a
-    /// class that exists.
+    /// The class a container binding name stands for: a core alias, a
+    /// class that exists, or what a service provider binds to the id.
     fn binding(resolver: &Resolver<'_>, name: &str) -> Option<Type> {
         if let Some(class) = core_alias(name) {
             return Some(Type::named(class));
         }
-        let name = name.trim_start_matches('\\');
-        resolver.class_model(name).map(|model| Type::named(model.fqn()))
+        let trimmed = name.trim_start_matches('\\');
+        if let Some(model) = resolver.class_model(trimmed) {
+            return Some(Type::named(model.fqn()));
+        }
+        let facts = resolver.laravel();
+        // A later registration replaces an earlier one.
+        facts.bindings.iter().rev().filter(|binding| binding.id == name).find_map(|binding| {
+            let ty = resolver.resolve(&binding.target, &Context::default());
+            let members: Vec<Type> = ty
+                .members()
+                .iter()
+                .filter_map(|member| match member {
+                    Type::Named { .. } => Some(member.clone()),
+                    Type::ClassString(Some(class)) if matches!(class.as_ref(), Type::Named { .. }) => {
+                        Some(class.as_ref().clone())
+                    }
+                    Type::LiteralString(class) => resolver.class_model(class).map(|model| Type::named(model.fqn())),
+                    _ => None,
+                })
+                .collect();
+            (!members.is_empty()).then(|| Type::union(members))
+        })
     }
 
     /// The service behind a facade: what its `getFacadeAccessor()` returns.
@@ -365,7 +408,121 @@ impl LaravelProvider {
         if camel != name && model.method(&camel).is_some() {
             return Self::model_property(resolver, class, &camel);
         }
-        None
+        Self::attribute(resolver, &model, name)
+    }
+
+    /// A model attribute: its cast, else its migrated column.
+    fn attribute(resolver: &Resolver<'_>, model: &ClassModel, name: &str) -> Option<Type> {
+        let facts = resolver.laravel();
+        let table = Self::table(model);
+        let column = facts.columns(&table).into_iter().find(|column| column.name == name).cloned();
+        // The model's own casts, else a parent's.
+        let cast = facts
+            .casts
+            .iter()
+            .filter(|casts| model.is_subclass_of(&casts.class))
+            .min_by_key(|casts| !casts.class.eq_ignore_ascii_case(model.fqn()))
+            .and_then(|casts| casts.casts.iter().find(|cast| cast.attribute == name))
+            .and_then(|cast| cast_type(resolver, &cast.cast));
+        let ty = match (cast, &column) {
+            (Some(ty), _) => ty,
+            (None, Some(column)) => Type::from_doc(&column.ty, &[]),
+            (None, None) => return None,
+        };
+        Some(if column.is_some_and(|column| column.nullable) { ty.nullable() } else { ty })
+    }
+
+    /// A model's table: its `$table`, else the snake-case plural of its
+    /// name (`BlogPost` is `blog_posts`).
+    fn table(model: &ClassModel) -> String {
+        let declared = model
+            .property("table")
+            .and_then(|property| property.declared())
+            .and_then(|property| property.default.as_deref())
+            .map(|value| value.trim_matches(|c| c == '\'' || c == '"'))
+            .filter(|value| !value.is_empty() && !value.contains(['$', '\'', '"', '.']));
+        if let Some(table) = declared {
+            return table.to_owned();
+        }
+        let short = model.fqn().rsplit('\\').next().unwrap_or_default();
+        let snake = snake(short);
+        let (head, last) = match snake.rsplit_once('_') {
+            Some((head, last)) => (format!("{head}_"), last.to_owned()),
+            None => (String::new(), snake),
+        };
+        format!("{head}{}", plural(&last))
+    }
+}
+
+/// The type an attribute with built-in cast or cast class `cast` has
+/// (`HasAttributes::castAttribute` in Laravel's MIT source).
+fn cast_type(resolver: &Resolver<'_>, cast: &str) -> Option<Type> {
+    if let Some(class) = cast.strip_prefix('\\') {
+        if let Some((_, known)) = CAST_CLASSES.iter().find(|(name, _)| name.eq_ignore_ascii_case(class)) {
+            return Some(Type::named(known));
+        }
+        let model = resolver.class_model(class)?;
+        if model.kind() == ClassKind::Enum {
+            return Some(Type::named(model.fqn()));
+        }
+        // A `CastsAttributes` class: what its `get()` returns.
+        let got = resolver.method_return(&Type::named(model.fqn()), "get", &Context::default());
+        return (got != Type::Mixed).then_some(got);
+    }
+    let (kind, argument) = cast.split_once(':').unwrap_or((cast, ""));
+    Some(match kind.to_ascii_lowercase().as_str() {
+        "int" | "integer" | "timestamp" => Type::Int,
+        "real" | "float" | "double" => Type::Float,
+        "decimal" | "string" | "hashed" => Type::string(),
+        "bool" | "boolean" => Type::Bool,
+        "object" => Type::named("stdClass"),
+        "array" | "json" => Type::array(),
+        "collection" => Type::named(SUPPORT_COLLECTION),
+        "date" | "datetime" | "custom_datetime" => Type::named(CARBON),
+        "immutable_date" | "immutable_datetime" | "immutable_custom_datetime" => Type::named(CARBON_IMMUTABLE),
+        "encrypted" => match argument.to_ascii_lowercase().as_str() {
+            "array" | "json" => Type::array(),
+            "collection" => Type::named(SUPPORT_COLLECTION),
+            "object" => Type::named("stdClass"),
+            _ => Type::string(),
+        },
+        _ => return None,
+    })
+}
+
+/// `BlogPost` → `blog_post`.
+fn snake(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
+/// The English plural of a lower-case word, for the common cases
+/// (`post` → `posts`, `category` → `categories`, `box` → `boxes`).
+fn plural(word: &str) -> String {
+    const IRREGULAR: &[(&str, &str)] =
+        &[("person", "people"), ("child", "children"), ("man", "men"), ("woman", "women"), ("mouse", "mice")];
+    const SAME: &[&str] = &["data", "equipment", "information", "media", "news", "series", "species"];
+    if let Some((_, plural)) = IRREGULAR.iter().find(|(single, _)| *single == word) {
+        return (*plural).to_owned();
+    }
+    if SAME.contains(&word) {
+        return word.to_owned();
+    }
+    let consonant_y = word.len() > 1
+        && word.ends_with('y')
+        && !matches!(word.as_bytes()[word.len() - 2], b'a' | b'e' | b'i' | b'o' | b'u');
+    if consonant_y {
+        format!("{}ies", &word[..word.len() - 1])
+    } else if ["s", "x", "z", "ch", "sh"].iter().any(|end| word.ends_with(end)) {
+        format!("{word}es")
+    } else {
+        format!("{word}s")
     }
 }
 

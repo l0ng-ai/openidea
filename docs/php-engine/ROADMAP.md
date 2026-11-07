@@ -443,13 +443,22 @@ The design:
 
   Turn them on when `laravel/framework` is installed. Tests: snippets with stubs.
 
-- [ ] Phase 7.1.b: Laravel casts, migrations and service-provider bindings
+- [x] Phase 7.1.b: Laravel casts, migrations and service-provider bindings
       Phase 7.1 types facades, the container helpers with core aliases, and Eloquent forwarding, scopes, relations and accessors. What it left needs data from other files, so it needs new summary fields and an index:
   - `@property` types of models from `$casts` and `casts()` (the array values are widened in summaries today) and from simple `Schema::create` migrations (table name → model by Laravel's naming convention)
   - container bindings registered in service providers (`bind`, `singleton`, `scoped`, `instance`, `alias`) for `app('id')`, `make('id')` and facade accessors that name them
   - completion and hover for facade methods, builder forwarding and relation properties (today only the types are known)
 
   Tests: snippets with stubs, and summaries recording the new data.
+
+- [ ] Phase 7.1.c: Completion and hover for Laravel's magic members
+      Phase 7.1.b types model attributes (casts, migrated columns), relation properties and the bindings service providers register, but only as types. Make them visible in the editor:
+  - completion after `Facade::` lists the service's methods (as static), after `Model::` and on a builder or relation the builder's and query builder's methods, the model's local scopes (`active()` for `scopeActive()`) and nothing for dynamic `where*`
+  - completion after `$model->` lists the relation properties, accessors, casts and migrated columns
+  - hover on those members shows the forwarded method's signature and docs, or the attribute's type and where it comes from (the cast, the migration column)
+  - goto definition on a cast attribute or column goes to the cast entry or the migration line (needs the locations in `LaravelFacts`)
+
+  Tests: completion and hover fixtures with a `/*|*/` caret on the Laravel stubs of `laravel_tests.rs`.
 
 - [ ] Phase 7.2: Symfony providers
   - Service container `get()` typed by service id from `config/services.yaml` and autowiring.

@@ -453,3 +453,34 @@ override(\App\Factory::make(0), map(['clock' => \App\Factory::class]));
     engine.document_closed(meta_doc);
     assert_eq!(engine.type_at(doc, Pos::new(2, 16)), Some(Type::named(r"App\Clock")));
 }
+
+#[test]
+fn laravel_bindings_come_from_the_index_and_open_buffers() {
+    use crate::types::Type;
+    let f = Fixture::new();
+    f.write("lib/Application.php", "<?php\nnamespace Illuminate\\Foundation;\nclass Application {}\n");
+    f.write("src/Clock.php", "<?php\nnamespace App;\nclass Clock {}\nclass Timer {}\n");
+    f.write(
+        "src/AppServiceProvider.php",
+        "<?php\nnamespace App;\nclass AppServiceProvider { function register() { $this->app->singleton('clock', Clock::class); } }\n",
+    );
+    let main = f.write("src/main.php", "<?php\n");
+    let added = f.root.join("src/TimerProvider.php");
+    let engine = f.open();
+    assert_eq!(engine.index().unwrap().laravel_files().unwrap().len(), 1);
+
+    let doc = DocId::next();
+    engine.document_opened(doc, &main, 1, "<?php\napp('clock');\napp('timer');\n");
+    assert_eq!(engine.type_at(doc, Pos::new(1, 1)), Some(Type::named(r"App\Clock")));
+    assert_eq!(engine.type_at(doc, Pos::new(2, 1)), Some(Type::Mixed));
+
+    // A provider only open in the editor counts too.
+    let provider = DocId::next();
+    engine.document_opened(
+        provider,
+        &added,
+        1,
+        "<?php\nnamespace App;\nclass TimerProvider { function register() { $this->app->bind('timer', fn () => new Timer()); } }\n",
+    );
+    assert_eq!(engine.type_at(doc, Pos::new(2, 1)), Some(Type::named(r"App\Timer")));
+}

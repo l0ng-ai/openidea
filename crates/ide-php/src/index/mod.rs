@@ -18,7 +18,9 @@
 //! - **namespaces**: lower-case namespace (empty for the global one) → its
 //!   child declarations and child namespaces.
 //! - **meta files**: [`META_FILES_KEY`] → a `PHPSTORM_META` namespace
-//!   [`Decl`] per file with `.phpstorm.meta.php` directives.
+//!   [`Decl`] per file with `.phpstorm.meta.php` directives;
+//!   [`LARAVEL_FILES_KEY`] → a [`Decl`] per file with Laravel bindings,
+//!   migrations or casts (same table).
 //! - **words**: lower-case identifier ([`words`]) → the files containing it
 //!   anywhere (code, comments, strings), by a 64-bit id of the path; the
 //!   candidates of a find-usages search. Each content hash keeps its word
@@ -62,8 +64,8 @@ use serde::{Deserialize, Serialize};
 use crate::names::NameKind;
 use crate::summary::{ClassKind, FileSummary, SCHEMA_VERSION};
 use crate::syntax::ParsedFile;
-pub use tables::META_FILES_KEY;
 use tables::*;
+pub use tables::{LARAVEL_FILES_KEY, META_FILES_KEY};
 pub use words::words;
 
 /// Bump whenever the tables or their encodings change.
@@ -463,6 +465,11 @@ impl PhpIndex {
     /// The files with `.phpstorm.meta.php` directives, sorted.
     pub fn meta_files(&self) -> IdeResult<Vec<PathBuf>> {
         Ok(self.multimap(META_FILES, META_FILES_KEY)?.iter().map(Decl::path).collect())
+    }
+
+    /// The files with Laravel bindings, migrations or casts, sorted.
+    pub fn laravel_files(&self) -> IdeResult<Vec<PathBuf>> {
+        Ok(self.multimap(META_FILES, LARAVEL_FILES_KEY)?.iter().map(Decl::path).collect())
     }
 
     fn multimap(&self, def: MultiDef, key: &str) -> IdeResult<Vec<Decl>> {

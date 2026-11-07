@@ -47,7 +47,7 @@ use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
 use crate::project::{LayoutConfig, ProjectLayout, is_php_path, normalize};
 use crate::stubs::{BundledStubs, StubFilter, StubSet};
-use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl};
+use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, LaravelFacts};
 use crate::syntax::{ParseCache, ParsedFile};
 use crate::types::{ClassModel, Declarations, Resolver, Type, TypeCache};
 
@@ -642,6 +642,26 @@ impl Declarations for PhpEngine {
         let summaries: Vec<Arc<FileSummary>> =
             paths.iter().filter_map(|path| self.shared_summary(path).ok().flatten()).collect();
         PhpStormMeta::merge(summaries.iter().map(|summary| &summary.meta))
+    }
+
+    /// The facts of the indexed files that have some (their open buffers
+    /// first), then of open buffers not indexed yet, in path order (the
+    /// order migrations run in).
+    fn laravel(&self) -> LaravelFacts {
+        let indexed = self.index().and_then(|index| index.laravel_files().ok()).unwrap_or_default();
+        let mut summaries: Vec<(PathBuf, Arc<FileSummary>)> =
+            indexed.iter().filter_map(|path| Some((path.clone(), self.shared_summary(path).ok()??))).collect();
+        let open: Vec<OpenDocument> = self.shared.documents.lock().values().cloned().collect();
+        for document in open {
+            if !indexed.contains(&document.path) {
+                let summary = self.open_summary(&document);
+                if !summary.laravel.is_empty() {
+                    summaries.push((document.path.clone(), summary));
+                }
+            }
+        }
+        summaries.sort_by(|a, b| a.0.cmp(&b.0));
+        LaravelFacts::merge(summaries.iter().map(|(_, summary)| &summary.laravel))
     }
 }
 

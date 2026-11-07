@@ -56,7 +56,7 @@ use super::provider::TypeProviders;
 use super::{Hierarchy, LazyType, Relative, SignatureParam, Type};
 use crate::meta::PhpStormMeta;
 use crate::names::{NameKind, fqn_eq};
-use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, TypeHint};
+use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, LaravelFacts, TypeHint};
 
 mod generics;
 
@@ -106,6 +106,11 @@ pub trait Declarations {
     fn meta(&self) -> PhpStormMeta {
         PhpStormMeta::default()
     }
+    /// The Laravel bindings, migrations and casts of the project, merged.
+    /// The [`Resolver`] caches them per modification counter.
+    fn laravel(&self) -> LaravelFacts {
+        LaravelFacts::default()
+    }
 }
 
 /// [`Declarations`] over a fixed set of summaries, the first declaration
@@ -142,6 +147,10 @@ impl Declarations for SummarySet {
     fn meta(&self) -> PhpStormMeta {
         PhpStormMeta::merge(self.summaries.iter().map(|summary| &summary.meta))
     }
+
+    fn laravel(&self) -> LaravelFacts {
+        LaravelFacts::merge(self.summaries.iter().map(|summary| &summary.laravel))
+    }
 }
 
 /// A cached declaration.
@@ -175,6 +184,8 @@ struct CacheState {
     models: HashMap<String, Option<Arc<ClassModel>>>,
     /// The merged `.phpstorm.meta.php` directives.
     meta: Option<Arc<PhpStormMeta>>,
+    /// The merged Laravel facts.
+    laravel: Option<Arc<LaravelFacts>>,
 }
 
 impl CacheState {
@@ -184,6 +195,7 @@ impl CacheState {
             self.entries.clear();
             self.models.clear();
             self.meta = None;
+            self.laravel = None;
             self.generation = generation;
         }
         self
@@ -239,6 +251,18 @@ impl TypeCache {
 
     fn insert_meta(&self, generation: u64, meta: Arc<PhpStormMeta>) {
         self.state.lock().at(generation).meta = Some(meta);
+    }
+
+    fn laravel(&self, generation: u64) -> Option<Arc<LaravelFacts>> {
+        let state = self.state.lock();
+        if state.generation != generation {
+            return None;
+        }
+        state.laravel.clone()
+    }
+
+    fn insert_laravel(&self, generation: u64, facts: Arc<LaravelFacts>) {
+        self.state.lock().at(generation).laravel = Some(facts);
     }
 }
 
@@ -315,6 +339,17 @@ impl<'a> Resolver<'a> {
         let meta = Arc::new(self.decls.meta());
         self.cache.insert_meta(self.generation, meta.clone());
         meta
+    }
+
+    /// The project's Laravel bindings, migrations and casts, cached for the
+    /// modification counter.
+    pub fn laravel(&self) -> Arc<LaravelFacts> {
+        if let Some(facts) = self.cache.laravel(self.generation) {
+            return facts;
+        }
+        let facts = Arc::new(self.decls.laravel());
+        self.cache.insert_laravel(self.generation, facts.clone());
+        facts
     }
 
     /// The type a lazy type stands for, `self`/`parent` (and `static`/

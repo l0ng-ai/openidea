@@ -9,8 +9,8 @@
 use std::fmt::Write;
 
 use super::{
-    ClassLike, ConstantKind, DocBlock, DocTemplate, DocType, FileSummary, Loc, Param, Property, PropertyAccess,
-    TraitRule, TypeHint, Variance, Visibility,
+    ClassLike, ConstantKind, DocBlock, DocTemplate, DocType, FileSummary, LaravelFacts, Loc, Param, Property,
+    PropertyAccess, TraitRule, TypeHint, Variance, Visibility,
 };
 use crate::meta::{MetaDirectives, MetaValue, OverrideKind};
 use crate::types::LazyType;
@@ -56,7 +56,28 @@ pub(super) fn render(summary: &FileSummary) -> String {
         lazy(&mut out, "  ", "type", &constant.value_type);
     }
     meta(&mut out, &summary.meta);
+    laravel(&mut out, &summary.laravel);
     out
+}
+
+/// Laravel bindings, migrated tables and casts, one per line.
+fn laravel(out: &mut String, facts: &LaravelFacts) {
+    for binding in &facts.bindings {
+        let _ = writeln!(out, "laravel bind '{}' => {}", binding.id, binding.target);
+    }
+    for table in &facts.tables {
+        let columns: Vec<String> = table
+            .columns
+            .iter()
+            .map(|column| format!("{}: {}{}", column.name, if column.nullable { "?" } else { "" }, column.ty))
+            .collect();
+        let _ = writeln!(out, "laravel table '{}': {}", table.name, columns.join(", "));
+    }
+    for model in &facts.casts {
+        let casts: Vec<String> =
+            model.casts.iter().map(|cast| format!("{} => {}", cast.attribute, cast.cast)).collect();
+        let _ = writeln!(out, "laravel casts {}: {}", model.class, casts.join(", "));
+    }
 }
 
 /// `.phpstorm.meta.php` directives, one per line.

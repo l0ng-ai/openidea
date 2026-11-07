@@ -34,9 +34,11 @@
 //! stored summary from an older engine is rejected instead of misread.
 
 mod extract;
+mod laravel;
 mod render;
 
 pub(crate) use extract::{inline_vars, type_hint};
+pub use laravel::{Binding, Cast, Column, LaravelFacts, ModelCasts, Table};
 
 use std::fmt;
 
@@ -51,9 +53,9 @@ use crate::types::LazyType;
 /// Bump whenever a type in this module changes shape, or extraction
 /// computes something differently (7: inferred returns track local
 /// variables; 8: hash-notation types and assertion tags; 9: Laravel
-/// provider payloads and `getFacadeAccessor()` values), so stored
-/// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 9;
+/// provider payloads and `getFacadeAccessor()` values; 10: Laravel
+/// bindings, migrations and casts), so stored summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -78,6 +80,9 @@ pub struct FileSummary {
     pub constants: Vec<ConstantDecl>,
     /// `.phpstorm.meta.php` directives (in the `PHPSTORM_META` namespace).
     pub meta: MetaDirectives,
+    /// Container bindings, migrations and model casts, for the Laravel
+    /// type provider.
+    pub laravel: LaravelFacts,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

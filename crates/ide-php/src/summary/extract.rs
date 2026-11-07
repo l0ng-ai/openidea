@@ -11,8 +11,8 @@ use mago_syntax::cst::{
     Argument, AttributeList, Class, ClassLikeConstant, ClassLikeMember, Constant, Enum, EnumCase as AstEnumCase,
     EnumCaseItem, Expression, Function, FunctionCall, FunctionLikeParameter, FunctionLikeParameterList,
     FunctionLikeReturnTypeHint, Hint, Identifier, Interface, Literal, LocalIdentifier, Method as AstMethod, MethodBody,
-    Modifier, Namespace, NamespaceBody, Property as AstProperty, PropertyItem, Sequence, Trait,
-    TraitUse as AstTraitUse, TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification, Use,
+    MethodCall, Modifier, Namespace, NamespaceBody, Property as AstProperty, PropertyItem, Sequence, StaticMethodCall,
+    Trait, TraitUse as AstTraitUse, TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification, Use,
 };
 use mago_syntax::walker::Walker;
 
@@ -28,6 +28,7 @@ use crate::types::{LazyType, Type, TypeProviders};
 use infer::{Infer, body_return, this_assignments};
 
 mod infer;
+mod laravel;
 mod phpdoc;
 
 pub(super) fn extract(file: &ParsedFile) -> FileSummary {
@@ -619,6 +620,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
         class.implements =
             node.implements.as_ref().map(|implements| cx.class_names(&implements.types)).unwrap_or_default();
         cx.provided_properties(&mut class, &node.members);
+        cx.model_casts(&class.fqn, &node.members);
         cx.push_class(class);
     }
 
@@ -665,6 +667,15 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
             };
             cx.summary.constants.push(constant);
         }
+    }
+
+    fn walk_in_method_call(&self, node: &'ast MethodCall<'arena>, cx: &mut Extractor<'f>) {
+        cx.method_binding(node.object, &node.method, &node.argument_list);
+    }
+
+    fn walk_in_static_method_call(&self, node: &'ast StaticMethodCall<'arena>, cx: &mut Extractor<'f>) {
+        cx.static_binding(node.class, &node.method, &node.argument_list);
+        cx.migration(node.class, &node.method, &node.argument_list);
     }
 
     fn walk_in_function_call(&self, node: &'ast FunctionCall<'arena>, cx: &mut Extractor<'f>) {

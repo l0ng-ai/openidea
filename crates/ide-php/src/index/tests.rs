@@ -345,6 +345,23 @@ fn meta_files_are_listed() {
     assert!(index.meta_files().unwrap().is_empty());
 }
 
+#[test]
+fn laravel_files_are_listed() {
+    const PROVIDER: &str = "<?php\nclass P { function register() { $this->app->bind('x', \\App\\X::class); } }\n";
+    const MIGRATION: &str = "<?php\nSchema::create('users', function ($table) { $table->string('name'); });\n";
+    let p = Project::new(&[("Model.php", MODEL), ("provider.php", PROVIDER), ("migration.php", MIGRATION)]);
+    let index = PhpIndex::open(&p.cache()).unwrap();
+    index.sync(&p.files(), &token()).unwrap();
+    assert_eq!(index.laravel_files().unwrap(), [p.path("migration.php"), p.path("provider.php")]);
+    assert!(index.meta_files().unwrap().is_empty());
+
+    // A file without bindings any more leaves the list.
+    p.write("provider.php", "<?php\nclass P {}\n");
+    p.bump_mtime("provider.php", 10);
+    index.sync(&p.files(), &token()).unwrap();
+    assert_eq!(index.laravel_files().unwrap(), [p.path("migration.php")]);
+}
+
 fn word_files(index: &PhpIndex, word: &str) -> Vec<String> {
     let files = index.files_with_word(word).unwrap();
     files.iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect()

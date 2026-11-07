@@ -20,7 +20,8 @@ pub(super) const FQNS: MultiDef = MultimapTableDefinition::new("fqns");
 pub(super) const SHORT_NAMES: MultiDef = MultimapTableDefinition::new("short_names");
 pub(super) const SUBCLASSES: MultiDef = MultimapTableDefinition::new("subclasses");
 pub(super) const NAMESPACES: MultiDef = MultimapTableDefinition::new("namespaces");
-/// [`META_FILES_KEY`] → the files with `.phpstorm.meta.php` directives.
+/// [`META_FILES_KEY`] → the files with `.phpstorm.meta.php` directives;
+/// [`LARAVEL_FILES_KEY`] → the files with Laravel facts.
 pub(super) const META_FILES: MultiDef = MultimapTableDefinition::new("meta_files");
 
 /// lower-case word → the [`file_id`]s of the files containing it.
@@ -33,6 +34,10 @@ pub(super) const WORD_LISTS: TableDefinition<[u8; 32], &[u8]> = TableDefinition:
 
 /// The only key of [`META_FILES`].
 pub const META_FILES_KEY: &str = "phpstorm_meta";
+
+/// The key of [`META_FILES`] listing the files with Laravel bindings,
+/// migrations or casts.
+pub const LARAVEL_FILES_KEY: &str = "laravel";
 
 const MULTIMAPS: [MultiDef; 5] = [FQNS, SHORT_NAMES, SUBCLASSES, NAMESPACES, META_FILES];
 
@@ -112,6 +117,10 @@ fn entries(file: &str, summary: &FileSummary) -> Vec<Entry> {
     if !summary.meta.is_empty() {
         let decl = Decl { kind: DeclKind::Namespace, fqn: "PHPSTORM_META".to_owned(), file: file.to_owned(), index: 0 };
         out.push(Entry { table: 4, key: META_FILES_KEY.to_owned(), decl });
+    }
+    if !summary.laravel.is_empty() {
+        let decl = Decl { kind: DeclKind::Namespace, fqn: String::new(), file: file.to_owned(), index: 0 };
+        out.push(Entry { table: 4, key: LARAVEL_FILES_KEY.to_owned(), decl });
     }
     // Every namespace that holds a declaration is a child of its parent,
     // up to the global namespace.
