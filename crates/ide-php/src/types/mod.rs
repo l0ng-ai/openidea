@@ -441,13 +441,21 @@ impl Type {
     }
 
     /// The type with literals widened to their base type (`1` → `int`,
-    /// `'a'` → `string`, `true` → `bool`), everywhere inside it.
+    /// `'a'` → `string`, `true` → `bool`), everywhere inside it. In a union
+    /// with other types `true`/`false` stay: `int|false` (`strpos()`, and
+    /// WordPress's `T|false` returns) says more than `int|bool`.
     pub fn widen(&self) -> Self {
         self.map(&mut |ty| match ty {
             Self::LiteralInt(_) => Some(Self::Int),
             Self::LiteralFloat(_) => Some(Self::Float),
             Self::LiteralString(_) => Some(Self::string()),
             Self::LiteralBool(_) => Some(Self::Bool),
+            Self::Union(members) if members.iter().any(|m| matches!(m, Self::LiteralBool(_))) => {
+                Some(Self::union(members.iter().map(|m| match m {
+                    Self::LiteralBool(_) => m.clone(),
+                    other => other.widen(),
+                })))
+            }
             _ => None,
         })
     }

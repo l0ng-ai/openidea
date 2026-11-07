@@ -1204,14 +1204,33 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 | BinaryOperator::AngledNotEqual(_) => {
                     self.expr(binary.lhs);
                     self.expr(binary.rhs);
-                    let variable = match (binary.lhs, binary.rhs) {
-                        (Expression::Literal(Literal::Null(_)), other)
-                        | (other, Expression::Literal(Literal::Null(_))) => direct(other),
+                    let literal = |expr: &Expression<'_>| match expr {
+                        Expression::Literal(Literal::Null(_)) => Some(Type::Null),
+                        Expression::Literal(Literal::False(_)) => Some(Type::LiteralBool(false)),
+                        Expression::Literal(Literal::True(_)) => Some(Type::LiteralBool(true)),
                         _ => None,
                     };
-                    let Some(variable) = variable else { return self.split() };
+                    let compared = match (literal(binary.lhs), literal(binary.rhs)) {
+                        (Some(ty), None) => direct(binary.rhs).map(|variable| (variable, ty)),
+                        (None, Some(ty)) => direct(binary.lhs).map(|variable| (variable, ty)),
+                        _ => None,
+                    };
+                    let Some((variable, target)) = compared else { return self.split() };
                     let strict =
                         matches!(binary.operator, BinaryOperator::Identical(_) | BinaryOperator::NotIdentical(_));
+                    if target != Type::Null {
+                        // `=== false` / `!== true` (`strpos()`, WordPress's
+                        // `T|false` returns); loose comparisons with a bool
+                        // are truthiness checks.
+                        if !strict {
+                            return self.split();
+                        }
+                        let (is, is_not) = self.narrow(variable, &target);
+                        return match binary.operator {
+                            BinaryOperator::Identical(_) => (is, is_not),
+                            _ => (is_not, is),
+                        };
+                    }
                     let (mut is_null, mut not_null) = self.narrow(variable, &Type::Null);
                     if !strict {
                         // `== null` holds for every falsy value.

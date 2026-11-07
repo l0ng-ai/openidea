@@ -48,7 +48,7 @@ use std::sync::{Arc, OnceLock};
 use ide_core::settings::Settings;
 use rayon::prelude::*;
 
-use crate::summary::{ClassLike, ConstantDecl, FileSummary, FunctionDecl, Loc, Param, TypeHint};
+use crate::summary::{ClassLike, ConstantDecl, DocBlock, DocType, FileSummary, FunctionDecl, Loc, Param, TypeHint};
 use crate::syntax::ParsedFile;
 use rules::Rules;
 
@@ -296,6 +296,41 @@ impl BundledStubs {
     }
 }
 
+/// Removes the top-level `false` of a docblock type when the native type
+/// `hint` (a stub's, after its version rules) can't be `false`.
+fn drop_false(doc: &mut DocType, hint: &Option<TypeHint>) {
+    fn allows_false(hint: &TypeHint) -> bool {
+        match hint {
+            TypeHint::Builtin(name) => matches!(name.as_str(), "false" | "bool" | "mixed"),
+            TypeHint::Nullable(inner) => allows_false(inner),
+            TypeHint::Union(members) => members.iter().any(allows_false),
+            _ => false,
+        }
+    }
+    let Some(hint) = hint else { return };
+    if allows_false(hint) {
+        return;
+    }
+    let mut members = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    for (i, c) in doc.0.char_indices() {
+        match c {
+            '<' | '(' | '{' | '[' => depth += 1,
+            '>' | ')' | '}' | ']' => depth -= 1,
+            '|' if depth == 0 => {
+                members.push(&doc.0[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    members.push(&doc.0[start..]);
+    let kept: Vec<&str> = members.iter().copied().filter(|m| !m.trim().eq_ignore_ascii_case("false")).collect();
+    if !kept.is_empty() && kept.len() < members.len() {
+        doc.0 = kept.join("|");
+    }
+}
+
 /// The summary as seen at `version`: unavailable declarations and
 /// parameters dropped, version-dependent types chosen.
 fn apply(summary: &FileSummary, rules: &Rules, version: PhpVersion) -> FileSummary {
@@ -312,11 +347,37 @@ fn apply(summary: &FileSummary, rules: &Rules, version: PhpVersion) -> FileSumma
         }
     };
 
+    // A docblock written for every version (`@return string|false` on
+    // `substr()`, "FALSE prior PHP 8.0") loses the `false` the version's
+    // type no longer has; a PHPDoc type the attribute gives for the version
+    // (`explode()`'s `['8.0' => 'string[]']`, which no native hint holds)
+    // replaces the `@return`.
+    let doc_types = |name: &Loc, doc: &mut Option<Box<DocBlock>>, return_type: &Option<TypeHint>, params: &[Param]| {
+        let phpdoc = rules
+            .get(&name.start)
+            .and_then(|rule| rule.ty.as_ref())
+            .filter(|ty| ty.at(version).is_none() && !ty.text_at(version).is_empty())
+            .map(|ty| ty.text_at(version).to_owned());
+        if let Some(text) = phpdoc {
+            doc.get_or_insert_default().return_type = Some(DocType(text));
+        }
+        let Some(doc) = doc else { return };
+        if let Some(ty) = &mut doc.return_type {
+            drop_false(ty, return_type);
+        }
+        for param in &mut doc.params {
+            if let Some(hint) = params.iter().find(|p| p.name == param.name).map(|p| &p.type_hint) {
+                drop_false(&mut param.ty, hint);
+            }
+        }
+    };
+
     let mut out = summary.clone();
     out.functions.retain(|function| keep(&function.name_loc));
     for function in &mut out.functions {
         retype(&function.name_loc, &mut function.return_type);
         params(&mut function.params);
+        doc_types(&function.name_loc, &mut function.doc, &function.return_type, &function.params);
     }
     out.constants.retain(|constant| keep(&constant.name_loc));
     out.class_likes.retain(|class| keep(&class.name_loc));
@@ -325,6 +386,7 @@ fn apply(summary: &FileSummary, rules: &Rules, version: PhpVersion) -> FileSumma
         for method in &mut class.methods {
             retype(&method.name_loc, &mut method.return_type);
             params(&mut method.params);
+            doc_types(&method.name_loc, &mut method.doc, &method.return_type, &method.params);
         }
         class.properties.retain(|property| keep(&property.name_loc));
         for property in &mut class.properties {

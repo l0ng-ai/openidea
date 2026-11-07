@@ -115,6 +115,37 @@ fn language_level_type_aware_picks_the_type() {
     // `['8.2' => 'true'], default: 'bool'`
     assert_eq!(hint(&defaults("8.1"), "phpcredits").as_deref(), Some("bool"));
     assert_eq!(hint(&defaults("8.2"), "phpcredits").as_deref(), Some("true"));
+    // `@return string|false` on `substr()`, whose 8.0 type is `string`: the
+    // docblock loses its `false` from 8.0 on.
+    let doc_return = |version: &str| {
+        let set = defaults(version);
+        set.function("substr").unwrap().1.doc.as_ref().and_then(|doc| doc.return_type.clone()).map(|t| t.0)
+    };
+    assert_eq!(doc_return("7.4").as_deref(), Some("string|false"));
+    assert_eq!(doc_return("8.0").as_deref(), Some("string"));
+    // `['8.0' => 'string[]'], default: 'string[]|false'` on `explode()`:
+    // PHPDoc types, kept as the `@return`.
+    let explode = |version: &str| {
+        let set = defaults(version);
+        let function = set.function("explode").unwrap().1.clone();
+        (function.return_type.clone(), function.doc.and_then(|doc| doc.return_type).map(|t| t.0))
+    };
+    assert_eq!(explode("8.1"), (None, Some("string[]".to_owned())));
+    assert_eq!(explode("7.4"), (None, Some("string[]|false".to_owned())));
+}
+
+#[test]
+fn drop_false_keeps_what_the_native_type_allows() {
+    let doc = |text: &str, hint: Option<TypeHint>| {
+        let mut ty = DocType(text.into());
+        drop_false(&mut ty, &hint);
+        ty.0
+    };
+    let builtin = |name: &str| Some(TypeHint::Builtin(name.into()));
+    assert_eq!(doc("array<int|false, string>|false", builtin("array")), "array<int|false, string>");
+    assert_eq!(doc("string|false", builtin("bool")), "string|false");
+    assert_eq!(doc("string|false", None), "string|false");
+    assert_eq!(doc("false", builtin("string")), "false");
 }
 
 #[test]

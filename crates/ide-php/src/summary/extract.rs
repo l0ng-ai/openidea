@@ -248,22 +248,23 @@ impl Extractor<'_> {
         templates.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
         let params = params
             .iter()
-            .filter_map(|param| {
+            .map(|param| {
                 let ty = match (doc.as_ref().and_then(|doc| doc.param_type(&param.name)), &param.type_hint) {
                     (Some(ty), _) => Type::from_doc(ty, &templates),
                     (None, Some(hint)) => Type::from_hint(hint),
-                    (None, None) => return None,
+                    // Untyped: still a parameter, not a local variable.
+                    (None, None) => Type::Mixed,
                 };
                 let ty = if param.variadic { Type::list_of(ty) } else { ty };
-                Some((param.name.clone(), ty))
+                (param.name.clone(), ty)
             })
             .collect();
-        Infer { scope: &self.scope, params, literals: false }
+        Infer { scope: &self.scope, params, literals: false, locals: Vec::new() }
     }
 
     /// The type of a constant value or property default.
     fn value_type(&self, value: &Expression<'_>, literals: bool) -> LazyType {
-        Infer { scope: &self.scope, params: Vec::new(), literals }.expr(value)
+        Infer { scope: &self.scope, params: Vec::new(), literals, locals: Vec::new() }.expr(value)
     }
 
     fn class_like(

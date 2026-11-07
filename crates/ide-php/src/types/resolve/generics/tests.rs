@@ -222,6 +222,52 @@ fn fixture_collection() {
 }
 
 #[test]
+fn undocumented_parameters_inherit_param_tags() {
+    // The fixture: `BookRepository::save(object $entity)` overrides
+    // `AbstractRepository::save(object $entity)`, which implements
+    // `Repository<T>::save` with `@param T $entity`; `@extends
+    // AbstractRepository<Book>` binds `T`.
+    let body = "namespace App\\Repository;\nclass Sub extends BookRepository {\n  public function save(object $entity): void { $entity/*|*/; }\n}\n";
+    assert_eq!(type_in(FIXTURE, "<?php\n", body), "App\\Model\\Book");
+    let interface = "/** @template T */\ninterface Store {\n  /** @param list<T> $items\n   * @param int $n */\n  public function put(array $items, $n, string $s);\n}\n";
+    let cases = [
+        // Matched by position when renamed; templates mapped through `@implements`.
+        (
+            "/** @implements Store<string> */\nclass S implements Store {\n  public function put(array $xs, $n, string $s) { $xs/*|*/; }\n}\n",
+            "list<string>",
+        ),
+        // A class still generic keeps its own template.
+        (
+            "/** @template U\n * @implements Store<U> */\nclass G implements Store {\n  public function put(array $items, $n, string $s) { $items/*|*/; }\n}\n",
+            "list<U>",
+        ),
+        // Its own `@param` wins; undocumented in the parent keeps the hint.
+        (
+            "class O implements Store {\n  /** @param list<int> $items */\n  public function put(array $items, $n, string $s) { $items/*|*/; }\n}\n",
+            "list<int>",
+        ),
+        ("class O implements Store {\n  public function put(array $items, $n, string $s) { $s/*|*/; }\n}\n", "string"),
+        ("class O implements Store {\n  public function put(array $items, $n, string $s) { $n/*|*/; }\n}\n", "int"),
+        // A parameter inserted before others doesn't take a moved one's tag.
+        (
+            "class O implements Store {\n  public function put(string $first, array $items, $n) { $first/*|*/; }\n}\n",
+            "string",
+        ),
+    ];
+    for (class, expected) in cases {
+        assert_eq!(type_in(&[], "<?php\n", &format!("{interface}{class}")), expected, "{class}");
+    }
+    // Constructors don't inherit their parent's `@param`s.
+    let cases = [(
+        "class P {\n  /** @param string[] $groups */\n  public function __construct(?array $groups = null) {}\n}\nclass C extends P {\n  public function __construct(?string $message = null) { $message/*|*/; }\n}\n",
+        "?string",
+    )];
+    for (class, expected) in cases {
+        assert_eq!(type_in(&[], "<?php\n", &format!("{interface}{class}")), expected, "{class}");
+    }
+}
+
+#[test]
 fn inside_the_generic_class_templates_stay() {
     let body = "namespace App\\Support;\n/** @template T */\nclass Own {\n  /** @return T */\n  public function get() {}\n  public function f() { $this->get()/*|*/; }\n}\n";
     assert_eq!(type_in(&[], "<?php\n", body), "T");

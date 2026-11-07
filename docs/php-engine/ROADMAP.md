@@ -399,8 +399,19 @@ The design:
 - [x] Phase 6.1: Full Native smoke parity
       Every check in the php `language_smoke` case passes with `engine = Native`. Fix the gaps found. Run it both ways and record both results in PROGRESS.
 
-- [ ] Phase 6.2: Comparison harness on the corpora
+- [x] Phase 6.2: Comparison harness on the corpora
       Run `differential.rs` on laravel/framework, symfony/symfony and WordPress. Fix engine differences until it matches Intelephense or beats it (checking by hand where they disagree) on at least 98% of definition and hover samples. Commit the summary report to `docs/php-engine/differential.md`. If more fixing is needed, split it into follow-up phases.
+
+- [ ] Phase 6.2.b: Close the remaining hover gaps
+      Phase 6.2 left definition at 98.5% and hover at 96.8% ("matches or beats", 200 samples per corpus; see the review in `docs/php-engine/differential.md`). Fix the engine gaps listed there under Follow-ups:
+  - closure and arrow function parameters typed from the callable they are passed to
+  - `@phpstan-assert(-if-true|-if-false)` and the `@psalm-` variants
+  - inline `/** @var T $x */`
+  - the magic `@property` when the real property isn't accessible
+  - array flow: by-reference aliases, `foreach` over elements, returned array-literal shapes through destructuring, templates through by-reference parameters
+  - `$this->…` in anonymous classes, `match (true)` narrowing, literal types in callable signatures, superglobal definitions
+
+  Rerun the corpora with the same seed and update `docs/php-engine/differential.md` until hover also reaches 98%. Test each fix with unit tests.
 
 - [ ] Phase 6.3: Performance budgets
       Criterion benches for:

@@ -3,15 +3,21 @@
 //!
 //! Only the file is known here, so anything that depends on another
 //! declaration (a call, a member access, a constant) becomes a lazy recipe
-//! for the resolver. Variables other than `$this` and the parameters are not
-//! tracked (that is the flow analysis of a later phase): they are `mixed`.
+//! for the resolver. Local variables are tracked flow-insensitively for
+//! returns only ([`body_return`]): a variable only ever written by plain
+//! `$x = value` assignments has the union of those values; any other write
+//! (compound assignment, element write, destructuring, `foreach`, `global`,
+//! `static`, a by-reference closure capture) makes it `mixed`, as are all
+//! other variables.
 //! Calls go through the local step of the built-in type providers
 //! ([`TypeProviders::builtin`]), the core one giving the plain recipes.
 
 use mago_syntax::cst::{
     Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, Assignment, AssignmentOperator,
-    BinaryOperator, Block, Call, Class, ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct, Enum,
-    Expression, Function, Interface, MagicConstant, MatchArm, Return, Trait, UnaryPrefixOperator, Variable, Yield,
+    BinaryOperator, Block, Call, Class, ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct,
+    DirectVariable, Enum, Expression, ForeachKeyValueTarget, ForeachValueTarget, Function, Global, Interface,
+    MagicConstant, MatchArm, Return, StaticAbstractItem, StaticConcreteItem, Trait, UnaryPrefixOperator, Variable,
+    Yield,
 };
 use mago_syntax::walker::Walker;
 
@@ -28,6 +34,9 @@ pub(super) struct Infer<'s> {
     /// Keep literal types (`'a'`, `1`) instead of widening them; used for
     /// constant values, where the literal is the value.
     pub literals: bool,
+    /// Local variables (name without `$`) only written by plain
+    /// assignments, and the union of the assigned values.
+    pub locals: Vec<(String, LazyType)>,
 }
 
 fn lossy(bytes: &[u8]) -> String {
@@ -183,8 +192,11 @@ impl Infer<'_> {
             return known(Type::Relative(Relative::This));
         }
         let name = lossy(name);
-        match self.params.iter().find(|(param, _)| *param == name) {
-            Some((_, ty)) => known(ty.clone()),
+        if let Some((_, ty)) = self.params.iter().find(|(param, _)| *param == name) {
+            return known(ty.clone());
+        }
+        match self.locals.iter().find(|(local, _)| *local == name) {
+            Some((_, ty)) => ty.clone(),
             None => LazyType::mixed(),
         }
     }
@@ -328,6 +340,20 @@ impl Infer<'_> {
 /// - else the union of the returned values, with `null` for a bare
 ///   `return;`.
 pub(super) fn body_return(infer: &Infer<'_>, body: &Block<'_>) -> LazyType {
+    let mut writes = Writes::default();
+    WriteWalker.walk_block(body, &mut writes);
+    let mut infer =
+        Infer { scope: infer.scope, params: infer.params.clone(), literals: infer.literals, locals: Vec::new() };
+    // Two rounds, so `$a = new A; $b = $a; return $b;` sees `$a` in `$b`.
+    for _ in 0..2 {
+        infer.locals = writes
+            .assigned
+            .iter()
+            .filter(|(name, _)| !writes.other.contains(name) && !infer.params.iter().any(|(param, _)| param == name))
+            .map(|(name, values)| (name.clone(), LazyType::union(values.iter().map(|value| infer.expr(value)))))
+            .collect();
+    }
+    let infer = &infer;
     let mut returns = Returns { infer, values: Vec::new(), bare: false, generator: false };
     ReturnWalker.walk_block(body, &mut returns);
     if returns.generator {
@@ -407,4 +433,105 @@ impl<'ast, 'arena> Walker<'ast, 'arena, Assignments<'ast, 'arena>> for Assignmen
     fn walk_interface(&self, _: &'ast Interface<'arena>, _: &mut Assignments<'ast, 'arena>) {}
     fn walk_trait(&self, _: &'ast Trait<'arena>, _: &mut Assignments<'ast, 'arena>) {}
     fn walk_enum(&self, _: &'ast Enum<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+}
+
+/// The local variables written in a function-like body (outside nested
+/// scopes): the values of plain `$x = value` assignments by name, and the
+/// names written any other way.
+#[derive(Default)]
+struct Writes<'ast, 'arena> {
+    assigned: Vec<(String, Vec<&'ast Expression<'arena>>)>,
+    other: Vec<String>,
+}
+
+fn variable_name(variable: &DirectVariable<'_>) -> String {
+    lossy(variable.name.strip_prefix(b"$").unwrap_or(variable.name))
+}
+
+impl Writes<'_, '_> {
+    fn mark(&mut self, expr: &Expression<'_>) {
+        VariableWalker.walk_expression(expr, &mut self.other);
+    }
+}
+
+struct WriteWalker;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Writes<'ast, 'arena>> for WriteWalker {
+    fn walk_in_assignment(&self, node: &'ast Assignment<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        match (node.lhs, &node.operator) {
+            (Expression::Variable(Variable::Direct(direct)), AssignmentOperator::Assign(_)) => {
+                let name = variable_name(direct);
+                match cx.assigned.iter_mut().find(|(assigned, _)| *assigned == name) {
+                    Some((_, values)) => values.push(node.rhs),
+                    None => cx.assigned.push((name, vec![node.rhs])),
+                }
+            }
+            // Compound assignments, `$a[…] = `, `$a[] = `, `[$a, $b] = `,
+            // `list(…) = `.
+            (
+                Expression::Variable(_)
+                | Expression::ArrayAccess(_)
+                | Expression::ArrayAppend(_)
+                | Expression::List(_)
+                | Expression::Array(_),
+                _,
+            ) => cx.mark(node.lhs),
+            _ => {}
+        }
+    }
+
+    fn walk_in_foreach_value_target(&self, node: &'ast ForeachValueTarget<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        cx.mark(node.value);
+    }
+
+    fn walk_in_foreach_key_value_target(
+        &self,
+        node: &'ast ForeachKeyValueTarget<'arena>,
+        cx: &mut Writes<'ast, 'arena>,
+    ) {
+        cx.mark(node.key);
+        cx.mark(node.value);
+    }
+
+    fn walk_in_global(&self, node: &'ast Global<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        for variable in node.variables.iter() {
+            if let Variable::Direct(direct) = variable {
+                cx.other.push(variable_name(direct));
+            }
+        }
+    }
+
+    fn walk_in_static_concrete_item(&self, node: &'ast StaticConcreteItem<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        cx.other.push(variable_name(&node.variable));
+    }
+
+    fn walk_in_static_abstract_item(&self, node: &'ast StaticAbstractItem<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        cx.other.push(variable_name(&node.variable));
+    }
+
+    // Nested scopes have their own variables, but a closure's `use (&$x)`
+    // can write the enclosing `$x`.
+    fn walk_closure(&self, node: &'ast Closure<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        if let Some(uses) = &node.use_clause {
+            for used in uses.variables.iter().filter(|used| used.ampersand.is_some()) {
+                cx.other.push(variable_name(&used.variable));
+            }
+        }
+    }
+    fn walk_arrow_function(&self, _: &'ast ArrowFunction<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_anonymous_class(&self, _: &'ast AnonymousClass<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_function(&self, _: &'ast Function<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_class(&self, _: &'ast Class<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_interface(&self, _: &'ast Interface<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_trait(&self, _: &'ast Trait<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_enum(&self, _: &'ast Enum<'arena>, _: &mut Writes<'ast, 'arena>) {}
+}
+
+/// Every direct variable's name (without `$`) in an expression.
+struct VariableWalker;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Vec<String>> for VariableWalker {
+    fn walk_in_direct_variable(&self, node: &'ast DirectVariable<'arena>, cx: &mut Vec<String>) {
+        cx.push(variable_name(node));
+    }
 }

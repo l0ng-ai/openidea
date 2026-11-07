@@ -11,12 +11,12 @@ fn branches_merge() {
         ("if ($c) { $x = new Book; }\n$x/*|*/;", r"Lib\Book"),
         ("$x = 1;\nif ($c) { $x = 'a'; } elseif ($d) { $x = 1.5; }\n$x/*|*/;", "string|float|int"),
         ("$x = 1;\nif ($c) { $x = 'a'; return; }\n$x/*|*/;", "int"),
-        ("$x = 1;\nif ($c): $x = 'a'; else: $x = true; endif;\n$x/*|*/;", "string|bool"),
+        ("$x = 1;\nif ($c): $x = 'a'; else: $x = true; endif;\n$x/*|*/;", "string|true"),
         // Inside a branch, the branch's own assignment.
         ("$x = 1;\nif ($c) { $x = 'a'; $x/*|*/; }", "string"),
         ("$x = null;\nswitch ($k) { case 1: $x = 1; break; case 2: $x = 'a'; break; }\n$x/*|*/;", "int|string|null"),
         // Fall-through from `case 1` into `case 2`.
-        ("switch ($k) { case 1: $x = 1; case 2: $x = 'a'; break; default: $x = true; }\n$x/*|*/;", "string|bool"),
+        ("switch ($k) { case 1: $x = 1; case 2: $x = 'a'; break; default: $x = true; }\n$x/*|*/;", "string|true"),
         ("switch ($k) { case 1: $y = 1; case 2: $y/*|*/; }", "int"),
         ("$x = match ($k) { 1 => new Book, default => null };\n$x/*|*/;", r"?Lib\Book"),
         ("$c ? $x = 1 : $x = 'a';\n$x/*|*/;", "int|string"),
@@ -135,6 +135,23 @@ fn foreach_keys_and_values() {
             "int",
         ),
         ("foreach ($unknown as $v) { $v/*|*/; }", "mixed"),
+        // A plain object: its property names and values.
+        ("foreach (new Book as $k => $v) { $k/*|*/; }", "string"),
+        ("foreach (new Book as $k => $v) { $v/*|*/; }", "mixed"),
+        // Not when an ancestor is unknown (it might be Traversable).
+        ("class Sub extends Missing {}\nforeach (new Sub as $k => $v) { $k/*|*/; }", "mixed"),
+        // `false` stays beside other types once literals are widened.
+        ("function g(): int|false { return 1; }\n$p = g();\n$p/*|*/;", "int|false"),
+        ("$t = true;\n$t/*|*/;", "bool"),
+        // `false` in the iterated type adds nothing.
+        ("/** @return string[]|false */\nfunction parts() {}\nforeach (parts() as $p) { $p/*|*/; }", "string"),
+        // Superglobals are arrays everywhere.
+        ("function f() { $_COOKIE['a'] = 1; return $_COOKIE/*|*/; }", "array"),
+        ("$_SERVER/*|*/;", "array"),
+        // A `void` call's result is stored as `null`.
+        ("function e() { echo 1; }\nfunction s(): ?string { return null; }\n$v = e();\n$v/*|*/;", "null"),
+        ("function e() { echo 1; }\n$v = $c ? 'a' : e();\n$v/*|*/;", "?string"),
+        ("$f = function () {};\n$f/*|*/;", "Closure(): void"),
     ]);
 }
 
@@ -145,6 +162,13 @@ fn narrowing() {
         ("function f(?Book $b) { if (null === $b) { $b/*|*/; } }", "null"),
         ("function f(?Book $b) { if ($b === null) { return; } $b/*|*/; }", r"Lib\Book"),
         ("function f(?Book $b) { if ($b == null) { return; } $b/*|*/; }", r"Lib\Book"),
+        // `=== false` / `!== false` on `T|false`.
+        ("function f(Book|false $b) { if (false === $b) { return; } $b/*|*/; }", r"Lib\Book"),
+        ("function f(Book|false $b) { if ($b !== false) { $b/*|*/; } }", r"Lib\Book"),
+        ("function f(Book|false $b) { if ($b === false) { $b/*|*/; } }", "bool"),
+        ("function f(Book|true $b) { if (true === $b) { return; } $b/*|*/; }", r"Lib\Book"),
+        // A loose comparison with a bool doesn't narrow.
+        ("function f(Book|false $b) { if ($b == false) { return; } $b/*|*/; }", r"Lib\Book|false"),
         ("function f(?Book $b) { if (!$b) { return; } $b/*|*/; }", r"Lib\Book"),
         ("function f(?Book $b) { if ($b) { $b/*|*/; } }", r"Lib\Book"),
         ("function f(?Book $b) { if (isset($b)) { $b/*|*/; } }", r"Lib\Book"),

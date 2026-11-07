@@ -569,8 +569,30 @@ impl Declarations for PhpEngine {
             .or_else(|| self.stubs().class_like(fqn).map(|(_, class)| class.clone()))
     }
 
+    /// When the project declares a function more than once (conditionally,
+    /// or WordPress's `@ignore`d no-op `__()` and `get_option()` in
+    /// `wp-admin/includes/noop.php`), the one that says most about its
+    /// signature: a declared or documented return type first, then
+    /// parameters, else the first.
     fn function(&self, fqn: &str) -> Option<FunctionDecl> {
-        self.project_declaration(NameKind::Function, fqn, |summary| summary.function(fqn).cloned())
+        let indexed: Vec<FunctionDecl> = self
+            .index()
+            .and_then(|index| index.declarations(NameKind::Function, fqn).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|decl| self.summary(&decl.path()).ok()??.function(fqn).cloned())
+            .collect();
+        let rank = |f: &FunctionDecl| {
+            let returns = f.return_type.is_some() || f.doc.as_ref().is_some_and(|doc| doc.return_type.is_some());
+            (returns, !f.params.is_empty())
+        };
+        let mut best: Option<FunctionDecl> = None;
+        for function in indexed {
+            if best.as_ref().is_none_or(|best| rank(&function) > rank(best)) {
+                best = Some(function);
+            }
+        }
+        best.or_else(|| self.open_declaration(fqn, &|summary: &FileSummary| summary.function(fqn).cloned()))
             .or_else(|| self.stubs().function(fqn).map(|(_, function)| function.clone()))
     }
 

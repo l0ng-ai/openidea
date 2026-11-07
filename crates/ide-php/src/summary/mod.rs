@@ -48,8 +48,10 @@ use crate::names::RelativeClass;
 use crate::syntax::ParsedFile;
 use crate::types::LazyType;
 
-/// Bump whenever a type in this module changes shape.
-pub const SCHEMA_VERSION: u32 = 6;
+/// Bump whenever a type in this module changes shape, or extraction
+/// computes something differently (7: inferred returns track local
+/// variables), so stored summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

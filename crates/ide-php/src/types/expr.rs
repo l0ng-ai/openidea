@@ -324,6 +324,14 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 Type::Mixed
             };
         }
+        // Superglobals exist everywhere, as arrays (writes into them don't
+        // make them local).
+        if matches!(
+            name,
+            b"GLOBALS" | b"_SERVER" | b"_GET" | b"_POST" | b"_FILES" | b"_COOKIE" | b"_SESSION" | b"_REQUEST" | b"_ENV"
+        ) {
+            return Type::array();
+        }
         let scope = flow::outer_scope(frames);
         let flow = self.flow_cell(scope);
         let state = {
@@ -346,6 +354,19 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         }
     }
 
+    /// Whether `ty` is an object of known classes that aren't `Traversable`
+    /// (with every ancestor known, so none can be).
+    fn is_plain_object(&self, ty: &Type, context: &Context) -> bool {
+        let models = self.resolver.class_models(ty, context);
+        !models.is_empty()
+            && models.iter().all(|model| {
+                !model.is_subclass_of("Traversable")
+                    && model.method("current").is_none()
+                    && model.method("getIterator").is_none()
+                    && model.parents.iter().chain(&model.interfaces).all(|a| self.resolver.class_model(a).is_some())
+            })
+    }
+
     /// What `foreach` over a value of type `ty` gives as keys and values.
     fn iteration_types(&self, ty: &Type, frames: &[Frame<'a>]) -> (Type, Type) {
         let context = self.context(frames);
@@ -356,8 +377,14 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 Type::Array { key, value, .. } | Type::Iterable { key, value } => ((**key).clone(), (**value).clone()),
                 Type::List { value, .. } => (Type::int_range(Some(0), None), (**value).clone()),
                 Type::Shape(shape) => (shape.key_type(), shape.value_type()),
-                Type::Null | Type::Void | Type::Never => continue,
+                // Not iterable (`foreach` warns and skips): `explode()`'s
+                // `string[]|false` iterates over strings.
+                Type::Null | Type::Void | Type::Never | Type::LiteralBool(_) | Type::Bool => continue,
                 Type::Named { .. } if let Some(args) = self.resolver.iteration_args(member) => args,
+                // A plain object iterates over its visible properties.
+                Type::Named { .. } | Type::Relative(_) if self.is_plain_object(member, &context) => {
+                    (Type::string(), Type::Mixed)
+                }
                 Type::Named { .. } | Type::Relative(_) | Type::Intersection(_) => {
                     // An `Iterator`, else an `IteratorAggregate`'s iterator.
                     let mut receiver = member.clone();
@@ -396,7 +423,15 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
 
     /// The type an assignment expression has (and gives its variable).
     fn assignment(&self, assignment: &'a Assignment<'a>, frames: &[Frame<'a>]) -> Type {
-        let right = self.expr(assignment.rhs, frames);
+        // The result of a call to a `void` function is `null` once stored.
+        // Only at the top: `Closure(): void` stays.
+        let right = match self.expr(assignment.rhs, frames) {
+            Type::Void => Type::Null,
+            Type::Union(members) => {
+                Type::union(members.into_iter().map(|ty| if ty == Type::Void { Type::Null } else { ty }))
+            }
+            ty => ty,
+        };
         match Op::of_assignment(&assignment.operator) {
             None => right,
             Some(op) => {
@@ -435,12 +470,21 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
             }
             Frame::Method(method) => {
                 let start = method.name.span.start.offset;
-                let (class, decl) = self
+                let found = self
                     .summary
                     .class_likes
                     .iter()
-                    .find_map(|class| Some((class, class.methods.iter().find(|m| m.name_loc.start == start)?)))?;
+                    .find_map(|class| Some((class, class.methods.iter().find(|m| m.name_loc.start == start)?)));
+                // Methods of anonymous classes aren't in the summary: their
+                // native hints.
+                let Some((class, decl)) = found else { return self.ast_parameter(&method.parameter_list, &name) };
                 let doc = decl.doc.as_deref();
+                if doc.and_then(|doc| doc.param_type(&name)).is_none()
+                    && let Some(param) = decl.params.iter().find(|param| param.name == name)
+                    && let Some(inherited) = self.resolver.inherited_param(&class.fqn, &decl.name, &name)
+                {
+                    return Some(if param.variadic { Type::list_of(inherited) } else { inherited });
+                }
                 let mut templates: Vec<&str> = class_templates(class);
                 templates.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
                 declared(&decl.params, doc, templates)
@@ -456,7 +500,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         self.summary.functions.iter().find(|decl| decl.name_loc.start == start)
     }
 
-    /// A closure or arrow function parameter's native type.
+    /// A closure, arrow function or anonymous class method parameter's
+    /// native type.
     fn ast_parameter(&self, list: &FunctionLikeParameterList<'_>, name: &str) -> Option<Type> {
         let parameter = list.parameters.iter().find(|parameter| {
             parameter.variable.name.strip_prefix(b"$").unwrap_or(parameter.variable.name) == name.as_bytes()

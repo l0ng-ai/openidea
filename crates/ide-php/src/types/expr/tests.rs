@@ -203,6 +203,9 @@ fn variables_and_assignments() {
         ("/** @param list<Book> $books */\nfunction g(array $books) { return $books[0]/*|*/; }", r"Lib\Book"),
         ("function h(Book ...$books) { return $books/*|*/; }", r"list<Lib\Book>"),
         ("function u($p) { return $p/*|*/; }", "mixed"),
+        // Methods of anonymous classes: their native hints.
+        ("$o = new class { public function m(Book $b, int ...$n) { $b/*|*/; } };", r"Lib\Book"),
+        ("$o = new class { public function m(Book $b, int ...$n) { $n/*|*/; } };", "list<int>"),
         // A parameter reassigned.
         ("function k(int $p) { $p = 'a'; return $p/*|*/; }", "string"),
         // Assignments in the function, not the top level.

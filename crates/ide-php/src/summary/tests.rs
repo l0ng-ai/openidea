@@ -698,6 +698,49 @@ function documented() { return 1; }
 }
 
 #[test]
+fn lazy_returns_of_local_variables() {
+    let source = r#"<?php
+namespace App;
+use Lib\Repo;
+function built() { $r = new Repo(); $r->boot(); return $r; }
+function chained() { $a = new Repo(); $b = $a; return $b; }
+function branches($x) { if ($x) { $v = 1; } else { $v = 'a'; } return $v; }
+function called() { $found = Repo::find(); return $found; }
+function param(Repo $p) { $p = 1; return $p; }
+function untyped($p) { $p = 1; return $p; }
+function compound() { $s = 'a'; $s .= 'b'; return $s; }
+function element() { $a = []; $a['k'] = 1; return $a; }
+function looped(array $xs) { $x = null; foreach ($xs as $x) {} return $x; }
+function destructured() { $a = 1; [$a] = [new Repo()]; return $a; }
+function captured() { $n = 0; $f = function () use (&$n) { $n = 'x'; }; return $n; }
+function globals() { global $g; $g = 1; return $g; }
+function statics() { static $s = 0; $s = 1; return $s; }
+function inner() { $f = function () { $z = 1; return $z; }; return $z; }
+function never_set() { return $missing; }
+"#;
+    assert_eq!(
+        lazy_lines(source),
+        [
+            r"~ returns: Lib\Repo",
+            r"~ returns: Lib\Repo",
+            "~ returns: int|string",
+            r"~ returns: Lib\Repo->find()",
+            r"~ returns: Lib\Repo",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+            "~ returns: mixed",
+        ]
+    );
+}
+
+#[test]
 fn lazy_types_of_members_and_constants() {
     let source = r#"<?php
 namespace App;

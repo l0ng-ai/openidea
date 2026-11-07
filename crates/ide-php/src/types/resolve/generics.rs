@@ -253,6 +253,54 @@ impl Resolver<'_> {
         bind_args(&params, args.as_deref().unwrap_or_default())
     }
 
+    /// The type a parameter of method `name` of class-like `class` without
+    /// its own `@param` takes from the method it overrides or implements,
+    /// when that one (or one it overrides in turn) documents it, as
+    /// `@return` is inherited: matched by name, else by position, and the
+    /// overridden class's templates mapped onto `class`'s own
+    /// (`save(object $entity)` implementing `@param T $entity`). PHPStan
+    /// and Intelephense inherit `@param` the same way.
+    pub fn inherited_param(&self, class: &str, name: &str, param: &str) -> Option<Type> {
+        self.inherited_param_at(class, name, param, 0)
+    }
+
+    fn inherited_param_at(&self, class: &str, name: &str, param: &str, depth: usize) -> Option<Type> {
+        if depth >= super::MAX_DEPTH {
+            return None;
+        }
+        // Constructors don't follow their parent's signature.
+        if name.eq_ignore_ascii_case("__construct") {
+            return None;
+        }
+        let model = self.class_model(class)?;
+        let method = model.method(name)?;
+        let ours = &method.declared()?.params;
+        let position = ours.iter().position(|p| p.name == param)?;
+        let parent = method.overrides.as_deref()?;
+        let parent_model = self.class_model(parent)?;
+        let overridden = parent_model.method(name)?;
+        let declared = overridden.declared()?;
+        // By name, else a renamed parameter at the same position (its old
+        // name not used by the override).
+        let theirs =
+            declared.params.iter().find(|p| p.name == param).or_else(|| {
+                declared.params.get(position).filter(|theirs| !ours.iter().any(|p| p.name == theirs.name))
+            })?;
+        let doc = declared.doc.as_deref();
+        let ty = match doc.and_then(|doc| doc.param_type(&theirs.name)) {
+            Some(ty) => {
+                let scope = super::templates(&overridden.declaring, doc.into_iter().flat_map(|d| d.local_type_names()));
+                Type::from_doc(ty, &scope)
+            }
+            None => self.inherited_param_at(&overridden.declaring.fqn, name, &theirs.name, depth + 1)?,
+        };
+        let own: Vec<Type> =
+            class_template_params(&method.declaring).into_iter().map(|param| Type::Template(param.name)).collect();
+        let args = self.ancestor_args(&method.declaring.fqn, &own, &overridden.declaring.fqn);
+        let params = class_template_params(&overridden.declaring);
+        Some(substitute(&ty, &bind_args(&params, args.as_deref().unwrap_or_default())))
+    }
+
     /// The parameters of a method with the class templates bound by
     /// `bindings` and `self`/`parent` completed in its class.
     pub(super) fn method_params(&self, method: &ModelMethod, bindings: &Bindings) -> Vec<SignatureParam> {
@@ -261,7 +309,15 @@ impl Resolver<'_> {
         let params = if let Some(declared) = method.declared() {
             let doc = declared.doc.as_deref();
             scope.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
-            declared_params(&declared.params, doc, &scope)
+            let mut params = declared_params(&declared.params, doc, &scope);
+            for (param, decl) in params.iter_mut().zip(&declared.params) {
+                if doc.and_then(|doc| doc.param_type(&decl.name)).is_none()
+                    && let Some(inherited) = self.inherited_param(&method.declaring.fqn, &method.name, &decl.name)
+                {
+                    param.ty = inherited;
+                }
+            }
+            params
         } else if let Some(magic) = method.magic() {
             scope.extend(magic.templates.iter().map(|template| template.name.as_str()));
             magic

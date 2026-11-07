@@ -58,6 +58,9 @@ pub(super) struct TypeAware {
     /// Ascending by version.
     pub by_version: Vec<(PhpVersion, Option<TypeHint>)>,
     pub default: Option<TypeHint>,
+    /// The type strings as written, same order, then the default's: some
+    /// are PHPDoc types (`string[]`) that no native hint can hold.
+    pub texts: Vec<String>,
 }
 
 impl TypeAware {
@@ -65,6 +68,12 @@ impl TypeAware {
     /// it, else the default. `None` means no type.
     pub fn at(&self, version: PhpVersion) -> Option<TypeHint> {
         self.by_version.iter().rev().find(|(since, _)| *since <= version).map_or(&self.default, |(_, ty)| ty).clone()
+    }
+
+    /// The type string written for `version`, as [`TypeAware::at`] picks it.
+    pub fn text_at(&self, version: PhpVersion) -> &str {
+        let index = self.by_version.iter().rposition(|(since, _)| *since <= version).unwrap_or(self.by_version.len());
+        self.texts.get(index).map_or("", |text| text.trim())
     }
 }
 
@@ -191,12 +200,15 @@ impl Collector<'_> {
                         Some(Expression::LegacyArray(array)) => self.entries(array.elements.iter()),
                         _ => Vec::new(),
                     };
-                    let mut by_version: Vec<(PhpVersion, Option<TypeHint>)> = entries
+                    let mut versioned: Vec<(PhpVersion, Option<TypeHint>, String)> = entries
                         .iter()
-                        .filter_map(|(version, ty)| Some((PhpVersion::parse(version)?, self.hint(ty))))
+                        .filter_map(|(version, ty)| Some((PhpVersion::parse(version)?, self.hint(ty), ty.clone())))
                         .collect();
-                    by_version.sort_by_key(|(version, _)| *version);
-                    rule.ty = Some(TypeAware { by_version, default: self.hint(&default) });
+                    versioned.sort_by_key(|(version, _, _)| *version);
+                    let mut texts: Vec<String> = versioned.iter().map(|(_, _, text)| text.clone()).collect();
+                    texts.push(default.clone());
+                    let by_version = versioned.into_iter().map(|(version, hint, _)| (version, hint)).collect();
+                    rule.ty = Some(TypeAware { by_version, default: self.hint(&default), texts });
                 }
                 _ => {}
             }

@@ -336,6 +336,23 @@ fn expression_type_at_a_position() {
 }
 
 #[test]
+fn a_function_declared_twice_resolves_to_the_documented_one() {
+    use crate::types::{Declarations, Type};
+    let f = Fixture::new();
+    // WordPress: `wp-admin/includes/noop.php` sorts before `wp-includes/l10n.php`.
+    f.write("a/noop.php", "<?php\n/** @ignore */\nfunction __() {}\n");
+    f.write("b/l10n.php", "<?php\n/** @return string */\nfunction __($text, $domain = 'default') { return $text; }\n");
+    let main = f.write("main.php", "<?php\n");
+    let engine = f.open();
+    assert_eq!(engine.function("__").unwrap().params.len(), 2);
+    let doc = DocId::next();
+    engine.document_opened(doc, &main, 1, "<?php\n$msg = __('Hi');\n");
+    assert_eq!(engine.type_at(doc, Pos::new(1, 2)), Some(Type::string()));
+    let hover = engine.hover(doc, Pos::new(1, 8)).unwrap();
+    assert!(hover.markdown.contains("function __($text"), "{}", hover.markdown);
+}
+
+#[test]
 fn generic_types_with_the_bundled_stubs() {
     use crate::types::Type;
     let f = Fixture::new();
