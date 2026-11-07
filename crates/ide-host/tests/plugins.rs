@@ -137,6 +137,30 @@ fn misbehave_granted(dir: &Path, granted: &Path) -> PathBuf {
     pkg
 }
 
+/// `misbehave` with `fs.write:<granted>` added to its capabilities (no read).
+fn misbehave_writable(dir: &Path, granted: &Path) -> PathBuf {
+    let pkg = dir.join("misbehave-writable");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let path = granted.to_string_lossy().replace('\\', "/");
+    let required = format!("required = [\"project.read\", \"fs.write:{path}\"]");
+    let text = text.replace("required = [\"project.read\"]", &required);
+    std::fs::write(&manifest, text).unwrap();
+    pkg
+}
+
+/// `misbehave` with `project.write` added to its capabilities.
+fn misbehave_project_writer(dir: &Path) -> PathBuf {
+    let pkg = dir.join("misbehave-project-writer");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let text = text.replace("required = [\"project.read\"]", "required = [\"project.read\", \"project.write\"]");
+    std::fs::write(&manifest, text).unwrap();
+    pkg
+}
+
 /// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
 /// another (or behind a new instance starting) holds once it caught up.
 fn eventually(mut f: impl FnMut() -> bool) -> bool {
@@ -439,6 +463,89 @@ fn fs_read_dir_lists_a_granted_directory() {
     assert!(err.contains("not a directory"), "{err}");
     let err = f.run("misbehave", "read-dir", Some(f._tmp.path().to_str().unwrap())).unwrap_err();
     assert!(err.contains("fs.read:"), "{err}");
+}
+
+/// `project.write` creates and replaces files under the project root, and never
+/// leaves it, through the real component.
+#[test]
+fn project_write_stays_inside_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_project_writer(f._tmp.path()));
+
+    // A Run configuration: neither the file nor `.openidea/` exists yet.
+    assert_eq!(f.run("misbehave", "projwrite", Some(".openidea/run.toml")).unwrap(), None);
+    let conf = f.project.join(".openidea").join("run.toml");
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), "written inside the project\n");
+    // What it wrote reads back through the project.
+    assert_eq!(
+        f.run("misbehave", "read", Some(".openidea/run.toml")).unwrap().as_deref(),
+        Some("written inside the project\n")
+    );
+    // An absolute path inside the root lands in the same place.
+    let fresh = f.project.join("build").join("patch.txt");
+    assert_eq!(f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // Replacing an existing file rewrites it whole.
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(f.project.join("src/notes.txt")).unwrap(), "written inside the project\n");
+    // Leaving the root is refused, and nothing is written.
+    let err = f.run("misbehave", "projwrite", Some("../escape.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.write` replaces files the grant covers and nothing else, through the
+/// real component; the editor's unsaved contents win over the write.
+#[test]
+fn fs_write_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "old\n").unwrap();
+    let bommed = shared.join("bom.txt");
+    std::fs::write(&bommed, b"\xef\xbb\xbfold").unwrap();
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    std::fs::write(&secret, "keep me\n").unwrap();
+    f.install(&misbehave_writable(f._tmp.path(), &shared));
+
+    // An existing file is replaced…
+    assert_eq!(f.run("misbehave", "fswrite", Some(notes.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "written by the plugin\n");
+    // …a new one is created…
+    let fresh = shared.join("fresh.txt");
+    assert_eq!(f.run("misbehave", "fswrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written by the plugin\n");
+    // …and a file's encoding and BOM survive the write.
+    assert_eq!(f.run("misbehave", "fswrite", Some(bommed.to_str().unwrap())).unwrap(), None);
+    let bytes = std::fs::read(&bommed).unwrap();
+    assert!(bytes.starts_with(b"\xef\xbb\xbf"), "the BOM stays: {bytes:?}");
+    assert_eq!(String::from_utf8(bytes[3..].to_vec()).unwrap(), "written by the plugin\n");
+
+    // Outside the grant nothing changes.
+    let err = f.run("misbehave", "fswrite", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "the refusal names what to grant: {err}");
+    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep me\n");
+    let err = f.run("misbehave", "fswrite", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fswrite", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let missing_parent = shared.join("conf").join("web.xml");
+    let err = f.run("misbehave", "fswrite", Some(missing_parent.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("directory does not exist"), "{err}");
+    // Writing a directory fails rather than replacing it.
+    assert!(f.run("misbehave", "fswrite", Some(shared.to_str().unwrap())).is_err(), "a directory is not a file");
+    assert!(shared.is_dir(), "the directory is still there");
+
+    // `fs.write` does not carry `fs.read`.
+    let err = f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "write does not imply read: {err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
@@ -719,7 +826,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 12, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 14, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 

@@ -188,6 +188,16 @@ pub trait HostApi: Send + Sync {
     /// The entries directly under a granted directory, sorted by name; `max`
     /// bounds how many.
     fn list_dir(&self, real: &Path, max: usize) -> Result<Vec<DirEntryInfo>, HostError>;
+    /// Replaces the text of a file outside the project, whose real path an
+    /// `fs.write` grant already covers: atomically, keeping its encoding and
+    /// BOM. `max` bounds the bytes written.
+    fn write_text_file(&self, real: &Path, text: &str, max: usize) -> Result<(), HostError>;
+    /// Replaces the bytes of a file outside the project, at most `max`.
+    fn write_bytes_file(&self, real: &Path, bytes: &[u8], max: usize) -> Result<(), HostError>;
+    /// Writes `bytes` to a file inside the project, whose real path the caller
+    /// confined to that project's root: parents are created as needed and the
+    /// file is replaced in one step. `max` bounds the bytes written.
+    fn write_project_file(&self, real: &Path, bytes: &[u8], max: usize) -> Result<(), HostError>;
 }
 
 /// Shared compilation engine plus an epoch ticker thread for wall-clock limits.

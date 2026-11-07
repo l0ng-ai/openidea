@@ -30,6 +30,14 @@ interface workspace {
         /// contents win over the disk. A missing path is `not-found`.
         /// Requires `project.read`.
         read-file: func(path: string) -> result<string, error>;
+
+    /// Writes `bytes` to a file inside the project (absolute, or relative to
+    /// the root); paths leaving the root are refused and missing parent
+    /// directories are created. The file is replaced in one step, so a
+    /// reader never sees half of it. An open editor with unsaved changes
+    /// for that file is left alone (`invalid`: save it first). Requires
+    /// `project.write`.
+    write-file: func(path: string, bytes: list<u8>) -> result<_, error>;
         /// Whether `path` (absolute, or relative to the root) names an
         /// existing file or directory — including hidden and ignored ones,
         /// without reading any content. Paths leaving the root are refused.

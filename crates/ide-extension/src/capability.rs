@@ -18,6 +18,8 @@ pub enum Capability {
     EditorRead,
     /// Edit the focused editor (versioned edits).
     EditorWrite,
+    /// Create and replace files inside the project root.
+    ProjectWrite,
     VcsRead,
     VcsWrite,
     /// The plugin's own key-value store and data directory.
@@ -36,6 +38,8 @@ pub enum Capability {
     Process(String),
     /// Read files outside the project under one path.
     FsRead(String),
+    /// Write files outside the project under one path.
+    FsWrite(String),
 }
 
 /// How a grant is presented (plan 4.2).
@@ -54,10 +58,14 @@ impl Capability {
     pub fn risk(&self) -> Risk {
         match self {
             Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead => Risk::Low,
-            Self::EditorWrite | Self::VcsWrite | Self::Net(_) | Self::Secrets | Self::InputEvents | Self::Clipboard => {
-                Risk::Medium
-            }
-            Self::Process(_) | Self::FsRead(_) => Risk::High,
+            Self::EditorWrite
+            | Self::ProjectWrite
+            | Self::VcsWrite
+            | Self::Net(_)
+            | Self::Secrets
+            | Self::InputEvents
+            | Self::Clipboard => Risk::Medium,
+            Self::Process(_) | Self::FsRead(_) | Self::FsWrite(_) => Risk::High,
         }
     }
 
@@ -73,6 +81,7 @@ impl Capability {
             Self::ProjectRead => "Read files in the open project".into(),
             Self::EditorRead => "Read the focused editor's file and selection".into(),
             Self::EditorWrite => "Change text in the editor".into(),
+            Self::ProjectWrite => "Create and change files in the open project".into(),
             Self::VcsRead => "Read version control state".into(),
             Self::VcsWrite => "Change version control state (commit, fetch, checkout)".into(),
             Self::Storage => "Store its own data".into(),
@@ -85,6 +94,7 @@ impl Capability {
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
+            Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
         }
     }
 
@@ -92,7 +102,7 @@ impl Capability {
     pub fn covers(&self, wanted: &Capability) -> bool {
         match (self, wanted) {
             (Self::Net(pattern), Self::Net(host)) => host_matches(pattern, host),
-            (Self::FsRead(base), Self::FsRead(path)) => {
+            (Self::FsRead(base), Self::FsRead(path)) | (Self::FsWrite(base), Self::FsWrite(path)) => {
                 std::path::Path::new(path).starts_with(std::path::Path::new(base))
             }
             _ => self == wanted,
@@ -116,6 +126,7 @@ impl fmt::Display for Capability {
             Self::ProjectRead => f.write_str("project.read"),
             Self::EditorRead => f.write_str("editor.read"),
             Self::EditorWrite => f.write_str("editor.write"),
+            Self::ProjectWrite => f.write_str("project.write"),
             Self::VcsRead => f.write_str("vcs.read"),
             Self::VcsWrite => f.write_str("vcs.write"),
             Self::Storage => f.write_str("storage"),
@@ -126,6 +137,7 @@ impl fmt::Display for Capability {
             Self::Net(h) => write!(f, "net:{h}"),
             Self::Process(b) => write!(f, "process:{b}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
+            Self::FsWrite(p) => write!(f, "fs.write:{p}"),
         }
     }
 }
@@ -158,11 +170,11 @@ impl FromStr for Capability {
                     }
                     Ok(Self::Process(arg.to_owned()))
                 }
-                "fs.read" => {
+                "fs.read" | "fs.write" => {
                     if !std::path::Path::new(arg).is_absolute() && !arg.starts_with('~') {
                         return Err(format!("{s:?}: use an absolute path (or ~/…)"));
                     }
-                    Ok(Self::FsRead(arg.to_owned()))
+                    Ok(if kind == "fs.read" { Self::FsRead(arg.to_owned()) } else { Self::FsWrite(arg.to_owned()) })
                 }
                 _ => Err(format!("unknown capability {s:?}")),
             };
@@ -171,6 +183,7 @@ impl FromStr for Capability {
             "project.read" | "project-read" => Self::ProjectRead,
             "editor.read" | "editor-read" => Self::EditorRead,
             "editor.write" | "editor-write" => Self::EditorWrite,
+            "project.write" | "project-write" => Self::ProjectWrite,
             "vcs.read" => Self::VcsRead,
             "vcs.write" => Self::VcsWrite,
             "storage" => Self::Storage,

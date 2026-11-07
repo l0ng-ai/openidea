@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 pub const MAX_LIST_ENTRIES: usize = 4096;
 
 pub const MAX_READ_BYTES: u64 = 16 << 20;
+/// The largest file s.write may write, in bytes.
+pub const MAX_WRITE_BYTES: usize = 16 << 20;
 
 /// The canonical `root` and the absolute form of `path` (absolute, or
 /// relative to `root`) — before any symlink or existence check.
@@ -72,6 +74,28 @@ pub fn inside_root(root: &Path, path: &str) -> Result<bool, String> {
     Ok(resolve_real(&joined).starts_with(&root))
 }
 
+/// Resolves the file `path` names inside `root` for writing, creating the
+/// directories it needs: `path` may not exist yet, so the deepest part that
+/// exists is canonicalized (following symlinks) and must stay inside `root`.
+pub fn resolve_writable_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() {
+        return Err("empty path".into());
+    }
+    let root = root.canonicalize().map_err(|e| format!("project root unavailable: {e}"))?;
+    let requested = Path::new(path);
+    let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+    let mut existing = joined.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(|| format!("{path}: no such directory"))?;
+    }
+    let real = existing.canonicalize().map_err(|_| format!("{path}: no such directory"))?;
+    if !real.starts_with(&root) {
+        return Err(format!("{path}: access outside the project root is not allowed"));
+    }
+    let rest = joined.strip_prefix(existing).unwrap_or(Path::new(""));
+    // `join("")` would add a trailing separator, which names no file on Windows.
+    Ok(if rest.as_os_str().is_empty() { real } else { real.join(rest) })
+}
 /// Reads a UTF-8 file that `resolve_in_root` already approved.
 pub fn read_text(real: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(real).map_err(|e| e.to_string())?;
@@ -112,6 +136,30 @@ fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
+/// Which grant a path is resolved against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wanted {
+    Read,
+    Write,
+}
+
+impl Wanted {
+    fn capability(self, plain: String) -> Capability {
+        match self {
+            Self::Read => Capability::FsRead(plain),
+            Self::Write => Capability::FsWrite(plain),
+        }
+    }
+
+    /// `fs.read` / `fs.write`, for messages.
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Read => "fs.read",
+            Self::Write => "fs.write",
+        }
+    }
+}
+
 /// The real path of `path` when an `fs.read:<path>` grant covers it.
 ///
 /// The grant is compared with the **real** path, so a symlink pointing out of
@@ -119,28 +167,64 @@ fn expand_tilde(path: &str) -> PathBuf {
 /// not `/srv/application`. Windows' `\\?\` prefix (what `canonicalize` adds)
 /// is stripped from the file side so a manifest may spell `C:\Program Files\X`.
 pub fn resolve_granted(granted: &[Capability], path: &str) -> Result<PathBuf, Refusal> {
+    resolve(granted, path, Wanted::Read)
+}
+
+/// The real path `path` would be written to, when an `fs.write:<path>` grant
+/// covers it.
+///
+/// A file that does not exist yet cannot be canonicalized, so its directory is
+/// canonicalized instead and the name appended; an existing file (or link) is
+/// followed first, so a link cannot be used to write outside the grant.
+pub fn resolve_writable(granted: &[Capability], path: &str) -> Result<PathBuf, Refusal> {
+    resolve(granted, path, Wanted::Write)
+}
+
+fn resolve(granted: &[Capability], path: &str, wanted: Wanted) -> Result<PathBuf, Refusal> {
     let asked = expand_tilde(path);
     if !asked.is_absolute() {
         return Err(Refusal::Invalid(format!("{path}: use an absolute path (or ~/…)")));
     }
-    let real = asked.canonicalize().map_err(|_| Refusal::Invalid(format!("{path}: no such file")))?;
+    let real = match wanted {
+        Wanted::Read => asked.canonicalize().map_err(|_| Refusal::Invalid(format!("{path}: no such file")))?,
+        Wanted::Write => asked
+            .canonicalize()
+            .or_else(|_| resolve_unsaved(&asked))
+            .map_err(|e| Refusal::Invalid(format!("{path}: {e}")))?,
+    };
     let plain = strip_verbatim(&real);
-    let cap = Capability::FsRead(plain.clone());
+    let cap = wanted.capability(plain.clone());
     let mut covered = false;
     for grant in granted {
-        let Capability::FsRead(base) = grant else { continue };
+        let base = match (wanted, grant) {
+            (Wanted::Read, Capability::FsRead(base)) | (Wanted::Write, Capability::FsWrite(base)) => base,
+            _ => continue,
+        };
+        // The grant may spell the home directory as `~`; the file side never does
+        // because it went through `expand_tilde` above.
+        let base = strip_verbatim(&expand_tilde(base));
+        let grant = wanted.capability(base.clone());
         if !grant.covers(&cap) {
             continue;
         }
         // A directory that is its own parent is a root: `/`, `C:\`.
-        if Path::new(base).parent().is_none() {
+        if Path::new(&base).parent().is_none() {
             return Err(Refusal::Invalid(format!(
-                "{plain}: fs.read:{base} covers a whole file system; declare a directory"
+                "{plain}: {}:{base} covers a whole file system; declare a directory",
+                wanted.prefix()
             )));
         }
         covered = true;
     }
     if covered { Ok(real) } else { Err(Refusal::Denied(cap.to_string())) }
+}
+
+/// Where `asked` would be created: its directory, resolved, plus its name.
+fn resolve_unsaved(asked: &Path) -> Result<PathBuf, String> {
+    let name = asked.file_name().ok_or_else(|| "not a file name".to_string())?;
+    let parent = asked.parent().ok_or_else(|| "no directory to put it in".to_string())?;
+    let dir = parent.canonicalize().map_err(|_| "its directory does not exist".to_string())?;
+    Ok(dir.join(name))
 }
 
 /// `\\?\C:\…` (what `canonicalize` returns on Windows) as `C:\…`.

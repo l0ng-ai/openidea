@@ -194,6 +194,12 @@ impl StoreData {
         sandbox::resolve_granted(&self.granted, path).map_err(Into::into)
     }
 
+    /// The same for `fs.write:…`: a file that does not exist yet is resolved
+    /// through the directory it would be created in.
+    fn writable_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
+        sandbox::resolve_writable(&self.granted, path).map_err(Into::into)
+    }
+
     fn client(&self) -> Option<&str> {
         self.invocation.client.as_deref()
     }
@@ -512,6 +518,18 @@ impl workspace::HostProject for StoreData {
         }
         let root = self.table.get(&this)?.root.clone();
         Ok(self.host.find_files(&root, &glob, limit.min(MAX_FIND) as usize).map_err(to_wit))
+    }
+
+    fn write_file(&mut self, this: Resource<ProjectRes>, path: String, bytes: Vec<u8>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectWrite) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_writable_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+        };
+        Ok(self.host.write_project_file(&real, &bytes, sandbox::MAX_WRITE_BYTES).map_err(to_wit))
     }
 
     fn drop(&mut self, rep: Resource<ProjectRes>) -> wasmtime::Result<()> {
@@ -938,7 +956,7 @@ impl settings::Host for StoreData {
 
 impl views_bindings::openidea::plugin::view_types::Host for StoreData {}
 
-/// A refused `fs.read` as the plugin sees it: `denied` carries the capability
+/// A refused `fs` call as the plugin sees it: `denied` carries the capability
 /// string, so the plugin can say exactly what its manifest lacks.
 impl From<sandbox::Refusal> for wit::Error {
     fn from(refusal: sandbox::Refusal) -> Self {
@@ -949,7 +967,8 @@ impl From<sandbox::Refusal> for wit::Error {
     }
 }
 
-/// Files outside the windows' projects, gated by `fs.read:<path>` grants.
+/// Files outside the windows' projects, gated by `fs.read:<path>` and
+/// `fs.write:<path>` grants.
 impl fs::Host for StoreData {
     fn read_text(&mut self, path: String) -> Fallible<String> {
         let real = match self.granted_file(&path) {
@@ -991,6 +1010,23 @@ impl fs::Host for StoreData {
             .list_dir(&real, max)
             .map_err(to_wit)
             .map(|entries| entries.into_iter().map(to_dir_entry).collect()))
+    }
+    fn write_text(&mut self, path: String, text: String) -> Fallible<()> {
+        let real = match self.writable_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let max = sandbox::MAX_WRITE_BYTES;
+        Ok(self.host.write_text_file(&real, &text, max).map_err(to_wit))
+    }
+
+    fn write_bytes(&mut self, path: String, bytes: Vec<u8>) -> Fallible<()> {
+        let real = match self.writable_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let max = sandbox::MAX_WRITE_BYTES;
+        Ok(self.host.write_bytes_file(&real, &bytes, max).map_err(to_wit))
     }
 }
 

@@ -42,6 +42,14 @@ id = "read-dir"
 title = "List a directory outside the project"
 
 [[contributes.commands]]
+id = "fswrite"
+title = "fswrite"
+
+[[contributes.commands]]
+id = "projwrite"
+title = "project.write a file"
+
+[[contributes.commands]]
 id = "insert"
 title = "insert"
 

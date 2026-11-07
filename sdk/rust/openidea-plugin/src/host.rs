@@ -160,6 +160,9 @@ mod imp {
     pub fn project_read(p: &ProjectRes, path: &str) -> Result<String, Error> {
         p.read_file(path).map_err(error)
     }
+    pub fn project_write(p: &ProjectRes, path: &str, bytes: &[u8]) -> Result<(), Error> {
+        p.write_file(path, bytes).map_err(error)
+    }
 
     pub fn fs_read_text(path: &str) -> Result<String, Error> {
         wit::fs::read_text(path).map_err(error)
@@ -193,6 +196,14 @@ mod imp {
             .collect();
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
+    }
+
+    pub fn fs_write_text(path: &str, text: &str) -> Result<(), Error> {
+        wit::fs::write_text(path, text).map_err(error)
+    }
+
+    pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        wit::fs::write_bytes(path, bytes).map_err(error)
     }
 
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
@@ -491,6 +502,13 @@ impl Project {
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
     }
+    /// Writes `bytes` to a file inside the project (absolute or root-relative),
+    /// creating the directories it needs and replacing the file in one step. At
+    /// most 16 MiB. An editor with unsaved changes for the file is refused.
+    /// Needs `project.write`; `project.read` is not implied.
+    pub fn write_file(&self, path: &str, bytes: &[u8]) -> Result<(), Error> {
+        imp::project_write(&self.inner, path, bytes)
+    }
 
     /// Whether `path` names an existing file or directory inside the project
     /// — including hidden and ignored ones — without reading any content.
@@ -682,6 +700,29 @@ pub fn fs_path_kind(path: &str) -> Result<PathKind, Error> {
 /// covering the directory; reading a file as a directory is [`Error::Invalid`].
 pub fn fs_list(path: &str) -> Result<Vec<DirEntry>, Error> {
     imp::fs_list(path)
+}
+
+/// Replaces a text file outside the project, creating it when it is not there,
+/// at most 16 MiB. The write is atomic and keeps the file's encoding and BOM (a
+/// new file is UTF-8); `path` is absolute, or starts with `~/` for the user's
+/// home.
+///
+/// Fails with [`Error::Invalid`] when the parent directory is missing, the path
+/// is a directory, the text cannot be written in the file's encoding, or an
+/// editor holds unsaved changes for the file — save those first.
+///
+/// Needs an `fs.write:<path>` grant covering the file. Writing does not imply
+/// reading: a plugin that reads back what it wrote needs `fs.read:` too.
+pub fn fs_write_text(path: &str, text: &str) -> Result<(), Error> {
+    imp::fs_write_text(path, text)
+}
+
+/// Replaces the bytes of a file outside the project (images, class files,
+/// archives), creating it when it is not there, at most 16 MiB, atomically. The
+/// same failures as [`fs_write_text`], minus the encoding. Needs
+/// `fs.write:<path>`, as [`fs_write_text`] does.
+pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+    imp::fs_write_bytes(path, bytes)
 }
 
 /// A file open in an editor.

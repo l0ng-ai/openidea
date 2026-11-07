@@ -195,6 +195,7 @@ pub mod inlay_bindings {
          export_macro_name: "__export_inlay_hints_world",
          default_bindings_module: "openidea_plugin::inlay_bindings",
          with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
     });
 }
 
