@@ -141,6 +141,13 @@ const OWN_MODES = [
       );
     },
   }),
+  LanguageDescription.of({
+    name: "GoMod",
+    alias: ["gomod", "gowork"],
+    extensions: ["mod", "work"],
+    filename: /^(?:go\.mod|go\.work)$/,
+    load: async () => new LanguageSupport((await import("./gomod")).goModLanguage),
+  }),
 ];
 
 const BATCH_KEYWORDS = new Set([
@@ -224,9 +231,9 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
     const loose = LanguageDescription.matchLanguageName(BUILTIN_MODES, uiMode, false);
     if (loose) return OWN_MODES.find((l) => l.name === loose.name) ?? loose;
   }
-  if (uiMode === null && infos) return null;
   const own = LanguageDescription.matchFilename(OWN_MODES, path.slice(path.lastIndexOf("/") + 1));
   if (own) return own;
+  if (uiMode === null && infos) return null;
   const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
   return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }
