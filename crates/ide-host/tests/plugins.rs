@@ -4282,8 +4282,26 @@ iconDark = "{dark}"
         assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
         std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
     }
-    std::fs::write(pkg.join("icons/resource_dark.svg"), "<svg><script>alert(1)</script></svg>").unwrap();
-    assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+    let mut unsafe_svgs = vec![
+        "<svg><script>alert(1)</script></svg>".to_owned(),
+        "<svg onload=\"alert(1)\"/>".to_owned(),
+        "<svg><foreignObject/></svg>".to_owned(),
+        "<svg><rect style=\"fill:url(https://evil/x)\"/></svg>".to_owned(),
+        "<svg><rect style=\"background-image:image-set('https://evil/x' 1x)\"/></svg>".to_owned(),
+        format!("<svg>{}</svg>", " ".repeat(64 << 10)),
+    ];
+    for attr in ["href", "xlink:href"] {
+        for scheme in ["http://evil/x", "data:image/svg+xml,x", "javascript:alert(1)"] {
+            unsafe_svgs.push(format!("<svg><use {attr}=\"{scheme}\"/></svg>"));
+        }
+    }
+    for path in ["icons/resource.svg", "icons/resource_dark.svg"] {
+        for svg in &unsafe_svgs {
+            std::fs::write(pkg.join(path), svg).unwrap();
+            assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {path}: {svg}");
+        }
+        std::fs::write(pkg.join(path), clean).unwrap();
+    }
     std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
     let info = f.install(&pkg);
     assert!(info.error.is_none(), "{:?}", info.error);

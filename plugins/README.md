@@ -557,7 +557,8 @@ iconDark = "icons/resource_dark.svg" # optional dark-theme variant
 
 Return `icon = Some("icons/resource.svg".into())` from `line_markers` to use it.
 The referenced icon path is package-relative, up to 256 bytes; both SVGs use the same sandbox,
-size limits and sanitization as view icons. Missing or unknown icons retain the
+64 KiB size limit and sanitization as view icons. Active content and external SVG or CSS
+references are rejected during installation. Missing or unknown icons retain the
 navigation glyph. A marker's optional target still navigates on click. For
 several cross-file targets, publish document-index mappings; the existing
 chooser lists every matching definition. Command clicks are deferred; use a
