@@ -646,6 +646,16 @@ pub enum ViewEvent {
     Sort { column: u32, descending: bool },
 }
 
+/// A plugin's HTTP route declaration in a project.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub method: Option<String>,
+    pub path: String,
+    pub framework: String,
+    pub handler: Option<String>,
+    pub location: Location,
+}
+
 /// A notification button that runs one of the publishing plugin's commands.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

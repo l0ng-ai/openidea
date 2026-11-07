@@ -1139,6 +1139,7 @@ export const commands = {
 	targets: Location[],
 } | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
+	pluginEndpoints: (pluginId: string) => typedError<PluginEndpoint[], IdeError>(__TAURI_INVOKE("plugin_endpoints", { pluginId })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -5941,12 +5942,30 @@ export type PluginEditor = {
 	selections: Range[],
 };
 
+/**  A route as the UI gets it. */
+export type PluginEndpoint = {
+	/**  `None` accepts any method. */
+	method: string | null,
+	/**  Path parameters in braces: `/photos/{id}`. */
+	path: string,
+	framework: string,
+	/**  Display name, e.g. `PhotosController#show`. */
+	handler: string | null,
+	/**  Where the route is declared. */
+	location: Location,
+};
+
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
 { type: "commandsChanged" } | 
 /**  Cached document associations were disposed (reload, disable or failure). */
 { type: "documentIndexesChanged" } | 
+/**
+ *  The routes `plugin_id` reports for the project `root` may have changed:
+ *  ask `plugin_endpoints` again.
+ */
+{ type: "endpointsChanged"; pluginId: string; root: IpcPath } | 
 /**
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).

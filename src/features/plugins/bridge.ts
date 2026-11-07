@@ -9,7 +9,7 @@
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
-import { notifications } from "@/workbench/contributions";
+import { endpointsChanged, notifications } from "@/workbench/contributions";
 import { useI18n } from "@/platform/i18n";
 import { useProducerNames } from "@/platform/inspections";
 import { languageListChanged } from "@/platform/languageList";
@@ -279,6 +279,9 @@ export function handlePluginEvent(e: PluginEvent) {
   switch (e.type) {
     case "commandsChanged":
       scheduleRefresh();
+      break;
+    case "endpointsChanged":
+      if (e.root === useProject.getState().project?.root) endpointsChanged();
       break;
     case "updatesAvailable":
       announceUpdates(e.updates);

@@ -184,5 +184,7 @@
   "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.": "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.",
   "Remove Module Overrides": "Remove Module Overrides",
   "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}",
-  "Cannot choose a directory": "Cannot choose a directory"
+  "Cannot choose a directory": "Cannot choose a directory",
+  "Open in HTTP Client": "Open in HTTP Client",
+  "Cannot generate the HTTP request": "Cannot generate the HTTP request"
 }
