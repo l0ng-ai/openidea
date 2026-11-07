@@ -1022,7 +1022,9 @@ impl HostApi for PluginApi {
         let binary = self.approved_program(program)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
-        let mut child = std::process::Command::new(&binary)
+        let mut cmd = std::process::Command::new(&binary);
+        ide_core::process::prepare(&mut cmd);
+        let mut child = cmd
             .args(&args)
             .current_dir(&cwd)
             .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })

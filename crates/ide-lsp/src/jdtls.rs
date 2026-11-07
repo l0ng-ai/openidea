@@ -458,19 +458,25 @@ impl LspManager {
         cancel: &CancellationToken,
     ) -> IdeResult<Value> {
         let started = Instant::now();
-        let (server, run) = self.jdtls(path, cancel).await?;
-        let ready_ms = started.elapsed().as_millis();
         let phase = params.get("command").and_then(Value::as_str).unwrap_or(method).to_owned();
-        let fut = run.peer.request::<Value, Value>(method, params, Some(cancel.clone()));
-        let result = match tokio::time::timeout(timeout, fut).await {
-            Ok(r) => r.map_err(|e| crate::rpc_err(&server.name, method, e)),
-            Err(_) => Err(IdeError::new(
-                ErrorKind::Protocol,
-                format!(
-                    "{SERVER}: {method} timed out after {} s; retry, or check that jdtls is not stuck",
-                    timeout.as_secs()
-                ),
-            )),
+        let (result, ready_ms) = loop {
+            let (server, run) = self.jdtls(path, cancel).await?;
+            let ready_ms = started.elapsed().as_millis();
+            let fut = run.peer.request::<Value, Value>(method, params.clone(), Some(cancel.clone()));
+            let res = match tokio::time::timeout(timeout, fut).await {
+                Ok(r) => r.map_err(|e| crate::rpc_err(&server.name, method, e)),
+                Err(_) => Err(IdeError::new(
+                    ErrorKind::Protocol,
+                    format!(
+                        "{SERVER}: {method} timed out after {} s; retry, or check that jdtls is not stuck",
+                        timeout.as_secs()
+                    ),
+                )),
+            };
+            if res.is_err() && !cancel.is_cancelled() && server.running_gen(run.generation).is_none() {
+                continue;
+            }
+            break (res, ready_ms);
         };
         tracing::info!(
             phase,

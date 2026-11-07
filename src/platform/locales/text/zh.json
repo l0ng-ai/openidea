@@ -6443,5 +6443,17 @@
   "Couldn't regenerate the response": "无法重新生成回复",
   "Reasoning": "思考过程",
   "Cannot copy the value": "无法复制该值",
-  "The check could not run: {reason}": "检查无法运行：{reason}"
+  "The check could not run: {reason}": "检查无法运行：{reason}",
+  "Invalid log stream configuration": "无效的日志流配置",
+  "Find in Logs (⌘F)": "在日志中查找 (⌘F)",
+  "Invalid Kubernetes resource YAML configuration": "无效的 Kubernetes 资源 YAML 配置",
+  "Loading live YAML…": "正在加载实时 YAML…",
+  "Loading live YAML from cluster…": "正在从集群加载实时 YAML…",
+  "Running kubectl diff -f -…": "正在运行 kubectl diff -f -…",
+  "Applying YAML to cluster…": "正在将 YAML 应用到集群…",
+  "Kubernetes Apply": "Kubernetes 应用",
+  "Kubernetes Apply Failed": "Kubernetes 应用失败",
+  "Find / Replace (⌘F / ⌘R)": "查找 / 替换 (⌘F / ⌘R)",
+  "Save & Apply": "保存并应用",
+  "Close Diff": "关闭差异对比"
 }

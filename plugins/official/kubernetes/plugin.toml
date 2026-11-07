@@ -1,0 +1,278 @@
+id = "openidea.kubernetes"
+name = "Kubernetes"
+version = "0.1.0"
+description = "Manage Kubernetes clusters, Helm releases and Kustomize overlays: cluster explorer with live Pod logs, shell and port-forward, YAML completion, cross-resource navigation, gutter markers and manifest inspections."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+change-notes = "0.1.0 — first release: Kubernetes cluster explorer (contexts, namespaces, workloads, network, config & storage, events, Helm releases, workspace manifests), kubectl actions (apply, diff, delete, describe, logs, exec, port-forward, scale, rollout restart), YAML completion & live templates, cross-resource Go to Definition & gutter markers, manifest inspections & quick fixes, status bar context switcher, file icons and templates."
+categories = ["tools", "frameworks"]
+engines.openidea = "^1.2"
+wasm = "dist/plugin.wasm"
+activation = [
+    "on-view:kubernetes",
+    "on-language:yaml",
+    "on-event:file-opened",
+    "on-event:file-saved",
+    "on-command:*",
+]
+
+[capabilities]
+required = [
+    "project.read",
+    "editor.read",
+    "editor.write",
+    "events",
+    "storage",
+    "clipboard",
+    "process:kubectl",
+]
+optional = ["process:helm", "process:kustomize"]
+
+[[contributes.views]]
+id = "kubernetes"
+title = "Kubernetes"
+icon = "icons/kubernetes.svg"
+location = "bottom"
+web = "web/index.html"
+
+[[contributes.statusBar]]
+id = "context"
+text = "k8s"
+tooltip = "Kubernetes context and namespace (click to switch context)"
+command = "switch-context"
+align = "right"
+priority = 120
+
+[[contributes.providers]]
+kinds = ["completion", "code-actions", "definition", "line-markers"]
+languages = ["yaml"]
+
+[[contributes.commands]]
+id = "refresh"
+title = "Kubernetes: Refresh Cluster State"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "switch-context"
+title = "Kubernetes: Switch Context"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "switch-namespace"
+title = "Kubernetes: Switch Namespace"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "apply"
+title = "Kubernetes: Apply Current Manifest"
+category = "Kubernetes"
+when = "editorLang == yaml"
+
+[[contributes.commands]]
+id = "diff"
+title = "Kubernetes: Diff Current Manifest with Cluster"
+category = "Kubernetes"
+when = "editorLang == yaml"
+
+[[contributes.commands]]
+id = "delete-manifest"
+title = "Kubernetes: Delete Resources in Current Manifest"
+category = "Kubernetes"
+when = "editorLang == yaml"
+
+[[contributes.commands]]
+id = "dry-run"
+title = "Kubernetes: Validate Current Manifest (Dry Run)"
+category = "Kubernetes"
+when = "editorLang == yaml"
+
+[[contributes.commands]]
+id = "inspect"
+title = "Kubernetes: Inspect Current File"
+category = "Kubernetes"
+when = "editorLang == yaml"
+
+[[contributes.commands]]
+id = "scan-project"
+title = "Kubernetes: Inspect All Project Manifests"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "follow-logs"
+title = "Kubernetes: Follow Pod Logs in Terminal"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "exec-shell"
+title = "Kubernetes: Open Shell in Pod Container"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "port-forward"
+title = "Kubernetes: Port Forward to Resource"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "scale"
+title = "Kubernetes: Scale Workload Replicas"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "rollout-restart"
+title = "Kubernetes: Rollout Restart Workload"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "helm-template"
+title = "Kubernetes: Render Helm Chart Templates"
+category = "Kubernetes"
+
+[[contributes.commands]]
+id = "kustomize-build"
+title = "Kubernetes: Build Kustomize Overlay"
+category = "Kubernetes"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "apply"
+when = "editorLang == yaml"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "diff"
+when = "editorLang == yaml"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "dry-run"
+when = "editorLang == yaml"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "delete-manifest"
+when = "editorLang == yaml"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "inspect"
+when = "editorLang == yaml"
+
+[[contributes.menus]]
+menu = "editorTab.context"
+command = "apply"
+when = "editorLang == yaml"
+
+[[contributes.menus]]
+menu = "editorTab.context"
+command = "diff"
+when = "editorLang == yaml"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "scan-project"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "kustomize-build"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "helm-template"
+
+[[contributes.menus]]
+menu = "tools"
+command = "refresh"
+
+[[contributes.menus]]
+menu = "tools"
+command = "switch-context"
+
+[[contributes.menus]]
+menu = "tools"
+command = "switch-namespace"
+
+[[contributes.menus]]
+menu = "tools"
+command = "scan-project"
+
+[[contributes.menus]]
+menu = "tools"
+command = "kustomize-build"
+
+[[contributes.menus]]
+menu = "tools"
+command = "helm-template"
+
+[[contributes.runDetectors]]
+id = "kustomize-build"
+name = "kubectl kustomize"
+files = ["kustomization.yaml", "kustomization.yml"]
+command = "kubectl"
+args = ["kustomize", "."]
+
+[[contributes.runDetectors]]
+id = "helm-lint"
+name = "helm lint"
+files = ["Chart.yaml"]
+command = "helm"
+args = ["lint", "."]
+test = true
+
+[[contributes.runDetectors]]
+id = "helm-template"
+name = "helm template"
+files = ["Chart.yaml"]
+command = "helm"
+args = ["template", "."]
+
+[[contributes.fileIcons]]
+id = "kubernetes"
+patterns = ["*.k8s.yaml", "*.k8s.yml", "kubeconfig", "*.kubeconfig"]
+icon = "icons/kubernetes.svg"
+iconDark = "icons/kubernetes_dark.svg"
+
+[[contributes.fileIcons]]
+id = "kustomize"
+patterns = ["kustomization.yaml", "kustomization.yml", "Kustomization"]
+icon = "icons/kustomize.svg"
+iconDark = "icons/kustomize_dark.svg"
+
+[[contributes.fileIcons]]
+id = "helm"
+patterns = ["Chart.yaml", "Chart.lock", "values.yaml", "values.*.yaml"]
+icon = "icons/helm.svg"
+iconDark = "icons/helm_dark.svg"
+
+[[contributes.fileTemplates]]
+id = "deployment"
+name = "Kubernetes Deployment"
+extension = "yaml"
+path = "templates/deployment.yaml"
+
+[[contributes.fileTemplates]]
+id = "service"
+name = "Kubernetes Service"
+extension = "yaml"
+path = "templates/service.yaml"
+
+[[contributes.fileTemplates]]
+id = "configmap"
+name = "Kubernetes ConfigMap"
+extension = "yaml"
+path = "templates/configmap.yaml"
+
+[[contributes.fileTemplates]]
+id = "ingress"
+name = "Kubernetes Ingress"
+extension = "yaml"
+path = "templates/ingress.yaml"
+
+[[contributes.fileTemplates]]
+id = "kustomization"
+name = "Kustomization"
+extension = "yaml"
+path = "templates/kustomization.yaml"
+
+[contributes.settings]
+title = "Kubernetes"
+schema = "settings.schema.json"

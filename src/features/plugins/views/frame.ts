@@ -29,9 +29,13 @@ export const FRAME_THEME_TOKENS = {
   "--openidea-bg-hover": "--bg-hover",
   "--openidea-bg-selected": "--bg-tree-selected",
   "--openidea-bg-input": "--bg-input",
+  "--openidea-bg-editor": "--bg-editor",
+  "--openidea-bg-editor-line": "--bg-caret-row",
+  "--openidea-bg-editor-selection": "--bg-editor-selection",
   "--openidea-fg": "--fg",
   "--openidea-fg-strong": "--fg-strong",
   "--openidea-fg-muted": "--fg-muted",
+  "--openidea-fg-editor": "--fg-editor",
   "--openidea-border": "--border",
   "--openidea-accent": "--accent",
   "--openidea-fg-on-accent": "--fg-on-accent",
@@ -41,6 +45,14 @@ export const FRAME_THEME_TOKENS = {
   "--openidea-warning": "--warning",
   "--openidea-success": "--success",
   "--openidea-info": "--info",
+  "--openidea-syn-keyword": "--syn-keyword",
+  "--openidea-syn-string": "--syn-string",
+  "--openidea-syn-number": "--syn-number",
+  "--openidea-syn-property": "--syn-property",
+  "--openidea-syn-comment": "--syn-comment",
+  "--openidea-syn-type": "--syn-type",
+  "--openidea-syn-constant": "--syn-constant",
+  "--openidea-syn-invalid": "--syn-invalid",
 } as const;
 
 /** Non-colour variables: public name → IDE token. */
@@ -48,6 +60,8 @@ const FRAME_FONT_TOKENS = {
   "--openidea-font-ui": "--font-ui",
   "--openidea-font-mono": "--font-mono",
   "--openidea-font-size": "--fs-ui",
+  "--openidea-font-code-size": "--fs-code",
+  "--openidea-font-code-line-height": "--lh-code",
 } as const;
 
 export interface FrameTheme {

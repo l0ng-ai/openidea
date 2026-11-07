@@ -1,0 +1,1147 @@
+<style>
+  body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    user-select: none;
+  }
+  .k8s-root {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 2px);
+    box-sizing: border-box;
+    background: var(--openidea-bg);
+    color: var(--openidea-fg);
+    font-family: var(--openidea-font-ui, system-ui, sans-serif);
+    font-size: 12px;
+  }
+  .k8s-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--openidea-border);
+    background: var(--openidea-bg-elevated, var(--openidea-bg));
+    flex-wrap: wrap;
+  }
+  .k8s-bar label {
+    color: var(--openidea-fg-muted);
+    font-size: 11px;
+  }
+  select,
+  input[type="text"],
+  input[type="number"] {
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--openidea-fg);
+    background: var(--openidea-bg-input, transparent);
+    border: 1px solid var(--openidea-border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    height: 22px;
+    outline: none;
+    box-sizing: border-box;
+  }
+  select:focus,
+  input:focus {
+    border-color: var(--openidea-focus-ring, var(--openidea-accent));
+  }
+  button.btn {
+    font-family: inherit;
+    font-size: 11px;
+    height: 22px;
+    padding: 0 8px;
+    color: var(--openidea-fg);
+    background: transparent;
+    border: 1px solid var(--openidea-border);
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  button.btn:hover:not(:disabled) {
+    background: var(--openidea-bg-hover);
+  }
+  button.btn.primary {
+    color: var(--openidea-fg-on-accent);
+    background: var(--openidea-accent);
+    border-color: var(--openidea-accent);
+  }
+  button.btn.danger {
+    color: var(--openidea-danger);
+    border-color: color-mix(in srgb, var(--openidea-danger) 50%, var(--openidea-border));
+  }
+  button.btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .k8s-main {
+    display: grid;
+    grid-template-columns: 44px 190px minmax(280px, 1.35fr) minmax(300px, 1.55fr);
+    flex: 1;
+    min-height: 0;
+  }
+  .k8s-hotbar {
+    border-right: 1px solid var(--openidea-border);
+    background: var(--openidea-bg-elevated, var(--openidea-bg));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 4px;
+    overflow-y: auto;
+  }
+  .hb-item {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    border: 2px solid transparent;
+    box-sizing: border-box;
+    letter-spacing: -0.02em;
+  }
+  .hb-item:hover {
+    filter: brightness(1.1);
+  }
+  .hb-item.active {
+    border-color: var(--openidea-fg-strong);
+    box-shadow: 0 0 0 1px var(--openidea-accent);
+  }
+  .cluster-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 20px;
+    border-radius: 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    color: #fff;
+    margin-right: 7px;
+    vertical-align: middle;
+    flex-shrink: 0;
+  }
+  .label-chip {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    background: color-mix(in srgb, var(--openidea-fg-muted) 14%, transparent);
+    color: var(--openidea-fg-muted);
+    font-family: var(--openidea-font-mono, monospace);
+  }
+  .yaml-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--openidea-border);
+    background: color-mix(in srgb, var(--openidea-accent) 6%, var(--openidea-bg));
+    font-size: 11px;
+  }
+  .yaml-editor {
+    flex: 1;
+    width: 100%;
+    margin: 0;
+    padding: 8px;
+    border: none;
+    outline: none;
+    resize: none;
+    box-sizing: border-box;
+    background: var(--openidea-bg);
+    color: var(--openidea-fg-strong);
+    font-family: var(--openidea-font-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    line-height: 1.45;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 2;
+  }
+  .k8s-nav {
+    border-right: 1px solid var(--openidea-border);
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+  .nav-group {
+    padding: 6px 10px 2px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--openidea-fg-muted);
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px 4px 14px;
+    cursor: pointer;
+    color: var(--openidea-fg);
+  }
+  .nav-item:hover {
+    background: var(--openidea-bg-hover);
+  }
+  .nav-item.active {
+    background: var(--openidea-bg-selected);
+    color: var(--openidea-fg-strong);
+    font-weight: 500;
+  }
+  .badge {
+    font-size: 10px;
+    padding: 0 5px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--openidea-fg-muted) 18%, transparent);
+    color: var(--openidea-fg-muted);
+  }
+  .k8s-list {
+    border-right: 1px solid var(--openidea-border);
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  table.res-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  table.res-table th,
+  table.res-table td {
+    text-align: left;
+    padding: 4px 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--openidea-border) 50%, transparent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 220px;
+  }
+  table.res-table th {
+    position: sticky;
+    top: 0;
+    background: var(--openidea-bg-elevated, var(--openidea-bg));
+    color: var(--openidea-fg-muted);
+    font-weight: 500;
+    z-index: 1;
+  }
+  table.res-table tr.row {
+    cursor: pointer;
+  }
+  table.res-table tr.row:hover {
+    background: var(--openidea-bg-hover);
+  }
+  table.res-table tr.row.selected {
+    background: var(--openidea-bg-selected);
+  }
+  .pill {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .pill.ok {
+    color: var(--openidea-success);
+    background: color-mix(in srgb, var(--openidea-success) 15%, transparent);
+  }
+  .pill.warn {
+    color: var(--openidea-warning);
+    background: color-mix(in srgb, var(--openidea-warning) 15%, transparent);
+  }
+  .pill.err {
+    color: var(--openidea-danger);
+    background: color-mix(in srgb, var(--openidea-danger) 15%, transparent);
+  }
+  .k8s-detail {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+  .detail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--openidea-border);
+    background: var(--openidea-bg-elevated, var(--openidea-bg));
+    flex-wrap: wrap;
+  }
+  .tabs {
+    display: flex;
+    gap: 2px;
+  }
+  .tab {
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 8px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--openidea-fg-muted);
+    cursor: pointer;
+  }
+  .tab:hover {
+    background: var(--openidea-bg-hover);
+  }
+  .tab.active {
+    color: var(--openidea-fg-on-accent);
+    background: var(--openidea-accent);
+  }
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .log-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--openidea-border);
+    flex-wrap: wrap;
+  }
+  .output {
+    flex: 1;
+    margin: 0;
+    padding: 8px;
+    overflow: auto;
+    font-family: var(--openidea-font-mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
+    color: var(--openidea-fg-strong);
+  }
+  .output mark {
+    background: color-mix(in srgb, var(--openidea-warning, var(--openidea-accent)) 40%, transparent);
+    color: inherit;
+    border-radius: 2px;
+  }
+  .empty {
+    padding: 16px;
+    color: var(--openidea-fg-muted);
+    text-align: center;
+  }
+  .banner {
+    padding: 4px 8px;
+    font-size: 11px;
+    border-bottom: 1px solid var(--openidea-border);
+    color: var(--openidea-info, var(--openidea-fg));
+    background: color-mix(in srgb, var(--openidea-accent) 12%, transparent);
+  }
+  .banner.error {
+    color: var(--openidea-danger);
+    background: color-mix(in srgb, var(--openidea-danger) 12%, transparent);
+  }
+</style>
+<div class="k8s-root">
+  <div class="k8s-bar">
+    <label for="ctx-select">Context</label>
+    <select id="ctx-select" title="Kubernetes context"></select>
+    <label for="ns-select">Namespace</label>
+    <select id="ns-select" title="Kubernetes namespace"></select>
+    <label><input id="all-ns" type="checkbox" /> All</label>
+    <input
+      id="filter"
+      type="text"
+      placeholder="Filter resources by name or status…"
+      style="flex: 1; min-width: 140px"
+    />
+    <button id="btn-refresh" class="btn" title="Refresh cluster state">Refresh</button>
+    <button id="btn-apply" class="btn primary" title="Apply active editor YAML (kubectl apply -f -)">Apply File</button>
+    <button id="btn-diff" class="btn" title="Diff active editor YAML against cluster">Diff File</button>
+    <button id="btn-kustomize" class="btn" title="Build Kustomize overlay">Kustomize</button>
+    <button id="btn-helm-tpl" class="btn" title="Render Helm chart templates">Helm Template</button>
+  </div>
+  <div id="banner" class="banner" hidden></div>
+  <div class="k8s-main">
+    <div id="hotbar" class="k8s-hotbar" role="toolbar" aria-label="Freelens Hotbar"></div>
+    <div id="nav" class="k8s-nav" role="navigation" aria-label="Kubernetes categories"></div>
+    <div id="list-pane" class="k8s-list"></div>
+    <div class="k8s-detail">
+      <div class="detail-head">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="describe">Describe</button>
+          <button class="tab" data-tab="yaml">YAML (Live Edit)</button>
+          <button class="tab" data-tab="logs">Logs</button>
+          <button class="tab" data-tab="events">Events</button>
+        </div>
+        <div id="item-actions" class="actions"></div>
+      </div>
+      <div id="yaml-bar" class="yaml-bar" hidden>
+        <span id="yaml-target-label">Live Cluster Resource YAML — edit below and click Apply to update cluster</span>
+        <div class="actions">
+          <button id="btn-yaml-reload" class="btn" title="Reload live YAML from cluster">Reload</button>
+          <button id="btn-yaml-diff" class="btn" title="Run kubectl diff -f - against live cluster">Diff</button>
+          <button id="btn-yaml-apply" class="btn primary" title="Apply edited YAML to cluster (kubectl apply -f -)">
+            Apply to Cluster
+          </button>
+        </div>
+      </div>
+      <div id="log-bar" class="log-controls" hidden>
+        <label for="container-select">Container</label>
+        <select id="container-select"></select>
+        <label for="log-level">Level</label>
+        <select id="log-level">
+          <option value="">All</option>
+          <option value="ERROR">ERROR</option>
+          <option value="WARN">WARN</option>
+          <option value="INFO">INFO</option>
+        </select>
+        <input id="log-search" type="text" placeholder="Pattern match logs…" style="flex: 1; min-width: 110px" />
+        <label><input id="log-prev" type="checkbox" /> Previous</label>
+        <button id="btn-fetch-logs" class="btn">Reload Logs</button>
+      </div>
+      <textarea id="yaml-editor" class="yaml-editor" spellcheck="false" hidden></textarea>
+      <pre id="output" class="output">Select a cluster resource or workspace manifest to inspect.</pre>
+    </div>
+  </div>
+</div>
+<script>
+  (() => {
+    const START_B64 = "__START_B64__";
+    const decodeStart = () => {
+      try {
+        if (!START_B64 || START_B64.startsWith("__START")) return null;
+        const bin = atob(START_B64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return JSON.parse(new TextDecoder().decode(bytes));
+      } catch (e) {
+        return null;
+      }
+    };
+    const START = decodeStart();
+    const $ = (id) => document.getElementById(id);
+    const ctxSelect = $("ctx-select"),
+      nsSelect = $("ns-select"),
+      allNs = $("all-ns"),
+      filterInput = $("filter"),
+      hotbarEl = $("hotbar"),
+      navEl = $("nav"),
+      listPane = $("list-pane"),
+      outputEl = $("output"),
+      yamlEditor = $("yaml-editor"),
+      yamlBar = $("yaml-bar"),
+      yamlTargetLabel = $("yaml-target-label"),
+      bannerEl = $("banner"),
+      itemActions = $("item-actions"),
+      logBar = $("log-bar"),
+      containerSelect = $("container-select"),
+      logLevel = $("log-level"),
+      logSearch = $("log-search"),
+      logPrev = $("log-prev");
+
+    const AVATAR_PALETTE = [
+      "#a855f7",
+      "#0d9488",
+      "#2563eb",
+      "#b91c1c",
+      "#15803d",
+      "#1d4ed8",
+      "#c2410c",
+      "#db2777",
+      "#0369a1",
+      "#4f46e5",
+    ];
+    function avatarColor(name) {
+      let h = 2166136261;
+      const s = String(name || "");
+      for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619) >>> 0;
+      }
+      return AVATAR_PALETTE[h % AVATAR_PALETTE.length];
+    }
+    function shortBadge(c) {
+      if (c && c.short_name) return c.short_name;
+      const name = String((c && c.name) || c || "");
+      const parts = name.split(/[-_./]+/).filter(Boolean);
+      if (parts.length >= 3) return (parts[0][0] + parts[1][0] + parts[2][0]).toUpperCase();
+      if (parts.length === 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+      return name.slice(0, 3).toUpperCase();
+    }
+
+    const CATEGORIES = [
+      {
+        group: "Catalog",
+        items: [
+          ["ClusterCatalog", "Clusters"],
+          ["Workspace", "Workspace YAML"],
+        ],
+      },
+      {
+        group: "Workloads",
+        items: [
+          ["Pod", "Pods"],
+          ["Deployment", "Deployments"],
+          ["StatefulSet", "StatefulSets"],
+          ["DaemonSet", "DaemonSets"],
+          ["Job", "Jobs"],
+          ["CronJob", "CronJobs"],
+        ],
+      },
+      {
+        group: "Network",
+        items: [
+          ["Service", "Services"],
+          ["Ingress", "Ingresses"],
+        ],
+      },
+      {
+        group: "Configuration & Storage",
+        items: [
+          ["ConfigMap", "ConfigMaps"],
+          ["Secret", "Secrets"],
+          ["PersistentVolumeClaim", "PVCs"],
+        ],
+      },
+      {
+        group: "Cluster & Helm",
+        items: [
+          ["Node", "Nodes"],
+          ["Namespace", "Namespaces"],
+          ["CustomResourceDefinition", "CRDs"],
+          ["Event", "Events"],
+          ["HelmRelease", "Helm Releases"],
+        ],
+      },
+    ];
+
+    let state =
+      typeof START === "object" && START
+        ? START
+        : {
+            snapshot: {
+              connected: false,
+              error: null,
+              current_context: "",
+              contexts: [],
+              cluster_catalog: [],
+              current_namespace: "default",
+              all_namespaces: false,
+              namespaces: ["default"],
+              resources: [],
+              events: [],
+              helm_releases: [],
+            },
+            workspace: [],
+          };
+    let activeKind = "ClusterCatalog";
+    let selectedKey = null;
+    let activeTab = "describe";
+    let rawOutput = "";
+    let loadedLazyCategories = {};
+
+    const esc = (s) =>
+      String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+    function send(msg) {
+      openidea.postMessage(JSON.stringify(msg));
+    }
+
+    function showBanner(text, isErr = false) {
+      if (!text) {
+        bannerEl.hidden = true;
+        return;
+      }
+      bannerEl.hidden = false;
+      bannerEl.className = "banner" + (isErr ? " error" : "");
+      bannerEl.textContent = text;
+    }
+
+    function switchContextOptimistic(chosen, targetCategory) {
+      const snap = state.snapshot || {};
+      const catalogEntry = (snap.cluster_catalog || []).find((c) => c.name === chosen);
+      const defaultNs = (catalogEntry && catalogEntry.namespace) || "default";
+      snap.current_context = chosen;
+      snap.current_namespace = defaultNs;
+      snap.all_namespaces = false;
+      snap.error = null;
+      snap.resources = [];
+      snap.events = [];
+      snap.helm_releases = [];
+      if (!snap.namespaces || !snap.namespaces.includes(defaultNs)) {
+        snap.namespaces = Array.from(new Set([defaultNs, "default", "kube-system"]));
+      }
+      loadedLazyCategories = {};
+      if (targetCategory) {
+        activeKind = targetCategory;
+      }
+      selectedKey = null;
+      renderToolbar();
+      renderNav();
+      renderList();
+      renderActions();
+      if (activeKind !== "ClusterCatalog" && activeKind !== "Workspace") {
+        showBanner(`Connecting to ${chosen} (${defaultNs})…`, false);
+      }
+      send({ op: "set-context", context: chosen, category: activeKind });
+    }
+
+    function countFor(kind) {
+      const snap = state.snapshot || {};
+      if (kind === "ClusterCatalog") return (snap.cluster_catalog || snap.contexts || []).length;
+      if (kind === "Event") return (snap.events || []).length;
+      if (kind === "HelmRelease") return (snap.helm_releases || []).length;
+      if (kind === "Workspace") return (state.workspace || []).length;
+      return (snap.resources || []).filter((r) => r.kind === kind).length;
+    }
+
+    function renderToolbar() {
+      const snap = state.snapshot || {};
+      const ctxs = snap.contexts && snap.contexts.length ? snap.contexts : [snap.current_context || "default"];
+      ctxSelect.innerHTML = ctxs
+        .map((c) => `<option value="${esc(c)}" ${c === snap.current_context ? "selected" : ""}>${esc(c)}</option>`)
+        .join("");
+      const nss = snap.namespaces && snap.namespaces.length ? snap.namespaces : [snap.current_namespace || "default"];
+      nsSelect.innerHTML = nss
+        .map((n) => `<option value="${esc(n)}" ${n === snap.current_namespace ? "selected" : ""}>${esc(n)}</option>`)
+        .join("");
+      allNs.checked = Boolean(snap.all_namespaces);
+      nsSelect.disabled = allNs.checked;
+      if (snap.error) {
+        showBanner(snap.error, true);
+      } else {
+        showBanner(null);
+      }
+      renderHotbar();
+    }
+
+    function renderHotbar() {
+      const snap = state.snapshot || {};
+      const catalog =
+        snap.cluster_catalog && snap.cluster_catalog.length
+          ? snap.cluster_catalog
+          : (snap.contexts || []).map((name) => ({ name, short_name: shortBadge(name), hotbar_pinned: false }));
+      const pinned = catalog
+        .filter((c) => c.hotbar_pinned)
+        .slice()
+        .sort((a, b) => (a.hotbar_order ?? 999) - (b.hotbar_order ?? 999));
+      const hotbarItems = pinned.length ? pinned : catalog.slice(0, 6);
+      let html = `<div class="hb-item ${activeKind === "ClusterCatalog" ? "active" : ""}" data-hb="catalog" style="background:#0d9488;" title="Cluster Catalog (${catalog.length} clusters)">ALL</div>`;
+      for (const c of hotbarItems) {
+        const isCur = c.name === snap.current_context && activeKind !== "ClusterCatalog";
+        const bg = avatarColor(c.name);
+        const badge = shortBadge(c);
+        html += `<div class="hb-item ${isCur ? "active" : ""}" data-ctx="${esc(c.name)}" style="background:${bg};" title="Switch to ${esc(c.name)}">${esc(badge)}</div>`;
+      }
+      hotbarEl.innerHTML = html;
+      for (const el of hotbarEl.querySelectorAll(".hb-item")) {
+        el.addEventListener("click", () => {
+          if (el.dataset.hb === "catalog") {
+            activeKind = "ClusterCatalog";
+            selectedKey = null;
+            renderHotbar();
+            renderNav();
+            renderList();
+            renderActions();
+          } else if (el.dataset.ctx) {
+            const chosen = el.dataset.ctx;
+            const nextKind = activeKind === "ClusterCatalog" || activeKind === "Workspace" ? "Pod" : activeKind;
+            switchContextOptimistic(chosen, nextKind);
+          }
+        });
+      }
+    }
+
+    function renderNav() {
+      let html = "";
+      for (const g of CATEGORIES) {
+        html += `<div class="nav-group">${esc(g.group)}</div>`;
+        for (const [kind, label] of g.items) {
+          const active = kind === activeKind ? " active" : "";
+          html += `<div class="nav-item${active}" data-kind="${esc(kind)}"><span>${esc(label)}</span><span class="badge">${countFor(kind)}</span></div>`;
+        }
+      }
+      navEl.innerHTML = html;
+      for (const el of navEl.querySelectorAll(".nav-item")) {
+        el.addEventListener("click", () => {
+          const nextKind = el.dataset.kind;
+          activeKind = nextKind;
+          selectedKey = null;
+          renderHotbar();
+          renderNav();
+          renderList();
+          renderActions();
+          const snap = state.snapshot || {};
+          if (
+            ["Node", "CustomResourceDefinition", "Event", "HelmRelease"].includes(nextKind) &&
+            !loadedLazyCategories[nextKind]
+          ) {
+            loadedLazyCategories[nextKind] = true;
+            showBanner(`Loading ${nextKind}s from ${snap.current_context || "cluster"}…`, false);
+            send({ op: "load-category", category: nextKind });
+          } else if (
+            nextKind !== "ClusterCatalog" &&
+            nextKind !== "Workspace" &&
+            (!snap.resources || !snap.resources.length) &&
+            !snap.connected
+          ) {
+            showBanner(`Loading ${nextKind}s from ${snap.current_context || "cluster"}…`, false);
+            send({ op: "load-category", category: nextKind });
+            send({ op: "sync-cluster", context: snap.current_context || "" });
+          }
+        });
+      }
+    }
+
+    function statusPill(status) {
+      const s = String(status || "");
+      const low = s.toLowerCase();
+      let cls = "ok";
+      if (
+        low.includes("err") ||
+        low.includes("fail") ||
+        low.includes("crash") ||
+        low.includes("notready") ||
+        low.includes("backoff")
+      ) {
+        cls = "err";
+      } else if (
+        low.includes("pend") ||
+        low.includes("prog") ||
+        low.includes("scal") ||
+        low.includes("warn") ||
+        low.includes("terminat")
+      ) {
+        cls = "warn";
+      }
+      return `<span class="pill ${cls}">${esc(s)}</span>`;
+    }
+
+    function filteredItems() {
+      const q = (filterInput.value || "").trim().toLowerCase();
+      const snap = state.snapshot || {};
+      if (activeKind === "ClusterCatalog") {
+        const catalog =
+          snap.cluster_catalog && snap.cluster_catalog.length
+            ? snap.cluster_catalog
+            : (snap.contexts || []).map((name) => ({
+                name,
+                cluster: name,
+                server: "",
+                user: "",
+                namespace: "default",
+                source: "~/.kube/config",
+              }));
+        return catalog.filter(
+          (c) =>
+            !q ||
+            c.name.toLowerCase().includes(q) ||
+            (c.server || "").toLowerCase().includes(q) ||
+            (c.cluster || "").toLowerCase().includes(q),
+        );
+      }
+      if (activeKind === "Event") {
+        return (snap.events || []).filter(
+          (e) =>
+            !q ||
+            e.object.toLowerCase().includes(q) ||
+            e.reason.toLowerCase().includes(q) ||
+            e.message.toLowerCase().includes(q),
+        );
+      }
+      if (activeKind === "HelmRelease") {
+        return (snap.helm_releases || []).filter(
+          (h) => !q || h.name.toLowerCase().includes(q) || h.chart.toLowerCase().includes(q),
+        );
+      }
+      if (activeKind === "Workspace") {
+        return (state.workspace || []).filter(
+          (w) =>
+            !q ||
+            w.name.toLowerCase().includes(q) ||
+            w.kind.toLowerCase().includes(q) ||
+            w.path.toLowerCase().includes(q),
+        );
+      }
+      return (snap.resources || []).filter(
+        (r) =>
+          r.kind === activeKind &&
+          (!q ||
+            r.name.toLowerCase().includes(q) ||
+            r.status.toLowerCase().includes(q) ||
+            r.namespace.toLowerCase().includes(q)),
+      );
+    }
+
+    function renderList() {
+      const items = filteredItems();
+      if (!items.length) {
+        listPane.innerHTML = `<div class="empty">No ${esc(activeKind)} items found.</div>`;
+        return;
+      }
+      if (activeKind === "ClusterCatalog") {
+        const activeCtx = (state.snapshot && state.snapshot.current_context) || "";
+        const connected = Boolean(state.snapshot && state.snapshot.connected);
+        listPane.innerHTML = `<table class="res-table"><thead><tr><th>Name</th><th>Source</th><th>Labels</th><th>Version</th><th>Distro</th><th>Status</th></tr></thead><tbody>${items
+          .map((c) => {
+            const isCur = c.name === activeCtx;
+            const status = isCur ? (connected ? "connected" : "selected") : "disconnected";
+            const sel = isCur ? " selected" : "";
+            const bg = avatarColor(c.name);
+            const badge = shortBadge(c);
+            const pinMark = c.hotbar_pinned ? " ★" : "";
+            const ver = c.version || "";
+            const distro = c.distro || (c.nodes ? `${c.nodes} nodes` : "");
+            const srcLabel = `file=${c.source || "~/.kube/config"}`;
+            return `<tr class="row${sel}" data-ctx="${esc(c.name)}"><td><span class="cluster-avatar" style="background:${bg}">${esc(badge)}</span><strong>${esc(c.name)}</strong>${esc(pinMark)}</td><td>local</td><td><span class="label-chip">${esc(srcLabel)}</span></td><td>${esc(ver)}</td><td>${esc(distro)}</td><td>${statusPill(status)}</td></tr>`;
+          })
+          .join("")}</tbody></table>`;
+        for (const tr of listPane.querySelectorAll("tr.row")) {
+          tr.addEventListener("click", () => {
+            const chosen = tr.dataset.ctx;
+            const item = items.find((x) => x.name === chosen);
+            if (item) {
+              rawOutput = `Context:      ${item.name}\nCluster:      ${item.cluster}\nAPI Server:   ${item.server || "(default)"}\nUser:         ${item.user || "(default)"}\nNamespace:    ${item.namespace || "default"}\nK8s Version:  ${item.version || "(not cached in Freelens)"}\nDistribution: ${item.distro || "standard"}\nNodes:        ${item.nodes || "-"}\nLast Seen:    ${item.last_seen || "-"}\nSource:       ${item.source || "~/.kube/config"}\n\nSelected context ${item.name}. Double-click row or click a Hotbar/Workload item to inspect live workloads.`;
+              renderOutput();
+            }
+            switchContextOptimistic(chosen, "ClusterCatalog");
+          });
+          tr.addEventListener("dblclick", () => {
+            const chosen = tr.dataset.ctx;
+            switchContextOptimistic(chosen, "Pod");
+          });
+        }
+        return;
+      }
+      if (activeKind === "Event") {
+        listPane.innerHTML = `<table class="res-table"><thead><tr><th>Type</th><th>Object</th><th>Reason</th><th>Message</th></tr></thead><tbody>${items
+          .map(
+            (e, idx) =>
+              `<tr class="row" data-idx="${idx}"><td>${statusPill(e.event_type)}</td><td>${esc(e.kind)}/${esc(e.object)}</td><td>${esc(e.reason)}</td><td title="${esc(e.message)}">${esc(e.message)}</td></tr>`,
+          )
+          .join("")}</tbody></table>`;
+        for (const tr of listPane.querySelectorAll("tr.row")) {
+          tr.addEventListener("click", () => {
+            const ev = items[Number(tr.dataset.idx)];
+            rawOutput = `${ev.kind}/${ev.object} (${ev.namespace})\nType: ${ev.event_type}\nReason: ${ev.reason} (x${ev.count})\nLast seen: ${ev.last_seen}\n\n${ev.message}`;
+            renderOutput();
+          });
+        }
+        return;
+      }
+      if (activeKind === "HelmRelease") {
+        listPane.innerHTML = `<table class="res-table"><thead><tr><th>Name</th><th>Namespace</th><th>Chart</th><th>Status</th><th>Rev</th></tr></thead><tbody>${items
+          .map((h) => {
+            const key = `helm:${h.namespace}/${h.name}`;
+            const sel = key === selectedKey ? " selected" : "";
+            return `<tr class="row${sel}" data-key="${esc(key)}" data-ns="${esc(h.namespace)}" data-name="${esc(h.name)}"><td>${esc(h.name)}</td><td>${esc(h.namespace)}</td><td>${esc(h.chart)}</td><td>${statusPill(h.status)}</td><td>${esc(h.revision)}</td></tr>`;
+          })
+          .join("")}</tbody></table>`;
+        for (const tr of listPane.querySelectorAll("tr.row")) {
+          tr.addEventListener("click", () => {
+            selectedKey = tr.dataset.key;
+            renderList();
+            renderActions();
+            send({
+              op: "helm-detail",
+              namespace: tr.dataset.ns,
+              name: tr.dataset.name,
+              sub: activeTab === "yaml" ? "manifest" : "values",
+            });
+          });
+        }
+        return;
+      }
+      if (activeKind === "Workspace") {
+        listPane.innerHTML = `<table class="res-table"><thead><tr><th>Kind</th><th>Name</th><th>Namespace</th><th>File</th></tr></thead><tbody>${items
+          .map((w, i) => {
+            const key = `ws:${i}`;
+            const sel = key === selectedKey ? " selected" : "";
+            return `<tr class="row${sel}" data-idx="${i}" data-key="${key}"><td>${esc(w.kind)}</td><td>${esc(w.name)}</td><td>${esc(w.namespace)}</td><td title="${esc(w.path)}">${esc(w.path)}:${w.line + 1}</td></tr>`;
+          })
+          .join("")}</tbody></table>`;
+        for (const tr of listPane.querySelectorAll("tr.row")) {
+          tr.addEventListener("click", () => {
+            const w = items[Number(tr.dataset.idx)];
+            selectedKey = tr.dataset.key;
+            renderList();
+            send({ op: "open-location", path: w.fullPath, line: w.line });
+          });
+        }
+        return;
+      }
+
+      listPane.innerHTML = `<table class="res-table"><thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Detail</th></tr></thead><tbody>${items
+        .map((r) => {
+          const key = `${r.kind}:${r.namespace}/${r.name}`;
+          const sel = key === selectedKey ? " selected" : "";
+          return `<tr class="row${sel}" data-key="${esc(key)}"><td>${esc(r.name)}</td><td>${esc(r.namespace || "-")}</td><td>${statusPill(r.status)}</td><td>${esc(r.ready)}</td><td title="${esc(r.detail)}">${esc(r.detail)}</td></tr>`;
+        })
+        .join("")}</tbody></table>`;
+
+      for (const tr of listPane.querySelectorAll("tr.row")) {
+        tr.addEventListener("click", () => {
+          selectedKey = tr.dataset.key;
+          renderList();
+          renderActions();
+          requestSelectedDetail();
+        });
+      }
+    }
+
+    function selectedResource() {
+      if (!selectedKey) return null;
+      const snap = state.snapshot || {};
+      return (snap.resources || []).find((r) => `${r.kind}:${r.namespace}/${r.name}` === selectedKey) || null;
+    }
+
+    function renderActions() {
+      const res = selectedResource();
+      logBar.hidden = !(res && res.kind === "Pod" && activeTab === "logs");
+      yamlBar.hidden = !(res && activeTab === "yaml");
+      if (res && activeTab === "yaml") {
+        yamlTargetLabel.textContent = `Editing live ${res.kind}/${res.name} (${res.namespace || "cluster-scoped"})`;
+      }
+      if (!res) {
+        itemActions.innerHTML = "";
+        return;
+      }
+      if (res.containers && res.containers.length) {
+        containerSelect.innerHTML = res.containers.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+      } else {
+        containerSelect.innerHTML = `<option value="">(default)</option>`;
+      }
+
+      let btns = "";
+      if (res.kind === "Pod") {
+        btns += `<button class="btn" data-act="follow-logs" title="Follow logs in terminal">Follow Logs</button>`;
+        btns += `<button class="btn" data-act="exec-shell" title="Open interactive shell in Pod">Shell</button>`;
+        btns += `<button class="btn" data-act="port-forward" title="Forward local port to Pod">Port Forward</button>`;
+      } else if (res.kind === "Service") {
+        btns += `<button class="btn" data-act="port-forward" title="Forward local port to Service">Port Forward</button>`;
+      }
+      if (["Deployment", "StatefulSet", "ReplicaSet"].includes(res.kind)) {
+        btns += `<button class="btn" data-act="scale-up" title="Scale +1 replica">Scale +1</button>`;
+        btns += `<button class="btn" data-act="scale-down" title="Scale -1 replica">Scale -1</button>`;
+        btns += `<button class="btn" data-act="restart" title="Rollout restart workload">Restart</button>`;
+      } else if (res.kind === "DaemonSet") {
+        btns += `<button class="btn" data-act="restart" title="Rollout restart DaemonSet">Restart</button>`;
+      }
+      btns += `<button class="btn" data-act="copy-yaml" title="Copy resource YAML to clipboard">Copy YAML</button>`;
+      btns += `<button class="btn danger" data-act="delete" title="Delete resource from cluster">Delete</button>`;
+      itemActions.innerHTML = btns;
+
+      for (const b of itemActions.querySelectorAll("button[data-act]")) {
+        b.addEventListener("click", () => {
+          const act = b.dataset.act;
+          const container = containerSelect.value || null;
+          if (act === "follow-logs") {
+            send({ op: "follow-logs", namespace: res.namespace, name: res.name, container });
+          } else if (act === "exec-shell") {
+            send({ op: "exec-shell", namespace: res.namespace, name: res.name, container });
+          } else if (act === "port-forward") {
+            const port = (res.ports && res.ports[0]) || "8080";
+            send({ op: "port-forward", kind: res.kind, namespace: res.namespace, name: res.name, port });
+          } else if (act === "scale-up" || act === "scale-down") {
+            const cur = parseInt(res.ready.split("/")[1] || "1", 10) || 1;
+            const next = act === "scale-up" ? cur + 1 : Math.max(0, cur - 1);
+            send({ op: "scale", kind: res.kind, namespace: res.namespace, name: res.name, replicas: next });
+          } else if (act === "restart") {
+            send({ op: "restart", kind: res.kind, namespace: res.namespace, name: res.name });
+          } else if (act === "copy-yaml") {
+            send({ op: "copy-yaml", kind: res.kind, namespace: res.namespace, name: res.name });
+          } else if (act === "delete") {
+            send({ op: "delete", kind: res.kind, namespace: res.namespace, name: res.name });
+          }
+        });
+      }
+    }
+
+    function requestSelectedDetail() {
+      const res = selectedResource();
+      if (!res) return;
+      if (activeTab === "events") {
+        const evs = (state.snapshot.events || []).filter(
+          (e) => e.object === res.name && (!res.namespace || e.namespace === res.namespace),
+        );
+        rawOutput = evs.length
+          ? evs
+              .map((e) => `[${e.last_seen || "recent"}] ${e.event_type} ${e.reason} (x${e.count}): ${e.message}`)
+              .join("\n")
+          : `No cluster events recorded for ${res.kind}/${res.name}.`;
+        renderOutput();
+        return;
+      }
+      if (activeTab === "logs") {
+        if (res.kind !== "Pod") {
+          rawOutput = `Select a Pod to view container logs (selected: ${res.kind}/${res.name}).`;
+          renderOutput();
+          return;
+        }
+        send({
+          op: "pod-logs",
+          namespace: res.namespace,
+          name: res.name,
+          container: containerSelect.value || (res.containers && res.containers[0]) || null,
+          previous: logPrev.checked,
+        });
+        return;
+      }
+      send({
+        op: "inspect",
+        kind: res.kind,
+        namespace: res.namespace,
+        name: res.name,
+        yaml: activeTab === "yaml",
+      });
+    }
+
+    function renderOutput() {
+      let text = rawOutput || "";
+      const res = selectedResource();
+      const showYamlEditor = Boolean(res && activeTab === "yaml");
+      yamlEditor.hidden = !showYamlEditor;
+      outputEl.hidden = showYamlEditor;
+      if (showYamlEditor) {
+        yamlEditor.value = text;
+        return;
+      }
+      if (activeTab === "logs") {
+        const lvl = logLevel.value;
+        if (lvl) {
+          text = text
+            .split("\n")
+            .filter((l) => l.toUpperCase().includes(lvl))
+            .join("\n");
+        }
+        const q = (logSearch.value || "").trim();
+        if (q) {
+          const parts = text.split(q);
+          outputEl.innerHTML = parts.map(esc).join(`<mark>${esc(q)}</mark>`);
+          return;
+        }
+      }
+      outputEl.textContent = text;
+    }
+
+    for (const tabBtn of document.querySelectorAll(".tab[data-tab]")) {
+      tabBtn.addEventListener("click", () => {
+        for (const t of document.querySelectorAll(".tab[data-tab]")) {
+          t.classList.toggle("active", t === tabBtn);
+        }
+        activeTab = tabBtn.dataset.tab;
+        renderActions();
+        requestSelectedDetail();
+      });
+    }
+
+    ctxSelect.addEventListener("change", () => {
+      const nextKind = activeKind === "ClusterCatalog" || activeKind === "Workspace" ? "Pod" : activeKind;
+      switchContextOptimistic(ctxSelect.value, nextKind);
+    });
+    nsSelect.addEventListener("change", () => {
+      const ns = nsSelect.value;
+      if (state.snapshot) {
+        state.snapshot.current_namespace = ns;
+        state.snapshot.all_namespaces = false;
+      }
+      loadedLazyCategories = {};
+      showBanner(`Switching namespace to ${ns}…`, false);
+      send({ op: "set-namespace", namespace: ns, category: activeKind });
+    });
+    allNs.addEventListener("change", () => {
+      loadedLazyCategories = {};
+      showBanner(allNs.checked ? "Querying all namespaces…" : `Scoping to namespace ${nsSelect.value}…`, false);
+      send({ op: "set-all-namespaces", all: allNs.checked, category: activeKind });
+    });
+    filterInput.addEventListener("input", renderList);
+    $("btn-refresh").addEventListener("click", () => {
+      showBanner("Refreshing cluster…", false);
+      send({ op: "refresh", category: activeKind });
+    });
+    $("btn-apply").addEventListener("click", () => send({ op: "editor-action", action: "apply" }));
+    $("btn-diff").addEventListener("click", () => send({ op: "editor-action", action: "diff" }));
+    $("btn-kustomize").addEventListener("click", () => send({ op: "kustomize-build" }));
+    $("btn-helm-tpl").addEventListener("click", () => send({ op: "helm-template" }));
+    $("btn-fetch-logs").addEventListener("click", requestSelectedDetail);
+    $("btn-yaml-reload").addEventListener("click", requestSelectedDetail);
+    $("btn-yaml-diff").addEventListener("click", () => {
+      if (!yamlEditor.value.trim()) return;
+      for (const t of document.querySelectorAll(".tab[data-tab]")) {
+        t.classList.toggle("active", t.dataset.tab === "describe");
+      }
+      activeTab = "describe";
+      renderActions();
+      showBanner("Running kubectl diff -f - against live cluster…", false);
+      send({ op: "diff-yaml", yaml: yamlEditor.value });
+    });
+    $("btn-yaml-apply").addEventListener("click", () => {
+      if (!yamlEditor.value.trim()) return;
+      showBanner("Applying edited YAML to live cluster (kubectl apply -f -)…", false);
+      send({ op: "apply-yaml", yaml: yamlEditor.value });
+    });
+    containerSelect.addEventListener("change", requestSelectedDetail);
+    logPrev.addEventListener("change", requestSelectedDetail);
+    logLevel.addEventListener("change", renderOutput);
+    logSearch.addEventListener("input", renderOutput);
+
+    openidea.onMessage((raw) => {
+      const m = JSON.parse(raw);
+      if (m.op === "state") {
+        const prevWorkspace = state.workspace;
+        const prevCatalog = state.snapshot && state.snapshot.cluster_catalog;
+        const prevContexts = state.snapshot && state.snapshot.contexts;
+        state = m;
+        if (!state.workspace && prevWorkspace) {
+          state.workspace = prevWorkspace;
+        }
+        if (state.snapshot) {
+          if (
+            (!state.snapshot.cluster_catalog || !state.snapshot.cluster_catalog.length) &&
+            prevCatalog &&
+            prevCatalog.length
+          ) {
+            state.snapshot.cluster_catalog = prevCatalog;
+          }
+          if ((!state.snapshot.contexts || !state.snapshot.contexts.length) && prevContexts && prevContexts.length) {
+            state.snapshot.contexts = prevContexts;
+          }
+        }
+        renderToolbar();
+        renderNav();
+        renderList();
+        renderActions();
+        if (m.needsBackgroundSync) {
+          const curCtx = (state.snapshot && state.snapshot.current_context) || "";
+          send({ op: "sync-cluster", context: curCtx });
+        } else if (m.needsClusterFetch) {
+          showBanner("Loading cluster resources…", false);
+          send({ op: "refresh", category: activeKind });
+        }
+      } else if (m.op === "detail") {
+        rawOutput = m.text || "";
+        if (m.banner) showBanner(m.banner, Boolean(m.error));
+        renderOutput();
+      }
+    });
+
+    renderToolbar();
+    renderNav();
+    renderList();
+    renderActions();
+    if (!START) {
+      send({ op: "init" });
+    } else if (state.needsClusterFetch) {
+      showBanner("Loading cluster resources…", false);
+      send({ op: "refresh" });
+    }
+  })();
+</script>

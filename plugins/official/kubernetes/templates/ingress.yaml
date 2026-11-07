@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: $NAME$
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: $NAME$.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: $NAME$
+                port:
+                  name: http

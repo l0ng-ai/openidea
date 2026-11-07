@@ -63,7 +63,9 @@ import {
   type CustomEditorDecl,
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
+import { PLUGIN_LOG_EDITOR_KIND, PluginLogEditor, pluginLogEditorTitle } from "./views/logEditor";
 import { PluginView } from "./views/PluginView";
+import { PLUGIN_YAML_EDITOR_KIND, PluginResourceYamlEditor, pluginYamlEditorTitle } from "./views/resourceYamlEditor";
 import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
 import styles from "./PluginsPage.module.css";
@@ -546,6 +548,18 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       icon: () => "db-table",
       restorable: true,
       document: customEditorDocument,
+    }),
+    registerEditorKind({
+      kind: PLUGIN_LOG_EDITOR_KIND,
+      component: PluginLogEditor,
+      title: pluginLogEditorTitle,
+      icon: () => "file-log",
+    }),
+    registerEditorKind({
+      kind: PLUGIN_YAML_EDITOR_KIND,
+      component: PluginResourceYamlEditor,
+      title: pluginYamlEditorTitle,
+      icon: () => fileIconName("resource.yaml"),
     }),
     registerMenuGroup({
       id: "plugins",
