@@ -119,6 +119,8 @@ interface MemDoc {
 
 const EXT_LANG: Record<string, string> = {
   ts: "typescript",
+  mts: "typescript",
+  cts: "typescript",
   tsx: "typescriptreact",
   js: "javascript",
   jsx: "javascriptreact",
@@ -126,6 +128,7 @@ const EXT_LANG: Record<string, string> = {
   kt: "kotlin",
   kts: "kotlin",
   java: "java",
+  cs: "csharp",
   py: "python",
   gd: "gdscript",
   go: "go",
@@ -154,7 +157,7 @@ const MEM_LANGUAGES: LanguageInfo[] = [
   {
     id: "typescript",
     name: "TypeScript",
-    extensions: ["ts"],
+    extensions: ["ts", "mts", "cts"],
     uiMode: "TypeScript",
     lineComment: "//",
     blockComment: ["/*", "*/"],
@@ -376,12 +379,20 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
     ...(d.uri ? { uri: d.uri } : {}),
     ...(d.uiMode ? { uiMode: d.uiMode } : {}),
   });
-  // An Angular project's templates (an `angular.json` above them), like the backend's `framework-ui-modes`.
-  const uiModeOf = (path: string) =>
-    path.endsWith(".html") &&
-    [...store.keys()].some((f) => f.endsWith("/angular.json") && path.startsWith(f.slice(0, -"angular.json".length)))
-      ? "Angular Template"
-      : null;
+  // Framework modes mirror the backend's `framework-ui-modes` definitions.
+  const uiModeOf = (path: string) => {
+    const angular = [...store.keys()].some((f) => {
+      const root = f.endsWith("/angular.json")
+        ? f.slice(0, -"angular.json".length)
+        : f.includes("/node_modules/@angular/core/")
+          ? f.slice(0, f.indexOf("/node_modules/@angular/core/") + 1)
+          : null;
+      return root !== null && path.startsWith(root);
+    });
+    if (!angular) return null;
+    if (path.endsWith(".html")) return "Angular Template";
+    return /\.(?:ts|mts|cts)$/.test(path) ? "Angular TypeScript" : null;
+  };
   const get = (doc: DocId) => {
     const d = docs.get(doc);
     if (!d) throw new IpcError({ kind: "notFound", message: `document ${doc} is not open` });

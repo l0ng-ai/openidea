@@ -231,7 +231,12 @@ fn fixture(limits: Limits) -> Fixture {
 
 impl Fixture {
     fn inv(&self) -> Invocation {
-        Invocation { client: Some("main".into()), workspace_root: Some(self.project.clone()), editor: None }
+        Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(self.project.clone()),
+            editor: None,
+            selected_paths: Vec::new(),
+        }
     }
 
     fn install(&self, dir: &Path) -> PluginInfo {
@@ -356,8 +361,11 @@ fn read_file_is_confined_to_the_project() {
     let err = f.run("misbehave", "read", Some("src/../../secret.txt")).unwrap_err();
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
+    // A missing path inside the project is `not-found`, like the mock reports.
+    let err = f.run("misbehave", "read", Some("src/missing.txt")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
     // Without a project there is nothing to read.
-    let inv = Invocation { client: None, workspace_root: None, editor: None };
+    let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
@@ -668,6 +676,7 @@ fn contribution_only_plugins() {
     let theme = f.install(&theme_template());
     assert_eq!(theme.status, PluginStatus::Static);
     assert!(!theme.has_code);
+    assert!(theme.icon.is_none());
     assert_eq!(f.theme_kinds("openidea.harbor-night")[0].0, "harbor-night");
     let lang = f.install(&sample("language-toy"));
     assert_eq!(lang.status, PluginStatus::Static);
@@ -1522,13 +1531,50 @@ fn official_key_promoter() {
     assert_eq!(tips.len(), 1, "{tips:?}");
     assert_eq!(tips[0].0.as_deref(), Some("main"), "shown in the window the actions came from");
     assert!(tips[0].1.contains("Ctrl+D") && tips[0].2.contains("3 times"), "{tips:?}");
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.key-promoter/storage.json")).unwrap();
-    assert!(stored.contains("\"count:code.duplicate\":\"3\""), "{stored}");
+    let stored = stored(&f, "openidea.key-promoter");
+    assert!(stored.contains(&("count:code.duplicate".into(), "3".into())), "{stored:?}");
 
     // Uninstalling removes its data.
     f.host.uninstall("openidea.key-promoter").unwrap();
     assert!(!f.plugins_dir.join(".data/openidea.key-promoter").exists());
     assert!(f.host.event_kinds().is_empty());
+}
+
+#[test]
+fn storage_keeps_multimegabyte_indexes_after_idle_reclaim_and_removes_them_on_uninstall() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/storage");
+    f.install(&pkg);
+    f.run("test.storage", "save", None).unwrap();
+    assert_eq!(f.host.instances(), 1);
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.reclaims, 1);
+    assert_eq!(f.run("test.storage", "load", None).unwrap().as_deref(), Some("4194304"));
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.activations, 2);
+    let storage_dir = f.plugins_dir.join(".data/test.storage");
+    assert_eq!(std::fs::read_dir(storage_dir.join("storage")).unwrap().count(), 1, "one file per key");
+    f.host.uninstall("test.storage").unwrap();
+    assert!(!storage_dir.exists());
+    f.install(&pkg);
+    assert!(f.run("test.storage", "load", None).unwrap_err().contains("missing index"));
+}
+
+/// A plugin's stored entries (key, value), read from its files.
+fn stored(f: &Fixture, plugin: &str) -> Vec<(String, String)> {
+    let dir = f.plugins_dir.join(".data").join(plugin).join("storage");
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let bytes = std::fs::read(e.unwrap().path()).unwrap();
+            let len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+            let key = String::from_utf8(bytes[2..2 + len].to_vec()).unwrap();
+            (key, String::from_utf8(bytes[2 + len..].to_vec()).unwrap())
+        })
+        .collect();
+    entries.sort();
+    entries
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -1595,8 +1641,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
         )
     );
     assert!(events.iter().any(|(_, e)| matches!(e, PluginEvent::TaskEnded { .. })));
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.git-toolbox/storage.json")).unwrap();
-    assert!(stored.contains("last-fetch:"), "{stored}");
+    let stored = stored(&f, "openidea.git-toolbox");
+    assert!(stored.iter().any(|(key, _)| key.starts_with("last-fetch:")), "{stored:?}");
 }
 
 /// Restricted Mode: git does not run in an untrusted project (no fetch).
@@ -1936,8 +1982,12 @@ fn official_csv_editor_edits_the_shared_document() {
 
 #[test]
 fn view_item_menus_name_a_declared_view() {
+    /// The menu is new in API 1.2.
+    fn api_1_2(m: &str) -> String {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.2\"")
+    }
     fn with_menu(extra: &str) -> impl Fn(&str) -> String + '_ {
-        move |m: &str| format!("{m}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n")
+        move |m: &str| format!("{}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n", api_1_2(m))
     }
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
@@ -1946,26 +1996,26 @@ fn view_item_menus_name_a_declared_view() {
         "[[contributes.views]]\nid = \"more\"\ntitle = \"More\"\nicon = \"plugin\"\nlocation = \"right\"\n";
     let ok = hello_variant(tmp.path(), |m| {
         let on_greetings =
-            with_menu("menu = \"view.item.context\"\nview = \"greetings\"\nwhen = \"viewItemKind == English\"")(m);
-        let on_more = with_menu("menu = \"view.item.context\"\nview = \"more\"")("");
+            with_menu("menu = \"viewItem.context\"\nview = \"greetings\"\nwhen = \"viewItemKind == English\"")(m);
+        let on_more = with_menu("menu = \"viewItem.context\"\nview = \"more\"")("");
         format!("{on_greetings}\n{second_view}\n{on_more}")
     });
     assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
-    let item = f.host.ui_items("menus").into_iter().find(|i| i.decl["menu"] == "view.item.context").unwrap();
+    let item = f.host.ui_items("menus").into_iter().find(|i| i.decl["menu"] == "viewItem.context").unwrap();
     assert_eq!(
         (item.key.as_str(), item.decl["view"].as_str()),
-        ("view.item.context/greetings/word-count", Some("greetings"))
+        ("viewItem.context/greetings/word-count", Some("greetings"))
     );
     let keys: Vec<String> = f.host.ui_items("menus").into_iter().map(|i| i.key).collect();
     for view in ["greetings", "more"] {
-        assert!(keys.contains(&format!("view.item.context/{view}/word-count")), "{keys:?}");
+        assert!(keys.contains(&format!("viewItem.context/{view}/word-count")), "{keys:?}");
     }
     f.host.uninstall("hello").unwrap();
 
     for (extra, message) in [
-        ("menu = \"view.item.context\"", "needs `view`"),
-        ("menu = \"view.item.context\"\nview = \"nope\"", "view \"nope\" is not declared"),
-        ("menu = \"projectView.context\"\nview = \"greetings\"", "`view` is only for view.item.context"),
+        ("menu = \"viewItem.context\"", "needs `view`"),
+        ("menu = \"viewItem.context\"\nview = \"nope\"", "view \"nope\" is not declared"),
+        ("menu = \"projectView.context\"\nview = \"greetings\"", "`view` is only for viewItem.context"),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let err = f.host.install_from_dir(&hello_variant(dir.path(), with_menu(extra)), &Consent::all()).unwrap_err();
@@ -1975,13 +2025,22 @@ fn view_item_menus_name_a_declared_view() {
     let dir = tempfile::tempdir().unwrap();
     let web_view = "[[contributes.views]]\nid = \"page\"\ntitle = \"Page\"\nicon = \"plugin\"\nlocation = \"right\"\nweb = \"web/index.html\"\n";
     let pkg = hello_variant(dir.path(), |m| {
-        let on_page = with_menu("menu = \"view.item.context\"\nview = \"page\"")("");
-        format!("{m}\n{web_view}\n{on_page}")
+        let on_page = with_menu("menu = \"viewItem.context\"\nview = \"page\"")("");
+        format!("{}\n{web_view}\n{on_page}", api_1_2(m))
     });
     std::fs::create_dir_all(pkg.join("web")).unwrap();
     std::fs::write(pkg.join("web/index.html"), "<p>hi</p>").unwrap();
     let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
     assert!(err.message.contains("is a web view"), "{}", err.message);
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = hello_variant(dir.path(), |m| {
+        format!(
+            "{m}\n[[contributes.menus]]\nmenu = \"viewItem.context\"\nview = \"greetings\"\ncommand = \"word-count\"\n"
+        )
+    });
+    let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
 }
 
 /// The sample plugin makes a tool window with a tree view.
@@ -2129,6 +2188,17 @@ fn views_open_project_files_at_a_line() {
 }
 
 #[test]
+fn commands_see_the_paths_they_were_run_on() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let (a, b) = (f.project.join("src/a.txt"), f.project.join("src/b.txt"));
+    let inv = Invocation { selected_paths: vec![a.clone(), b.clone()], ..f.inv() };
+    let out = f.host.run_command("jobs", "selection", Some(&to_ipc(&a)), inv).unwrap();
+    assert_eq!(out.as_deref(), Some(format!("{}\n{}", to_ipc(&a), to_ipc(&b)).as_str()));
+    assert_eq!(f.run("jobs", "selection", None).unwrap().as_deref(), Some(""));
+}
+
+#[test]
 fn vcs_remotes_clipboard_and_open_url() {
     let f = fixture(Limits::default());
     let info = f.install(&sample("jobs"));
@@ -2182,6 +2252,126 @@ fn vcs_remotes_clipboard_and_open_url() {
         assert!(err.contains("http:// or https://"), "{bad:?}: {err}");
         assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::OpenUrl { .. })));
     }
+}
+
+/// Runs `cmd` of the jobs plugin; once it asks the user, answers after `delay`
+/// (`None`: dismisses). Returns the command's result and what it asked.
+fn run_and_answer(
+    f: &Fixture,
+    cmd: &str,
+    arg: Option<&str>,
+    answer: Option<&[&str]>,
+    delay: Duration,
+) -> (Result<Option<String>, String>, ide_plugin::Prompt) {
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("jobs", cmd, arg));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (client, prompt_id, prompt) = loop {
+            let asked = f.take_events().into_iter().find_map(|(client, e)| match e {
+                PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+                _ => None,
+            });
+            if let Some(asked) = asked {
+                break asked;
+            }
+            assert!(Instant::now() < deadline && !running.is_finished(), "the command never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(client.as_deref(), Some("main"), "asks in the window that ran the command");
+        std::thread::sleep(delay);
+        let answer = answer.map(|a| a.iter().map(|s| (*s).to_owned()).collect());
+        assert!(f.host.answer_prompt(&prompt_id, answer));
+        assert!(!f.host.answer_prompt(&prompt_id, None), "an answer counts once");
+        (running.join().unwrap(), prompt)
+    })
+}
+
+#[test]
+fn commands_ask_the_user_and_reveal_their_views() {
+    use ide_plugin::{PickItem, Prompt};
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    let none = Duration::ZERO;
+
+    let (result, prompt) = run_and_answer(&f, "pick", None, Some(&["b"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("b"));
+    let items = vec![
+        PickItem { key: "a".into(), label: "Alpha".into(), description: Some("first".into()) },
+        PickItem { key: "b".into(), label: "Beta".into(), description: None },
+        PickItem { key: "c".into(), label: "Gamma".into(), description: None },
+    ];
+    assert_eq!(prompt, Prompt::QuickPick { title: "Pick".into(), items, multiple: false });
+
+    let (result, prompt) = run_and_answer(&f, "pick-many", None, Some(&["a", "c"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("a,c"));
+    assert!(matches!(prompt, Prompt::QuickPick { multiple: true, .. }));
+    assert_eq!(run_and_answer(&f, "pick", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "input", Some("Main"), Some(&["Other"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("Other"));
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()) });
+    assert_eq!(run_and_answer(&f, "input", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "confirm", None, Some(&[]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("true"));
+    assert_eq!(prompt, Prompt::Confirm { title: "Delete".into(), message: "Really?".into() });
+    assert_eq!(run_and_answer(&f, "confirm", None, None, none).0.unwrap().as_deref(), Some("false"));
+
+    // The wait is not part of the call's 500 ms budget.
+    let (result, _) = run_and_answer(&f, "confirm", None, Some(&[]), Duration::from_millis(1200));
+    assert_eq!(result.unwrap().as_deref(), Some("true"));
+
+    // Keys come back as given: one that doesn't fit is refused, not cut.
+    f.take_events();
+    let err = f.run("jobs", "pick", Some("long-key")).unwrap_err();
+    assert!(err.contains("item key is longer"), "{err}");
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // Without a window there is nothing to attach the dialog to.
+    f.take_events();
+    let no_window = Invocation { client: None, ..f.inv() };
+    for cmd in ["pick", "input", "confirm"] {
+        let err = f.host.run_command("jobs", cmd, None, no_window.clone()).unwrap_err().message;
+        assert!(err.contains("from a command the user invoked"), "{cmd}: {err}");
+    }
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // `views.reveal` only knows the plugin's own declared views.
+    f.take_events();
+    f.run("jobs", "reveal", Some("jobs")).unwrap();
+    let revealed = f.take_events().into_iter().find_map(|(client, e)| match e {
+        PluginEvent::RevealView { plugin_id, view } => Some((client, plugin_id, view)),
+        _ => None,
+    });
+    assert_eq!(revealed, Some((Some("main".into()), "jobs".into(), "jobs".into())));
+    for view in ["greetings", ""] {
+        let err = f.run("jobs", "reveal", Some(view)).unwrap_err();
+        assert!(err.contains("declares no view"), "{view:?}: {err}");
+    }
+    assert!(f.run("jobs", "reveal", Some("jobs")).is_ok(), "the instance survives");
+}
+
+#[test]
+fn disabling_a_plugin_that_waits_for_an_answer_does_not_hang() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("jobs"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.run("jobs", "confirm", None));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })) {
+            assert!(Instant::now() < deadline && !running.is_finished(), "the command never asked");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        f.host.set_enabled("jobs", false).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5), "disabling waited for the user");
+        assert!(running.join().unwrap().is_err(), "the waiting command ends with an error");
+    });
+    f.host.set_enabled("jobs", true).unwrap();
+    let (result, _) = run_and_answer(&f, "confirm", None, Some(&[]), Duration::ZERO);
+    assert_eq!(result.unwrap().as_deref(), Some("true"), "prompts work again after the restart");
 }
 
 #[test]
@@ -2699,4 +2889,369 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
+}
+
+/// `hello` as a services view, which needs API 1.3.
+fn services_variant(text: &str) -> String {
+    text.replace("location = \"right\"", "location = \"services\"")
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+}
+
+#[test]
+fn services_views_need_api_1_3_and_code() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let info = f.install(&hello_variant(tmp.path(), services_variant));
+    assert!(info.error.is_none(), "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views").remove(0).decl["location"].as_str(), Some("services"));
+
+    for (edit, message) in [
+        (
+            Box::new(|t: &str| t.replace("location = \"right\"", "location = \"services\""))
+                as Box<dyn Fn(&str) -> String>,
+            "new in plugin API 1.3",
+        ),
+        (
+            Box::new(|t: &str| t.replace("location = \"right\"", "location = \"middle\"")),
+            "left, right, bottom or services",
+        ),
+        (
+            Box::new(|t: &str| {
+                services_variant(t)
+                    .replace("location = \"services\"", "location = \"services\"\nweb = \"web/index.html\"")
+            }),
+            "a services view is rendered by the plugin's code (no `web`)",
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), edit);
+        std::fs::create_dir_all(pkg.join("web")).unwrap();
+        std::fs::write(pkg.join("web/index.html"), "<p>x</p>").unwrap();
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{message}: {err:?}");
+    }
+}
+
+#[test]
+fn services_views_have_a_detail_pane() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    f.install(&hello_variant(tmp.path(), services_variant));
+    let tabs = f.host.service_detail("hello", "greetings", "pod:default/nginx", f.inv()).unwrap();
+    assert_eq!(tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["log", "info"]);
+    assert_eq!(tabs[1].body, ide_plugin::ServicePane::Text("greetings: pod:default/nginx".into()));
+    let ide_plugin::ServicePane::Log(log) = &tabs[0].body else { panic!("a log: {:?}", tabs[0].body) };
+    assert_eq!(
+        (log.program.as_str(), log.args.as_slice()),
+        ("sh", ["-c".to_owned(), "pod:default/nginx".to_owned()].as_slice())
+    );
+
+    let f = fixture(Limits::default());
+    f.install(&sample("hello"));
+    let err = f.host.service_detail("hello", "greetings", "x", f.inv()).unwrap_err();
+    assert!(err.message.contains("declares no services view"), "a right view has no pane: {err:?}");
+}
+
+/// `hello` as a services view that may run `sh`, granted or not.
+#[cfg(unix)]
+fn services_with_sh(f: &Fixture, dir: &Path, grant: bool) {
+    let sh = PathBuf::from("/bin");
+    f.host.set_program_path(Arc::new(move || Some(sh.clone().into_os_string())));
+    let pkg = hello_variant(dir, |t| {
+        services_variant(t).replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = [\"editor.read\", \"editor.write\"]\noptional = [\"process:sh\"]",
+        )
+    });
+    f.install(&pkg);
+    f.host.set_capability("hello", "process:sh", grant).unwrap();
+}
+
+/// Follows the Log tab of the node whose key is `script`.
+#[cfg(unix)]
+fn stream(
+    f: &Fixture,
+    script: &str,
+    on: &[&str],
+    cancel: &ide_core::CancellationToken,
+    lines: impl Fn(PluginOutputLine),
+) -> ide_core::IdeResult<Option<i32>> {
+    let on: Vec<String> = on.iter().map(|s| (*s).to_owned()).collect();
+    f.host.stream_service_log("hello", "greetings", script, "log", &on, f.inv(), cancel, &lines)
+}
+
+#[cfg(unix)]
+#[test]
+fn service_logs_stream_lines_with_the_toggles_args() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let lines = Mutex::new(Vec::new());
+    let script = "printf 'a\\nb\\n'; printf 'e\\n' >&2; exit 3";
+    let status = stream(&f, script, &[], &Default::default(), |l| lines.lock().push(l));
+    assert_eq!(status.unwrap(), Some(3));
+    let mut lines = lines.into_inner();
+    lines.sort_by_key(|l| l.stderr);
+    let line = |stderr: bool, text: &str| PluginOutputLine { stderr, text: text.into() };
+    assert_eq!(lines, [line(false, "a"), line(false, "b"), line(true, "e")]);
+
+    // `sh -c script arg` names the script `arg` ($0): the toggle's args are appended.
+    let named = Mutex::new(Vec::new());
+    stream(&f, "echo $0", &["named"], &Default::default(), |l| named.lock().push(l.text)).unwrap();
+    assert_eq!(named.into_inner(), ["named"]);
+
+    let long = Mutex::new(Vec::new());
+    stream(&f, "head -c 40000 /dev/zero | tr '\\0' x; echo; echo next", &[], &Default::default(), |l| {
+        long.lock().push(l.text.len())
+    })
+    .unwrap();
+    assert_eq!(long.into_inner(), [16 << 10, 4], "a long line is cut, the next one is whole");
+}
+
+#[cfg(unix)]
+#[test]
+fn service_logs_need_the_grant_and_a_log_tab() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), false);
+    let marker = tmp.path().join("ran");
+    let script = format!("touch {}", marker.display());
+    let err = stream(&f, &script, &[], &Default::default(), |_| {}).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied);
+    assert!(err.message.contains("permission denied: process:sh is not granted"), "{err:?}");
+    assert!(!marker.exists(), "nothing was started");
+
+    f.host.set_capability("hello", "process:sh", true).unwrap();
+    let info =
+        f.host.stream_service_log("hello", "greetings", &script, "info", &[], f.inv(), &Default::default(), &|_| {});
+    assert_eq!(info.unwrap_err().kind, ErrorKind::NotFound, "a text tab runs nothing");
+    let cancelled = ide_core::CancellationToken::default();
+    cancelled.cancel();
+    assert_eq!(stream(&f, &script, &[], &cancelled, |_| {}).unwrap_err().kind, ErrorKind::Cancelled);
+    assert!(!marker.exists(), "a cancelled request starts nothing");
+}
+
+#[cfg(unix)]
+#[test]
+fn service_log_cancel_kills_the_child() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let cancel = ide_core::CancellationToken::default();
+    let started = Instant::now();
+    let result = stream(&f, "echo up; sleep 30.4321", &[], &cancel, |l| {
+        if l.text == "up" {
+            cancel.cancel();
+        }
+    });
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    let orphan = || std::process::Command::new("pgrep").args(["-f", "sleep 30.4321"]).status().unwrap().success();
+    assert!(eventually(|| !orphan()), "what the program started is killed too");
+}
+
+#[cfg(unix)]
+#[test]
+fn service_log_stops_when_the_grant_is_revoked() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let started = Instant::now();
+    let watchdog = ide_core::CancellationToken::default();
+    let timer = watchdog.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        timer.cancel();
+    });
+    let result = stream(&f, "while :; do echo tick; sleep 0.05; done", &[], &watchdog, |l| {
+        if l.text == "tick" && started.elapsed() < Duration::from_secs(1) {
+            f.host.set_capability("hello", "process:sh", false).unwrap();
+        }
+    });
+    assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+}
+
+#[test]
+fn plugins_set_their_own_context_keys() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.run("jobs", "context", Some("connected=true")).unwrap();
+    let changed: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, e)| match e {
+            PluginEvent::ContextChanged { plugin_id, key, value } => Some((client, plugin_id, key, value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changed, [(Some("main".into()), "jobs".into(), "connected".into(), Some("true".into()))]);
+    assert_eq!(f.host.context_keys(Some("main")).len(), 1);
+    assert!(f.host.context_keys(Some("other")).is_empty(), "window-scoped");
+
+    for bad in ["bad key=true", "a.b=true", "x=NaN"] {
+        assert!(f.run("jobs", "context", Some(bad)).unwrap_err().contains("invalid"), "{bad}");
+    }
+
+    f.run("jobs", "context", Some("connected=")).unwrap();
+    assert!(f.host.context_keys(Some("main")).is_empty());
+
+    f.run("jobs", "context", Some("connected=true")).unwrap();
+    f.host.set_enabled("jobs", false).unwrap();
+    assert!(f.host.context_keys(Some("main")).is_empty(), "cleared when the plugin stops");
+}
+
+#[test]
+fn context_keys_are_capped_and_windows_overlay_global_ones() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    for i in 0..100 {
+        f.run("jobs", "context", Some(&format!("k{i}=1"))).unwrap();
+    }
+    assert!(f.run("jobs", "context", Some("k100=1")).unwrap_err().contains("invalid"));
+    f.run("jobs", "context", Some("k0=2")).unwrap();
+    for i in 1..4 {
+        f.run("jobs", "context", Some(&format!("k{i}="))).unwrap();
+    }
+
+    let global = Invocation { client: None, ..f.inv() };
+    f.host.run_command("jobs", "context", Some("g=1"), global.clone()).unwrap();
+    f.host.run_command("jobs", "context", Some("w=global"), global).unwrap();
+    f.run("jobs", "context", Some("w=window")).unwrap();
+    let w = |client| f.host.context_keys(Some(client)).into_iter().find(|k| k.key == "w").map(|k| k.value);
+    assert_eq!(w("main").as_deref(), Some("\"window\""));
+    assert_eq!(w("other").as_deref(), Some("\"global\""));
+
+    f.run("jobs", "context", Some("w=")).unwrap();
+    assert_eq!(w("main").as_deref(), Some("\"global\""), "removing the window key reveals the global one");
+}
+
+#[test]
+fn context_values_are_stored_as_json_and_bounded() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let value = |arg: &str| {
+        f.run("jobs", "context", Some(arg)).unwrap();
+        f.host.context_keys(Some("main")).into_iter().find(|k| k.key == "x").unwrap().value
+    };
+    assert_eq!(value("x=true"), "true");
+    assert_eq!(value("x=2.5"), "2.5");
+    assert_eq!(value("x=say \"hi\""), "\"say \\\"hi\\\"\"");
+    assert_eq!(value("x=1"), "1");
+    f.take_events();
+    f.run("jobs", "context", Some("x=1.0")).unwrap();
+    assert!(f.take_events().is_empty(), "the same value emits nothing");
+    let long = format!("x={}", "a".repeat(1025));
+    assert!(f.run("jobs", "context", Some(&long)).unwrap_err().contains("invalid"));
+}
+
+#[test]
+fn forgetting_a_window_drops_its_context_keys_silently() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.run("jobs", "context", Some("w=1")).unwrap();
+    f.take_events();
+    f.host.forget_client("main");
+    assert!(f.host.context_keys(Some("main")).is_empty());
+    assert!(f.take_events().is_empty());
+}
+
+#[test]
+fn a_closed_window_ignores_late_context_writes_until_its_label_is_reused() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.forget_client("main");
+    f.take_events();
+    f.run("jobs", "context", Some("late=1")).unwrap();
+    assert!(f.host.context_keys(Some("main")).is_empty());
+    let events = f.take_events();
+    assert!(
+        !events.iter().any(|(_, e)| matches!(e, PluginEvent::ContextChanged { .. })),
+        "no context event: {events:?}"
+    );
+
+    f.host.reopen_client("main");
+    f.run("jobs", "context", Some("fresh=1")).unwrap();
+    assert_eq!(f.host.context_keys(Some("main"))[0].key, "fresh");
+}
+
+#[test]
+fn stopping_a_plugin_withdraws_each_context_key_in_its_own_scope() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let global = Invocation { client: None, ..f.inv() };
+    f.host.run_command("jobs", "context", Some("g=1"), global).unwrap();
+    f.run("jobs", "context", Some("w=1")).unwrap();
+    f.take_events();
+    f.host.set_enabled("jobs", false).unwrap();
+    let mut removed: Vec<_> = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, e)| match e {
+            PluginEvent::ContextChanged { key, value: None, .. } => Some((client, key)),
+            _ => None,
+        })
+        .collect();
+    removed.sort();
+    assert_eq!(removed, [(None, "g".to_owned()), (Some("main".to_owned()), "w".to_owned())]);
+}
+
+/// A data-only package `id` in `dir` whose manifest ends with `extra`, plus `files`.
+fn icon_package(dir: &Path, id: &str, extra: &str, files: &[(&str, &str)]) -> PathBuf {
+    let pkg = dir.join(id);
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("id = \"{id}\"\nname = \"Iconic\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n{extra}"),
+    )
+    .unwrap();
+    for (name, text) in files {
+        std::fs::write(pkg.join(name), text).unwrap();
+    }
+    pkg
+}
+
+const RECT: &str = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+const CIRCLE: &str = r#"<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="8"/></svg>"#;
+
+#[test]
+fn plugin_icons_install_with_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = icon_package(
+        tmp.path(),
+        "iconic",
+        "icon = \"icon.svg\"\nicon-dark = \"icon_dark.svg\"\n",
+        &[("icon.svg", RECT), ("icon_dark.svg", CIRCLE)],
+    );
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    let icon = info.icon.expect("icon");
+    assert!(icon.light.contains("<rect"), "{}", icon.light);
+    assert!(icon.dark.unwrap().contains("<circle"));
+    assert!(f.installed("iconic").join("icon_dark.svg").is_file());
+
+    f.host.set_enabled("iconic", false).unwrap();
+    assert!(f.host.info_of("iconic").unwrap().icon.is_some(), "disabled plugins keep their icon");
+}
+
+#[test]
+fn invalid_plugin_icons_refuse_the_package() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let big = format!("<svg>{}</svg>", "<path d=\"M0 0h1v1z\"/>".repeat(1000));
+    let padded = format!("<svg><!--{}--><rect/></svg>", " ".repeat(20 << 10));
+    let cases = [
+        ("scripted", "icon = \"icon.svg\"\n", "<svg><script>alert(1)</script></svg>".to_owned(), "icon.svg"),
+        ("oversized", "icon = \"icon.svg\"\n", big, "16 KiB"),
+        ("padded", "icon = \"icon.svg\"\n", padded, "16 KiB"),
+        ("missing", "icon = \"missing.svg\"\n", RECT.to_owned(), "missing.svg"),
+    ];
+    for (id, extra, svg, expected) in cases {
+        let pkg = icon_package(tmp.path(), id, extra, &[("icon.svg", &svg)]);
+        let err = f.host.preview_install(&pkg).map(|_| ()).unwrap_err().message;
+        assert!(err.contains(expected), "{id}: {err}");
+    }
 }

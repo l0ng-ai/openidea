@@ -127,6 +127,21 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
+/// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
+/// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
+/// Linux sets the urgency hint). A focused window is never flashed: the user is already
+/// looking at it, and re-flashing it would steal attention for nothing.
+#[tauri::command]
+#[specta::specta]
+pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
+    if flash && window.is_focused().unwrap_or(false) {
+        return Ok(());
+    }
+    window
+        .request_user_attention(flash.then_some(tauri::UserAttentionType::Critical))
+        .map_err(|e| IdeError::internal(e.to_string()))
+}
+
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
 #[tauri::command]
 #[specta::specta]
@@ -214,7 +229,9 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text (on locale or keymap change) and rebuilds it.
+/// Sets the menu's labels / shortcut text and rebuilds it when they changed.
+/// Focusing another project window re-pushes the same shared menu; an identical
+/// config must not call `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
@@ -223,8 +240,9 @@ pub fn menu_configure(
     state: State<'_, AppState>,
     config: MenuConfig,
 ) {
-    *menu_state.config.lock() = config;
-    menu::install(&app, &menu_state, &state.recent.list());
+    if menu::store_config(&menu_state, config) {
+        menu::install(&app, &menu_state, &state.recent.list());
+    }
 }
 
 /// Rebuilds the menu (e.g. after the recent-projects list changed).

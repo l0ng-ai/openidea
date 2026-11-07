@@ -168,6 +168,7 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "cli interpreter",
       "language level",
       "php version",
+      "xdebug",
       "php",
       "composer",
       "phpunit",

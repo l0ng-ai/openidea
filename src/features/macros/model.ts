@@ -6,9 +6,26 @@
  */
 import { create } from "zustand";
 
+/** Plain data an action can be run with: primitives, string lists, or a flat object of those. */
+export type MacroArg = MacroValue | { [key: string]: MacroValue };
+type MacroValue = string | number | boolean | string[];
+
+const isMacroValue = (v: unknown): v is MacroValue =>
+  typeof v === "string" ||
+  typeof v === "boolean" ||
+  (typeof v === "number" && Number.isFinite(v)) ||
+  (Array.isArray(v) && v.every((x) => typeof x === "string"));
+
+function isMacroArg(v: unknown): v is MacroArg {
+  if (isMacroValue(v)) return true;
+  if (!v || typeof v !== "object") return false;
+  const proto = Object.getPrototypeOf(v);
+  return (proto === Object.prototype || proto === null) && Object.values(v).every(isMacroValue);
+}
+
 /** An editor key replayed as a CodeMirror command (see `editorKeys.ts`). */
 export type MacroStep =
-  | { kind: "action"; id: string; arg?: string | number | boolean }
+  | { kind: "action"; id: string; arg?: MacroArg }
   | { kind: "text"; text: string }
   | { kind: "key"; key: string };
 
@@ -32,8 +49,7 @@ export const STORAGE_KEY = "openidea.macros.v1";
 function isStep(v: unknown): v is MacroStep {
   if (!v || typeof v !== "object") return false;
   const s = v as Record<string, unknown>;
-  if (s.kind === "action")
-    return typeof s.id === "string" && ["undefined", "string", "number", "boolean"].includes(typeof s.arg);
+  if (s.kind === "action") return typeof s.id === "string" && (s.arg === undefined || isMacroArg(s.arg));
   if (s.kind === "text") return typeof s.text === "string";
   return s.kind === "key" && typeof s.key === "string";
 }
@@ -82,12 +98,10 @@ export function recordStep(step: MacroStep) {
   useMacros.setState({ recording: next });
 }
 
-/** An action's argument when it can be stored (plain values only). */
-export function storableArg(arg: unknown): string | number | boolean | undefined | null {
+/** An action's argument when it can be stored (plain data only). */
+export function storableArg(arg: unknown): MacroArg | undefined | null {
   if (arg === undefined) return undefined;
-  if (typeof arg === "string" || typeof arg === "boolean" || (typeof arg === "number" && Number.isFinite(arg)))
-    return arg;
-  return null;
+  return isMacroArg(arg) ? arg : null;
 }
 
 export function startRecording() {
@@ -127,11 +141,17 @@ export function deleteMacro(name: string) {
   persist();
 }
 
+function describeArg(arg: MacroArg): string {
+  if (Array.isArray(arg)) return arg.join(", ");
+  if (typeof arg === "object") return typeof arg.path === "string" ? arg.path : JSON.stringify(arg);
+  return String(arg);
+}
+
 /** One line per step, for Edit Macros. */
 export function describeStep(step: MacroStep, title: (id: string) => string): string {
   switch (step.kind) {
     case "action":
-      return step.arg === undefined ? title(step.id) : `${title(step.id)} (${String(step.arg)})`;
+      return step.arg === undefined ? title(step.id) : `${title(step.id)} (${describeArg(step.arg)})`;
     case "text":
       return `Type "${step.text.replace(/\n/g, "↵")}"`;
     case "key":

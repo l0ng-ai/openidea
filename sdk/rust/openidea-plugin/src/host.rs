@@ -73,12 +73,56 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        let value = match value {
+            ContextValue::Flag(b) => wit::ui::ContextValue::Flag(b),
+            ContextValue::Number(n) => wit::ui::ContextValue::Number(n),
+            ContextValue::Text(t) => wit::ui::ContextValue::Text(t),
+        };
+        wit::ui::set_context(key, &value).map_err(error)
+    }
+
+    pub fn remove_context(key: &str) {
+        wit::ui::remove_context(key)
+    }
+
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         wit::ui::copy_to_clipboard(text).map_err(error)
     }
 
     pub fn open_url(url: &str) -> Result<(), Error> {
         wit::ui::open_url(url).map_err(error)
+    }
+
+    fn pick_items(items: &[PickItem]) -> Vec<wit::ui::PickItem> {
+        items
+            .iter()
+            .map(|i| wit::ui::PickItem {
+                key: i.key.clone(),
+                label: i.label.clone(),
+                description: i.description.clone(),
+            })
+            .collect()
+    }
+
+    pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+        wit::ui::pick(title, &pick_items(items)).map_err(error)
+    }
+
+    pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+        wit::ui::pick_many(title, &pick_items(items)).map_err(error)
+    }
+
+    pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::input(prompt, value).map_err(error)
+    }
+
+    pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
+        wit::ui::confirm(title, body).map_err(error)
+    }
+
+    pub fn reveal_view(view: &str) -> Result<(), Error> {
+        wit::views::reveal(view).map_err(error)
     }
 
     pub fn locale() -> String {
@@ -119,6 +163,10 @@ mod imp {
 
     pub fn invocation_editor(i: InvocationRef<'_>) -> Option<EditorRes> {
         i.editor()
+    }
+
+    pub fn invocation_selected_paths(i: InvocationRef<'_>) -> Vec<String> {
+        i.selected_paths()
     }
 
     pub fn editor_path(e: &EditorRes) -> String {
@@ -168,6 +216,35 @@ mod imp {
         wit::vcs::remotes(p).map_err(error)
     }
 
+    pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+        wit::commit::pending_commit().map(|d| d.map(__draft_in)).map_err(error)
+    }
+
+    pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+        wit::commit::set_commit_message(revision, message).map_err(error)
+    }
+
+    #[doc(hidden)]
+    pub fn __draft_in(d: wit::commit::CommitDraft) -> CommitDraft {
+        CommitDraft {
+            revision: d.revision,
+            message: d.message,
+            amend: d.amend,
+            changes: d
+                .changes
+                .into_iter()
+                .map(|c| CommitChange {
+                    repository: c.repository,
+                    path: c.path,
+                    old_path: c.old_path,
+                    status: c.status,
+                    diff: c.diff,
+                    truncated: c.truncated,
+                })
+                .collect(),
+        }
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
     }
@@ -190,6 +267,26 @@ mod imp {
 
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         p.find_files(glob, limit).map_err(error)
+    }
+
+    pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
+        p.exists(path).map_err(error)
+    }
+
+    pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        use wit::workspace::FileKind as K;
+        p.stat(path)
+            .map(|s| FileStat {
+                kind: match s.kind {
+                    K::File => FileKind::File,
+                    K::Directory => FileKind::Directory,
+                    K::Symlink => FileKind::Symlink,
+                    K::Other => FileKind::Other,
+                },
+                size: s.size,
+                modified: s.modified,
+            })
+            .map_err(error)
     }
 
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
@@ -331,6 +428,12 @@ impl<'a> Invocation<'a> {
     pub fn editor(&self) -> Option<TextEditor> {
         imp::invocation_editor(self.inner).map(|inner| TextEditor { inner })
     }
+
+    /// The files and folders the command was run on, as absolute paths. Empty when it was not
+    /// run on any, or when the menu was for a tab without a file (a virtual document).
+    pub fn selected_paths(&self) -> Vec<String> {
+        imp::invocation_selected_paths(self.inner)
+    }
 }
 
 /// A project open in the IDE.
@@ -345,9 +448,23 @@ impl Project {
     }
 
     /// Reads a UTF-8 file inside the project (absolute or root-relative);
-    /// unsaved editor contents win. Needs `project.read`.
+    /// unsaved editor contents win. A missing path is `Error::NotFound`.
+    /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Whether `path` names an existing file or directory inside the project
+    /// — including hidden and ignored ones — without reading any content.
+    /// Needs `project.read`.
+    pub fn exists(&self, path: &str) -> Result<bool, Error> {
+        imp::project_exists(&self.inner, path)
+    }
+
+    /// Metadata of an existing path inside the project; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn stat(&self, path: &str) -> Result<FileStat, Error> {
+        imp::project_stat(&self.inner, path)
     }
 
     /// The repository containing the project (`None`: not under git). Needs `vcs.read`.
@@ -375,6 +492,27 @@ impl Project {
     pub fn run_process(&self, program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
         imp::run_process(program, args, Some(&self.inner), stdin)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub use imp::__draft_in;
+
+/// The commit being prepared in the window the command or event came from:
+/// the included files and changed blocks only, as Commit would commit them
+/// (unsaved editors of those files are saved first). `None` when the window's
+/// project has no repository. Only from a command or event of a window, in a
+/// trusted project. Needs `vcs.read`.
+pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+    imp::pending_commit()
+}
+
+/// Replaces the commit message of that window, only while its draft is still
+/// at `revision` ([`CommitDraft::revision`]); [`Error::Stale`] when the user
+/// changed the message or the included changes meanwhile, and nothing changes.
+/// Needs `vcs.write`.
+pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+    imp::set_commit_message(revision, message)
 }
 
 /// Replaces the plugin's diagnostics for `path` (absolute, in an open
@@ -549,6 +687,19 @@ pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
 }
 
+/// Sets the plugin's context key that `when` clauses test as `plugin.<id>.<key>`, in
+/// the window the current command or event came from (every window when there is
+/// none): `set_context("connected", true)`. A window's value takes precedence over
+/// the global one. The key is 1-64 of `A-Za-z0-9_-`; at most 100 keys.
+pub fn set_context(key: &str, value: impl Into<ContextValue>) -> Result<(), Error> {
+    imp::set_context(key, value.into())
+}
+
+/// Removes the key [`set_context`] set in the same scope.
+pub fn remove_context(key: &str) {
+    imp::remove_context(key)
+}
+
 /// Copies `text` to the system clipboard. Needs `clipboard`.
 pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
     imp::copy_to_clipboard(text)
@@ -557,6 +708,38 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
 /// Opens an `http://` or `https://` URL in the user's default browser.
 pub fn open_url(url: &str) -> Result<(), Error> {
     imp::open_url(url)
+}
+
+/// Shows a list in the window the current command or event came from and
+/// waits for the key of the chosen item, or `None` when the user dismisses
+/// it. Needs no capability; [`Error::Invalid`] outside a command or event of a
+/// window (and in editor providers). The wait doesn't count against the
+/// call's time budget, but the plugin handles nothing else meanwhile.
+pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+    imp::pick(title, items)
+}
+
+/// Like [`pick`], with any number of items chosen.
+pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+    imp::pick_many(title, items)
+}
+
+/// Asks for a line of text, pre-filled with `value`; `None` when dismissed.
+/// Same rules as [`pick`].
+pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    imp::input(prompt, value)
+}
+
+/// Asks for confirmation: `true` on OK, `false` on Cancel or Escape.
+/// Same rules as [`pick`].
+pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
+    imp::confirm(title, body)
+}
+
+/// Brings one of the plugin's declared views to the front in the window the
+/// current command or event came from.
+pub fn reveal_view(view: &str) -> Result<(), Error> {
+    imp::reveal_view(view)
 }
 
 /// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …), for the
@@ -579,7 +762,8 @@ pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
 }
 
-/// The plugin's persistent key-value store (≤ 1 MiB). Needs `storage`.
+/// The plugin's persistent key-value store (≤ 64 MiB of UTF-8 keys and values).
+/// Needs `storage`; rejected writes preserve the stored data.
 pub mod storage {
     use super::imp;
     use crate::types::Error;

@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
-import { clipboardDocumentPath, clipboardFilesExtension, pasteEditorClipboard } from "./clipboard";
+import { clipboardDocumentPath, clipboardFilesExtension, pasteEditorClipboard, pasteEditorText } from "./clipboard";
 import { markdownImages } from "./markdownImages";
 
 vi.mock("@/platform/remote", () => ({ isRemoteWindow: vi.fn(() => false) }));
@@ -203,4 +203,103 @@ it("does not insert into a read-only editor", async () => {
   await pasteEditorClipboard(view);
   expect(view.state.doc.toString()).toBe("");
   expect(list).not.toHaveBeenCalled();
+});
+
+describe("multi-caret paste", () => {
+  const view = (doc: string, ranges: Array<[number, number]>) => {
+    const v = new EditorView({
+      state: EditorState.create({
+        doc,
+        selection: EditorSelection.create(
+          ranges.length > 1
+            ? ranges.map(([from, to]) => EditorSelection.range(from, to))
+            : [EditorSelection.cursor(ranges[0]![0])],
+        ),
+        extensions: EditorState.allowMultipleSelections.of(true),
+      }),
+      parent: document.body,
+    });
+    views.push(v);
+    return v;
+  };
+
+  it("pastes one line per caret when the counts match", () => {
+    const line = 'icjsdiocjosid "" cdscsd';
+    // A caret inside each pair of quotes (index 15), as in the issue.
+    const v = view(
+      Array(7).fill(line).join("\n"),
+      Array.from({ length: 7 }, (_, i) => {
+        const from = i * (line.length + 1) + 15;
+        return [from, from] as [number, number];
+      }),
+    );
+    pasteEditorText(v, "s\nd\nd\ns\nd\nd\ne");
+    expect(v.state.doc.toString()).toBe(
+      Array.from({ length: 7 }, (_, i) => `icjsdiocjosid "${"sddsdde"[i]}" cdscsd`).join("\n"),
+    );
+  });
+
+  it("keeps a trailing newline as the last caret's empty line (issue #1828)", () => {
+    const line = 'icjsdiocjosid "" cdscsd';
+    // Seven carets, six copied lines with a trailing newline: split keeps the
+    // empty seventh segment, so the last caret gets "" as the issue expects.
+    const v = view(
+      Array(7).fill(line).join("\n"),
+      Array.from({ length: 7 }, (_, i) => {
+        const from = i * (line.length + 1) + 15;
+        return [from, from] as [number, number];
+      }),
+    );
+    pasteEditorText(v, "s\nd\nd\ns\nd\nd\n");
+    expect(v.state.doc.toString()).toBe(
+      Array.from({ length: 7 }, (_, i) => `icjsdiocjosid "${"sddsdd"[i] ?? ""}" cdscsd`).join("\n"),
+    );
+  });
+
+  it("drops the extra lines when there are more lines than carets (IDEA parity)", () => {
+    // IntelliJ's ClipboardTextPerCaretSplitter gives caret i line i and simply
+    // ignores the lines beyond the caret count: 2 carets + "x\ny\nz" → "x", "y".
+    const v = view("a b", [
+      [1, 1],
+      [3, 3],
+    ]);
+    pasteEditorText(v, "x\ny\nz");
+    expect(v.state.doc.toString()).toBe("ax by");
+  });
+
+  it("pastes empty lines into the extra carets when there are more carets than lines", () => {
+    const v = view("a b c", [
+      [1, 1],
+      [3, 3],
+      [5, 5],
+    ]);
+    pasteEditorText(v, "x\ny");
+    expect(v.state.doc.toString()).toBe("ax by c");
+  });
+
+  it("repeats a single line at every caret", () => {
+    const v = view("a b", [
+      [1, 1],
+      [3, 3],
+    ]);
+    pasteEditorText(v, "xyz");
+    expect(v.state.doc.toString()).toBe("axyz bxyz");
+  });
+
+  it("treats a single copied line with a trailing newline as one line (IDEA parity)", () => {
+    // IntelliJ's splitter ignores the trailing newline of a one-line clipboard,
+    // so "x\n" at two carets repeats "x" instead of spreading "x" and "".
+    const v = view("a b", [
+      [1, 1],
+      [3, 3],
+    ]);
+    pasteEditorText(v, "x\n");
+    expect(v.state.doc.toString()).toBe("ax bx");
+  });
+
+  it("pastes the whole text at a single caret", () => {
+    const v = view("a", [[1, 1]]);
+    pasteEditorText(v, "x\ny");
+    expect(v.state.doc.toString()).toBe("ax\ny");
+  });
 });

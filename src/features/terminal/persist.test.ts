@@ -17,10 +17,17 @@ vi.mock("./session", () => ({
     key: string;
     state: { cwd: string };
     command: { program: string; args: string[]; shell?: boolean } | undefined;
-    constructor(opts: { key: string; cwd: string; command?: { program: string; args: string[]; shell?: boolean } }) {
+    fallbackRoot: string | undefined;
+    constructor(opts: {
+      key: string;
+      cwd: string;
+      command?: { program: string; args: string[]; shell?: boolean };
+      fallbackRoot?: string;
+    }) {
       this.key = opts.key;
       this.state = { cwd: opts.cwd };
       this.command = opts.command;
+      this.fallbackRoot = opts.fallbackRoot;
     }
     dispose() {}
   },
@@ -28,6 +35,10 @@ vi.mock("./session", () => ({
 
 const state = () => useTerminals.getState();
 const names = () => state().tabs.map((t) => t.customName ?? t.name);
+const sessionOf = (key: string) =>
+  getSession(key) as
+    | { state: { cwd: string }; command?: { program: string; args: string[]; shell?: boolean }; fallbackRoot?: string }
+    | undefined;
 
 beforeEach(() => {
   unbindTerminals();
@@ -98,5 +109,36 @@ describe("terminal tab memory", () => {
     syncTerminalProject("/repo");
     expect(names()).toEqual(["Ship"]);
     expect(getSession(state().tabs[0]!.session)?.state.cwd).toBe("/repo");
+  });
+
+  it("restored tabs fall back to the project root, fresh tabs do not", () => {
+    syncTerminalProject("/repo");
+    newTab("/repo/logs");
+    syncTerminalProject(null);
+    syncTerminalProject("/repo");
+    const restored = state().tabs[0]!;
+    expect(sessionOf(restored.session)?.fallbackRoot).toBe("/repo");
+
+    const fresh = newTab("/repo/app");
+    expect(sessionOf(fresh.session)?.fallbackRoot).toBeUndefined();
+
+    const side = splitTab(restored.id, "horizontal")!;
+    const sideTab = state().tabs.find((t) => t.id === side)!;
+    expect(sessionOf(sideTab.session)?.fallbackRoot).toBe("/repo");
+  });
+
+  it("restores a tab whose saved directory is gone with the project root as its fallback", () => {
+    syncTerminalProject("/repo");
+    const tab = newTab("/repo");
+    getSession(tab.session)!.state.cwd = "/repo/gone";
+    useTerminals.setState((s) => ({
+      sessions: { ...s.sessions, [tab.session]: { ...s.sessions[tab.session]!, cwd: "/repo/gone" } },
+    }));
+
+    syncTerminalProject(null);
+    syncTerminalProject("/repo");
+    const restored = sessionOf(state().tabs[0]!.session)!;
+    expect(restored.state.cwd).toBe("/repo/gone");
+    expect(restored.fallbackRoot).toBe("/repo");
   });
 });

@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { t } from "@/platform/i18n";
-import { Dialog, Input, List, T } from "@/ui";
+import { Checkbox, Dialog, Input, List, T } from "@/ui";
 import styles from "./inputDialogs.module.css";
 
 export interface PromptInputOptions {
@@ -27,6 +27,10 @@ export interface PromptInputOptions {
   error?: string;
   /** Extra content under the field (hints). */
   hint?: ReactNode;
+  /** Closes the dialog as cancelled when aborted. */
+  signal?: AbortSignal;
+  /** Resolve with the text as typed instead of trimmed. */
+  keepWhitespace?: boolean;
 }
 
 export interface ChooseItemOptions {
@@ -36,32 +40,53 @@ export interface ChooseItemOptions {
   empty?: string;
 }
 
+export interface PickItemsOptions {
+  title: string;
+  items: readonly { key: string; label: string; description?: string | null }[];
+  multiple: boolean;
+  /** Closes the dialog as cancelled when aborted. */
+  signal?: AbortSignal;
+}
+
 type Request =
   | { kind: "prompt"; id: number; options: PromptInputOptions; resolve: (v: string | null) => void }
-  | { kind: "choose"; id: number; options: ChooseItemOptions; resolve: (v: string | null) => void };
+  | { kind: "choose"; id: number; options: ChooseItemOptions; resolve: (v: string | null) => void }
+  | { kind: "pick"; id: number; options: PickItemsOptions; resolve: (v: string[] | null) => void };
 
 const useInputDialogs = create<{ stack: Request[] }>(() => ({ stack: [] }));
 let seq = 0;
 
-function open(make: (id: number, finish: (v: string | null) => void) => Request): Promise<string | null> {
+function open<T>(
+  make: (id: number, finish: (v: T | null) => void) => Request,
+  signal?: AbortSignal,
+): Promise<T | null> {
   return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(null);
     const id = ++seq;
-    const finish = (v: string | null) => {
+    const finish = (v: T | null) => {
+      signal?.removeEventListener("abort", cancel);
       useInputDialogs.setState((s) => ({ stack: s.stack.filter((r) => r.id !== id) }));
       resolve(v);
     };
-    useInputDialogs.setState((s) => ({ stack: [...s.stack, make(id, finish)] }));
+    const cancel = () => finish(null);
+    signal?.addEventListener("abort", cancel);
+    useInputDialogs.setState((s) => ({ stack: [...s.stack, make(id, finish as never)] }));
   });
 }
 
 /** A text field dialog; resolves with the trimmed value, or null when cancelled. */
 export function promptInput(options: PromptInputOptions): Promise<string | null> {
-  return open((id, resolve) => ({ kind: "prompt", id, options, resolve }));
+  return open<string>((id, resolve) => ({ kind: "prompt", id, options, resolve }), options.signal);
 }
 
 /** A list to pick one entry from; resolves with it, or null when cancelled. */
 export function chooseItem(options: ChooseItemOptions): Promise<string | null> {
-  return open((id, resolve) => ({ kind: "choose", id, options, resolve }));
+  return open<string>((id, resolve) => ({ kind: "choose", id, options, resolve }));
+}
+
+/** A list to pick one or more entries from; resolves with their keys, or null when cancelled. */
+export function pickItems(options: PickItemsOptions): Promise<string[] | null> {
+  return open<string[]>((id, resolve) => ({ kind: "pick", id, options, resolve }), options.signal);
 }
 
 export function InputDialogsHost() {
@@ -71,8 +96,10 @@ export function InputDialogsHost() {
       {stack.map((r) =>
         r.kind === "prompt" ? (
           <PromptDialog key={r.id} options={r.options} done={r.resolve} />
-        ) : (
+        ) : r.kind === "choose" ? (
           <ChooseDialog key={r.id} options={r.options} done={r.resolve} />
+        ) : (
+          <PickDialog key={r.id} options={r.options} done={r.resolve} />
         ),
       )}
     </>
@@ -97,15 +124,16 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
   const submit = async () => {
     setTouched(true);
     if (localError || validation.current) return;
-    if (!options.submit) return done(value.trim());
+    const result = options.keepWhitespace ? value : value.trim();
+    if (!options.submit) return done(result);
     const controller = new AbortController();
     validation.current = controller;
     setPending(true);
     try {
-      const message = await options.submit(value.trim(), controller.signal);
+      const message = await options.submit(result, controller.signal);
       if (controller.signal.aborted) return;
       setServerError(message);
-      if (!message) done(value.trim());
+      if (!message) done(result);
     } catch (e) {
       if (!controller.signal.aborted) setServerError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -197,6 +225,71 @@ function ChooseDialog({ options, done }: { options: ChooseItemOptions; done: (v:
             </div>
           }
           renderItem={(item, state) => <div className={state.active ? styles.activeRow : styles.row}>{item}</div>}
+        />
+      </div>
+    </Dialog>
+  );
+}
+
+function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: string[] | null) => void }) {
+  const [active, setActive] = useState(0);
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  const toggle = (key: string) =>
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  const picked = options.multiple ? options.items.filter((i) => checked.has(i.key)).map((i) => i.key) : [];
+  const activeKey = options.items[active]?.key;
+  const confirm = () => {
+    if (options.multiple) return done(picked);
+    if (activeKey !== undefined) done([activeKey]);
+  };
+  return (
+    <Dialog
+      open
+      title={options.title}
+      onClose={() => done(null)}
+      width={420}
+      buttons={[
+        {
+          label: "OK",
+          role: "default",
+          disabled: options.multiple ? false : activeKey === undefined,
+          onClick: confirm,
+        },
+        { label: t("common.cancel"), role: "cancel" },
+      ]}
+    >
+      <div className={styles.form}>
+        <List
+          items={options.items}
+          getKey={(item) => item.key}
+          activeIndex={active}
+          onActiveChange={setActive}
+          onActivate={(item, _index, e) => {
+            if (!options.multiple) return done([item.key]);
+            if (e.type === "keydown") toggle(item.key);
+          }}
+          rowHeight={options.items.some((i) => i.description) ? 36 : 24}
+          className={styles.list}
+          aria-label={options.title}
+          empty={
+            <div className={styles.hint}>
+              <T>Nothing to choose from</T>
+            </div>
+          }
+          renderItem={(item, state) => (
+            <div className={state.active ? styles.activeRow : styles.row}>
+              {options.multiple ? (
+                <Checkbox checked={checked.has(item.key)} onChange={() => toggle(item.key)} label={item.label} />
+              ) : (
+                item.label
+              )}
+              {item.description && <div className={styles.hint}>{item.description}</div>}
+            </div>
+          )}
         />
       </div>
     </Dialog>

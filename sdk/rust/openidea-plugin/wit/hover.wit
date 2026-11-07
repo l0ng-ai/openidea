@@ -1,0 +1,19 @@
+package openidea:plugin@1.3.0;
+
+interface hover-provider {
+    use types.{position, range};
+
+    record document {
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    record hover-content {
+        markdown: string,
+        range: option<range>,
+    }
+
+    hover: func(doc: document, at: position) -> option<hover-content>;
+}

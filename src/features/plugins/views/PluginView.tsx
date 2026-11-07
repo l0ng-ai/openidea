@@ -202,17 +202,17 @@ function Body({ content, send, pluginId, view, onViewport, itemMenu }: BodyProps
 
 // --- tree -------------------------------------------------------------------------
 
-interface Node {
+export interface TreeNode {
   item: ViewTreeItem;
-  children: Node[];
+  children: TreeNode[];
 }
 
 /** The flat item list as nodes (items naming an unknown parent are roots). */
-export function treeNodes(items: readonly ViewTreeItem[]): Node[] {
-  const byKey = new Map<string, Node>();
-  const roots: Node[] = [];
+export function treeNodes(items: readonly ViewTreeItem[]): TreeNode[] {
+  const byKey = new Map<string, TreeNode>();
+  const roots: TreeNode[] = [];
   for (const item of items) {
-    const node: Node = { item, children: [] };
+    const node: TreeNode = { item, children: [] };
     if (!byKey.has(item.key)) byKey.set(item.key, node);
     const parent = item.parent != null ? byKey.get(item.parent) : undefined;
     (parent ? parent.children : roots).push(node);
@@ -241,7 +241,7 @@ function TreeBody({ items, send, itemMenu }: TreeBodyProps) {
   const roots = useMemo(() => treeNodes(items), [items]);
   const expanded = useMemo(() => new Set(items.filter((i) => i.expanded).map((i) => i.key)), [items]);
   return (
-    <Tree<Node>
+    <Tree<TreeNode>
       roots={roots}
       getKey={(n) => n.item.key}
       getLabel={(n) => n.item.label}
