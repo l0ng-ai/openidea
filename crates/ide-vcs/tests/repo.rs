@@ -1367,6 +1367,30 @@ fn status_reflects_external_changes_without_reopen() {
 }
 
 #[test]
+fn branches_in_newly_written_packs_stay_visible() {
+    let fx = Fixture::new();
+    fx.write("a", "1\n");
+    fx.commit_all("a");
+    let repo = fx.repo();
+    assert_eq!(repo.branches().unwrap().len(), 1);
+
+    // An external pull: objects move into a pack the IDE has never seen, then a
+    // new branch points at a commit living only in that pack.
+    fx.write("a", "2\n");
+    fx.commit_all("b");
+    fx.git(&["repack", "-adq"]);
+    fx.git(&["checkout", "-q", "-b", "uat"]);
+    let uat = fx.git(&["rev-parse", "uat"]);
+    assert!(std::fs::read_dir(fx.path(".git/objects/pack")).unwrap().count() >= 2);
+
+    let names: Vec<String> = repo.branches().unwrap().into_iter().map(|b| b.name).collect();
+    assert!(names.contains(&"uat".to_string()), "branches: {names:?}, want uat at {uat}");
+
+    // Status peels HEAD for the tree-index diff: the same failure drops it too.
+    assert!(repo.status().is_ok(), "status failed: {:?}", repo.status().unwrap_err());
+}
+
+#[test]
 fn linked_worktree_and_submodule() {
     let fx = Fixture::new();
     fx.write("a.txt", "a\n");
