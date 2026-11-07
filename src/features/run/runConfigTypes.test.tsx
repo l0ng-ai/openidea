@@ -634,6 +634,16 @@ describe("before launch tasks", () => {
       setBeforeLaunchRunner(null);
     }
   });
+
+  it("shows the build policy for a Maven configuration", async () => {
+    const type = typeFor("maven")!;
+    const config = newConfigOfType(type, []);
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    fireEvent.click(await screen.findByText("Build"));
+    expect(screen.getByRole("button", { name: "Build" })).toBeTruthy();
+  });
 });
 
 describe("environment variables", () => {
