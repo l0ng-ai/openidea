@@ -1095,9 +1095,10 @@ impl PluginHost {
         }
         // Keep the installed package and registration available until cleanup succeeds.
         let cleanup = || -> std::io::Result<()> {
-            match std::fs::remove_dir_all(self.shared.data_dir.join(id)) {
+            let data = self.shared.data_dir.join(id);
+            match std::fs::remove_dir_all(&data) {
                 Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !data.exists() => {}
                 Err(e) => return Err(e),
             }
             // Every version (`<id>/<version>`), or the flat directory of an older install.
