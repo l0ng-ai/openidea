@@ -179,6 +179,21 @@ A `commit.message` menu puts the command, with the plugin's icon, in the
 toolbar above the commit message of the Commit tool window and the Commit
 dialog (see _Commits_). It is new in API 1.3 (`engines.openidea = "^1.3"`).
 
+In a context menu (`editor.context`, `projectView.context`, `editorTab.context`,
+`viewItem.context`), entries can name a `submenu`: the plugin's entries of that
+menu with the same `submenu` are shown under it (`Arthas` ▸ _Watch_ / _Trace_),
+in declaration order; a submenu with one visible entry shows it as a plain
+entry, and entries without `submenu` stay where they are. The label goes
+through the plugin's translations. It is new in API 1.3
+(`engines.openidea = "^1.3"`):
+
+```toml
+[[contributes.menus]]
+menu = "editor.context"
+command = "arthas.watch"
+submenu = "Arthas"
+```
+
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
 themes can be applied, settings pages are there — **before** any plugin code
