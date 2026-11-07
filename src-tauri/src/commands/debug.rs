@@ -309,3 +309,13 @@ pub async fn debug_listen_for_jvm(
 pub async fn debug_redefine_classes(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<HotSwapResult> {
     ide_host::ops::debug::debug_redefine_classes(&state.host, "", session).await
 }
+
+/// The debuggee JVM's loaded classes (instances and shallow bytes), or why they cannot be read.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_jvm_memory_classes(
+    state: State<'_, AppState>,
+    session: DebugSessionId,
+) -> IdeResult<JvmMemoryResult> {
+    ide_host::ops::debug::debug_jvm_memory_classes(&state.host, "", session).await
+}

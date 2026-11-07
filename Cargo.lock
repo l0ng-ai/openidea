@@ -4339,6 +4339,7 @@ dependencies = [
  "ide-http",
  "ide-index",
  "ide-jsonrpc",
+ "ide-jvm-attach",
  "ide-language",
  "ide-lsp",
  "ide-notebook",

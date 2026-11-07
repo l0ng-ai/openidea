@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
-    let mut config = match_java_debug_encoding(config, cfg!(windows));
+    let mut config = match_java_debug_encoding(start_java_attach_listener(config), cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
         && let Ok(project) = host.project(window)
@@ -81,6 +81,31 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
     result
+}
+
+/// The JVM memory tab reads the class table over the attach socket, which only exists once the
+/// JVM has started its attach listener. The flag goes first so the user's arguments still win.
+fn start_java_attach_listener(mut config: LaunchConfig) -> LaunchConfig {
+    if config.adapter != "java-debug" || config.request != "launch" {
+        return config;
+    }
+    let Some(serde_json::Value::Object(mut extra)) =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok())
+    else {
+        return config;
+    };
+    let vm_args = extra.get("vmArgs").and_then(|v| v.as_str()).unwrap_or_default();
+    if !ide_jvm_attach::wants_listener_flag(vm_args) {
+        return config;
+    }
+    let vm_args = if vm_args.is_empty() {
+        ide_jvm_attach::START_LISTENER_FLAG.to_string()
+    } else {
+        format!("{} {vm_args}", ide_jvm_attach::START_LISTENER_FLAG)
+    };
+    extra.insert("vmArgs".into(), vm_args.into());
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    config
 }
 
 /// A JVM launched by java-debug writes what java-debug decodes its output as
@@ -358,6 +383,15 @@ pub async fn debug_redefine_classes(host: &Host, _window: &str, session: DebugSe
     host.debugger.redefine_classes(session).await
 }
 
+/// The debuggee JVM's loaded classes, or why they cannot be read.
+pub async fn debug_jvm_memory_classes(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+) -> IdeResult<JvmMemoryResult> {
+    host.debugger.jvm_memory_classes(session).await
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("debug_start", |c| async move { debug_start(&c.host, &c.window, c.arg("config")?).await });
@@ -485,6 +519,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "debug_redefine_classes",
         |c| async move { debug_redefine_classes(&c.host, &c.window, c.arg("session")?).await },
     );
+    d.add("debug_jvm_memory_classes", |c| async move {
+        debug_jvm_memory_classes(&c.host, &c.window, c.arg("session")?).await
+    });
 }
 
 #[cfg(test)]
@@ -527,6 +564,33 @@ mod tests {
         {
             assert_eq!(vm_args(&match_java_debug_encoding(launch(adapter, request, extra.clone()), windows)), "-Xmx1g");
         }
+    }
+
+    #[test]
+    fn java_debug_launches_start_the_attach_listener() {
+        let fixed = start_java_attach_listener(launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})));
+        assert_eq!(vm_args(&fixed), "-XX:+StartAttachListener -Xmx1g");
+        assert_eq!(
+            vm_args(&start_java_attach_listener(launch("java-debug", "launch", serde_json::json!({})))),
+            "-XX:+StartAttachListener"
+        );
+        for extra in [
+            serde_json::json!({"vmArgs": "-XX:-StartAttachListener"}),
+            serde_json::json!({"vmArgs": "-XX:+DisableAttachMechanism"}),
+        ] {
+            assert_eq!(
+                vm_args(&start_java_attach_listener(launch("java-debug", "launch", extra.clone()))),
+                extra["vmArgs"]
+            );
+        }
+        assert_eq!(
+            vm_args(&start_java_attach_listener(launch(
+                "java-debug",
+                "attach",
+                serde_json::json!({"vmArgs": "-Xmx1g"})
+            ))),
+            "-Xmx1g"
+        );
     }
 
     #[test]

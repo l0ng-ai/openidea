@@ -458,6 +458,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_attachable_processes,
         debug::debug_listen_for_jvm,
         debug::debug_redefine_classes,
+        debug::debug_jvm_memory_classes,
         coverage::coverage_prepare,
         coverage::coverage_collect,
         coverage::coverage_import,
