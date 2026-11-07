@@ -1647,6 +1647,8 @@ export type AgentProvider = {
 
 /**  A question the agent asks with `AskUserQuestion`, answered by picking options or typing. */
 export type AgentQuestion = {
+	/**  Stable answer identity when the provider supplies question ids. */
+	answerKey?: string | null,
 	header?: string,
 	question: string,
 	multiSelect?: boolean,

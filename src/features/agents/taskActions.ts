@@ -134,7 +134,7 @@ export const taskActions: Action[] = [
         initial: task.title,
         okLabel: "Rename",
       });
-      if (title !== null && title !== task.title)
+      if (title !== null)
         await renameTask(task.id, title).catch((e: unknown) => showError(tx("Couldn't rename the task"), String(e)));
     },
   },

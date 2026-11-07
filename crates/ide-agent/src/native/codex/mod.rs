@@ -877,6 +877,7 @@ impl CodexShim {
                 let asked: Vec<Value> = questions
                     .iter()
                     .filter_map(|q| {
+                        let id = q.get("id").and_then(Value::as_str)?;
                         let question = q.get("question").and_then(Value::as_str)?;
                         let options: Vec<Value> = q
                             .get("options")
@@ -892,6 +893,7 @@ impl CodexShim {
                             })
                             .collect();
                         Some(json!({
+                            "answerKey": id,
                             "header": q.get("header").and_then(Value::as_str).unwrap_or_default(),
                             "question": question,
                             "multiSelect": q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
@@ -912,12 +914,11 @@ impl CodexShim {
                     .unwrap_or_default();
                 let mut answers = serde_json::Map::new();
                 for q in &questions {
-                    let (Some(qid), Some(question)) =
-                        (q.get("id").and_then(Value::as_str), q.get("question").and_then(Value::as_str))
-                    else {
-                        continue;
-                    };
-                    if let Some(labels) = picked.get(question) {
+                    let Some(qid) = q.get("id").and_then(Value::as_str) else { continue };
+                    if let Some(labels) = picked
+                        .get(qid)
+                        .filter(|labels| labels.as_array().is_some_and(|labels| labels.iter().all(Value::is_string)))
+                    {
                         answers.insert(qid.to_owned(), json!({ "answers": labels }));
                     }
                 }

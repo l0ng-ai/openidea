@@ -341,7 +341,10 @@
   "\n[Log stream stopped]": "\n[Log stream stopped]",
   "Toggle Log Option": "Toggle Log Option",
   "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory",
-"devcontainer up exited with {status}": "devcontainer up exited with {status}",
+  "devcontainer up exited with {status}": "devcontainer up exited with {status}",
   "Rename Agent Task": "Rename Agent Task",
-  "Couldn't rename the task": "Couldn't rename the task"
+  "Couldn't rename the task": "Couldn't rename the task",
+  "Start a Fresh Agent Session": "Start a Fresh Agent Session",
+  "Start Fresh": "Start Fresh",
+  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are."
 }

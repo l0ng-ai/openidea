@@ -756,18 +756,18 @@ impl AgentManager {
         // Dropping every turn starts the conversation over, which needs no agent-side
         // rewind — and some agents cannot rewind past their first turn (a resumed
         // Claude Code session). A fresh session avoids both.
-        if cut == 0 {
+        if turns == 0 {
             task.kill();
             let first = {
                 let mut s = task.state.lock();
-                let first = match s.conversation.main.entries.first() {
+                let first = match s.conversation.main.entries.get(cut) {
                     Some(AgentEntry::User { text, .. }) => {
                         Some(AgentPrompt { text: text.clone(), ..Default::default() })
                     }
                     _ => None,
                 };
                 s.session_id = None;
-                s.conversation.truncate(0);
+                s.conversation = Conversation::default();
                 // The fresh session reports its own usage; nothing carries over.
                 s.task.usage = None;
                 s.pending_rollback = 0;
@@ -953,7 +953,7 @@ impl AgentManager {
         let task = self.task(id)?;
         {
             let mut s = task.state.lock();
-            if s.task.title == title {
+            if s.task.title == title && s.title_renamed {
                 return Ok(());
             }
             s.task.title = title;
@@ -1787,7 +1787,10 @@ impl Task {
                     .collect()
             })
             .unwrap_or_default();
-        let asked: Vec<String> = questions.iter().map(|question| question.question.clone()).collect();
+        let asked: Vec<String> = questions
+            .iter()
+            .map(|question| question.answer_key.clone().unwrap_or_else(|| question.question.clone()))
+            .collect();
         let (tx, rx) = std::sync::mpsc::channel();
         let entry =
             self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), questions, chosen: None });
