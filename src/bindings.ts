@@ -7067,7 +7067,7 @@ export type ServicePane = { kind: "message"; value: string } |
 /**  A program the IDE runs (with the plugin's `process:` grant), followed in a log. */
 { kind: "log"; value: ServiceLog };
 
-/**  A tab of the Services pane of a plugin's node (`service-provider.detail`). */
+/**  A tab of the Services pane of a plugin's node (`detail-provider.detail`). */
 export type ServiceTab = {
 	id: string,
 	label: string,
