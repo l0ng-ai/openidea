@@ -1104,7 +1104,7 @@ fn maven_option_groups(options: &[String]) -> Vec<&[String]> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < options.len() {
-        let n = if options[i] == "-s" || options[i] == "-T" { 2.min(options.len() - i) } else { 1 };
+        let n = if matches!(options[i].as_str(), "-s" | "-t" | "-T" | "-P") { 2.min(options.len() - i) } else { 1 };
         groups.push(&options[i..i + n]);
         i += n;
     }
