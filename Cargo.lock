@@ -4434,6 +4434,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-jvm-attach"
+version = "0.1.38"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ide-language"
 version = "0.1.38"
 dependencies = [
