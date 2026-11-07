@@ -182,6 +182,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "file.save": ["Meta+S"],
   "file.new": ["Meta+N"],
   "file.settings": ["Meta+,"],
+  "file.projectStructure": [],
   "file.openProject": ["Meta+O"],
   "file.newScratchFile": [],
   "editor.closeTab": ["Meta+W"],

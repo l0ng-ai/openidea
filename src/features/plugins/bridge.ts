@@ -9,7 +9,7 @@
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
-import { notifications } from "@/workbench/contributions";
+import { endpointsChanged, notifications } from "@/workbench/contributions";
 import { useI18n } from "@/platform/i18n";
 import { useProducerNames } from "@/platform/inspections";
 import { languageListChanged } from "@/platform/languageList";
@@ -36,7 +36,14 @@ import { defineBuiltinUiPoints } from "./points";
 import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, selectPluginTheme, updateAllPlugins, usePlugins } from "./store";
+import {
+  grantPlugin,
+  runPluginCommand,
+  refreshPlugins,
+  selectPluginTheme,
+  updateAllPlugins,
+  usePlugins,
+} from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -273,12 +280,25 @@ export function handlePluginEvent(e: PluginEvent) {
     case "commandsChanged":
       scheduleRefresh();
       break;
+    case "endpointsChanged":
+      if (e.root === useProject.getState().project?.root) endpointsChanged();
+      break;
     case "updatesAvailable":
       announceUpdates(e.updates);
       break;
     case "notification": {
       const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;
-      notifications().notify({ group: "plugins", level: e.level, title: e.title || name, body: e.body || undefined });
+      notifications().notify({
+        group: "plugins",
+        level: e.level,
+        title: e.title || name,
+        body: e.body || undefined,
+        verbatim: true,
+        actions: e.actions.map((a) => ({
+          label: a.label,
+          run: () => void runPluginCommand(e.pluginId, a.command, a.argument),
+        })),
+      });
       break;
     }
     case "themeChanged":

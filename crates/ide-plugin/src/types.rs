@@ -77,16 +77,19 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
-/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`).
+/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+/// `ui.input-multiline`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Prompt {
     #[serde(rename_all = "camelCase")]
     QuickPick { title: String, items: Vec<PickItem>, multiple: bool },
     #[serde(rename_all = "camelCase")]
-    Input { prompt: String, value: Option<String> },
+    Input { prompt: String, value: Option<String>, multiline: bool },
     #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
+    #[serde(rename_all = "camelCase")]
+    PickDirectory { title: String, initial: Option<String> },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -441,8 +444,21 @@ pub struct CodeAction {
     pub kind: Option<String>,
     pub preferred: bool,
     pub edits: Vec<(PathBuf, Vec<ide_core::TextEdit>)>,
+    /// Applied before `edits`, in one workspace edit with them.
+    pub operations: Vec<FileOperation>,
+    /// Opened once the action is applied.
+    pub open: Option<PathBuf>,
     /// The plugin's reference: the edits come from `resolve_code_action`.
     pub data: Option<String>,
+    /// Listed by the `file-actions` export, which also resolves it.
+    pub file_action: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOperation {
+    Create { path: PathBuf, text: String, overwrite: bool },
+    Rename { from: PathBuf, to: PathBuf },
+    Delete { path: PathBuf },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -511,6 +527,8 @@ pub struct ViewListItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum FieldValue {
+    Label(String),
+    ReadonlyText { text: String, multiline: bool },
     Text(String),
     Multiline(String),
     Checkbox(bool),
@@ -525,6 +543,14 @@ pub struct ViewField {
     pub value: FieldValue,
 }
 
+/// A sortable table's order: the column and the direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSort {
+    pub column: u32,
+    pub descending: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewTable {
@@ -533,6 +559,10 @@ pub struct ViewTable {
     pub first_row: u32,
     pub rows: Vec<Vec<String>>,
     pub editable: bool,
+    /// The plugin opted its headers in to click-to-sort (a `table` body through `other`).
+    pub sortable: bool,
+    /// The sort the plugin orders by (none: no arrow yet).
+    pub sort: Option<TableSort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -613,4 +643,28 @@ pub enum ViewEvent {
     InsertRow { before: u32 },
     DeleteRows { rows: Vec<u32> },
     Message { text: String },
+    // A sortable table's header click: the column and the direction (leaves
+    // as an `other` view-event, kind `sort`). See `TableSort`.
+    Sort { column: u32, descending: bool },
+    TableSelect { row: u32 },
+    TableActivate { row: u32 },
+}
+
+/// A plugin's HTTP route declaration in a project.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub method: Option<String>,
+    pub path: String,
+    pub framework: String,
+    pub handler: Option<String>,
+    pub location: Location,
+}
+
+/// A notification button that runs one of the publishing plugin's commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
 }

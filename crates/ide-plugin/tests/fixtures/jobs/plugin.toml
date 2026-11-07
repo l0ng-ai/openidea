@@ -38,3 +38,18 @@ category = "Jobs"
 [contributes.settings]
 title = "Jobs"
 schema = "settings.schema.json"
+
+[[contributes.commands]]
+id = "notify-actions"
+title = "Jobs: Show Notification Actions"
+category = "Jobs"
+
+[[contributes.commands]]
+id = "pick-directory"
+title = "Pick directory"
+[[contributes.commands]]
+id = "open-project"
+title = "Open project"
+[[contributes.commands]]
+id = "open-project-new"
+title = "Open project in new window"

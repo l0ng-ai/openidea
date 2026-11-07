@@ -445,7 +445,15 @@ export function windowActions(): Action[] {
       category: t("app.category.file"),
       hidden: true,
       run: async (c) => {
-        if (typeof c.arg === "string") await openProjectWithPolicy(c.arg);
+        if (typeof c.arg === "string") return openProjectWithPolicy(c.arg);
+        const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
+        if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
+        try {
+          const outcome = await call(commands.windowOpenProject(arg.path, arg.newWindow, []));
+          if (outcome.kind === "current") await openHere(arg.path);
+        } catch (error) {
+          openFailed(arg.path, error);
+        }
       },
     },
     {

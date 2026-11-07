@@ -188,7 +188,7 @@ pub(super) struct Shared {
     contexts: Mutex<BTreeMap<ContextKey, String>>,
     closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
-    pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
+    pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
@@ -331,7 +331,7 @@ impl Shared {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
         }
-        if subscriptions && self.subscriptions.lock().remove(plugin).is_some() {
+        if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -715,10 +715,23 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String) {
-        self.shared
-            .sink
-            .emit(client, PluginEvent::Notification { plugin_id: self.id().to_owned(), level, title, body });
+    fn notify(
+        &self,
+        client: Option<&str>,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ide_plugin::NotificationAction>,
+    ) -> Result<(), HostError> {
+        if !actions.is_empty() {
+            let commands = self.shared.ui.items("commands", Some(self.id()));
+            if let Some(a) = actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
+                return Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command)));
+            }
+        }
+        let plugin_id = self.id().to_owned();
+        self.shared.sink.emit(client, PluginEvent::Notification { plugin_id, level, title, body, actions });
+        Ok(())
     }
 
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
@@ -730,6 +743,14 @@ impl HostApi for PluginApi {
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let client = from_window(client, "open a URL")?;
         self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
+    }
+
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let client = from_window(client, "open a project")?;
+        self.shared
+            .sink
+            .emit(Some(client), PluginEvent::OpenProject { plugin_id: self.id().to_owned(), path, new_window });
         Ok(())
     }
 
@@ -1145,13 +1166,22 @@ impl HostApi for PluginApi {
         })
     }
 
-    fn subscribe(&self, kind: EventKind, on: bool) {
-        let changed = {
-            let mut subs = self.shared.subscriptions.lock();
-            let set = subs.entry(self.id().to_owned()).or_default();
-            if on { set.insert(kind) } else { set.remove(&kind) }
-        };
-        if changed {
+    fn subscribe(&self, kind: EventKind) {
+        if self.shared.subscriptions.lock().set(self.id(), kind) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+        if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+        Ok(())
+    }
+
+    fn unsubscribe(&self, kind: &str) {
+        if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1257,6 +1287,38 @@ impl HostApi for PluginApi {
         let value = user.get(key).filter(|v| setting.accepts(v)).cloned().unwrap_or(setting.default);
         serde_json::to_string(&value).ok()
     }
+
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
+        // Unsaved editor contents win, as they do for project files.
+        if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
+            return Ok(text);
+        }
+        let meta = std::fs::metadata(real).map_err(|e| not_a_file(real, e))?;
+        if !meta.is_file() {
+            return Err(HostError::Invalid(format!("{}: not a file", real.display())));
+        }
+        if meta.len() > max as u64 {
+            return Err(too_large(real, max));
+        }
+        let loaded = ide_vfs::load_text(real).map_err(failed)?;
+        if loaded.binary {
+            return Err(HostError::Invalid(format!("{}: not text; read it as bytes", real.display())));
+        }
+        Ok(loaded.text)
+    }
+}
+
+/// A file that is not there, or cannot be read, as the plugin sees it.
+fn not_a_file(path: &Path, e: std::io::Error) -> HostError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => HostError::NotFound(format!("{}: no such file", path.display())),
+        std::io::ErrorKind::PermissionDenied => HostError::Denied(format!("{}: {}", path.display(), "not readable")),
+        _ => failed(e),
+    }
+}
+
+fn too_large(path: &Path, max: usize) -> HostError {
+    HostError::Invalid(format!("{}: file is larger than {} MiB", path.display(), max >> 20))
 }
 
 /// [`PluginWorkspace`] over the desktop host's open projects.
@@ -1419,6 +1481,27 @@ mod tests {
         api.storage_set(key, Some("small".into())).unwrap();
         api.storage_set("other", Some("value".into())).unwrap();
         assert_eq!(api.storage_get("other").unwrap().as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn notification_actions_run_the_plugins_own_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let _command = api.shared.ui.insert(ide_extension::UiContribution {
+            plugin_id: api.id().into(),
+            point: "commands".into(),
+            key: "run".into(),
+            decl: serde_json::json!({}),
+        });
+        let action = |command: &str| ide_plugin::NotificationAction {
+            label: "Run".into(),
+            command: command.into(),
+            argument: Some("a\nb".into()),
+        };
+        let notify = |actions| api.notify(Some("main"), NotificationLevel::Info, "Done".into(), "".into(), actions);
+        notify(vec![]).unwrap();
+        notify(vec![action("run")]).unwrap();
+        assert!(matches!(notify(vec![action("run"), action("other.command")]), Err(HostError::NotFound(_))));
     }
 
     #[test]
