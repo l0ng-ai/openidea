@@ -6781,5 +6781,8 @@
   "Allowed for this session": "已在此会话中允许",
   "Always allowed": "已设为始终允许",
   "Declined": "已拒绝",
-  "Always declined": "已设为始终拒绝"
+  "Always declined": "已设为始终拒绝",
+  "Toolchains file": "Toolchains 文件",
+  "Passed as -t; selects the JDKs Maven compiles with.": "以 -t 传入，用于选择 Maven 编译使用的 JDK。",
+  "Select Maven toolchains.xml": "选择 Maven toolchains.xml"
 }

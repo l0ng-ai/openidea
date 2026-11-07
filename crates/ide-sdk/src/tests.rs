@@ -343,20 +343,27 @@ fn project_jdk_and_maven_settings() {
     s.languages.java.jdk = "jdk17/bin/java".into();
     s.languages.java.maven.home = maven.to_string_lossy().into_owned();
     s.languages.java.maven.user_settings = "/m2/settings.xml".into();
+    s.languages.java.maven.toolchains = "/m2/toolchains.xml".into();
     s.languages.java.maven.local_repository = "/m2/repo".into();
     assert_eq!(project_jdk(tmp.path(), &s).map(|j| j.major), Some(17));
     assert_eq!(maven_command(tmp.path(), &s), Some(maven.join("bin/mvn")));
-    assert_eq!(maven_options(tmp.path(), &s), ["-s", "/m2/settings.xml", "-Dmaven.repo.local=/m2/repo"]);
+    assert_eq!(
+        maven_options(tmp.path(), &s),
+        ["-s", "/m2/settings.xml", "-t", "/m2/toolchains.xml", "-Dmaven.repo.local=/m2/repo"]
+    );
 
     let mut configs = vec![run("maven", "./mvnw", &["package"]), run("gradle", "./gradlew", &["build"])];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     let home = project_jdk(tmp.path(), &s).unwrap().home.to_string_lossy().into_owned();
     assert_eq!(configs[0].command, maven.join("bin/mvn").to_string_lossy());
-    assert_eq!(configs[0].args, ["-s", "/m2/settings.xml", "-Dmaven.repo.local=/m2/repo", "package"]);
+    assert_eq!(
+        configs[0].args,
+        ["-s", "/m2/settings.xml", "-t", "/m2/toolchains.xml", "-Dmaven.repo.local=/m2/repo", "package"]
+    );
     assert_eq!(configs[0].env["JAVA_HOME"], home);
     assert_eq!(configs[1].env["JAVA_HOME"], home);
     apply_to_run_configs(&mut configs, tmp.path(), &s);
-    assert_eq!(configs[0].args.len(), 4, "applied once");
+    assert_eq!(configs[0].args.len(), 6, "applied once");
 
     s.languages.java.jdk = "missing".into();
     assert_eq!(project_jdk(tmp.path(), &s), None);

@@ -5577,6 +5577,8 @@ export type MavenSettings = {
 	home?: string,
 	/**  User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`. */
 	userSettings?: string,
+	/**  Toolchains file (`-t`); empty = `~/.m2/toolchains.xml`. */
+	toolchains?: string,
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
 	/**

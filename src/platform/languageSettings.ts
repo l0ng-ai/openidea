@@ -175,6 +175,7 @@ export interface LanguagesValid {
       runnerJre: string;
       home: string;
       userSettings: string;
+      toolchains: string;
       localRepository: string;
       unlinkedProjects: string[];
       linkedProjects: string[];
@@ -242,6 +243,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       runnerJre: "",
       home: "",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       unlinkedProjects: [],
       linkedProjects: [],
@@ -400,6 +402,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         runnerJre: text(maven.runnerJre, d.java.maven.runnerJre),
         home: text(maven.home, d.java.maven.home),
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
+        toolchains: text(maven.toolchains, d.java.maven.toolchains),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
         linkedProjects: folders(maven.linkedProjects),

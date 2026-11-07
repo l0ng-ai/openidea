@@ -915,6 +915,8 @@ pub struct MavenSettings {
     pub home: String,
     /// User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`.
     pub user_settings: String,
+    /// Toolchains file (`-t`); empty = `~/.m2/toolchains.xml`.
+    pub toolchains: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
     /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds

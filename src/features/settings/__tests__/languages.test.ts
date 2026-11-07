@@ -48,6 +48,7 @@ describe("languages settings", () => {
       runnerJre: "/opt/jdk-21",
       home: "/opt/maven",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       unlinkedProjects: [],
       linkedProjects: [],
