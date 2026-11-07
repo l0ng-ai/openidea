@@ -17,11 +17,21 @@ import { startRun, useRun } from "./store";
 export const BUILD_ACTION = "build.buildProject";
 const BUILD_STATUS = "build.lastStatus";
 
-export type BeforeLaunchKind = "run" | "build" | "tool" | "command" | "toolWindow" | "dotnetBuild";
+export type BeforeLaunchKind =
+  | "run"
+  | "build"
+  | "buildModule"
+  | "buildArtifacts"
+  | "tool"
+  | "command"
+  | "toolWindow"
+  | "dotnetBuild";
 
 export const TASK_LABELS: Record<BeforeLaunchKind, string> = {
   run: "Run Another Configuration",
   build: "Build Project",
+  buildModule: "Build Module",
+  buildArtifacts: "Build Artifacts",
   dotnetBuild: "Build .NET project",
   tool: "Run External Tool",
   command: "Run Shell Command",
@@ -36,6 +46,10 @@ export function taskLabel(task: BeforeLaunchTask, configs: readonly RunConfig[] 
       return `Run '${configs.find((c) => c.id === target)?.name ?? target}'`;
     case "build":
       return "Build Project";
+    case "buildModule":
+      return `Build Module${target ? ` '${target}'` : ""}`;
+    case "buildArtifacts":
+      return "Build Artifacts";
     case "dotnetBuild":
       return "Build .NET project";
     case "tool":
@@ -72,6 +86,17 @@ async function runTask(task: BeforeLaunchTask, config: RunConfig, chain: readonl
       if (getContext()[BUILD_STATUS] !== "success") return "Build failed";
       recordProjectBuild(useProject.getState().project?.root ?? "");
       return null;
+    }
+    case "buildModule": {
+      if (!getAction("build.buildModule")) return "Building is not available";
+      if (!target.trim()) return "No module";
+      if (!(await executeAction("build.buildModule", target))) return "A build is already running";
+      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
+    }
+    case "buildArtifacts": {
+      if (!getAction("build.buildArtifacts")) return "Building is not available";
+      if (!(await executeAction("build.buildArtifacts"))) return "A build is already running";
+      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
     }
     case "run": {
       if (chain.includes(target)) return "The before launch tasks run in a cycle";

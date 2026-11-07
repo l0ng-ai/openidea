@@ -71,9 +71,9 @@ export function activate(): () => void {
         category: "Build",
         when: WHEN,
         keywords: ["recompile", "compile file", "make module"],
-        run: ({ arg }) => {
+        run: async ({ arg }) => {
           const target = moduleTarget(arg);
-          void startBuild("build", target);
+          await startBuild("build", target);
         },
       },
       {
@@ -93,7 +93,9 @@ export function activate(): () => void {
         category: "Build",
         when: WHEN,
         keywords: ["package", "assemble", "jar", "release"],
-        run: () => void startBuild("artifacts"),
+        run: async () => {
+          await startBuild("artifacts");
+        },
       },
       {
         id: "build.stop",
