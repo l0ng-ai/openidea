@@ -3,6 +3,7 @@ import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { showError, confirmChecked } from "@/workbench/messages";
+import { promptInput } from "@/workbench/inputDialogs";
 import { isBusy } from "./model";
 import {
   archiveTask,
@@ -12,6 +13,7 @@ import {
   forkTask,
   openTask,
   openTaskInEditorLocation,
+  renameTask,
   setSessionLocation,
   undockTask,
   useAgents,
@@ -119,6 +121,24 @@ export const taskActions: Action[] = [
     run: () => undockTask(),
   },
   {
+    id: "agents.renameTask",
+    title: "Rename Agent Task",
+    category: "Agents",
+    hidden: true,
+    run: async ({ arg }) => {
+      const task = resolveTasks([arg])[0];
+      if (!task) return;
+      const title = await promptInput({
+        title: "Rename Agent Task",
+        label: "Name",
+        initial: task.title,
+        okLabel: "Rename",
+      });
+      if (title !== null && title !== task.title)
+        await renameTask(task.id, title).catch((e: unknown) => showError(tx("Couldn't rename the task"), String(e)));
+    },
+  },
+  {
     id: "agents.forkTask",
     title: "Copy Agent Task to a New Task",
     category: "Agents",
@@ -169,6 +189,7 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
     ...(!multiple
       ? ([
           { kind: "action", action: "agents.openTask", label: "Open", arg: task.id },
+          { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
           { kind: "action", action: "terminal.openAt", label: "Open in Terminal", icon: "terminal", arg: task.cwd },
           ...(task.capabilities?.fork && task.status !== "archived"
             ? ([

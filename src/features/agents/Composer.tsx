@@ -3,7 +3,17 @@
  * (project index search), `/` agent commands, ↑ / ↓ history, pasted or dropped images, Shift+Tab to cycle
  * the agent's mode. Its draft lives in the store under `id`.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import type { AgentCommand, AgentConfigOption, AgentImage } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -12,7 +22,7 @@ import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
-import { Icon, IconButton, Popup, fileIconName } from "@/ui";
+import { FILES_DRAG, Icon, IconButton, Popup, fileIconName, registerDropTarget } from "@/ui";
 import {
   IMAGE_EXTENSIONS,
   MAX_IMAGE_BYTES,
@@ -25,6 +35,7 @@ import {
   imageFromDataUrl,
   matchCommands,
   mentionOf,
+  messageTokens,
   modeOption,
   nextValue,
   recall,
@@ -73,8 +84,10 @@ export function Composer(props: ComposerProps) {
   const draft = useAgents((s) => s.composers.get(id));
   const text = draft?.text ?? "";
   const images = draft?.images ?? [];
+  const tokens = useMemo(() => messageTokens(text), [text]);
   const [preview, setPreview] = useState<AgentImage | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const imageInput = useRef<HTMLInputElement>(null);
   const [completion, setCompletion] = useState<Completion | null>(null);
@@ -102,6 +115,17 @@ export function Composer(props: ComposerProps) {
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, MAX_PROMPT_HEIGHT)}px`;
   }, [text]);
+
+  // A textarea that scrolls loses content width to its scrollbar: give the mirror the same
+  // width and offset, or a long prompt wraps a line earlier and the painted text drifts.
+  const syncMirror = useCallback(() => {
+    const el = ref.current;
+    const mirror = mirrorRef.current;
+    if (!el || !mirror) return;
+    mirror.style.right = `${el.offsetWidth - el.clientWidth}px`;
+    mirror.scrollTop = el.scrollTop;
+  }, []);
+  useLayoutEffect(syncMirror, [text, syncMirror]);
 
   // `@` completion: project file search, mapped into the task's directory.
   useEffect(() => {
@@ -189,15 +213,43 @@ export function Composer(props: ComposerProps) {
       const next = applyCompletion(text, completion, mentionOf(rel));
       setText(next.text, next.caret);
     } else {
+      // Inserted in place: the order of the message is kept, and the text is tagged
+      // where it stands (see the mirror below the textarea).
       const next = applyCompletion(text, completion, `/${item.command.name}`);
       setText(next.text, next.caret);
     }
     setCompletion(null);
   };
 
-  const addImages = (list: AgentImage[]) => {
-    if (list.length) updateComposer(id, { images: [...composerDraft(id).images, ...list] });
-  };
+  const [fileOver, setFileOver] = useState(false);
+
+  /** Adds paths as `@` references (a file or a folder), each once. */
+  const addPaths = useCallback(
+    (paths: readonly string[]) => {
+      const current = composerDraft(id);
+      const known = new Set(current.files.map((f) => f.path));
+      const refs: FileRef[] = [];
+      for (const raw of paths) {
+        // The Project view marks folders with a trailing slash.
+        const path = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+        if (!path || known.has(path)) continue;
+        known.add(path);
+        refs.push({ path, rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path });
+      }
+      if (!refs.length) return;
+      const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
+      const glue = current.text && !/\s$/.test(current.text) ? " " : "";
+      updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...current.files, ...refs] });
+    },
+    [id, root],
+  );
+
+  const addImages = useCallback(
+    (list: AgentImage[]) => {
+      if (list.length) updateComposer(id, { images: [...composerDraft(id).images, ...list] });
+    },
+    [id],
+  );
 
   const readImageFiles = (picked: Iterable<File>) => {
     for (const file of picked) {
@@ -228,7 +280,7 @@ export function Composer(props: ComposerProps) {
           const box = boxRef.current?.getBoundingClientRect();
           const { x, y } = nativeDropPoint(p.position);
           if (!box || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
-          const refs: FileRef[] = [];
+          const paths: string[] = [];
           for (const path of p.paths) {
             if (IMAGE_EXTENSIONS.test(path)) {
               void invokeLocal<string>("fs_read_image", { path }).then((url) => {
@@ -236,15 +288,10 @@ export function Composer(props: ComposerProps) {
                 if (image) addImages([image]);
               });
             } else {
-              refs.push({ path, rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path });
+              paths.push(path);
             }
           }
-          if (refs.length) {
-            const current = composerDraft(id);
-            const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
-            const glue = current.text && !/\s$/.test(current.text) ? " " : "";
-            updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...current.files, ...refs] });
-          }
+          addPaths(paths);
         })
         .then((u) => {
           if (disposed) u();
@@ -255,8 +302,22 @@ export function Composer(props: ComposerProps) {
       disposed = true;
       unlisten?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-subscribe only when the target changes
-  }, [id, root]);
+  }, [addPaths, addImages]);
+
+  // Files and folders dragged from the Project view: the same `@` references.
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === FILES_DRAG,
+      over: () => setFileOver(true),
+      leave: () => setFileOver(false),
+      drop: (data) => {
+        setFileOver(false);
+        addPaths(data.payload.split("\n").filter(Boolean));
+      },
+    });
+  }, [addPaths]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (isImeKey(e.nativeEvent)) return;
@@ -315,7 +376,7 @@ export function Composer(props: ComposerProps) {
   return (
     <div
       ref={boxRef}
-      className={clsx(styles.composer, props.className)}
+      className={clsx(styles.composer, fileOver && styles.fileOver, props.className)}
       {...OWNS_FILE_DROP}
       onClick={() => ref.current?.focus()}
     >
@@ -386,35 +447,54 @@ export function Composer(props: ComposerProps) {
           <ImagePreview image={preview} onClose={() => setPreview(null)} />
         </div>
       )}
-      <textarea
-        ref={ref}
-        className={styles.textarea}
-        rows={2}
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        value={text}
-        aria-label={tx("Message")}
-        placeholder={tx(props.placeholder)}
-        onChange={(e) => setText(e.target.value, e.target.selectionStart, false)}
-        onSelect={(e) => setCompletion(completionAt(e.currentTarget.value, e.currentTarget.selectionStart))}
-        onBlur={() => setCompletion(null)}
-        onKeyDown={onKeyDown}
-        onPaste={(e) => {
-          const pasted = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
-          if (pasted.length) {
-            e.preventDefault();
-            readImageFiles(pasted);
-          }
-        }}
-      />
+      <div className={styles.field}>
+        {/* The text is painted here with `@file` / `/skill` tags; the textarea above it
+            keeps native editing, selection and the caret. */}
+        <div ref={mirrorRef} className={styles.mirror} aria-hidden="true">
+          {tokens.map((token, i) =>
+            token.kind === "text" ? (
+              <Fragment key={i}>{token.value}</Fragment>
+            ) : (
+              <span key={i} className={token.kind === "command" ? styles.skillToken : styles.fileToken}>
+                {token.value}
+              </span>
+            ),
+          )}
+          {"\u200b"}
+        </div>
+        <textarea
+          ref={ref}
+          className={styles.textarea}
+          rows={2}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          value={text}
+          aria-label={tx("Message")}
+          placeholder={tx(props.placeholder)}
+          onChange={(e) => setText(e.target.value, e.target.selectionStart, false)}
+          // The controlled text, not the event's value: closing the completion popup can emit a
+          // stale select event with the old text.
+          onSelect={(e) => setCompletion(completionAt(text, e.currentTarget.selectionStart))}
+          onBlur={() => setCompletion(null)}
+          onKeyDown={onKeyDown}
+          onScroll={syncMirror}
+          onPaste={(e) => {
+            const pasted = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+            if (pasted.length) {
+              e.preventDefault();
+              readImageFiles(pasted);
+            }
+          }}
+        />
+      </div>
       <div className={styles.bar} onClick={(e) => e.stopPropagation()}>
         <div className={styles.toolbar}>{props.toolbar}</div>
         <div className={styles.actions}>
           <IconButton
-            icon="file"
+            icon="paperclip"
             title="Reference a File (@)"
-            size="small"
+            className={styles.composerButton}
             onClick={() => {
               const glue = text && !/\s$/.test(text) ? " " : "";
               setText(`${text}${glue}@`, text.length + glue.length + 1);
@@ -423,7 +503,7 @@ export function Composer(props: ComposerProps) {
           <IconButton
             icon="file-image"
             title="Attach Image…"
-            size="small"
+            className={styles.composerButton}
             onClick={() => imageInput.current?.click()}
           />
           <input

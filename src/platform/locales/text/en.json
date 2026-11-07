@@ -66,5 +66,11 @@
   "Couldn't regenerate the response": "Couldn't regenerate the response",
   "Reasoning": "Reasoning",
   "Branch '{name}'": "Branch '{name}'",
-  "Cannot copy the value": "Cannot copy the value"
+  "Cannot copy the value": "Cannot copy the value",
+  "You": "You",
+  "Rename Agent Task": "Rename Agent Task",
+  "Couldn't rename the task": "Couldn't rename the task",
+  "Jump to Latest": "Jump to Latest",
+  "Retract Message": "Retract Message",
+  "Retract": "Retract"
 }

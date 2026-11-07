@@ -16,7 +16,7 @@ import type {
 import { useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
@@ -246,6 +246,7 @@ function onEvent(e: AgentEvent) {
     case "task": {
       const prev = s.tasks.get(e.task.id);
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
+      if (prev && prev.title !== e.task.title) notifyTabTitlesChanged();
       if (e.task.status === "archived") setUnread(e.task.id, false);
       else if (attentionChange(prev?.status, e.task.status)) markUnread(e.task.id);
       notifyChange(prev, e.task);
@@ -391,7 +392,7 @@ export function openTask(task: string) {
     showDockedTask(task);
     return;
   }
-  useAgents.setState({ lastTask: task, homeOpen: false });
+  useAgents.setState({ lastTask: task, homeOpen: false, lastComposer: task });
   openTaskInEditor(task);
 }
 
@@ -402,7 +403,7 @@ function openTaskInEditor(task: string) {
 }
 
 function showDockedTask(task: string) {
-  useAgents.setState({ docked: task, lastTask: task, homeOpen: false });
+  useAgents.setState({ docked: task, lastTask: task, homeOpen: false, lastComposer: task });
   toolWindowService().show(TOOL_WINDOW, true);
   void editorService().closeInput?.(sessionKey(task));
 }
@@ -462,6 +463,7 @@ export function openTaskInEditorLocation(task: string) {
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
   const project = useProject.getState().project;
+  useAgents.setState({ lastComposer: HOME });
   if (project?.workspace) {
     const previous = useAgents.getState().draft.projectRoot;
     const projectRoot = defaultTaskProject(project, editorService().activePath(), previous);
@@ -542,26 +544,50 @@ export async function forkTask(task: string, turns: number | null): Promise<void
   openTask(copy.id);
 }
 
+/** Puts a message back in the task's composer, above anything typed meanwhile. */
+function restoreComposer(task: string, text: string, images: AgentImage[]) {
+  const current = composerDraft(task);
+  updateComposer(task, {
+    text: current.text ? `${text}\n${current.text}` : text,
+    images: [...images, ...current.images],
+  });
+  focusComposer(task);
+}
+
+/** Waits until a running turn has stopped, so it can be dropped. */
+async function stopForEdit(task: string) {
+  const busy = () => isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready");
+  if (!busy()) return;
+  await cancelTask(task);
+  await settled(task);
+  if (busy()) throw new Error("The agent is still stopping. Try again once it has stopped.");
+}
+
 /**
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
  * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
+ * Whatever fails, the message is kept in the composer so it can be sent again.
  */
 export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
-  if (isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready")) {
-    await cancelTask(task);
-    await settled(task);
-  }
-  await call(commands.agentRollback(task, turn));
   try {
+    await stopForEdit(task);
+    await call(commands.agentRollback(task, turn));
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
-    // Rollback removes the original turn; recover its prompt in the session composer.
-    const current = composerDraft(task);
-    updateComposer(task, {
-      text: current.text ? `${text}\n${current.text}` : text,
-      images: [...images, ...current.images],
-    });
-    focusComposer(task);
+    restoreComposer(task, text, images);
+    throw e;
+  }
+}
+
+/** Drops `turn` and the later turns, and puts the message back in the composer to edit. */
+export async function retractFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
+  try {
+    await stopForEdit(task);
+    const prompt = await call(commands.agentRollback(task, turn));
+    // The agent only hands back the text; the images come from the message itself.
+    restoreComposer(task, prompt?.text ?? text, images);
+  } catch (e) {
+    restoreComposer(task, text, images);
     throw e;
   }
 }
@@ -606,13 +632,38 @@ export const sendQueuedNow = (task: string, queued: string) => call(commands.age
 export const setTaskConfig = (task: string, option: string, value: string) =>
   call(commands.agentSetConfig(task, option, value));
 
+/** The composer the user is looking at: the Agents surface on show, else the one typed in last. */
+function activeComposerKey(): string {
+  const s = useAgents.getState();
+  // The tool window shows one conversation at a time; its inline New Task page wins.
+  if (s.sessionLocation === "toolWindow") {
+    if (s.homeOpen) return HOME;
+    if (s.docked && s.tasks.has(s.docked)) return s.docked;
+  }
+  const active = editorService().activeInput?.();
+  if (active?.kind === HOME_KIND) return HOME;
+  if (active?.kind === SESSION_KIND) {
+    const task = (active.data as { task?: unknown } | undefined)?.task;
+    if (typeof task === "string" && s.tasks.has(task)) return task;
+  }
+  // No agent tab has focus (the Project view has it): the one used last wins.
+  for (const tab of editorService().openTabs?.() ?? []) {
+    if (tab.input.kind === HOME_KIND) return HOME;
+    if (tab.input.kind === SESSION_KIND) {
+      const task = (tab.input.data as { task?: unknown } | undefined)?.task;
+      if (typeof task === "string" && s.tasks.has(task)) return task;
+    }
+  }
+  return s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
+}
+
 /**
- * Adds `@file` references (with an optional line range) to the composer typed in last and
- * shows it: IDEA-style "send this to the chat".
+ * Adds `@file` references (with an optional line range) to the composer on show (else the one
+ * typed in last) and shows it: IDEA-style "send this to the chat".
  */
 export function addReferences(refs: Array<{ path: string; rel: string; mention: string }>) {
   const s = useAgents.getState();
-  const key = s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
+  const key = activeComposerKey();
   const task = key === HOME ? null : s.tasks.get(key)!;
   const current = composerDraft(key);
   // A worktree task sees the same files under its own directory.
@@ -632,6 +683,7 @@ export const stopBackgroundTask = (task: string, background: string) =>
   call(commands.agentStopBackground(task, background));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
+export const renameTask = (task: string, title: string) => call(commands.agentRename(task, title));
 export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));

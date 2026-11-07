@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { AgentProvider } from "@/bindings";
 import { tx, useTx } from "@/platform/i18n";
 import clsx from "clsx";
-import { Button, Icon, IconButton, Input, List, Spinner, T } from "@/ui";
+import { Icon, IconButton, Input, List, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { providerIcon } from "./model";
 import type { CommandsBackend } from "./registry";
@@ -161,11 +161,7 @@ function Details({
                 }
               }}
             />
-            {value && (
-              <Button size="small" disabled={saving} onClick={() => set("")}>
-                <T>Reset</T>
-              </Button>
-            )}
+            {value && <IconButton icon="undo" title="Reset" disabled={saving} onClick={() => set("")} />}
           </div>
           <p className={styles.hint}>
             <T>Leave empty to find the executable on PATH. Changes apply to new sessions.</T>

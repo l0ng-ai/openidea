@@ -16,7 +16,55 @@
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
+/* A file or folder dragged over it from the Project view. */
+.fileOver {
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring),
+    0 0 0 1px var(--focus-ring);
+}
+.field {
+  position: relative;
+}
+/* Tags under the transparent textarea: same font, metrics and padding, so the caret
+   and selection of the real textarea line up with the painted text. */
+.mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 10px 12px 2px;
+  font: inherit;
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-strong);
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* Padding widened by equal negative margins: the pill gets room without moving the
+   glyphs or changing where lines wrap, so the textarea's caret stays aligned. */
+.fileToken,
+.skillToken {
+  padding: 1px 3px;
+  margin: 0 -3px;
+  border-radius: 5px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.fileToken {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 20%, transparent);
+}
+.skillToken {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
 .textarea {
+  position: relative;
+  z-index: 1;
   display: block;
   width: 100%;
   min-height: 44px;
@@ -24,11 +72,13 @@
   border: 0;
   outline: none;
   background: transparent;
-  color: var(--fg-strong);
+  color: transparent;
+  caret-color: var(--fg-strong);
   font: inherit;
   font-size: var(--fs-ui);
   line-height: 1.5;
   padding: 10px 12px 2px;
+  overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
 }
@@ -37,6 +87,13 @@
 }
 .textarea::placeholder {
   color: var(--fg-faint);
+}
+/* The textarea's own glyphs are transparent so the mirror above shows the tags; the
+   selection would then paint an empty highlight. Paint the selected glyphs here instead —
+   the opaque selection background covers the mirror underneath. */
+.textarea::selection {
+  background: var(--bg-editor-selection);
+  color: var(--fg-strong);
 }
 .bar {
   display: flex;
@@ -58,8 +115,19 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin-left: auto;
+}
+/* Attach/reference buttons share the send button's 24px footprint and chrome. */
+.composerButton {
+  width: var(--h-control);
+  height: var(--h-control);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.composerButton:hover:not(:disabled) {
+  background: var(--bg-hover);
 }
 .spacer {
   flex: 1;

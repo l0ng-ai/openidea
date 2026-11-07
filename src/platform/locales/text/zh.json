@@ -6444,5 +6444,11 @@
   "Couldn't regenerate the response": "无法重新生成回复",
   "Reasoning": "思考过程",
   "Cannot copy the value": "无法复制该值",
-  "The check could not run: {reason}": "检查无法运行：{reason}"
+  "The check could not run: {reason}": "检查无法运行：{reason}",
+  "You": "你",
+  "Rename Agent Task": "重命名智能体任务",
+  "Couldn't rename the task": "无法重命名任务",
+  "Jump to Latest": "跳转到最新位置",
+  "Retract Message": "撤回消息",
+  "Retract": "撤回"
 }

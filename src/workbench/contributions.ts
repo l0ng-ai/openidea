@@ -166,6 +166,14 @@ export interface EditorDocumentLifecycle {
   redo?(input: EditorInput): Promise<void>;
 }
 
+/** Bumped by `notifyTabTitlesChanged`; tab labels whose `title(input)` changed re-render. */
+export const useEditorTabTitles = create<{ revision: number }>(() => ({ revision: 0 }));
+
+/** An editor kind's tab title may have changed outside the tab state (e.g. a renamed agent task). */
+export function notifyTabTitlesChanged() {
+  useEditorTabTitles.setState((s) => ({ revision: s.revision + 1 }));
+}
+
 /** Bumped by `notifyEditorDocumentChanged`; selectors reading `isDirty` re-run on it. */
 export const useEditorDocuments = create<{ revision: number }>(() => ({ revision: 0 }));
 export const useStandaloneEditor = create<{ title: string | null }>(() => ({ title: null }));

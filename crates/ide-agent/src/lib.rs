@@ -201,6 +201,9 @@ struct TaskFile {
     /// Turns to drop from the session once it is loaded (a fork of an earlier point).
     #[serde(default, skip_serializing_if = "is_zero")]
     pending_rollback: u32,
+    /// The user named the task: its agent's own title updates no longer replace it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    title_renamed: bool,
 }
 
 struct TaskState {
@@ -210,6 +213,8 @@ struct TaskState {
     wanted: Vec<AgentConfigChoice>,
     before: Arc<BTreeMap<String, worktree::Stamp>>,
     pending_rollback: u32,
+    /// The user named the task; see `TaskFile::title_renamed`.
+    title_renamed: bool,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
     /// Background tasks the agent reported as running (`run_in_background` commands and
@@ -491,6 +496,7 @@ impl AgentManager {
             before,
             subagents: Vec::new(),
             pending_rollback: 0,
+            title_renamed: false,
         };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = true;
@@ -687,6 +693,7 @@ impl AgentManager {
                 before: (*s.before).clone(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
+                title_renamed: s.title_renamed,
             }
         };
         let task = Task::restore(file, self.shared.clone());
@@ -705,12 +712,38 @@ impl AgentManager {
         if task.state.lock().busy {
             return Err(IdeError::invalid("wait until the agent is done"));
         }
+        let starts = turn_starts(&task.state.lock().conversation.main.entries);
+        let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
+        // Dropping every turn starts the conversation over, which needs no agent-side
+        // rewind — and some agents cannot rewind past their first turn (a resumed
+        // Claude Code session). A fresh session avoids both.
+        if cut == 0 {
+            task.kill();
+            let first = {
+                let mut s = task.state.lock();
+                let first = match s.conversation.main.entries.first() {
+                    Some(AgentEntry::User { text, .. }) => {
+                        Some(AgentPrompt { text: text.clone(), ..Default::default() })
+                    }
+                    _ => None,
+                };
+                s.session_id = None;
+                s.conversation.truncate(0);
+                // The fresh session reports its own usage; nothing carries over.
+                s.task.usage = None;
+                s.pending_rollback = 0;
+                s.task.updated_ms = now_ms();
+                first
+            };
+            task.persist();
+            self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: 0 });
+            task.emit_task();
+            return Ok(first);
+        }
         let live = task.ensure_session().await.map_err(IdeError::internal)?;
         if !live.capabilities.rollback {
             return Err(IdeError::invalid("this agent can't undo turns"));
         }
-        let starts = turn_starts(&task.state.lock().conversation.main.entries);
-        let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
         let drop = (starts.len() - turns as usize) as u32;
         let _: Value = live
             .peer
@@ -871,6 +904,28 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Renames the task; the agent's own later title updates keep the user's choice.
+    pub fn rename(&self, id: &str, title: &str) -> IdeResult<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(IdeError::invalid("the title is empty"));
+        }
+        let title: String = title.chars().take(200).collect();
+        let task = self.task(id)?;
+        {
+            let mut s = task.state.lock();
+            if s.task.title == title {
+                return Ok(());
+            }
+            s.task.title = title;
+            s.title_renamed = true;
+            s.task.updated_ms = now_ms();
+        }
+        task.persist();
+        task.emit_task();
+        Ok(())
+    }
+
     /// Forgets the task; with `remove_worktree` also deletes its worktree (the branch stays).
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -941,6 +996,7 @@ impl Task {
                 wanted: file.wanted,
                 before: Arc::new(file.before),
                 pending_rollback: file.pending_rollback,
+                title_renamed: file.title_renamed,
                 busy: false,
                 background_tasks: Vec::new(),
             }),
@@ -1052,6 +1108,7 @@ impl Task {
                 before: (*s.before).clone(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
+                title_renamed: s.title_renamed,
             })
         };
         let path = self.shared.paths.store_dir.join(format!("{}.json", self.id));
@@ -1540,12 +1597,18 @@ impl Task {
             return;
         }
         if kind == "session_info_update" {
-            // The agent's own title for the session replaces the first line of the prompt.
+            // The agent's own title for the session replaces the first line of the prompt,
+            // unless the user named the task.
             let title = update.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
             if let Some(title) = title {
-                self.state.lock().task.title = title.to_owned();
-                self.persist();
-                self.emit_task();
+                // Check and write under one lock: a rename landing between them would be lost.
+                let mut s = self.state.lock();
+                if !s.title_renamed && s.task.title != title {
+                    s.task.title = title.to_owned();
+                    drop(s);
+                    self.persist();
+                    self.emit_task();
+                }
             }
             return;
         }
@@ -1881,6 +1944,10 @@ fn turn_starts(entries: &[AgentEntry]) -> Vec<usize> {
         .filter(|(_, e)| matches!(e, AgentEntry::User { steered: false, .. }))
         .map(|(i, _)| i)
         .collect()
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_zero(n: &u32) -> bool {
