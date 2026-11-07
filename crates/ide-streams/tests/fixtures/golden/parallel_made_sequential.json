@@ -1,0 +1,42 @@
+{
+  "recording": {
+    "totalLen": 34,
+    "entries": [
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":3,"class":"int","value":"2"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":3,"class":"int","value":"2"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":4,"class":"int","value":"3"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":4,"class":"int","value":"3"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":5,"class":"int","value":"4"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":5,"class":"int","value":"4"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":6,"class":"int","value":"5"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":6,"class":"int","value":"5"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":7,"class":"int","value":"6"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":7,"class":"int","value":"6"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":8,"class":"int","value":"7"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":8,"class":"int","value":"7"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":9,"class":"int","value":"8"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":9,"class":"int","value":"8"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":10,"class":"int","value":"9"},
+      {"kind":"boxed","id":11,"class":"int","value":"-1"},
+      {"kind":"object","id":12,"class":"java.util.ArrayList"}
+    ]
+  },
+  "e1": {"typeName":"ArrayList","text":"ArrayList@12 \"[2, 3, 4, 5, 6, 7, 8, 9]\""}
+}

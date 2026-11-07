@@ -1,0 +1,20 @@
+{
+  "recording": {
+    "totalLen": 12,
+    "entries": [
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"object","id":2,"class":"Golden$K"},
+      {"kind":"boxed","id":3,"class":"int","value":"1"},
+      {"kind":"object","id":2,"class":"Golden$K"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"object","id":4,"class":"Golden$K"},
+      {"kind":"boxed","id":3,"class":"int","value":"1"},
+      {"kind":"object","id":4,"class":"Golden$K"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"object","id":5,"class":"Golden$K"},
+      {"kind":"boxed","id":6,"class":"int","value":"-1"},
+      {"kind":"object","id":7,"class":"java.util.ArrayList"}
+    ]
+  },
+  "e1": {"typeName":"ArrayList","text":"ArrayList@7 \"[first, second]\""}
+}

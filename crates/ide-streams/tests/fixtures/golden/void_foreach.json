@@ -1,0 +1,18 @@
+{
+  "recording": {
+    "totalLen": 10,
+    "entries": [
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":3,"class":"int","value":"2"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":3,"class":"int","value":"2"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":4,"class":"int","value":"4"},
+      {"kind":"boxed","id":5,"class":"int","value":"-1"},
+      {"kind":"null"}
+    ]
+  },
+  "e1": {"typeName":"null","text":"null"}
+}

@@ -1,0 +1,26 @@
+{
+  "recording": {
+    "totalLen": 18,
+    "entries": [
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":3,"class":"int","value":"3"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":3,"class":"int","value":"3"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":4,"class":"int","value":"5"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":4,"class":"int","value":"5"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":5,"class":"int","value":"8"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":5,"class":"int","value":"8"},
+      {"kind":"boxed","id":6,"class":"int","value":"-1"},
+      {"kind":"object","id":7,"class":"java.util.ArrayList"}
+    ]
+  },
+  "e1": {"typeName":"ArrayList","text":"ArrayList@7 \"[1, 3, 5, 8]\""}
+}

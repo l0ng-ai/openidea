@@ -1,0 +1,18 @@
+{
+  "recording": {
+    "totalLen": 10,
+    "entries": [
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":1,"class":"int","value":"0"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":2,"class":"int","value":"1"},
+      {"kind":"boxed","id":3,"class":"int","value":"-1"},
+      {"kind":"object","id":4,"class":"java.util.ArrayList"}
+    ]
+  },
+  "e1": {"typeName":"ArrayList","text":"ArrayList@4 \"[1]\""}
+}

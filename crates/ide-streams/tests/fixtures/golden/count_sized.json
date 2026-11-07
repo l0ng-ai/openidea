@@ -1,0 +1,10 @@
+{
+  "recording": {
+    "totalLen": 2,
+    "entries": [
+      {"kind":"boxed","id":1,"class":"int","value":"-1"},
+      {"kind":"boxed","id":2,"class":"long","value":"4"}
+    ]
+  },
+  "e1": {"typeName":"Long","text":"Long@2 \"4\""}
+}
