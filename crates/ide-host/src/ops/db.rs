@@ -132,6 +132,21 @@ pub(crate) fn register(d: &mut Dispatcher) {
         );
         execute(&c.host, &c.window, request, &id, statements, skip, max_rows).await
     });
+    d.add("db_execute_held", |c| async move {
+        let (request, id, key, statements, skip, max_rows) = (
+            c.arg::<RequestId>("request")?,
+            c.arg::<String>("id")?,
+            c.arg::<String>("key")?,
+            c.arg::<Vec<SqlStatement>>("statements")?,
+            c.arg::<Option<u32>>("skip")?.unwrap_or(0),
+            c.arg::<u32>("maxRows")?,
+        );
+        execute_held(&c.host, &c.window, request, &id, &key, statements, skip, max_rows).await
+    });
+    d.add("db_finish_held", |c| async move {
+        let (key, commit) = (c.arg::<String>("key")?, c.arg::<bool>("commit")?);
+        finish_held(&c.host, &c.window, &key, commit).await
+    });
     d.add("db_table_page", |c| async move {
         let (request, id, schema, table) = (
             c.arg::<RequestId>("request")?,
@@ -337,11 +352,52 @@ pub async fn execute(
     skip: u32,
     max_rows: u32,
 ) -> IdeResult<Vec<StatementOutcome>> {
+    run_statements(host, window, request, id, statements, skip, max_rows, None).await
+}
+
+/// [`execute`] in held run `key`: the statements' transaction stays open
+/// until [`finish_held`], so the console can show the rows they changed first.
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_held(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: &str,
+    key: &str,
+    statements: Vec<SqlStatement>,
+    skip: u32,
+    max_rows: u32,
+) -> IdeResult<Vec<StatementOutcome>> {
+    run_statements(host, window, request, id, statements, skip, max_rows, Some(key)).await
+}
+
+/// Commits or rolls back held run `key` (see [`execute_held`]).
+pub async fn finish_held(host: &Host, window: &str, key: &str, commit: bool) -> IdeResult<()> {
+    let db = host.project(window)?.db.clone();
+    db.finish_held(key, commit).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_statements(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: &str,
+    statements: Vec<SqlStatement>,
+    skip: u32,
+    max_rows: u32,
+    held: Option<&str>,
+) -> IdeResult<Vec<StatementOutcome>> {
     let db = host.project(window)?.db.clone();
     let cancel = host.begin_request(request);
     let mut out = Vec::new();
     for statement in statements {
-        match db.execute_from(id, &statement.text, skip as usize, max_rows.max(1) as usize, &cancel).await {
+        let (skip, max_rows) = (skip as usize, max_rows.max(1) as usize);
+        let result = match held {
+            Some(key) => db.execute_held(id, key, &statement.text, skip, max_rows, &cancel).await,
+            None => db.execute_from(id, &statement.text, skip, max_rows, &cancel).await,
+        };
+        match result {
             Ok(result) => out.push(StatementOutcome { statement, result: Some(result), error: None }),
             Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled => {
                 host.end_request(request);

@@ -389,6 +389,29 @@ export function contributedAt<T>(state: EditorState, key: string, pos: number): 
   return state.languageDataAt<T>(key, pos)[0];
 }
 
+/**
+ * A problem a feature marks on its own text (the database console's run errors
+ * and unsafe-query warnings): the editor's hover shows it like a diagnostic.
+ *
+ *   problemProviders.of((state) => state.field(myField).problems)
+ */
+export interface ContributedProblem {
+  from: number;
+  to: number;
+  severity: "error" | "warning" | "info";
+  message: string;
+}
+
+export const problemProviders = Facet.define<(state: EditorState) => readonly ContributedProblem[]>();
+
+/** The contributed problems whose range covers `pos`. */
+export function contributedProblemsAt(state: EditorState, pos: number): ContributedProblem[] {
+  return state
+    .facet(problemProviders)
+    .flatMap((provider) => provider(state))
+    .filter((p) => p.from <= pos && pos <= p.to);
+}
+
 /** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵). */
 export interface ContributedIntention {
   id: string;

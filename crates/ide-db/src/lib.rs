@@ -224,6 +224,11 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// Runs held for review, by the caller's key (a console): an auto-commit
+    /// DELETE / UPDATE kept in its own transaction, on its own connection,
+    /// until [`finish_held`](DbManager::finish_held). Keyed apart from
+    /// `sessions` so other consoles of the data source stay auto-commit.
+    held_runs: Mutex<HashMap<String, (String, Session)>>,
 }
 
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
@@ -352,6 +357,7 @@ impl DbManager {
             ssh,
             session_passwords: Mutex::default(),
             sessions: Mutex::default(),
+            held_runs: Mutex::default(),
         }
     }
 
@@ -680,6 +686,14 @@ impl DbManager {
         // A held connection would keep the pool from closing; manual mode stays on.
         let session = self.sessions.lock().get(id).cloned();
         if let Some(s) = session {
+            end_session(&s).await;
+        }
+        let held: Vec<Session> = {
+            let mut runs = self.held_runs.lock();
+            let keys: Vec<String> = runs.iter().filter(|(_, (t, _))| t == id).map(|(k, _)| k.clone()).collect();
+            keys.iter().filter_map(|k| runs.remove(k)).map(|(_, s)| s).collect()
+        };
+        for s in held {
             end_session(&s).await;
         }
         let pool = self.pools.lock().remove(id);
@@ -1126,23 +1140,83 @@ impl DbManager {
         let Some(session) = session else {
             return pool.execute_from(statement, skip, max_rows, cancel).await;
         };
+        Self::run_in(&pool, &session, statement, skip, max_rows, cancel).await
+    }
+
+    /// Runs `statement` in the transaction of `session`, opening it (on a
+    /// connection of its own) for the first statement.
+    async fn run_in(
+        pool: &Pool,
+        session: &Session,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
         if pool.driver() == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
         }
         let mut held = session.lock().await;
         if held.is_none() {
-            let mut conn = Held::acquire(&pool).await?;
+            let mut conn = Held::acquire(pool).await?;
             conn.command(conn::begin_statement(pool.driver())).await?;
             *held = Some(conn);
         }
         let conn = held.as_mut().expect("opened above");
-        let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
+        let r = conn.execute_from(pool, statement, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             // The server rolls the transaction back with the connection.
             held.take().expect("opened above").discard().await;
             return Err(IdeError::cancelled());
         }
         r
+    }
+
+    /// Runs `statement` of target `id` in the held run `key` (see
+    /// `held_runs`): the first statement opens its transaction, later ones of
+    /// the same key join it, [`finish_held`](Self::finish_held) ends it. The
+    /// caller shows what the statements changed (`affected`) before committing.
+    pub async fn execute_held(
+        &self,
+        id: &str,
+        key: &str,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        let pool = self.pool(id).await?;
+        let session = {
+            let mut runs = self.held_runs.lock();
+            let run = runs.entry(key.to_owned()).or_insert_with(|| (id.to_owned(), Session::default()));
+            if run.0 != id {
+                return Err(IdeError::invalid(format!("Held run {key} belongs to {}", run.0)));
+            }
+            run.1.clone()
+        };
+        let r = Self::run_in(&pool, &session, statement, skip, max_rows, cancel).await;
+        let ran = match &r {
+            Ok(_) => true,
+            Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
+        };
+        if ran {
+            self.remember_statement(id, statement);
+        }
+        r
+    }
+
+    /// Commits (or rolls back) held run `key`; nothing to do when there is none.
+    pub async fn finish_held(&self, key: &str, commit: bool) -> IdeResult<()> {
+        let run = self.held_runs.lock().remove(key);
+        let Some((_, session)) = run else { return Ok(()) };
+        let Some(mut conn) = session.lock().await.take() else { return Ok(()) };
+        match conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                conn.discard().await;
+                Err(e)
+            }
+        }
     }
 
     /// Switches `id` between auto-commit and manual commit. Leaving manual

@@ -293,6 +293,17 @@
   color: var(--fg-secondary);
 }
 
+/* An unsafe statement waiting for confirmation. */
+:global(.cm-openidea-db-warning) {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--wave-warning);
+  text-underline-offset: 3px;
+}
+:global(.cm-openidea-db-run-warning svg) {
+  color: var(--warning);
+}
+
 /* Inline statement errors in consoles. */
 :global(.cm-openidea-db-error) {
   text-decoration-line: underline;
@@ -596,6 +607,22 @@
   color: var(--fg-strong);
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
+}
+:global(.cm-openidea-db-banner-warning) {
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-editor));
+}
+:global(.cm-openidea-db-banner-action) {
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+:global(.cm-openidea-db-banner-action:hover) {
+  background: var(--bg-hover);
 }
 :global(.cm-openidea-db-banner-text) {
   flex: 1;

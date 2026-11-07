@@ -4,7 +4,7 @@ import { analyze, templateContexts, valuesSlot } from "./analyze";
 import { aliasFor, quoteIdent, sqlCandidates, type SqlCandidate } from "./complete";
 import { identName, inLiteral, lex } from "./lexer";
 import { DATA_TYPES, statementStarters } from "./dialect";
-import { bindParams, findParams } from "./params";
+import { bindParams, findParams, unbindRange } from "./params";
 import { SqlResolver } from "./resolve";
 
 const col = (name: string, dataType = "INTEGER", primaryKey = false, hasDefault = false) => ({
@@ -468,5 +468,24 @@ describe("params", () => {
       "update t set a = 'x' where id = 3 and b = 'x'",
     );
     expect(bindParams("select ?", findParams("select ?", "sqlite"), {})).toBe("select NULL");
+  });
+
+  it("maps a range of the bound text back to the text it bound", () => {
+    const sql = "delete from t where :a = :bb and 1 = 1";
+    const params = findParams(sql, "sqlite");
+    const values = { ":a": "'xyz'", ":bb": "2" };
+    const bound = bindParams(sql, params, values);
+    const back = (part: string) => {
+      const from = bound.indexOf(part);
+      const r = unbindRange(params, values, from, from + part.length);
+      return r && sql.slice(r.from, r.to);
+    };
+    expect(back("delete from t")).toBe("delete from t");
+    expect(back("1 = 1")).toBe("1 = 1");
+    expect(back(" = ")).toBe(" = ");
+    expect(back("'xyz' = 2")).toBeNull();
+    expect(back("2 and 1")).toBeNull();
+    expect(back(bound)).toBeNull();
+    expect(unbindRange([], {}, 3, 5)).toEqual({ from: 3, to: 5 });
   });
 });

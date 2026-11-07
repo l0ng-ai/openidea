@@ -38,9 +38,10 @@ import { tableFolder, type DbNode } from "./nodes";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
-import { bindParams, findParams } from "./sql/params";
+import { bindParams, findParams, unbindRange } from "./sql/params";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
+import { changesRows, unsafeStatement, type UnsafeStatement } from "./sql/unsafe";
 import { tx } from "@/platform/i18n";
 
 export const DB_TOOL_WINDOW = "database";
@@ -660,9 +661,17 @@ async function run(
   request: RequestId,
   maxRows = useDatabase.getState().maxRows,
   skip = 0,
+  /** A held run's key: the statements' transaction stays open (see `settleHeld`). */
+  held?: string,
 ): Promise<DbStatementOutcome[]> {
   const wasConnected = useDatabase.getState().connected.has(id);
-  const outcomes = await withConnection(id, () => call(commands.dbExecute(request, id, statements, skip, maxRows)));
+  const outcomes = await withConnection(id, () =>
+    call(
+      held
+        ? commands.dbExecuteHeld(request, id, held, statements, skip, maxRows)
+        : commands.dbExecute(request, id, statements, skip, maxRows),
+    ),
+  );
   if (!wasConnected) log("info", "Connected");
   for (const o of outcomes) {
     log("statement", o.statement.text, `${promptOf(id)}>`);
@@ -756,14 +765,15 @@ export async function openDdl(id: string, schema: string, name: string): Promise
   }
 }
 
-/**
- * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
- * of console `path` on its data source. Result sets open as `Result N` tabs
- * of the Services view, everything is logged to its Output tab; returns the
- * outcomes (errors included) for the editor's marks.
- */
-/** Asks for the values of the statements' query parameters and binds them; `[]` when cancelled. */
-async function withParams(statements: SqlStatement[], driver: DbDriver): Promise<SqlStatement[]> {
+interface BoundStatements {
+  /** The statements with their parameters' values in their text; `[]` when cancelled. */
+  statements: SqlStatement[];
+  /** A range of statement `i`'s bound text in its unbound text; `null` when it overlaps a value. */
+  unbind: (i: number, from: number, to: number) => { from: number; to: number } | null;
+}
+
+/** Asks for the values of the statements' query parameters and binds them. */
+async function withParams(statements: SqlStatement[], driver: DbDriver): Promise<BoundStatements> {
   let numbered = 0;
   const found = statements.map((st) => {
     const params = findParams(st.text, driver, numbered);
@@ -771,20 +781,45 @@ async function withParams(statements: SqlStatement[], driver: DbDriver): Promise
     return params;
   });
   const names = [...new Set(found.flat().map((p) => p.name))];
-  if (!names.length) return statements;
+  const same: BoundStatements["unbind"] = (_i, from, to) => ({ from, to });
+  if (!names.length) return { statements, unbind: same };
   const values = await new Promise<Record<string, string> | null>((resolve) =>
     useDatabase.setState({ dialog: { kind: "params", names, resolve } }),
   );
-  if (!values) return [];
+  if (!values) return { statements: [], unbind: same };
   useDatabase.setState((s) => ({ paramValues: { ...s.paramValues, ...values } }));
-  return statements.map((st, i) => ({ ...st, text: bindParams(st.text, found[i]!, values) }));
+  return {
+    statements: statements.map((st, i) => ({ ...st, text: bindParams(st.text, found[i]!, values) })),
+    unbind: (i, from, to) => unbindRange(found[i]!, values, from, to),
+  };
 }
 
+/** Asks whether to run an unsafe statement (see `sql/unsafe`); false cancels the run. */
+export type ConfirmUnsafe = (statement: SqlStatement, unsafe: UnsafeStatement) => Promise<boolean>;
+/**
+ * Asks whether to commit the `rows` that a run's DELETE / UPDATE changed in
+ * its still open transaction; false rolls them back.
+ */
+export type ConfirmChanges = (outcomes: DbStatementOutcome[], rows: number) => Promise<boolean>;
+
+/**
+ * Runs the statement at `from` (or the selection `from..to`, UTF-16 offsets)
+ * of console `path` on its data source. Result sets open as `Result N` tabs
+ * of the Services view, everything is logged to its Output tab; returns the
+ * outcomes (errors included) for the editor's marks.
+ *
+ * With `confirmChanges`, a run that deletes or updates rows on an
+ * auto-commit data source keeps its transaction open (a backend held run) and
+ * commits only when the console's banner says so; a run that fails is rolled
+ * back whole.
+ */
 export async function executeConsole(
   path: string,
   text: string,
   from: number,
   to: number,
+  confirmUnsafe?: ConfirmUnsafe,
+  confirmChanges?: ConfirmChanges,
 ): Promise<DbStatementOutcome[]> {
   const id = consoleSource(path);
   if (!id) {
@@ -798,15 +833,24 @@ export async function executeConsole(
     });
     return [];
   }
-  const statements = await consoleStatements(id, text, from, to);
+  const statements = await consoleStatements(id, text, from, to, confirmUnsafe);
   if (!statements.length) return [];
   const prev = useDatabase.getState().running[path];
   if (prev) void commands.cancelRequest(prev);
   const request = nextRequestId();
+  const driver = sourceById(id)?.driver ?? "sqlite";
+  const held =
+    confirmChanges &&
+    driver !== "clickhouse" &&
+    !useDatabase.getState().manualCommit.has(id) &&
+    statements.some((st) => changesRows(st.text, driver))
+      ? `${path}#${request}`
+      : undefined;
   useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
+  let outcomes: DbStatementOutcome[] = [];
   try {
     const pageSize = useDatabase.getState().maxRows;
-    const outcomes = await run(id, statements, request, pageSize);
+    outcomes = await run(id, statements, request, pageSize, 0, held);
     const tabs: ResultTab[] = outcomes
       .filter((o) => o.result?.columns.length)
       .map((outcome) => {
@@ -819,8 +863,8 @@ export async function executeConsole(
       activeResult: failed || !tabs.length ? OUTPUT_TAB : tabs.at(-1)!.id,
     }));
     showServiceView(RESULTS_VIEW, false);
-    return outcomes;
   } catch (e) {
+    outcomes = [];
     if (!isCancelled(e)) {
       log("error", message(e));
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
@@ -832,7 +876,6 @@ export async function executeConsole(
         setPending(id, false);
       }
     }
-    return [];
   } finally {
     useDatabase.setState((s) => {
       if (s.running[path] !== request) return s;
@@ -841,13 +884,63 @@ export async function executeConsole(
       return { running };
     });
   }
+  if (held) await settleHeld(id, held, outcomes, confirmChanges!);
+  return outcomes;
+}
+
+/** Rows that `outcomes` changed (inserted, updated, deleted). */
+function changedRows(outcomes: readonly DbStatementOutcome[]): number {
+  return outcomes.reduce((n, o) => n + (o.result && !o.result.columns.length ? (o.result.affected ?? 0) : 0), 0);
+}
+
+/**
+ * Ends held run `key` of `id`: committed when the run changed nothing or
+ * `confirm` says so, rolled back when it failed (or was cancelled) or not.
+ */
+async function settleHeld(
+  id: string,
+  key: string,
+  outcomes: DbStatementOutcome[],
+  confirm: ConfirmChanges,
+): Promise<void> {
+  const failed = !outcomes.length || outcomes.some((o) => o.error);
+  const rows = changedRows(outcomes);
+  const commit = !failed && (rows === 0 || (await confirm(outcomes, rows)));
+  try {
+    await call(commands.dbFinishHeld(key, commit));
+    if (failed && !outcomes.length) return;
+    if (rows === 0 && commit) return;
+    log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
+    log("result", commit ? "Transaction committed" : "Transaction rolled back");
+  } catch (e) {
+    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    notifications().notify({ level: "error", title: commit ? "Cannot commit" : "Cannot roll back", body: message(e) });
+  }
 }
 
 /** The statements of console `path` to run or explain: the selection's, else the one at `from`, parameters bound. */
-async function consoleStatements(id: string, text: string, from: number, to: number): Promise<SqlStatement[]> {
+async function consoleStatements(
+  id: string,
+  text: string,
+  from: number,
+  to: number,
+  confirmUnsafe?: ConfirmUnsafe,
+): Promise<SqlStatement[]> {
   const statements: SqlStatement[] = await call(commands.dbStatements(id, text, from, to));
   if (!statements.length) return [];
-  return withParams(statements, sourceById(id)?.driver ?? "sqlite");
+  const driver = sourceById(id)?.driver ?? "sqlite";
+  const bound = await withParams(statements, driver);
+  // The bound text is what runs: a parameter's value can make it unsafe (`where :cond`, `1=1`).
+  if (confirmUnsafe)
+    for (const [i, st] of bound.statements.entries()) {
+      const unsafe = unsafeStatement(st.text, driver);
+      if (!unsafe) continue;
+      const original = statements[i]!;
+      // A mark inside a parameter's value marks the whole statement.
+      const at = bound.unbind(i, unsafe.from, unsafe.to) ?? { from: 0, to: original.text.length };
+      if (!(await confirmUnsafe(original, { ...unsafe, ...at }))) return [];
+    }
+  return bound.statements;
 }
 
 const PLAN_TITLE = "Query Plan";

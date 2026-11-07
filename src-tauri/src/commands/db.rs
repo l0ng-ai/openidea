@@ -256,6 +256,31 @@ pub async fn db_execute(
     ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, skip, max_rows).await
 }
 
+/// [`db_execute`] keeping the statements' transaction open until
+/// [`db_finish_held`]: the console shows the rows a DELETE / UPDATE changed
+/// and commits or rolls them back.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn db_execute_held(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    id: String,
+    key: String,
+    statements: Vec<SqlStatement>,
+    skip: u32,
+    max_rows: u32,
+) -> IdeResult<Vec<StatementOutcome>> {
+    ide_host::ops::db::execute_held(&state.host, window.label(), request, &id, &key, statements, skip, max_rows).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_finish_held(window: Window, state: State<'_, AppState>, key: String, commit: bool) -> IdeResult<()> {
+    ide_host::ops::db::finish_held(&state.host, window.label(), &key, commit).await
+}
+
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]

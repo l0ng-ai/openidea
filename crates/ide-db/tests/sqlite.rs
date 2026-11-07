@@ -218,6 +218,32 @@ async fn count(db: &DbManager) -> String {
 }
 
 #[tokio::test]
+async fn held_runs_report_changes_before_commit_or_rollback() -> IdeResult<()> {
+    let (_tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    // Statements of one key share a transaction; its affected rows are known before committing.
+    let r = db.execute_held("s1", "console-a", "DELETE FROM users WHERE note IS NULL", 0, 1, &c).await?;
+    assert_eq!(r.affected, Some(1.0));
+    let r = db.execute_held("s1", "console-a", "UPDATE users SET note = 'n'", 0, 1, &c).await?;
+    assert_eq!(r.affected, Some(2.0));
+    db.finish_held("console-a", false).await?;
+    assert_eq!(count(&db).await, "3");
+
+    db.execute_held("s1", "console-a", "DELETE FROM users WHERE name = 'cy'", 0, 1, &c).await?;
+    db.finish_held("console-a", true).await?;
+    assert_eq!(count(&db).await, "2");
+    // Finishing twice, or a key that never ran, does nothing.
+    db.finish_held("console-a", true).await?;
+    db.finish_held("never", false).await?;
+
+    // A held run is not a manual-commit session: other statements stay auto-commit.
+    db.execute_held("s1", "console-b", "DELETE FROM users", 0, 1, &c).await?;
+    db.disconnect("s1").await;
+    assert_eq!(count(&db).await, "2");
+    Ok(())
+}
+
+#[tokio::test]
 async fn manual_commit_keeps_a_transaction_until_commit_or_rollback() -> IdeResult<()> {
     let (_tmp, db) = setup().await;
     let c = CancellationToken::new();
