@@ -32,6 +32,12 @@ async fn bind(host: &str, port: u16) -> IdeResult<TcpListener> {
 /// to it (accepts one connection). Cancelled through `cancel` while waiting.
 pub async fn listen_for_jvm(host: &str, port: u16, cancel: CancellationToken) -> IdeResult<u16> {
     let listener = bind(host, port).await?;
+    listen_on(listener, cancel).await
+}
+
+/// Accepts the JVM on an already-bound listener; the caller may bind port 0 and keep
+/// the actual port, so tests never race another process for a released ephemeral port.
+async fn listen_on(listener: TcpListener, cancel: CancellationToken) -> IdeResult<u16> {
     let jvm = tokio::select! {
         _ = cancel.cancelled() => return Err(IdeError::cancelled()),
         accepted = listener.accept() => accepted.map_err(IdeError::from)?.0,
@@ -64,8 +70,9 @@ mod tests {
 
     #[tokio::test]
     async fn relays_the_jdwp_handshake_both_ways() {
-        let port = TcpListener::bind(("127.0.0.1", 0)).await.unwrap().local_addr().unwrap().port();
-        let waiting = tokio::spawn(listen_for_jvm("127.0.0.1", port, CancellationToken::new()));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let waiting = tokio::spawn(listen_on(listener, CancellationToken::new()));
         // The remote JVM (`server=n`) connects to the IDE.
         let mut jvm = loop {
             if let Ok(s) = TcpStream::connect(("127.0.0.1", port)).await {

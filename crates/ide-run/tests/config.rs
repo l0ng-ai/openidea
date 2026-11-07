@@ -1,4 +1,4 @@
-use ide_run::{RunConfig, load_user_configs, save_user_configs, user_configs_path};
+use ide_run::{BuildPolicy, RunConfig, load_user_configs, save_user_configs, user_configs_path};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -60,6 +60,22 @@ fn round_trip() {
     let loaded = load_user_configs(dir.path()).unwrap();
     assert_eq!(loaded.len(), 1);
     assert!(!loaded[0].detected);
+}
+
+#[test]
+fn build_policy_round_trips_and_old_files_default_to_automatic() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut configs = sample();
+    configs[0].extras.build_policy = Some(BuildPolicy::MakeAndContinueOnErrors);
+    save_user_configs(dir.path(), &configs).unwrap();
+    let text = fs::read_to_string(user_configs_path(dir.path())).unwrap();
+    assert!(text.contains("build-policy = \"makeAndContinueOnErrors\""), "{text}");
+    assert_eq!(load_user_configs(dir.path()).unwrap(), configs);
+
+    // A configuration written before the field existed loads with the automatic default.
+    let old = text.replace("build-policy = \"makeAndContinueOnErrors\"\n", "");
+    fs::write(user_configs_path(dir.path()), old).unwrap();
+    assert_eq!(load_user_configs(dir.path()).unwrap()[0].extras.build_policy, None);
 }
 
 #[test]
