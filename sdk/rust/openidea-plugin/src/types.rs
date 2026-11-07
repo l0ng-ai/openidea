@@ -102,6 +102,16 @@ pub struct TextEdit {
     pub text: String,
 }
 
+/// A symbol from the host's current in-memory project index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolInfo {
+    pub name: String,
+    /// Host symbol kind in camelCase (`class`, `method`, `enumMember`, …).
+    pub kind: String,
+    pub container: Option<String>,
+    pub location: Location,
+}
+
 /// An editor's document at one version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {

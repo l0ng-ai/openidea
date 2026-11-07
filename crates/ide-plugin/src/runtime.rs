@@ -122,6 +122,19 @@ pub trait HostApi: Send + Sync {
             .filter(|root| real.starts_with(crate::resolve_real(root)))
             .max_by_key(|root| root.components().count())
     }
+
+    /// Searches the current in-memory index of an open project.
+    fn symbols(
+        &self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Vec<crate::SymbolInfo>, HostError> {
+        let _ = (root, query, limit, cancel, deadline);
+        Err(HostError::NotFound("no project index is available".into()))
+    }
     /// Unsaved text of an open editor's file.
     fn buffer_text(&self, path: &Path) -> Option<String>;
     /// Version and text of the open document at `path`.
@@ -1027,7 +1040,7 @@ impl Runtime {
             .take(MAX_PROVIDER_ITEMS)
             .map(|m| LineMarker {
                 line: m.line,
-                icon: m.icon.map(|i| clip(i, 32)),
+                icon: m.icon.map(|i| clip(i, 256)),
                 tooltip: clip(m.tooltip, 1024),
                 target: m.target.map(location_from_wit),
             })

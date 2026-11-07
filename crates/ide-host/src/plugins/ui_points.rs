@@ -69,6 +69,7 @@ pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
+pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 pub const COMMIT_CHECKS: &str = "commitChecks";
 
@@ -403,6 +404,9 @@ struct ViewDecl {
     group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     when: Option<String>,
+    /// Show the selected tree/list item's detail-provider tabs beside it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    detail: bool,
     /// A web page of the package (`web/index.html`) instead of content the code renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
@@ -440,6 +444,12 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         pkg.manifest.needs_api(&format!("view {:?}: `location = \"services\"`", d.id), 3)?;
         if d.web.is_some() {
             return Err(format!("view {:?}: a services view is rendered by the plugin's code (no `web`)", d.id));
+        }
+    }
+    if d.detail {
+        pkg.manifest.needs_api(&format!("view {:?}: `detail`", d.id), 3)?;
+        if d.web.is_some() {
+            return Err(format!("view {:?}: `detail` needs a tree or list rendered by the plugin (no `web`)", d.id));
         }
     }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {
@@ -550,6 +560,35 @@ pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Stri
     let mut out = UiDecl::new(d.id.clone(), d.patterns.join(", "), json);
     out.files = files;
     out.assets = assets;
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MarkerIconDecl {
+    id: String,
+    icon: PathBuf,
+    #[serde(default)]
+    icon_dark: Option<PathBuf>,
+}
+
+pub(super) fn marker_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    pkg.manifest.needs_api("contributes.markerIcons", 3)?;
+    let d: MarkerIconDecl = decode(MARKER_ICONS, decl)?;
+    validate_item_id(&d.id, "marker icon id")?;
+    if d.icon.to_string_lossy().len() > 256 {
+        return Err("marker icon paths are up to 256 bytes".into());
+    }
+    let mut out = UiDecl::new(d.id.clone(), d.id.clone(), serde_json::json!({ "id": d.id, "icon": d.icon }));
+    for (path, variant) in [(Some(&d.icon), "light"), (d.icon_dark.as_ref(), "dark")] {
+        let Some(path) = path else { continue };
+        let svg = super::icons::read_icon(pkg, path, super::icons::MAX_SVG)?;
+        out.assets.push((format!("markerIcon/{}/{variant}", d.id), svg));
+        out.files.push(path.clone());
+    }
+    // A changed SVG must reproject even when its declared path stays the same.
+    let bytes = serde_json::to_vec(&out.assets).map_err(|e| e.to_string())?;
+    out.json["revision"] = Value::String(blake3::hash(&bytes).to_hex().to_string());
     Ok(out)
 }
 

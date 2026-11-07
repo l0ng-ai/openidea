@@ -1,4 +1,5 @@
 {
+  "Marker Icons": "行标记图标",
   "this data source does not list databases": "此数据源不支持列出数据库",
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",
   "connect_timeout must be greater than zero": "connect_timeout 必须大于零",
@@ -6679,5 +6680,6 @@
   "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.": "使用 Dev Containers CLI 构建或启动项目的开发容器（devcontainer.json），并在其中打开项目。",
   "Read-only: the table schema could not be identified in the result database.": "只读：无法确定结果所在数据库中的表架构。",
   "devcontainer up exited with {status}": "devcontainer up 已退出，状态为 {status}",
+  "Select an item to view details": "选择条目以查看详情",
   "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE 托管的 Tomcat 运行目录不得与 Tomcat 主目录或基目录重叠"
 }

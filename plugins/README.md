@@ -281,7 +281,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 
 | Capability          | Risk   | Unlocks today                                                                                                                |
 | ------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics`                                          |
+| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `symbols`, `host::projects`, `publish_diagnostics`                               |
 | `project.write`     | medium | `Project::write_file` — creates and replaces text files inside the open projects                                             |
 | `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory            |
 | `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                         |
@@ -439,6 +439,7 @@ then run `openidea-plugin check`.
 | `host::locale()`                                                         | `ui.locale`                      | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                      |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
+| `Project::symbols(query, limit)`                                         | `workspace.symbols`              | New in 1.3; `project.read`. Fuzzy in-memory search (no LSP): name, camelCase kind, container and UTF-16 location. Queries ≤ 256 UTF-8 bytes; limits capped at 1000. Snapshot notes below.                            |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
 | `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
 | `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |
@@ -450,6 +451,20 @@ then run `openidea-plugin check`.
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
 | `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
+
+`Project::symbols` reads the current in-memory index: results may be partial
+while indexing, and locations can lag unsaved edits. Normal saves and filesystem
+changes update the index in the background. Results are confined to the project's
+root, with normal exclusions; external content roots and updates through escaping
+symlinks are excluded. Search honours the current call's cancellation and deadline.
+Empty queries and zero limits return no symbols; a closed project returns
+`Error::NotFound`.
+
+Type resolution and member queries remain deferred to the asynchronous API 2.0
+model. Providers can select their project with `host::project_of(&doc.path)` and
+call `symbols` synchronously; `crates/ide-plugin/tests/fixtures/symbols` demonstrates
+a definition provider. `MockHost::set_symbols(root, symbols)` replaces a test
+snapshot; its mock uses case-insensitive substring matching rather than fuzzy ranking.
 
 Both process APIs only add environment variables. A key already in the prepared child
 environment (including the login-shell `PATH`) fails with an error naming the key;
@@ -554,6 +569,27 @@ declaration matches the file's language are called (and loaded):
 kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
+
+Line marker `icon` accepts an icon name (including registered plugin icons),
+the aliases `navigate`, `implemented`, `implementing`, `overridden`, `overriding`
+and `run`, or a package SVG path. Declare package marker icons so installation
+includes and validates the SVGs (`engines.openidea = "^1.3"`):
+
+```toml
+[[contributes.markerIcons]]
+id = "resource"
+icon = "icons/resource.svg"
+iconDark = "icons/resource_dark.svg" # optional dark-theme variant
+```
+
+Return `icon = Some("icons/resource.svg".into())` from `line_markers` to use it.
+The referenced icon path is package-relative, up to 256 bytes; both SVGs use the same sandbox,
+64 KiB size limit and sanitization as view icons. Active content and external SVG or CSS
+references are rejected during installation. Missing or unknown icons retain the
+navigation glyph. A marker's optional target still navigates on click. For
+several cross-file targets, publish document-index mappings; the existing
+chooser lists every matching definition. Command clicks are deferred; use a
+code action on the same line.
 
 Then `register_plugin!(MyPlugin, providers)` and implement
 `openidea_plugin::providers::Providers` for it: `completion`,
@@ -814,6 +850,28 @@ values (the body already uses the text colour, UI font and size):
 Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
 `openidea.onThemeChange(fn)`, for drawing on a canvas, say. Variables are only
 ever added.
+
+#### List and detail views
+
+With API 1.3 (`engines.openidea = "^1.3"`), a rendered `tree` or `list` view
+in any location can declare `detail = true`:
+
+```toml
+[[contributes.views]]
+id = "endpoints"
+title = "Endpoints"
+location = "bottom"
+detail = true
+```
+
+Implement the same `details::Details` export shown below. The host requests
+the selected item's tabs after its `select` event finishes, and again after
+`host::refresh_view(view)`. The list and tabs appear side by side with a
+resizable divider remembered per plugin/view. Changing or removing the selected
+item closes its pane and stops its log. Changing projects or remote hosts clears
+selection; hiding the window stops its log. Other body kinds render as before;
+`detail` cannot be combined with `web`. Services uses its existing single
+list/detail split, so this declaration never adds a nested split.
 
 #### Services views
 

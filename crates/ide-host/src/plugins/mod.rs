@@ -382,7 +382,8 @@ impl PluginHost {
         let ui = UiStore::new();
         let index = Arc::new(ContributionIndex::new(
             plugins_dir.join(".cache").join("contributions"),
-            env!("CARGO_PKG_VERSION"),
+            // Revalidate SVGs accepted before URL-valued CSS functions were rejected.
+            concat!(env!("CARGO_PKG_VERSION"), ":svg-2"),
         ));
         ui.set_index(Some(index.clone()));
         let languages = PluginLanguages::new();
@@ -1096,8 +1097,7 @@ impl PluginHost {
         })
     }
 
-    /// The Services pane of node `key` of the plugin's `location = "services"`
-    /// view `view`.
+    /// The detail tabs of item `key` of a Services or `detail = true` view.
     pub fn service_detail(
         &self,
         id: &str,
@@ -1105,9 +1105,9 @@ impl PluginHost {
         key: &str,
         invocation: Invocation,
     ) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
-        self.services_view(id, view)?;
+        self.detail_view(id, view)?;
         let (view, key) = (view.to_owned(), key.to_owned());
-        self.code_call(id, invocation, "rendering the service's pane", move |rt, inv| {
+        self.code_call(id, invocation, "rendering the item's detail pane", move |rt, inv| {
             rt.service_detail(&view, &key, inv)
         })
     }
@@ -1163,16 +1163,16 @@ impl PluginHost {
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
     }
 
-    fn services_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        let services = self
-            .ui
-            .items(ui_points::VIEWS, Some(id))
-            .iter()
-            .any(|i| i.key == view && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION));
-        if services {
+    fn detail_view(&self, id: &str, view: &str) -> IdeResult<()> {
+        let detail = self.ui.items(ui_points::VIEWS, Some(id)).iter().any(|i| {
+            i.key == view
+                && (i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION)
+                    || i.decl["detail"].as_bool() == Some(true))
+        });
+        if detail {
             Ok(())
         } else {
-            Err(IdeError::not_found(format!("plugin {id:?} declares no services view {view:?}")))
+            Err(IdeError::not_found(format!("plugin {id:?} declares no detail view {view:?}")))
         }
     }
 

@@ -3676,7 +3676,80 @@ fn services_views_have_a_detail_pane() {
     let f = fixture(Limits::default());
     f.install(&sample("hello"));
     let err = f.host.service_detail("hello", "greetings", "x", f.inv()).unwrap_err();
-    assert!(err.message.contains("declares no services view"), "a right view has no pane: {err:?}");
+    assert!(err.message.contains("declares no detail view"), "a right view has no pane: {err:?}");
+}
+
+#[test]
+fn detail_views_work_in_every_location_and_require_api_1_3_code() {
+    for location in ["left", "right", "bottom", "services"] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = {location:?}\ndetail = true"))
+        });
+        assert!(f.install(&pkg).error.is_none());
+        assert_eq!(f.host.ui_items("views")[0].decl["detail"], true);
+        let tabs = f.host.service_detail("hello", "greetings", "item:😀", f.inv()).unwrap();
+        assert_eq!(tabs[1].body, ide_plugin::ServicePane::Text("greetings: item:😀".into()));
+        assert!(f.host.service_detail("hello", "missing", "x", f.inv()).is_err());
+    }
+    for (api, web, message) in
+        [("^1.0", false, "new in plugin API 1.3"), ("^1.3", true, "`detail` needs a tree or list")]
+    {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = {api:?}")).replace(
+                "location = \"right\"",
+                if web {
+                    "location = \"right\"\ndetail = true\nweb = \"web/index.html\""
+                } else {
+                    "location = \"right\"\ndetail = true"
+                },
+            )
+        });
+        if web {
+            std::fs::create_dir_all(pkg.join("web")).unwrap();
+            std::fs::write(pkg.join("web/index.html"), "<p>x</p>").unwrap();
+        }
+        let error = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(error.message.contains(message), "{error:?}");
+    }
+}
+
+#[test]
+fn detail_fixture_tracks_selection_and_refresh_for_tree_list_and_services() {
+    let f = fixture(Limits::default());
+    assert!(f.install(&sample("detail-views")).error.is_none());
+    for view in ["tree", "list", "services"] {
+        assert!(matches!(
+            f.host.render_view("test.detail-views", view, None, f.inv()).unwrap().body,
+            ide_plugin::ViewBody::Tree(_) | ide_plugin::ViewBody::List(_)
+        ));
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Select { key: "beta".into() }, f.inv())
+            .unwrap();
+        let tabs = f.host.service_detail("test.detail-views", view, "beta", f.inv()).unwrap();
+        let ide_plugin::ServicePane::Text(text) = &tabs[0].body else { panic!("text detail") };
+        assert!(text.starts_with(&format!("{view}: beta")));
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Button { id: "refresh".into() }, f.inv())
+            .unwrap();
+        let refreshed = f.host.service_detail("test.detail-views", view, "beta", f.inv()).unwrap();
+        assert_ne!(tabs, refreshed);
+    }
+    let selections = [("tree", "alpha"), ("list", "beta"), ("services", "alpha")];
+    for (view, key) in selections {
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Select { key: key.into() }, f.inv())
+            .unwrap();
+    }
+    for (view, key) in selections {
+        let tabs = f.host.service_detail("test.detail-views", view, key, f.inv()).unwrap();
+        let ide_plugin::ServicePane::Text(text) = &tabs[0].body else { panic!("text detail") };
+        assert!(text.starts_with(&format!("{view}: {key}")));
+    }
 }
 
 /// `hello` as a services view that may run `sh`, granted or not.
@@ -3756,6 +3829,30 @@ fn service_logs_need_the_grant_and_a_log_tab() {
     cancelled.cancel();
     assert_eq!(stream(&f, &script, &[], &cancelled, |_| {}).unwrap_err().kind, ErrorKind::Cancelled);
     assert!(!marker.exists(), "a cancelled request starts nothing");
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_detail_views_reuse_log_grants_and_streaming() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |t| {
+        services_variant(t).replace("location = \"services\"", "location = \"right\"\ndetail = true").replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = [\"editor.read\", \"editor.write\"]\noptional = [\"process:sh\"]",
+        )
+    });
+    f.install(&pkg);
+    f.host.set_capability("hello", "process:sh", false).unwrap();
+    assert_eq!(
+        stream(&f, "echo allowed", &[], &Default::default(), |_| {}).unwrap_err().kind,
+        ErrorKind::PermissionDenied
+    );
+    f.host.set_capability("hello", "process:sh", true).unwrap();
+    f.host.set_program_path(Arc::new(|| Some(PathBuf::from("/bin").into_os_string())));
+    let lines = Mutex::new(Vec::new());
+    assert_eq!(stream(&f, "echo allowed", &[], &Default::default(), |l| lines.lock().push(l.text)).unwrap(), Some(0));
+    assert_eq!(lines.into_inner(), ["allowed"]);
 }
 
 #[cfg(unix)]
@@ -4335,4 +4432,113 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
     let err =
         f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
     assert!(err.message.contains("limited to"), "{}", err.message);
+}
+
+#[test]
+fn marker_icons_ship_sanitized_light_and_dark_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    let manifest = |engine: &str, icon: &str, dark: &str| {
+        format!(
+            r#"
+id = "marker-icons"
+name = "Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "resource"
+icon = "{icon}"
+iconDark = "{dark}"
+"#
+        )
+    };
+    let clean = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+    std::fs::write(pkg.join("icons/resource.svg"), clean).unwrap();
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    for (engine, icon, dark) in [
+        ("^1.0", "icons/resource.svg", "icons/resource_dark.svg"),
+        ("^1.3", "../outside.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/missing.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/resource.svg", "icons/missing.svg"),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, icon, dark)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.3", "icons/resource.svg", "icons/resource_dark.svg")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.svg");
+        std::fs::write(&outside, clean).unwrap();
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+        std::os::unix::fs::symlink(outside, pkg.join("icons/resource_dark.svg")).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+    }
+    let mut unsafe_svgs = vec![
+        "<svg><script>alert(1)</script></svg>".to_owned(),
+        "<svg onload=\"alert(1)\"/>".to_owned(),
+        "<svg><foreignObject/></svg>".to_owned(),
+        "<svg><rect style=\"fill:url(https://evil/x)\"/></svg>".to_owned(),
+        "<svg><rect style=\"background-image:image-set('https://evil/x' 1x)\"/></svg>".to_owned(),
+        format!("<svg>{}</svg>", " ".repeat(64 << 10)),
+    ];
+    for attr in ["href", "xlink:href"] {
+        for scheme in ["http://evil/x", "data:image/svg+xml,x", "javascript:alert(1)"] {
+            unsafe_svgs.push(format!("<svg><use {attr}=\"{scheme}\"/></svg>"));
+        }
+    }
+    for path in ["icons/resource.svg", "icons/resource_dark.svg"] {
+        for svg in &unsafe_svgs {
+            std::fs::write(pkg.join(path), svg).unwrap();
+            assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {path}: {svg}");
+        }
+        std::fs::write(pkg.join(path), clean).unwrap();
+    }
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert_eq!(assets.len(), 2);
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("<rect")));
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/dark") && svg.contains("<circle")));
+    let revision = f.host.ui_items("markerIcons")[0].decl["revision"].clone();
+    std::fs::write(pkg.join("icons/resource.svg"), clean.replace("width=\"16\"", "width=\"14\"")).unwrap();
+    let updated = f.install(&pkg);
+    assert!(updated.error.is_none(), "{:?}", updated.error);
+    assert_ne!(f.host.ui_items("markerIcons")[0].decl["revision"], revision);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("width=\"14\"")));
+    std::fs::remove_dir_all(pkg).unwrap();
+    assert_eq!(f.host.assets("marker-icons", "markerIcon/resource/").unwrap(), assets);
+    f.host.set_enabled("marker-icons", false).unwrap();
+    assert!(f.host.assets("marker-icons", "markerIcon/resource/").is_err());
+}
+
+#[test]
+fn marker_providers_preserve_names_and_package_paths() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"line-markers\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("markers.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "marker-icons\nordinary\ncustom\nlegacy".into(),
+    };
+    assert!(eventually(|| f.host.provide_line_markers(&doc).len() == 4));
+    let markers = f.host.provide_line_markers(&doc);
+    assert_eq!(
+        markers.iter().map(|(_, m)| m.icon.as_deref().unwrap()).collect::<Vec<_>>(),
+        ["run", "database", "icons/very-long-resource-marker-icon.svg", "overriding"]
+    );
 }
