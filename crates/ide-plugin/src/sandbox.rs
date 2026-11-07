@@ -141,7 +141,7 @@ mod tests {
         assert!(resolve_in_root(&root, "link").unwrap_err().contains("outside"));
         assert!(!inside_root(&root, "link").unwrap());
         assert!(!inside_root(&root, "link/../x").unwrap());
-        std::os::unix::fs::symlink(tmp.path().to_path_buf(), root.join("dirlink")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), root.join("dirlink")).unwrap();
         assert!(!inside_root(&root, "dirlink/secret.txt").unwrap());
         assert!(!inside_root(&root, "dirlink/missing.txt").unwrap());
     }
