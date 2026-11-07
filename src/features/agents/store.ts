@@ -436,7 +436,7 @@ export function openTask(task: string) {
     showDockedTask(task);
     return;
   }
-  useAgents.setState({ lastTask: task, homeOpen: false });
+  useAgents.setState({ lastTask: task, homeOpen: false, lastComposer: task });
   openTaskInEditor(task);
 }
 
@@ -447,7 +447,7 @@ function openTaskInEditor(task: string) {
 }
 
 function showDockedTask(task: string) {
-  useAgents.setState({ docked: task, lastTask: task, homeOpen: false });
+  useAgents.setState({ docked: task, lastTask: task, homeOpen: false, lastComposer: task });
   toolWindowService().show(TOOL_WINDOW, true);
   void editorService().closeInput?.(sessionKey(task));
 }
@@ -507,6 +507,7 @@ export function openTaskInEditorLocation(task: string) {
 /** Opens the New Task page; `prompt` pre-fills it. */
 export function openHome(prompt?: string) {
   const project = useProject.getState().project;
+  useAgents.setState({ lastComposer: HOME });
   if (project?.workspace) {
     const previous = useAgents.getState().draft.projectRoot;
     const projectRoot = defaultTaskProject(project, editorService().activePath(), previous);
@@ -674,13 +675,38 @@ export const sendQueuedNow = (task: string, queued: string) => call(commands.age
 export const setTaskConfig = (task: string, option: string, value: string) =>
   call(commands.agentSetConfig(task, option, value));
 
+/** The composer the user is looking at: the Agents surface on show, else the one typed in last. */
+function activeComposerKey(): string {
+  const s = useAgents.getState();
+  // The tool window shows one conversation at a time; its inline New Task page wins.
+  if (s.sessionLocation === "toolWindow") {
+    if (s.homeOpen) return HOME;
+    if (s.docked && s.tasks.has(s.docked)) return s.docked;
+  }
+  const active = editorService().activeInput?.();
+  if (active?.kind === HOME_KIND) return HOME;
+  if (active?.kind === SESSION_KIND) {
+    const task = (active.data as { task?: unknown } | undefined)?.task;
+    if (typeof task === "string" && s.tasks.has(task)) return task;
+  }
+  // No agent tab has focus (the Project view has it): the one used last wins.
+  for (const tab of editorService().openTabs?.() ?? []) {
+    if (tab.input.kind === HOME_KIND) return HOME;
+    if (tab.input.kind === SESSION_KIND) {
+      const task = (tab.input.data as { task?: unknown } | undefined)?.task;
+      if (typeof task === "string" && s.tasks.has(task)) return task;
+    }
+  }
+  return s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
+}
+
 /**
- * Adds `@file` references (with an optional line range) to the composer typed in last and
- * shows it: IDEA-style "send this to the chat".
+ * Adds `@file` references (with an optional line range) to the composer on show (else the one
+ * typed in last) and shows it: IDEA-style "send this to the chat".
  */
 export function addReferences(refs: Array<{ path: string; rel: string; mention: string }>) {
   const s = useAgents.getState();
-  const key = s.lastComposer !== HOME && s.tasks.has(s.lastComposer) ? s.lastComposer : HOME;
+  const key = activeComposerKey();
   const task = key === HOME ? null : s.tasks.get(key)!;
   const current = composerDraft(key);
   // A worktree task sees the same files under its own directory.

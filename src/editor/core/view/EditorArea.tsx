@@ -57,6 +57,11 @@ import { CodeBreadcrumbs } from "./StatusItems";
 import styles from "./EditorArea.module.css";
 import { tx } from "@/platform/i18n";
 
+/** The documents of a project-files drag: folders (trailing `/`) are not opened as editors. */
+function droppedFiles(payload: string): string[] {
+  return payload.split("\n").filter((p) => !!p && !p.endsWith("/"));
+}
+
 export function EditorAreaView() {
   const layout = useTabs((s) => s.layout);
   const empty = useTabs((s) => Object.values(s.panes).every((p) => p.tabs.length === 0));
@@ -77,14 +82,14 @@ function EmptyEditorArea() {
     if (!el) return;
     return registerDropTarget(el, {
       accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
-      over: () => setOver(true),
+      over: (data) => setOver(data.type !== FILES_DRAG || droppedFiles(data.payload).length > 0),
       leave: () => setOver(false),
       drop: (data) => {
         setOver(false);
         const paneId = Object.keys(useTabs.getState().panes)[0];
         if (!paneId) return;
         if (data.type === FILES_DRAG) {
-          void editorController().openFilesIn(data.payload.split("\n").filter(Boolean), paneId, "center");
+          void editorController().openFilesIn(droppedFiles(data.payload), paneId, "center");
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
@@ -253,14 +258,16 @@ function PaneView({ paneId }: { paneId: string }) {
     const zoneAt = (x: number, y: number) => dropZoneAt(x, y, el.getBoundingClientRect());
     return registerDropTarget(el, {
       accepts: (type) => type === EDITOR_TAB_MIME || type === FILES_DRAG || acceptsEditorDrop(type),
-      over: (data, x, y) =>
-        setDropZone(data.type === EDITOR_TAB_MIME || data.type === FILES_DRAG ? zoneAt(x, y) : "center"),
+      over: (data, x, y) => {
+        if (data.type === FILES_DRAG) setDropZone(droppedFiles(data.payload).length ? zoneAt(x, y) : null);
+        else setDropZone(data.type === EDITOR_TAB_MIME ? zoneAt(x, y) : "center");
+      },
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
         const zone = zoneAt(x, y);
         setDropZone(null);
         if (data.type === FILES_DRAG) {
-          void ctrl.openFilesIn(data.payload.split("\n").filter(Boolean), paneId, zone);
+          void ctrl.openFilesIn(droppedFiles(data.payload), paneId, zone);
           return;
         }
         if (data.type !== EDITOR_TAB_MIME) {
