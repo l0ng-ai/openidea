@@ -815,6 +815,19 @@ pub(crate) mod indexing_bindings {
     });
 }
 
+/// The optional `service-provider` export.
+pub(crate) mod services_bindings {
+    wasmtime::component::bindgen!({
+        world: "services", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
 pub(crate) mod semantic_bindings {
     wasmtime::component::bindgen!({
         world: "semantic-tokens", path: "../../wit",

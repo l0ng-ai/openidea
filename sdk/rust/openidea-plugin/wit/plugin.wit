@@ -61,6 +61,13 @@ world plugin-semantic-tokens {
     export semantic-tokens-provider;
 }
 
+/// A plugin whose views show in the Services tool window
+/// (`location = "services"`): their nodes' detail pane.
+world plugin-services {
+    include plugin;
+    export service-provider;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -84,4 +91,9 @@ world indexing {
 
 world semantic-tokens {
     export semantic-tokens-provider;
+}
+
+/// Only the `service-provider` export, generated next to `plugin` like `syntax`.
+world services {
+    export service-provider;
 }

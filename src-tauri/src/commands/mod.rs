@@ -489,6 +489,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_answer_prompt,
         plugin::plugin_view_render,
         plugin::plugin_view_event,
+        plugin::plugin_service_detail,
+        plugin::plugin_service_log,
         plugin::plugin_web_page,
         plugin::plugin_web_save_file,
         plugin::plugin_web_read_file,

@@ -45,6 +45,7 @@ pub mod indexing;
 pub mod mock;
 pub mod providers;
 pub mod semantic_tokens;
+pub mod services;
 pub mod syntax;
 pub mod text;
 mod types;
@@ -129,6 +130,22 @@ pub mod indexing_bindings {
 
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
+pub mod services_bindings {
+    wit_bindgen::generate!({
+        world: "services", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_services_world",
+        default_bindings_module: "openidea_plugin::services_bindings",
+        with: {
+            "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.3.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.3.0": crate::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
 pub mod semantic_bindings {
     wit_bindgen::generate!({
         world: "semantic-tokens", path: "wit", pub_export_macro: true,
@@ -194,6 +211,9 @@ macro_rules! __optional_exports {
     };
     (semantic_tokens, $plugin:ty, $component:ident) => {
         $crate::__semantic_tokens_exports!($plugin, $component);
+    };
+    (services, $plugin:ty, $component:ident) => {
+        $crate::__services_exports!($plugin, $component);
     };
     (syntax, $plugin:ty, $component:ident) => {
         impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
@@ -323,6 +343,27 @@ macro_rules! __indexing_exports {
             }
         }
         $crate::indexing_bindings::__export_indexing_world!($component with_types_in $crate::indexing_bindings);
+    };
+}
+
+/// `register_plugin!(T, services)`: `T` is also a [`services::Services`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __services_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::services_bindings::exports::openidea::plugin::service_provider::Guest for $component {
+            fn detail(
+                view: ::std::string::String,
+                key: ::std::string::String,
+                ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
+            ) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::services_bindings::openidea::plugin::service_types::Tab>,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
+                $crate::__rt::service_detail::<$plugin>(view, key, ctx)
+            }
+        }
+        $crate::services_bindings::__export_services_world!($component with_types_in $crate::services_bindings);
     };
 }
 
@@ -685,6 +726,34 @@ pub mod __rt {
         let ctx = Invocation::__new(ctx);
         let viewport = viewport.map(|v| v::Viewport { first_row: v.first_row, rows: v.rows });
         with::<T, _>(|p| p.render(&view, viewport, &ctx)).map(view_out).map_err(error_out)
+    }
+
+    pub fn service_detail<T: Plugin + crate::services::Services + Default>(
+        view: String,
+        key: String,
+        ctx: &b::invocation::Invocation,
+    ) -> Result<Vec<crate::services_bindings::openidea::plugin::service_types::Tab>, b::types::Error> {
+        use crate::services as s;
+        use crate::services_bindings::openidea::plugin::service_types as w;
+        let ctx = Invocation::__new(ctx);
+        let tab = |t: s::Tab| w::Tab {
+            id: t.id,
+            label: t.label,
+            body: match t.body {
+                s::Pane::Message(m) => w::Pane::Message(m),
+                s::Pane::Text(text) => w::Pane::Text(text),
+                s::Pane::Log(log) => w::Pane::Log(w::ProcessLog {
+                    program: log.program,
+                    args: log.args,
+                    toggles: log
+                        .toggles
+                        .into_iter()
+                        .map(|t| w::LogToggle { id: t.id, label: t.label, args: t.args })
+                        .collect(),
+                }),
+            },
+        };
+        with::<T, _>(|p| p.detail(&view, &key, &ctx)).map(|tabs| tabs.into_iter().map(tab).collect()).map_err(error_out)
     }
 
     pub fn view_event<T: Plugin + v::Views + Default>(

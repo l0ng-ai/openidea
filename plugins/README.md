@@ -137,23 +137,23 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                                                       | Code needed   |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                                               | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                             | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                   | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                     | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`), `view?`, `command`, `when?`   | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
-| `views`         | `id`, `title`, `icon?` (an icon name, or an SVG of the package), `location` (`left`, `right`, `bottom`), `web?` (see _Web views_) | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
+| Point           | Declaration                                                                                                                      | Code needed   |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                              | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                            | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                  | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                    | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                        | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                         | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                  | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`), `view?`, `command`, `when?`  | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                      | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                       | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                      | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                         | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                   | no            |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -542,6 +542,50 @@ values (the body already uses the text colour, UI font and size):
 Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
 `openidea.onThemeChange(fn)`, for drawing on a canvas, say. Variables are only
 ever added.
+
+#### Services views
+
+`location = "services"` (API 1.3: `engines.openidea = "^1.3"`) puts a view's
+tree in the Services tool window, next to Docker and the run configurations,
+instead of a tool window of its own. Its code renders it (no `web`):
+
+```toml
+[[contributes.views]]
+id = "kube"
+title = "Kubernetes"
+icon = "icons/kubernetes.svg"
+location = "services"
+
+[capabilities]
+optional = ["process:kubectl"]
+```
+
+The items of the view's `tree` are Services nodes: `render`, `handle` and the
+toolbar work as in a tool window, the toolbar's buttons acting on the one
+selected node, and `viewItem.context` menus give the nodes a right-click menu.
+The pane beside the tree comes from the `service-provider` export: register
+`register_plugin!(MyPlugin, views, services)` and implement
+`openidea_plugin::services::Services`, which returns the selected node's tabs
+(at most 8; asked again after `host::refresh_view("kube")`):
+
+```rust
+impl Services for MyPlugin {
+    fn detail(&mut self, view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
+        let pod = key.trim_start_matches("pod:");
+        let log = ProcessLog::new("kubectl", &["logs", "-f", "--tail=1000", pod])
+            .toggle("ts", "Timestamps", &["--timestamps"]);
+        Ok(vec![Tab::new("log", "Log", log), Tab::new("inspect", "Inspect", Pane::Text(self.describe(pod)?))])
+    }
+}
+```
+
+The IDE switches tabs without calling the plugin. A tab is a `Pane::Message`,
+read-only `Pane::Text` (at most 1 MiB) or a `ProcessLog`: the IDE asks for the
+pane again and runs that program (it needs the plugin's `process:<program>`
+grant) in the project root, following its output in the log Docker containers
+use (ANSI stripped, the last 5000 lines and 16 KiB per line, Soft-wrap, Clear,
+the exit code at the end). A toggle appends its `args` and starts the program
+again. It stops when the node's pane closes or the Services window is hidden.
 
 #### Web views
 

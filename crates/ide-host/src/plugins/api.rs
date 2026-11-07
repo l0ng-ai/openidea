@@ -417,6 +417,129 @@ impl PluginApi {
     }
 }
 
+impl PluginApi {
+    /// Runs an approved program until it exits or `cancel` fires, passing
+    /// each output line to `on_line`; returns its exit code.
+    pub(super) fn stream_process(
+        &self,
+        program: &str,
+        args: Vec<String>,
+        cwd: Option<&Path>,
+        cancel: &CancellationToken,
+        on_line: &dyn Fn(super::PluginOutputLine),
+    ) -> Result<Option<i32>, HostError> {
+        let binary = self.approved_program(program)?;
+        let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
+        let _ = std::fs::create_dir_all(&cwd);
+        let mut cmd = std::process::Command::new(&binary);
+        ide_core::process::prepare(ide_core::process::own_group(&mut cmd));
+        let mut child = cmd
+            .args(&args)
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| HostError::Failed(format!("{}: {e}", binary.display())))?;
+        // Bounded: a program printing faster than the lines are sent waits on its pipe.
+        let (tx, rx) = std::sync::mpsc::sync_channel(1024);
+        let read = |pipe: Box<dyn std::io::Read + Send>, stderr: bool| {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                read_lines(pipe, MAX_OUTPUT_LINE, &mut |text| {
+                    tx.send(super::PluginOutputLine { stderr, text }).is_ok()
+                });
+            });
+        };
+        if let Some(out) = child.stdout.take() {
+            read(Box::new(out), false);
+        }
+        if let Some(err) = child.stderr.take() {
+            read(Box::new(err), true);
+        }
+        drop(tx);
+        // Revoking the grant removes the pin: stop then.
+        let cap = format!("process:{program}");
+        let pin = (self.id().to_owned(), cap.clone());
+        let stop = |child: &mut std::process::Child| -> Option<HostError> {
+            if cancel.is_cancelled() {
+                kill_group(child);
+                return Some(HostError::Cancelled);
+            }
+            if !self.shared.pins.read().contains_key(&pin) {
+                kill_group(child);
+                return Some(HostError::Denied(cap.clone()));
+            }
+            None
+        };
+        loop {
+            if let Some(e) = stop(&mut child) {
+                return Err(e);
+            }
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(line) => on_line(line),
+                // Both pipes closed: the program is done (or detached them).
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+        loop {
+            if let Some(status) = child.try_wait().map_err(failed)? {
+                return Ok(status.code());
+            }
+            if let Some(e) = stop(&mut child) {
+                return Err(e);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Longest output line a followed program sends; the rest of the line is dropped.
+const MAX_OUTPUT_LINE: usize = 16 << 10;
+
+/// Passes `pipe`'s lines (without `\r\n`, at most `max` bytes each) to `line`
+/// until it returns false or the pipe closes, holding at most one line.
+fn read_lines(pipe: Box<dyn std::io::Read + Send>, max: usize, line: &mut dyn FnMut(String) -> bool) {
+    use std::io::{BufRead, Read};
+    let mut reader = std::io::BufReader::new(pipe);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match (&mut reader).take(max as u64).read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        if buf.last() != Some(&b'\n') && buf.len() == max {
+            // Too long: skip to the end of the line.
+            let mut rest = Vec::new();
+            loop {
+                rest.clear();
+                match (&mut reader).take(max as u64).read_until(b'\n', &mut rest) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if rest.last() == Some(&b'\n') => break,
+                    Ok(_) => {}
+                }
+            }
+        }
+        let end = buf.strip_suffix(b"\n").unwrap_or(&buf);
+        let end = end.strip_suffix(b"\r").unwrap_or(end);
+        if !line(String::from_utf8_lossy(end).into_owned()) {
+            return;
+        }
+    }
+}
+
+/// Kills a program spawned in its own group and what it started. A kill that
+/// lands while the program forks can miss the new process, so the group is
+/// signalled again before the program is reaped (until then its group id
+/// can't be reused).
+fn kill_group(child: &mut std::process::Child) {
+    ide_core::process::kill_tree_of(child.id());
+    std::thread::sleep(Duration::from_millis(50));
+    ide_core::process::kill_tree(child);
+}
+
 fn failed(e: impl std::fmt::Display) -> HostError {
     HostError::Failed(e.to_string())
 }

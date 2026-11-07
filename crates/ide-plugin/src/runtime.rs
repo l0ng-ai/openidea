@@ -11,10 +11,12 @@ use crate::types::{
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
-    FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
+    FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, View, ViewBody, ViewButton, ViewEvent,
+    ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, indexing_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+    bindings, indexing_bindings, providers_bindings, semantic_bindings, services_bindings, syntax_bindings,
+    views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -34,6 +36,8 @@ use bindings::openidea::plugin::types as wit_types;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
+use services_bindings::exports::openidea::plugin::service_provider as wit_svc;
+use services_bindings::openidea::plugin::service_types as wit_st;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
@@ -519,6 +523,7 @@ struct Exports {
     indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
+    services: Option<wit_svc::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -599,6 +604,7 @@ impl Runtime {
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
+        let service_indices = wit_svc::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -621,9 +627,13 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let services = match service_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer, semantic },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services },
             limits: setup.limits,
             version: setup.version,
         })
@@ -946,6 +956,29 @@ impl Runtime {
         }
     }
 
+    /// The Services pane of node `key` of the plugin's services view `view`.
+    pub fn service_detail(
+        &mut self,
+        view: &str,
+        key: &str,
+        invocation: Invocation,
+    ) -> Result<Vec<ServiceTab>, CallError> {
+        if self.exports.services.is_none() {
+            return Err(CallError::missing_export("service-provider"));
+        }
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let services = e.services.as_ref().expect("checked");
+            let r = services.call_detail(&mut *store, view, key, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        match result {
+            Ok(tabs) => Ok(tabs.into_iter().take(MAX_SERVICE_TABS).map(service_tab_from_wit).collect()),
+            Err(e) => Err(CallError::Guest(e.into())),
+        }
+    }
+
     /// A user action in a view or custom editor.
     pub fn view_event(&mut self, view: &str, event: ViewEvent, invocation: Invocation) -> Result<(), CallError> {
         if self.exports.views.is_none() {
@@ -1141,6 +1174,40 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
 
 fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
     s.map(|s| clip(s, max))
+}
+
+const MAX_SERVICE_TABS: usize = 8;
+const MAX_LOG_TOGGLES: usize = 8;
+const MAX_LOG_ARGS: usize = 256;
+const MAX_LOG_ARG: usize = 4096;
+
+fn service_tab_from_wit(t: wit_st::Tab) -> ServiceTab {
+    let body = match t.body {
+        wit_st::Pane::Message(m) => ServicePane::Message(clip(m, 16 << 10)),
+        wit_st::Pane::Text(text) => ServicePane::Text(clip(text, MAX_TEXT)),
+        wit_st::Pane::Log(log) => {
+            let args_fit = |args: &[String]| args.len() <= MAX_LOG_ARGS && args.iter().all(|a| a.len() <= MAX_LOG_ARG);
+            if args_fit(&log.args)
+                && log.toggles.len() <= MAX_LOG_TOGGLES
+                && log.toggles.iter().all(|t| args_fit(&t.args))
+            {
+                ServicePane::Log(ServiceLog {
+                    program: clip(log.program, 256),
+                    args: log.args,
+                    toggles: log
+                        .toggles
+                        .into_iter()
+                        .map(|t| ServiceLogToggle { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), args: t.args })
+                        .collect(),
+                })
+            } else {
+                ServicePane::Message(format!(
+                    "This log asks for more than {MAX_LOG_ARGS} arguments of {MAX_LOG_ARG} bytes or {MAX_LOG_TOGGLES} toggles."
+                ))
+            }
+        }
+    };
+    ServiceTab { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), body }
 }
 
 fn view_from_wit(v: wit_vt::View) -> View {
