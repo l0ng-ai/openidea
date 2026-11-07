@@ -132,6 +132,14 @@ pub fn prepare_debug_compiler(
     env: &mut std::collections::BTreeMap<String, String>,
     extra_json: &Option<String>,
 ) -> ide_core::IdeResult<()> {
+    #[cfg(windows)]
+    for key in ["PATH", "GOROOT"] {
+        if let Some(previous) = env.keys().find(|name| name.eq_ignore_ascii_case(key) && name.as_str() != key).cloned()
+        {
+            let value = env.remove(&previous).unwrap();
+            env.entry(key.into()).or_insert(value);
+        }
+    }
     let extra: Value = extra_json.as_deref().and_then(|value| serde_json::from_str(value).ok()).unwrap_or_default();
     let Some(executable) = extra["__goExecutable"].as_str().filter(|value| *value != "go" && *value != "go.exe") else {
         return Ok(());
@@ -139,7 +147,14 @@ pub fn prepare_debug_compiler(
     let path = env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(crate::exec::search_path);
     let executable = ide_core::process::find_executable(executable, &path)
         .ok_or_else(|| ide_core::IdeError::unavailable(format!("Go executable not found: {executable}")))?;
-    if !executable.file_name().is_some_and(|name| name == "go" || name == "go.exe") {
+    if !executable.file_name().is_some_and(|name| {
+        if cfg!(windows) {
+            let name = name.to_string_lossy();
+            name.eq_ignore_ascii_case("go") || name.eq_ignore_ascii_case("go.exe")
+        } else {
+            name == "go"
+        }
+    }) {
         return Err(ide_core::IdeError::invalid("Delve requires a Go SDK executable named go or go.exe"));
     }
     if !env.contains_key("GOROOT") {
@@ -336,6 +351,18 @@ mod command_tests {
         assert_eq!(program.as_deref(), root.join("main.go").to_str());
         let value: Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
         assert_eq!(value["buildFlags"], format!("'{}'", root.join("helper.go").to_string_lossy()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn compiler_selection_preserves_case_insensitive_windows_environment_keys() {
+        let mut env =
+            BTreeMap::from([("Path".into(), "explicit path".into()), ("GoRoot".into(), "explicit root".into())]);
+        prepare_debug_compiler(&mut env, &None).unwrap();
+        assert_eq!(env["PATH"], "explicit path");
+        assert_eq!(env["GOROOT"], "explicit root");
+        assert!(!env.contains_key("Path"));
+        assert!(!env.contains_key("GoRoot"));
     }
 
     #[test]
