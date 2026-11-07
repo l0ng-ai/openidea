@@ -30,6 +30,7 @@ import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
 import { openSettings, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
+import { ProjectStructureDialog } from "../languages/ProjectStructurePage";
 import { SettingsWindow } from "../window/SettingsWindow";
 import dialogStyles from "../dialog/SettingsDialog.module.css";
 import { activate } from "..";
@@ -51,7 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => useSettingsDialog.setState({ open: false }));
+  act(() => useSettingsDialog.setState({ open: false, projectStructureOpen: false }));
   dispose();
 });
 
@@ -471,6 +472,75 @@ describe("Settings dialog", () => {
     const dialog = await openDialog("appearance");
     expect(within(dialog).getByRole("button", { name: "Theme" })).toHaveTextContent("Islands Light");
     expect(within(dialog).getByLabelText("UI font size")).toHaveValue("13");
+  });
+
+  it("opens Project Structure as its own standalone IDEA-style dialog instead of Settings", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(
+      <>
+        <SettingsDialog />
+        <ProjectStructureDialog />
+        <MessagesHost />
+      </>,
+    );
+    await act(async () => {
+      await executeAction("file.projectStructure");
+    });
+    expect(useSettingsDialog.getState().open).toBe(false);
+    expect(useSettingsDialog.getState().projectStructureOpen).toBe(true);
+    const psDialog = screen.getByRole("dialog", { name: "Project Structure" });
+    const nav = within(psDialog).getByRole("navigation", { name: "Project Structure sections" });
+    expect(within(nav).getByText("Project Settings")).toBeInTheDocument();
+    expect(within(nav).getByText("Platform Settings")).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Project" })).toHaveAttribute("aria-current", "page");
+    await act(async () => {
+      fireEvent.click(within(nav).getByRole("button", { name: "Modules" }));
+    });
+    expect(within(nav).getByRole("button", { name: "Modules" })).toHaveAttribute("aria-current", "page");
+    expect(within(psDialog).getByRole("tab", { name: "Sources" })).toBeInTheDocument();
+    expect(within(psDialog).getByRole("tab", { name: "Paths" })).toBeInTheDocument();
+    expect(within(psDialog).getByRole("tab", { name: "Dependencies" })).toBeInTheDocument();
+  });
+
+  it("preserves pending Project Structure edits when its shortcut is invoked again", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure"));
+    fireEvent.change(screen.getByLabelText("Compiler output"), { target: { value: "out/classes" } });
+    await act(async () => executeAction("file.projectStructure"));
+    expect(screen.getByLabelText("Compiler output")).toHaveValue("out/classes");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("project", "projectStructure.compilerOutput", '"out/classes"');
+  });
+
+  it("disables Project Structure controls whose settings have no execution support", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure", "modules"));
+    fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
+    expect(screen.getByLabelText("Test output path")).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "Dependencies" }));
+    expect(screen.getByRole("button", { name: "Add Library" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add Module Dependency" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
+    expect(screen.getByRole("button", { name: "JAR" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "WAR" })).toBeDisabled();
+  });
+
+  it("shows the selected module's source tree", async () => {
+    current = setAt(current, "projectStructure.modules", {
+      service: { jdk: "", languageLevel: "", compilerOutput: "", testCompilerOutput: "", dependencies: [] },
+    });
+    useProject.setState({ settings: current, project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure", "modules"));
+    fireEvent.click(screen.getByRole("button", { name: /service\s*custom/ }));
+    const tree = screen.getByRole("tree", { name: "Content root" });
+    expect(within(tree).getByRole("treeitem")).toHaveTextContent("service");
+    expect(within(tree).queryByText("demo")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
+    expect(screen.getByLabelText("Module language level")).toBeDisabled();
+    expect(screen.getByLabelText("Output path")).toBeDisabled();
   });
 });
 

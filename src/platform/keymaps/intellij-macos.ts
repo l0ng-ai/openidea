@@ -176,6 +176,7 @@ export const intellijMacos: Record<string, string[]> = {
   // File / editor tabs
   "file.save": ["Meta+S"],
   "file.settings": ["Meta+,"],
+  "file.projectStructure": ["Meta+;"],
   "file.openProject": ["Meta+Shift+Alt+O"],
   "file.newScratchFile": ["Meta+Shift+N"],
   "editor.closeTab": ["Meta+W"],

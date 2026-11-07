@@ -2396,7 +2396,6 @@
   "UI font": "UI 글꼴",
   "UI font size": "UI 글꼴 크기",
   "Uninstalled {name}": "{name} 제거됨",
-  "Unchecked values are inherited from the scheme.": "선택 해제된 값은 구성표에서 상속됩니다.",
   "Uncommitted changes are stashed before the update and restored afterwards.": "커밋되지 않은 변경 사항은 업데이트 전에 스태시되었다가 이후에 복원됩니다.",
   "Underline": "밑줄",
   "Underscored": "밑줄 표시",
@@ -6297,6 +6296,5 @@
   "Empty: where the service mounts the project.": "비워 두면 서비스가 프로젝트를 마운트하는 위치를 사용합니다.",
   "The project is mounted here; paths and the working directory are mapped into it.": "프로젝트가 여기에 마운트되며, 경로와 작업 디렉터리가 이 위치로 매핑됩니다.",
   "Published ports": "게시된 포트",
-  "Run as the image's user, not the project folder's owner (Linux)": "프로젝트 폴더 소유자가 아닌 이미지의 사용자로 실행(Linux)",
-  "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine.": "Docker 연결은 서비스 도구 창에서 가져옵니다. 실행할 때마다 새 컨테이너가 만들어지고 실행이 끝나면 제거됩니다. 디버깅, 커버리지 및 프로파일링은 이 컴퓨터에서 실행됩니다."
+  "Run as the image's user, not the project folder's owner (Linux)": "프로젝트 폴더 소유자가 아닌 이미지의 사용자로 실행(Linux)"
 }

@@ -388,3 +388,36 @@ it("removes the first workspace member while retaining the workspace state root"
   expect(useProject.getState().project?.root).toBe("/workspace");
   expect(useProject.getState().project?.workspace?.projects).toEqual(["/b"]);
 });
+
+describe("explicit project-window requests", () => {
+  it("honours current-window requests even when a project is already open", async () => {
+    useProject.setState(projectState("/p/old") as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    const action = windowActions().find((a) => a.id === "file.openProjectPath")!;
+    await action.run({ arg: { path: "/p/new", newWindow: false } } as never);
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/new", false, []);
+    expect(openProject).toHaveBeenCalledWith("/p/new");
+  });
+  it("opens a new window without replacing the current project", async () => {
+    useProject.setState(projectState("/p/old") as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-1" }));
+    const action = windowActions().find((a) => a.id === "file.openProjectPath")!;
+    await action.run({ arg: { path: "/p/new", newWindow: true } } as never);
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/new", true, []);
+    expect(openProject).not.toHaveBeenCalled();
+    expect(useProject.getState().project?.root).toBe("/p/old");
+  });
+  it("keeps the ordinary unsaved-change guard for current-window opens", async () => {
+    const { provideLeaveProjectGuard } = await import("@/platform/project");
+    const dispose = provideLeaveProjectGuard(async () => false);
+    useProject.setState(projectState("/p/old") as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    try {
+      const action = windowActions().find((a) => a.id === "file.openProjectPath")!;
+      await action.run({ arg: { path: "/p/new", newWindow: false } } as never);
+      expect(openProject).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+});

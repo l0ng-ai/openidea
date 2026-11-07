@@ -2,7 +2,8 @@ import type { ReactNode } from "react";
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
-import { T } from "./T";
+import { Given } from "./T";
+import { useTx } from "@/platform/i18n";
 import { selectableText } from "./selectableText";
 import styles from "./Feedback.module.css";
 
@@ -89,7 +90,7 @@ export interface EmptyStateProps {
 export function EmptyState({ title, children, actions, className }: EmptyStateProps) {
   return (
     <div className={clsx(styles.empty, className)}>
-      {title && <div className={styles.emptyTitle}>{typeof title === "string" ? <T>{title}</T> : title}</div>}
+      {title && <div className={styles.emptyTitle}>{typeof title === "string" ? <Given>{title}</Given> : title}</div>}
       {children && <div className={styles.emptyBody}>{children}</div>}
       {actions && <div className={styles.emptyActions}>{actions}</div>}
     </div>
@@ -125,6 +126,7 @@ export function Toast({
   onPointerEnter,
   onPointerLeave,
 }: ToastProps) {
+  const tx = useTx();
   return (
     <div
       className={clsx(styles.toast, className)}
@@ -137,16 +139,16 @@ export function Toast({
       <div className={styles.toastMain}>
         <div className={styles.toastHead}>
           <span className={clsx(styles.toastTitle, selectableText)}>
-            {typeof title === "string" ? <T>{title}</T> : title}
+            {typeof title === "string" ? <Given>{title}</Given> : title}
           </span>
           {meta && <span className={styles.toastMeta}>{meta}</span>}
         </div>
-        {body && <div className={styles.toastBody}>{typeof body === "string" ? <T>{body}</T> : body}</div>}
+        {body && <div className={styles.toastBody}>{typeof body === "string" ? <Given>{body}</Given> : body}</div>}
         {actions && actions.length > 0 && (
           <div className={styles.toastActions}>
             {actions.map((a) => (
               <button key={a.label} type="button" className={styles.link} onClick={a.run}>
-                <T>{a.label}</T>
+                <Given>{a.label}</Given>
               </button>
             ))}
           </div>
@@ -155,7 +157,7 @@ export function Toast({
       {onClose && (
         <IconButton
           icon="close"
-          title="Dismiss"
+          title={tx("Dismiss")}
           size="small"
           iconSize={12}
           className={styles.toastClose}

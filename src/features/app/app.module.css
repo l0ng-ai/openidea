@@ -214,3 +214,24 @@
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
 }
+
+/* Import Settings… › JetBrains settings.zip confirmation */
+.importSummary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.importList {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 16px;
+}
+.importList dt {
+  color: var(--fg-muted);
+}
+.importList dd {
+  margin: 0;
+  color: var(--fg-strong);
+  overflow-wrap: anywhere;
+}

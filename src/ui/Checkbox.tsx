@@ -2,7 +2,7 @@ import { useId, type ReactNode } from "react";
 import clsx from "clsx";
 import { Icon } from "./icons";
 import styles from "./Checkbox.module.css";
-import { useTx } from "@/platform/i18n";
+import { useGivenTx } from "@/platform/i18n";
 
 export interface CheckboxProps {
   checked: boolean;
@@ -17,7 +17,7 @@ export interface CheckboxProps {
 
 export function Checkbox({ checked, onChange, label, disabled, indeterminate, className, ...aria }: CheckboxProps) {
   const id = useId();
-  const tx = useTx();
+  const tx = useGivenTx();
   return (
     <label className={clsx(styles.row, disabled && styles.disabled, className)} htmlFor={id}>
       <span className={styles.boxWrap}>
@@ -56,7 +56,7 @@ export interface RadioProps {
 /** Radio button, drawn like the checkbox with a round box and a dot. */
 export function Radio({ checked, onChange, name, label, disabled, className }: RadioProps) {
   const id = useId();
-  const tx = useTx();
+  const tx = useGivenTx();
   return (
     <label className={clsx(styles.row, disabled && styles.disabled, className)} htmlFor={id}>
       <span className={styles.boxWrap}>

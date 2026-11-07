@@ -21,8 +21,16 @@ export function unloadBuiltinPages() {
 }
 
 const Dialog = lazyComponent(() => import("./SettingsDialog").then((m) => m.SettingsDialog));
+const ProjectStructure = lazyComponent(() =>
+  import("../languages/ProjectStructurePage").then((m) => m.ProjectStructureDialog),
+);
 
 export function LazySettingsDialog() {
   const open = useSettingsDialog((s) => s.open);
   return open ? <Dialog /> : null;
+}
+
+export function LazyProjectStructureDialog() {
+  const open = useSettingsDialog((s) => s.projectStructureOpen);
+  return open ? <ProjectStructure /> : null;
 }

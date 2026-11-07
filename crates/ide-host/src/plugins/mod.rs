@@ -16,11 +16,16 @@
 //! projects) and folders linked with `openidea-plugin link` (`links.json`).
 
 mod api;
+pub mod commit;
+pub mod endpoints;
+mod event_paths;
+mod hover;
 mod icon_extensions;
 mod icon_patterns;
 mod icon_settings;
 mod icons;
 pub mod index_ops;
+mod inlay_hints;
 mod install;
 pub mod intellij;
 mod market;
@@ -38,9 +43,11 @@ pub mod views;
 pub mod web;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
 };
+pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
     read_url as read_market_url, resolve as resolve_market_href,
@@ -318,6 +325,7 @@ pub struct PluginHost {
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
+    endpoints: Mutex<endpoints::Endpoints>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -407,6 +415,7 @@ impl PluginHost {
             run_detectors,
             providers,
             navigation: Mutex::default(),
+            endpoints: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -695,6 +704,15 @@ impl PluginHost {
         Ok(self.ui.assets_with_prefix(id, prefix).into_iter().map(|(k, v)| (k, v.to_string())).collect())
     }
 
+    /// The UI language windows run in, as `locale()` reports it to plugin code.
+    pub fn set_ui_locale(&self, tag: &str) {
+        *self.shared.locale.write() = tag.to_owned();
+    }
+
+    pub fn ui_locale(&self) -> String {
+        self.shared.locale.read().clone()
+    }
+
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
@@ -899,6 +917,7 @@ impl PluginHost {
                 level: ide_plugin::NotificationLevel::Warning,
                 title: format!("{name} update rolled back"),
                 body: message.clone(),
+                actions: Vec::new(),
             },
         );
         self.changed();
@@ -1364,6 +1383,67 @@ impl PluginHost {
         prompt_id.parse().is_ok_and(|id| self.shared.answer_prompt(id, answer))
     }
 
+    /// A window answered a plugin's `CommitRequested`; false when the call no
+    /// longer waits.
+    pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_commit(id, answer))
+    }
+
+    /// Runs the plugins' before-commit checks `checks` (`(plugin, check)`) on
+    /// what `selection` commits. A check that fails or isn't available is
+    /// reported with `error`, so the commit still stops for it.
+    pub fn commit_checks(
+        &self,
+        invocation: Invocation,
+        selection: CommitSelection,
+        checks: Vec<PluginCommitCheckRef>,
+        cancel: &ide_core::CancellationToken,
+    ) -> IdeResult<Vec<PluginCommitCheckResult>> {
+        let declared = self.ui.items(ui_points::COMMIT_CHECKS, None);
+        let wanted: Vec<_> = checks
+            .into_iter()
+            .filter_map(|c| {
+                let item = declared.iter().find(|i| i.plugin_id == c.plugin_id && i.key == c.check)?;
+                Some((c, item.decl["title"].as_str().unwrap_or_default().to_owned()))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workspace = self.shared.workspace().ok_or_else(|| IdeError::unavailable("no workspace"))?;
+        let draft = api::commit_draft(&*workspace, selection, cancel).map_err(|e| match e {
+            HostError::Cancelled => IdeError::cancelled(),
+            HostError::Invalid(m) => IdeError::invalid(m),
+            e => IdeError::unavailable(e.to_string()),
+        })?;
+        let mut out = Vec::new();
+        for (c, title) in wanted {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let granted = self
+                .plugins
+                .read()
+                .get(&c.plugin_id)
+                .is_some_and(|p| p.meta.lock().granted.contains(&Capability::VcsRead));
+            let result = if granted {
+                let (check, draft) = (c.check.clone(), draft.clone());
+                self.code_call(&c.plugin_id, invocation.clone(), "checking the commit", move |rt, inv| {
+                    rt.commit_check(&check, draft.clone(), inv)
+                })
+                .map_err(|e| e.message)
+            } else {
+                Err(HostError::Denied(Capability::VcsRead.to_string()).to_string())
+            };
+            let (problems, error) = match result {
+                Ok(problems) => (problems, None),
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            out.push(PluginCommitCheckResult { plugin_id: c.plugin_id, check: c.check, title, problems, error });
+        }
+        Ok(out)
+    }
+
     /// Kinds of workbench events some running or activatable plugin wants;
     /// the UI reports only these.
     pub fn event_kinds(&self) -> BTreeSet<EventKind> {
@@ -1371,7 +1451,7 @@ impl PluginHost {
         let mut out = BTreeSet::new();
         for p in self.plugins.read().values() {
             for kind in EventKind::ALL {
-                if self.wants(p, kind, subs.get(p.id())) {
+                if self.wants(p, kind, subs.kinds.get(p.id())) {
                     out.insert(kind);
                 }
             }
@@ -1404,7 +1484,8 @@ impl PluginHost {
         let mut queues = self.queues.lock();
         for p in plugins {
             let wanted: Vec<WorkbenchEvent> =
-                events.iter().filter(|e| self.wants(&p, e.kind(), subs.get(p.id()))).cloned().collect();
+                events.iter().filter(|e| self.wants(&p, e.kind(), subs.kinds.get(p.id()))).cloned().collect();
+            let wanted = self.filter_path_events(&p, client, &wanted, &subs);
             if wanted.is_empty() {
                 continue;
             }
@@ -1484,6 +1565,18 @@ impl PluginHost {
     /// Returns whether the plugin was activated.
     fn deliver(&self, id: &str, client: Option<String>, events: Vec<WorkbenchEvent>) -> bool {
         let Ok(plugin) = self.get(id) else { return false };
+        let subs = self.shared.subscriptions.lock().clone();
+        let events: Vec<_> = self
+            .filter_path_events(&plugin, client.as_deref(), &events, &subs)
+            .into_iter()
+            .filter(|event| {
+                !matches!(event, WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_))
+                    || self.wants(&plugin, event.kind(), subs.kinds.get(id))
+            })
+            .collect();
+        if events.is_empty() {
+            return false;
+        }
         if !plugin.meta.lock().pending.is_empty() {
             return false;
         }
@@ -2009,6 +2102,7 @@ impl PluginHost {
         }
         let Some(error) = actor.take_crash() else { return };
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         if error.starts_with(CANCELLED) {
             // Cancelled on request: restart on next use, no backoff.
             let mut meta = plugin.meta.lock();
@@ -2054,6 +2148,7 @@ impl PluginHost {
                     level: NotificationLevel::Warning,
                     title: format!("Plugin \u{201c}{}\u{201d} crashed", plugin.manifest().name),
                     body: format!("{error}\nIt restarts the next time it is needed."),
+                    actions: Vec::new(),
                 },
             );
         }
@@ -2081,6 +2176,7 @@ impl PluginHost {
 
     fn stop(&self, plugin: &LoadedPlugin) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         // A call waiting on the user would keep the join below waiting.
         self.shared.block_prompts(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
@@ -2093,6 +2189,7 @@ impl PluginHost {
 
     fn set_failed(&self, plugin: &LoadedPlugin, error: String) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
         let mut meta = plugin.meta.lock();
@@ -2102,6 +2199,7 @@ impl PluginHost {
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "disabled after failure: {error}");
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(false);
@@ -2115,6 +2213,7 @@ impl PluginHost {
                 level: NotificationLevel::Error,
                 title: format!("Plugin \u{201c}{}\u{201d} was disabled", plugin.manifest().name),
                 body: error.to_owned(),
+                actions: Vec::new(),
             },
         );
         self.changed();
