@@ -135,6 +135,7 @@ pub fn set_fullscreen_auxiliary(window: &WebviewWindow, host: Option<&WebviewWin
         if let Some(frame) = frame {
             native.setFrame_display(frame, true);
         }
+        target.state::<crate::state::AppState>().sink.emit(ide_core::IdeEvent::WindowFullscreenChanged);
     })
 }
 
