@@ -37,6 +37,7 @@ pub enum ProviderKind {
     CodeActions,
     Definition,
     LineMarkers,
+    SemanticTokens,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +113,9 @@ impl ExtensionPoint for ProvidersPoint {
         if d.kinds.is_empty() || d.languages.is_empty() || d.languages.len() > 64 {
             return Err("contributes.providers: give `kinds` and 1–64 `languages`".into());
         }
+        if d.kinds.contains(&ProviderKind::SemanticTokens) {
+            pkg.manifest.needs_api("contributes.providers: semantic-tokens", 3)?;
+        }
         for l in &d.languages {
             if l != "*"
                 && (l.is_empty()
@@ -161,7 +165,7 @@ use super::{LoadedPlugin, PluginHost, PluginStatus};
 use ide_core::CancellationToken;
 use ide_plugin::{
     ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending,
-    ProviderDocument, Runtime,
+    ProviderDocument, Runtime, SemanticToken,
 };
 use std::sync::Weak;
 use std::time::{Duration, Instant};
@@ -328,6 +332,16 @@ impl PluginHost {
         })
         .into_iter()
         .flat_map(|(p, markers)| markers.into_iter().map(move |m| (p.id().to_owned(), m)))
+        .collect()
+    }
+
+    pub fn provide_semantic_tokens(&self, doc: &ProviderDocument) -> Vec<SemanticToken> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::SemanticTokens, &doc.language, move |rt, timeout| {
+            rt.provide_semantic_tokens(&d, timeout)
+        })
+        .into_iter()
+        .flat_map(|(_, tokens)| tokens)
         .collect()
     }
 

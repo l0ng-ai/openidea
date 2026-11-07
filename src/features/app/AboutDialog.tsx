@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
 import { t as translate, useT } from "@/platform/i18n";
 import { commands, isTauri, type AppInfo, type BuildInfo } from "@/platform/ipc";
+import { openExternalUrl } from "@/platform/openUrl";
 import clsx from "clsx";
 import { Dialog, IconButton, selectableText } from "@/ui";
 import logo from "../../../src-tauri/icons/128x128.png";
@@ -116,6 +117,15 @@ function AboutDialog({ onClose }: { onClose: () => void }) {
                 {t("app.about.showConfig")}
               </button>
             )}
+            <button
+              type="button"
+              className={styles.link}
+              onClick={() =>
+                void openExternalUrl("https://github.com/l0ng-ai/openidea/issues/new/choose").catch(() => {})
+              }
+            >
+              {t("app.about.reportIssue")}
+            </button>
           </div>
           <div className={clsx(styles.license, selectableText)}>
             {t("app.about.copyright")}

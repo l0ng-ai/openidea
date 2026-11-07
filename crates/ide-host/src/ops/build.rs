@@ -5,10 +5,11 @@ use crate::rpc::Dispatcher;
 use crate::{Host, Project, apply_workspace_edit};
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
+use ide_build::maven::PomGoto;
 use ide_build::pom_edit::{ArtifactKey, Exclusion};
 use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
-use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Range, RequestId, WorkspaceEdit};
+use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -440,6 +441,27 @@ pub async fn maven_dependency_declaration(
     .map_err(join_err)?
 }
 
+/// The go-to-declaration target at `pos` of the Maven POM `pom` (project-relative, or
+/// absolute for a parent POM opened from the local repository): the definition of the
+/// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
+/// entry providing the dependency's / plugin's version, along the parent chain (into
+/// the local repository when a parent is not in the project). `None` when nothing
+/// resolvable is under the caret.
+pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let given = Path::new(&pom);
+        let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
+        let text = project.text_of(&path)?;
+        let settings = project.settings.effective();
+        let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+            .or_else(ide_build::maven::default_local_repo);
+        Ok(ide_build::maven::goto_declaration(&text, &path, pos, repo))
+    })
+    .await
+    .map_err(join_err)?
+}
+
 /// Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency
 /// `dependency` of the Maven module `pom`, through the open document when there is one
 /// (saved). Returns the declaration; nothing changes when it already excludes it.
@@ -581,6 +603,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("maven_dependency_declaration", |c| async move {
         maven_dependency_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?).await
+    });
+    d.add("maven_goto_declaration", |c| async move {
+        maven_goto_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("pos")?).await
     });
     d.add("maven_exclude_dependency", |c| async move {
         maven_exclude_dependency(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?, c.arg("exclusion")?).await

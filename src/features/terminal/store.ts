@@ -82,12 +82,13 @@ export function sessionForTerminalId(id: number): TerminalSession | undefined {
   return allSessions().find((s) => s.terminalId === id);
 }
 
-function createSession(cwd: string, command?: SessionOptions["command"]): TerminalSession {
+function createSession(cwd: string, command?: SessionOptions["command"], fallbackRoot?: string): TerminalSession {
   const key = `s${++seq}`;
   const session = new TerminalSession({
     key,
     cwd,
     command,
+    fallbackRoot,
     onChange: (k, snapshot) => useTerminals.setState((s) => ({ sessions: { ...s.sessions, [k]: snapshot } })),
     onFocus: (k) => {
       const tab = tabOfSession(k);
@@ -381,7 +382,7 @@ export function splitTab(id: string, orientation: SplitOrientation, move = false
     });
     return id;
   }
-  const session = createSession(sessions.get(tab.session)?.state.cwd ?? "/");
+  const session = createSession(sessions.get(tab.session)?.state.cwd ?? "/", undefined, boundProject ?? undefined);
   const copy: TerminalTab = {
     id: `t${seq}`,
     name: defaultTabName(),
@@ -560,7 +561,7 @@ function remapLayout(node: GroupLayout, mapGroup: (group: string) => string): Gr
 }
 
 /** Opens the saved tabs in fresh sessions. Group ids are new, so they don't collide with ones minted later. */
-function restore(saved: StoredTerminals) {
+function restore(saved: StoredTerminals, root: string) {
   const groupOf = new Map<string, string>();
   const mapGroup = (group: string) => {
     let mapped = groupOf.get(group);
@@ -574,6 +575,8 @@ function restore(saved: StoredTerminals) {
     const session = createSession(
       savedTab.cwd,
       savedTab.shell ? { program: savedTab.shell, args: [], shell: true } : undefined,
+      // A saved directory may have been deleted since the last run: start in the project root then.
+      root,
     );
     const id = `t${seq}`;
     idOf.set(savedTab.id, id);
@@ -611,7 +614,7 @@ export function syncTerminalProject(root: string | null) {
     closeAll();
     if (!root) return;
     const saved = readStored(root);
-    if (saved?.tabs.length) restore(saved);
+    if (saved?.tabs.length) restore(saved, root);
   } finally {
     restoring = false;
   }

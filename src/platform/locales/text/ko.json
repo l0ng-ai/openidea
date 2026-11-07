@@ -643,7 +643,7 @@
   "Create Terminal": "터미널 생성",
   "Create Terminal in Container": "컨테이너에서 터미널 생성",
   "Create UTF-8 files": "UTF-8 파일 생성",
-  "Creating virtual environment": "가상 환경 생성 중",
+  "Creating environment": "가상 환경 생성 중",
   "Current": "현재",
   "Current Branch": "현재 브랜치",
   "Current File": "현재 파일",

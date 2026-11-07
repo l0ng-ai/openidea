@@ -797,6 +797,9 @@ impl LspManager {
         if server.name == "gopls" {
             params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
         }
+        if server.name == "csharp-ls" {
+            params["capabilities"]["experimental"]["csharp"]["metadataUris"] = json!(true);
+        }
         if !init_options.is_null() {
             params["initializationOptions"] = init_options;
         }
@@ -1092,7 +1095,15 @@ impl LspManager {
         cancel: Option<&CancellationToken>,
         timeout: Duration,
     ) -> IdeResult<R> {
-        let fut = t.run.peer.request::<P, R>(method, params, cancel.cloned());
+        let fut = async {
+            if t.server.name == "csharp-ls" {
+                let mut value = t.run.peer.request::<P, Value>(method, params, cancel.cloned()).await?;
+                virtual_doc::normalize_csharp_uris(&mut value);
+                serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
+            } else {
+                t.run.peer.request::<P, R>(method, params, cancel.cloned()).await
+            }
+        };
         match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),
             Err(_) => Err(rpc_err(&t.server.name, method, RpcError::Timeout)),
@@ -2630,7 +2641,14 @@ impl LspManager {
             };
             if let Some((entry, text)) = found {
                 let title = entry.rsplit('/').next().unwrap_or(&entry).to_owned();
-                return Ok(self.store_virtual(uri, text, Some(title), &[], self.origin_server(uri).map(|s| s.id)));
+                return Ok(self.store_virtual(
+                    uri,
+                    text,
+                    Some(title),
+                    None,
+                    &[],
+                    self.origin_server(uri).map(|s| s.id),
+                ));
             }
         }
         let class_file = scheme == "jdt" || (scheme == "file" && uri.ends_with(".class"));
@@ -2641,6 +2659,7 @@ impl LspManager {
         let mut error = None;
         for t in &targets {
             let languages = t.server.languages();
+            let mut description = None;
             let serves_scheme = t.caps().content_schemes().contains(&scheme);
             let result: IdeResult<Option<String>> = if serves_scheme && !class_file {
                 self.call::<_, Option<Value>>(
@@ -2655,6 +2674,21 @@ impl LspManager {
             } else if class_file && languages.iter().any(|l| l.as_str() == "java") {
                 self.call::<_, Option<String>>(t, "java/classFileContents", json!({ "uri": uri }), None, LONG_TIMEOUT)
                     .await
+            } else if scheme == "csharp" && t.server.name == "csharp-ls" {
+                self.call::<_, Option<virtual_doc::CSharpMetadata>>(
+                    t,
+                    "csharp/metadata",
+                    json!({ "textDocument": { "uri": uri } }),
+                    None,
+                    LONG_TIMEOUT,
+                )
+                .await
+                .map(|metadata| {
+                    metadata.map(|m| {
+                        description = m.assembly_name.filter(|name| !name.is_empty());
+                        m.source
+                    })
+                })
             } else if jar_class && t.caps().commands().iter().any(|c| c == "decompile") {
                 // The official Kotlin LSP: `decompile` answers `{ code, language }`.
                 self.call::<_, Option<Value>>(
@@ -2685,7 +2719,7 @@ impl LspManager {
                     continue;
                 }
             };
-            return Ok(self.store_virtual(uri, text, None, &languages, Some(t.server.id)));
+            return Ok(self.store_virtual(uri, text, None, description, &languages, Some(t.server.id)));
         }
         if jar_class && error.is_none() {
             return Err(IdeError::not_found(format!(
@@ -2702,10 +2736,15 @@ impl LspManager {
         uri: &str,
         text: String,
         title: Option<String>,
+        description: Option<String>,
         languages: &[LanguageId],
         server: Option<ide_core::ServerId>,
     ) -> VirtualDocument {
-        let decompiled = virtual_doc::is_decompiled(&text);
+        let decompiled = if virtual_doc::scheme(uri) == "csharp" {
+            virtual_doc::is_csharp_decompiled(uri)
+        } else {
+            virtual_doc::is_decompiled(&text)
+        };
         let title = title.unwrap_or_else(|| virtual_doc::title(uri, decompiled));
         let detected = self.languages.detect(Path::new(&title), None);
         let language_id = if detected == LanguageId::plain_text() {
@@ -2718,7 +2757,7 @@ impl LspManager {
             text,
             language_id,
             title,
-            description: virtual_doc::description(uri),
+            description: description.or_else(|| virtual_doc::description(uri)),
             decompiled,
         };
         if let Some(server) = server {
