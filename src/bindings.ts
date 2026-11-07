@@ -7708,6 +7708,12 @@ export type SyntaxNode = {
 	hasError: boolean,
 };
 
+/**  A sortable table's order: the column and the direction. */
+export type TableSort = {
+	column: number,
+	descending: boolean,
+};
+
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
@@ -8067,7 +8073,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean };
 
 export type ViewField = {
 	key: string,
@@ -8088,6 +8094,10 @@ export type ViewTable = {
 	firstRow: number,
 	rows: string[][],
 	editable: boolean,
+	/**  The plugin opted its headers in to click-to-sort (a `table` body through `other`). */
+	sortable: boolean,
+	/**  The sort the plugin orders by (none: no arrow yet). */
+	sort: TableSort | null,
 };
 
 export type ViewTreeItem = {

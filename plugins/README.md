@@ -603,6 +603,12 @@ collapse of items, form fields, table cells, inserted and deleted rows, and
 `html` messages. A tree is a flat list whose items name their `parent`; an
 `expandable` item gets its children when it is expanded. A table gets only
 the rows it shows (`viewport`): report `total_rows` and return those.
+For a table the user can sort by clicking a header, build it with
+`Body::sortable_table(&table, sort)`: it travels as a `table` through `other`
+(so IDEs and plugins of any API version keep working), the IDE makes the
+column headers clickable and asks for a column and direction with
+`ViewEvent::sort()` — sort your rows and render again; the sort you report
+shows as an arrow in the header.
 Bodies, field types and view events added by later APIs travel as `Other {
 kind, data }`: an IDE that doesn't know a body says it needs updating, and
 leaves out a field type it doesn't know.
