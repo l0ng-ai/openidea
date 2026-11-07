@@ -10,6 +10,9 @@ def tc = { String s ->
 
 allprojects {
     tasks.withType(Test).configureEach { Test task ->
+        if (System.getProperty('openidea.run.debug') == 'true') {
+            task.jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')
+        }
         task.outputs.upToDateWhen { false }
         task.addTestListener(new TestListener() {
             void beforeSuite(TestDescriptor suite) {}
