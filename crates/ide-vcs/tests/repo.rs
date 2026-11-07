@@ -1204,6 +1204,71 @@ fn partial_commit_of_chosen_hunks_leaves_worktree_and_index_alone() {
 }
 
 #[test]
+fn pending_changes_show_what_the_commit_would_hold_without_touching_the_index() {
+    let fx = Fixture::new();
+    let base = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
+    fx.write("f.txt", base);
+    fx.write("staged.txt", "s\n");
+    fx.write("old.txt", "moved\nfile\nwith\nlines\n");
+    fx.write("bin.dat", "\0\x01");
+    fx.commit_all("base");
+    let repo = fx.repo();
+    let utf8 = |_: &Path| -> ide_core::IdeResult<&encoding_rs::Encoding> { Ok(encoding_rs::UTF_8) };
+
+    let edited = "A\nb\nc\nd\ne\nf\ng\nh\ni\nJ\n";
+    fx.write("f.txt", edited);
+    fx.write("staged.txt", "s2\n");
+    fx.git(&["add", "staged.txt"]);
+    fx.git(&["mv", "old.txt", "new.txt"]);
+    fx.write("bin.dat", "\0\x02");
+    fx.write("added.txt", "new\n");
+    let index_before = std::fs::read(fx.dir.join(".git/index")).unwrap();
+
+    // The index as it is: the staged file and the rename.
+    let plain = repo.pending_changes(&CommitOptions::default(), 1 << 20, &utf8).unwrap();
+    let summary: Vec<_> = plain
+        .iter()
+        .map(|c| (c.status, c.path.strip_prefix(&fx.dir).unwrap().to_string_lossy().into_owned()))
+        .collect();
+    assert_eq!(summary, [("renamed", "new.txt".to_owned()), ("modified", "staged.txt".to_owned())]);
+    assert_eq!(plain[0].old_path.as_deref(), Some(fx.path("old.txt").as_path()));
+    assert!(plain[1].diff.as_deref().unwrap().contains("-s\n+s2\n"), "{:?}", plain[1].diff);
+
+    // A selection: the first hunk of f.txt, the binary and the new file, staged.txt left out.
+    let hunks = diff_hunks(base, edited);
+    let options = CommitOptions {
+        partial: vec![PartialCommitFile { path: fx.path("f.txt").into(), hunks: vec![range(&hunks[0])] }],
+        stage: vec![fx.path("bin.dat").into(), fx.path("added.txt").into()],
+        exclude: vec![fx.path("staged.txt").into()],
+        ..Default::default()
+    };
+    let picked = repo.pending_changes(&options, 1 << 20, &utf8).unwrap();
+    let by_name = |name: &str| picked.iter().find(|c| c.path == fx.path(name)).unwrap_or_else(|| panic!("{name}"));
+    assert!(picked.iter().all(|c| c.path != fx.path("staged.txt")));
+    assert_eq!(by_name("added.txt").status, "added");
+    assert_eq!(by_name("bin.dat").diff, None);
+    let f = by_name("f.txt").diff.clone().unwrap();
+    assert!(f.starts_with("diff --git a/f.txt b/f.txt\n"), "{f}");
+    assert!(f.contains("-a\n+A\n") && !f.contains("+J"), "{f}");
+
+    // Nothing changed: the index, the working tree, no temporary index left behind.
+    assert_eq!(std::fs::read(fx.dir.join(".git/index")).unwrap(), index_before);
+    assert_eq!(fx.read("f.txt"), edited);
+    let leftovers: Vec<_> = std::fs::read_dir(fx.dir.join(".git"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("openidea-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+
+    // The size limit cuts at a line and says so.
+    let cut = repo.pending_changes(&options, 40, &utf8).unwrap();
+    let total: usize = cut.iter().filter_map(|c| c.diff.as_ref()).map(String::len).sum();
+    assert!(total <= 40 && cut.iter().any(|c| c.truncated));
+    assert!(cut.iter().filter_map(|c| c.diff.as_ref()).all(|d| d.is_empty() || d.ends_with('\n')));
+}
+
+#[test]
 fn partial_staging_with_built_patch() {
     let fx = Fixture::new();
     let base = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n";

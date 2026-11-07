@@ -4,7 +4,8 @@
 //! themselves are in `wit_host`.
 
 use crate::types::{
-    CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, PluginHover, ProviderDocument, SemanticToken,
+    CodeAction, CommitDraft, CommitProblem, CompletionItem, InlineSuggestion, LineMarker, Location, PluginHover,
+    ProviderDocument, SemanticToken,
 };
 use crate::types::{
     EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
@@ -15,8 +16,8 @@ use crate::types::{
     ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, hover_bindings, indexing_bindings, providers_bindings, semantic_bindings, services_bindings,
-    syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, hover_bindings, indexing_bindings, providers_bindings, semantic_bindings,
+    services_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -33,6 +34,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
+use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
@@ -115,6 +117,22 @@ pub trait HostApi: Send + Sync {
         Ok(Vec::new())
     }
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
+    /// The commit being prepared in `client`'s window (`None`: no repository),
+    /// waiting for the window until `cancel` fires.
+    fn pending_commit(
+        &self,
+        client: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<CommitDraft>, HostError> {
+        let _ = (client, cancel);
+        Ok(None)
+    }
+    /// Replaces the commit message of `client`'s window if its draft is still at
+    /// `revision` (else [`HostError::Stale`]).
+    fn set_commit_message(&self, client: Option<&str>, revision: u64, message: String) -> Result<(), HostError> {
+        let _ = (client, revision, message);
+        Err(HostError::Invalid("no commit is being prepared".into()))
+    }
     /// Subscribes to (or unsubscribes from) a kind of workbench event.
     /// Project files matching `glob` (root-relative), at most `limit`.
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError>;
@@ -526,6 +544,7 @@ struct Exports {
     semantic: Option<wit_sem::Guest>,
     services: Option<wit_svc::Guest>,
     hover: Option<wit_hover::Guest>,
+    commit_checks: Option<wit_cc::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -608,6 +627,7 @@ impl Runtime {
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
         let service_indices = wit_svc::GuestIndices::new(&pre).ok();
         let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
+        let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -638,9 +658,13 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let commit_checks = match commit_check_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services, hover },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services, hover, commit_checks },
             limits: setup.limits,
             version: setup.version,
         })
@@ -1009,6 +1033,30 @@ impl Runtime {
         }
     }
 
+    /// Runs the plugin's before-commit check `check` on `draft`.
+    pub fn commit_check(
+        &mut self,
+        check: &str,
+        draft: CommitDraft,
+        invocation: Invocation,
+    ) -> Result<Vec<CommitProblem>, CallError> {
+        if self.exports.commit_checks.is_none() {
+            return Err(CallError::missing_export("commit-checker"));
+        }
+        let draft = crate::wit_host::commit_draft_to_wit(draft);
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let checks = e.commit_checks.as_ref().expect("checked");
+            let r = checks.call_check(&mut *store, check, &draft, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        match result {
+            Ok(problems) => Ok(problems.into_iter().take(MAX_COMMIT_PROBLEMS).map(commit_problem_from_wit).collect()),
+            Err(e) => Err(CallError::Guest(e.into())),
+        }
+    }
+
     /// A user action in a view or custom editor.
     pub fn view_event(&mut self, view: &str, event: ViewEvent, invocation: Invocation) -> Result<(), CallError> {
         if self.exports.views.is_none() {
@@ -1205,6 +1253,16 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
 
 fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
     s.map(|s| clip(s, max))
+}
+
+const MAX_COMMIT_PROBLEMS: usize = 50;
+
+fn commit_problem_from_wit(p: wit_cc::CommitProblem) -> CommitProblem {
+    let (path, range) = match p.location {
+        Some(l) => (Some(clip(l.path, 4096)), Some(range_from_wit(l.range))),
+        None => (None, None),
+    };
+    CommitProblem { message: clip(p.message, 4096), path, range }
 }
 
 const MAX_SERVICE_TABS: usize = 8;

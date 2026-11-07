@@ -39,6 +39,7 @@
 //! Build with `openidea-plugin build` (or `cargo build --release --target
 //! wasm32-wasip2`); see `plugins/README.md`.
 
+pub mod commit;
 pub mod host;
 pub mod hover;
 pub mod indexing;
@@ -167,6 +168,23 @@ pub mod hover_bindings {
     });
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod commit_checks_bindings {
+    wit_bindgen::generate!({
+        world: "commit-checks", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_commit_checks_world",
+        default_bindings_module: "openidea_plugin::commit_checks_bindings",
+        with: {
+            "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.3.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.3.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit@1.3.0": crate::bindings::openidea::plugin::commit,
+        },
+    });
+}
+
 /// The plugin API version this SDK targets.
 pub const API_VERSION: &str = "1.3";
 
@@ -229,6 +247,9 @@ macro_rules! __optional_exports {
     };
     (hover, $plugin:ty, $component:ident) => {
         $crate::__hover_exports!($plugin, $component);
+    };
+    (commit_checks, $plugin:ty, $component:ident) => {
+        $crate::__commit_checks_exports!($plugin, $component);
     };
     (syntax, $plugin:ty, $component:ident) => {
         impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
@@ -379,6 +400,27 @@ macro_rules! __services_exports {
             }
         }
         $crate::services_bindings::__export_services_world!($component with_types_in $crate::services_bindings);
+    };
+}
+
+/// `register_plugin!(T, commit_checks)`: `T` is also a [`commit::CommitChecks`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __commit_checks_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::Guest for $component {
+            fn check(
+                check: ::std::string::String,
+                draft: $crate::bindings::openidea::plugin::commit::CommitDraft,
+                ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
+            ) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::CommitProblem>,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
+                $crate::__rt::commit_check::<$plugin>(check, draft, ctx)
+            }
+        }
+        $crate::commit_checks_bindings::__export_commit_checks_world!($component with_types_in $crate::commit_checks_bindings);
     };
 }
 
@@ -795,6 +837,27 @@ pub mod __rt {
             },
         };
         with::<T, _>(|p| p.detail(&view, &key, &ctx)).map(|tabs| tabs.into_iter().map(tab).collect()).map_err(error_out)
+    }
+
+    pub fn commit_check<T: Plugin + crate::commit::CommitChecks + Default>(
+        check: String,
+        draft: b::commit::CommitDraft,
+        ctx: &b::invocation::Invocation,
+    ) -> Result<
+        Vec<crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::CommitProblem>,
+        b::types::Error,
+    > {
+        use crate::commit_checks_bindings::exports::openidea::plugin::commit_checker as w;
+        let ctx = Invocation::__new(ctx);
+        let draft = crate::host::__draft_in(draft);
+        with::<T, _>(|p| p.check(&check, &draft, &ctx))
+            .map(|problems| {
+                problems
+                    .into_iter()
+                    .map(|p| w::CommitProblem { message: p.message, location: p.location.map(loc) })
+                    .collect()
+            })
+            .map_err(error_out)
     }
 
     pub fn view_event<T: Plugin + v::Views + Default>(

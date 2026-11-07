@@ -8,12 +8,16 @@ import type {
   ActiveTheme,
   CapabilityInfo,
   CatalogPlugin,
+  CommitAnswer,
+  CommitSelection,
   Consent,
   EventKind,
   InstalledIntellijTheme,
   InstallPreview,
   IntellijThemeSource,
   MarketPlugin,
+  PluginCommitCheckRef,
+  PluginCommitCheckResult,
   PluginContextKey,
   PluginEditor,
   PluginEvent,
@@ -68,6 +72,10 @@ export interface PluginsBackend {
   cancelTask(taskId: string): Promise<void>;
   /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
   answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
+  /** This window's answer to a plugin's `commitRequested`. */
+  answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** Runs plugins' before-commit checks on what `selection` commits. */
+  commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
   marketUrl(): Promise<string | null>;
@@ -187,6 +195,10 @@ export const tauriPluginsBackend: PluginsBackend = {
   answerPrompt: async (promptId, answer) => {
     await commands.pluginAnswerPrompt(promptId, answer);
   },
+  answerCommit: async (requestId, answer) => {
+    await commands.pluginAnswerCommit(requestId, answer);
+  },
+  commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
   setMarketUrl: async (url) => {
@@ -569,6 +581,8 @@ export function createMemoryPluginsBackend(
     }),
     viewEvent: async () => {},
     serviceDetail: async () => [],
+    answerCommit: async () => {},
+    commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
       onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);
       return () => {};

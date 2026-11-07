@@ -212,6 +212,35 @@ mod imp {
         wit::vcs::remotes(p).map_err(error)
     }
 
+    pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+        wit::commit::pending_commit().map(|d| d.map(__draft_in)).map_err(error)
+    }
+
+    pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+        wit::commit::set_commit_message(revision, message).map_err(error)
+    }
+
+    #[doc(hidden)]
+    pub fn __draft_in(d: wit::commit::CommitDraft) -> CommitDraft {
+        CommitDraft {
+            revision: d.revision,
+            message: d.message,
+            amend: d.amend,
+            changes: d
+                .changes
+                .into_iter()
+                .map(|c| CommitChange {
+                    repository: c.repository,
+                    path: c.path,
+                    old_path: c.old_path,
+                    status: c.status,
+                    diff: c.diff,
+                    truncated: c.truncated,
+                })
+                .collect(),
+        }
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
     }
@@ -425,6 +454,27 @@ impl Project {
     pub fn run_process(&self, program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
         imp::run_process(program, args, Some(&self.inner), stdin)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub use imp::__draft_in;
+
+/// The commit being prepared in the window the command or event came from:
+/// the included files and changed blocks only, as Commit would commit them
+/// (unsaved editors of those files are saved first). `None` when the window's
+/// project has no repository. Only from a command or event of a window, in a
+/// trusted project. Needs `vcs.read`.
+pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+    imp::pending_commit()
+}
+
+/// Replaces the commit message of that window, only while its draft is still
+/// at `revision` ([`CommitDraft::revision`]); [`Error::Stale`] when the user
+/// changed the message or the included changes meanwhile, and nothing changes.
+/// Needs `vcs.write`.
+pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+    imp::set_commit_message(revision, message)
 }
 
 /// Replaces the plugin's diagnostics for `path` (absolute, in an open

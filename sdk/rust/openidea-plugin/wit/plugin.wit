@@ -17,6 +17,7 @@ world plugin {
     import editor;
     import invocation;
     import vcs;
+    import commit;
     import events;
     import tasks;
     import diagnostics;
@@ -73,6 +74,12 @@ world plugin-services {
     export service-provider;
 }
 
+/// A plugin with before-commit checks (`[[contributes.commitChecks]]`).
+world plugin-commit-checks {
+    include plugin;
+    export commit-checker;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -105,4 +112,9 @@ world hover {
 /// Only the `service-provider` export, generated next to `plugin` like `syntax`.
 world services {
     export service-provider;
+}
+
+/// Only the `commit-checker` export, generated next to `plugin` like `syntax`.
+world commit-checks {
+    export commit-checker;
 }
