@@ -26,6 +26,36 @@
     "typingLarge.mainThreadMsPerKey": 20,
     "typingLarge.tbtMs": 50,
 
+    "typingAngular.openMs": 200,
+    "typingAngular.p95Ms": 30,
+    "typingAngular.maxMs": 40,
+    "typingAngular.mainThreadMsPerKey": 30,
+    "typingAngular.tbtMs": 50,
+
+    "completion.openMs": 150,
+    "completion.narrowP95Ms": 20,
+    "completion.narrowMissedFramePct": 2,
+    "completion.narrowMainThreadMsPerKey": 35,
+    "completion.arrowP95Ms": 20,
+    "completion.arrowMissedFramePct": 2,
+    "completion.tbtMs": 50,
+
+    "consoleOutput.streamMs": 4600,
+    "consoleOutput.droppedFramesPct": 2,
+    "consoleOutput.keyP95Ms": 20,
+    "consoleOutput.keyMissedFramePct": 10,
+    "consoleOutput.tbtMs": 50,
+
+    "gitLog.showMs": 300,
+    "gitLog.droppedFramesPct": 2,
+    "gitLog.tbtMs": 50,
+    "gitLog.arrowKeyP95Ms": 20,
+    "gitLog.arrowKeyMissedFramePct": 5,
+
+    "resizePanels.droppedFramesPct": 2,
+    "resizePanels.bottomDroppedFramesPct": 2,
+    "resizePanels.tbtMs": 50,
+
     "keyRepeat.p95Ms": 20,
     "keyRepeat.maxMs": 33,
     "keyRepeat.missedFramePct": 2,

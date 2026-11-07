@@ -2253,6 +2253,7 @@
   "Stop and Rerun": "停止并重新运行",
   "Stop to Edit": "停止以编辑",
   "Stopped after {count} matches": "匹配 {count} 处后停止",
+  "Stream Sample Output": "流式输出示例日志",
   "Strikeout": "删除线",
   "Struct": "结构体",
   "Struct type": "结构体类型",

@@ -97,8 +97,13 @@ interface SessionRuntime {
   /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
   queue: OutputChunk[];
-  /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
+  /**
+   * rAF id while the page is visible, timeout id while hidden (rAF pauses in
+   * background tabs) or while waiting out `FLUSH_INTERVAL`.
+   */
   flushHandle: { raf: number } | { timeout: number } | null;
+  /** When output was last shown (`performance.now()`). */
+  flushedAt: number;
   /** Bumped per start so output from a previous run in the same tab is ignored. */
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
@@ -499,6 +504,7 @@ function flush(sessionId: string) {
   if (!rt) return;
   cancelFlush(rt);
   if (rt.queue.length === 0) return;
+  rt.flushedAt = performance.now();
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
     const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
@@ -519,11 +525,26 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
     // pile up until the console is shown again (issue #319: the console "kept
     // scrolling" the previous run's backlog after switching back to it).
+    const wait = FLUSH_INTERVAL - (performance.now() - rt.flushedAt);
     rt.flushHandle = document.hidden
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
-      : { raf: requestAnimationFrame(() => flush(sessionId)) };
+      : wait > 0
+        ? {
+            timeout: window.setTimeout(
+              () => (rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) }),
+              wait,
+            ),
+          }
+        : { raf: requestAnimationFrame(() => flush(sessionId)) };
   }
 }
+
+/**
+ * Shortest time between console updates. A line after a quiet spell shows on the
+ * next frame; a flood is shown at ~20 Hz instead of every frame, which kept
+ * typing elsewhere from fitting in a frame (35% missed while 12k lines/s stream).
+ */
+const FLUSH_INTERVAL = 50;
 
 function cancelFlush(rt: SessionRuntime) {
   if (rt.flushHandle === null) return;
@@ -595,6 +616,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
     }),
     queue: [],
     flushHandle: null,
+    flushedAt: -Infinity,
     generation: 0,
     lineListeners: [],
     input: "",
@@ -1313,4 +1335,60 @@ export function modifyTemporary(config: RunConfig) {
     editTarget: adopted.id,
     editDirty: adopted.detected === false,
   });
+}
+
+const SAMPLE_LINES = [
+  (i: number) =>
+    `2026-11-05 10:42:${String(i % 60).padStart(2, "0")}.${String(i % 1000).padStart(3, "0")}  INFO 4242 --- [nio-8080-exec-${i % 10}] c.a.orders.service.OrderService  : processed order #${i} in ${i % 97} ms`,
+  (i: number) => `\tat com.acme.orders.service.OrderService.process(OrderService.kt:${(i % 300) + 1})`,
+  (i: number) =>
+    `2026-11-05 10:42:01.${String(i % 1000).padStart(3, "0")} DEBUG 4242 --- [           main] o.s.web.servlet.DispatcherServlet        : GET "/api/orders/${i}", parameters={}`,
+];
+
+/**
+ * Development and the performance harness only: a session whose console gets
+ * `lines` generated log lines (stack frames among them), `perFrame` per
+ * animation frame, as from a chatty process. Resolves once all are shown.
+ */
+export async function startSampleOutput(lines: number, perFrame: number): Promise<void> {
+  const config: RunConfig = {
+    id: `sample-output-${sessionSeq + 1}`,
+    name: "Sample output",
+    kind: "shell",
+    command: "",
+    args: [],
+    cwd: null,
+    env: {},
+    detected: false,
+    isTest: false,
+    debugAdapter: null,
+  };
+  const session: RunSession = {
+    id: `run${++sessionSeq}`,
+    config,
+    runId: null,
+    status: "running",
+    exitCode: null,
+    startedAt: Date.now(),
+    endedAt: null,
+    stdinClosed: true,
+  };
+  runtimes.set(session.id, newRuntime(config));
+  useRun.setState((s) => ({ sessions: [...s.sessions, session], activeSession: session.id }));
+  bump(session.id);
+  try {
+    toolWindowService().show("run");
+  } catch {
+    /* no workbench (tests) */
+  }
+  for (let i = 0; i < lines;) {
+    await new Promise(requestAnimationFrame);
+    for (const end = Math.min(lines, i + perFrame); i < end; i++) {
+      const line = SAMPLE_LINES[i % 20 === 19 ? 1 : i % 7 === 6 ? 2 : 0]!(i);
+      enqueue(session.id, { kind: i % 101 === 100 ? "stderr" : "stdout", text: `${line}\n` });
+    }
+  }
+  await new Promise(requestAnimationFrame);
+  flush(session.id);
+  finishSession(session.id, 0);
 }
