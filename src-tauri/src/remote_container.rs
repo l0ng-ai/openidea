@@ -4,11 +4,16 @@
 //!
 //! The container id, user and folder come from the CLI's output, are checked, and only ever
 //! reach `docker exec` as separate arguments; only fixed scripts reach `sh -c`.
+//!
+//! A forwarded port is a local listener whose every connection runs
+//! `openidea-server --connect localhost <port>` in the container and pipes through it: the
+//! container's own network is reached the same way on every Docker setup.
 
 use crate::remote_dev::{Progress, RemoteStage, SERVER_BIN};
 use crate::remote_wsl::{Probe, Tail, install_script, parse_probe, probe_script, upload, version_dir};
 use ide_core::{IdeError, IdeResult};
 use ide_jsonrpc::{Handler, Peer};
+use ide_remote::container_tunnel::Exec;
 use ide_remote::devcontainer::{Up, parse_up};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -172,7 +177,8 @@ fn server_args(up: &Up, bin: &str) -> Vec<String> {
 }
 
 /// Opens the dev container of local `folder`: starts it with the CLI, installs and starts the
-/// server in it. Returns the connection and the project folder in the container.
+/// server in it. Returns the connection, the project folder in the container and how to run the
+/// server there.
 pub(crate) async fn connect(
     state: &crate::state::AppState,
     folder: &str,
@@ -180,7 +186,7 @@ pub(crate) async fn connect(
     handler: Arc<dyn Handler>,
     tail: &Tail,
     progress: &Arc<Progress>,
-) -> IdeResult<(Peer, String)> {
+) -> IdeResult<(Peer, String, Exec)> {
     let local = PathBuf::from(folder);
     // `devcontainer up` runs the project's code on this machine (`initializeCommand`, the build).
     if !state.host.trust.trusted(&local).unwrap_or(false) {
@@ -210,7 +216,8 @@ pub(crate) async fn connect(
     let bin = ensure_server(state, &docker, &up, progress).await?;
     progress(RemoteStage::Starting, None);
     let peer = spawn(&docker, &up, &bin, handler, tail)?;
-    Ok((peer, up.folder))
+    let folder = up.folder.clone();
+    Ok((peer, folder, Exec::new(docker, up, bin)))
 }
 
 fn spawn(docker: &Path, up: &Up, bin: &str, handler: Arc<dyn Handler>, tail: &Tail) -> IdeResult<Peer> {
@@ -223,6 +230,7 @@ fn spawn(docker: &Path, up: &Up, bin: &str, handler: Arc<dyn Handler>, tail: &Ta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ide_remote::container_tunnel::Tunnel;
 
     const ID: &str = "3f1c2b9a7d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";
 
@@ -375,6 +383,33 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
         assert!(files.to_string().contains("main.py"), "the project is the local folder: {files}");
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert_eq!(docker_sh(&docker, &up.container, "wc -l < /tmp/post-start"), "1", "postStartCommand ran once");
+        // A port only the container's own network reaches (perl is in every Debian image).
+        let listen = "perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new(LocalAddr => \"127.0.0.1:8000\", \
+            Listen => 5, ReuseAddr => 1) or die; while ($c = $s->accept) { print $c \"from the container\\n\"; close $c }'";
+        let started = std::process::Command::new(&docker)
+            .args(["exec", "-d", &up.container, "sh", "-c", listen])
+            .status()
+            .unwrap();
+        assert!(started.success());
+        let exec = Arc::new(Exec::new(
+            docker.clone(),
+            Up { container: up.container.clone(), user: up.user.clone(), folder: up.folder.clone() },
+            bin.clone(),
+        ));
+        let tunnel = Tunnel::listen(exec, 0, 8000).await.unwrap();
+        let mut reply = String::new();
+        for _ in 0..50 {
+            use tokio::io::AsyncReadExt;
+            let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
+            reply.clear();
+            let _ = socket.read_to_string(&mut reply).await;
+            if !reply.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert_eq!(reply, "from the container\n");
+        drop(tunnel);
         drop(peer);
         let removed = std::process::Command::new(&docker).args(["rm", "-f", &up.container]).output().unwrap();
         assert!(removed.status.success());
