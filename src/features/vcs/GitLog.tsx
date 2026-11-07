@@ -1121,7 +1121,9 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
-  const head = (commitRepo(c) ? useVcs.getState().heads[commitRepo(c)!]?.head : useVcs.getState().branch?.head) ?? null;
+  const repo = commitRepo(c);
+  const vcs = useVcs.getState();
+  const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
   const pushed = (x: Commit) =>
     commitRepo(x) === undefined ? !!outgoing && !outgoing.has(x.id) : isPushed(commitKey(x));
@@ -1148,6 +1150,22 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     ((commitRepo(c) === undefined ? !!outgoing : useGitLog.getState().tracked.has(commitRepo(c) ?? ""))
       ? !!outgoing?.has(commitKey(c))
       : true);
+  const branches = ((c as RepoCommit).refBranches ?? []).filter((branch) => !branch.current);
+  const branchActions: MenuItem[] = branches.map((branch) => {
+    const menu = branchMenu(branch, head);
+    return {
+      label: tx`Branch '${branch.name}'`,
+      submenu: repo ? inRepo(repo, menu) : menu,
+    };
+  });
+  if (!branchActions.length)
+    branchActions.push({
+      kind: "action",
+      action: "vcs.log.rebaseOntoCommit",
+      arg: c,
+      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
+      disabled: !head,
+    });
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: c },
     {
@@ -1173,13 +1191,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "action", action: "vcs.log.interactiveRebase", arg: c, disabled: pushedCommit },
     { kind: "action", action: "vcs.log.pushUpToHere", arg: c, disabled: !canPushHere },
     { kind: "separator" },
-    {
-      kind: "action",
-      action: "vcs.log.rebaseOntoCommit",
-      arg: c,
-      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
-      disabled: !head,
-    },
+    ...(branchActions.length > 2 ? [{ label: "Branches", submenu: branchActions }] : branchActions),
     { kind: "action", action: "vcs.log.newBranch", arg: c },
     { kind: "action", action: "vcs.log.newTag", arg: c },
     { kind: "separator" },
