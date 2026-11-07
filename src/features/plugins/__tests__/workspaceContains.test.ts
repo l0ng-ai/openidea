@@ -139,7 +139,7 @@ describe("workspaceContains", () => {
   });
 });
 
-describe("startWorkspaceContains", () => {
+describe.each(["menus", "views"])("startWorkspaceContains (%s)", (point) => {
   const key = "workspaceContains:.devcontainer/devcontainer.json";
   const setProject = (root: string) => useProject.setState({ project: { root, workspace: null } as never });
   const keyIs = (value: boolean) => vi.waitFor(() => expect(getContext()[key]).toBe(value));
@@ -156,7 +156,7 @@ describe("startWorkspaceContains", () => {
     ipc.files = { "/p": ["src"], "/q": [".devcontainer"], "/q/.devcontainer": ["devcontainer.json"] };
     ipc.readDir.mockReset();
     ipc.readDir.mockImplementation(async (dir: string) => (ipc.files[dir] ?? []).map((name) => ({ name })));
-    usePlugins.setState({ ui: [{ pluginId: "x", point: "menus", key: "k", decl: { when: key } }] as never });
+    usePlugins.setState({ ui: [{ pluginId: "x", point, key: "k", decl: { when: key } }] as never });
     setProject("/p");
     setContext(key, undefined);
     stop = startWorkspaceContains();

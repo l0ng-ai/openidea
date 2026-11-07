@@ -137,24 +137,24 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                                                                       | Code needed   |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                                                               | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                                             | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                   | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                                     | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                                         | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                                          | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                                   | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`), `view?`, `command`, `when?` | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                 | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                       | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                                        | no            |
-| `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_)                  | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                       | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                          | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                                    | no            |
-| `commitChecks`  | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                           | yes           |
+| Point           | Declaration                                                                                                                                                   | Code needed   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                                                           | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                                                         | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                               | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                                                 | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                                                     | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                      | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                                               | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`), `view?`, `command`, `when?`             | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                             | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                   | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                                                    | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                   | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                      | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                                                | no            |
+| `commitChecks`  | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                       | yes           |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -632,6 +632,39 @@ prompts are the document's. _Open as Text_ opens the text editor. For a
 tool window `ctx.editor()` is the window's active text editor, as for a
 command, so a view's buttons can act on what the user is editing (a click in
 the tool window doesn't change which editor that is).
+
+API 1.3 adds optional `group` and `when` fields to `[[contributes.views]]`;
+using either requires `engines.openidea = "^1.3"`. `when` uses the same
+context clauses as commands and menus, including `workspaceContains:pom.xml`
+and keys set with `set_context`. A false condition removes the view from the
+stripe and its group tabs; context changes, file creation/removal and project
+changes evaluate it again. Hidden views are not rendered or activated.
+
+Tool-window views (`left`, `right` or `bottom`) with the same `group`
+**within one plugin** share a tool window, with
+tabs in manifest declaration order. The first declaration supplies the window's
+title, icon and default location, even when that view is hidden; the window
+is absent when all its tabs are hidden. Group ids follow the same rules as
+view ids and are scoped to the declaring plugin. Tabs load on first selection
+and keep their content mounted while they apply, preserving web-view state
+when switching tabs. Ungrouped views keep their
+existing window ids and placement. `reveal_view` selects a visible grouped
+view's tab; it does not override its condition. Services views remain providers
+of the built-in Services window, and also support `when`.
+
+```toml
+[[contributes.views]]
+id = "endpoints"
+title = "Spring"
+group = "spring"
+when = "workspaceContains:pom.xml || workspaceContains:build.gradle"
+
+[[contributes.views]]
+id = "beans"
+title = "Beans"
+group = "spring"
+when = "plugin.my-plugin.ready"
+```
 
 `layout` puts a custom editor beside the text editor instead of in a tab of
 its own: with `"split"` or `"preview"` the file opens in the text editor,

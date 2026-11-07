@@ -2072,6 +2072,51 @@ fn view_item_menus_name_a_declared_view() {
     assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
 }
 
+#[test]
+fn conditional_and_grouped_views_need_api_1_3() {
+    for field in ["group = \"spring\"", "when = \"workspaceContains:pom.xml || plugin.hello.ready\""] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let old =
+            hello_variant(tmp.path(), |m| m.replace("location = \"right\"", &format!("location = \"right\"\n{field}")));
+        let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+        assert!(err.message.contains("new in plugin API 1.3"), "{err:?}");
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |m| {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"").replace(
+            "location = \"right\"",
+            "location = \"right\"\ngroup = \"spring\"\nwhen = \"workspaceContains:pom.xml || plugin.hello.ready\"",
+        )
+    });
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Inactive, "declaring views must not activate code");
+    let view = f.host.ui_items("views").remove(0);
+    assert_eq!(view.decl["group"], "spring");
+    assert_eq!(view.decl["when"], "workspaceContains:pom.xml || plugin.hello.ready");
+    f.host.set_enabled("hello", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+}
+
+#[test]
+fn view_conditions_and_group_ids_are_validated() {
+    for (field, message) in [
+        ("group = \"\"", "invalid view group"),
+        ("group = \"../other\"", "invalid view group"),
+        ("when = \"ready && (\"", "when"),
+    ] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |m| {
+            m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = \"right\"\n{field}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{field}: {err:?}");
+    }
+}
+
 /// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.
