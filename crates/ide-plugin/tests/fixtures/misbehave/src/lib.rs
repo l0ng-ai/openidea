@@ -20,7 +20,7 @@ use exports::openidea::plugin::providers::{
 };
 use exports::openidea::plugin::syntax_provider::{self, Fold, Symbol, Token};
 use exports::openidea::plugin::{commands, event_handler, lifecycle};
-use openidea::plugin::{invocation::Invocation, types};
+use openidea::plugin::{invocation::Invocation, process, types};
 
 struct Misbehave;
 
@@ -91,6 +91,34 @@ impl commands::Guest for Misbehave {
             "projwrite" => {
                 let project = ctx.project().ok_or_else(|| failed("no project is open"))?;
                 project.write_file(&arg.unwrap_or_default(), "written inside the project\n").map(|()| None)
+            }
+
+            // API 1.3 `process.start`: a program kept running behind a handle.
+            "child" => {
+                let cmd = process::Command {
+                    program: "git".into(),
+                    args: vec!["hash-object".into(), "--stdin".into()],
+                    env: Vec::new(),
+                };
+                let child = process::start(&cmd, None)?;
+                child.write("hello\n")?;
+                child.close_stdin()?;
+                let chunk = child.wait(30_000)?;
+                child.kill()?;
+                Ok(Some(format!("{} {:?}", chunk.stdout.trim(), chunk.status)))
+            }
+            // API 1.3 `process.run-command`: the environment is added to ours.
+            "envrun" => {
+                let cmd = process::Command {
+                    program: "git".into(),
+                    args: vec!["var".into(), "GIT_AUTHOR_IDENT".into()],
+                    env: vec![
+                        ("GIT_AUTHOR_NAME".into(), "Openidea Bot".into()),
+                        ("GIT_AUTHOR_EMAIL".into(), "bot@example.com".into()),
+                        ("GIT_AUTHOR_DATE".into(), "2005-04-07T22:13:13 +0200".into()),
+                    ],
+                };
+                Ok(Some(process::run_command(&cmd, None, None)?.stdout))
             }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {

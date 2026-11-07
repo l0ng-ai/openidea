@@ -75,8 +75,10 @@ interface secrets {
     is-set: func(name: string) -> bool;
 }
 
-/// One-off runs of programs granted with `process:<program>` (the file the
-/// user approved, checked before every run).
+/// Runs of programs granted with `process:<program>` (the file the user
+/// approved, checked before every run): once and awaited with `run`, once
+/// with an environment with `run-command`, or kept running behind a `child`
+/// handle started with `start`.
 interface process {
     use types.{error};
     use workspace.{project};
@@ -89,8 +91,52 @@ interface process {
         stderr: string,
     }
 
+    /// What to run. `env` is added to the inherited environment: a name
+    /// there replaces the inherited one, `PATH` included (which is why the
+    /// approved file, not the name, is what runs). At most 64 entries, names
+    /// at most 256 bytes, values at most 4 KiB, neither with a NUL.
+    record command {
+        program: string,
+        args: list<string>,
+        env: list<tuple<string, string>>,
+    }
+
+    /// What a kept-running program printed since the last call, and its exit
+    /// code once it ended (`none` while it still runs).
+    record chunk {
+        /// At most `max-bytes` (the rest waits for the next call; `max-bytes`
+        /// of 0 still hands over one byte, so a polling loop makes progress).
+        stdout: string,
+        stderr: string,
+        status: option<s32>,
+    }
+
+    /// A program left running. Dropping the handle kills it if it still
+    /// runs, so a plugin cannot leak one; a plugin has at most 8 at a time
+    /// (the ninth `start` is `invalid`). They also end with the plugin:
+    /// stopping, disabling or reclaiming it kills what it started.
+    resource child {
+        /// What it printed since the last call, and its status once it ends.
+        poll: func(max-bytes: u32) -> result<chunk, error>;
+        /// Waits up to `timeout-ms` for it to end (0 only checks), then
+        /// reports what it printed since the last call.
+        wait: func(timeout-ms: u32) -> result<chunk, error>;
+        /// Writes to its stdin; fails once it ended or stdin was closed.
+        write: func(text: string) -> result<_, error>;
+        close-stdin: func() -> result<_, error>;
+        /// Kills it and reaps it, so its status is available afterwards.
+        kill: func() -> result<_, error>;
+    }
+
     /// Runs `program` with `args` in `cwd`'s root (else the plugin's data
     /// directory) and waits; cancelled with the task or call. Call it inside
     /// a task for anything slow.
     run: func(program: string, args: list<string>, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
+
+    /// The same as `run`, with an environment.
+    run-command: func(cmd: command, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
+
+    /// Starts `cmd` with piped stdin and stdout/stderr, and returns the
+    /// handle to it without waiting.
+    start: func(cmd: command, cwd: option<borrow<project>>) -> result<child, error>;
 }

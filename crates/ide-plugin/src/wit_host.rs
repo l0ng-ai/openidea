@@ -5,7 +5,8 @@
 use crate::runtime::{MAX_TITLE, StoreData, clip};
 use crate::sandbox;
 use crate::types::{
-    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, PickItem, Prompt, StatusItem, net_host,
+    EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, PickItem, ProcessChunk, ProcessCommand,
+    Prompt, StatusItem, net_host,
 };
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -23,6 +24,7 @@ pub(crate) mod bindings {
             "openidea:plugin/editor.text-editor": super::EditorRes,
             "openidea:plugin/invocation.invocation": super::InvocationRes,
             "openidea:plugin/tasks.task": super::TaskRes,
+            "openidea:plugin/process.child": super::ChildRes,
         },
     });
 }
@@ -124,6 +126,12 @@ pub struct ProjectRes {
     root: PathBuf,
 }
 
+/// A program a plugin started behind a handle (`process.start`); dropping the
+/// handle ends it if it still runs.
+pub struct ChildRes {
+    id: u64,
+}
+
 /// The invoking window's focused editor.
 pub struct EditorRes {
     ctx: EditorContext,
@@ -143,6 +151,15 @@ const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
 const MAX_PICK_ITEMS: usize = 5000;
 const MAX_PICK_KEY: usize = 256;
+const MAX_ARGS: usize = 256;
+const MAX_ARG_BYTES: usize = 4096;
+const MAX_ENV: usize = 64;
+const MAX_ENV_NAME: usize = 256;
+const MAX_ENV_VALUE: usize = 4096;
+/// Most output one `poll` / `wait` hands out, per stream.
+const MAX_CHUNK: usize = 1 << 20;
+/// Most text one `write` puts into a process's stdin.
+const MAX_STDIN_BYTES: usize = 1 << 20;
 
 type Fallible<T> = wasmtime::Result<Result<T, wit::Error>>;
 
@@ -925,6 +942,45 @@ impl secrets::Host for StoreData {
     }
 }
 
+impl StoreData {
+    /// The `command` of `process.run-command` / `process.start`, checked: the
+    /// program is the one the user approved, the sizes stay in the limits.
+    fn command(&self, cmd: process::Command) -> Result<ProcessCommand, wit::Error> {
+        self.require(Capability::Process(cmd.program.clone()))?;
+        if cmd.args.len() > MAX_ARGS || cmd.args.iter().any(|a| a.len() > MAX_ARG_BYTES) {
+            return Err(wit::Error::Invalid(format!("at most {MAX_ARGS} arguments of at most {MAX_ARG_BYTES} bytes")));
+        }
+        if cmd.env.len() > MAX_ENV {
+            return Err(wit::Error::Invalid(format!("at most {MAX_ENV} environment variables")));
+        }
+        for (name, value) in &cmd.env {
+            if name.is_empty() || name.len() > MAX_ENV_NAME || name.contains(['=', '\0']) {
+                return Err(wit::Error::Invalid(format!("{name:?} is not an environment variable name")));
+            }
+            if value.len() > MAX_ENV_VALUE || value.contains('\0') {
+                return Err(wit::Error::Invalid(format!("the value of {name:?} is too long or holds a NUL")));
+            }
+        }
+        Ok(ProcessCommand { program: cmd.program, args: cmd.args, env: cmd.env })
+    }
+
+    /// The project a call runs in, when it named one.
+    fn cwd_of(&self, cwd: Option<Resource<ProjectRes>>) -> wasmtime::Result<Option<PathBuf>> {
+        Ok(match &cwd {
+            Some(p) => Some(self.table.get(p)?.root.clone()),
+            None => None,
+        })
+    }
+}
+
+fn to_chunk(chunk: ProcessChunk) -> process::Chunk {
+    process::Chunk { stdout: chunk.stdout, stderr: chunk.stderr, status: chunk.status }
+}
+
+fn to_output(output: crate::types::ProcessOutput) -> process::Output {
+    process::Output { status: output.status, stdout: output.stdout, stderr: output.stderr }
+}
+
 impl process::Host for StoreData {
     fn run(
         &mut self,
@@ -933,20 +989,74 @@ impl process::Host for StoreData {
         cwd: Option<Resource<ProjectRes>>,
         stdin: Option<String>,
     ) -> Fallible<process::Output> {
-        if let Err(e) = self.require(Capability::Process(program.clone())) {
-            return Ok(Err(e));
-        }
-        let cwd = match &cwd {
-            Some(p) => Some(self.table.get(p)?.root.clone()),
-            None => None,
-        };
+        let cmd = self.command(process::Command { program, args, env: Vec::new() })?;
+        let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
         let timeout = self.remaining();
-        Ok(self
-            .host
-            .run_process(&program, args, cwd.as_deref(), stdin, &token, timeout)
-            .map(|o| process::Output { status: o.status, stdout: o.stdout, stderr: o.stderr })
-            .map_err(to_wit))
+        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+    }
+
+    fn run_command(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        stdin: Option<String>,
+    ) -> Fallible<process::Output> {
+        let cmd = self.command(cmd)?;
+        let cwd = self.cwd_of(cwd)?;
+        let token = self.cancel.token();
+        let timeout = self.remaining();
+        Ok(self.host.run_process(cmd, cwd.as_deref(), stdin, &token, timeout).map(to_output).map_err(to_wit))
+    }
+
+    fn start(&mut self, cmd: process::Command, cwd: Option<Resource<ProjectRes>>) -> Fallible<Resource<ChildRes>> {
+        let cmd = self.command(cmd)?;
+        let cwd = self.cwd_of(cwd)?;
+        let id = match self.host.start_process(cmd, cwd.as_deref()) {
+            Ok(id) => id,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        self.push(ChildRes { id }).map(Ok)
+    }
+}
+
+impl process::HostChild for StoreData {
+    fn poll(&mut self, this: Resource<ChildRes>, max_bytes: u32) -> Fallible<process::Chunk> {
+        let id = self.table.get(&this)?.id;
+        let max = (max_bytes as usize).min(MAX_CHUNK);
+        Ok(self.host.poll_process(id, max).map(to_chunk).map_err(to_wit))
+    }
+
+    fn wait(&mut self, this: Resource<ChildRes>, timeout_ms: u32) -> Fallible<process::Chunk> {
+        let id = self.table.get(&this)?.id;
+        let timeout = Duration::from_millis(u64::from(timeout_ms)).min(self.remaining());
+        let token = self.cancel.token();
+        Ok(self.host.wait_process(id, MAX_CHUNK, timeout, &token).map(to_chunk).map_err(to_wit))
+    }
+
+    fn write(&mut self, this: Resource<ChildRes>, text: String) -> Fallible<()> {
+        if text.len() > MAX_STDIN_BYTES {
+            return Ok(Err(wit::Error::Invalid(format!("at most {MAX_STDIN_BYTES} bytes at a time"))));
+        }
+        let id = self.table.get(&this)?.id;
+        Ok(self.host.write_process(id, &text).map_err(to_wit))
+    }
+
+    fn close_stdin(&mut self, this: Resource<ChildRes>) -> Fallible<()> {
+        let id = self.table.get(&this)?.id;
+        Ok(self.host.close_process_stdin(id).map_err(to_wit))
+    }
+
+    fn kill(&mut self, this: Resource<ChildRes>) -> Fallible<()> {
+        let id = self.table.get(&this)?.id;
+        Ok(self.host.kill_process(id).map_err(to_wit))
+    }
+
+    fn drop(&mut self, rep: Resource<ChildRes>) -> wasmtime::Result<()> {
+        let child = self.table.delete(rep)?;
+        // Dropping the handle is how a plugin ends a run it no longer needs.
+        let _ = self.host.kill_process(child.id);
+        Ok(())
     }
 }
 

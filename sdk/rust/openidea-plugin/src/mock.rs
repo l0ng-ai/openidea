@@ -44,8 +44,27 @@ type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutpu
 pub struct ProcessRun {
     pub program: String,
     pub args: Vec<String>,
+    /// Variables added to the inherited environment.
+    pub env: Vec<(String, String)>,
     /// The project root it ran in (`None`: the data directory).
     pub cwd: Option<String>,
+}
+
+/// A program a plugin started and keeps running behind a handle.
+#[derive(Debug)]
+#[allow(dead_code)] // recorded so a test can see what a handle was started with
+struct ChildState {
+    program: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    cwd: Option<String>,
+    /// What `write` put into its stdin.
+    stdin: String,
+    stdin_closed: bool,
+    /// What it printed and the plugin has not read yet.
+    stdout: String,
+    stderr: String,
+    status: Option<i32>,
 }
 
 struct Editor {
@@ -95,6 +114,9 @@ struct State {
     requests: Vec<HttpRequest>,
     processes: BTreeMap<String, ProcessHandler>,
     runs: Vec<ProcessRun>,
+    /// The programs `start`ed, by handle id.
+    children: BTreeMap<u64, ChildState>,
+    next_child: u64,
     refreshed: Vec<String>,
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
@@ -110,6 +132,9 @@ pub struct MockTerminal {
     pub program: String,
     pub args: Vec<String>,
 }
+
+/// At most 8 programs a plugin may keep running, as the host allows.
+const MAX_CHILDREN: usize = 8;
 
 thread_local! {
     static CURRENT: RefCell<Option<Rc<RefCell<State>>>> = const { RefCell::new(None) };
@@ -1185,11 +1210,147 @@ pub mod current {
     ) -> Result<ProcessOutput, Error> {
         with(|s| {
             require(s, &format!("process:{program}"))?;
-            s.runs.push(ProcessRun { program: program.into(), args: args.to_vec(), cwd: cwd.map(|p| p.root.clone()) });
+            s.runs.push(ProcessRun {
+                program: program.into(),
+                args: args.to_vec(),
+                env: Vec::new(),
+                cwd: cwd.map(|p| p.root.clone()),
+            });
             match s.processes.get(program) {
                 Some(handler) => handler(args, stdin),
                 None => Err(Error::NotFound(format!("{program} (MockHost::on_process)"))),
             }
+        })
+    }
+
+    pub type ChildRes = u64;
+
+    /// Runs a [`Command`]: like `run_process`, with its environment in front of
+    /// what the program printed (the mock machine has none of its own, so this
+    /// is how a test sees the variables arrived).
+    pub fn run_command(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+    ) -> Result<ProcessOutput, Error> {
+        with(|s| {
+            require(s, &format!("process:{}", cmd.program))?;
+            s.runs.push(ProcessRun {
+                program: cmd.program.clone(),
+                args: cmd.args.clone(),
+                env: cmd.env.clone(),
+                cwd: cwd.map(|p| p.root.clone()),
+            });
+            let Some(handler) = s.processes.get(&cmd.program) else {
+                return Err(Error::NotFound(format!("{} (MockHost::on_process)", cmd.program)));
+            };
+            let mut out = handler(&cmd.args, stdin)?;
+            let env: String = cmd.env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+            out.stdout.insert_str(0, &env);
+            Ok(out)
+        })
+    }
+
+    /// Starts a [`Command`] and returns its handle (at most 8, as the host allows).
+    pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
+        with(|s| {
+            require(s, &format!("process:{}", cmd.program))?;
+            if s.children.len() >= MAX_CHILDREN {
+                return Err(Error::Invalid(format!(
+                    "{}: too many processes (at most {MAX_CHILDREN} at a time)",
+                    cmd.program
+                )));
+            }
+            s.next_child += 1;
+            let id = s.next_child;
+            let child = ChildState {
+                program: cmd.program.clone(),
+                args: cmd.args.clone(),
+                env: cmd.env.clone(),
+                cwd: cwd.map(|p| p.root.clone()),
+                stdin: String::new(),
+                stdin_closed: false,
+                stdout: format!("started: {}\n", cmd.program),
+                stderr: String::new(),
+                status: None,
+            };
+            s.children.insert(id, child);
+            Ok(id)
+        })
+    }
+
+    fn child_at(s: &mut State, id: u64) -> Result<&mut ChildState, Error> {
+        s.children.get_mut(&id).ok_or_else(|| Error::NotFound(format!("{id} (no such process handle)")))
+    }
+
+    /// Up to `max` bytes from the front of `buf`, cut at a character boundary.
+    fn take(buf: &mut String, max: u32) -> String {
+        let mut cut = (max as usize).min(buf.len());
+        while !buf.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        buf.drain(..cut).collect()
+    }
+
+    pub fn child_poll(child: &ChildRes, max_bytes: u32) -> Result<crate::host::Chunk, Error> {
+        let id = *child;
+        with(|s| {
+            let c = child_at(s, id)?;
+            Ok(crate::host::Chunk {
+                stdout: take(&mut c.stdout, max_bytes as u32),
+                stderr: take(&mut c.stderr, max_bytes as u32),
+                status: c.status,
+            })
+        })
+    }
+
+    pub fn child_write(child: &ChildRes, text: &str) -> Result<(), Error> {
+        let id = *child;
+        with(|s| {
+            let c = child_at(s, id)?;
+            if c.status.is_some() {
+                return Err(Error::Invalid(format!("{id}: the process has ended")));
+            }
+            if c.stdin_closed {
+                return Err(Error::Invalid(format!("{id}: the input is closed")));
+            }
+            c.stdin.push_str(text);
+            c.stdout.push_str(&format!("echo: {text}"));
+            Ok(())
+        })
+    }
+
+    pub fn child_close_stdin(child: &ChildRes) -> Result<(), Error> {
+        let id = *child;
+        with(|s| {
+            child_at(s, id)?.stdin_closed = true;
+            Ok(())
+        })
+    }
+
+    pub fn child_kill(child: &ChildRes) -> Result<(), Error> {
+        let id = *child;
+        with(|s| {
+            let c = child_at(s, id)?;
+            if c.status.is_none() {
+                c.status = Some(-1);
+            }
+            Ok(())
+        })
+    }
+
+    pub fn child_wait(child: &ChildRes, _timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
+        let id = *child;
+        with(|s| {
+            let c = child_at(s, id)?;
+            if c.status.is_none() {
+                c.status = Some(0);
+            }
+            Ok(crate::host::Chunk {
+                stdout: std::mem::take(&mut c.stdout),
+                stderr: std::mem::take(&mut c.stderr),
+                status: c.status,
+            })
         })
     }
 

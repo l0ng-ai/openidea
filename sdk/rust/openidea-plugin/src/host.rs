@@ -449,6 +449,48 @@ mod imp {
             .map_err(error)
     }
 
+    pub type ChildRes = wit::process::Child;
+
+    pub fn run_command(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+    ) -> Result<ProcessOutput, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        wit::process::run_command(&c, cwd, stdin)
+            .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
+            .map_err(error)
+    }
+
+    pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        wit::process::start(&c, cwd).map_err(error)
+    }
+
+    pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
+        wit::process::Child::poll(child, max).map(chunk_in).map_err(error)
+    }
+
+    pub fn child_write(child: &ChildRes, text: &str) -> Result<(), Error> {
+        wit::process::Child::write(child, text).map_err(error)
+    }
+
+    pub fn child_close_stdin(child: &ChildRes) -> Result<(), Error> {
+        wit::process::Child::close_stdin(child).map_err(error)
+    }
+
+    pub fn child_kill(child: &ChildRes) -> Result<(), Error> {
+        wit::process::Child::kill(child).map_err(error)
+    }
+
+    pub fn child_wait(child: &ChildRes, timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
+        wit::process::Child::wait(child, timeout_ms).map(chunk_in).map_err(error)
+    }
+
+    fn chunk_in(c: wit::process::Chunk) -> crate::host::Chunk {
+        crate::host::Chunk { stdout: c.stdout, stderr: c.stderr, status: c.status }
+    }
+
     pub fn range_from(r: wit::types::Range) -> Range {
         range_in(r)
     }
@@ -662,6 +704,102 @@ pub fn setting_number(key: &str) -> Option<f64> {
 /// (see [`Project::run_process`] to run it in a project).
 pub fn run_process(program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
     imp::run_process(program, args, None, stdin)
+}
+
+/// A program with its arguments and the environment added to the inherited one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Command {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Variables added to the inherited environment: at most 64, names at most
+    /// 256 bytes, values at most 4 KiB. They never remove or replace an inherited one.
+    pub env: Vec<(String, String)>,
+}
+
+impl Command {
+    pub fn new(program: &str) -> Self {
+        Self { program: program.to_owned(), args: Vec::new(), env: Vec::new() }
+    }
+
+    pub fn arg(mut self, arg: &str) -> Self {
+        self.args.push(arg.to_owned());
+        self
+    }
+
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.args.extend(args.into_iter().map(|a| a.as_ref().to_owned()));
+        self
+    }
+
+    pub fn env(mut self, name: &str, value: &str) -> Self {
+        self.env.push((name.to_owned(), value.to_owned()));
+        self
+    }
+}
+
+/// What a kept-running program printed since the last read, and its exit status
+/// once it ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Chunk {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: Option<i32>,
+}
+
+/// A program kept running behind a handle ([`start`]). Dropping it ends the
+/// program, as the host does when the plugin instance goes away.
+pub struct Child {
+    inner: imp::ChildRes,
+}
+
+impl Child {
+    /// What it printed since the last read, each stream at most `max_bytes`;
+    /// `status` is `Some` once it ended.
+    pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
+        imp::child_poll(&self.inner, max_bytes)
+    }
+
+    /// Writes `text` to its stdin.
+    pub fn write(&self, text: &str) -> Result<(), Error> {
+        imp::child_write(&self.inner, text)
+    }
+
+    /// Closes its stdin, so a program reading it sees the end.
+    pub fn close_stdin(&self) -> Result<(), Error> {
+        imp::child_close_stdin(&self.inner)
+    }
+
+    /// Ends it; `status` becomes known right away (-1 when a signal ended it).
+    pub fn kill(&self) -> Result<(), Error> {
+        imp::child_kill(&self.inner)
+    }
+
+    /// Waits up to `timeout_ms` for it to end (0 only checks), then reads it.
+    pub fn wait(&self, timeout_ms: u32) -> Result<Chunk, Error> {
+        imp::child_wait(&self.inner, timeout_ms)
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        // The host ends a program whose handle is dropped.
+        let _ = imp::child_kill(&self.inner);
+    }
+}
+
+/// Runs a [`Command`] to its end, adding its environment to the inherited one.
+pub fn run_command(cmd: &Command, project: Option<&Project>, stdin: Option<&str>) -> Result<ProcessOutput, Error> {
+    imp::run_command(cmd, project.map(|p| &p.inner), stdin)
+}
+
+/// Starts a [`Command`] and keeps it running behind a [`Child`] (at most 8 per
+/// plugin instance).
+pub fn start(cmd: &Command, project: Option<&Project>) -> Result<Child, Error> {
+    imp::start(cmd, project.map(|p| &p.inner)).map(|inner| Child { inner })
 }
 
 /// Projects open in any window. Needs `project.read`.

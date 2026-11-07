@@ -8,6 +8,7 @@ activation = ["on-command:*"]
 
 [capabilities]
 required = ["project.read"]
+optional = ["process:git"]
 
 [[contributes.commands]]
 id = "echo"
@@ -64,3 +65,11 @@ title = "subscribe"
 [[contributes.commands]]
 id = "diagnose"
 title = "diagnose"
+
+[[contributes.commands]]
+id = "child"
+title = "child"
+
+[[contributes.commands]]
+id = "envrun"
+title = "envrun"

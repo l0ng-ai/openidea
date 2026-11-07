@@ -551,6 +551,33 @@ fn fs_write_reaches_only_the_granted_paths() {
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
+/// A program kept running behind a handle: the plugin writes its stdin, closes
+/// it, and waits for the exit status and what the program printed. A one-off run
+/// passes the environment it names.
+#[test]
+fn a_plugin_keeps_a_process_running_behind_a_handle() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    // The fixture declares `process:git` as optional: it needs a program that
+    // reads stdin and reports its environment. Machines running these tests have
+    // git; without one, there is nothing to run and nothing to check.
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+
+    let out = f.run("misbehave", "child", None).expect("the handle works").expect("a result");
+    let (hash, status) = out.split_once(' ').unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(hash.len(), 40, "a sha1 of what was written: {out}");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{out}");
+    assert_eq!(status, "Some(0)", "it ended by itself: {out}");
+
+    let ident = f.run("misbehave", "envrun", None).expect("a run with extra environment").expect("a result");
+    assert!(ident.starts_with("Openidea Bot <bot@example.com>"), "the run's own variables are used: {ident}");
+
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
 /// A missing capability is an error the plugin can handle, not a trap.
 #[test]
 fn ungranted_capabilities_are_denied_not_trapped() {
@@ -827,7 +854,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 14, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 16, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
