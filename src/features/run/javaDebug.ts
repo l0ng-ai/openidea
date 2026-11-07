@@ -9,8 +9,14 @@
  * debugger (a script such as `catalina.sh run`) through `JAVA_TOOL_OPTIONS`, which every JVM reads.
  */
 import { executeAction } from "@/platform/actions";
-import type { RunConfig } from "@/platform/ipc";
-import { isJvmApplication, JDWP_AGENT, jdwpListeningPort } from "@/platform/javaLaunch";
+import { call, commands, type RunConfig } from "@/platform/ipc";
+import {
+  ATTACH_LISTENER,
+  isJvmApplication,
+  JDWP_AGENT,
+  jdwpListeningPort,
+  optsOutOfAttach,
+} from "@/platform/javaLaunch";
 import { startRun, useRun } from "./store";
 import { DELEGATED_DEBUG, DELEGATED_MAIN } from "./gradleRun";
 
@@ -24,6 +30,23 @@ const JVM_ADAPTERS = ["java-debug", "kotlin-debug-adapter"];
 function withOption(env: Record<string, string>, key: string, value: string): Record<string, string> {
   const current = env[key]?.trim();
   return { ...env, [key]: current ? `${current} ${value}` : value };
+}
+
+/**
+ * The agent, preceded by the attach listener unless a VM option of the configuration or the
+ * channel's current value (`existing`) already decides about the attach mechanism.
+ */
+function agentOptions(config: RunConfig, ...existing: (string | undefined)[]): string[] {
+  const options = [config.params?.vmOptions, ...existing].filter(Boolean).join(" ");
+  return optsOutOfAttach(options) ? [JDWP_AGENT] : [ATTACH_LISTENER, JDWP_AGENT];
+}
+
+const agentText = (config: RunConfig, ...existing: (string | undefined)[]) =>
+  agentOptions(config, ...existing).join(" ");
+
+function propertyValue(args: readonly string[], key: string): string | undefined {
+  const prefix = `-D${key}=`;
+  return args.find((a) => a.startsWith(prefix))?.slice(prefix.length);
 }
 
 function withProperty(args: readonly string[], key: string, value: string): string[] {
@@ -44,19 +67,23 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
   // (`javac … && java -cp …`): through `JDK_JAVA_OPTIONS`, which only the `java` launcher reads.
   if (config.kind === "java-file")
     return args.length
-      ? { ...config, args: [JDWP_AGENT, ...args] }
-      : { ...config, env: withOption(config.env, "JDK_JAVA_OPTIONS", JDWP_AGENT) };
+      ? { ...config, args: [...agentOptions(config, args.join(" ")), ...args] }
+      : { ...config, env: withOption(config.env, "JDK_JAVA_OPTIONS", agentText(config, config.env.JDK_JAVA_OPTIONS)) };
   if (config.kind === "maven" || /(^|\/)mvnw?(\.cmd)?$/.test(config.command)) {
-    if (args.some((a) => a === "spring-boot:run" || /:spring-boot-maven-plugin:[^:]*:run$/.test(a)))
-      return { ...config, args: withProperty(args, "spring-boot.run.jvmArguments", JDWP_AGENT) };
+    if (args.some((a) => a === "spring-boot:run" || /:spring-boot-maven-plugin:[^:]*:run$/.test(a))) {
+      const options = agentText(config, propertyValue(args, "spring-boot.run.jvmArguments"));
+      return { ...config, args: withProperty(args, "spring-boot.run.jvmArguments", options) };
+    }
     if (config.isTest || args.some(isMavenTestGoal)) {
       const failsafe = args.some((a) => /integration-test|verify|failsafe/.test(a));
-      let out = withProperty(args, "maven.surefire.debug", JDWP_AGENT);
-      if (failsafe) out = withProperty(out, "maven.failsafe.debug", JDWP_AGENT);
+      // Forked-JVM options of the test goals come as `-DargLine=…` among the arguments.
+      const options = agentText(config, args.join(" "));
+      let out = withProperty(args, "maven.surefire.debug", options);
+      if (failsafe) out = withProperty(out, "maven.failsafe.debug", options);
       return { ...config, args: out };
     }
     if (JVM_ADAPTERS.includes(config.debugAdapter ?? "") || args.some(isMavenInProcessGoal))
-      return { ...config, env: withOption(config.env, "MAVEN_OPTS", JDWP_AGENT) };
+      return { ...config, env: withOption(config.env, "MAVEN_OPTS", agentText(config, config.env.MAVEN_OPTS)) };
     return null;
   }
   if (config.kind === "gradle" || /(^|\/)gradlew?(\.bat)?$/.test(config.command)) {
@@ -68,14 +95,34 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
   }
   // Application / Spring Boot configurations are launched by java-debug itself.
   if (JVM_ADAPTERS.includes(config.debugAdapter ?? "") && !isJvmApplication(config))
-    return { ...config, env: withOption(config.env, "JAVA_TOOL_OPTIONS", JDWP_AGENT) };
+    return {
+      ...config,
+      env: withOption(config.env, "JAVA_TOOL_OPTIONS", agentText(config, config.env.JAVA_TOOL_OPTIONS)),
+    };
   return null;
+}
+
+/**
+ * `--debug-jvm` makes Gradle add the agent itself, so the attach listener reaches the forked
+ * JVMs through an init script (the one VM options use). A failure only costs the memory view.
+ */
+async function withGradleAttachListener(launch: RunConfig): Promise<RunConfig> {
+  if (!launch.args.includes("--debug-jvm") || launch.target) return launch;
+  if (optsOutOfAttach([launch.params?.vmOptions, ...launch.args].join(" "))) return launch;
+  try {
+    const script = await call(commands.runGradleJvmArgsScript([ATTACH_LISTENER]));
+    return { ...launch, args: ["--init-script", script, ...launch.args] };
+  } catch (e) {
+    console.warn("Could not add the attach listener to the Gradle debug run", e);
+    return launch;
+  }
 }
 
 /** Runs `config` with a JDWP agent and attaches the Java debugger to every JVM it starts. */
 export async function debugWithAgent(config: RunConfig): Promise<boolean> {
-  const launch = jdwpLaunch(config);
-  if (!launch) return false;
+  const agent = jdwpLaunch(config);
+  if (!agent) return false;
+  const launch = await withGradleAttachListener(agent);
   let sessionId: string | null = null;
   const waiting: number[] = [];
   const attach = (port: number) => {

@@ -111,6 +111,14 @@ export function joinJavaArgs(args: readonly string[]): string {
 /** JDWP agent options: listen on a free local port and wait for the debugger. */
 export const JDWP_AGENT = "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0";
 
+/** Makes a HotSpot JVM open its attach socket at start-up; the memory view finds the debuggee through it. */
+export const ATTACH_LISTENER = "-XX:+StartAttachListener";
+
+/** True when VM options already decide about the attach mechanism, so the IDE must not override them. */
+export function optsOutOfAttach(text: string): boolean {
+  return /StartAttachListener|DisableAttachMechanism/.test(text);
+}
+
 /** The port of `Listening for transport dt_socket at address: 5005` (JDWP's start-up line). */
 export function jdwpListeningPort(line: string): number | null {
   const m = /Listening for transport dt_socket at address:\s*(?:[\w.[\]:-]*:)?(\d+)\s*$/.exec(line.trim());

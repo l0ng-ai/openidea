@@ -9,6 +9,7 @@ import {
   wrapperGradleVersion,
 } from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
+import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import { isJvmApplication } from "@/platform/javaLaunch";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
@@ -142,6 +143,17 @@ describe("Build and run using: Gradle", () => {
     expect(debug.args.at(-1)).toBe(DELEGATED_DEBUG);
     expect(debug.args).not.toContain("--debug-jvm");
     expect(jdwpLaunch(debug)!.args.filter((a) => a === DELEGATED_DEBUG)).toHaveLength(1);
+  });
+
+  it("adds the attach listener before the agent in the init script, unless the VM options decide", () => {
+    const flag = RUN_SCRIPT.indexOf("'-XX:+StartAttachListener'");
+    const agent = RUN_SCRIPT.indexOf("'-agentlib:jdwp=");
+    expect(flag).toBeGreaterThan(0);
+    expect(flag).toBeLessThan(agent);
+    // The guard reads the same list the user's VM options arrive in.
+    const guard = RUN_SCRIPT.slice(RUN_SCRIPT.lastIndexOf("if (", flag), flag);
+    expect(guard).toContain("list('openidea.run.jvmArgs')");
+    expect(guard).toContain("StartAttachListener|DisableAttachMechanism");
   });
 });
 

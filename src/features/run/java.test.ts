@@ -3,7 +3,9 @@ import type { JavaLaunchInfo, RunConfig } from "@/platform/ipc";
 import {
   formatCompileErrors,
   joinJavaArgs,
+  JDWP_AGENT,
   jdwpListeningPort,
+  optsOutOfAttach,
   parseJavaArgs,
   resolveJavaCommand,
 } from "@/platform/javaLaunch";
@@ -332,14 +334,21 @@ describe("debugging build tool configurations", () => {
   it("adds a waiting JDWP agent to spring-boot:run, Surefire and Gradle", () => {
     const boot = jdwpLaunch(cfg({ id: "b", kind: "maven", args: ["spring-boot:run"] }))!;
     expect(boot.args[1]).toMatch(
-      /^-Dspring-boot\.run\.jvmArguments=-agentlib:jdwp=.*suspend=y.*address=127\.0\.0\.1:0$/,
+      /^-Dspring-boot\.run\.jvmArguments=-XX:\+StartAttachListener -agentlib:jdwp=.*suspend=y.*address=127\.0\.0\.1:0$/,
     );
     const merged = jdwpLaunch(
       cfg({ id: "b", kind: "maven", args: ["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Xmx1g"] }),
     )!;
-    expect(merged.args[1]).toMatch(/^-Dspring-boot\.run\.jvmArguments=-Xmx1g -agentlib:jdwp=/);
+    expect(merged.args[1]).toMatch(
+      /^-Dspring-boot\.run\.jvmArguments=-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/,
+    );
     const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", "-Dtest=A#b"], isTest: true }))!;
-    expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-agentlib:jdwp="))).toBe(true);
+    expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-XX:+StartAttachListener -agentlib:jdwp="))).toBe(
+      true,
+    );
+    const failsafe = jdwpLaunch(cfg({ id: "v", kind: "maven", args: ["verify"] }))!;
+    for (const key of ["maven.surefire.debug", "maven.failsafe.debug"])
+      expect(failsafe.args.some((a) => a.startsWith(`-D${key}=-XX:+StartAttachListener -agentlib:jdwp=`))).toBe(true);
     expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toEqual(["bootRun", "--debug-jvm"]);
     expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"] }))).toBeNull();
     expect(jdwpLaunch(cfg({ id: "n", kind: "npm", args: ["test"] }))).toBeNull();
@@ -356,7 +365,7 @@ describe("debugging build tool configurations", () => {
   ])("debugs Maven's own JVM for the in-process goal %s", (goal) => {
     const out = jdwpLaunch(cfg({ id: "m", kind: "maven", args: ["clean", goal], env: { MAVEN_OPTS: "-Xmx1g" } }))!;
     expect(out.args).toEqual(["clean", goal]);
-    expect(out.env.MAVEN_OPTS).toMatch(/^-Xmx1g -agentlib:jdwp=/);
+    expect(out.env.MAVEN_OPTS).toMatch(/^-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(out.env.MAVEN_OPTS).toMatch(AGENT);
   });
 
@@ -375,21 +384,49 @@ describe("debugging build tool configurations", () => {
     const out = jdwpLaunch(rc)!;
     expect(out.command).toBe(command);
     expect(out.args).toEqual(args);
+    expect(out.env.JAVA_TOOL_OPTIONS).toMatch(/^-XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(out.env.JAVA_TOOL_OPTIONS).toMatch(AGENT);
     const merged = jdwpLaunch({ ...rc, env: { JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8" } })!;
-    expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -agentlib:jdwp=/);
+    expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -XX:\+StartAttachListener -agentlib:jdwp=/);
   });
 
   it("debugs a single Java file: the agent before the file, or for java only on a javac line", () => {
     const source = jdwpLaunch(cfg({ id: "f", kind: "java-file", command: "/bin/java", args: ["Hi.java"] }))!;
-    expect(source.args).toEqual([expect.stringMatching(AGENT), "Hi.java"]);
+    expect(source.args).toEqual(["-XX:+StartAttachListener", expect.stringMatching(AGENT), "Hi.java"]);
     const line = "mkdir -p /tmp/c && /bin/javac -g -d /tmp/c Test.java && /bin/java -cp /tmp/c Test";
     const compiled = jdwpLaunch(
       cfg({ id: "f", kind: "java-file", command: line, env: { JDK_JAVA_OPTIONS: "-Xmx1g" } }),
     )!;
     expect(compiled).toMatchObject({ command: line, args: [] });
-    expect(compiled.env.JDK_JAVA_OPTIONS).toMatch(/^-Xmx1g -agentlib:jdwp=/);
+    expect(compiled.env.JDK_JAVA_OPTIONS).toMatch(/^-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(compiled.env.JAVA_TOOL_OPTIONS).toBeUndefined();
+  });
+
+  it("keeps the user's attach opt-out: the agent is still added, the listener is not", () => {
+    const off = "-XX:+DisableAttachMechanism";
+    const script = cfg({ id: "s", kind: "shell", command: "./run.sh", debugAdapter: "java-debug" });
+    expect(jdwpLaunch({ ...script, env: { JAVA_TOOL_OPTIONS: off } })!.env.JAVA_TOOL_OPTIONS).toBe(
+      `${off} ${JDWP_AGENT}`,
+    );
+    const maven = cfg({ id: "m", kind: "maven", args: ["jetty:run"], env: { MAVEN_OPTS: "-XX:-StartAttachListener" } });
+    expect(jdwpLaunch(maven)!.env.MAVEN_OPTS).toBe(`-XX:-StartAttachListener ${JDWP_AGENT}`);
+    const javaFile = cfg({ id: "j", kind: "java-file", command: "java", env: { JDK_JAVA_OPTIONS: off } });
+    expect(jdwpLaunch(javaFile)!.env.JDK_JAVA_OPTIONS).toBe(`${off} ${JDWP_AGENT}`);
+    const file = cfg({ id: "f", kind: "java-file", command: "java", args: [off, "Hi.java"] });
+    expect(jdwpLaunch(file)!.args).toEqual([JDWP_AGENT, off, "Hi.java"]);
+    const boot = cfg({ id: "b", kind: "maven", args: ["spring-boot:run", `-Dspring-boot.run.jvmArguments=${off}`] });
+    expect(jdwpLaunch(boot)!.args[1]).toBe(`-Dspring-boot.run.jvmArguments=${off} ${JDWP_AGENT}`);
+    const surefire = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", `-DargLine=${off}`] }))!;
+    expect(surefire.args).toEqual(["test", `-DargLine=${off}`, `-Dmaven.surefire.debug=${JDWP_AGENT}`]);
+    // VM options of the configuration count as well as the channel's own value.
+    const withVm = jdwpLaunch({ ...script, params: { vmOptions: off } })!;
+    expect(withVm.env.JAVA_TOOL_OPTIONS).toBe(JDWP_AGENT);
+  });
+
+  it("detects VM options that decide about the attach mechanism", () => {
+    for (const text of ["-XX:+StartAttachListener", "-XX:-StartAttachListener", "-Xmx1g -XX:+DisableAttachMechanism"])
+      expect(optsOutOfAttach(text)).toBe(true);
+    for (const text of ["", "-Xmx1g -agentlib:jdwp=transport=dt_socket"]) expect(optsOutOfAttach(text)).toBe(false);
   });
 
   it("leaves Application configurations and other debuggers alone", () => {
