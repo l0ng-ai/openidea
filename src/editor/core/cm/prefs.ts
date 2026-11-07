@@ -276,9 +276,11 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     }
     const block = indentPastedText(text, targetCol, useTabs ? "\t" : " ", tabSize, unitCols);
     const out = prefix + (prefix ? block.trimStart() : block);
+    const formatted = start.changes({ from, to, insert: out });
     const first: TransactionSpec = {
-      changes: { from, to, insert: out },
-      selection: EditorSelection.cursor(from + out.length),
+      changes: formatted,
+      // Keep line-wise paste carets on their original text after reformatting.
+      selection: tr.newSelection.map(tr.changes.invertedDesc, 1).map(formatted, 1),
       userEvent: "input.paste",
       scrollIntoView: true,
     };
@@ -293,7 +295,7 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     if (lineStart > lineEnd) return first;
     const reindent = indentRange(pasted, lineStart, lineEnd);
     if (reindent.empty) return first;
-    return [first, { changes: reindent, selection: EditorSelection.cursor(reindent.mapPos(end, 1)), sequential: true }];
+    return [first, { changes: reindent, selection: pasted.selection.map(reindent, 1), sequential: true }];
   });
 }
 

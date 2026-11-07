@@ -8,6 +8,7 @@ import {
   clipboardHistory,
   copiedText,
   installClipboardTracking,
+  isLinewiseClipboardText,
   recordClipboard,
 } from "./clipboardHistory";
 
@@ -19,10 +20,13 @@ describe("clipboard history (Paste from History)", () => {
     recordClipboard("b");
     recordClipboard("a");
     recordClipboard("");
-    expect(clipboardHistory()).toEqual(["a", "b"]);
+    expect(clipboardHistory()).toEqual([
+      { text: "a", linewise: false },
+      { text: "b", linewise: false },
+    ]);
     for (let i = 0; i < MAX_CLIPBOARD_ENTRIES + 5; i++) recordClipboard(`x${i}`);
     expect(clipboardHistory()).toHaveLength(MAX_CLIPBOARD_ENTRIES);
-    expect(clipboardHistory()[0]).toBe(`x${MAX_CLIPBOARD_ENTRIES + 4}`);
+    expect(clipboardHistory()[0]?.text).toBe(`x${MAX_CLIPBOARD_ENTRIES + 4}`);
   });
 
   it("copies the selections, or whole caret lines without a selection", () => {
@@ -43,7 +47,36 @@ describe("clipboard history (Paste from History)", () => {
         EditorSelection.cursor(5),
       ]),
     });
-    expect(copiedText(carets)).toBe("one\ntwo\n");
+    expect(copiedText(carets)).toBe("one\ntwo");
+  });
+
+  it("keeps a line-wise flag with older history entries and restores it when promoted", () => {
+    recordClipboard("one", true);
+    recordClipboard("two");
+    expect(clipboardHistory()).toEqual([
+      { text: "two", linewise: false },
+      { text: "one", linewise: true },
+    ]);
+    expect(isLinewiseClipboardText("two")).toBe(false);
+    expect(isLinewiseClipboardText("one")).toBe(false);
+    const entry = clipboardHistory()[1]!;
+    recordClipboard(entry.text, entry.linewise);
+    expect(isLinewiseClipboardText("one")).toBe(true);
+    expect(isLinewiseClipboardText("one\n")).toBe(false);
+    expect(isLinewiseClipboardText("other app")).toBe(false);
+  });
+
+  it("replaces the flag when the same text is copied as a selection", () => {
+    recordClipboard("one", true);
+    recordClipboard("one");
+    expect(clipboardHistory()).toEqual([{ text: "one", linewise: false }]);
+    expect(isLinewiseClipboardText("one")).toBe(false);
+  });
+
+  it("clears remembered line-wise text with the history", () => {
+    recordClipboard("one", true);
+    clearClipboardHistory();
+    expect(isLinewiseClipboardText("one")).toBe(false);
   });
 
   it("labels rows by their first non-blank line and line count", () => {
@@ -62,7 +95,7 @@ describe("clipboard history (Paste from History)", () => {
       document.body.appendChild(input);
       input.setSelectionRange(6, 11);
       input.dispatchEvent(new Event("copy", { bubbles: true }));
-      expect(clipboardHistory()[0]).toBe("world");
+      expect(clipboardHistory()[0]).toEqual({ text: "world", linewise: false });
       input.remove();
     });
   });

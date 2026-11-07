@@ -9,16 +9,26 @@ import { tx } from "@/platform/i18n";
 
 export const MAX_CLIPBOARD_ENTRIES = 30;
 
-let entries: string[] = [];
+interface ClipboardEntry {
+  text: string;
+  linewise: boolean;
+}
 
-export function clipboardHistory(): readonly string[] {
+let entries: ClipboardEntry[] = [];
+
+export function clipboardHistory(): readonly ClipboardEntry[] {
   return entries;
 }
 
 /** Adds `text` on top; an existing equal entry moves up instead of repeating. */
-export function recordClipboard(text: string) {
-  if (!text) return;
-  entries = [text, ...entries.filter((e) => e !== text)].slice(0, MAX_CLIPBOARD_ENTRIES);
+export function recordClipboard(text: string, linewise = false) {
+  if (!text && !linewise) return;
+  entries = [{ text, linewise }, ...entries.filter((e) => e.text !== text)].slice(0, MAX_CLIPBOARD_ENTRIES);
+}
+
+/** Only the latest copy determines the current clipboard's paste mode. */
+export function isLinewiseClipboardText(text: string): boolean {
+  return entries[0]?.linewise === true && entries[0].text === text;
 }
 
 export function clearClipboardHistory() {
@@ -41,7 +51,7 @@ export function copiedText(state: EditorState): string {
     last = line.number;
     lines.push(line.text);
   }
-  return lines.join(state.lineBreak) + state.lineBreak;
+  return lines.join(state.lineBreak);
 }
 
 /** Label of a history row: first non-blank line, shortened, plus the line count. */
@@ -53,9 +63,16 @@ export function clipLabel(text: string, max = 80): { label: string; detail: stri
   return { label, detail: count > 1 ? tx`${count} lines` : undefined };
 }
 
+function recordEditorClipboard(_e: Event, view: EditorView) {
+  recordClipboard(
+    copiedText(view.state),
+    view.state.selection.ranges.every((r) => r.empty),
+  );
+}
+
 export const clipboardHistoryExtension = EditorView.domEventHandlers({
-  copy: (_e, view) => void recordClipboard(copiedText(view.state)),
-  cut: (_e, view) => void recordClipboard(copiedText(view.state)),
+  copy: recordEditorClipboard,
+  cut: recordEditorClipboard,
 });
 
 /** Copies outside editors (inputs, tool windows) go into the history too. */
