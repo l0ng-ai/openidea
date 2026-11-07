@@ -265,6 +265,26 @@ mod imp {
         p.find_files(glob, limit).map_err(error)
     }
 
+    pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
+        p.exists(path).map_err(error)
+    }
+
+    pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        use wit::workspace::FileKind as K;
+        p.stat(path)
+            .map(|s| FileStat {
+                kind: match s.kind {
+                    K::File => FileKind::File,
+                    K::Directory => FileKind::Directory,
+                    K::Symlink => FileKind::Symlink,
+                    K::Other => FileKind::Other,
+                },
+                size: s.size,
+                modified: s.modified,
+            })
+            .map_err(error)
+    }
+
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
         use wit::diagnostics::{Diagnostic as D, RelatedInformation as R, Severity as S};
         let items: Vec<D> = items
@@ -424,9 +444,23 @@ impl Project {
     }
 
     /// Reads a UTF-8 file inside the project (absolute or root-relative);
-    /// unsaved editor contents win. Needs `project.read`.
+    /// unsaved editor contents win. A missing path is `Error::NotFound`.
+    /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Whether `path` names an existing file or directory inside the project
+    /// — including hidden and ignored ones — without reading any content.
+    /// Needs `project.read`.
+    pub fn exists(&self, path: &str) -> Result<bool, Error> {
+        imp::project_exists(&self.inner, path)
+    }
+
+    /// Metadata of an existing path inside the project; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn stat(&self, path: &str) -> Result<FileStat, Error> {
+        imp::project_stat(&self.inner, path)
     }
 
     /// The repository containing the project (`None`: not under git). Needs `vcs.read`.

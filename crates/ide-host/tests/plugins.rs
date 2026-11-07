@@ -361,6 +361,9 @@ fn read_file_is_confined_to_the_project() {
     let err = f.run("misbehave", "read", Some("src/../../secret.txt")).unwrap_err();
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
+    // A missing path inside the project is `not-found`, like the mock reports.
+    let err = f.run("misbehave", "read", Some("src/missing.txt")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
     // Without a project there is nothing to read.
     let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;

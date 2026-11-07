@@ -55,6 +55,7 @@ struct State {
     root: Option<String>,
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
+    dirs: BTreeSet<String>,
     editor: Option<Editor>,
     selected_paths: Vec<String>,
     notifications: Vec<Notification>,
@@ -147,6 +148,12 @@ impl MockHost {
     /// A project file `read_file` can return (project-relative or absolute path).
     pub fn add_file(&self, path: &str, text: &str) {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
+    }
+
+    /// A project directory `exists` and `stat` report (project-relative or
+    /// absolute path); file paths count as existing too.
+    pub fn add_dir(&self, path: &str) {
+        self.state.borrow_mut().dirs.insert(path.to_owned());
     }
 
     /// Sets the paths invocations report as selected.
@@ -527,19 +534,63 @@ pub mod current {
         })
     }
 
+    /// `path` inside `p`'s root as a project-relative key, or `Invalid` for a
+    /// path leaving the root (as the host does).
+    fn rel_in_root<'a>(p: &ProjectRes, path: &'a str) -> Result<&'a str, Error> {
+        let root = p.root.as_str();
+        let rel = path.strip_prefix(root).map(|p| p.trim_start_matches('/')).unwrap_or(path);
+        if rel.starts_with('/') || rel.split('/').any(|seg| seg == "..") {
+            return Err(Error::Invalid(format!("{path}: access outside the project root is not allowed")));
+        }
+        Ok(rel)
+    }
+
+    fn path_known(s: &State, p: &ProjectRes, path: &str, rel: &str) -> bool {
+        let root = p.root.as_str();
+        s.files.contains_key(rel)
+            || s.files.contains_key(path)
+            || s.dirs.contains(rel)
+            || s.dirs.contains(path)
+            || s.editor.as_ref().is_some_and(|e| e.path == path || e.path == format!("{root}/{rel}"))
+    }
+
     pub fn project_read(p: &ProjectRes, path: &str) -> Result<String, Error> {
         with(|s| {
             require(s, "project.read")?;
             let root = p.root.as_str();
-            let rel = path.strip_prefix(root).map(|p| p.trim_start_matches('/')).unwrap_or(path);
-            if rel.starts_with('/') || rel.split('/').any(|seg| seg == "..") {
-                return Err(Error::Invalid(format!("{path}: access outside the project root is not allowed")));
-            }
+            let rel = rel_in_root(p, path)?;
             let open = s.editor.as_ref().filter(|e| e.path == path || e.path == format!("{root}/{rel}"));
             if let Some(e) = open {
                 return Ok(e.text.clone());
             }
             s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })
+    }
+
+    pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let rel = rel_in_root(p, path)?;
+            Ok(rel.is_empty() || path_known(s, p, path, rel))
+        })
+    }
+
+    pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let rel = rel_in_root(p, path)?;
+            if !path_known(s, p, path, rel) {
+                return if rel.is_empty() {
+                    Ok(FileStat { kind: FileKind::Directory, size: 0, modified: None })
+                } else {
+                    Err(Error::NotFound(path.into()))
+                };
+            }
+            let file = s.files.get(rel).or_else(|| s.files.get(path));
+            let open = s.editor.as_ref().filter(|e| e.path == path || e.path == format!("{}/{rel}", p.root));
+            let kind = if file.is_some() || open.is_some() { FileKind::File } else { FileKind::Directory };
+            let size = file.or_else(|| open.map(|e| &e.text)).map_or(0, |t| t.len() as u64);
+            Ok(FileStat { kind, size, modified: None })
         })
     }
 
@@ -889,6 +940,35 @@ mod tests {
             assert!(task.is_cancelled());
         }
         assert!(mock.tasks()[0].ended);
+    }
+
+    #[test]
+    fn exists_and_stat_report_missing_as_not_found() {
+        let mock = MockHost::install();
+        mock.add_file("src/a.txt", "hello");
+        mock.add_dir("src");
+        mock.add_dir(".hidden");
+        let project = mock.invocation().project().unwrap();
+        assert!(project.exists("src/a.txt").unwrap());
+        assert!(project.exists("src").unwrap());
+        assert!(project.exists(".hidden").unwrap());
+        assert!(project.exists("/project/src/a.txt").unwrap());
+        assert!(!project.exists("missing.txt").unwrap());
+        assert!(!project.exists("missing/dir").unwrap());
+        assert!(matches!(project.exists("../outside"), Err(Error::Invalid(_))));
+        assert!(matches!(project.read_file("missing.txt"), Err(Error::NotFound(_))));
+
+        let file = project.stat("src/a.txt").unwrap();
+        assert_eq!((file.kind, file.size), (FileKind::File, 5));
+        let dir = project.stat("src").unwrap();
+        assert_eq!(dir.kind, FileKind::Directory);
+        assert!(matches!(project.stat("missing.txt"), Err(Error::NotFound(_))));
+        assert!(matches!(project.stat("../outside"), Err(Error::Invalid(_))));
+
+        let read_only = MockHost::install().with_capabilities(&[]);
+        let project = read_only.invocation().project().unwrap();
+        assert!(matches!(project.exists("x"), Err(Error::Denied(_))));
+        assert!(matches!(project.stat("x"), Err(Error::Denied(_))));
     }
 
     #[test]

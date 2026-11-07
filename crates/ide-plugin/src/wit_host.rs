@@ -424,12 +424,66 @@ impl workspace::HostProject for StoreData {
         let root = self.table.get(&this)?.root.clone();
         let real = match sandbox::resolve_in_root(&root, &path) {
             Ok(real) => real,
-            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
         };
         if let Some(text) = self.host.buffer_text(&real) {
             return Ok(Ok(text));
         }
         Ok(sandbox::read_text(&real).map_err(wit::Error::Failed))
+    }
+
+    fn exists(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<bool> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        match sandbox::inside_root(&root, &path) {
+            Err(e) => Ok(Err(wit::Error::Invalid(e))),
+            Ok(false) => {
+                Ok(Err(wit::Error::Invalid(format!("{path}: access outside the project root is not allowed"))))
+            }
+            Ok(true) => {
+                let requested = Path::new(&path);
+                let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+                Ok(Ok(joined.exists()))
+            }
+        }
+    }
+
+    fn stat(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<workspace::FileStat> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
+        };
+        let meta = match std::fs::symlink_metadata(&real) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Err(wit::Error::NotFound(format!("{path}: no such file"))));
+            }
+            Err(e) => return Ok(Err(wit::Error::Failed(e.to_string()))),
+        };
+        let kind = if meta.is_file() {
+            workspace::FileKind::File
+        } else if meta.is_dir() {
+            workspace::FileKind::Directory
+        } else if meta.is_symlink() {
+            workspace::FileKind::Symlink
+        } else {
+            workspace::FileKind::Other
+        };
+        let modified =
+            meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+        Ok(Ok(workspace::FileStat { kind, size: meta.len(), modified }))
     }
 
     fn find_files(&mut self, this: Resource<ProjectRes>, glob: String, limit: u32) -> Fallible<Vec<String>> {
