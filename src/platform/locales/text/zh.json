@@ -4726,7 +4726,6 @@
   "Find in Conversation": "在对话中查找",
   "Find in conversation": "在对话中查找",
   "0 results": "0 个结果",
-  "Time the agent took to answer": "智能体回答所用的时间",
   "Time the agent spent on this task": "智能体在此任务上花费的时间",
   "Send Again": "再次发送",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "自定义 IDE 的外观和行为：更改主题和字号，配置系统设置和通知。",
@@ -6688,7 +6687,6 @@
   "Read-only: the result has no primary key of {tableLabel}.": "只读：结果中没有 {tableLabel} 的主键。",
   "Starting the dev container…": "正在启动开发容器…",
   "Command-line tool": "命令行工具",
-  "Forwarding ports is not supported in a dev container yet": "开发容器暂不支持端口转发",
   "Could not reopen the project in a container": "无法在容器中重新打开项目",
   "Reopen in Container": "在容器中重新打开",
   "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.": "使用 Dev Containers CLI 构建或启动项目的开发容器（devcontainer.json），并在其中打开项目。",
@@ -6725,5 +6723,11 @@
   "Copy Path From Source Root": "复制相对于源根的路径",
   "Copied {text}": "已复制 {text}",
   "Reference": "引用",
-  "Insert imports on paste": "粘贴时插入导入"
+  "Insert imports on paste": "粘贴时插入导入",
+  "You": "你",
+  "Jump to Latest": "跳转到最新位置",
+  "Retract Message": "撤回消息",
+  "Retract": "撤回",
+  "Couldn't retract the message": "无法撤回消息",
+  "The agent is still stopping. Try again once it has stopped.": "智能体仍在停止中。请在停止后重试。"
 }
