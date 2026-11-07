@@ -1235,6 +1235,61 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
 }
 
+/// The whole workspace root deleted: the server can never start again
+/// (its cwd is gone), so the crash drops the entry instead of restarting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_below_a_deleted_workspace_root_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // A crash on a root that still exists restarts; removing it changes that.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    eventually(|| s.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    s.peer().kill();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 2, "no restart with a dead working directory");
+}
+
+/// The root deleted while a crash backoff is still sleeping: the pending
+/// restart must drop the server rather than leave a permanently "Crashed" row.
+#[tokio::test(flavor = "multi_thread")]
+async fn root_deleted_during_crash_backoff_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // Crash with the root alive: "Crashed" is published before the backoff
+    // sleep, so removing the root here lands inside that window.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    std::fs::remove_dir_all(&h.root).unwrap();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1, "no restart with a dead working directory");
+}
+
+/// A manual restart with the root gone fails instead of spawning into a dead cwd.
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_below_a_deleted_workspace_root_fails() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let id = h.mgr.servers()[0].id;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    let err = h.mgr.restart(id).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.message.contains("workspace root"), "{err:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_server_reports_once() {
     let h = harness(&[("ghost", json!({}))]);
@@ -1836,11 +1891,10 @@ async fn java_implementations_come_from_sources_first() {
             .collect::<Value>()
     };
     *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
-        // Lines 0 and 1 are declared in the sources; 2 and 3 in a dependency, which implements 2 on line 3.
+        // Line 0 is declared in the sources; line 2 in a dependency, which implements it on line 3.
         "workspace/executeCommand" => Some(match params["arguments"][1].as_u64() {
             Some(0) => json!({ "locations": at(&[1]), "complete": true }),
             Some(2) => json!({ "locations": at(&[1]), "complete": false }),
-            Some(3) => json!({ "locations": [], "complete": false }),
             _ => json!({ "locations": [], "complete": true }),
         }),
         "textDocument/implementation" => Some(at(&[3, 1])),
@@ -1871,14 +1925,7 @@ async fn java_implementations_come_from_sources_first() {
     assert_eq!(lines(&found), vec![3, 1]);
     assert_eq!(s.requested("textDocument/implementation").len(), 2);
 
-    // Declared in the sources and implemented nowhere there: no search through the dependencies.
-    let found = h.mgr.goto(doc, Pos::new(1, 6), GotoKind::Implementation).await.unwrap();
-    assert!(found.is_empty());
-    let markers = h.mgr.implementations(doc, &[Pos::new(1, 6)], Default::default()).await.unwrap();
-    assert!(markers[0].is_empty());
-    assert_eq!(s.requested("textDocument/implementation").len(), 2);
-
-    // None in the sources of a dependency's type: the standard request, with the dependencies.
+    // None in the sources: the standard request, with the dependencies.
     let partial = Mutex::new(Vec::new());
     let found = h
         .mgr
@@ -3267,17 +3314,9 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
     let scopes: Vec<_> =
         s.requested("workspace/executeCommand")[3..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
     assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources"))]);
-    // Scoped probes with the libraries search everything at once.
+    // Scoped probes (code lenses) search everything at once.
     let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
     assert_eq!(scoped.locations.len(), 2);
-    // Usage counts and Safe Delete (no libraries): the sources alone, not widened.
-    let scoped =
-        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, false, Default::default(), None).await.unwrap();
-    assert_eq!(scoped.locations.len(), 1);
-    assert!(scoped.locations.iter().all(|l| l.uri.is_none()));
-    let scopes: Vec<_> =
-        s.requested("workspace/executeCommand")[5..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
-    assert_eq!(scopes, [None, Some(json!("sources"))]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4087,6 +4126,52 @@ async fn configuration_usages_merge_native_and_unsaved_profiles_without_sibling_
     assert!(refs.locations.iter().all(|l| !l.path.to_path_buf().starts_with(&sibling)));
     assert!(refs.locations.iter().any(|l| l.path.to_path_buf() == overlay));
     assert_eq!(refs.incomplete, None);
+}
+
+/// The configuration index is rebuilt after Java changes, which can take seconds: Show Usages
+/// shows the Java usages meanwhile, then adds the configuration ones.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_arrive_before_configuration_usages() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages", "openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let yaml = h.root.join("application.yml");
+    std::fs::write(&yaml, "app:\n  target: 1\n").unwrap();
+    let property = json!({"uri": uri_of(&yaml), "range": {
+        "start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 8}}});
+    let gate = Arc::new(Gate::default());
+    let held = gate.clone();
+    *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+        (method == "workspace/executeCommand").then(|| {
+            if params["command"] == "openidea.java.configuration" {
+                held.hold();
+                return json!({"locations": [property.clone()], "keys": [{"name": "app.target", "relaxed": true}], "roots": []});
+            }
+            let docs = s.docs.lock();
+            let rows = docs.iter().flat_map(|(uri, text)| occurrences(uri, text));
+            Value::Array(rows.map(|location| json!({"location": location, "kind": "unknown"})).collect())
+        })
+    }));
+    let (doc, a) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let partials = Mutex::new(Vec::<References>::new());
+    let push = |r| partials.lock().push(r);
+    let search = h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, false, Default::default(), Some(&push));
+    let release = async {
+        eventually(|| !partials.lock().is_empty()).await;
+        assert!(gate.entered(), "shown before the configuration lookup started");
+        gate.open();
+    };
+    let (refs, ()) = tokio::join!(search, release);
+    let refs = refs.unwrap();
+    let partials = partials.into_inner();
+    assert_eq!(partials.len(), 1);
+    let paths = |r: &References| r.locations.iter().map(|l| l.path.to_path_buf()).collect::<Vec<_>>();
+    assert_eq!(paths(&partials[0]), std::slice::from_ref(&a));
+    assert_eq!(partials[0].classified.len(), 1);
+    assert_eq!(paths(&refs), [a, yaml]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

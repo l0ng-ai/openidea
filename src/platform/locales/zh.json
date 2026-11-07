@@ -178,6 +178,7 @@
   "menu.file.openInNewWindow": "在新窗口中打开…",
   "menu.file.openProject": "打开…",
   "menu.file.save": "全部保存",
+  "menu.file.projectStructure": "项目结构…",
   "menu.file.settings": "设置…",
   "menu.find": "查找",
   "menu.find.inFile": "查找…",

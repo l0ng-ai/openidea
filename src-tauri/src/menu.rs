@@ -230,6 +230,8 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("file.reloadAllFromDisk", "Reload All from Disk"),
         sub("fileProperties", "File Properties", vec![act("file.toggleReadOnly", "Make File Read-only / Writable")]),
         SEP,
+        act("file.projectStructure", "Project Structure…"),
+        SEP,
         act("file.invalidateCaches", "Invalidate Caches…"),
         SEP,
         sub(
@@ -1632,6 +1634,7 @@ mod tests {
                 "file.openInNewWindow",
                 "file.closeProject",
                 "file.save",
+                "file.projectStructure",
                 "file.settings",
                 "file.newProjectsSettings",
                 "window.new",

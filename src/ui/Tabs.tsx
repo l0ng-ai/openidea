@@ -22,9 +22,9 @@ import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
 import { tooltipAttrs } from "./Tooltip";
 import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
-import { T } from "./T";
+import { Given } from "./T";
 import styles from "./Tabs.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, useGivenTx } from "@/platform/i18n";
 
 export interface TabItem {
   id: string;
@@ -152,6 +152,7 @@ export function Tabs({
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
+  const given = useGivenTx();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const [overflow, setOverflow] = useState(false);
@@ -283,7 +284,7 @@ export function Tabs({
 
   const menuItems: MenuItem[] = items.map((t) => ({
     id: t.id,
-    label: tx(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
+    label: given(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
     icon: t.icon,
     checked: t.id === activeId ? true : undefined,
     run: () => onSelect(t.id),
@@ -316,7 +317,7 @@ export function Tabs({
       <div
         ref={scrollRef}
         role="tablist"
-        aria-label={tx(aria["aria-label"])}
+        aria-label={given(aria["aria-label"])}
         aria-orientation={vertical ? "vertical" : undefined}
         className={styles.scroller}
         onWheel={(e) => {
@@ -411,11 +412,11 @@ export function Tabs({
                 }}
                 onDoubleClick={onDoubleClick ? () => onDoubleClick(item.id) : undefined}
                 onKeyDown={(e) => onKeyDown(e, index, item)}
-                {...tooltipAttrs(item.tooltip)}
+                {...tooltipAttrs(given(item.tooltip), undefined, true)}
               >
                 {item.icon && <Icon name={item.icon} size={14} className={styles.tabIcon} />}
                 <span className={clsx(styles.tabLabel, item.italic && styles.italic)}>
-                  {typeof item.label === "string" ? <T>{item.label}</T> : item.label}
+                  {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}
                 {item.modified && !closable && <span className={styles.modified} aria-label={tx("Modified")} />}

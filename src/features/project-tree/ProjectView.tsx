@@ -20,7 +20,6 @@ import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { revealRange, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
-import { setContext } from "@/platform/context";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { isTauri } from "@/platform/ipc";
 import { nativeDropPoint } from "@/platform/nativeDrop";
@@ -779,8 +778,6 @@ export function ProjectView() {
       onCopy={(e) => onClipboard(e, "project.copy")}
       onCut={(e) => onClipboard(e, "project.cut")}
       onPaste={(e) => onClipboard(e, "project.paste")}
-      onFocus={(e) => setContext("projectViewFocus", (e.target as HTMLElement).getAttribute("role") === "tree")}
-      onBlur={() => setContext("projectViewFocus", false)}
     >
       {mode === "unity" && unity && !unity.projects.length && (
         <div className={styles.unityNotice} role="status">
@@ -795,6 +792,7 @@ export function ProjectView() {
       <Tree<ProjectNode>
         horizontalScroll
         aria-label="Project"
+        focusContext="projectViewFocus"
         handleRef={setTreeHandle}
         roots={model.roots}
         getKey={getKey}
