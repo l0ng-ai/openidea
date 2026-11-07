@@ -233,3 +233,11 @@ describe("Go rerun argument boundaries", () => {
     expect(rerun.args).toEqual(["test", "-run", "^(TestFail)$", "main_test.go"]);
   });
 });
+
+it("keeps inherited Go build tags enabled when deriving a typed package rerun", () => {
+  const config = {
+    ...cfg("go", "go", ["test", "./..."]),
+    params: { goKind: "test", scope: "package", target: "./..." },
+  };
+  expect(rerunFailedConfig(config, [["example.com/p", "TestChosen"]])!.params?.useTags).toBe("true");
+});

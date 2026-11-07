@@ -77,7 +77,11 @@ pub fn apply_to_run(config: &mut ide_run::RunConfig, tags: &GoBuildTags) {
             }
         }
     }
-    if config.extras.params.get("useTags").is_some_and(|v| v == "true") {
+    if config.extras.params.get("useTags").is_none_or(|value| value != "false")
+        && config.args.first().is_some_and(|operation| {
+            matches!(operation.as_str(), "run" | "build" | "test" | "generate" | "vet" | "list" | "install" | "clean")
+        })
+    {
         let extra = settings["buildFlags"]
             .as_array()
             .into_iter()
@@ -198,6 +202,27 @@ pub fn apply_to_debug(
 mod command_tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn detected_go_runs_inherit_tags_only_for_commands_that_accept_build_flags() {
+        let tags = GoBuildTags { custom: "integration".into(), ..Default::default() };
+        for operation in
+            ["run", "build", "test", "generate", "vet", "list", "install", "clean", "mod", "work", "env", "version"]
+        {
+            let mut config: ide_run::RunConfig = serde_json::from_value(json!({
+                "id":"go", "name":"Go", "kind":"go", "command":"go", "args":[operation, "."],
+                "env":{}, "detected":true, "isTest":false
+            }))
+            .unwrap();
+            let accepts = !["mod", "work", "env", "version"].contains(&operation);
+            apply_to_run(&mut config, &tags);
+            assert_eq!(config.args.iter().any(|flag| flag == "-tags=integration"), accepts, "{operation}");
+            config.args = vec![operation.into(), "-tags=explicit".into(), ".".into()];
+            config.extras.params.insert("useTags".into(), "false".into());
+            apply_to_run(&mut config, &tags);
+            assert_eq!(config.args, [operation, "-tags=explicit", "."]);
+        }
+    }
 
     #[test]
     fn merges_custom_tags_without_touching_program_arguments() {

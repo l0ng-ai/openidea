@@ -194,7 +194,7 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
                   pattern: args[args.indexOf("-run") + 1] ?? "",
                   toolArgs: formatArgs(withoutGoSelection(goTestParts(args).flags)),
                 }
-              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "false" },
+              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "true" },
         }
       : {}),
   };
