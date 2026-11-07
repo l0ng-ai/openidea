@@ -27,6 +27,7 @@
   "connect_timeout must be greater than zero": "connect_timeout must be greater than zero",
   "database connection is closed": "database connection is closed",
   "Database": "Database",
+  "Observe editor, filesystem and version control events": "Observe editor, filesystem and version control events",
   "Run `{command}` in a terminal.": "Run `{command}` in a terminal.",
   "Run `{command}` in a terminal and sign in.": "Run `{command}` in a terminal and sign in.",
   "{name} needs you to sign in. {hint}": "{name} needs you to sign in. {hint}",

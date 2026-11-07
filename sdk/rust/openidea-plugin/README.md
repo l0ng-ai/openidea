@@ -3,6 +3,19 @@
 The Rust API is documented by `cargo doc`. Web pages shipped alongside a Rust
 component use `window.openidea` rather than Rust imports.
 
+API 1.3 adds `Event::FilesChanged(FilesChanged)` for debounced external file
+creation, modification and removal in open projects. Declare
+`engines.openidea = "^1.3"`, the `events` capability and
+`activation = ["on-event:files-changed"]`, then handle the typed event in
+`Plugin::handle_events`. Use `host::subscribe_paths("files-changed", &["config/**"])`
+to receive only matching project-relative paths in each category. An empty
+filter pauses delivery. Paths are absolute, like `Event::FileSaved`; pending
+batches are discarded when their project closes. The released WIT variant
+is unchanged: the SDK decodes `event::other` with kind `files-changed`.
+
+See [the event contract](../../../plugins/README.md#events)
+and the [real Wasm fixture](../../../crates/ide-plugin/tests/fixtures/files-events).
+
 API 1.3 adds capability-gated interactive PTYs to that web bridge. Declare
 `engines.openidea = "^1.3"` and `process:<program>` in `plugin.toml`, then send
 `pty-spawn`, `pty-input`, `pty-resize` and `pty-kill` JSON strings using

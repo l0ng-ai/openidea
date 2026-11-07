@@ -510,6 +510,7 @@ from another feature, or nothing when run from Search Everywhere / a shortcut. `
 | Kind               | Capability     | Delivered                                                                 |
 | ------------------ | -------------- | ------------------------------------------------------------------------- |
 | `file-opened`      | `events`       | a file opens in an editor                                                 |
+| `files-changed`    | `events`       | debounced created, modified and removed paths in open projects (API 1.3)  |
 | `file-saved`       | `events`       | after the file is written                                                 |
 | `editor-focused`   | `events`       | the focused editor changes (path, or none)                                |
 | `vcs-changed`      | `events`       | a repository's state changed (commit, checkout, fetch…; its root)         |
@@ -518,7 +519,21 @@ from another feature, or nothing when run from Search Everywhere / a shortcut. `
 
 Events are batched: a running plugin gets them within a fraction of a second,
 an idle one collects them for 2 s before it is woken, so frequent events
-(Key Promoter's actions) don't keep it alive.
+(Key Promoter's actions) don't keep it alive. `files-changed` is already debounced
+by the project's watcher (100 ms quiet period, at most 1 s during a continuous
+burst), so it bypasses the idle delay. Queued filesystem batches coalesce paths;
+a later batch does not cancel an earlier one. Closed project sessions discard
+pending filesystem events. Excluded and git-ignored paths follow the normal
+project watcher rules; scratch files and language-server dependency watches do
+not produce this event.
+
+The released WIT event remains unchanged: `event::other` carries kind
+`files-changed` and JSON `{ "created": [...], "modified": [...], "removed": [...] }`.
+The Rust SDK exposes `Event::FilesChanged(FilesChanged)` and
+`EventKind::FilesChanged`. Paths have the same absolute form as `file-saved`.
+Subscribe with `host::subscribe(EventKind::FilesChanged)` or
+`activation = ["on-event:files-changed"]`. Plugins using this event must declare
+`engines.openidea = "^1.3"`.
 
 Kinds are names (`subscribe` takes a string), so later IDEs add kinds without
 a new API: an IDE refuses a kind it doesn't know with `invalid`, and a kind
@@ -527,7 +542,9 @@ The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 
 API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
 (`events.subscribe-paths`). The host matches project-relative globs before
-queueing an event or waking an idle plugin. `file-saved` works the same way.
+queueing an event or waking an idle plugin. `file-saved` and `files-changed` work
+the same way. For `files-changed`, each category is filtered and an empty batch
+is omitted; replacing or pausing a filter also affects batches already queued.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
 parent traversal and malformed patterns fail without replacing the old filter.
