@@ -833,6 +833,25 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
 #[cfg(test)]
 mod tests {
     #[test]
+    fn go_workspace_build_commands_compile_members_with_local_dependencies() {
+        let Some(go) = ide_core::process::find_executable("go", &ide_core::tool_path::search_path()) else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "go.work", "go 1.22\nuse (\n ./app\n ./lib\n)\n");
+        write(root, "lib/go.mod", "module example.com/lib\ngo 1.22\n");
+        write(root, "lib/lib.go", "package lib\nfunc Value() int { return 1 }\n");
+        write(root, "app/go.mod", "module example.com/app\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "app/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        let plan = plan(root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+        for step in plan.steps {
+            let result = std::process::Command::new(&go).args(&step.args).current_dir(&step.cwd).output().unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        }
+    }
+
+    #[test]
     fn go_workspace_builds_every_use_module() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("workspace");
