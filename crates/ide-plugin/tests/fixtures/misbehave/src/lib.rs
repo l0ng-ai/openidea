@@ -287,8 +287,20 @@ impl providers::Guest for Misbehave {
         Vec::new()
     }
 
-    fn line_markers(_doc: Document) -> Vec<LineMarker> {
-        Vec::new()
+    fn line_markers(doc: Document) -> Vec<LineMarker> {
+        if !doc.text.starts_with("marker-icons") {
+            return Vec::new();
+        }
+        ["run", "database", "icons/very-long-resource-marker-icon.svg", "overriding"]
+            .into_iter()
+            .enumerate()
+            .map(|(line, icon)| LineMarker {
+                line: line as u32,
+                icon: Some(icon.into()),
+                tooltip: format!("Marker: {icon}"),
+                target: None,
+            })
+            .collect()
     }
 }
 

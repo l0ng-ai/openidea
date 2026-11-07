@@ -997,7 +997,7 @@ impl Runtime {
             .take(MAX_PROVIDER_ITEMS)
             .map(|m| LineMarker {
                 line: m.line,
-                icon: m.icon.map(|i| clip(i, 32)),
+                icon: m.icon.map(|i| clip(i, 256)),
                 tooltip: clip(m.tooltip, 1024),
                 target: m.target.map(location_from_wit),
             })
