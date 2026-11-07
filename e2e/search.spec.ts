@@ -92,8 +92,12 @@ test("Find in Files streams matches by file and opens the chosen one at its line
   await dialog.getByRole("textbox", { name: "Text to find" }).fill("OrderService");
   const matches = dialog.getByRole("listbox", { name: "Matches" });
   await expect(matches.getByRole("option")).toHaveCount(3);
+  // The TODO index scans the project through `search_start` too, on its own schedule.
   await expect
-    .poll(async () => (await ipcCalls(page, "search_start")).at(-1)?.query)
+    .poll(
+      async () =>
+        (await ipcCalls(page, "search_start")).filter((c) => !/\bTODO\b/.test(c.query?.pattern ?? "")).at(-1)?.query,
+    )
     .toMatchObject({
       pattern: "OrderService",
     });

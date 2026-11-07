@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 pub use text_encoding::TextEncoding;
+pub use write::PendingChange;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1068,6 +1069,17 @@ impl Repo {
     ) -> IdeResult<String> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::commit(self, message, options, &|path| encoding(path).map(Into::into))
+    }
+    /// What [`Repo::commit_with`] would commit with `options`, file by file, without
+    /// committing or touching the index: patches against HEAD, `max_bytes` in all.
+    pub fn pending_changes<E: Into<TextEncoding>>(
+        &self,
+        options: &CommitOptions,
+        max_bytes: usize,
+        encoding: &dyn Fn(&Path) -> IdeResult<E>,
+    ) -> IdeResult<Vec<PendingChange>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::pending_changes(self, options, max_bytes, &|path| encoding(path).map(Into::into))
     }
     /// Switches to `branch`. With `create`, creates it at HEAD. Without, a remote branch
     /// (`origin/x`) gets a local tracking branch and any other revision is checked out

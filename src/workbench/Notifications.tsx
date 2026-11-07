@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useTxTemplate } from "@/platform/i18n";
+import { useTxTemplate, VerbatimTextContext } from "@/platform/i18n";
 import { EmptyState, IconButton, Toast, T } from "@/ui";
 import {
   balloonTimeout,
@@ -49,11 +49,24 @@ export function notificationActions(n: IdeNotification, wrap: (run: () => void) 
   return [...own, { label: DONT_SHOW_AGAIN, run: wrap(() => void suppressGroup(n.group).catch(() => {})) }];
 }
 
+/** Title and action labels in the UI language; a plugin's own text stays as written. */
+function useShownText() {
+  const txt = useTxTemplate();
+  return (n: IdeNotification) => {
+    const given = (s: string) => (n.verbatim ? s : txt(s));
+    const own = n.actions?.length ?? 0;
+    return {
+      title: given(n.title),
+      actions: notificationActions(n).map((a, i) => ({ ...a, label: i < own ? given(a.label) : txt(a.label) })),
+    };
+  };
+}
+
 function Balloon({ n }: { n: IdeNotification }) {
   const [hover, setHover] = useState(false);
   const active = useWindowActive();
   const remaining = useRef<number | null>(null);
-  const txt = useTxTemplate();
+  const shown = useShownText()(n);
   const ms = balloonTimeout(n);
   // IDEA's smart fade-out: the clock runs only while the window is active and the balloon not hovered.
   useEffect(() => {
@@ -67,22 +80,24 @@ function Balloon({ n }: { n: IdeNotification }) {
     };
   }, [n.id, ms, hover, active]);
   return (
-    <Toast
-      className={styles.balloon}
-      level={n.level}
-      title={txt(n.title)}
-      body={n.body}
-      actions={notificationActions(n).map((a) => ({
-        label: txt(a.label),
-        run: () => {
-          dismissBalloon(n.id);
-          a.run();
-        },
-      }))}
-      onClose={() => dismissBalloon(n.id)}
-      onPointerEnter={() => setHover(true)}
-      onPointerLeave={() => setHover(false)}
-    />
+    <VerbatimTextContext.Provider value={!!n.verbatim}>
+      <Toast
+        className={styles.balloon}
+        level={n.level}
+        title={shown.title}
+        body={n.body}
+        actions={shown.actions.map((a) => ({
+          label: a.label,
+          run: () => {
+            dismissBalloon(n.id);
+            a.run();
+          },
+        }))}
+        onClose={() => dismissBalloon(n.id)}
+        onPointerEnter={() => setHover(true)}
+        onPointerLeave={() => setHover(false)}
+      />
+    </VerbatimTextContext.Provider>
   );
 }
 
@@ -112,7 +127,7 @@ function useListVisible() {
 
 /** The Notifications tool window (right stripe, as in IDEA): history, newest first. */
 export function NotificationsToolWindow() {
-  const txt = useTxTemplate();
+  const shownText = useShownText();
   const all = useNotifications((s) => s.items);
   const items = all.filter((n) => n.logged);
   const visible = useListVisible();
@@ -127,18 +142,22 @@ export function NotificationsToolWindow() {
           <T>No notifications</T>
         </EmptyState>
       ) : (
-        items.map((n) => (
-          <Toast
-            key={n.id}
-            className={styles.entry}
-            level={n.level}
-            title={txt(n.title)}
-            body={n.body}
-            meta={timeLabel(n.time)}
-            actions={notificationActions(n).map((a) => ({ ...a, label: txt(a.label) }))}
-            onClose={() => removeNotification(n.id)}
-          />
-        ))
+        items.map((n) => {
+          const shown = shownText(n);
+          return (
+            <VerbatimTextContext.Provider key={n.id} value={!!n.verbatim}>
+              <Toast
+                className={styles.entry}
+                level={n.level}
+                title={shown.title}
+                body={n.body}
+                meta={timeLabel(n.time)}
+                actions={shown.actions}
+                onClose={() => removeNotification(n.id)}
+              />
+            </VerbatimTextContext.Provider>
+          );
+        })
       )}
     </div>
   );

@@ -245,14 +245,26 @@ describe("Go test targets", () => {
       id: "go:typed",
       kind: "go",
       cwd: "runtime",
-      args: ["test", "-tags", "demo", "-run", "Old", ".", "-args", "-test.short"],
+      args: [
+        "test",
+        "-tags",
+        "demo",
+        "-run",
+        "Old",
+        ".",
+        "-args",
+        "-test.run=Old",
+        "-test.bench",
+        "OldBench",
+        "-test.short",
+      ],
       params: {
         goKind: "test",
         module: "app",
         scope: "package",
         target: ".",
         pattern: "Old",
-        programArgs: "-test.short",
+        programArgs: "-test.run=Old -test.bench OldBench -test.short",
       },
     });
     const text = 'package calc\nfunc TestNew(t *testing.T) {\n t.Run("child case", func(t *testing.T) {})\n}';
@@ -273,6 +285,7 @@ describe("Go test targets", () => {
       scope: "directory",
       target: ".",
       pattern: "^TestNew$/^child_case$",
+      programArgs: "-test.short",
     });
   });
 });
@@ -315,5 +328,89 @@ describe("php (PHPUnit)", () => {
     const run = targetConfig(target, "tests/CalcTest.php", [phpunit], src);
     expect(run?.args).toEqual(["--filter", "/(CalcTest::testAdd( with data set .*)?)$/", "tests/CalcTest.php"]);
     expect(run?.command).toBe("vendor/bin/phpunit");
+  });
+});
+
+describe("php (Pest)", () => {
+  const src = [
+    "<?php", // 0
+    "",
+    "test('adds numbers', function () {", // 2
+    "    expect(1 + 1)->toBe(2);",
+    "});",
+    "",
+    'it("handles \\"quoted\\" names", fn () => true);', // 6
+    "",
+    "describe('division', function () {", // 8
+    "    it('divides', function () {", // 9
+    "        expect(4 / 2)->toBe(2);",
+    "    });",
+    "",
+    "    describe('by zero', function () {", // 13
+    "        test('throws', fn () => true);", // 14
+    "    });",
+    "});",
+    "",
+    "it('doubles', function (int $n) {", // 18
+    "    expect($n * 2)->toBe($n + $n);",
+    "})->with([1, 2, 3]);",
+    "// it('is commented out')",
+  ].join("\n");
+  const pest = cfg({ id: "phpunit", kind: "phpunit", command: "vendor/bin/pest" });
+  const run = (line: number) => {
+    const target = detectRunTargets(src, "tests/Unit/MathTest.php").find((t) => t.line === line)!;
+    return targetConfig(target, "tests/Unit/MathTest.php", [pest], src);
+  };
+
+  it("finds tests and describe blocks with the names Pest gives them", () => {
+    expect(pick(detectRunTargets(src, "tests/Unit/MathTest.php"))).toEqual([
+      [2, "test", "adds numbers"],
+      [6, "test", 'it handles "quoted" names'],
+      [8, "suite", "division"],
+      [9, "test", "division/it divides"],
+      [13, "suite", "division/by zero"],
+      [14, "test", "division/by zero/throws"],
+      [18, "test", "it doubles"],
+    ]);
+    expect(detectRunTargets(src, "tests/Unit/MathTest.php")[3]).toMatchObject({
+      name: "division → it divides",
+      pest: true,
+    });
+  });
+
+  it("ignores files that are not tests", () => {
+    expect(detectRunTargets(src, "src/Math.php")).toEqual([]);
+  });
+
+  it("runs one test by the name Pest matches, data sets included", () => {
+    expect(run(2)?.args).toEqual(["--filter", "/::adds numbers( with data set .*)?$/", "tests/Unit/MathTest.php"]);
+    expect(run(14)?.args).toEqual([
+      "--filter",
+      "/::`division` → `by zero` → throws( with data set .*)?$/",
+      "tests/Unit/MathTest.php",
+    ]);
+    expect(run(18)?.args[1]).toBe("/::it doubles( with data set .*)?$/");
+    expect(run(18)?.command).toBe("vendor/bin/pest");
+  });
+
+  it("runs every test of a describe block", () => {
+    expect(run(8)?.args[1]).toBe("/::`division` → /");
+    expect(run(13)?.args[1]).toBe("/::`division` → `by zero` → /");
+  });
+
+  it("keeps PHPUnit classes in the same file", () => {
+    const mixed = [
+      "<?php",
+      "final class CalcTest extends TestCase",
+      "{",
+      "    public function testAdd() {}",
+      "}",
+      "test('x', fn () => 1);",
+    ];
+    expect(pick(detectRunTargets(mixed.join("\n"), "tests/CalcTest.php"))).toEqual([
+      [1, "suite", "CalcTest"],
+      [3, "test", "CalcTest/testAdd"],
+      [5, "test", "x"],
+    ]);
   });
 });

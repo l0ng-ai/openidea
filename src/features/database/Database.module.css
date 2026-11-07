@@ -238,6 +238,12 @@
   margin: 0 4px;
   background: var(--border);
 }
+.treeFilter {
+  flex: 1;
+  min-width: 80px;
+  max-width: 280px;
+  margin-left: 4px;
+}
 .treeHost {
   flex: 1;
   min-height: 0;

@@ -9,7 +9,8 @@
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
-import { notifications } from "@/workbench/contributions";
+import { endpointsChanged, notifications } from "@/workbench/contributions";
+import { useI18n } from "@/platform/i18n";
 import { useProducerNames } from "@/platform/inspections";
 import { languageListChanged } from "@/platform/languageList";
 import {
@@ -32,9 +33,17 @@ import { useProject } from "@/platform/project";
 import { pluginsBackend } from "./backend";
 import { trackIconTheme } from "./iconThemes";
 import { defineBuiltinUiPoints } from "./points";
+import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, selectPluginTheme, updateAllPlugins, usePlugins } from "./store";
+import {
+  grantPlugin,
+  runPluginCommand,
+  refreshPlugins,
+  selectPluginTheme,
+  updateAllPlugins,
+  usePlugins,
+} from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -42,16 +51,23 @@ export { pluginActionId } from "./points";
 export function syncProjection(): () => void {
   const apply = () => {
     const s = usePlugins.getState();
-    syncUiContributions(s.ui, s.plugins);
+    syncUiContributions(localizeContributions(s.ui, usePluginCatalogs.getState().catalogs), s.plugins);
     // Their problems are listed by name in Settings › Inspections.
     useProducerNames.setState({ names: new Map(s.plugins.map((p) => [`plugin:${p.id}`, p.name])) });
   };
+  const loadCatalogs = () => void loadPluginCatalogs(usePlugins.getState().ui, useI18n.getState().locale);
   apply();
-  const unsubscribe = usePlugins.subscribe((s, prev) => {
-    if (s.ui !== prev.ui || s.plugins !== prev.plugins) apply();
-  });
+  loadCatalogs();
+  const unsubscribe = [
+    usePlugins.subscribe((s, prev) => {
+      if (s.ui !== prev.ui) loadCatalogs();
+      if (s.ui !== prev.ui || s.plugins !== prev.plugins) apply();
+    }),
+    usePluginCatalogs.subscribe((s, prev) => s.catalogs !== prev.catalogs && apply()),
+    useI18n.subscribe((s, prev) => s.locale !== prev.locale && loadCatalogs()),
+  ];
   return () => {
-    unsubscribe();
+    unsubscribe.forEach((u) => u());
     clearUiContributions();
   };
 }
@@ -264,12 +280,25 @@ export function handlePluginEvent(e: PluginEvent) {
     case "commandsChanged":
       scheduleRefresh();
       break;
+    case "endpointsChanged":
+      if (e.root === useProject.getState().project?.root) endpointsChanged();
+      break;
     case "updatesAvailable":
       announceUpdates(e.updates);
       break;
     case "notification": {
       const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;
-      notifications().notify({ group: "plugins", level: e.level, title: e.title || name, body: e.body || undefined });
+      notifications().notify({
+        group: "plugins",
+        level: e.level,
+        title: e.title || name,
+        body: e.body || undefined,
+        verbatim: true,
+        actions: e.actions.map((a) => ({
+          label: a.label,
+          run: () => void runPluginCommand(e.pluginId, a.command, a.argument),
+        })),
+      });
       break;
     }
     case "themeChanged":

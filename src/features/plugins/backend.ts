@@ -8,19 +8,24 @@ import type {
   ActiveTheme,
   CapabilityInfo,
   CatalogPlugin,
+  CommitAnswer,
+  CommitSelection,
   Consent,
   EventKind,
   InstalledIntellijTheme,
   InstallPreview,
   IntellijThemeSource,
   MarketPlugin,
+  PluginCommitCheckRef,
+  PluginCommitCheckResult,
   PluginContextKey,
   PluginEditor,
+  PluginEndpoint,
   PluginEvent,
   PluginInfo,
   PluginOutputLine,
-  PluginsSnapshot,
   PluginSecretState,
+  PluginsSnapshot,
   PluginStatusItem,
   ServiceTab,
   UiContribution,
@@ -68,6 +73,10 @@ export interface PluginsBackend {
   cancelTask(taskId: string): Promise<void>;
   /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
   answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
+  /** This window's answer to a plugin's `commitRequested`. */
+  answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** Runs plugins' before-commit checks on what `selection` commits. */
+  commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
   marketUrl(): Promise<string | null>;
@@ -93,6 +102,8 @@ export interface PluginsBackend {
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
   /** The Services pane of node `key` of a plugin's services view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
+  /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
+  endpoints(pluginId: string): Promise<PluginEndpoint[]>;
   /**
    * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
    * lines until it exits (`onExit`) or the returned stop function is called.
@@ -187,6 +198,10 @@ export const tauriPluginsBackend: PluginsBackend = {
   answerPrompt: async (promptId, answer) => {
     await commands.pluginAnswerPrompt(promptId, answer);
   },
+  answerCommit: async (requestId, answer) => {
+    await commands.pluginAnswerCommit(requestId, answer);
+  },
+  commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
   setMarketUrl: async (url) => {
@@ -223,6 +238,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
   },
   serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
+  endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
   serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
     const request = nextRequestId();
     const channel = new Channel<PluginOutputLine>();
@@ -528,7 +544,14 @@ export function createMemoryPluginsBackend(
       if (commandId === "word-count") {
         if (!activeFile) throw new IpcError({ kind: "internal", message: "no file is open in the editor" });
         const name = activeFile.split("/").pop() ?? activeFile;
-        emit({ type: "notification", pluginId, level: "info", title: `Word count: ${name}`, body: "(simulated)" });
+        emit({
+          type: "notification",
+          pluginId,
+          level: "info",
+          title: `Word count: ${name}`,
+          body: "(simulated)",
+          actions: [],
+        });
         return null;
       }
       throw new IpcError({ kind: "internal", message: `unknown command: ${commandId}` });
@@ -569,6 +592,9 @@ export function createMemoryPluginsBackend(
     }),
     viewEvent: async () => {},
     serviceDetail: async () => [],
+    endpoints: async () => [],
+    answerCommit: async () => {},
+    commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
       onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);
       return () => {};

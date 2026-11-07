@@ -854,6 +854,27 @@ fn php_phpunit_project() {
 }
 
 #[test]
+fn php_pest_project() {
+    let dir = project(&[
+        ("composer.json", r#"{"require-dev":{"pestphp/pest":"^3"}}"#),
+        ("phpunit.xml", "<phpunit/>"),
+        ("vendor/bin/phpunit", ""),
+        ("vendor/bin/phpunit.bat", ""),
+        ("vendor/bin/pest", ""),
+        ("vendor/bin/pest.bat", ""),
+    ]);
+    let c = detect(dir.path());
+    let pest = find(&c, "phpunit");
+    assert_eq!(pest.name, "Pest");
+    assert_eq!(cmdline(pest), if cfg!(windows) { "vendor/bin/pest.bat" } else { "vendor/bin/pest" });
+    assert_eq!(pest.kind, "phpunit");
+    assert!(pest.is_test);
+    assert_eq!(pest.debug_adapter.as_deref(), Some("php-debug"));
+    let dir = project(&[("composer.json", r#"{"require-dev":{"pestphp/pest":"^3"}}"#)]);
+    assert_eq!(find(&detect(dir.path()), "phpunit").name, "PHPUnit");
+}
+
+#[test]
 fn php_detection_needs_a_marker() {
     let dir = project(&[("index.php", "<?php")]);
     assert!(detect(dir.path()).is_empty());

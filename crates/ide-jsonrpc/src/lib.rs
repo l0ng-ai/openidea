@@ -346,7 +346,7 @@ impl Drop for KillOnDrop {
 /// child's `PATH` (a caller's `env` PATH, else the login shell's, else ours), so
 /// that on Windows `PATHEXT` names (`codex` → `codex.cmd`) start; anything else
 /// is kept as given.
-fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
+pub fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
     let path = std::path::Path::new(command);
     if path.components().count() > 1 || path.is_absolute() {
         return path.to_path_buf();
