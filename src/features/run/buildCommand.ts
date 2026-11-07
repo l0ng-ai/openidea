@@ -12,11 +12,11 @@ export function applyBuildPolicyToCommand(config: RunConfig): RunConfig {
   const rebuild = config.buildPolicy === "rebuild";
   if (rebuild && (MAVEN.has(config.kind) || GRADLE.has(config.kind))) {
     // Maven and Gradle both accept the clean task before their other goals.
-    return { ...config, args: ["clean", ...config.args] };
+    return config.args.includes("clean") ? config : { ...config, args: ["clean", ...config.args] };
   }
   if (config.buildPolicy === "makeAndContinueOnErrors" && MAVEN.has(config.kind)) {
     const flag = "-Dmaven.compiler.failOnError=false";
-    return config.args.includes(flag) ? config : { ...config, args: [...config.args, flag] };
+    return config.args.includes(flag) ? config : { ...config, args: [flag, ...config.args] };
   }
   return config;
 }
