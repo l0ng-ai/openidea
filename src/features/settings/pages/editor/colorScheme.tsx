@@ -145,14 +145,17 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
   if (attr.italicOnly)
     return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
   const t = attr.token;
+  const italic = t === "comment" ? "var(--syn-comment-style)" : attr.defaultItalic ? "italic" : "inherit";
+  const bold = attr.defaultBold ? "var(--fw-code-bold, 700)" : "inherit";
+  const effect = attr.defaultEffect === "underline" ? "underline" : "none";
   return {
     color: `var(--syn-${t})`,
-    fontWeight: `var(--syn-${t}-bold, inherit)` as CSSProperties["fontWeight"],
-    fontStyle: `var(--syn-${t}-italic, ${t === "comment" ? "var(--syn-comment-style)" : t === "doc-comment" || t === "docstring" ? "italic" : "inherit"})`,
+    fontWeight: `var(--syn-${t}-bold, ${bold})` as CSSProperties["fontWeight"],
+    fontStyle: `var(--syn-${t}-italic, ${italic})`,
     backgroundColor: `var(--syn-${t}-bg, transparent)`,
-    textDecoration: `var(--syn-${t}-effect, none)`,
+    textDecoration: `var(--syn-${t}-effect, ${effect})`,
     // WebKit takes a decoration with a style or colour only through the prefixed property.
-    ...({ WebkitTextDecoration: `var(--syn-${t}-effect, none)` } as CSSProperties),
+    ...({ WebkitTextDecoration: `var(--syn-${t}-effect, ${effect})` } as CSSProperties),
   };
 }
 
@@ -355,8 +358,8 @@ const SAMPLES: Record<string, CodeSample> = {
       [["    Syntax Highlighting Demo", "pyDocstring"]],
       [["    @param x Parameter", "pyDocstring"]],
       [],
-      [["    语义高亮显示:", "pyDocstring"]],
-      [["    生成的光谱为局部变量和形参选择颜色:", "pyDocstring"]],
+      [["    Semantic highlighting:", "pyDocstring"]],
+      [["    Generated spectrum to pick colors for local variables and parameters:", "pyDocstring"]],
       [
         ["     ", "pyDocstring"],
         ["Color#1 ", "semantic1"],
@@ -639,7 +642,7 @@ const SAMPLES: Record<string, CodeSample> = {
         [" MAX", "java.constant"],
         [" = ", "java.operator"],
         ["3", "java.number"],
-        [";", "java.separator"],
+        [";", "java.operator"],
       ],
       [
         ["    private ", "java.keyword"],
@@ -649,7 +652,7 @@ const SAMPLES: Record<string, CodeSample> = {
         ['"a', "java.string"],
         ["\\n", "java.escape"],
         ['"', "java.string"],
-        [";", "java.separator"],
+        [";", "java.operator"],
       ],
       [["    /** doc comment */", "java.docComment"]],
       [
@@ -672,7 +675,7 @@ const SAMPLES: Record<string, CodeSample> = {
         ["(", "java.operator"],
         ["name", "java.identifier"],
         [")", "java.operator"],
-        [";", "java.separator"],
+        [";", "java.operator"],
       ],
       [
         ["        ", "text"],
