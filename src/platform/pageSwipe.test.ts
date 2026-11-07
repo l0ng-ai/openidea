@@ -4,6 +4,7 @@ import { setContext } from "./context";
 import {
   installKeyboardDispatcher,
   normalizeBinding,
+  PRESETS,
   primaryKeyBinding,
   suspendKeyboardDispatch,
   useKeymap,
@@ -58,13 +59,27 @@ describe("native page swipes", () => {
     }
   });
 
-  it("maps physical right to Back and left to Forward", async () => {
-    swipe("SwipeRight");
-    swipe("SwipeLeft");
-    await Promise.resolve();
-    expect(back).toHaveBeenCalledOnce();
-    expect(forward).toHaveBeenCalledOnce();
-  });
+  it.each(Object.entries(PRESETS).filter(([preset]) => preset.endsWith("-macos")))(
+    "%s maps physical right to Back and left to Forward without duplicate owners",
+    async (preset, keymap) => {
+      useKeymap.setState({ preset });
+      for (const [stroke, action] of [
+        ["SwipeRight", "navigate.back"],
+        ["SwipeLeft", "navigate.forward"],
+      ] as const) {
+        expect(
+          Object.entries(keymap)
+            .filter(([, keys]) => keys.includes(stroke))
+            .map(([id]) => id),
+        ).toEqual([action]);
+      }
+      swipe("SwipeRight");
+      swipe("SwipeLeft");
+      await Promise.resolve();
+      expect(back).toHaveBeenCalledOnce();
+      expect(forward).toHaveBeenCalledOnce();
+    },
+  );
   it("supports removing and rebinding gestures", async () => {
     useKeymap.setState({ overrides: { "navigate.back": [], "navigate.forward": ["SwipeRight"] } });
     swipe("SwipeLeft");

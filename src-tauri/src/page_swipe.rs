@@ -47,6 +47,7 @@ pub fn install(window: &WebviewWindow) {
             }
             if event.r#type() == NSEventType::Swipe {
                 if event.deltaX() != 0.0 && event.deltaY() == 0.0 {
+                    // Cocoa swipeWithEvent: uses positive deltaX for Back; verified with a physical trackpad.
                     stroke(&window, event.deltaX() > 0.0);
                     return std::ptr::null_mut();
                 }
