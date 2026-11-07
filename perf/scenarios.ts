@@ -316,6 +316,52 @@ const gitLog: Scenario = {
   },
 };
 
+/** Scrollbar-sized jumps across a loaded graph, rather than incremental wheel scrolling. */
+const gitLogScrollbar: Scenario = {
+  id: "gitLogScrollbar",
+  title: "Drag through a loaded 6k-commit Git Log",
+  async run(h) {
+    await h.page.evaluate(async () => {
+      const probe = (
+        window as never as {
+          __openideaPerf: {
+            fakeGitLog(n: number): void;
+            runAction(id: string): Promise<boolean>;
+          };
+        }
+      ).__openideaPerf;
+      probe.fakeGitLog(6000);
+      await probe.runAction("vcs.showLog");
+    });
+    const list = h.page.getByRole("listbox", { name: "Commits" });
+    await list.waitFor();
+    await list.evaluate(async (element) => {
+      for (let i = 0; i < 300 && element.scrollHeight < 6000 * 26; i++) {
+        element.scrollTop = element.scrollHeight;
+        await new Promise(requestAnimationFrame);
+      }
+      if (element.scrollHeight < 6000 * 26) throw new Error("Git Log did not finish loading");
+      element.scrollTop = 0;
+    });
+    await h.page.waitForTimeout(200);
+    const refresh = await h.refreshMs();
+    const t0 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    await list.evaluate(async (element) => {
+      const max = element.scrollHeight - element.clientHeight;
+      for (let i = 0; i < 180; i++) {
+        element.scrollTop = ((i < 90 ? i : 180 - i) / 90) * max;
+        await new Promise(requestAnimationFrame);
+      }
+    });
+    const frames = await h.inPage((p) => p.stopFrames());
+    return {
+      ...frameSummary(frames, refresh),
+      tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+    };
+  },
+};
+
 /**
  * Dragging the splitters with an editor, the Project tree and the Git Log
  * open: every pointer move resizes the islands, so each frame relays them out.
@@ -555,6 +601,7 @@ export const SCENARIOS: Scenario[] = [
   completion,
   consoleOutput,
   gitLog,
+  gitLogScrollbar,
   resizePanels,
   keyRepeat,
   scroll,
