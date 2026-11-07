@@ -5,6 +5,7 @@ import type { commands } from "@/platform/ipc";
 
 const lspGoto = vi.hoisted(() => vi.fn<typeof commands.lspGoto>());
 const indexGoto = vi.hoisted(() => vi.fn<typeof commands.indexGoto>());
+indexGoto.mockResolvedValue({ status: "ok", data: null });
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, lspGoto, indexGoto } };

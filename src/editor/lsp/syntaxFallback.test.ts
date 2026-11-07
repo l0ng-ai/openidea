@@ -297,6 +297,9 @@ describe("navigation wiring", () => {
     cmd.lspGoto.mockReturnValueOnce(ok([]));
     const view = editor("const x = 1;\nx;", "typescript", 13);
     await gotoTargets(view, "definition");
+    // No identifier at the caret (the locals mock says noIdentifier): there
+    // is no name to look up, so the index is not consulted — the hint shows.
+    expect(cmd.indexGoto).not.toHaveBeenCalled();
     expect(cmd.syntaxLocals).not.toHaveBeenCalled();
     expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Cannot find declaration to go to");
   });
