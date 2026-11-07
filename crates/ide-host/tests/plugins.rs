@@ -4336,3 +4336,112 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
         f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
     assert!(err.message.contains("limited to"), "{}", err.message);
 }
+
+#[test]
+fn marker_icons_ship_sanitized_light_and_dark_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    let manifest = |engine: &str, icon: &str, dark: &str| {
+        format!(
+            r#"
+id = "marker-icons"
+name = "Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "resource"
+icon = "{icon}"
+iconDark = "{dark}"
+"#
+        )
+    };
+    let clean = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+    std::fs::write(pkg.join("icons/resource.svg"), clean).unwrap();
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    for (engine, icon, dark) in [
+        ("^1.0", "icons/resource.svg", "icons/resource_dark.svg"),
+        ("^1.3", "../outside.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/missing.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/resource.svg", "icons/missing.svg"),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, icon, dark)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.3", "icons/resource.svg", "icons/resource_dark.svg")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.svg");
+        std::fs::write(&outside, clean).unwrap();
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+        std::os::unix::fs::symlink(outside, pkg.join("icons/resource_dark.svg")).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+    }
+    let mut unsafe_svgs = vec![
+        "<svg><script>alert(1)</script></svg>".to_owned(),
+        "<svg onload=\"alert(1)\"/>".to_owned(),
+        "<svg><foreignObject/></svg>".to_owned(),
+        "<svg><rect style=\"fill:url(https://evil/x)\"/></svg>".to_owned(),
+        "<svg><rect style=\"background-image:image-set('https://evil/x' 1x)\"/></svg>".to_owned(),
+        format!("<svg>{}</svg>", " ".repeat(64 << 10)),
+    ];
+    for attr in ["href", "xlink:href"] {
+        for scheme in ["http://evil/x", "data:image/svg+xml,x", "javascript:alert(1)"] {
+            unsafe_svgs.push(format!("<svg><use {attr}=\"{scheme}\"/></svg>"));
+        }
+    }
+    for path in ["icons/resource.svg", "icons/resource_dark.svg"] {
+        for svg in &unsafe_svgs {
+            std::fs::write(pkg.join(path), svg).unwrap();
+            assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {path}: {svg}");
+        }
+        std::fs::write(pkg.join(path), clean).unwrap();
+    }
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert_eq!(assets.len(), 2);
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("<rect")));
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/dark") && svg.contains("<circle")));
+    let revision = f.host.ui_items("markerIcons")[0].decl["revision"].clone();
+    std::fs::write(pkg.join("icons/resource.svg"), clean.replace("width=\"16\"", "width=\"14\"")).unwrap();
+    let updated = f.install(&pkg);
+    assert!(updated.error.is_none(), "{:?}", updated.error);
+    assert_ne!(f.host.ui_items("markerIcons")[0].decl["revision"], revision);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("width=\"14\"")));
+    std::fs::remove_dir_all(pkg).unwrap();
+    assert_eq!(f.host.assets("marker-icons", "markerIcon/resource/").unwrap(), assets);
+    f.host.set_enabled("marker-icons", false).unwrap();
+    assert!(f.host.assets("marker-icons", "markerIcon/resource/").is_err());
+}
+
+#[test]
+fn marker_providers_preserve_names_and_package_paths() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"line-markers\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("markers.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "marker-icons\nordinary\ncustom\nlegacy".into(),
+    };
+    assert!(eventually(|| f.host.provide_line_markers(&doc).len() == 4));
+    let markers = f.host.provide_line_markers(&doc);
+    assert_eq!(
+        markers.iter().map(|(_, m)| m.icon.as_deref().unwrap()).collect::<Vec<_>>(),
+        ["run", "database", "icons/very-long-resource-marker-icon.svg", "overriding"]
+    );
+}
