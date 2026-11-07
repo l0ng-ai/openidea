@@ -4783,12 +4783,14 @@ dependencies = [
  "ignore",
  "notify",
  "parking_lot",
+ "rustix",
  "serde",
  "serde_json",
  "specta",
  "tempfile",
  "tracing",
  "trash",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

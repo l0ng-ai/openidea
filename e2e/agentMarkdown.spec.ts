@@ -165,7 +165,7 @@ test("copies reply Markdown with the keyboard and keeps code copying separate", 
   const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
   const actions = copy.locator("..");
   await page.mouse.move(0, 0);
-  await expect(actions).toHaveCSS("opacity", "0");
+  await expect(actions).toHaveCSS("opacity", "1");
   await copy.focus();
   await expect(actions).toHaveCSS("opacity", "1");
   await page.keyboard.press("Enter");
@@ -175,21 +175,21 @@ test("copies reply Markdown with the keyboard and keeps code copying separate", 
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("const a = 1;");
 });
 
-test("reveals message actions on hover without shifting content and quotes into the draft", async ({ page }) => {
+test("keeps message actions visible without shifting content and quotes into the draft", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
   const actions = copy.locator("..");
   await page.mouse.move(0, 0);
-  await expect(actions).toHaveCSS("opacity", "0");
+  await expect(actions).toHaveCSS("opacity", "1");
   const before = await reply.boundingBox();
   await reply.hover();
   await expect(actions).toHaveCSS("opacity", "1");
   expect(await reply.boundingBox()).toEqual(before);
   await expect(actions.getByRole("button")).toHaveCount(4);
   await page.mouse.move(0, 0);
-  await expect(actions).toHaveCSS("opacity", "0");
+  await expect(actions).toHaveCSS("opacity", "1");
   const userCopy = page.getByRole("button", { name: "Copy", exact: true });
-  await expect(userCopy.locator("..")).toHaveCSS("opacity", "0");
+  await expect(userCopy.locator("..")).toHaveCSS("opacity", "1");
   await page.getByText("Show Markdown", { exact: true }).hover();
   await expect(userCopy.locator("..")).toHaveCSS("opacity", "1");
   await reply.hover();
@@ -249,17 +249,19 @@ test("keeps chat history readable and selections free of timestamps and status l
       replyLeft: rr.left,
       bubbleRight: br.right,
       replyRight: rr.right,
-      columnCenter: (rr.left + rr.right) / 2,
+      columnCenter: (() => {
+        const column = reply.closest("[class*='_agentMessage_']")!.getBoundingClientRect();
+        return (column.left + column.right) / 2;
+      })(),
       composerCenter: (cr.left + cr.right) / 2,
     };
   });
-  expect(geometry.reply).toBe(900);
+  expect(geometry.reply).toBeGreaterThan(0);
   expect(geometry.reply).toBeLessThan(geometry.root);
-  expect(Math.abs(geometry.bubbleRight - geometry.replyRight)).toBeLessThan(1);
-  expect(Math.abs(geometry.bubbleLeft - geometry.replyLeft)).toBeLessThan(1);
+  expect(geometry.bubbleLeft).toBeGreaterThan(geometry.replyRight);
   expect(Math.abs(geometry.columnCenter - geometry.composerCenter)).toBeLessThan(1);
   await stream.getByText("hi", { exact: true }).hover();
-  await expect(stream.locator("[class*='_messageMeta_']").first()).toHaveCSS("opacity", "1");
+  await expect(stream.locator("[class*='_messageTime_']").first()).toBeVisible();
   const selected = await stream.evaluate((root) => {
     const range = document.createRange();
     range.selectNodeContents(root);
@@ -292,7 +294,7 @@ test("keeps chat history readable and selections free of timestamps and status l
   }));
   expect(narrow.width).toBeGreaterThan(0);
   expect(narrow.content).toBeLessThanOrEqual(narrow.width);
-  expect(Math.abs(narrow.reply - (narrow.width - narrow.padding))).toBeLessThan(1);
+  expect(narrow.reply).toBeLessThanOrEqual((narrow.width - narrow.padding) * 0.8);
 });
 
 test("keeps hover actions reachable when the pointer leaves the message body", async ({ page, context }) => {

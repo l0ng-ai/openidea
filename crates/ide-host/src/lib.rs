@@ -14,6 +14,7 @@ mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
+pub mod relay;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
