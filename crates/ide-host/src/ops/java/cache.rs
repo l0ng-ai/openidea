@@ -56,6 +56,7 @@ impl Session {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // the launch inputs; a parameter struct adds no clarity here
     pub(super) fn build(
         &mut self,
         root: &Path,
@@ -63,6 +64,7 @@ impl Session {
         module: &Path,
         test: bool,
         local_repo: Option<PathBuf>,
+        rebuild: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<Outputs> {
         self.initialize();
@@ -80,7 +82,8 @@ impl Session {
         };
         let before = fingerprint()?;
         let previous = fs::read(&record).ok().and_then(|bytes| serde_json::from_slice::<Outputs>(&bytes).ok());
-        if let Some(outputs) = previous.as_ref()
+        if !rebuild
+            && let Some(outputs) = previous.as_ref()
             && outputs.reusable(&before, &snapshots)
         {
             tracing::info!(module = %module.display(), test, "Reusing Maven launch snapshot");
@@ -93,7 +96,8 @@ impl Session {
         if let Some(previous) = previous {
             self.unreferenced.push(previous.snapshot);
         }
-        let originals = compile::build_for_launch(root, model, module, test, compile::BuildKind::Build, cancel)?;
+        let kind = if rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
+        let originals = compile::build_for_launch(root, model, module, test, kind, cancel)?;
         fs::create_dir_all(&snapshots)?;
         let snapshot = tempfile::Builder::new().prefix("launch-").tempdir_in(&snapshots)?.keep();
         // Retain every new snapshot even if copying or publishing its record fails.
@@ -214,7 +218,7 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let mut build = || session.build(root, &model, root, false, None, &cancel);
+        let mut build = || session.build(root, &model, root, false, None, false, &cancel);
         let first = build().unwrap();
         let snapshot = first.snapshot.clone();
         drop(first);
@@ -242,6 +246,23 @@ mod tests {
         assert!(build().is_err());
         assert_eq!(fs::read_to_string(root.join("calls")).unwrap().lines().count(), 5);
     }
+    #[test]
+    fn rebuild_does_not_reuse_a_reusable_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(cache);
+        let first = session.build(root, &model, root, false, None, false, &cancel).unwrap();
+        let reused = session.build(root, &model, root, false, None, false, &cancel).unwrap();
+        assert_eq!(first.snapshot, reused.snapshot, "a normal launch reuses the snapshot");
+        let rebuilt = session.build(root, &model, root, false, None, true, &cancel).unwrap();
+        assert_ne!(rebuilt.snapshot, first.snapshot, "Rebuild must build again");
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap().lines().count(), 2);
+        assert!(first.snapshot.is_dir(), "the old snapshot stays for running JVMs");
+    }
+
     /// An external tool (e.g. an AI code editor) rewrites a source file with the same byte
     /// length and preserves its mtime. The `(length, mtime)` fingerprint reads that as
     /// "unchanged" and would reuse the stale snapshot; the content hash must catch it.
@@ -253,14 +274,14 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let first = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let first = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         assert_eq!(fs::read_to_string(first.snapshot.join("0/Main.class")).unwrap(), "first");
 
         let source = root.join("src/main/kotlin/Main.kt");
         let mtime = fs::metadata(&source).unwrap().modified().unwrap();
         fs::write(&source, "other").unwrap(); // 5 bytes, same length as "first"
         fs::File::options().write(true).open(&source).unwrap().set_modified(mtime).unwrap();
-        let rebuilt = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let rebuilt = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         assert_ne!(rebuilt.snapshot, first.snapshot, "a same-length, same-mtime content change must rebuild");
         assert_eq!(fs::read_to_string(rebuilt.snapshot.join("0/Main.class")).unwrap(), "other");
     }
@@ -273,9 +294,9 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let first = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let first = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         fs::write(root.join("src/main/kotlin/Main.kt"), "updated").unwrap();
-        let second = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let second = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         assert!(first.snapshot.is_dir());
         assert!(second.snapshot.is_dir());
         // Another mode can keep a superseded snapshot alive.
@@ -286,10 +307,10 @@ mod tests {
         assert!(first.snapshot.is_dir());
         assert!(second.snapshot.is_dir());
         let mut session = Session::new(cache.clone());
-        let reused = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let reused = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         assert_eq!(reused.snapshot, second.snapshot);
         fs::write(root.join("src/main/kotlin/Main.kt"), "third version").unwrap();
-        let third = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let third = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         assert!(second.snapshot.is_dir());
         drop(session);
         assert!(!second.snapshot.exists());
@@ -347,7 +368,7 @@ mod tests {
         fs::write(script, text).unwrap();
         let cache = root.join("cache");
         let mut session = Session::new(cache.clone());
-        assert!(session.build(root, &model, root, false, None, &CancellationToken::new()).is_err());
+        assert!(session.build(root, &model, root, false, None, false, &CancellationToken::new()).is_err());
         assert_eq!(session.unreferenced.len(), 1);
         let snapshot = session.unreferenced[0].clone();
         assert!(snapshot.join("0/Main.class").is_file());
@@ -366,7 +387,7 @@ mod tests {
         fs::write(script, text).unwrap();
         let cache = root.join("cache");
         let mut session = Session::new(cache.clone());
-        let outputs = session.build(root, &model, root, false, None, &CancellationToken::new()).unwrap();
+        let outputs = session.build(root, &model, root, false, None, false, &CancellationToken::new()).unwrap();
         assert!(outputs.fingerprint.is_none());
         assert_eq!(fs::read(cache.join("java-launch/records/main.json")).unwrap(), b"null");
         assert!(outputs.snapshot.join("0/Main.class").is_file());
@@ -381,14 +402,14 @@ mod tests {
         let cache = root.join("cache");
         let cancel = CancellationToken::new();
         let mut session = Session::new(cache.clone());
-        let first = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let first = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         fs::remove_file(root.join("src/main/kotlin/Main.kt")).unwrap();
         assert!(!compile::launch_has_non_java_sources(root, &model, root, false));
         assert!(has_record(root, &cache, root));
-        assert!(session.build(root, &model, root, false, None, &cancel).is_err());
+        assert!(session.build(root, &model, root, false, None, false, &cancel).is_err());
         assert!(has_record(root, &cache, root));
         fs::write(root.join("src/main/kotlin/Main.kt"), "restored").unwrap();
-        let restored = session.build(root, &model, root, false, None, &cancel).unwrap();
+        let restored = session.build(root, &model, root, false, None, false, &cancel).unwrap();
         assert_ne!(first.snapshot, restored.snapshot);
     }
 }

@@ -38,6 +38,27 @@ export function hotSwapMessage(
   return { level: "info", title: tx`${classesText(changed)} reloaded` };
 }
 
+/**
+ * The Java module a session runs: java-debug's launch carries the joined module path in
+ * `extraJson.projectRoot` (see `javaLaunchConfig`). The working directory is the project
+ * root for multi-module projects, so it cannot stand in for the module.
+ */
+export function hotSwapModule(session: DebugSession): string {
+  const extra = session.launch?.extraJson;
+  if (extra) {
+    try {
+      const parsed: unknown = JSON.parse(extra);
+      if (parsed && typeof parsed === "object" && "projectRoot" in parsed) {
+        const root = (parsed as { projectRoot?: unknown }).projectRoot;
+        if (typeof root === "string" && root) return root;
+      }
+    } catch {
+      /* not JSON: fall back */
+    }
+  }
+  return session.launch?.cwd ?? "";
+}
+
 /** Compiles (unless `build` is false) and reloads changed classes into every Java debug session. */
 export async function reloadChangedClasses(build = true, configId?: string): Promise<void> {
   const sessions = hotSwapSessions().filter((s) => !configId || s.runConfig?.id === configId);
@@ -53,7 +74,7 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
       } catch {
         /* best effort */
       }
-      const modules = new Set(sessions.map((s) => s.launch?.cwd ?? ""));
+      const modules = new Set(sessions.map(hotSwapModule));
       for (const module of modules) {
         const status = await call(commands.javaBuildWorkspace(module)).catch(() => null);
         if (status === "failed" || status === "withErrors") {

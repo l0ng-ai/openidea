@@ -77,6 +77,7 @@ async fn resolve_launch(
                 &module,
                 test,
                 ide_sdk::apply::maven_local_repository(&project.root, &settings),
+                full,
                 &cancel,
             )?;
             let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
