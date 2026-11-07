@@ -250,7 +250,8 @@ function Result({ tab }: { tab: ResultTab }) {
     edits: emptyEdits(),
   });
   const edits = pending.outcome === r ? pending.edits : emptyEdits();
-  const setEdits = (f: (e: PendingEdits) => PendingEdits) => setPending({ outcome: r, edits: f(edits) });
+  const setEdits = (f: (e: PendingEdits) => PendingEdits) =>
+    setPending((previous) => ({ outcome: r, edits: f(previous.outcome === r ? previous.edits : emptyEdits()) }));
   const loaded = r?.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const value = useCallback(

@@ -112,6 +112,25 @@ beforeEach(() => {
 });
 
 describe("editable result grid", () => {
+  it("keeps every cell of a pasted row in the submitted edits", async () => {
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    await act(async () => render(<ResultsView />));
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[2]!, { button: 0 });
+    fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "3\tCara" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+    expect(backend.applyEdits).toHaveBeenCalledWith("pg", "public", "users", [
+      {
+        kind: "insert",
+        values: [
+          { column: "id", value: "3" },
+          { column: "name", value: "Cara" },
+        ],
+      },
+    ]);
+  });
+
   it("makes a single-table select with its primary key editable and submits in one transaction", async () => {
     const tab = show("SELECT * FROM users WHERE id < 10", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
     await act(async () => render(<ResultsView />));
