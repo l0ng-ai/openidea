@@ -46,6 +46,8 @@ vi.mock("@/platform/project", async (orig) => {
   const real = await orig<typeof import("@/platform/project")>();
   return { ...real, openProject: (p: string) => openProject(p) };
 });
+const diffs: unknown[] = [];
+vi.mock("@/features/vcs/diffInput", () => ({ openDiff: (data: unknown) => void diffs.push(data) }));
 
 const {
   openProjectInWindow,
@@ -88,6 +90,7 @@ beforeEach(() => {
   notify.mockClear();
   vi.mocked(isRemoteWindow).mockReturnValue(false);
   opened.length = 0;
+  diffs.length = 0;
   activePath = null;
   useProject.setState({ project: null, lightEdit: false, settings: null } as never);
 });
@@ -301,6 +304,33 @@ describe("launch", () => {
     });
     await consumeLaunch();
     expect(opened).toEqual(["/x/notes/a.txt @119:7", "/x/notes/b.txt (focus)"]);
+  });
+
+  it("opens the CLI diff pair in LightEdit without a project (openidea diff a b)", async () => {
+    windowTakeLaunch.mockResolvedValueOnce({ project: null, files: [], diff: { left: "/x/a.txt", right: "/x/b.txt" } });
+    await consumeLaunch();
+    expect(lightEditOpen).toHaveBeenCalledWith("/x/b.txt");
+    expect(diffs).toEqual([
+      {
+        path: "/x/b.txt",
+        left: { type: "file", path: "/x/a.txt", label: "/x/a.txt" },
+        right: { type: "worktree", label: "/x/b.txt" },
+      },
+    ]);
+  });
+
+  it("opens the CLI diff pair in the open project without LightEdit", async () => {
+    useProject.setState(projectState("/p") as never);
+    windowTakeLaunch.mockResolvedValueOnce({ project: null, files: [], diff: { left: "/p/a.txt", right: "/p/b.txt" } });
+    await consumeLaunch();
+    expect(lightEditOpen).not.toHaveBeenCalled();
+    expect(diffs).toEqual([
+      {
+        path: "/p/b.txt",
+        left: { type: "file", path: "/p/a.txt", label: "a.txt" },
+        right: { type: "worktree", label: "b.txt" },
+      },
+    ]);
   });
 });
 

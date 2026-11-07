@@ -30,6 +30,7 @@ mod providers;
 pub mod remote;
 pub mod remote_host;
 mod run_detectors;
+mod semantic_tokens;
 mod theme;
 mod types;
 pub mod ui_points;
@@ -47,6 +48,7 @@ pub use market::{
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub use providers::{ProviderKind, set_editor_providers};
 pub(crate) use providers::{editor_plugin_host, editor_providers as editor_providers_for};
+pub(crate) use semantic_tokens::merge as merge_semantic_tokens;
 pub use theme::{ThemeDef, ThemeKind};
 pub use types::*;
 

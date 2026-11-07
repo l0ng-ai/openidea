@@ -62,7 +62,7 @@ import { isColumnMode, toggleColumnMode } from "./cm/columnMode";
 import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
-import { copyReferenceToClipboard, qualifiedReference, referenceOffset } from "./copyReference";
+import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
@@ -439,7 +439,7 @@ async function resolveReference(view: EditorView, slot: EditorSlot): Promise<str
         path: slot.model.path,
         root,
         text: state.doc.toString(),
-        chain: localChain.map((item) => item.name),
+        chain: localChain.map(declaredName),
         line: position.number - 1,
       });
     } else {
@@ -462,7 +462,7 @@ async function resolveReference(view: EditorView, slot: EditorSlot): Promise<str
               path: target.path,
               root,
               text: lines.join("\n"),
-              chain: chain.map((item) => item.name),
+              chain: chain.map(declaredName),
               line: pos.line,
             });
           }

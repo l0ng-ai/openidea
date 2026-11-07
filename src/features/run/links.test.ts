@@ -68,6 +68,26 @@ describe("findOutputLinks", () => {
     expect(files("src/App.tsx(14,3): error TS2322")[0]).toMatchObject({ path: "src/App.tsx", line: 14, col: 3 });
   });
 
+  it("maven diagnostics [ERROR] path:[line,col]", () => {
+    expect(files("[ERROR] /p/src/main/java/a/A.java:[12,5] cannot find symbol")[0]).toEqual({
+      path: "/p/src/main/java/a/A.java",
+      line: 12,
+      col: 5,
+      resolve: "path",
+      text: "/p/src/main/java/a/A.java:[12,5]",
+    });
+    expect(files("[WARNING] src/main/java/B.java:[3,8] [deprecation] old() has been deprecated")[0]).toMatchObject({
+      path: "src/main/java/B.java",
+      line: 3,
+      col: 8,
+    });
+    expect(files("[ERROR] C:\\proj\\A.java:[7,1] error: x")[0]).toMatchObject({
+      path: "C:\\proj\\A.java",
+      line: 7,
+      col: 1,
+    });
+  });
+
   it("URLs, trimming trailing punctuation", () => {
     const links = findOutputLinks("Listening on http://localhost:8080/api. (see https://x.dev/a_(b))");
     expect(links.filter((l) => l.kind === "url").map((l) => (l.kind === "url" ? l.url : ""))).toEqual([

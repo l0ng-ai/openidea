@@ -419,6 +419,13 @@ pub struct LineMarker {
     pub target: Option<Location>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticToken {
+    pub range: ide_core::Range,
+    pub kind: String,
+    pub modifiers: Vec<String>,
+}
+
 // ---- declarative views (wit/views.wit) ---------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

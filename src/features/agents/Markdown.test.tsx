@@ -1,20 +1,41 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { resetMermaidForTests } from "../viewers/markdown/mermaid";
 import { Markdown } from "./Markdown";
 
 const { openFile, openExternalUrl } = vi.hoisted(() => ({
   openFile: vi.fn().mockResolvedValue(undefined),
   openExternalUrl: vi.fn().mockResolvedValue(undefined),
 }));
+const copyText = vi.hoisted(() => vi.fn());
 const readImage = vi.fn<(path: string) => Promise<string>>();
 const PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
 vi.mock("@/workbench/contributions", () => ({ editorService: () => ({ openFile }) }));
 vi.mock("@/platform/openUrl", () => ({ openExternalUrl }));
+vi.mock("@/ui", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/ui")>()), copyText }));
+
+const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }));
+vi.mock("mermaid", () => ({ default: { initialize: mermaid.initialize, render: mermaid.render } }));
+
+const DIAGRAM = "flowchart TD\n    A-->B";
+const FENCE = `\`\`\`mermaid\n${DIAGRAM}\n\`\`\`\n`;
 
 beforeEach(() => {
   vi.clearAllMocks();
   readImage.mockReset().mockResolvedValue(PIXEL);
+  resetMermaidForTests();
+  mermaid.render.mockReset().mockImplementation(async (id: string, text: string) => {
+    // Like mermaid: a measuring node under <body> while rendering.
+    const tmp = document.createElement("div");
+    tmp.id = `d${id}`;
+    document.body.append(tmp);
+    return {
+      svg:
+        `<svg id="${id}"><defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
+        `<path d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
+    };
+  });
   mockIPC((cmd, args) => (cmd === "fs_read_image" ? readImage((args as { path: string }).path) : null));
 });
 afterEach(clearMocks);
@@ -165,4 +186,67 @@ it("reports network or decode failures without leaving a broken source", () => {
   fireEvent.error(screen.getByRole("img"));
   expect(screen.getByRole("img")).not.toHaveAttribute("src");
   expect(screen.getByRole("img")).toHaveAttribute("alt", "Unable to load image: https://example.com/gone.png");
+});
+
+describe("mermaid diagrams in a reply", () => {
+  it("renders the fence as a placeholder holding the source, then draws the diagram", async () => {
+    const { container } = render(
+      <Markdown text={`Before\n\n${FENCE}\n\n\`\`\`ts\nconst a = 1;\n\`\`\``} cwd="/repo" />,
+    );
+    const block = container.querySelector<HTMLElement>("[data-mermaid]")!;
+    expect(block.querySelector("code.language-mermaid")!.textContent).toBe(DIAGRAM);
+    expect(container.querySelector("code.language-ts")).not.toBeNull();
+    await waitFor(() => expect(block).toHaveAttribute("data-mermaid-state", "ok"));
+    expect(block.querySelector(".mermaid-output svg")).not.toBeNull();
+    // Temporary nodes mermaid leaves under <body> are removed.
+    expect(document.body.querySelector(":scope > [id^='d']")).toBeNull();
+  });
+
+  it("draws two equal diagrams with unique SVG ids, so markers of a hidden copy stay live", async () => {
+    const one = render(<Markdown text={FENCE} cwd="/repo" />);
+    await waitFor(() => expect(one.container.querySelector("[data-mermaid-state='ok']")).not.toBeNull());
+    // The second copy (the first now hidden, like a collapsed subagent reply) comes
+    // from the cache — and still gets ids of its own.
+    const two = render(<Markdown text={FENCE} cwd="/repo" />);
+    await waitFor(() => expect(two.container.querySelector("[data-mermaid-state='ok']")).not.toBeNull());
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
+    const idsOf = (root: HTMLElement) =>
+      [...root.querySelectorAll("svg[id], svg [id]")].map((el) => el.getAttribute("id"));
+    const idsOne = idsOf(one.container);
+    const idsTwo = idsOf(two.container);
+    expect(idsOne).toHaveLength(2);
+    expect(idsTwo).toHaveLength(2);
+    expect(idsOne.filter((id) => idsTwo.includes(id))).toEqual([]);
+    // Every marker reference resolves inside its own copy.
+    for (const root of [one.container, two.container]) {
+      const svg = root.querySelector(".mermaid-output svg")!;
+      const ref = svg.querySelector("[marker-end]")!.getAttribute("marker-end")!;
+      expect(new Set(idsOf(root)).has(/url\(#(.+)\)/.exec(ref)![1]!)).toBe(true);
+    }
+  });
+
+  it("keeps the source copyable on the block once the diagram is drawn", async () => {
+    const { container } = render(<Markdown text={FENCE} cwd="/repo" />);
+    const block = container.querySelector<HTMLElement>("[data-mermaid]")!;
+    await waitFor(() => expect(block).toHaveAttribute("data-mermaid-state", "ok"));
+    // The drawn diagram hides the code block (and with it the usual per-pre Copy button):
+    // the block keeps its own, outside what gets hidden.
+    const copy = block.querySelector<HTMLElement>(":scope > button[data-copy]")!;
+    expect(copy.dataset.copy).toBe(DIAGRAM);
+    expect(block.querySelector("pre button[data-copy]")).toBeNull();
+    fireEvent.click(copy);
+    expect(copyText).toHaveBeenCalledWith(DIAGRAM);
+  });
+
+  it("tells the conversation to follow when a diagram draws after the message rendered", async () => {
+    const onDiagramDrawn = vi.fn();
+    const { rerender } = render(<Markdown text={FENCE} cwd="/repo" onDiagramDrawn={onDiagramDrawn} />);
+    expect(onDiagramDrawn).not.toHaveBeenCalled(); // the draw hasn't finished yet
+    await waitFor(() => expect(onDiagramDrawn).toHaveBeenCalledTimes(1));
+    // The next streamed chunk hits the cache: drawn in place before paint, so the
+    // conversation follows it on its own render pass without another callback.
+    rerender(<Markdown text={`${FENCE}\n\nDone.`} cwd="/repo" onDiagramDrawn={onDiagramDrawn} />);
+    await act(async () => {});
+    expect(onDiagramDrawn).toHaveBeenCalledTimes(1);
+  });
 });

@@ -977,6 +977,19 @@ fn api_retries_are_announced() {
 }
 
 #[test]
+fn background_tasks_are_announced_wholesale() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let tasks = json!([{"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"}]);
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": tasks}));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].session, "s");
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": tasks}));
+    // The list is replaced with every report: an empty one says every task is done.
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": []}));
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": []}));
+}
+
+#[test]
 fn streamed_text_is_not_sent_twice() {
     let mut t = Translator::new("s", PathBuf::from("/w"), true);
     let se = |event: Value| json!({"type": "stream_event", "parent_tool_use_id": null, "event": event});
@@ -1092,4 +1105,68 @@ fn tool_calls_plans_and_subagents() {
     assert_eq!(finished[0].update["state"], json!({"state": "idle", "stopReason": "end_turn"}));
     assert_eq!(finished[1].update["content"][0]["text"], "It is x");
     assert_eq!(finished[1].update["senderSessionId"], "ag");
+}
+
+#[tokio::test]
+async fn questions_go_out_as_one_request() {
+    let questions = json!([
+        {"header": "Files", "question": "Where should they live?", "multiSelect": false,
+         "options": [{"label": "Local", "description": "Kept out of git"}, {"label": "Committed", "description": "In the repo"}]},
+        {"header": "Checks", "question": "Which checks?", "multiSelect": true,
+         "options": [{"label": "Lint", "description": ""}, {"label": "Tests", "description": ""}]},
+    ]);
+    let input = json!({ "questions": questions });
+    let asked = std::sync::Mutex::new(Vec::new());
+    let reply = json!({"Where should they live?": ["Local"], "Which checks?": ["Lint", "Tests"]}).to_string();
+    let answers = json!({"Where should they live?": "Local", "Which checks?": "Lint, Tests"});
+    let result = ask_questions(&input, &json!({"toolCallId": "t"}), |call, options| {
+        asked.lock().unwrap().push((call, options));
+        let reply = reply.clone();
+        async move { Some(reply) }
+    })
+    .await;
+    assert_eq!(result, Some(answers));
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1);
+    let (call, options) = &asked[0];
+    assert_eq!(call["title"], "Where should they live?");
+    assert_eq!(call["_meta"]["questions"], questions);
+    assert_eq!(options[0]["optionId"], "reject");
+}
+
+#[tokio::test]
+async fn answers_keep_claude_codes_format_with_other_text() {
+    let input = json!({"questions": [
+        {"question": "Which cache?", "multiSelect": false, "options": [{"label": "Redis"}, {"label": "None"}]},
+        {"question": "Which checks?", "multiSelect": true, "options": [{"label": "Lint"}, {"label": "Tests"}]},
+        {"question": "Which stores?", "multiSelect": true, "options": [{"label": "Disk"}, {"label": "S3"}]},
+    ]});
+    let reply = json!({
+        "Which cache?": ["Memcached, for now"],
+        "Which checks?": ["Lint", "Tests"],
+        "Which stores?": ["Disk", "Redis, not Memcached", "a \"cold\" tier"],
+    })
+    .to_string();
+    let result = ask_questions(&input, &json!({}), |_, _| {
+        let reply = reply.clone();
+        async move { Some(reply) }
+    })
+    .await;
+    assert_eq!(
+        result,
+        Some(json!({
+            "Which cache?": "Memcached, for now",
+            "Which checks?": "Lint, Tests",
+            "Which stores?": "Disk, \"Redis, not Memcached\", \"a \\\"cold\\\" tier\"",
+        }))
+    );
+}
+
+#[tokio::test]
+async fn skipped_questions_have_no_answers() {
+    let input = json!({"questions": [{"question": "Which?", "options": [{"label": "A"}]}]});
+    let skipped = ask_questions(&input, &json!({}), |_, _| async { Some("reject".to_owned()) }).await;
+    assert_eq!(skipped, None);
+    let cancelled = ask_questions(&input, &json!({}), |_, _| async { None }).await;
+    assert_eq!(cancelled, None);
 }
