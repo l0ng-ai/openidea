@@ -188,7 +188,7 @@ pub(super) struct Shared {
     contexts: Mutex<BTreeMap<ContextKey, String>>,
     closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
-    pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
+    pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
@@ -331,7 +331,7 @@ impl Shared {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
         }
-        if subscriptions && self.subscriptions.lock().remove(plugin).is_some() {
+        if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1166,13 +1166,22 @@ impl HostApi for PluginApi {
         })
     }
 
-    fn subscribe(&self, kind: EventKind, on: bool) {
-        let changed = {
-            let mut subs = self.shared.subscriptions.lock();
-            let set = subs.entry(self.id().to_owned()).or_default();
-            if on { set.insert(kind) } else { set.remove(&kind) }
-        };
-        if changed {
+    fn subscribe(&self, kind: EventKind) {
+        if self.shared.subscriptions.lock().set(self.id(), kind) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+        if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+        Ok(())
+    }
+
+    fn unsubscribe(&self, kind: &str) {
+        if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1278,6 +1287,38 @@ impl HostApi for PluginApi {
         let value = user.get(key).filter(|v| setting.accepts(v)).cloned().unwrap_or(setting.default);
         serde_json::to_string(&value).ok()
     }
+
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
+        // Unsaved editor contents win, as they do for project files.
+        if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
+            return Ok(text);
+        }
+        let meta = std::fs::metadata(real).map_err(|e| not_a_file(real, e))?;
+        if !meta.is_file() {
+            return Err(HostError::Invalid(format!("{}: not a file", real.display())));
+        }
+        if meta.len() > max as u64 {
+            return Err(too_large(real, max));
+        }
+        let loaded = ide_vfs::load_text(real).map_err(failed)?;
+        if loaded.binary {
+            return Err(HostError::Invalid(format!("{}: not text; read it as bytes", real.display())));
+        }
+        Ok(loaded.text)
+    }
+}
+
+/// A file that is not there, or cannot be read, as the plugin sees it.
+fn not_a_file(path: &Path, e: std::io::Error) -> HostError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => HostError::NotFound(format!("{}: no such file", path.display())),
+        std::io::ErrorKind::PermissionDenied => HostError::Denied(format!("{}: {}", path.display(), "not readable")),
+        _ => failed(e),
+    }
+}
+
+fn too_large(path: &Path, max: usize) -> HostError {
+    HostError::Invalid(format!("{}: file is larger than {} MiB", path.display(), max >> 20))
 }
 
 /// [`PluginWorkspace`] over the desktop host's open projects.

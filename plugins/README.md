@@ -250,6 +250,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | Capability          | Risk   | Unlocks today                                                                                                                |
 | ------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics`                                          |
+| `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory            |
 | `editor.read`       | low    | `TextEditor::document`, `selections`                                                                                         |
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                    |
 | `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`, `host::pending_commit`, before-commit checks |
@@ -269,8 +270,16 @@ working. On grant the program is resolved to an absolute path and its content
 hash is recorded; it is checked again right before every start, and a replaced
 file is refused until the user approves it again. In a remote project the
 server resolves and pins the program on its own machine (see _Remote
-projects_). `fs.read:<path>` can be declared and granted; it unlocks nothing
-yet.
+projects_).
+
+`fs.read:<path>` grants reading outside the open projects: a directory (its
+files, at any depth) or one file. The path is resolved to its real location
+before it is compared, so a symlink pointing out of the granted directory is
+refused, and a sibling whose name merely starts with the granted one (`/opt/see`
+vs `/opt/seeyon`) is not covered. Granting a whole file system (`/`, `C:\`) is
+refused when the manifest is read: declare the directories you need. Reads are
+capped — text over the limit fails rather than truncating, and files that are
+not text have to be read as bytes.
 
 Logging, notifications, status bar items, tasks and run-time contributions
 are always available. Calling a gated function without its capability returns
@@ -418,6 +427,27 @@ Kinds are names (`subscribe` takes a string), so later IDEs add kinds without
 a new API: an IDE refuses a kind it doesn't know with `invalid`, and a kind
 newer than the plugin's SDK arrives as `Event::Other { kind, data }` (JSON).
 The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
+
+API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
+(`events.subscribe-paths`). The host matches project-relative globs before
+queueing an event or waking an idle plugin. `file-saved` works the same way.
+Patterns use `/`, `*` stays within a directory, and `**` crosses
+directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
+parent traversal and malformed patterns fail without replacing the old filter.
+
+Register filters in `activate`, using a startup or command activation to install
+them before observing events. Patterns are ORed; another call replaces the same
+kind's filter, an empty list pauses it, `subscribe(kind)` restores all paths,
+and `unsubscribe(kind)` removes it. Filters survive idle reclaim and disappear
+on disable, uninstall or reload. Each window's events use its current project;
+files outside that project do not match.
+
+Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
+without an invocation project or enumerating every open project. It returns the
+deepest open project containing the absolute path, or `None` outside open roots.
+Symlinks and missing file tails are resolved before checking containment.
+Obtaining a handle grants no read access: `Project::root` and file operations
+still require `project.read`.
 
 ### Commits
 
@@ -618,6 +648,26 @@ For a table the user can sort by clicking a header, build it with
 column headers clickable and asks for a column and direction with
 `ViewEvent::sort()` — sort your rows and render again; the sort you report
 shows as an arrow in the header.
+API 1.3 adds read-only form values without changing the released field record:
+`FieldValue::label(text)` uses `other { kind: "label", data }`, where `data`
+is a JSON string. `FieldValue::readonly_text(text, multiline)` uses kind
+`readonly-text` with JSON `{ "text": "…", "multiline": false }` (the flag
+defaults to false). Labels render as plain selectable values; read-only text
+keeps the single-line or multiline text control and never sends field events.
+
+Table row clicks and Space send `other` kind `table-select`; double-click
+and Enter send `table-activate`, both with JSON `{ "row": 0 }`.
+`ViewEvent::table_select()` and `table_activate()` decode the absolute,
+zero-based index, including `first_row` for paged tables. These work for both
+plain tables and the same `other` table shape used by sortable tables above;
+no new table shape is needed. Editable cells still double-click to edit;
+activate their row with Enter on the focused row or double-click its row number.
+`viewItem.context` menus also work on table rows: the command argument and
+`viewItem` context key are the decimal row index, e.g. `"0"`. Editable tables
+keep their insert/delete entries alongside contributed commands. After sorting
+or changing data, plugins resolve row indices against their current row order.
+Declare `engines.openidea = "^1.3"` when relying on these additions.
+
 Bodies, field types and view events added by later APIs travel as `Other {
 kind, data }`: an IDE that doesn't know a body says it needs updating, and
 leaves out a field type it doesn't know.

@@ -8,6 +8,10 @@ interface workspace {
     /// `path` is an absolute directory path on the UI machine.
     open-project: func(path: string, new-window: bool) -> result<_, error>;
 
+    /// The open project containing an absolute document path, or `none`.
+    /// Reading the returned project still requires `project.read`.
+    project-of: func(path: string) -> option<project>;
+
     /// What a path inside a project is.
     enum file-kind {
         file,

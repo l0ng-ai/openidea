@@ -527,6 +527,8 @@ pub struct ViewListItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum FieldValue {
+    Label(String),
+    ReadonlyText { text: String, multiline: bool },
     Text(String),
     Multiline(String),
     Checkbox(bool),
@@ -644,6 +646,8 @@ pub enum ViewEvent {
     // A sortable table's header click: the column and the direction (leaves
     // as an `other` view-event, kind `sort`). See `TableSort`.
     Sort { column: u32, descending: bool },
+    TableSelect { row: u32 },
+    TableActivate { row: u32 },
 }
 
 /// A plugin's HTTP route declaration in a project.

@@ -49,6 +49,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
         },
@@ -77,6 +78,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
         },
@@ -105,6 +107,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
         },
@@ -112,7 +115,7 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks,
+    commit, diagnostics, editor, events, fs, invocation, log, net, process, secrets, settings, storage, tasks,
     types as wit, ui, vcs, views, workspace,
 };
 
@@ -191,6 +194,12 @@ fn range_to_wit(r: &ide_core::Range) -> wit::Range {
 impl StoreData {
     fn require(&self, cap: Capability) -> Result<(), wit::Error> {
         if self.granted.iter().any(|g| g.covers(&cap)) { Ok(()) } else { Err(wit::Error::Denied(cap.to_string())) }
+    }
+
+    /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
+    /// should be told instead (`denied` naming the capability to declare).
+    fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
+        sandbox::resolve_granted(&self.granted, path).map_err(Into::into)
     }
 
     fn client(&self) -> Option<&str> {
@@ -460,6 +469,10 @@ impl workspace::Host for StoreData {
         Ok(self.host.open_project(client.as_deref(), path, new_window).map_err(to_wit))
     }
 
+    fn project_of(&mut self, path: String) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
+        self.host.project_of(Path::new(&path)).map(|root| self.push(ProjectRes { root })).transpose()
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -529,25 +542,7 @@ impl workspace::HostProject for StoreData {
                 return Ok(Err(e));
             }
         };
-        let meta = match std::fs::symlink_metadata(&real) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Err(wit::Error::NotFound(format!("{path}: no such file"))));
-            }
-            Err(e) => return Ok(Err(wit::Error::Failed(e.to_string()))),
-        };
-        let kind = if meta.is_file() {
-            workspace::FileKind::File
-        } else if meta.is_dir() {
-            workspace::FileKind::Directory
-        } else if meta.is_symlink() {
-            workspace::FileKind::Symlink
-        } else {
-            workspace::FileKind::Other
-        };
-        let modified =
-            meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
-        Ok(Ok(workspace::FileStat { kind, size: meta.len(), modified }))
+        Ok(file_stat(&real, &path))
     }
 
     fn find_files(&mut self, this: Resource<ProjectRes>, glob: String, limit: u32) -> Fallible<Vec<String>> {
@@ -758,14 +753,19 @@ impl events::Host for StoreData {
         {
             return Ok(Err(e));
         }
-        self.host.subscribe(kind, true);
+        self.host.subscribe(kind);
         Ok(Ok(()))
     }
 
-    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
-        if let Some(kind) = EventKind::parse(&kind) {
-            self.host.subscribe(kind, false);
+    fn subscribe_paths(&mut self, kind: String, globs: Vec<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
         }
+        Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
+    }
+
+    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
+        self.host.unsubscribe(&kind);
         Ok(())
     }
 }
@@ -981,6 +981,104 @@ impl settings::Host for StoreData {
 }
 
 impl views_bindings::openidea::plugin::view_types::Host for StoreData {}
+
+fn file_kind(t: std::fs::FileType) -> workspace::FileKind {
+    if t.is_file() {
+        workspace::FileKind::File
+    } else if t.is_dir() {
+        workspace::FileKind::Directory
+    } else if t.is_symlink() {
+        workspace::FileKind::Symlink
+    } else {
+        workspace::FileKind::Other
+    }
+}
+
+/// `project.stat` and `fs.stat`: the metadata of `real`, named `shown` in errors.
+fn file_stat(real: &Path, shown: &str) -> Result<workspace::FileStat, wit::Error> {
+    let meta = std::fs::symlink_metadata(real).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => wit::Error::NotFound(format!("{shown}: no such file")),
+        _ => wit::Error::Failed(e.to_string()),
+    })?;
+    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+    Ok(workspace::FileStat { kind: file_kind(meta.file_type()), size: meta.len(), modified })
+}
+
+/// A refused `fs.read` as the plugin sees it: `denied` carries the capability
+/// string, so the plugin can say exactly what its manifest lacks.
+impl From<sandbox::Refusal> for wit::Error {
+    fn from(refusal: sandbox::Refusal) -> Self {
+        match refusal {
+            sandbox::Refusal::Denied(cap) => Self::Denied(cap),
+            sandbox::Refusal::Invalid(message) => Self::Invalid(message),
+        }
+    }
+}
+
+/// Files outside the open projects, gated by `fs.read:<path>` grants.
+impl fs::Host for StoreData {
+    fn read_file(&mut self, path: String) -> Fallible<String> {
+        let real = match self.granted_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.read_text_file(&real, sandbox::MAX_READ_BYTES as usize).map_err(to_wit))
+    }
+
+    fn read_bytes(&mut self, path: String) -> Fallible<Vec<u8>> {
+        use std::io::Read;
+        let real = match self.granted_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let max = sandbox::MAX_READ_BYTES;
+        let read = std::fs::File::open(&real).and_then(|file| {
+            let mut bytes = Vec::new();
+            // One byte over: a file that grew past the limit is refused, not truncated.
+            file.take(max + 1).read_to_end(&mut bytes).map(|_| bytes)
+        });
+        Ok(match read {
+            Ok(bytes) if bytes.len() as u64 > max => {
+                Err(wit::Error::Invalid(format!("{path}: larger than {} MiB", max >> 20)))
+            }
+            Ok(bytes) => Ok(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(wit::Error::NotFound(format!("{path}: no such file")))
+            }
+            Err(e) => Err(wit::Error::Failed(format!("{path}: {e}"))),
+        })
+    }
+
+    fn stat(&mut self, path: String) -> Fallible<workspace::FileStat> {
+        Ok(self.granted_file(&path).and_then(|real| file_stat(&real, &path)))
+    }
+
+    fn read_dir(&mut self, path: String) -> Fallible<Vec<fs::DirEntry>> {
+        let real = match self.granted_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let read = match std::fs::read_dir(&real) {
+            Ok(read) => read,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Err(wit::Error::NotFound(format!("{path}: no such directory"))));
+            }
+            Err(_) if real.is_file() => return Ok(Err(wit::Error::Invalid(format!("{path}: not a directory")))),
+            Err(e) => return Ok(Err(wit::Error::Failed(format!("{path}: {e}")))),
+        };
+        let mut entries: Vec<fs::DirEntry> = read
+            .flatten()
+            .take(sandbox::MAX_LIST_ENTRIES)
+            .map(|e| fs::DirEntry {
+                name: e.file_name().to_string_lossy().into_owned(),
+                kind: e.file_type().map_or(workspace::FileKind::Other, file_kind),
+            })
+            .collect();
+        // Sorted, so what a plugin picks doesn't depend on the disk's order.
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Ok(entries))
+    }
+}
 
 /// Largest message between a plugin and its view's frame.
 const MAX_VIEW_MESSAGE: usize = 1 << 20;
