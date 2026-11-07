@@ -126,7 +126,7 @@ describe("MemoryView", () => {
   });
 
   it.each<[JvmMemoryUnavailable, string]>([
-    [{ kind: "notLaunchedByIde" }, "Memory view works for programs the IDE launches."],
+    [{ kind: "attachedJvmNotFound" }, "Memory view works for programs the IDE launches."],
     [{ kind: "unsupportedPlatform" }, "Memory view is not available on this platform yet."],
     [{ kind: "noJvmProcess" }, "Could not find the program's JVM process."],
     [

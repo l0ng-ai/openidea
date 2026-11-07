@@ -20,7 +20,7 @@ const count = (n: number) => n.toLocaleString();
 
 function unavailableText(reason: JvmMemoryUnavailable): string {
   switch (reason.kind) {
-    case "notLaunchedByIde":
+    case "attachedJvmNotFound":
       return tx("Memory view works for programs the IDE launches.");
     case "unsupportedPlatform":
       return tx("Memory view is not available on this platform yet.");

@@ -4,10 +4,12 @@ use crate::session::Session;
 use ide_core::IdeResult;
 use ide_jvm_attach::{AttachError, HistogramRow, JavaVersion};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use specta::Type;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 pub const JVM_MEMORY_ADAPTERS: &[&str] = &["java-debug", crate::kotlin::ADAPTER];
@@ -45,7 +47,8 @@ pub struct JvmMemorySnapshot {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum JvmMemoryUnavailable {
-    NotLaunchedByIde,
+    /// An attach session whose JVM is remote, or local but not found by its JDWP port.
+    AttachedJvmNotFound,
     UnsupportedPlatform,
     NoJvmProcess,
     ListenerNotRunning,
@@ -78,17 +81,78 @@ pub struct JvmMemoryState {
 /// Version probe for a JVM whose `release` file could not be read.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn launched_jvm(adapter: &str, request: &str) -> bool {
-    JVM_MEMORY_ADAPTERS.contains(&adapter) && request == "launch"
+/// One try of the scan at attach time, and the limit per socket within it: a silent socket's
+/// query thread lives that long, so a longer per-socket limit piles threads up across tries.
+const ATTACH_SCAN_TRY: Duration = Duration::from_millis(500);
+const ATTACH_SCAN_INTERVAL: Duration = Duration::from_millis(150);
+/// The JVM's attach socket can appear a little after the JDWP "Listening" banner, which is
+/// when the IDE attaches.
+const ATTACH_SCAN_WINDOW: Duration = Duration::from_secs(3);
+/// The single scan a refresh makes while the attach-time one found nothing.
+const RESCAN_PER_SOCKET: Duration = Duration::from_secs(1);
+const RESCAN_BUDGET: Duration = Duration::from_secs(2);
+
+/// JDWP port of an attach to this machine (`hostName` loopback or absent): only such a JVM has
+/// an attach socket the IDE can find.
+pub(crate) fn local_jdwp_port(arguments: &Value) -> Option<u16> {
+    let local = match arguments.get("hostName") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(host)) => {
+            let host = host.trim();
+            let ip = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+            host.eq_ignore_ascii_case("localhost") || ip.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        }
+        Some(_) => false,
+    };
+    let port = match arguments.get("port")? {
+        Value::Number(n) => n.as_u64().and_then(|p| u16::try_from(p).ok()),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    };
+    port.filter(|&p| local && p != 0)
 }
 
-pub(crate) fn jvm_memory_supported(adapter: &str, request: &str) -> bool {
-    launched_jvm(adapter, request) && cfg!(unix)
+/// Looks for the JVM behind a local attach in the background, so a JVM that never opens an
+/// attach socket does not hold the attach up.
+pub(crate) fn find_attached_jvm(session: &Arc<Session>, port: u16) {
+    let _ = session.jdwp_port.set(port);
+    let weak = Arc::downgrade(session);
+    tokio::spawn(async move {
+        let live = || weak.upgrade().is_some_and(|s| !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed());
+        let find = move || ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY);
+        let Some(pid) = retry_find(find, live, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW).await else {
+            tracing::debug!(port, "no local JVM found for the JDWP port yet");
+            return;
+        };
+        if let Some(s) = weak.upgrade() {
+            let _ = s.jvm_pid.compare_exchange(0, i64::from(pid), Ordering::AcqRel, Ordering::Acquire);
+        }
+    });
+}
+
+/// Calls `find` on a blocking thread until it returns a pid, `live` turns false or `window`
+/// has passed.
+pub(crate) async fn retry_find<F>(find: F, live: impl Fn() -> bool, interval: Duration, window: Duration) -> Option<u32>
+where
+    F: Fn() -> Option<u32> + Clone + Send + 'static,
+{
+    let deadline = tokio::time::Instant::now() + window;
+    while live() {
+        if let Ok(Some(pid)) = tokio::task::spawn_blocking(find.clone()).await {
+            return Some(pid);
+        }
+        if tokio::time::Instant::now() + interval >= deadline {
+            break;
+        }
+        tokio::time::sleep(interval).await;
+    }
+    None
 }
 
 /// The attach calls a snapshot makes, so tests can stand in for a JVM.
 pub(crate) trait AttachProbe: Send + Sync {
     fn has_listener(&self, pid: u32) -> bool;
+    fn find_by_jdwp_port(&self, port: u16) -> Option<u32>;
     fn version(&self, pid: u32) -> Option<JavaVersion>;
     fn histogram(&self, pid: u32) -> Result<String, AttachError>;
     fn alive(&self, pid: u32) -> bool;
@@ -101,6 +165,10 @@ struct JdkProbe {
 impl AttachProbe for JdkProbe {
     fn has_listener(&self, pid: u32) -> bool {
         ide_jvm_attach::has_listener(pid)
+    }
+
+    fn find_by_jdwp_port(&self, port: u16) -> Option<u32> {
+        ide_jvm_attach::find_jvm_by_jdwp_port(port, RESCAN_PER_SOCKET, RESCAN_BUDGET)
     }
 
     fn version(&self, pid: u32) -> Option<JavaVersion> {
@@ -245,26 +313,50 @@ pub(crate) fn take_snapshot(
 
 pub(crate) async fn session_classes(session: Arc<Session>) -> IdeResult<JvmMemoryResult> {
     let unavailable = |reason| Ok(JvmMemoryResult::Unavailable { reason });
-    if !launched_jvm(&session.adapter, &session.request) {
-        return unavailable(JvmMemoryUnavailable::NotLaunchedByIde);
+    if !JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str()) {
+        return unavailable(JvmMemoryUnavailable::NoJvmProcess);
     }
     if !cfg!(unix) {
         return unavailable(JvmMemoryUnavailable::UnsupportedPlatform);
     }
-    let pid = match session.jvm_pid.load(Ordering::Acquire) {
-        p if p > 0 => p,
-        _ => session.debuggee_pid.load(Ordering::Acquire),
-    };
-    let Some(pid) = i32::try_from(pid).ok().filter(|&p| p > 0) else {
-        return unavailable(JvmMemoryUnavailable::NoJvmProcess);
+    let launched = if session.request == "launch" {
+        let pid = match session.jvm_pid.load(Ordering::Acquire) {
+            p if p > 0 => p,
+            _ => session.debuggee_pid.load(Ordering::Acquire),
+        };
+        let Some(pid) = i32::try_from(pid).ok().filter(|&p| p > 0) else {
+            return unavailable(JvmMemoryUnavailable::NoJvmProcess);
+        };
+        Some(pid)
+    } else {
+        None
     };
     // Detached, so a caller that gives up cannot release the lock while the JVM is still
     // answering and let a second histogram request run next to it.
     tokio::spawn(async move {
-        snapshot(&session.jvm_memory, &session.suspended, |suspended| Arc::new(JdkProbe { suspended }), pid).await
+        let target = match launched {
+            Some(pid) => JvmTarget::Launched(pid),
+            None => JvmTarget::Attached { pid: &session.jvm_pid, jdwp_port: session.jdwp_port.get().copied() },
+        };
+        snapshot(&session.jvm_memory, &session.suspended, |suspended| Arc::new(JdkProbe { suspended }), target).await
     })
     .await
     .map_err(|e| ide_core::IdeError::internal(format!("JVM memory snapshot failed: {e}")))?
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum JvmTarget<'a> {
+    /// The program a launch session started: its pid and everything it started.
+    Launched(i32),
+    /// The JVM of an attach session. While `pid` is 0 it is looked up by `jdwp_port`, which is
+    /// `None` for a remote JVM.
+    Attached { pid: &'a AtomicI64, jdwp_port: Option<u16> },
+}
+
+enum Lookup {
+    Tree(i32),
+    Known(i32),
+    Scan(u16),
 }
 
 /// `probe` is built from the suspension read once the lock is held: a request queued behind
@@ -273,18 +365,41 @@ pub(crate) async fn snapshot(
     state: &tokio::sync::Mutex<JvmMemoryState>,
     suspended: &AtomicBool,
     probe: impl FnOnce(bool) -> Arc<dyn AttachProbe>,
-    pid: i32,
+    target: JvmTarget<'_>,
 ) -> IdeResult<JvmMemoryResult> {
     let mut state = state.lock().await;
+    let lookup = match target {
+        JvmTarget::Launched(pid) => Lookup::Tree(pid),
+        JvmTarget::Attached { pid, jdwp_port } => match i32::try_from(pid.load(Ordering::Acquire)) {
+            Ok(p) if p > 0 => Lookup::Known(p),
+            _ => match jdwp_port {
+                Some(port) => Lookup::Scan(port),
+                None => {
+                    return Ok(JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound });
+                }
+            },
+        },
+    };
     let suspended = suspended.load(Ordering::Acquire);
     let probe = probe(suspended);
     let previous = state.previous.clone();
-    let outcome = tokio::task::spawn_blocking(move || {
-        let tree = pid_tree(pid);
-        take_snapshot(&*probe, &tree, suspended, previous.as_deref())
+    let (found, outcome) = tokio::task::spawn_blocking(move || {
+        let (found, tree) = match lookup {
+            Lookup::Tree(pid) => (None, pid_tree(pid)),
+            Lookup::Known(pid) => (None, vec![pid]),
+            Lookup::Scan(port) => match probe.find_by_jdwp_port(port).and_then(|p| i32::try_from(p).ok()) {
+                Some(pid) if pid > 0 => (Some(pid), vec![pid]),
+                _ => return (None, Ok(Err(JvmMemoryUnavailable::AttachedJvmNotFound))),
+            },
+        };
+        (found, take_snapshot(&*probe, &tree, suspended, previous.as_deref()))
     })
     .await
     .map_err(|e| ide_core::IdeError::internal(format!("JVM memory snapshot failed: {e}")))?;
+    if let (Some(found), JvmTarget::Attached { pid, .. }) = (found, target) {
+        // The attach-time scan may have found it meanwhile; either answer is the same JVM.
+        let _ = pid.compare_exchange(0, i64::from(found), Ordering::AcqRel, Ordering::Acquire);
+    }
     Ok(match outcome? {
         Ok((snapshot, counts)) => {
             state.previous = Some(Arc::new(counts));
@@ -323,6 +438,10 @@ mod tests {
         delay: Duration,
         in_flight: AtomicUsize,
         max_in_flight: AtomicUsize,
+        /// JDWP port → pid of the JVM listening on it.
+        jdwp: Option<(u16, u32)>,
+        scans: AtomicUsize,
+        asked: parking_lot::Mutex<Vec<u32>>,
     }
 
     impl FakeProbe {
@@ -335,13 +454,21 @@ mod tests {
                 delay: Duration::ZERO,
                 in_flight: AtomicUsize::new(0),
                 max_in_flight: AtomicUsize::new(0),
+                jdwp: None,
+                scans: AtomicUsize::new(0),
+                asked: parking_lot::Mutex::new(Vec::new()),
             }
         }
     }
 
     impl AttachProbe for FakeProbe {
         fn has_listener(&self, pid: u32) -> bool {
+            self.asked.lock().push(pid);
             pid == self.listener
+        }
+        fn find_by_jdwp_port(&self, port: u16) -> Option<u32> {
+            self.scans.fetch_add(1, Ordering::SeqCst);
+            self.jdwp.filter(|(p, _)| *p == port).map(|(_, pid)| pid)
         }
         fn version(&self, _pid: u32) -> Option<JavaVersion> {
             self.version.clone()
@@ -478,6 +605,122 @@ mod tests {
         );
     }
 
+    #[test]
+    fn local_jdwp_port_accepts_loopback_only() {
+        let port = |args: serde_json::Value| local_jdwp_port(&args);
+        for host in ["127.0.0.1", "localhost", "LocalHost", "::1", "[::1]"] {
+            assert_eq!(port(serde_json::json!({"hostName": host, "port": 5005})), Some(5005), "{host}");
+        }
+        assert_eq!(port(serde_json::json!({"port": 5005})), Some(5005));
+        assert_eq!(port(serde_json::json!({"hostName": "localhost", "port": "5005"})), Some(5005));
+        assert_eq!(port(serde_json::json!({"hostName": "10.0.0.5", "port": 5005})), None);
+        assert_eq!(port(serde_json::json!({"hostName": "build-box", "port": 5005})), None);
+        assert_eq!(port(serde_json::json!({"hostName": "localhost", "port": 0})), None);
+        assert_eq!(port(serde_json::json!({"hostName": "localhost", "port": 70000})), None);
+        assert_eq!(port(serde_json::json!({"hostName": "localhost", "port": "x"})), None);
+        assert_eq!(port(serde_json::json!({"hostName": "localhost"})), None);
+    }
+
+    #[tokio::test]
+    async fn attach_with_pid_takes_snapshot() {
+        let state = tokio::sync::Mutex::new(JvmMemoryState::default());
+        let running = AtomicBool::new(false);
+        let jvm_pid = AtomicI64::new(4242);
+        let fake = Arc::new(FakeProbe::new(4242, vec![Ok(HISTOGRAM.into())]));
+        let probe: Arc<dyn AttachProbe> = fake.clone();
+        let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
+        let r = snapshot(&state, &running, |_| probe, target).await.unwrap();
+        assert!(matches!(r, JvmMemoryResult::Ready { .. }), "{r:?}");
+        // The attached JVM's own pid only: its children are not part of the session.
+        assert_eq!(*fake.asked.lock(), [4242]);
+        assert_eq!(fake.scans.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_rescans_local_attach_without_pid() {
+        let state = tokio::sync::Mutex::new(JvmMemoryState::default());
+        let running = AtomicBool::new(false);
+        let jvm_pid = AtomicI64::new(0);
+
+        let missing = Arc::new(FakeProbe::new(4242, Vec::new()));
+        let probe: Arc<dyn AttachProbe> = missing.clone();
+        let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
+        assert_eq!(
+            snapshot(&state, &running, |_| probe, target).await.unwrap(),
+            JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound }
+        );
+        assert_eq!(missing.scans.load(Ordering::SeqCst), 1);
+        assert_eq!(jvm_pid.load(Ordering::Acquire), 0);
+
+        let mut found = FakeProbe::new(4242, vec![Ok(HISTOGRAM.into()), Ok(HISTOGRAM.into())]);
+        found.jdwp = Some((5005, 4242));
+        let found = Arc::new(found);
+        let probe: Arc<dyn AttachProbe> = found.clone();
+        let target = || JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
+        let r = snapshot(&state, &running, |_| probe.clone(), target()).await.unwrap();
+        assert!(matches!(r, JvmMemoryResult::Ready { .. }), "{r:?}");
+        assert_eq!(jvm_pid.load(Ordering::Acquire), 4242);
+        snapshot(&state, &running, |_| probe, target()).await.unwrap();
+        assert_eq!(found.scans.load(Ordering::SeqCst), 1, "a found pid is kept");
+    }
+
+    #[tokio::test]
+    async fn remote_attach_without_pid_is_not_scanned() {
+        let state = tokio::sync::Mutex::new(JvmMemoryState::default());
+        let running = AtomicBool::new(false);
+        let jvm_pid = AtomicI64::new(0);
+        let mut fake = FakeProbe::new(4242, Vec::new());
+        fake.jdwp = Some((5005, 4242));
+        let fake = Arc::new(fake);
+        let probe: Arc<dyn AttachProbe> = fake.clone();
+        let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: None };
+        assert_eq!(
+            snapshot(&state, &running, |_| probe, target).await.unwrap(),
+            JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound }
+        );
+        assert_eq!(fake.scans.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn retries_find_until_the_jvm_appears() {
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counted = tries.clone();
+        let find = move || (counted.fetch_add(1, Ordering::SeqCst) >= 2).then_some(4242);
+        let found = retry_find(find, || true, Duration::from_millis(1), Duration::from_secs(5)).await;
+        assert_eq!(found, Some(4242));
+        assert_eq!(tries.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_find_gives_up_after_its_window() {
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counted = tries.clone();
+        let find = move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            None
+        };
+        let started = std::time::Instant::now();
+        let found = retry_find(find, || true, Duration::from_millis(10), Duration::from_millis(100)).await;
+        assert_eq!(found, None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(tries.load(Ordering::SeqCst) >= 2);
+    }
+
+    #[tokio::test]
+    async fn retry_find_stops_when_the_session_ends() {
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counted = tries.clone();
+        let find = move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            None
+        };
+        let live = AtomicBool::new(true);
+        let live_check = || live.swap(false, Ordering::SeqCst);
+        let found = retry_find(find, live_check, Duration::from_millis(1), Duration::from_secs(5)).await;
+        assert_eq!(found, None);
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn histogram_lock_released_after_timeout() {
@@ -486,12 +729,15 @@ mod tests {
         let running = AtomicBool::new(false);
         let probe: Arc<dyn AttachProbe> =
             Arc::new(FakeProbe::new(pid, vec![Err(AttachError::Timeout), Ok(HISTOGRAM.into())]));
-        let first = snapshot(&state, &running, |_| probe.clone(), pid as i32).await.unwrap();
+        let first = snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32)).await.unwrap();
         assert_eq!(first, JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::TimedOut });
-        let second = tokio::time::timeout(Duration::from_secs(5), snapshot(&state, &running, |_| probe, pid as i32))
-            .await
-            .expect("second request blocked by the first")
-            .unwrap();
+        let second = tokio::time::timeout(
+            Duration::from_secs(5),
+            snapshot(&state, &running, |_| probe, JvmTarget::Launched(pid as i32)),
+        )
+        .await
+        .expect("second request blocked by the first")
+        .unwrap();
         let JvmMemoryResult::Ready { snapshot } = second else { panic!("{second:?}") };
         assert!(!snapshot.has_baseline);
         assert_eq!((snapshot.total_instances, snapshot.total_bytes), (6, 96));
@@ -508,8 +754,8 @@ mod tests {
         let probe: Arc<dyn AttachProbe> = fake.clone();
         let running = AtomicBool::new(false);
         let (a, b) = tokio::join!(
-            snapshot(&state, &running, |_| probe.clone(), pid as i32),
-            snapshot(&state, &running, |_| probe.clone(), pid as i32)
+            snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32)),
+            snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32))
         );
         assert_eq!(fake.max_in_flight.load(Ordering::SeqCst), 1);
         let has_baseline = |r: JvmMemoryResult| match r {
@@ -540,7 +786,7 @@ mod tests {
                 *seen.lock() = Some(s);
                 probe
             },
-            pid as i32,
+            JvmTarget::Launched(pid as i32),
         ));
         assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
         // The program hits a breakpoint while the request waits behind another one.
@@ -560,10 +806,14 @@ mod tests {
         let state = tokio::sync::Mutex::new(JvmMemoryState::default());
         let running = AtomicBool::new(false);
         let probe = |histograms: Vec<_>| -> Arc<dyn AttachProbe> { Arc::new(FakeProbe::new(pid, histograms)) };
-        snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), pid as i32).await.unwrap();
+        snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), JvmTarget::Launched(pid as i32))
+            .await
+            .unwrap();
         // An empty fake panics on its histogram call, failing the blocking task.
-        assert!(snapshot(&state, &running, |_| probe(Vec::new()), pid as i32).await.is_err());
-        let third = snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), pid as i32).await.unwrap();
+        assert!(snapshot(&state, &running, |_| probe(Vec::new()), JvmTarget::Launched(pid as i32)).await.is_err());
+        let third = snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), JvmTarget::Launched(pid as i32))
+            .await
+            .unwrap();
         let JvmMemoryResult::Ready { snapshot } = third else { panic!("{third:?}") };
         assert!(snapshot.has_baseline);
     }

@@ -53,9 +53,12 @@ pub(crate) struct Session {
     pub stop_force: AtomicBool,
     /// `systemProcessId` from the adapter's `process` event: the program being debugged.
     pub debuggee_pid: AtomicI64,
-    /// The JVM an app-launched (Kotlin) session started. Separate from `debuggee_pid`, which
-    /// decides how Stop signals the program and is 0 for Kotlin.
+    /// The JVM an app-launched (Kotlin) session started, or the local JVM an attach session
+    /// found by its JDWP port. Separate from `debuggee_pid`, which decides how Stop signals the
+    /// program and is 0 for Kotlin.
     pub jvm_pid: AtomicI64,
+    /// JDWP port of an attach to a local JVM, to look the JVM up again; unset for a remote one.
+    pub jdwp_port: std::sync::OnceLock<u16>,
     /// True from a `stopped` event until `continued` or a successful resume/step request.
     /// Never cleared elsewhere: a stale `true` only makes a later check refuse.
     pub suspended: AtomicBool,
@@ -116,6 +119,7 @@ impl Session {
             stop_force: AtomicBool::new(false),
             debuggee_pid: AtomicI64::new(0),
             jvm_pid: AtomicI64::new(0),
+            jdwp_port: std::sync::OnceLock::new(),
             suspended: AtomicBool::new(false),
             stop_seq: AtomicU64::new(0),
             stop_pids: parking_lot::Mutex::new(Vec::new()),

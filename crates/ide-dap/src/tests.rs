@@ -1651,22 +1651,56 @@ fn java_config(request: &str) -> LaunchConfig {
     LaunchConfig { adapter: "java-debug".into(), request: request.into(), extra_json: None, ..config() }
 }
 
+fn remote_attach(adapter: &str, project: &std::path::Path) -> LaunchConfig {
+    LaunchConfig {
+        adapter: adapter.into(),
+        cwd: Some(project.to_owned().into()),
+        extra_json: Some(json!({"projectRoot": project, "hostName": "10.0.0.5", "port": 5005}).to_string()),
+        ..java_config("attach")
+    }
+}
+
 #[tokio::test]
-async fn attach_session_is_not_launched_by_ide() {
+async fn attach_session_reports_capability() {
     let h = harness(Script::default());
-    let id = h.start(java_config("attach")).await.unwrap();
-    assert!(!h.manager.capabilities(id).unwrap().jvm_memory);
-    assert_eq!(
-        h.manager.jvm_memory_classes(id).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NotLaunchedByIde }
-    );
+    let project = tempfile::tempdir().unwrap();
+    for adapter in ["java-debug", kotlin::ADAPTER] {
+        let id = h.start(remote_attach(adapter, project.path())).await.unwrap();
+        assert!(h.manager.capabilities(id).unwrap().jvm_memory, "{adapter}");
+    }
 
     let id = h.start(config()).await.unwrap();
     assert!(!h.manager.capabilities(id).unwrap().jvm_memory);
     assert_eq!(
         h.manager.jvm_memory_classes(id).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NotLaunchedByIde }
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess }
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_host_is_not_scanned() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.jdwp_port.get(), None);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound }
+    );
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_attach_remembers_its_jdwp_port() {
+    let h = harness(Script::default());
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "localhost", "port": "5005"}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.manager.session(id).unwrap().jdwp_port.get(), Some(&5005));
+    assert_eq!(h.request("attach")["arguments"]["port"], "5005");
 }
 
 #[cfg(unix)]

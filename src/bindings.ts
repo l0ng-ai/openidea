@@ -3030,7 +3030,10 @@ export type DebugCapabilities = {
 	logPoints: boolean,
 	/**  HotSwap ("Reload Changed Classes"): java-debug's `redefineClasses` request. */
 	hotCodeReplace: boolean,
-	/**  [`DebugManager::jvm_memory_classes`] can answer for this session. */
+	/**
+	 *  The session debugs a JVM, so it has a Memory view; [`DebugManager::jvm_memory_classes`]
+	 *  says why when it has no data (platform, remote JVM, ...).
+	 */
 	jvmMemory: boolean,
 };
 
@@ -4921,7 +4924,9 @@ export type JvmMemorySnapshot = {
 	elapsedMs: number,
 };
 
-export type JvmMemoryUnavailable = { kind: "notLaunchedByIde" } | { kind: "unsupportedPlatform" } | { kind: "noJvmProcess" } | { kind: "listenerNotRunning" } | 
+export type JvmMemoryUnavailable = 
+/**  An attach session whose JVM is remote, or local but not found by its JDWP port. */
+{ kind: "attachedJvmNotFound" } | { kind: "unsupportedPlatform" } | { kind: "noJvmProcess" } | { kind: "listenerNotRunning" } | 
 /**  `java_major` is 0 when the version is unknown. */
 { kind: "unsafeWhileSuspended"; javaMajor: number } | { kind: "programExited" } | { kind: "timedOut" };
 

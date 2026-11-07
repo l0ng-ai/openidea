@@ -128,7 +128,8 @@ pub struct DebugCapabilities {
     pub log_points: bool,
     /// HotSwap ("Reload Changed Classes"): java-debug's `redefineClasses` request.
     pub hot_code_replace: bool,
-    /// [`DebugManager::jvm_memory_classes`] can answer for this session.
+    /// The session debugs a JVM, so it has a Memory view; [`DebugManager::jvm_memory_classes`]
+    /// says why when it has no data (platform, remote JVM, ...).
     pub jvm_memory: bool,
 }
 
@@ -890,6 +891,14 @@ impl DebugManager {
         } else {
             &s.request
         };
+        // Before the Kotlin relay below replaces the JVM's address with its own.
+        if cfg!(unix)
+            && s.request == "attach"
+            && JVM_MEMORY_ADAPTERS.contains(&s.adapter.as_str())
+            && let Some(port) = jvm_memory::local_jdwp_port(&arguments)
+        {
+            jvm_memory::find_attached_jvm(s, port);
+        }
         if s.adapter == kotlin::ADAPTER {
             let host = arguments
                 .get("hostName")
@@ -1539,7 +1548,7 @@ impl DebugManager {
         let session = self.session(s)?;
         let mut caps = capabilities_from(&session.caps.lock());
         caps.hot_code_replace = HOT_CODE_REPLACE_ADAPTERS.contains(&session.adapter.as_str());
-        caps.jvm_memory = jvm_memory::jvm_memory_supported(&session.adapter, &session.request);
+        caps.jvm_memory = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
         Ok(caps)
     }
 
