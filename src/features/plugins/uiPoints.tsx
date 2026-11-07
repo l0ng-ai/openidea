@@ -34,6 +34,7 @@ import {
   registerFileEditorProvider,
   registerMenuGroup,
   registerMenuSlotItem,
+  registerServiceProvider,
   registerSettingsPage,
   registerTextEditorWrapper,
   registerToolWindow,
@@ -46,6 +47,7 @@ import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
 import { declareStatusItem } from "./runtimeUi";
+import { pluginToolWindowId } from "./views/viewStore";
 import {
   CUSTOM_EDITOR_KIND,
   CustomEditor,
@@ -57,6 +59,7 @@ import {
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
 import { PluginView } from "./views/PluginView";
+import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
 import styles from "./PluginsPage.module.css";
 
@@ -86,7 +89,11 @@ export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): 
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;
     // The editor menu runs with the focused editor; the others name their file.
-    out.push({ kind: "action", action, arg: menu === "editor" ? undefined : paths[0] });
+    out.push({
+      kind: "action",
+      action,
+      arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths] },
+    });
   }
   return out;
 }
@@ -237,7 +244,7 @@ interface ViewDecl {
   id: string;
   title: string;
   icon?: string | null;
-  location: ToolWindowAnchor;
+  location: ToolWindowAnchor | "services";
   web?: string;
 }
 
@@ -303,9 +310,11 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
   };
 }
 
-export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
-
 function registerView(pluginId: string, decl: ViewDecl, icon: string): () => void {
+  if (decl.location === "services") {
+    const itemMenu = (key: string) => pluginViewItemMenuItems(pluginId, decl.id, key);
+    return registerServiceProvider(pluginServiceProvider(pluginId, decl, icon, itemMenu));
+  }
   return registerToolWindow({
     id: pluginToolWindowId(pluginId, decl.id),
     title: decl.title,

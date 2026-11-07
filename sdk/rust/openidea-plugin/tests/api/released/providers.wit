@@ -1,4 +1,4 @@
-package openidea:plugin@1.1.0;
+package openidea:plugin@1.2.0;
 
 /// Editor features a plugin provides for the languages it declares under
 /// `[[contributes.providers]]` (the host calls only declared kinds). They run

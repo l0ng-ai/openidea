@@ -171,7 +171,12 @@ fn two_windows_of_same_root_keep_unsaved_snapshots_isolated() {
                 .index_navigation(
                     &f.root,
                     Snapshot { path, version: Some(1), text, symbols: &symbols, scope: "" },
-                    Invocation { client: Some(client.into()), workspace_root: Some(f.root.clone()), editor: None },
+                    Invocation {
+                        client: Some(client.into()),
+                        workspace_root: Some(f.root.clone()),
+                        editor: None,
+                        selected_paths: Vec::new(),
+                    },
                 )
                 .unwrap();
         }

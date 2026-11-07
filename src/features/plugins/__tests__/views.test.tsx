@@ -6,7 +6,7 @@ import type { View, ViewEvent } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { bindingsFor, effectiveBindings, registerExtensionBindings, useKeymap } from "@/platform/keymap";
 import { createMemoryPluginsBackend, setPluginsBackend, type PluginsBackend } from "../backend";
-import { defineBuiltinUiPoints } from "../points";
+import { commandArgs, defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, syncUiContributions } from "../projection";
 import { pluginMenuItems, pluginViewItemMenuItems, withPluginSetting } from "../uiPoints";
 import { matchesPattern } from "../views/customEditor";
@@ -162,6 +162,13 @@ describe("plugin keymaps", () => {
 });
 
 describe("plugin menus", () => {
+  it("unpacks command arguments", () => {
+    expect(commandArgs("x")).toEqual(["x", []]);
+    expect(commandArgs({ path: "/a", paths: ["/a", "/b"] })).toEqual(["/a", ["/a", "/b"]]);
+    expect(commandArgs(undefined)).toEqual([null, []]);
+    expect(commandArgs({ path: 3 })).toEqual([null, []]);
+  });
+
   it("projects context menu entries for their command's action", () => {
     const off = registerAction({ id: "plugin.p.check", title: "Check", run: () => {} });
     const plugin = {
@@ -188,9 +195,26 @@ describe("plugin menus", () => {
       [plugin],
     );
     expect(pluginMenuItems("projectView", ["/p/a.java"])).toEqual([
-      { kind: "action", action: "plugin.p.check", arg: "/p/a.java" },
+      { kind: "action", action: "plugin.p.check", arg: { path: "/p/a.java", paths: ["/p/a.java"] } },
     ]);
+    expect(pluginMenuItems("projectView", ["/p/a.java", "/p/b.java"])[0]).toMatchObject({
+      arg: { path: "/p/a.java", paths: ["/p/a.java", "/p/b.java"] },
+    });
     expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([]);
+    syncUiContributions(
+      [
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/always",
+          decl: { menu: "editor.context", command: "check" },
+        },
+      ],
+      [plugin],
+    );
+    expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([
+      { kind: "action", action: "plugin.p.check", arg: undefined },
+    ]);
     off();
   });
 

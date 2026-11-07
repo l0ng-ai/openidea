@@ -82,7 +82,7 @@ pub fn project_libraries(root: &Path, settings: &Settings, dependencies: &[Build
 // ------------------------------------------------------------------ cache
 
 /// Size and modification time of each manifest (`None`: missing).
-type Stamp = Vec<(PathBuf, Option<(SystemTime, u64)>)>;
+pub(crate) type Stamp = Vec<(PathBuf, Option<(SystemTime, u64)>)>;
 
 struct Cached {
     /// Settings the result depends on.
@@ -97,7 +97,7 @@ pub fn invalidate_go(root: &Path) {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&(root.to_path_buf(), "go"));
 }
 
-fn stamp(files: &[PathBuf]) -> Stamp {
+pub(crate) fn stamp(files: &[PathBuf]) -> Stamp {
     files
         .iter()
         .map(|f| {

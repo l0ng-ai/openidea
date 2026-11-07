@@ -51,7 +51,7 @@ import { selectableText } from "@/ui/selectableText";
 import { iconNode } from "./iconMarkup";
 import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
 import { featureBackoff } from "./availability";
-import { pathCompletionSource } from "./fileReferences";
+import { pathCompletionSource, pathContext, pathLike } from "./fileReferences";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
@@ -298,7 +298,7 @@ export function callParens(
 ): "inside" | "after" | null {
   if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || /[(<[{]/.test(item.insertText)) return null;
   const next = line.text.charAt(end - line.from);
-  if (next && /[(\p{L}\p{N}_$]/u.test(next)) return null;
+  if (next && /[(\p{L}\p{N}_$'"`]/u.test(next)) return null;
   if (IMPORT_LINE.test(line.text.slice(0, start - line.from))) return null;
   const sig = item.labelDetail ?? item.detail ?? "";
   return /^\s*\(\s*\)/.test(sig) || /^\s*fn\s*\(\s*\)|^\s*\(\)\s*(=>|->|:)/.test(sig) ? "after" : "inside";
@@ -764,12 +764,39 @@ const completionFooter = ViewPlugin.fromClass(
   },
 );
 
+let pluginClaim: { pos: number; claimed: Promise<boolean> } | null = null;
+
+const claimingLspSource: CompletionSource = (ctx) => {
+  const result = Promise.resolve(lspCompletionSource(ctx));
+  pluginClaim = {
+    pos: ctx.pos,
+    claimed: result.then((r) => !!r?.options.some((o) => isLsp(o) && o.lsp.server === 0)).catch(() => false),
+  };
+  return result;
+};
+
+const PATH_ONLY_WHEN_PATH_LIKE = new Set(["php", "blade"]);
+
+export function offersPaths(language: string, before: string): boolean {
+  if (!PATH_ONLY_WHEN_PATH_LIKE.has(language)) return true;
+  const found = pathContext(before, language);
+  return !!found && pathLike(found.prefix);
+}
+
+const pathFallbackSource: CompletionSource = async (ctx) => {
+  const line = ctx.state.doc.lineAt(ctx.pos);
+  if (!offersPaths(ctx.state.facet(lspDoc)?.language ?? "", line.text.slice(0, ctx.pos - line.from))) return null;
+  const claim = pluginClaim;
+  if (claim && claim.pos === ctx.pos && (await claim.claimed)) return null;
+  return pathCompletionSource(ctx);
+};
+
 export function completionExtension() {
   return [
     lookupKeys,
     prefetchResolve,
     autocompletion({
-      override: [gated(lspCompletionSource), gated(contributedSource), gated(pathCompletionSource)],
+      override: [gated(claimingLspSource), gated(contributedSource), gated(pathFallbackSource)],
       icons: false,
       addToOptions: [
         { render: kindBadge, position: 20 },

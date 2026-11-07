@@ -30,6 +30,7 @@ mod providers;
 pub mod remote;
 pub mod remote_host;
 mod run_detectors;
+mod semantic_tokens;
 mod theme;
 mod types;
 pub mod ui_points;
@@ -47,6 +48,7 @@ pub use market::{
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub use providers::{ProviderKind, set_editor_providers};
 pub(crate) use providers::{editor_plugin_host, editor_providers as editor_providers_for};
+pub(crate) use semantic_tokens::merge as merge_semantic_tokens;
 pub use theme::{ThemeDef, ThemeKind};
 pub use types::*;
 
@@ -59,7 +61,8 @@ use ide_extension::{
 use ide_language::plugin_point::PluginLanguages;
 use ide_language::{LanguageConfig, ProgramPin};
 use ide_plugin::{
-    Actor, ActorError, CANCELLED, CallError, HostApi, Invocation, Limits, PluginEngine, Runtime, RuntimeSetup,
+    Actor, ActorError, CANCELLED, CallError, HostApi, HostError, Invocation, Limits, PluginEngine, Runtime,
+    RuntimeSetup,
 };
 use parking_lot::{Condvar, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -1074,11 +1077,84 @@ impl PluginHost {
         })
     }
 
+    /// The Services pane of node `key` of the plugin's `location = "services"`
+    /// view `view`.
+    pub fn service_detail(
+        &self,
+        id: &str,
+        view: &str,
+        key: &str,
+        invocation: Invocation,
+    ) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
+        self.services_view(id, view)?;
+        let (view, key) = (view.to_owned(), key.to_owned());
+        self.code_call(id, invocation, "rendering the service's pane", move |rt, inv| {
+            rt.service_detail(&view, &key, inv)
+        })
+    }
+
+    /// Runs the program of the log tab `tab` of node `key`'s pane, with the
+    /// arguments of the toggles in `on`, streaming its output until it exits
+    /// or `cancel` fires; returns its exit code. The pane is asked of the
+    /// plugin again, so the UI never names what runs. Needs the plugin's
+    /// `process:<program>` grant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stream_service_log(
+        &self,
+        id: &str,
+        view: &str,
+        key: &str,
+        tab: &str,
+        on: &[String],
+        invocation: Invocation,
+        cancel: &ide_core::CancellationToken,
+        on_line: &dyn Fn(PluginOutputLine),
+    ) -> IdeResult<Option<i32>> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let cwd = invocation.workspace_root.clone();
+        let tabs = self.service_detail(id, view, key, invocation)?;
+        let Some(ide_plugin::ServicePane::Log(log)) = tabs.into_iter().find(|t| t.id == tab).map(|t| t.body) else {
+            return Err(IdeError::not_found(format!("the pane of {key:?} has no log tab {tab:?}")));
+        };
+        let toggled = log.toggles.into_iter().filter(|t| on.contains(&t.id)).flat_map(|t| t.args);
+        let args: Vec<String> = log.args.into_iter().chain(toggled).collect();
+        let plugin =
+            self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("plugin {id:?}")))?;
+        let cap = Capability::Process(log.program.clone());
+        if !plugin.meta.lock().granted.iter().any(|g| g.covers(&cap)) {
+            let denied = HostError::Denied(cap.to_string()).to_string();
+            return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, denied));
+        }
+        let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
+        api.stream_process(&log.program, args, cwd.as_deref(), cancel, on_line).map_err(|e| match e {
+            HostError::Cancelled => IdeError::cancelled(),
+            e @ HostError::Denied(_) => IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e.to_string()),
+            HostError::NotFound(m) => IdeError::not_found(m),
+            HostError::Invalid(m) => IdeError::invalid(m),
+            e => IdeError::unavailable(e.to_string()),
+        })
+    }
+
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
         let declared = [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
             .iter()
             .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
+    }
+
+    fn services_view(&self, id: &str, view: &str) -> IdeResult<()> {
+        let services = self
+            .ui
+            .items(ui_points::VIEWS, Some(id))
+            .iter()
+            .any(|i| i.key == view && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION));
+        if services {
+            Ok(())
+        } else {
+            Err(IdeError::not_found(format!("plugin {id:?} declares no services view {view:?}")))
+        }
     }
 
     /// One call into a plugin's code for the UI: checks it may run (asking
@@ -1260,9 +1336,32 @@ impl PluginHost {
         self.shared.status_items()
     }
 
+    /// Plugin context keys in effect for window `client`: global keys overlaid with its own.
+    pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
+        self.shared.context_keys(client)
+    }
+
+    /// A window labelled `label` is about to exist again (labels are reused).
+    pub fn reopen_client(&self, label: &str) {
+        self.shared.reopen_client(label);
+    }
+
+    /// Window `label` closed: drops its context keys and queued events, and ignores
+    /// context writes of commands still running for it.
+    pub fn forget_client(&self, label: &str) {
+        self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
+        self.shared.forget_client(label);
+    }
+
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
     pub fn cancel_task(&self, task_id: &str) -> bool {
         task_id.parse().is_ok_and(|id| self.shared.cancel_task(id))
+    }
+
+    /// The user answered (`Some`) or dismissed (`None`) a prompt
+    /// (`PromptRequested`); false when it is no longer waiting.
+    pub fn answer_prompt(&self, prompt_id: &str, answer: Option<Vec<String>>) -> bool {
+        prompt_id.parse().is_ok_and(|id| self.shared.answer_prompt(id, answer))
     }
 
     /// Kinds of workbench events some running or activatable plugin wants;
@@ -1393,6 +1492,7 @@ impl PluginHost {
             workspace_root: client.as_deref().and_then(|c| self.shared.project_of(c)),
             client: client.clone(),
             editor: None,
+            selected_paths: Vec::new(),
         };
         let kinds: BTreeSet<EventKind> = events.iter().map(WorkbenchEvent::kind).collect();
         {
@@ -1567,6 +1667,9 @@ impl PluginHost {
     /// Deactivates every plugin (also done on drop).
     pub fn shutdown(&self) {
         let actors: Vec<_> = self.plugins.read().values().filter_map(|p| p.runtime.lock().take()).collect();
+        for id in self.plugins.read().keys() {
+            self.shared.block_prompts(id);
+        }
         for a in &actors {
             a.stop(false);
         }
@@ -1880,6 +1983,7 @@ impl PluginHost {
             Err(e) => return Err(IdeError::internal(format!("plugin {:?}: {e}", plugin.id()))),
         };
         *runtime = Some(actor.clone());
+        self.shared.allow_prompts(plugin.id());
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Active;
         meta.has_syntax = has_syntax;
@@ -1977,6 +2081,8 @@ impl PluginHost {
 
     fn stop(&self, plugin: &LoadedPlugin) {
         self.clear_plugin_navigation(plugin.id());
+        // A call waiting on the user would keep the join below waiting.
+        self.shared.block_prompts(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(true);
         }
