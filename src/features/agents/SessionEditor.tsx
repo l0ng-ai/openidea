@@ -56,6 +56,7 @@ import { canSend, costLabel, emptyDraft, limitLabel, retryParts, usageLabel, wor
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
+import { AgentReply } from "./AgentReply";
 import { Markdown } from "./Markdown";
 import {
   branchLabel,
@@ -68,6 +69,8 @@ import {
   subagentTitle,
   subagentWorking,
   turnNumbers,
+  replyTurns,
+  type ReplyTurn,
   type SubagentEntry,
 } from "./model";
 import {
@@ -79,7 +82,6 @@ import {
   editQueued,
   forkTask,
   rerunFrom,
-  quoteInComposer,
   removeQueued,
   resendMessage,
   respond,
@@ -492,6 +494,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
+  const replies = useMemo(() => (entries && !subagent ? replyTurns(entries) : null), [entries, subagent]);
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
@@ -510,7 +513,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           const text = selectionIn(e.currentTarget);
           const items = copyMenuFor(e.target) ?? [];
           if (text.trim() && task.status !== "archived") {
-            items.push({ id: "quote", label: "Quote", icon: "edit", run: () => quoteInComposer(task.id, text) });
+            items.push({ kind: "action", action: "agents.quoteReply", label: "Quote", arg: { task: task.id, text } });
           }
           if (!items.length) return;
           e.preventDefault();
@@ -529,6 +532,11 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
                 entry={entry}
                 turn={turns?.get(start + i) ?? null}
                 turnCount={turns?.size ?? 0}
+                reply={replies?.get(start + i)}
+                working={
+                  start + i === entries.length - 1 &&
+                  (subagent ? subagentWorking(subagent.status) : isBusy(task.status))
+                }
                 onOpenSubagent={onOpenSubagent}
                 onDiagramDrawn={onDiagramDrawn}
               />
@@ -761,6 +769,8 @@ const Entry = memo(function Entry({
   entry,
   turn,
   turnCount,
+  reply,
+  working,
   onOpenSubagent,
   onDiagramDrawn,
 }: {
@@ -769,6 +779,8 @@ const Entry = memo(function Entry({
   /** Number of the turn this message started (from 0), when it started one. */
   turn: number | null;
   turnCount: number;
+  reply?: ReplyTurn;
+  working: boolean;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
 }) {
@@ -776,15 +788,31 @@ const Entry = memo(function Entry({
     case "user":
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
     case "agent":
-      return <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />;
+      return (
+        <AgentReply
+          text={entry.text}
+          cwd={task.cwd}
+          task={task}
+          reply={reply}
+          turnCount={turnCount}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      );
     case "thought":
       return (
         <div>
           <details className={styles.thought}>
             <summary>
-              <T>Thinking</T>
+              {working ? (
+                <Spinner size={12} />
+              ) : (
+                <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
+              )}
+              <T>{working ? "Thinking" : "Reasoning"}</T>
             </summary>
-            <div className={styles.thoughtText}>{entry.text}</div>
+            <div className={styles.thoughtBody}>
+              <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+            </div>
           </details>
         </div>
       );
@@ -829,7 +857,7 @@ const Entry = memo(function Entry({
           <div className={styles.messageFrom}>
             <T>Report to the parent agent</T>
           </div>
-          <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+          <AgentReply text={entry.text} cwd={task.cwd} task={task} onDiagramDrawn={onDiagramDrawn} />
         </div>
       );
     case "permission":
@@ -1088,7 +1116,12 @@ function ToolEntry({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry
       {entry.status === "failed" && <Icon name="error" size={12} />}
     </>
   );
-  if (!entry.output) return <div className={styles.tool}>{head}</div>;
+  if (!entry.output)
+    return (
+      <div>
+        <div className={styles.tool}>{head}</div>
+      </div>
+    );
   return (
     <div>
       <details className={styles.toolDetails}>
@@ -1190,7 +1223,7 @@ function SubagentCard({
             <T>Result</T>
           </summary>
           <div className={styles.subagentReply}>
-            <Markdown text={entry.reply} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+            <AgentReply text={entry.reply} cwd={task.cwd} task={task} onDiagramDrawn={onDiagramDrawn} />
           </div>
         </details>
       )}

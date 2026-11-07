@@ -84,6 +84,14 @@ function renderHtml(text: string): string {
     ADD_ATTR: ["data-mermaid"],
   }) as HTMLElement;
   root.querySelectorAll("li").forEach(wrapLooseText);
+  // WebKit cuts controls inside <pre> out of a text selection, even when transparent.
+  root.querySelectorAll("pre").forEach((pre) => {
+    if (pre.parentElement?.hasAttribute("data-mermaid")) return;
+    const block = document.createElement("div");
+    block.className = styles.codeBlock!;
+    pre.replaceWith(block);
+    block.appendChild(pre);
+  });
   return root.innerHTML;
 }
 
@@ -136,6 +144,7 @@ export function openPathLink(link: PathLink) {
 function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<string>>): () => void {
   let alive = true;
   const disposeImages = loadImages(root, cwd, images);
+  const copies: HTMLButtonElement[] = [];
   root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
     const pre = code.parentElement!;
     const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice("language-".length) ?? null;
@@ -149,14 +158,10 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
     copy.setAttribute("aria-label", label);
     copy.appendChild(iconNode("copy", 14));
     copy.dataset.copy = text;
-    if (pre.parentElement?.hasAttribute("data-mermaid")) {
-      // Mermaid source: not highlighted (the diagram draws over it), and the Copy
-      // button sits on the block — the drawn diagram hides the code block itself.
-      pre.parentElement.appendChild(copy);
-      return;
-    }
-    void highlightInto(code, text, lang);
-    pre.appendChild(copy);
+    const block = pre.parentElement!;
+    block.appendChild(copy);
+    copies.push(copy);
+    if (!block.hasAttribute("data-mermaid")) void highlightInto(code, text, lang);
   });
   root.querySelectorAll<HTMLElement>("code").forEach((code) => {
     if (code.parentElement?.tagName === "PRE" || code.closest("a")) return;
@@ -173,6 +178,7 @@ function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<str
   });
   return () => {
     alive = false;
+    copies.forEach((copy) => copy.remove());
     disposeImages();
   };
 }

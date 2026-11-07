@@ -55,5 +55,12 @@
   "Recommended": "Recommended",
   "No preview": "No preview",
   "Running in the background": "Running in the background",
-  "Couldn't stop the background task": "Couldn't stop the background task"
+  "Couldn't stop the background task": "Couldn't stop the background task",
+  "Copy Markdown": "Copy Markdown",
+  "Couldn't copy the reply": "Couldn't copy the reply",
+  "Quote Reply": "Quote Reply",
+  "Regenerate Response": "Regenerate Response",
+  "Branch Conversation from Here": "Branch Conversation from Here",
+  "Couldn't regenerate the response": "Couldn't regenerate the response",
+  "Reasoning": "Reasoning"
 }
