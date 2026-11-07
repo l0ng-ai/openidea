@@ -682,7 +682,8 @@ export const commands = {
 	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
 	/**  Writes one of the IDE's Gradle init scripts where the build runs; returns its path. */
 	runGradleInitScript: (name: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_init_script", { name, text })),
-	runTomcatHome: (home: string) => typedError<TomcatHome, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatHome: (home: string) => typedError<TomcatHome_Serialize, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatInstallations: () => typedError<TomcatInstallation_Serialize[], IdeError>(__TAURI_INVOKE("run_tomcat_installations")),
 	runTomcatArtifacts: () => typedError<WebArtifact[], IdeError>(__TAURI_INVOKE("run_tomcat_artifacts")),
 	runTomcatBuild: (config: RunConfig_Deserialize) => typedError<({
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
@@ -1328,8 +1329,9 @@ export const commands = {
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
 	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
 	/**
-	 *  File › Remote Development: opens `path` on `target` (an SSH host or a WSL distribution)
-	 *  in this window (installs / starts the server as needed).
+	 *  File › Remote Development: opens `path` on `target` (an SSH host, a WSL distribution, or a
+	 *  dev container, whose project folder is the container's own) in this window (installs /
+	 *  starts the server as needed).
 	 */
 	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
@@ -6663,7 +6665,7 @@ export type RemoteEntry = {
 	permissions: string,
 };
 
-/**  A project folder on an SSH host or in a WSL distribution. */
+/**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
 export type RemoteLaunch = {
 	target: RemoteTarget,
 	path: string,
@@ -6738,14 +6740,21 @@ export type RemoteSession = {
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
-export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
+export type RemoteStage = "connecting" | 
+/**  `devcontainer up`: building or starting the container. */
+"container" | "checking" | "downloading" | "uploading" | "starting" | "opening";
 
 /**  Where a remote project lives and how the server there is reached. */
 export type RemoteTarget = 
 /**  The host of SSH configuration `config`. */
 { kind: "ssh"; config: string } | 
 /**  A WSL distribution on this machine. */
-{ kind: "wsl"; distro: string };
+{ kind: "wsl"; distro: string } | 
+/**
+ *  The dev container of local folder `folder`, built and started with the Dev Containers CLI;
+ *  `config` is its `devcontainer.json`, relative to the folder (empty = the default one).
+ */
+{ kind: "devContainer"; folder: string; config: string };
 
 export type Renamed = {
 	edit: WorkspaceEdit,
@@ -7906,8 +7915,46 @@ export type ThreadInfo = {
 	name: string,
 };
 
-export type TomcatHome = {
+export type TomcatHome = TomcatHome_Serialize | TomcatHome_Deserialize;
+
+export type TomcatHome_Deserialize = {
 	version: string,
+	libraries?: string[],
+	tomee?: boolean,
+	httpPort?: number | null,
+	httpsPort?: number | null,
+	ajpPort?: number | null,
+	shutdownPort?: number | null,
+};
+
+export type TomcatHome_Serialize = {
+	version: string,
+	libraries: string[],
+	tomee: boolean,
+	httpPort?: number | null,
+	httpsPort?: number | null,
+	ajpPort?: number | null,
+	shutdownPort?: number | null,
+};
+
+export type TomcatInstallation = TomcatInstallation_Serialize | TomcatInstallation_Deserialize;
+
+export type TomcatInstallation_Deserialize = {
+	path: string,
+	version: string,
+	libraries?: string[],
+	name?: string | null,
+	base?: string | null,
+	tomee?: boolean,
+};
+
+export type TomcatInstallation_Serialize = {
+	path: string,
+	version: string,
+	libraries: string[],
+	name?: string | null,
+	base?: string | null,
+	tomee: boolean,
 };
 
 /**  UI-facing state of one tool. */
@@ -7947,7 +7994,9 @@ export type ToolInfo = {
 
 export type ToolKind = "languageServer" | "debugger" | 
 /**  Loaded into another tool's process, e.g. a jdtls agent. */
-"plugin" | "formatter";
+"plugin" | "formatter" | 
+/**  A command the IDE itself runs, e.g. the Dev Containers CLI. */
+"cli";
 
 export type ToolSettings = {
 	/**  Executable to launch instead of the managed / `PATH` one; empty = auto-detect. */

@@ -137,24 +137,24 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                                                                       | Code needed   |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                                                               | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                                             | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                   | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                                     | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                                         | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                                          | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                                   | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`), `view?`, `command`, `when?` | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                 | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                       | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                                        | no            |
-| `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_)                  | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                       | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                          | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                                    | no            |
-| `commitChecks`  | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                           | yes           |
+| Point           | Declaration                                                                                                                                                   | Code needed   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                                                           | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                                                         | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                               | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                                                 | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                                                     | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                      | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                                               | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`), `view?`, `command`, `when?`             | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                             | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                   | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                                                    | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                   | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                      | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                           | no            |
+| `commitChecks`  | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                       | yes           |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -211,6 +211,38 @@ Plugins can set their own keys, `plugin.<id>.<key>`, with `host::set_context`:
 a key set from a command or event applies to that window, one set outside any
 applies to every window, and a window's value wins over the global one. Keys are
 kept across a window reload and idle reclaim, and dropped when the plugin stops.
+
+### File template names and variables (API 1.3)
+
+With `engines.openidea = "^1.3"`, `fileName` creates an exact single filename
+(including dotfiles) without a name prompt. `extension` may be omitted for these
+files; it is never appended to `fileName`. Without `fileName`, naming behaves as before.
+Declared variables are required text fields shown together in the new-file dialog;
+cancelling creates nothing. Names must be unique ASCII identifiers and cannot
+replace built-in variables (`NAME`, `PACKAGE`, `END`, etc.). Prompts can be translated
+through the plugin's text catalog. Values are inserted literally with `$ENTITY$`
+or `${ENTITY}` syntax.
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.fileTemplates]]
+id = "ignore"
+name = "Docker ignore"
+fileName = ".dockerignore"
+path = "templates/dockerignore.txt"
+variables = [{ name = "OUTPUT", prompt = "Output folder" }]
+```
+
+Plugin templates infer `$PACKAGE$` with the built-in rules for their extension:
+Java/Kotlin use source roots, Go uses sibling packages or the directory, and PHP
+uses Composer PSR-4 mappings. No `packageStyle` manifest field is needed.
+
+These declarations do not grant the plugin filesystem access: files are created
+only when the user invokes a template, through the IDE's normal New File flow.
+See `crates/ide-plugin/tests/fixtures/file-templates` for a minimal buildable
+plugin covering dotfiles, multiple variables, and Java/Kotlin packages. Build
+its component with `plugins/build.sh crates/ide-plugin/tests/fixtures/file-templates`.
 
 ### Background associations
 
@@ -400,9 +432,9 @@ then run `openidea-plugin check`.
 | `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
 | `host::copy_to_clipboard(text)`                                          | `ui.copy-to-clipboard`           | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                            |
 | `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
-| `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Asks the user to pick from `PickItem`s and waits: the chosen key(s), or `None` when dismissed. Only from a command or event of a window (else `invalid`); the wait isn't charged to the time limit.                  |
+| `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                  |
 | `host::input(prompt, value)`                                             | `ui.input`                       | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                            |
-| `host::input_multiline(prompt, value)`                                   | `ui.input-multiline`             | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Same rules as `input`.                                                                                                |
+| `host::input_multiline(prompt, value)`                                   | `ui.input-multiline`             | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Only from a command or event of a window.                                                                             |
 | `host::confirm(title, body)`                                             | `ui.confirm`                     | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                     |
 | `host::locale()`                                                         | `ui.locale`                      | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                      |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
@@ -411,6 +443,8 @@ then run `openidea-plugin check`.
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
 | `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
 | `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |
+| `host::run_command(cmd, project, stdin)` → `{code, stdout, stderr}`      | `process.run-command`            | API 1.3: same limits as `run_process`, with append-only environment variables; needs the pinned `process:<program>` grant.                                                                                           |
+| `host::start(cmd, project)` → `Child`                                    | `process.start`                  | API 1.3: `poll(max_bytes)`, `write(text)`, `close_stdin()`, `wait(timeout_ms)`, `kill()`; at most 8 handles; dropping one kills its process.                                                                         |
 | `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
 | `host::reveal_view(view)`                                                | `views.reveal`                   | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                              |
 | `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
@@ -420,15 +454,27 @@ then run `openidea-plugin check`.
 
 `Project::symbols` reads the current in-memory index: results may be partial
 while indexing, and locations can lag unsaved edits. Normal saves and filesystem
-changes update the index in the background. Results include the project's
-configured content roots, with normal exclusions. Empty queries and zero limits
-return no symbols; a closed project returns `Error::NotFound`.
+changes update the index in the background. Results are confined to the project's
+root, with normal exclusions; external content roots and updates through escaping
+symlinks are excluded. Search honours the current call's cancellation and deadline.
+Empty queries and zero limits return no symbols; a closed project returns
+`Error::NotFound`.
 
 Type resolution and member queries remain deferred to the asynchronous API 2.0
 model. Providers can select their project with `host::project_of(&doc.path)` and
 call `symbols` synchronously; `crates/ide-plugin/tests/fixtures/symbols` demonstrates
 a definition provider. `MockHost::set_symbols(root, symbols)` replaces a test
 snapshot; its mock uses case-insensitive substring matching rather than fuzzy ranking.
+
+Both process APIs only add environment variables. A key already in the prepared child
+environment (including the login-shell `PATH`) fails with an error naming the key;
+variables are never replaced or removed. Names compare case-insensitively on Windows.
+At most 64 entries are allowed: nonempty names up to 256 bytes without `=` or NUL,
+and values up to 4 KiB without NUL. The approved file still decides what runs.
+
+Unpolled child output keeps the last 1 MiB per stream; each read is capped at 1 MiB
+and preserves complete characters. Disabling, unloading, reclaiming or stopping a
+plugin ends its children, as does closing the window that started them.
 
 `run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`
 from another feature, or nothing when run from Search Everywhere / a shortcut. `ctx.selected_paths()` lists the files and folders a Project view or editor tab menu ran the command on (the argument is the first of them); it is empty otherwise. No capability is needed.
@@ -535,7 +581,12 @@ can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
 of its label, and bring `additional_edits` elsewhere in the document (an
 import). A code action can leave `edits` empty and set `data`: its edits are
 then computed by `resolve_code_action` when the user picks it, under the
-command budget instead of the 50 ms. A quick fix that creates, renames or
+command budget instead of the 50 ms. During resolution, `pick`, `pick_many`,
+`input` and `confirm` ask in the editor's window; waiting for an answer does
+not consume that budget. Dismissal returns `None` (or `false` for `confirm`):
+return `Error::Cancelled` or no edits to abandon the fix. Lazy plugin actions
+resolve only when invoked, never for the intention preview or Actions on Save. Commands/events-only
+APIs remain unavailable during resolution. A quick fix that creates, renames or
 deletes files implements `file_actions::FileActions` too
 (`register_plugin!(T, providers, file_actions)`; the `code-actions` kind
 covers both): a `FileAction` carries `operations` (`FileOperation::Create {
@@ -544,7 +595,7 @@ workspace edit, so a failure changes nothing and one undo reverses it. A path
 outside the project root disables the action; `open` shows a file once the
 action is applied. Like a code action, it can leave `operations` and `edits`
 empty and set `data`: `resolve_file_action` computes them when the user picks
-it. File actions are new in API 1.3. Problems (`publish_diagnostics`) can name
+it, with the same prompts and editor window as `resolve_code_action`. File actions are new in API 1.3. Problems (`publish_diagnostics`) can name
 the tool that found them (`source`) and be `unnecessary` (faded) or
 `deprecated` (struck through).
 Editor providers run under the edit-path budget: 50 ms, after which the
@@ -707,6 +758,48 @@ prompts are the document's. _Open as Text_ opens the text editor. For a
 tool window `ctx.editor()` is the window's active text editor, as for a
 command, so a view's buttons can act on what the user is editing (a click in
 the tool window doesn't change which editor that is).
+
+API 1.3 adds optional `group` and `when` fields to `[[contributes.views]]`;
+using either requires `engines.openidea = "^1.3"`. `when` uses the same
+context clauses as commands and menus, including `workspaceContains:pom.xml`
+and keys set with `set_context`. A false condition removes the view from the
+stripe and its group tabs; context changes, file creation/removal and project
+changes evaluate it again. Hidden views are not rendered or activated.
+
+Tool-window views (`left`, `right` or `bottom`) with the same `group`
+**within one plugin** share a tool window, with
+tabs in manifest declaration order. The first declaration supplies the window's
+title, icon and default location, even when that view is hidden; the window
+is absent when all its tabs are hidden. Group ids follow the same rules as
+view ids and are scoped to the declaring plugin. Tabs load on first selection
+and keep their content mounted while they apply, preserving web-view state
+when switching tabs. Ungrouped views keep their
+existing window ids and placement. `reveal_view` selects a visible grouped
+view's tab; it does not override its condition. Services views remain providers
+of the built-in Services window, and also support `when`.
+
+```toml
+[[contributes.views]]
+id = "endpoints"
+title = "Spring"
+group = "spring"
+when = "workspaceContains:pom.xml || workspaceContains:build.gradle"
+
+[[contributes.views]]
+id = "beans"
+title = "Beans"
+group = "spring"
+when = "plugin.my-plugin.ready"
+```
+
+The `crates/ide-plugin/tests/fixtures/grouped-views` sample exercises both
+fields without requesting capabilities. Build it with
+`plugins/build.sh crates/ide-plugin/tests/fixtures/grouped-views`, then install
+that directory. Run **Grouped Views: Show** to expose the first tab, create
+`grouped-views.txt` in the project root to expose **Project Files**, and run
+**Grouped Views: Hide** or remove the file to withdraw those tabs. The
+**Ungrouped View** window stays separate. These fields control visibility;
+they grant no access to project contents or another plugin's views.
 
 `layout` puts a custom editor beside the text editor instead of in a tab of
 its own: with `"split"` or `"preview"` the file opens in the text editor,

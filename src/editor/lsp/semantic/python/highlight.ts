@@ -1,12 +1,6 @@
 import type { SyntaxNode, Tree } from "@lezer/common";
 import type { Text } from "@codemirror/state";
-
-interface PythonRange {
-  from: number;
-  to: number;
-  className: string;
-  source: "pythonSyntax" | "pythonFallback";
-}
+import type { SemanticRange } from "../languages";
 
 export type PythonSymbolKind =
   | "function"
@@ -478,8 +472,8 @@ export function pythonSyntaxRanges(
   tree: Tree,
   doc: Text,
   symbols: Map<string, PythonSymbolKind> = pythonSymbolKinds(tree, doc),
-): PythonRange[] {
-  const ranges: PythonRange[] = [];
+): SemanticRange[] {
+  const ranges: SemanticRange[] = [];
   tree.iterate({
     enter(cursor) {
       const node = cursor.node;
@@ -505,10 +499,10 @@ export function pythonSyntaxRanges(
         let from = node.from;
         for (let child = node.firstChild; child; child = child.nextSibling) {
           if (child.name !== "FormatReplacement") continue;
-          if (child.from > from) ranges.push({ from, to: child.from, className, source: "pythonSyntax" });
+          if (child.from > from) ranges.push({ from, to: child.from, className, source: "syntax" });
           from = child.to;
         }
-        if (from < node.to) ranges.push({ from, to: node.to, className, source: "pythonSyntax" });
+        if (from < node.to) ranges.push({ from, to: node.to, className, source: "syntax" });
         return;
       }
       const text = doc.sliceString(node.from, node.to);
@@ -555,7 +549,7 @@ export function pythonSyntaxRanges(
       } else if (node.name === "Escape") style = "python-escape";
       else if (node.name === "type" && node.parent?.name === "TypeDefinition") style = "keyword";
       if (style) className = `cm-sem-${style}`;
-      if (className) ranges.push({ from: node.from, to: node.to, className, source: "pythonSyntax" });
+      if (className) ranges.push({ from: node.from, to: node.to, className, source: "syntax" });
       if (style === "python-docstring") return false;
     },
   });
@@ -574,8 +568,8 @@ export function pythonFallbackRanges(
   doc: Text,
   rainbow?: (name: string) => string,
   symbols: Map<string, PythonSymbolKind> = pythonSymbolKinds(tree, doc),
-): PythonRange[] {
-  const ranges: PythonRange[] = [];
+): SemanticRange[] {
+  const ranges: SemanticRange[] = [];
   tree.iterate({
     enter(cursor) {
       const node = cursor.node;
@@ -592,7 +586,7 @@ export function pythonFallbackRanges(
         className:
           pythonSymbolClasses(kind) +
           (local && rainbow && name !== "self" && name !== "cls" ? ` ${rainbow(name)}` : ""),
-        source: "pythonFallback",
+        source: "fallback",
       });
     },
   });

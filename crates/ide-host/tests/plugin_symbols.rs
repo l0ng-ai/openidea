@@ -1,11 +1,12 @@
 //! The synchronous workspace import uses the real project index, also from a provider.
+use ide_core::CancellationToken;
 use ide_core::{NullSink, Pos, Range};
 use ide_host::plugins::{Consent, HostWorkspace, PluginHost, PluginWorkspace};
 use ide_host::{Host, HostConfig};
 use ide_plugin::{Invocation, Limits, ProviderDocument};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -125,7 +126,9 @@ fn symbols_reach_commands_and_providers_without_a_language_server() {
         );
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].path, f.root.join("Order.php"));
-        let indexed = HostWorkspace(Arc::downgrade(&f.host)).symbols(&f.root, "OCo", 1).unwrap();
+        let indexed = HostWorkspace(Arc::downgrade(&f.host))
+            .symbols(&f.root, "OCo", 1, &CancellationToken::new(), Instant::now() + WAIT)
+            .unwrap();
         assert_eq!(targets[0].range, indexed[0].location.range);
     }
 }
@@ -140,7 +143,9 @@ fn reindex_and_closed_project_replace_results_and_invalidate_retained_handles() 
     p.index.update(std::slice::from_ref(&path), &[]);
     assert!(p.index.wait_idle(WAIT));
     assert!(!f.search("Order|10").contains("OrderController"));
-    let symbols = HostWorkspace(Arc::downgrade(&f.host)).symbols(&f.root, "UpdatedController", 1).unwrap();
+    let symbols = HostWorkspace(Arc::downgrade(&f.host))
+        .symbols(&f.root, "UpdatedController", 1, &CancellationToken::new(), Instant::now() + WAIT)
+        .unwrap();
     assert_eq!(symbols.len(), 1);
     assert_eq!(symbols[0].location.range, Range::new(Pos::new(0, 19), Pos::new(0, 36)));
     assert!(f.search("Updated|10").contains("0:19-0:36"));
@@ -183,4 +188,45 @@ fn symbol_queries_require_project_read_even_with_an_invocation_project() {
             )
             .is_empty()
     );
+}
+
+#[test]
+fn symbol_search_excludes_external_content_roots_before_ranking() {
+    let f = Fixture::new(true);
+    let project = f.host.project("main").unwrap();
+    std::fs::write(f.other.join("Exact.php"), "<?php class Order {}\n").unwrap();
+    project.index.set_scope(vec![f.other.clone()], Vec::new());
+    assert!(project.index.wait_idle(WAIT));
+    assert_eq!(project.index.find_symbols("OrderElsewhere", ide_index::SymbolFilter::All, 1).len(), 1);
+    assert!(f.search("OrderElsewhere|10").is_empty());
+    // A better external match must not displace a readable fuzzy match.
+    let result = f.search("Order|1");
+    assert!(result.contains("OrderController") || result.contains("OrderService"), "{result}");
+}
+
+#[test]
+fn native_symbol_search_honours_cancellation_and_deadlines() {
+    let f = Fixture::new(true);
+    let workspace = HostWorkspace(Arc::downgrade(&f.host));
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert_eq!(
+        workspace.symbols(&f.root, "Order", 10, &cancel, Instant::now() + WAIT),
+        Err(ide_plugin::HostError::Cancelled)
+    );
+    let error = workspace.symbols(&f.root, "Order", 10, &CancellationToken::new(), Instant::now()).unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn symbol_search_excludes_updates_through_escaping_symlink_ancestors() {
+    let f = Fixture::new(true);
+    let project = f.host.project("main").unwrap();
+    std::fs::write(f.other.join("Secret.php"), "<?php class SecretSymbol {}\n").unwrap();
+    let dir = f.root.join("linked");
+    std::os::unix::fs::symlink(&f.other, &dir).unwrap();
+    project.index.update(&[dir.join("Secret.php")], &[]);
+    assert!(project.index.wait_idle(WAIT));
+    assert!(f.search("Secret|1").is_empty());
 }

@@ -268,6 +268,43 @@ impl ProjectIndex {
         matching::find_symbols(&d, &matching::Recents { paths: &recent }, query, filter, limit)
     }
 
+    /// Scoped symbol search with cooperative interruption, including lock waits.
+    /// `None` means interrupted; no partial results are returned.
+    pub fn find_symbols_until(
+        &self,
+        query: &str,
+        filter: SymbolFilter,
+        limit: usize,
+        include: &(impl Fn(&Path) -> bool + Sync),
+        stopped: &(impl Fn() -> bool + Sync),
+    ) -> Option<Vec<SymbolMatch>> {
+        let recent = loop {
+            if stopped() {
+                return None;
+            }
+            if let Some(recent) = self.shared.recent.try_lock_for(Duration::from_millis(1)) {
+                break recent.clone();
+            }
+        };
+        let data = loop {
+            if stopped() {
+                return None;
+            }
+            if let Some(data) = self.shared.data.try_read_for(Duration::from_millis(1)) {
+                break data;
+            }
+        };
+        matching::find_symbols_until(
+            &data,
+            &matching::Recents { paths: &recent },
+            query,
+            filter,
+            limit,
+            include,
+            stopped,
+        )
+    }
+
     /// Symbols named exactly `name` (of `kind`, if given): `.card` selectors for `class="card"`.
     pub fn symbols_named(&self, name: &str, kind: Option<SymbolKind>, limit: usize) -> Vec<SymbolMatch> {
         matching::symbols_named(&self.shared.data.read(), name, kind, limit)
