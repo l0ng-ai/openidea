@@ -19,6 +19,7 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+mod twig;
 
 pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
 

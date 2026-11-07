@@ -1,0 +1,11 @@
+id = "twig"
+name = "Twig"
+# Also `page.html.twig`, `mail.txt.twig`: the last extension decides.
+extensions = ["twig"]
+block-comment = ["{#", "#}"]
+indent = { tab-size = 4, insert-spaces = true }
+# Twig and Jinja share their delimiters and most of their syntax; CodeMirror's
+# Jinja mode highlights tags, expressions, strings and comments. The outline,
+# completion and goto come from the native engine (`ide_php::twig`, served by
+# `ide-host`'s `TwigService`), with no language server.
+ui-mode = "Jinja"

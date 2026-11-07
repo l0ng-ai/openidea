@@ -475,7 +475,7 @@ The design:
 
   Tests: snippets with stubs and a fixture project with config files.
 
-- [ ] Phase 7.3: Twig
+- [x] Phase 7.3: Twig
       Add a `twig` language: `languages/twig.toml`, highlighting, and outline through `mago-twig-syntax` or a tree-sitter grammar if one is better. Completion of variables, filters and functions, and goto definition for templates (`{% extends %}`, `include`). Tests: unit tests.
 
 - [ ] Phase 7.4: Blade

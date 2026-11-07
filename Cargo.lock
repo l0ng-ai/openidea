@@ -4509,6 +4509,7 @@ dependencies = [
  "mago-span",
  "mago-syntax",
  "mago-syntax-core",
+ "mago-twig-syntax",
  "nucleo-matcher",
  "parking_lot",
  "postcard",
@@ -5598,6 +5599,21 @@ name = "mago-text-edit"
 version = "1.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f509454dea3ad8771504356ab320910966f2283664331efe0e26618bde3c708d"
+
+[[package]]
+name = "mago-twig-syntax"
+version = "1.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c76584c2bbeb75107ceb1889e92987ca380d9c0ae46479cb7b28cd7f882f3768"
+dependencies = [
+ "mago-allocator",
+ "mago-database",
+ "mago-span",
+ "mago-syntax-core",
+ "memchr",
+ "paste",
+ "strum",
+]
 
 [[package]]
 name = "mago-word"

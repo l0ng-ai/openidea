@@ -31,6 +31,9 @@ frontend ── IPC ──▶ ide-host ops/lsp.rs ──▶ LanguageService (php
   setting changes. `PhpObserver` forwards open documents, `files_changed`
   forwards watcher batches, and `IndexStates` merges the engine's dumb mode
   with the project index's.
+- `crates/ide-host/src/twig.rs` registers `TwigService` for `twig`. It needs
+  no engine: `ide_php::twig` answers the outline, completion and template
+  goto from the open document's text and the project's template directories.
 - With `Intelephense` selected, the slot is empty, the service answers
   nothing, and `ide_sdk::apply::language_servers` starts the server from
   `languages/php.toml`. Only one of the two runs at a time.

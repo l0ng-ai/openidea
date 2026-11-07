@@ -298,6 +298,7 @@ impl Host {
         documents.add_observer(Arc::new(crate::php::PhpObserver(php.clone())));
         let services = Arc::new(crate::language_service::LanguageServices::default());
         services.register(LanguageId::new("php"), Arc::new(crate::php::PhpService(php.clone())));
+        services.register(LanguageId::new("twig"), Arc::new(crate::twig::TwigService::new(&root, documents.clone())));
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));

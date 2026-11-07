@@ -60,6 +60,9 @@
 //!   return types).
 //! - [`navigate`]: document symbols, fuzzy workspace symbols and goto
 //!   definition of class-like, function and constant names.
+//! - [`twig`]: Twig templates: outline, completion of variables, tags,
+//!   filters, functions, tests and template names, and goto definition of
+//!   the templates a template loads, through `mago-twig-syntax`.
 //! - [`types`]: the type model ([`types::Type`]): parsing from native hints
 //!   and PHPDoc, display in PHP syntax, unions and intersections, and
 //!   subtyping against a class [`types::Hierarchy`].
@@ -84,6 +87,7 @@ pub mod stubs;
 pub mod summary;
 pub mod symfony;
 pub mod syntax;
+pub mod twig;
 pub mod types;
 
 /// Re-exports of the pinned Mago crates, so later phases and the examples use

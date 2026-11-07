@@ -35,6 +35,8 @@ mago-syntax-core = "=1.59.0"
 # Reformat Code (`format`): the PSR-12 preset with the editor's indentation.
 mago-formatter = "=1.59.0"
 mago-php-version = "=1.59.0"
+# Twig templates (`twig`): outline, completion and template goto.
+mago-twig-syntax = "=1.59.0"
 
 [dev-dependencies]
 insta.workspace = true
