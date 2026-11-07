@@ -728,6 +728,15 @@ group = "spring"
 when = "plugin.my-plugin.ready"
 ```
 
+The `crates/ide-plugin/tests/fixtures/grouped-views` sample exercises both
+fields without requesting capabilities. Build it with
+`plugins/build.sh crates/ide-plugin/tests/fixtures/grouped-views`, then install
+that directory. Run **Grouped Views: Show** to expose the first tab, create
+`grouped-views.txt` in the project root to expose **Project Files**, and run
+**Grouped Views: Hide** or remove the file to withdraw those tabs. The
+**Ungrouped View** window stays separate. These fields control visibility;
+they grant no access to project contents or another plugin's views.
+
 `layout` puts a custom editor beside the text editor instead of in a tab of
 its own: with `"split"` or `"preview"` the file opens in the text editor,
 with your editor next to it (the layout files start in) and the _Editor Only /

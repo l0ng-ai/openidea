@@ -2280,6 +2280,41 @@ fn conditional_and_grouped_views_need_api_1_3() {
 }
 
 #[test]
+fn grouped_views_fixture_renders_and_scopes_context_and_reveal() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("grouped-views"));
+    assert_eq!(info.status, PluginStatus::Inactive, "views stay lazy");
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let views = f.host.ui_items("views");
+    assert_eq!(views.len(), 3);
+    assert_eq!(views[0].decl["group"], "demo");
+    assert_eq!(views[1].decl["when"], "workspaceContains:grouped-views.txt");
+    f.take_events();
+    f.run("grouped-views", "show", None).unwrap();
+    assert!(f.take_events().iter().any(|(client, event)| matches!(
+        event,
+        PluginEvent::ContextChanged { plugin_id, key, value }
+            if client.as_deref() == Some("main") && plugin_id == "grouped-views"
+                && key == "ready" && value.as_deref() == Some("true")
+    )));
+    assert!(f.host.context_keys(Some("other")).is_empty());
+    for view in ["overview", "files", "legacy"] {
+        let rendered = f.host.render_view("grouped-views", view, None, f.inv()).unwrap();
+        assert!(matches!(rendered.body, ide_plugin::ViewBody::Message(_)));
+        f.run("grouped-views", "reveal", Some(view)).unwrap();
+        assert!(f.take_events().iter().any(|(client, event)| matches!(
+            event,
+            PluginEvent::RevealView { plugin_id, view: target }
+                if client.as_deref() == Some("main") && plugin_id == "grouped-views" && target == view
+        )));
+    }
+    assert!(f.run("grouped-views", "reveal", Some("plugin.hello.greetings")).is_err());
+    f.host.set_enabled("grouped-views", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+    assert!(f.host.context_keys(Some("main")).is_empty());
+}
+
+#[test]
 fn view_conditions_and_group_ids_are_validated() {
     for (field, message) in [
         ("group = \"\"", "invalid view group"),
