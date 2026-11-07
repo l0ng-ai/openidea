@@ -1,4 +1,11 @@
 {
+  "Invalid PTY request": "无效的 PTY 请求",
+  "Cannot write to PTY": "无法写入 PTY",
+  "Cannot resize PTY": "无法调整 PTY 大小",
+  "Too many PTY sessions": "PTY 会话过多",
+  "PTY output limit exceeded": "PTY 输出超出限制",
+  "PTY input limit exceeded": "PTY 输入超出限制",
+  "Cannot start PTY: process:{program} capability not granted.": "无法启动 PTY：未授予 process:{program} 权限。",
   "Marker Icons": "行标记图标",
   "this data source does not list databases": "此数据源不支持列出数据库",
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",

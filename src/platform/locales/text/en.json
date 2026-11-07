@@ -1,4 +1,11 @@
 {
+  "Invalid PTY request": "Invalid PTY request",
+  "Cannot write to PTY": "Cannot write to PTY",
+  "Cannot resize PTY": "Cannot resize PTY",
+  "Too many PTY sessions": "Too many PTY sessions",
+  "PTY output limit exceeded": "PTY output limit exceeded",
+  "PTY input limit exceeded": "PTY input limit exceeded",
+  "Cannot start PTY: process:{program} capability not granted.": "Cannot start PTY: process:{program} capability not granted.",
   "Marker Icons": "Marker Icons",
   "this data source does not list databases": "this data source does not list databases",
   "commit or roll back before clearing the selected database": "commit or roll back before clearing the selected database",

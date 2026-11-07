@@ -962,6 +962,45 @@ sends what Graphviz reports to the plugin, which publishes it as problems. The b
 checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
 before installing the plugin from the repository.
 
+### Web frame PTYs (API 1.3)
+
+Packages requiring `engines.openidea = "^1.3"` can exchange JSON strings through
+`openidea.postMessage` / `onMessage` to own an interactive PTY. Declare
+`process:<program>` in the manifest; the install dialog shows its high-risk
+permission and the user must grant it. The host runs the exact approved file,
+never a fresh PATH lookup or an implicit fallback shell. A shell requires its
+own grant. The cwd is always this window's trusted project root; a frame cannot
+supply a cwd. Environment entries only add variables: replacing an inherited
+variable (including PATH) is refused.
+
+| Message      | Fields beyond `op` and `sessionId`                                                         |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| `pty-spawn`  | `program`, optional `args` (default `[]`), `env` (default `{}`), `cols` (100), `rows` (28) |
+| `pty-input`  | `data`, at most 64 Ki UTF-16 code units pending or in flight                               |
+| `pty-resize` | Integer `cols` (2–500), `rows` (1–500)                                                     |
+| `pty-kill`   | None                                                                                       |
+| `pty-ack`    | `sequence` from the last `pty-data`, after consuming its data                              |
+
+`sessionId` is 1–64 ASCII letters, digits, underscores, dots or hyphens. Duplicate
+live session ids are refused. There are at most 8 sessions per plugin across its
+frames, including pending spawns. A frame controls only its own sessions. Limits:
+256 arguments of 4096 UTF-8 bytes each, 64 new environment entries (names 256
+bytes, values 4096), no NUL. Bridge messages are at most 2 Mi UTF-16 code units.
+
+The host sends `pty-data { sessionId, data, sequence }`,
+`pty-exit { sessionId, exitCode }` (nullable), or
+`pty-error { sessionId, error }`. Only one output chunk is unacknowledged at a
+time. Outstanding output, including that chunk, is capped at 256 Ki UTF-16 code
+units; overflowing input or output terminates the session and reports an error.
+Exit follows consumption of the remaining output. Unmounting, reloading,
+disabling, unloading, changing grants, switching projects or closing the window
+kills its PTYs, including spawns that complete after cleanup. Pages may start fresh sessions after a reload or grant change.
+
+`crates/ide-plugin/tests/fixtures/web-pty` is a minimal built Wasm package with a
+web page: start bash without the optional grant to see refusal, grant
+`process:bash` in Settings → Plugins, then send commands and resize or stop it.
+This API is a web bridge extension; existing WIT signatures are unchanged.
+
 ### Translations
 
 A package translates its own text with `locales/<tag>.json`, one file per language

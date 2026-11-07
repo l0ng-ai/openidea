@@ -565,6 +565,10 @@ impl Shared {
         self.closed_clients.lock().remove(client);
     }
 
+    pub fn client_closed(&self, client: &str) -> bool {
+        self.closed_clients.lock().contains(client)
+    }
+
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {

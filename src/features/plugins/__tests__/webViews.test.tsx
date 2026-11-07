@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import type { PluginInfo, ViewEvent } from "@/bindings";
 import { addFileIconProvider, fileIconName, registerExternalIcons } from "@/ui";
 import {
@@ -12,6 +12,7 @@ import { createMemoryPluginsBackend, setPluginsBackend, webSchemeUrl } from "../
 import { defineViewUiPoints } from "../uiPoints";
 import { clearUiContributions, syncUiContributions } from "../projection";
 import { usePlugins } from "../store";
+import * as ptyModule from "../views/ptyBridge";
 import { FRAME_TAG, frameDocument } from "../views/frame";
 import {
   WebView,
@@ -153,7 +154,7 @@ describe("WebView", () => {
       viewEvent: vi.fn(async (_p: string, _v: string, e: ViewEvent) => void events.push(e)),
     });
     usePlugins.setState({
-      plugins: [{ id: "acme.draw", hasCode, capabilities: [] } as unknown as PluginInfo],
+      plugins: [{ id: "acme.draw", hasCode, enabled: true, capabilities: [] } as unknown as PluginInfo],
     });
     const doc = memoryDocument("hello world");
     const view = render(<WebView pluginId="acme.draw" view="draw" label="Draw" document={doc} doc={7} />);
@@ -250,6 +251,71 @@ describe("WebView", () => {
       expect(events).toEqual(hasCode ? [{ kind: "message", text: "hi" }] : []);
       view.unmount();
     }
+  });
+
+  it("closes frame PTYs on plugin changes, navigation, window teardown and unmount", async () => {
+    const original = ptyModule.ptyBridge;
+    const closes: ReturnType<typeof vi.fn>[] = [];
+    const spy = vi.spyOn(ptyModule, "ptyBridge").mockImplementation((...args) => {
+      const bridge = original(...args);
+      const close = vi.fn(bridge.close);
+      closes.push(close);
+      return { ...bridge, close };
+    });
+    try {
+      const { view } = setup(true);
+      const { frame, send, posted } = await frameOf(view.container);
+      for (const change of [
+        (p: PluginInfo) => ({ ...p, enabled: false }),
+        (p: PluginInfo) => ({ ...p, enabled: true, capabilities: [] }),
+        (p: PluginInfo) => ({ ...p, version: "2.0.0" }),
+      ]) {
+        const close = closes.at(-1)!;
+        act(() => usePlugins.setState((s) => ({ plugins: s.plugins.map(change) })));
+        expect(close).toHaveBeenCalled();
+      }
+      const close = closes.at(-1)!;
+      act(() => {
+        frame.dispatchEvent(new Event("load"));
+        frame.dispatchEvent(new Event("load"));
+      });
+      expect(close).toHaveBeenCalled();
+      const windowClose = closes.at(-1)!;
+      act(() => window.dispatchEvent(new Event("pagehide")));
+      expect(windowClose).toHaveBeenCalled();
+      // Another window cannot request a PTY through this frame's listener.
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: window,
+          data: { tag: FRAME_TAG, text: JSON.stringify({ op: "pty-spawn", sessionId: "s", program: "sh" }) },
+        }),
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      expect(posted.filter((m) => m.text)).toEqual([]);
+      send({ text: "message" });
+      view.unmount();
+      expect(closes.every((close) => close.mock.calls.length > 0)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("refuses pty-spawn messages when process:<program> capability is not granted", async () => {
+    const { view, events } = setup(true);
+    const { posted, send } = await frameOf(view.container);
+    send({ text: JSON.stringify({ op: "pty-spawn", sessionId: "s1", program: "sh", args: ["-i"] }) });
+    await waitFor(() =>
+      expect(
+        posted.some(
+          (m) =>
+            typeof m.text === "string" &&
+            m.text.includes('"op":"pty-error"') &&
+            m.text.includes("process:sh capability not granted"),
+        ),
+      ).toBe(true),
+    );
+    expect(events).toEqual([]);
+    view.unmount();
   });
 });
 
