@@ -1703,36 +1703,58 @@ async fn local_attach_remembers_its_jdwp_port() {
     assert_eq!(h.request("attach")["arguments"]["port"], "5005");
 }
 
-/// Scans counted by a fake `find_jvm_by_jdwp_port` that always finds pid 4242.
+/// A fake `find_jvm_by_jdwp_port` for the JVM 4242, recording whether each scan ran while
+/// suspended. A JVM not `safe_while_suspended` (JDK below 17) is skipped by a suspended scan.
 #[cfg(unix)]
-fn counting_find() -> (Arc<std::sync::atomic::AtomicUsize>, impl Fn() -> Option<u32> + Clone + Send + 'static) {
-    let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+fn counting_find(
+    safe_while_suspended: bool,
+) -> (Arc<Mutex<Vec<bool>>>, impl Fn(bool) -> Option<u32> + Clone + Send + 'static) {
+    let scans = Arc::new(Mutex::new(Vec::new()));
     let counted = scans.clone();
-    (scans, move || {
-        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Some(4242)
+    (scans, move |suspended| {
+        counted.lock().push(suspended);
+        (!suspended || safe_while_suspended).then_some(4242)
     })
 }
 
 #[cfg(unix)]
-#[tokio::test]
-async fn background_scan_waits_while_the_jvm_is_suspended() {
-    let h = harness(Script::default());
+async fn suspended_remote_attach(h: &Harness) -> Arc<Session> {
     let project = tempfile::tempdir().unwrap();
     let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
     let session = h.manager.session(id).unwrap();
     assert!(session.suspended.load(Ordering::Acquire));
+    session
+}
 
-    let (scans, find) = counting_find();
-    let task = jvm_memory::watch_for_attached_jvm(&session, find, Duration::from_millis(5), Duration::from_secs(5));
+#[cfg(unix)]
+#[tokio::test]
+async fn background_scan_skips_an_old_jdk_while_suspended() {
+    let h = harness(Script::default());
+    let session = suspended_remote_attach(&h).await;
+    let (scans, find) = counting_find(false);
+    let task =
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5));
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(scans.load(Ordering::SeqCst), 0);
+    assert!(!scans.lock().is_empty() && scans.lock().iter().all(|&suspended| suspended));
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
 
     session.suspended.store(false, Ordering::Release);
     tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
-    assert_eq!(scans.load(Ordering::SeqCst), 1);
+    assert_eq!(scans.lock().last(), Some(&false));
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn background_scan_finds_a_jdk_17_or_later_while_suspended() {
+    let h = harness(Script::default());
+    let session = suspended_remote_attach(&h).await;
+    let (scans, find) = counting_find(true);
+    let task =
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5));
+    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    assert_eq!(*scans.lock(), [true]);
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
 }
 
@@ -1746,28 +1768,30 @@ async fn background_scan_keeps_a_known_pid_and_stops_with_the_session() {
     let session = h.manager.session(id).unwrap();
     session.suspended.store(false, Ordering::Release);
     session.jvm_pid.store(7, Ordering::Release);
-    let (scans, find) = counting_find();
-    let task = jvm_memory::watch_for_attached_jvm(&session, find, Duration::from_millis(5), Duration::from_secs(5));
-    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
-    assert_eq!(scans.load(Ordering::SeqCst), 0, "a known pid needs no scan");
+    let watch = |find| {
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5))
+    };
+    let (scans, find) = counting_find(true);
+    tokio::time::timeout(Duration::from_secs(2), watch(find)).await.unwrap().unwrap();
+    assert!(scans.lock().is_empty(), "a known pid needs no scan");
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 7);
 
     // A refresh stores the pid while this scan is still running.
     session.jvm_pid.store(0, Ordering::Release);
     let racing = session.clone();
-    let find = move || {
+    let find = move |_| {
         racing.jvm_pid.store(7, Ordering::Release);
         Some(4242)
     };
-    let task = jvm_memory::watch_for_attached_jvm(&session, find, Duration::from_millis(5), Duration::from_secs(5));
+    let task =
+        jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5));
     tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 7, "a pid stored first is kept");
 
     h.manager.stop(id).await.unwrap();
-    let (scans, find) = counting_find();
-    let task = jvm_memory::watch_for_attached_jvm(&session, find, Duration::from_millis(5), Duration::from_secs(5));
-    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
-    assert_eq!(scans.load(Ordering::SeqCst), 0);
+    let (scans, find) = counting_find(true);
+    tokio::time::timeout(Duration::from_secs(2), watch(find)).await.unwrap().unwrap();
+    assert!(scans.lock().is_empty());
 }
 
 #[cfg(unix)]

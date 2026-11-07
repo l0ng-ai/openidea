@@ -9,15 +9,21 @@ use crate::socket::{agent_properties_at, has_listener_at, temp_dir};
 
 /// Pid of the local JVM whose JDWP agent listens on `port`, found through the `.java_pid<pid>`
 /// sockets of JVMs run by the current user. Returns within `budget` even if a JVM never answers;
-/// `per_socket` bounds each individual query.
-pub fn find_jvm_by_jdwp_port(port: u16, per_socket: Duration, budget: Duration) -> Option<u32> {
+/// `per_socket` bounds each individual query. Only JVMs whose pid `may_query` accepts are asked;
+/// it runs on the calling thread before each query.
+pub fn find_jvm_by_jdwp_port(
+    port: u16,
+    per_socket: Duration,
+    budget: Duration,
+    may_query: impl Fn(u32) -> bool,
+) -> Option<u32> {
     #[cfg(unix)]
     {
-        find_in(&temp_dir(), port, per_socket, budget)
+        find_in(&temp_dir(), port, per_socket, budget, may_query)
     }
     #[cfg(not(unix))]
     {
-        let _ = (port, per_socket, budget);
+        let _ = (port, per_socket, budget, may_query);
         None
     }
 }
@@ -32,14 +38,20 @@ fn pid_of_socket_name(name: &str) -> Option<u32> {
 }
 
 #[cfg(unix)]
-pub(crate) fn find_in(dir: &Path, port: u16, per_socket: Duration, budget: Duration) -> Option<u32> {
+pub(crate) fn find_in(
+    dir: &Path,
+    port: u16,
+    per_socket: Duration,
+    budget: Duration,
+    may_query: impl Fn(u32) -> bool,
+) -> Option<u32> {
     let deadline = Instant::now() + budget;
     let (found, results) = mpsc::channel();
     for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let Some(pid) = entry.file_name().to_str().and_then(pid_of_socket_name) else { continue };
         let path = entry.path();
         // Same trust checks as a real request: never talk to a socket another user could own.
-        if !has_listener_at(&path) {
+        if !has_listener_at(&path) || !may_query(pid) {
             continue;
         }
         let found = found.clone();
@@ -96,20 +108,21 @@ mod tests {
     }
 
     const SECOND: Duration = Duration::from_secs(1);
+    const ALL: fn(u32) -> bool = |_| true;
 
     #[test]
     fn scan_matches_port_not_first_listener() {
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pid111", Some(5005));
         let _b = fake_jvm(dir.path(), ".java_pid222", Some(6006));
-        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND), Some(222));
+        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND, ALL), Some(222));
     }
 
     #[test]
     fn scan_returns_none_when_no_port_matches() {
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pid111", Some(5005));
-        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND), None);
+        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND, ALL), None);
     }
 
     #[test]
@@ -118,7 +131,7 @@ mod tests {
         let _silent = fake_jvm(dir.path(), ".java_pid111", None);
         let _b = fake_jvm(dir.path(), ".java_pid222", Some(6006));
         let started = Instant::now();
-        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND), Some(222));
+        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND, ALL), Some(222));
         assert!(started.elapsed() < Duration::from_millis(2500), "{:?}", started.elapsed());
     }
 
@@ -127,7 +140,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _silent = fake_jvm(dir.path(), ".java_pid111", None);
         let started = Instant::now();
-        assert_eq!(find_in(dir.path(), 6006, Duration::from_secs(30), Duration::from_millis(500)), None);
+        assert_eq!(find_in(dir.path(), 6006, Duration::from_secs(30), Duration::from_millis(500), ALL), None);
         assert!(started.elapsed() < Duration::from_millis(2500), "{:?}", started.elapsed());
     }
 
@@ -138,7 +151,7 @@ mod tests {
         let _b = fake_jvm(dir.path(), ".java_pid", Some(6006));
         let _c = fake_jvm(dir.path(), "java_pid12", Some(6006));
         let _d = fake_jvm(dir.path(), ".java_pid12x", Some(6006));
-        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND), None);
+        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND, ALL), None);
     }
 
     #[test]
@@ -146,12 +159,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pid111", Some(6006));
         fs::set_permissions(dir.path().join(".java_pid111"), fs::Permissions::from_mode(0o666)).unwrap();
-        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND), None);
+        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND, ALL), None);
     }
 
     #[test]
     fn scan_of_a_missing_directory_finds_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(find_in(&dir.path().join("gone"), 6006, SECOND, SECOND), None);
+        assert_eq!(find_in(&dir.path().join("gone"), 6006, SECOND, SECOND, ALL), None);
+    }
+
+    #[test]
+    fn scan_never_asks_a_jvm_the_caller_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let _a = fake_jvm(dir.path(), ".java_pid111", Some(6006));
+        let offered = std::sync::Mutex::new(Vec::new());
+        let only_222 = |pid| {
+            offered.lock().unwrap().push(pid);
+            pid == 222
+        };
+        // Pid 111 listens on the port, so asking it would have found it.
+        assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND, only_222), None);
+        assert_eq!(*offered.lock().unwrap(), [111]);
     }
 }

@@ -1,7 +1,9 @@
 //! One class histogram of a JVM and its deltas against the previous one.
 
 use super::scan::{RESCAN_BUDGET, RESCAN_PER_SOCKET};
-use super::{ClassCounts, HISTOGRAM_TIMEOUT, JvmClassRow, JvmMemorySnapshot, JvmMemoryUnavailable};
+use super::{
+    ClassCounts, HISTOGRAM_TIMEOUT, JvmClassRow, JvmMemorySnapshot, JvmMemoryUnavailable, safe_while_suspended,
+};
 use ide_core::IdeResult;
 use ide_jvm_attach::{AttachError, HistogramRow, JavaVersion};
 use std::collections::HashMap;
@@ -13,7 +15,8 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(2);
 /// The attach calls a snapshot makes, so tests can stand in for a JVM.
 pub(crate) trait AttachProbe: Send + Sync {
     fn has_listener(&self, pid: u32) -> bool;
-    fn find_by_jdwp_port(&self, port: u16) -> Option<u32>;
+    /// Asks only the JVMs whose pid `may_query` accepts.
+    fn find_by_jdwp_port(&self, port: u16, may_query: &dyn Fn(u32) -> bool) -> Option<u32>;
     fn version(&self, pid: u32) -> Option<JavaVersion>;
     fn histogram(&self, pid: u32) -> Result<String, AttachError>;
     fn alive(&self, pid: u32) -> bool;
@@ -28,8 +31,8 @@ impl AttachProbe for JdkProbe {
         ide_jvm_attach::has_listener(pid)
     }
 
-    fn find_by_jdwp_port(&self, port: u16) -> Option<u32> {
-        ide_jvm_attach::find_jvm_by_jdwp_port(port, RESCAN_PER_SOCKET, RESCAN_BUDGET)
+    fn find_by_jdwp_port(&self, port: u16, may_query: &dyn Fn(u32) -> bool) -> Option<u32> {
+        ide_jvm_attach::find_jvm_by_jdwp_port(port, RESCAN_PER_SOCKET, RESCAN_BUDGET, may_query)
     }
 
     fn version(&self, pid: u32) -> Option<JavaVersion> {
@@ -137,7 +140,7 @@ pub(crate) fn take_snapshot(
     };
 
     let version = probe.version(jvm);
-    if suspended && !version.as_ref().is_some_and(|v| ide_jvm_attach::histogram_safe_while_suspended(v.major)) {
+    if suspended && !safe_while_suspended(version.as_ref()) {
         return Ok(Err(U::UnsafeWhileSuspended { java_major: version.map_or(0, |v| v.major) }));
     }
 

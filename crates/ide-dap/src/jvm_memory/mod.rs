@@ -149,10 +149,6 @@ pub(crate) async fn snapshot(
         JvmTarget::Attached { pid, jdwp_port } => match i32::try_from(pid.load(Ordering::Acquire)) {
             Ok(p) if p > 0 => Lookup::Known(p),
             _ => match jdwp_port {
-                // The scan queries the session's own JVM before its version is known.
-                Some(_) if suspended => {
-                    return unavailable(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 0 });
-                }
                 Some(port) => Lookup::Scan(port),
                 None => return unavailable(JvmMemoryUnavailable::AttachedJvmNotFound),
             },
@@ -164,9 +160,9 @@ pub(crate) async fn snapshot(
         let (found, tree) = match lookup {
             Lookup::Tree(pid) => (None, pid_tree(pid)),
             Lookup::Known(pid) => (None, vec![pid]),
-            Lookup::Scan(port) => match probe.find_by_jdwp_port(port).and_then(|p| i32::try_from(p).ok()) {
-                Some(pid) if pid > 0 => (Some(pid), vec![pid]),
-                _ => return (None, Ok(Err(JvmMemoryUnavailable::AttachedJvmNotFound))),
+            Lookup::Scan(port) => match scan_for_jvm(&*probe, port, suspended) {
+                Ok(pid) => (Some(pid), vec![pid]),
+                Err(reason) => return (None, Ok(Err(reason))),
             },
         };
         (found, take_snapshot(&*probe, &tree, suspended, previous.as_deref()))
@@ -184,6 +180,43 @@ pub(crate) async fn snapshot(
         }
         Err(reason) => JvmMemoryResult::Unavailable { reason },
     })
+}
+
+/// A suspended JDK below 17 hangs on an attach request, so while suspended only a JVM known to
+/// be 17 or later is asked anything. Pass a version read without attaching (the `release` file).
+fn safe_while_suspended(version: Option<&ide_jvm_attach::JavaVersion>) -> bool {
+    version.is_some_and(|v| ide_jvm_attach::histogram_safe_while_suspended(v.major))
+}
+
+/// The JVM listening on JDWP `port`. While suspended the scan reaches the session's own JVM
+/// too, so JVMs unsafe to ask are skipped, and when one of them may be the session's the
+/// answer is a refusal rather than "not found".
+fn scan_for_jvm(probe: &dyn AttachProbe, port: u16, suspended: bool) -> Result<i32, JvmMemoryUnavailable> {
+    // Majors of the JVMs left out; 0 for an unknown version.
+    let skipped = std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let may_query = |pid: u32| {
+        if !suspended {
+            return true;
+        }
+        let version = probe.version(pid);
+        let safe = safe_while_suspended(version.as_ref());
+        if !safe {
+            skipped.borrow_mut().insert(version.map_or(0, |v| v.major));
+        }
+        safe
+    };
+    match probe.find_by_jdwp_port(port, &may_query).and_then(|p| i32::try_from(p).ok()) {
+        Some(pid) if pid > 0 => Ok(pid),
+        _ => {
+            let skipped = skipped.into_inner();
+            Err(match skipped.first() {
+                None => JvmMemoryUnavailable::AttachedJvmNotFound,
+                Some(&major) => JvmMemoryUnavailable::UnsafeWhileSuspended {
+                    java_major: if skipped.len() == 1 { major } else { 0 },
+                },
+            })
+        }
+    }
 }
 
 fn pid_tree(pid: i32) -> Vec<i32> {

@@ -137,7 +137,8 @@ fn finds_a_real_jvm_by_its_jdwp_port() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut found = None;
     while found.is_none() && Instant::now() < deadline {
-        found = find_jvm_by_jdwp_port(port, Duration::from_secs(1), Duration::from_secs(2));
+        // Only the JVM this test started: other JVMs of the developer are left alone.
+        found = find_jvm_by_jdwp_port(port, Duration::from_secs(1), Duration::from_secs(2), |p| p == pid);
         if found.is_none() {
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -146,5 +147,5 @@ fn finds_a_real_jvm_by_its_jdwp_port() {
 
     let props = agent_properties(pid, Duration::from_secs(2)).unwrap();
     assert_eq!(jdwp_port(&props), Some(port));
-    assert_eq!(find_jvm_by_jdwp_port(port ^ 1, Duration::from_secs(1), Duration::from_secs(2)), None);
+    assert_eq!(find_jvm_by_jdwp_port(port ^ 1, Duration::from_secs(1), Duration::from_secs(2), |p| p == pid), None);
 }

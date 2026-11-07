@@ -1,5 +1,6 @@
 //! Finding the JVM behind an attach session by its JDWP port.
 
+use super::safe_while_suspended;
 use crate::session::Session;
 use serde_json::Value;
 use std::net::IpAddr;
@@ -42,20 +43,24 @@ pub(crate) fn local_jdwp_port(arguments: &Value) -> Option<u16> {
 /// attach socket does not hold the attach up.
 pub(crate) fn find_attached_jvm(session: &Arc<Session>, port: u16) {
     let _ = session.jdwp_port.set(port);
-    let find = move || ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY);
-    drop(watch_for_attached_jvm(session, find, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW));
+    let find = move |suspended: bool| {
+        let may_query = |pid| !suspended || safe_while_suspended(ide_jvm_attach::java_version_of(pid).as_ref());
+        ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY, may_query)
+    };
+    drop(watch_for_attached_jvm(session, port, find, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW));
 }
 
 /// Retries `find` for the session's `jvm_pid`, holding the session weakly so an ended session
-/// is not kept alive.
+/// is not kept alive. `find` is told whether the session is suspended.
 pub(crate) fn watch_for_attached_jvm<F>(
     session: &Arc<Session>,
+    port: u16,
     find: F,
     interval: Duration,
     window: Duration,
 ) -> tokio::task::JoinHandle<()>
 where
-    F: Fn() -> Option<u32> + Clone + Send + 'static,
+    F: Fn(bool) -> Option<u32> + Clone + Send + 'static,
 {
     let weak = Arc::downgrade(session);
     tokio::spawn(async move {
@@ -63,17 +68,14 @@ where
             Some(s) if !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed() => {
                 if s.jvm_pid.load(Ordering::Acquire) > 0 {
                     ScanGate::Ended
-                } else if s.suspended.load(Ordering::Acquire) {
-                    // The scan queries this JVM too, and a suspended JDK below 17 hangs on it.
-                    ScanGate::Wait
                 } else {
-                    ScanGate::Scan
+                    ScanGate::Scan { suspended: s.suspended.load(Ordering::Acquire) }
                 }
             }
             _ => ScanGate::Ended,
         };
         let Some(pid) = retry_find(find, gate, interval, window).await else {
-            tracing::debug!("no local JVM found for the JDWP attach yet");
+            tracing::debug!("no local JVM found for JDWP port {port} yet");
             return;
         };
         if let Some(s) = weak.upgrade() {
@@ -84,9 +86,7 @@ where
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ScanGate {
-    Scan,
-    /// Skip this try but keep the window open.
-    Wait,
+    Scan { suspended: bool },
     Ended,
 }
 
@@ -99,15 +99,15 @@ pub(crate) async fn retry_find<F>(
     window: Duration,
 ) -> Option<u32>
 where
-    F: Fn() -> Option<u32> + Clone + Send + 'static,
+    F: Fn(bool) -> Option<u32> + Clone + Send + 'static,
 {
     let deadline = tokio::time::Instant::now() + window;
     loop {
         match gate() {
             ScanGate::Ended => break,
-            ScanGate::Wait => {}
-            ScanGate::Scan => {
-                if let Ok(Some(pid)) = tokio::task::spawn_blocking(find.clone()).await {
+            ScanGate::Scan { suspended } => {
+                let find = find.clone();
+                if let Ok(Some(pid)) = tokio::task::spawn_blocking(move || find(suspended)).await {
                     return Some(pid);
                 }
             }
