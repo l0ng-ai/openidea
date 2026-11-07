@@ -16,6 +16,7 @@ import {
   type ToolWindowService,
 } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
+import { BuildTitleItem } from "./BuildTitleItem";
 import { BuildView } from "./BuildView";
 import { activate } from "./index";
 import {
@@ -86,13 +87,20 @@ describe("build model", () => {
 type Note = Parameters<NotificationService["notify"]>[0];
 
 class FakeBackend implements BuildBackend {
-  calls: Array<{ kind: string; file: string | null; clear: string[] }> = [];
+  calls: Array<{ kind: string; file: string | null; clear: string[]; cmake?: string }> = [];
   cancelled: number[] = [];
   private finish?: (r: BuildResult) => void;
   private fail?: (e: unknown) => void;
   emit?: (e: BuildEvent) => void;
-  run(kind: string, file: string | null, _request: number, clear: string[], onEvent: (e: BuildEvent) => void) {
-    this.calls.push({ kind, file, clear });
+  run(
+    kind: string,
+    file: string | null,
+    _request: number,
+    clear: string[],
+    onEvent: (e: BuildEvent) => void,
+    cmake: string | null,
+  ) {
+    this.calls.push({ kind, file, clear, ...(cmake ? { cmake } : {}) });
     this.emit = onEvent;
     return new Promise<BuildResult>((resolve, reject) => {
       this.finish = resolve;
@@ -150,6 +158,26 @@ describe("build feature", () => {
     setBuildBackend(null);
     useProject.setState({ project: null });
     setContext("projectOpen", false);
+    setContext("run.cmakeBuild", null);
+  });
+
+  it("shows the CMake hammer and builds the selected target through the shared action", async () => {
+    setContext("run.cmakeBuild", "cmake:release:hello:build");
+    render(<BuildTitleItem />);
+    expect(screen.getByRole("button", { name: "Build Project" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Build Project" }));
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:release:hello:build" });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+    const explicit = executeAction("build.buildProject", { cmake: "cmake:debug:other:build", activate: false });
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:debug:other:build" });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await explicit;
+    });
   });
 
   it("registers the Build menu actions, shortcuts and an on-use bottom tool window", () => {

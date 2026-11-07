@@ -299,19 +299,22 @@ describe("run config → launch config", () => {
     expect(extra(dap)).toEqual({ env: ["K=v"] });
   });
 
-  it("maps CMake debug-info paths to the editor's canonical source root", () => {
-    const config = rc({
-      kind: "native",
-      command: "/private/tmp/project/build/app",
-      debugAdapter: "lldb-dap",
-      env: { K: "v" },
-      params: { cmakeSourceRoot: "/tmp/project", cmakeCanonicalSourceRoot: "/private/tmp/project" },
-    });
-    expect(extra(launchConfigFor(config, "/private/tmp/project")!)).toEqual({
-      env: ["K=v"],
-      sourceMap: [["/tmp/project", "/private/tmp/project"]],
-    });
-  });
+  it.each(["native", "cmake-application"])(
+    "maps %s CMake debug-info paths to the editor's canonical source root",
+    (kind) => {
+      const config = rc({
+        kind,
+        command: "/private/tmp/project/build/app",
+        debugAdapter: "lldb-dap",
+        env: { K: "v" },
+        params: { cmakeSourceRoot: "/tmp/project", cmakeCanonicalSourceRoot: "/private/tmp/project" },
+      });
+      expect(extra(launchConfigFor(config, "/private/tmp/project")!)).toEqual({
+        env: ["K=v"],
+        sourceMap: [["/tmp/project", "/private/tmp/project"]],
+      });
+    },
+  );
 
   it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
     const project = rc({

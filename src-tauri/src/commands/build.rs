@@ -150,11 +150,13 @@ pub async fn maven_exclude_dependency(
 /// are cleared first; the new messages are published as `build` diagnostics.
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn build_run(
     window: Window,
     state: State<'_, AppState>,
     kind: BuildKind,
     file: Option<std::path::PathBuf>,
+    cmake: Option<String>,
     request: RequestId,
     clear: Vec<std::path::PathBuf>,
     on_event: Channel<BuildEvent>,
@@ -164,6 +166,7 @@ pub async fn build_run(
         window.label(),
         kind,
         file,
+        cmake,
         request,
         clear,
         crate::commands::sender(on_event),

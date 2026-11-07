@@ -1,11 +1,11 @@
 //! Real Wasm provider dispatch and the document-edit path used locally and over RPC.
 use ide_core::{CancellationToken, ChangeSet, Diagnostic, IdeEvent, Pos, Range, TextChange};
-use ide_host::plugins::{Consent, HostWorkspace, PluginHost, set_editor_providers};
+use ide_host::plugins::{Consent, HostWorkspace, PluginEvent, PluginHost, set_editor_providers};
 use ide_host::{Host, HostConfig, ops};
 use ide_plugin::{Invocation, Limits, ProviderDocument};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 const ID: &str = "test.diagnostics";
@@ -86,11 +86,83 @@ fn diagnostics_is_an_api_1_3_addition() {
     assert!(host.install_from_dir(&package, &Consent::all()).unwrap_err().message.contains("new in plugin API 1.3"));
 }
 
+// The fixture signals from inside a host import, so the actor cannot finish
+// until this test releases it. A dropped guard also releases a failing test.
+enum FixtureEvent {
+    Entered,
+    Returned,
+}
+
+struct FixtureGate {
+    events: mpsc::Receiver<FixtureEvent>,
+    finished: mpsc::Sender<FixtureEvent>,
+    release: mpsc::Sender<()>,
+}
+
+impl FixtureGate {
+    fn new(dir: &Path, limits: Limits) -> (Arc<PluginHost>, Self) {
+        let (started, events) = mpsc::channel();
+        let finished = started.clone();
+        let (release, released) = mpsc::channel();
+        let released = Mutex::new(released);
+        let sink = Arc::new(move |_: Option<&str>, event| {
+            if matches!(event, PluginEvent::ContextChanged { ref plugin_id, ref key, value: Some(_), .. } if plugin_id == ID && key == "fixture-gate")
+            {
+                started.send(FixtureEvent::Entered).unwrap();
+                released.lock().recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        });
+        let host = Arc::new(PluginHost::new(dir.join("plugins"), sink, limits).unwrap());
+        host.install_from_dir(&fixture(), &Consent::all()).unwrap();
+        assert_eq!(host.run_command(ID, "calls", None, Invocation::default()).unwrap().as_deref(), Some("0"));
+        (host, Self { events, finished, release })
+    }
+
+    fn entered(&self) {
+        assert!(matches!(self.events.recv_timeout(Duration::from_secs(5)).unwrap(), FixtureEvent::Entered));
+    }
+
+    fn provider(
+        &self,
+        host: &Arc<PluginHost>,
+        document: ProviderDocument,
+        cancel: &CancellationToken,
+    ) -> std::thread::JoinHandle<Vec<(String, Vec<Diagnostic>)>> {
+        let start = Instant::now();
+        loop {
+            let (host, document, cancel, finished) =
+                (host.clone(), document.clone(), cancel.clone(), self.finished.clone());
+            let call = std::thread::spawn(move || {
+                let result = host.provide_diagnostics(&document, &cancel);
+                let _ = finished.send(FixtureEvent::Returned);
+                result
+            });
+            if matches!(self.events.recv_timeout(Duration::from_secs(5)).unwrap(), FixtureEvent::Entered) {
+                return call;
+            }
+            // Expiry before entry is valid, but cannot exercise a late answer.
+            assert!(call.join().unwrap().is_empty());
+            assert!(start.elapsed() < Duration::from_secs(5), "provider never entered the fixture");
+        }
+    }
+}
+
+impl Drop for FixtureGate {
+    fn drop(&mut self) {
+        let _ = self.release.send(());
+    }
+}
+
 #[test]
 fn late_and_cancelled_answers_are_dropped_without_disabling_the_plugin() {
     let tmp = tempfile::tempdir().unwrap();
-    let host = plugins(tmp.path(), Limits { edit_soft: Duration::from_millis(10), ..generous() });
-    assert!(host.provide_diagnostics(&doc(tmp.path(), "text", "slow BAD"), &CancellationToken::new()).is_empty());
+    let soft = Duration::from_millis(10);
+    let (host, gate) = FixtureGate::new(tmp.path(), Limits { edit_soft: soft, ..generous() });
+    let call = gate.provider(&host, doc(tmp.path(), "text", "gate BAD"), &CancellationToken::new());
+    // Entry was observed: hold this actual provider beyond its soft deadline.
+    assert!(matches!(gate.events.recv_timeout(soft), Err(mpsc::RecvTimeoutError::Timeout)));
+    drop(gate);
+    assert!(call.join().unwrap().is_empty());
     let cancel = CancellationToken::new();
     cancel.cancel();
     assert!(host.provide_diagnostics(&doc(tmp.path(), "text", "BAD"), &cancel).is_empty());
@@ -98,15 +170,26 @@ fn late_and_cancelled_answers_are_dropped_without_disabling_the_plugin() {
 }
 
 #[test]
+fn cancelling_a_started_provider_drops_its_answer_without_disabling_the_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (host, gate) = FixtureGate::new(tmp.path(), generous());
+    let cancel = CancellationToken::new();
+    let call = gate.provider(&host, doc(tmp.path(), "text", "gate BAD"), &cancel);
+    cancel.cancel();
+    drop(gate);
+    assert!(call.join().unwrap().is_empty());
+    assert_eq!(host.run_command(ID, "calls", None, Invocation::default()).unwrap().as_deref(), Some("1"));
+}
+
+#[test]
 fn cancelling_a_queued_provider_does_not_interrupt_another_windows_command() {
     let tmp = tempfile::tempdir().unwrap();
-    let host = plugins(tmp.path(), generous());
-    host.run_command(ID, "calls", None, Invocation::default()).unwrap();
+    let (host, gate) = FixtureGate::new(tmp.path(), generous());
     let waiter = {
         let host = host.clone();
         std::thread::spawn(move || host.run_command(ID, "wait", None, Invocation::default()))
     };
-    std::thread::sleep(Duration::from_millis(50));
+    gate.entered();
     let cancel = CancellationToken::new();
     let canceller = {
         let cancel = cancel.clone();
@@ -117,6 +200,7 @@ fn cancelling_a_queued_provider_does_not_interrupt_another_windows_command() {
     };
     assert!(host.provide_diagnostics(&doc(tmp.path(), "text", "BAD"), &cancel).is_empty());
     canceller.join().unwrap();
+    drop(gate);
     assert_eq!(waiter.join().unwrap().unwrap().as_deref(), Some("finished"));
     assert_eq!(host.run_command(ID, "calls", None, Invocation::default()).unwrap().as_deref(), Some("0"));
 }
@@ -124,14 +208,14 @@ fn cancelling_a_queued_provider_does_not_interrupt_another_windows_command() {
 #[test]
 fn editor_requests_expire_in_the_queue_without_running_after_a_command() {
     let tmp = tempfile::tempdir().unwrap();
-    let host = plugins(tmp.path(), Limits { edit_soft: Duration::from_millis(10), ..generous() });
-    host.run_command(ID, "calls", None, Invocation::default()).unwrap();
+    let (host, gate) = FixtureGate::new(tmp.path(), Limits { edit_soft: Duration::from_millis(10), ..generous() });
     let waiter = {
         let host = host.clone();
         std::thread::spawn(move || host.run_command(ID, "wait", None, Invocation::default()))
     };
-    std::thread::sleep(Duration::from_millis(50));
+    gate.entered();
     assert!(host.provide_diagnostics(&doc(tmp.path(), "text", "BAD"), &CancellationToken::new()).is_empty());
+    drop(gate);
     assert_eq!(waiter.join().unwrap().unwrap().as_deref(), Some("finished"));
     assert_eq!(host.run_command(ID, "calls", None, Invocation::default()).unwrap().as_deref(), Some("0"));
     assert_eq!(host.info_of(ID).unwrap().stats.slow_calls, 1);
@@ -140,20 +224,14 @@ fn editor_requests_expire_in_the_queue_without_running_after_a_command() {
 #[test]
 fn typing_on_cancels_a_running_provider_before_its_hard_deadline() {
     let tmp = tempfile::tempdir().unwrap();
-    let host = plugins(tmp.path(), Limits { fuel: u64::MAX, ..generous() });
-    host.run_command(ID, "calls", None, Invocation::default()).unwrap();
+    let (host, gate) = FixtureGate::new(tmp.path(), Limits { fuel: u64::MAX, ..generous() });
     let cancel = CancellationToken::new();
-    let canceller = {
-        let cancel = cancel.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(30));
-            cancel.cancel();
-        })
-    };
+    let call = gate.provider(&host, doc(tmp.path(), "text", "gate spin BAD"), &cancel);
     let started = Instant::now();
-    assert!(host.provide_diagnostics(&doc(tmp.path(), "text", "spin BAD"), &cancel).is_empty());
+    cancel.cancel();
+    drop(gate);
+    assert!(call.join().unwrap().is_empty());
     assert!(started.elapsed() < Duration::from_secs(2));
-    canceller.join().unwrap();
 }
 
 // This executable has one edit-path test because editor providers are installed once per process.
