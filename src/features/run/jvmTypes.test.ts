@@ -230,13 +230,13 @@ describe("Maven / Gradle: VM options of the forked JVM", () => {
     const launched = await gradle().prepareLaunch!(c);
     expect(scripts).toEqual([gradleJvmArgs(params)]);
     expect(launched.args).toEqual(["--init-script", "/tmp/openidea-gradle/jvm-args-1.init.gradle", "bootRun"]);
-    // Debugging keeps them: `--debug-jvm` is added before the launch is prepared.
+    // Debugging keeps them: the BootRun init script gives the forked JVM a dynamic port.
     const debug = await gradle().prepareLaunch!(jdwpLaunch(c)!);
     expect(debug.args).toEqual([
       "--init-script",
       "/tmp/openidea-gradle/jvm-args-1.init.gradle",
       "bootRun",
-      "--debug-jvm",
+      "-Dopenidea.run.debug=true",
     ]);
   });
 
