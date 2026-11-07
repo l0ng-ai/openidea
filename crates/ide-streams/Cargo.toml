@@ -11,6 +11,7 @@ ide-syntax.workspace = true
 serde.workspace = true
 specta.workspace = true
 thiserror.workspace = true
+tokio-util.workspace = true
 tree-sitter.workspace = true
 
 [dev-dependencies]

@@ -10,6 +10,7 @@ mod normalize;
 mod qualify;
 mod qualify_tables;
 mod resolve;
+mod trace;
 
 pub use catalog::OpRole;
 pub use chain::*;
@@ -19,3 +20,4 @@ pub use generate::*;
 pub use model::*;
 pub use normalize::*;
 pub use resolve::{distinct_drops, resolve, sorted_pass_through};
+pub use trace::*;
