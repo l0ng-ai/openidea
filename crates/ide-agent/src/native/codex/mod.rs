@@ -871,31 +871,55 @@ impl CodexShim {
                 Ok(self.ask(&thread, call, &choices, json!({ "permissions": {}, "scope": "turn" })))
             }
             "item/tool/requestUserInput" => {
-                let mut answers = serde_json::Map::new();
-                for q in params.get("questions").and_then(Value::as_array).into_iter().flatten() {
-                    let Some(qid) = q.get("id").and_then(Value::as_str) else { continue };
-                    let choices: Vec<Choice> = q
-                        .get("options")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .enumerate()
-                        .filter_map(|(i, o)| {
-                            let label = o.get("label")?.as_str()?;
-                            Some(Choice {
-                                option: json!({ "optionId": i.to_string(), "name": label, "kind": "allow_once" }),
-                                answer: json!({ "answers": [label] }),
+                let questions = params.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
+                // One permission request carrying all the questions, so the client shows
+                // them as a card (as it does for Claude's `AskUserQuestion`).
+                let asked: Vec<Value> = questions
+                    .iter()
+                    .filter_map(|q| {
+                        let id = q.get("id").and_then(Value::as_str)?;
+                        let question = q.get("question").and_then(Value::as_str)?;
+                        let options: Vec<Value> = q
+                            .get("options")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|o| {
+                                let label = o.get("label").and_then(Value::as_str)?;
+                                Some(json!({
+                                    "label": label,
+                                    "description": o.get("description").and_then(Value::as_str).unwrap_or_default(),
+                                }))
                             })
-                        })
-                        .collect();
-                    if choices.is_empty() {
-                        continue;
-                    }
-                    let title = q.get("question").and_then(Value::as_str).unwrap_or("Codex has a question");
-                    let call = tool_call_of(&item_id, title, "other", None, None);
-                    let answer = self.ask(&thread, call, &choices, Value::Null);
-                    if !answer.is_null() {
-                        answers.insert(qid.to_owned(), answer);
+                            .collect();
+                        Some(json!({
+                            "answerKey": id,
+                            "header": q.get("header").and_then(Value::as_str).unwrap_or_default(),
+                            "question": question,
+                            "multiSelect": q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+                            "options": options,
+                        }))
+                    })
+                    .collect();
+                if asked.is_empty() {
+                    return Ok(json!({ "answers": {} }));
+                }
+                let title = asked[0].get("question").and_then(Value::as_str).unwrap_or("Codex has a question");
+                let mut call = tool_call_of(&item_id, title, "other", None, None);
+                call["_meta"] = json!({ "questions": asked });
+                let options = [json!({ "optionId": "submit", "name": "Submit", "kind": "allow_once" })];
+                let picked: serde_json::Map<String, Value> = self
+                    .ask_option(&thread, call, &options)
+                    .and_then(|reply| serde_json::from_str(&reply).ok())
+                    .unwrap_or_default();
+                let mut answers = serde_json::Map::new();
+                for q in &questions {
+                    let Some(qid) = q.get("id").and_then(Value::as_str) else { continue };
+                    if let Some(labels) = picked
+                        .get(qid)
+                        .filter(|labels| labels.as_array().is_some_and(|labels| labels.iter().all(Value::is_string)))
+                    {
+                        answers.insert(qid.to_owned(), json!({ "answers": labels }));
                     }
                 }
                 Ok(json!({ "answers": answers }))
@@ -925,6 +949,25 @@ impl CodexShim {
                 Ok(self.ask(&thread, call, &choices, json!({ "action": "decline" })))
             }
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported request {method}"))),
+        }
+    }
+
+    /// Asks the client; returns the selected option id (`None` when cancelled).
+    fn ask_option(&self, session: &str, tool_call: Value, options: &[Value]) -> Option<String> {
+        let client = self.client.get().cloned()?;
+        let params = json!({ "sessionId": session, "toolCall": tool_call, "options": options });
+        let outcome: Result<Value, RpcError> =
+            self.runtime.block_on(client.request("session/request_permission", params, None));
+        match outcome {
+            Ok(outcome) => outcome
+                .pointer("/outcome/outcome")
+                .and_then(Value::as_str)
+                .filter(|outcome| *outcome == "selected")
+                .and_then(|_| outcome.pointer("/outcome/optionId").and_then(Value::as_str).map(str::to_owned)),
+            Err(e) => {
+                tracing::debug!("codex: question request failed: {e}");
+                None
+            }
         }
     }
 

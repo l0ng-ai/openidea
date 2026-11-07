@@ -3,7 +3,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import type { AgentEntry, AgentTask } from "@/bindings";
 
-const ipc = vi.hoisted(() => ({ rollback: vi.fn(), prompt: vi.fn(), cancel: vi.fn() }));
+const ipc = vi.hoisted(() => ({ rollback: vi.fn(), prompt: vi.fn(), cancel: vi.fn(), confirm: vi.fn() }));
+vi.mock("@/workbench/messages", () => ({ confirm: ipc.confirm }));
 const entries: AgentEntry[] = [
   { type: "user", text: "Original message", attachments: [], sentMs: 1, doneMs: 2, steered: false },
   { type: "agent", text: "Original answer" },
@@ -25,7 +26,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 }));
 
 import { SessionEditor } from "./SessionEditor";
-import { composerDraft, sendMessage, updateComposer, useAgents } from "./store";
+import { composerDraft, rerunFrom, sendMessage, updateComposer, useAgents } from "./store";
 import { replyActions } from "./replyActions";
 
 const task: AgentTask = {
@@ -50,10 +51,29 @@ const task: AgentTask = {
 };
 
 beforeEach(() => {
+  ipc.confirm.mockReset().mockResolvedValue(true);
   ipc.rollback.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.prompt.mockReset().mockResolvedValue({ status: "ok", data: null });
   ipc.cancel.mockReset().mockResolvedValue({ status: "ok", data: null });
   useAgents.setState({ tasks: new Map([[task.id, task]]), entries: new Map(), composers: new Map(), focus: null });
+});
+
+it("keeps the transcript and running session when a fresh-session rerun is cancelled", async () => {
+  ipc.confirm.mockResolvedValue(false);
+  useAgents.setState({
+    tasks: new Map([[task.id, { ...task, status: "running" }]]),
+    entries: new Map([[task.id, entries]]),
+  });
+  await rerunFrom(task.id, 0, "Replacement");
+  expect(ipc.confirm).toHaveBeenCalledWith(
+    expect.objectContaining({
+      message: expect.stringContaining("clears the entire conversation"),
+    }),
+  );
+  expect(ipc.cancel).not.toHaveBeenCalled();
+  expect(ipc.rollback).not.toHaveBeenCalled();
+  expect(ipc.prompt).not.toHaveBeenCalled();
+  expect(useAgents.getState().entries.get(task.id)).toEqual(entries);
 });
 
 async function edit() {
