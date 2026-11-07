@@ -3732,8 +3732,6 @@
   "What should the agent do?": "让 agent 做点什么？",
   "New worktree": "新 worktree",
   "Building and resolving the classpath of {name}…": "正在构建并解析 {name} 的类路径…",
-  "Build completed with errors; launching with the last compiled classes.": "构建完成但存在错误；使用上次编译的类启动。",
-  "Build failed; launching with the last compiled classes.": "构建失败；使用上次编译的类启动。",
   "The classpath is empty: is the module imported by the Java language server?": "类路径为空：Java 语言服务器是否已导入此模块？",
   "Launch cancelled.": "启动已取消。",
   "Starting debugger for {name}…": "正在启动 {name} 的调试器…",
@@ -6781,5 +6779,7 @@
   "Allowed for this session": "已在此会话中允许",
   "Always allowed": "已设为始终允许",
   "Declined": "已拒绝",
-  "Always declined": "已设为始终拒绝"
+  "Always declined": "已设为始终拒绝",
+  "Build failed; '{name}' was not started.": "构建失败；'{name}' 未启动。",
+  "Build has compile errors; '{name}' was not started.": "构建存在编译错误；'{name}' 未启动。"
 }

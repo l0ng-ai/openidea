@@ -19,9 +19,9 @@ import {
   type TestCaseReport,
 } from "@/platform/ipc";
 import {
-  consoleVmArgs,
   findJavaModule,
   isJvmApplication,
+  JavaBuildFailedError,
   parseJavaArgs,
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
@@ -931,7 +931,8 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
     say(`No main class in '${config.name}': expected java [options] -cp \${classpath} <main class> [args]\n`, "stderr");
     return null;
   }
-  if (!parsed.classpath) return { ...config, args: [...consoleVmArgs(config), ...config.args] };
+  // Always prepare, exactly like Debug: even an explicit classpath needs the module, the
+  // project JDK and the selected build, and both modes must share the same result.
   const rt = runtime(sessionId)!;
   const request = { id: nextRequestId(), controller: new AbortController() };
   rt.resolveRequest = request;
@@ -959,7 +960,7 @@ async function resolveJvmApplication(sessionId: string, config: RunConfig): Prom
       if (runtimes.get(sessionId) === rt && rt.resolveRequest === request) patchSession(sessionId, { stopped: true });
       return null;
     }
-    say(`Cannot resolve the classpath: ${message}\n`, "stderr");
+    say(e instanceof JavaBuildFailedError ? `${message}\n` : `Cannot resolve the classpath: ${message}\n`, "stderr");
     // jdtls can't start without a newer JDK: "Download JDK 25".
     const actions = downloadJdkActions(message);
     notifications().notify({
