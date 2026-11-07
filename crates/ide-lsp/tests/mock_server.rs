@@ -3123,6 +3123,112 @@ fn scope_harness() -> (Harness, Arc<MockState>) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn indexed_sources_are_not_widened_but_outside_callers_are() {
+    for classified in [false, true] {
+        for outside in [false, true] {
+            let mut caps = incremental_caps();
+            caps["executeCommandProvider"]["commands"] = if classified {
+                json!(["openidea.workspace.coveredFiles", "openidea.java.usages"])
+            } else {
+                json!(["openidea.workspace.coveredFiles"])
+            };
+            let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+            let s = h.launcher.state("jdtls");
+            let caller = h.root.join("Caller.java");
+            let decoy = h.root.join("Unrelated.java");
+            let extra = h.root.join("Outside.java");
+            std::fs::write(&caller, "target();").unwrap();
+            std::fs::write(&decoy, "target").unwrap();
+            if outside {
+                std::fs::write(&extra, "target();").unwrap();
+            }
+            let covered = vec![uri_of(&caller), uri_of(&decoy)];
+            let indexed = uri_of(&caller);
+            *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+                if method == "workspace/executeCommand" && params["command"] == "openidea.workspace.coveredFiles" {
+                    return Some(json!(covered));
+                }
+                let model = MockState::default();
+                *model.docs.lock() = s.docs.lock().clone();
+                model.docs.lock().insert(indexed.clone(), "target();".into());
+                let responder = open_files_only(vec![]);
+                if method == "workspace/executeCommand" && params["command"] == "openidea.java.usages" {
+                    let refs = responder(&model, "textDocument/references", params).unwrap();
+                    return Some(Value::Array(
+                        refs.as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|location| json!({ "location": location, "kind": "unknown", "access": "read" }))
+                            .collect(),
+                    ));
+                }
+                responder(&model, method, params)
+            }));
+            grep_candidates(&h);
+            let (doc, _) = h.open("Target.java", "def target\n");
+            h.wait_status("jdtls", ServerStatus::Ready).await;
+            let refs = h
+                .mgr
+                .references_streaming(doc, Pos::new(0, 5), true, true, false, Default::default(), None)
+                .await
+                .unwrap();
+            assert!(refs.locations.iter().any(|l| l.path == caller));
+            assert_eq!(refs.locations.iter().any(|l| l.path == extra), outside);
+            assert_eq!(refs.incomplete, None);
+            let calls = h
+                .mgr
+                .call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, Default::default())
+                .await
+                .unwrap();
+            assert!(calls.items.iter().any(|i| i.path == caller));
+            assert_eq!(calls.items.iter().any(|i| i.path == extra), outside);
+            assert_eq!(calls.incomplete, None);
+            let rounds = if outside { 2 } else { 1 };
+            assert_eq!(s.requested("callHierarchy/incomingCalls").len(), rounds);
+            if classified {
+                assert_eq!(
+                    s.requested("workspace/executeCommand")
+                        .iter()
+                        .filter(|p| p["command"] == "openidea.java.usages")
+                        .count(),
+                    rounds
+                );
+                assert_eq!(refs.classified.len(), refs.locations.len());
+            } else {
+                assert_eq!(s.requested("textDocument/references").len(), rounds);
+            }
+            eventually(|| s.docs.lock().len() == 1).await;
+            let opened = uris(&s.notified("textDocument/didOpen"));
+            assert!(!opened.contains(&uri_of(&caller)));
+            assert!(!opened.contains(&uri_of(&decoy)));
+            assert_eq!(opened.contains(&uri_of(&extra)), outside);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unavailable_scope_capability_keeps_widening_and_incomplete_signals() {
+    for response in [json!(null), json!([false]), json!([])] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = json!(["openidea.workspace.coveredFiles"]);
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        *s.responder.lock() = Some(open_files_only(vec![]));
+        s.respond("workspace/executeCommand", response);
+        h.mgr.set_candidates_hook(Box::new(|q, _| ide_lsp::CandidateFiles {
+            files: vec![q.root.join("b.mk")],
+            limit_hit: true,
+        }));
+        std::fs::write(h.root.join("b.mk"), "target\n").unwrap();
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        expect_all(incomplete_reports(&h, doc).await, Some(ReferencesIncomplete::TooManyFiles));
+        assert_eq!(s.requested("textDocument/references").len(), 2);
+        assert_eq!(s.requested("callHierarchy/incomingCalls").len(), 2);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn references_open_unopened_files_that_mention_the_name() {
     let (h, s) = scope_harness();
     let seen = grep_candidates(&h);

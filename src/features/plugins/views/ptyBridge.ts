@@ -43,7 +43,7 @@ function dimensions(cols: unknown, rows: unknown): cols is number {
   );
 }
 
-/** One opaque frame owns this bridge. Terminal ids never cross the frame boundary. */
+/** One frame or log tab owns this bridge. Terminal ids never cross the frame boundary. */
 export function ptyBridge(pluginId: string, backend: PtyBackend, send: (message: object) => void) {
   const sessions = new Map<string, Session>();
   const earlyExits = new Map<TerminalId, number | null>();

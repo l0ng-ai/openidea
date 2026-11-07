@@ -110,6 +110,7 @@ struct State {
     answers: VecDeque<Option<Vec<String>>>,
     revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
+    provider_diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
@@ -360,6 +361,31 @@ impl MockHost {
     /// Diagnostics the plugin published, per path.
     pub fn diagnostics(&self) -> BTreeMap<String, Vec<Diagnostic>> {
         self.state.borrow().diagnostics.clone()
+    }
+
+    /// Runs a diagnostics provider against the current mock editor snapshot.
+    /// This explicit call replaces the real host's debounce; it needs no capability.
+    pub fn refresh_diagnostics(&self, provider: &mut impl crate::diagnostics::DiagnosticsProvider) {
+        let document = self.state.borrow().editor.as_ref().map(|e| crate::diagnostics::Document {
+            path: e.path.clone(),
+            language: e.language.clone(),
+            version: e.version,
+            text: e.text.clone(),
+        });
+        if let Some(document) = document {
+            let items = provider.diagnostics(&document);
+            let mut state = self.state.borrow_mut();
+            if items.is_empty() {
+                state.provider_diagnostics.remove(&document.path);
+            } else {
+                state.provider_diagnostics.insert(document.path, items);
+            }
+        }
+    }
+
+    /// Diagnostics returned by the provider, separate from manual publishing.
+    pub fn provider_diagnostics(&self) -> BTreeMap<String, Vec<Diagnostic>> {
+        self.state.borrow().provider_diagnostics.clone()
     }
 
     /// Views the plugin asked to refresh, in order.
