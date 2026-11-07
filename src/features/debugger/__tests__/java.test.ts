@@ -4,6 +4,7 @@ import type { RunConfig } from "@/platform/ipc";
 const invoked: Array<[string, unknown[]]> = [];
 let shortenCommandLine: string | null = null;
 let kotlinFiles = false;
+let buildStatus = "succeeded";
 const files: Record<string, string> = {};
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
@@ -29,7 +30,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       javaResolveLaunch: (...a: unknown[]) => {
         invoked.push(["javaResolveLaunch", a]);
         return ok({
-          build: "succeeded",
+          build: buildStatus,
           projectRoot: "/p",
           classPaths: ["/p/target/classes", "/m2/a.jar"],
           modulePaths: [],
@@ -71,6 +72,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
     invoked.length = 0;
     shortenCommandLine = null;
     kotlinFiles = false;
+    buildStatus = "succeeded";
   });
 
   it("launches Application configs with the resolved classpath on jdtls' debug server", async () => {
@@ -93,6 +95,13 @@ describe("Java debugging (java-debug through jdtls)", () => {
       shortenCommandLine: "none",
       projectName: "p",
     });
+  });
+
+  it("does not start a debug session when the shared build failed", async () => {
+    buildStatus = "failed";
+    const { JavaBuildFailedError } = await import("@/platform/javaLaunch");
+    await expect(javaLaunchConfig(app, "/p")).rejects.toBeInstanceOf(JavaBuildFailedError);
+    expect(invoked).toEqual([["javaResolveLaunch", ["api", false, "automatic", expect.any(Number)]]]);
   });
 
   it("debugs Spring Boot with coloured console output, as Run does", async () => {
