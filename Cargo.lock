@@ -4212,6 +4212,7 @@ dependencies = [
 name = "ide-dap"
 version = "0.1.37"
 dependencies = [
+ "futures",
  "ide-core",
  "ide-jsonrpc",
  "ide-language",
