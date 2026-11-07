@@ -1531,8 +1531,8 @@ fn official_key_promoter() {
     assert_eq!(tips.len(), 1, "{tips:?}");
     assert_eq!(tips[0].0.as_deref(), Some("main"), "shown in the window the actions came from");
     assert!(tips[0].1.contains("Ctrl+D") && tips[0].2.contains("3 times"), "{tips:?}");
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.key-promoter/storage.json")).unwrap();
-    assert!(stored.contains("\"count:code.duplicate\":\"3\""), "{stored}");
+    let stored = stored(&f, "openidea.key-promoter");
+    assert!(stored.contains(&("count:code.duplicate".into(), "3".into())), "{stored:?}");
 
     // Uninstalling removes its data.
     f.host.uninstall("openidea.key-promoter").unwrap();
@@ -1554,11 +1554,27 @@ fn storage_keeps_multimegabyte_indexes_after_idle_reclaim_and_removes_them_on_un
     assert_eq!(f.run("test.storage", "load", None).unwrap().as_deref(), Some("4194304"));
     assert_eq!(f.host.info_of("test.storage").unwrap().stats.activations, 2);
     let storage_dir = f.plugins_dir.join(".data/test.storage");
-    assert!(storage_dir.join("storage.json").is_file());
+    assert_eq!(std::fs::read_dir(storage_dir.join("storage")).unwrap().count(), 1, "one file per key");
     f.host.uninstall("test.storage").unwrap();
     assert!(!storage_dir.exists());
     f.install(&pkg);
     assert!(f.run("test.storage", "load", None).unwrap_err().contains("missing index"));
+}
+
+/// A plugin's stored entries (key, value), read from its files.
+fn stored(f: &Fixture, plugin: &str) -> Vec<(String, String)> {
+    let dir = f.plugins_dir.join(".data").join(plugin).join("storage");
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let bytes = std::fs::read(e.unwrap().path()).unwrap();
+            let len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+            let key = String::from_utf8(bytes[2..2 + len].to_vec()).unwrap();
+            (key, String::from_utf8(bytes[2 + len..].to_vec()).unwrap())
+        })
+        .collect();
+    entries.sort();
+    entries
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -1625,8 +1641,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
         )
     );
     assert!(events.iter().any(|(_, e)| matches!(e, PluginEvent::TaskEnded { .. })));
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.git-toolbox/storage.json")).unwrap();
-    assert!(stored.contains("last-fetch:"), "{stored}");
+    let stored = stored(&f, "openidea.git-toolbox");
+    assert!(stored.iter().any(|(key, _)| key.starts_with("last-fetch:")), "{stored:?}");
 }
 
 /// Restricted Mode: git does not run in an untrusted project (no fetch).
