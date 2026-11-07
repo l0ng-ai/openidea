@@ -18,6 +18,7 @@
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",
   "connect_timeout must be greater than zero": "connect_timeout 必须大于零",
   "database connection is closed": "数据库连接已关闭",
+  "Observe editor, filesystem and version control events": "监听编辑器、文件系统和版本控制事件",
   "Run `{command}` in a terminal.": "在终端中运行 `{command}`。",
   "Run `{command}` in a terminal and sign in.": "在终端中运行 `{command}` 并登录。",
   "{name} needs you to sign in. {hint}": "{name} 需要你登录。{hint}",

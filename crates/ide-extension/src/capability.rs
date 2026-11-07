@@ -26,7 +26,7 @@ pub enum Capability {
     Storage,
     /// The plugin's own secrets (kept in the client's OS keychain).
     Secrets,
-    /// Workbench events (file opened, saved, focus…), not keystrokes.
+    /// Workbench events (files, focus, VCS), not keystrokes.
     Events,
     /// Keystrokes and editor input events.
     InputEvents,
@@ -86,7 +86,7 @@ impl Capability {
             Self::VcsWrite => "Change version control state (commit, fetch, checkout)".into(),
             Self::Storage => "Store its own data".into(),
             Self::Secrets => "Store secrets in the system keychain".into(),
-            Self::Events => "Observe workbench events (files opened, saved, focus)".into(),
+            Self::Events => "Observe editor, filesystem and version control events".into(),
             Self::InputEvents => "Observe keystrokes and editor input".into(),
             Self::Clipboard => {
                 "Copy to the clipboard from its commands, and read and write it from its web views".into()

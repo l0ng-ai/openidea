@@ -20,6 +20,7 @@ pub mod commit;
 pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
+mod files_changed;
 mod hover;
 mod icon_extensions;
 mod icon_patterns;
@@ -187,6 +188,7 @@ const LATENCY_WINDOW: usize = 128;
 struct EventQueue {
     since: Instant,
     events: Vec<WorkbenchEvent>,
+    files_source: Option<files_changed::Source>,
 }
 
 /// Most events queued per plugin and window; older ones are dropped.
@@ -1481,6 +1483,15 @@ impl PluginHost {
     /// Queues workbench events from window `client` for the plugins that want
     /// them; [`flush_events`](Self::flush_events) delivers them in batches.
     pub fn post_events(&self, client: Option<&str>, events: Vec<WorkbenchEvent>) {
+        self.post_events_from(client, events, None);
+    }
+
+    fn post_events_from(
+        &self,
+        client: Option<&str>,
+        events: Vec<WorkbenchEvent>,
+        source: Option<files_changed::Source>,
+    ) {
         if events.is_empty() {
             return;
         }
@@ -1489,31 +1500,57 @@ impl PluginHost {
         let now = Instant::now();
         let mut queues = self.queues.lock();
         for p in plugins {
-            let wanted: Vec<WorkbenchEvent> =
-                events.iter().filter(|e| self.wants(&p, e.kind(), subs.kinds.get(p.id()))).cloned().collect();
+            let wanted: Vec<WorkbenchEvent> = events
+                .iter()
+                .filter(|e| self.wants(&p, e.kind(), subs.kinds.get(p.id())))
+                .filter(|e| {
+                    !matches!(e, WorkbenchEvent::FilesChanged(_))
+                        || p.dev_root
+                            .as_ref()
+                            .is_none_or(|root| client.and_then(|c| self.shared.project_of(c)).as_ref() == Some(root))
+                })
+                .cloned()
+                .collect();
             let wanted = self.filter_path_events(&p, client, &wanted, &subs);
             if wanted.is_empty() {
                 continue;
             }
-            let queue = queues
-                .entry((p.id().to_owned(), client.map(str::to_owned)))
-                .or_insert_with(|| EventQueue { since: now, events: Vec::new() });
-            queue.events.extend(wanted);
+            let queue = queues.entry((p.id().to_owned(), client.map(str::to_owned))).or_insert_with(|| EventQueue {
+                since: now,
+                events: Vec::new(),
+                files_source: None,
+            });
+            if let Some(source) = &source {
+                if !queue.files_source.as_ref().is_some_and(|old| old.same(source)) {
+                    queue.events.retain(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)));
+                }
+                queue.files_source = Some(source.clone());
+            }
+            files_changed::append(&mut queue.events, wanted);
             let excess = queue.events.len().saturating_sub(MAX_QUEUED_EVENTS);
-            queue.events.drain(..excess);
+            let mut remaining = excess;
+            queue.events.retain(|event| {
+                if remaining > 0 && !matches!(event, WorkbenchEvent::FilesChanged(_)) {
+                    remaining -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
         }
     }
 
     /// Delivers queued events: to running plugins right away, to idle ones
     /// (which must be activated) after [`IDLE_BATCH`], so frequent events
-    /// don't keep waking them. Call it a few times a second.
+    /// don't keep waking them. Filesystem events are already debounced by
+    /// the watcher and bypass that delay. Call it a few times a second.
     pub fn flush_events(&self) {
         self.flush_events_at(Instant::now());
     }
 
     #[doc(hidden)]
     pub fn flush_events_at(&self, now: Instant) {
-        let due: Vec<(QueueKey, Vec<WorkbenchEvent>)> = {
+        let due: Vec<(QueueKey, EventQueue)> = {
             let mut queues = self.queues.lock();
             let plugins = self.plugins.read();
             let keys: Vec<_> = queues
@@ -1524,15 +1561,17 @@ impl PluginHost {
                     running
                         || now.saturating_duration_since(q.since) >= IDLE_BATCH
                         || q.events.len() >= MAX_QUEUED_EVENTS / 2
-                        || q.events.contains(&WorkbenchEvent::Scheduled)
+                        || q.events
+                            .iter()
+                            .any(|e| matches!(e, WorkbenchEvent::FilesChanged(_) | WorkbenchEvent::Scheduled))
                 })
                 .map(|(k, _)| k.clone())
                 .collect();
-            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q.events))).collect()
+            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q))).collect()
         };
         let mut changed = false;
-        for ((id, client), events) in due {
-            changed |= self.deliver(&id, client, events);
+        for ((id, client), queue) in due {
+            changed |= self.deliver(&id, client, queue);
         }
         // Batches that crashed since.
         let plugins: Vec<_> = self.plugins.read().values().cloned().collect();
@@ -1568,16 +1607,24 @@ impl PluginHost {
     /// Hands one batch to the plugin's `event-handler.handle` without waiting
     /// for it. A newer batch of the same kinds cooperatively cancels the one
     /// being handled (a save while the previous save is still being checked).
+    /// Filesystem deltas must all run: a newer delta cannot replace an older one.
     /// Returns whether the plugin was activated.
-    fn deliver(&self, id: &str, client: Option<String>, events: Vec<WorkbenchEvent>) -> bool {
+    fn deliver(&self, id: &str, client: Option<String>, mut queue: EventQueue) -> bool {
+        files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
+        if queue.events.is_empty() {
+            return false;
+        }
+        let events = queue.events;
         let Ok(plugin) = self.get(id) else { return false };
         let subs = self.shared.subscriptions.lock().clone();
         let events: Vec<_> = self
             .filter_path_events(&plugin, client.as_deref(), &events, &subs)
             .into_iter()
             .filter(|event| {
-                !matches!(event, WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_))
-                    || self.wants(&plugin, event.kind(), subs.kinds.get(id))
+                !matches!(
+                    event,
+                    WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_) | WorkbenchEvent::FilesChanged(_)
+                ) || self.wants(&plugin, event.kind(), subs.kinds.get(id))
             })
             .collect();
         if events.is_empty() {
@@ -1596,7 +1643,10 @@ impl PluginHost {
         let kinds: BTreeSet<EventKind> = events.iter().map(WorkbenchEvent::kind).collect();
         {
             let mut batches = plugin.batches.lock();
-            if batches.running.as_ref() == Some(&kinds) && !kinds.contains(&EventKind::Scheduled) {
+            if batches.running.as_ref() == Some(&kinds)
+                && !kinds.contains(&EventKind::Scheduled)
+                && !kinds.contains(&EventKind::FilesChanged)
+            {
                 actor.cancel_soft();
             }
             batches.pending += 1;
@@ -1606,7 +1656,12 @@ impl PluginHost {
         let done_plugin = plugin.clone();
         actor.post(
             move |rt| {
+                let mut events = events;
+                files_changed::retain_live(&mut events, queue.files_source.as_ref());
                 start.lock().running = Some(kinds);
+                if events.is_empty() {
+                    return Ok(());
+                }
                 rt.handle_events(events, invocation)
             },
             move |result| {
@@ -1823,7 +1878,7 @@ impl PluginHost {
                 self.queues
                     .lock()
                     .entry((p.id().to_owned(), None))
-                    .or_insert_with(|| EventQueue { since: now, events: Vec::new() })
+                    .or_insert_with(|| EventQueue { since: now, events: Vec::new(), files_source: None })
                     .events
                     .push(WorkbenchEvent::Scheduled);
             }

@@ -144,7 +144,8 @@ impl ActivationEvent {
 
 /// Workbench event kinds (`on-event:<kind>`, WIT `events.event-kind`).
 /// `scheduled` comes from `on-schedule` instead.
-pub const EVENT_KINDS: &[&str] = &["file-opened", "file-saved", "editor-focused", "action-performed", "vcs-changed"];
+pub const EVENT_KINDS: &[&str] =
+    &["file-opened", "file-saved", "files-changed", "editor-focused", "action-performed", "vcs-changed"];
 
 impl std::fmt::Display for ActivationEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -495,6 +496,10 @@ mod tests {
     fn event_activation() {
         assert_eq!(ActivationEvent::parse("on-event:file-saved"), Ok(ActivationEvent::Event("file-saved".into())));
         assert_eq!(ActivationEvent::Event("vcs-changed".into()).to_string(), "on-event:vcs-changed");
+        assert_eq!(
+            ActivationEvent::parse("on-event:files-changed"),
+            Ok(ActivationEvent::Event("files-changed".into()))
+        );
         let err = ActivationEvent::parse("on-event:keystroke").unwrap_err();
         assert!(err.contains("unknown event kind") && err.contains("action-performed"), "{err}");
         assert!(ActivationEvent::parse("on-event:scheduled").is_err(), "declared with on-schedule");

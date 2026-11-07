@@ -21,8 +21,10 @@ pub(super) struct PathFilter {
 
 impl PathFilter {
     pub fn new(kind: &str, globs: Vec<String>) -> Result<Self, HostError> {
-        if !matches!(kind, "file-opened" | "file-saved") {
-            return Err(HostError::Invalid("subscribe-paths supports file-opened and file-saved".into()));
+        if !matches!(kind, "file-opened" | "file-saved" | "files-changed") {
+            return Err(HostError::Invalid(
+                "subscribe-paths supports file-opened, file-saved and files-changed".into(),
+            ));
         }
         if globs.len() > 64 {
             return Err(HostError::Invalid("at most 64 event path globs".into()));
@@ -97,16 +99,40 @@ impl PluginHost {
         let workspace = self.shared.workspace();
         events
             .iter()
-            .filter(|event| {
+            .filter_map(|event| {
+                if let WorkbenchEvent::FilesChanged(batch) = event {
+                    let Some(filter) = filters.get(event.kind().name()) else { return Some(event.clone()) };
+                    let root = workspace.as_ref()?.project_of(client?)?;
+                    if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
+                        return None;
+                    }
+                    let paths = |paths: &[String]| {
+                        paths
+                            .iter()
+                            .filter(|path| {
+                                let path = Path::new(path);
+                                path.is_absolute() && filter.matches(&root, path)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    let batch = ide_plugin::FilesChanged {
+                        created: paths(&batch.created),
+                        modified: paths(&batch.modified),
+                        removed: paths(&batch.removed),
+                    };
+                    return (!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty()))
+                        .then_some(WorkbenchEvent::FilesChanged(batch));
+                }
                 let path = match event {
                     WorkbenchEvent::FileOpened(path) | WorkbenchEvent::FileSaved(path) => Path::new(path),
-                    _ => return true,
+                    _ => return Some(event.clone()),
                 };
-                let Some(filter) = filters.get(event.kind().name()) else { return true };
+                let Some(filter) = filters.get(event.kind().name()) else { return Some(event.clone()) };
                 if !path.is_absolute() {
-                    return false;
+                    return None;
                 }
-                let Some(workspace) = &workspace else { return false };
+                let workspace = workspace.as_ref()?;
                 let root = match client {
                     Some(client) => workspace.project_of(client),
                     None => {
@@ -117,14 +143,12 @@ impl PluginHost {
                             .filter(|r| real.starts_with(ide_plugin::resolve_real(r)))
                             .max_by_key(|r| r.components().count())
                     }
-                };
-                let Some(root) = root else { return false };
+                }?;
                 if plugin.dev_root.as_deref().is_some_and(|r| r != root) {
-                    return false;
+                    return None;
                 }
-                filter.matches(&root, path)
+                filter.matches(&root, path).then(|| event.clone())
             })
-            .cloned()
             .collect()
     }
 }
@@ -142,6 +166,7 @@ mod tests {
         assert!(PathFilter::new("file-saved", vec!["*".into(); 65]).is_err());
         assert!(PathFilter::new("file-saved", vec!["./".repeat(513)]).is_err());
         assert!(PathFilter::new("file-saved", vec![]).is_ok());
+        assert!(PathFilter::new("files-changed", vec![]).is_ok());
     }
 
     #[test]
