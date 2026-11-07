@@ -327,6 +327,7 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
         initial: prompt.value ?? "",
         validate: () => null,
         keepWhitespace: true,
+        multiline: prompt.multiline,
         signal,
       });
       return text === null ? null : [text];

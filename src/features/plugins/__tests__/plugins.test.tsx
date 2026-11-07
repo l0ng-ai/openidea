@@ -536,11 +536,31 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "2",
-        prompt: { kind: "input", prompt: "Name", value: "Main" },
+        prompt: { kind: "input", prompt: "Name", value: "Main", multiline: false },
       });
     });
     await user.click(await screen.findByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("2", null));
+  });
+
+  it("asks multi-line text and confirms on Ctrl+Enter", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "5",
+        prompt: { kind: "input", prompt: "Notes", value: "one", multiline: true },
+      });
+    });
+    const area = await screen.findByRole("textbox");
+    expect(area.tagName).toBe("TEXTAREA");
+    await user.clear(area);
+    await user.type(area, "a{Enter}b{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("5", ["a\nb"]));
   });
 
   it("returns the typed text untrimmed", async () => {
@@ -553,7 +573,7 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "4",
-        prompt: { kind: "input", prompt: "Name", value: "  Main  " },
+        prompt: { kind: "input", prompt: "Name", value: "  Main  ", multiline: false },
       });
     });
     await user.click(await screen.findByRole("button", { name: "OK" }));
@@ -569,7 +589,7 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "3",
-        prompt: { kind: "input", prompt: "Name", value: null },
+        prompt: { kind: "input", prompt: "Name", value: null, multiline: false },
       });
     });
     await screen.findByRole("dialog");
