@@ -168,6 +168,7 @@ export const commands = {
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
 	agentArchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_archive", { task })),
 	agentUnarchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unarchive", { task })),
+	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
 	agentChanges: (task: string) => typedError<AgentChange[], IdeError>(__TAURI_INVOKE("agent_changes", { task })),
 	/**  Content of `path` when the task started (left side of its diff). */
@@ -761,7 +762,7 @@ export const commands = {
 	 *  with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 	 *  are cleared first; the new messages are published as `build` diagnostics.
 	 */
-	buildRun: (kind: BuildKind, file: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, request, clear, onEvent })),
+	buildRun: (kind: BuildKind, file: string | null, cmake: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, cmake, request, clear, onEvent })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds the workspace (when `build`), then resolves the runtime (or test)
@@ -1646,6 +1647,8 @@ export type AgentProvider = {
 
 /**  A question the agent asks with `AskUserQuestion`, answered by picking options or typing. */
 export type AgentQuestion = {
+	/**  Stable answer identity when the provider supplies question ids. */
+	answerKey?: string | null,
 	header?: string,
 	question: string,
 	multiSelect?: boolean,
@@ -1937,6 +1940,7 @@ export type AttachableProcess = {
 export type AutoImportSettings = {
 	addUnambiguous?: boolean,
 	optimizeOnTheFly?: boolean,
+	importsOnPaste?: ImportsOnPaste,
 };
 
 /**  When local changes are uploaded to the default deployment server. */
@@ -1949,7 +1953,8 @@ export type AutoUpload = "never" |
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
 	/**
-	 *  `run` (another configuration, `target` = its id) | `build` | `tool` (external tool id) |
+	 *  `run` (another configuration id) | `build` (project, or `target` = CMake build id) |
+	 *  `tool` (external tool id) |
 	 *  `command` (a shell command line) | `toolWindow` (tool window id).
 	 */
 	kind: string,
@@ -4593,6 +4598,8 @@ export type ImportedRunConfig_Serialize = {
 	/**  Keys of the source entry with no equivalent here (`preLaunchTask`, `justMyCode`…). */
 	ignored: string[],
 };
+
+export type ImportsOnPaste = "ask" | "always" | "never";
 
 export type IndentConfig = IndentConfig_Serialize | IndentConfig_Deserialize;
 
@@ -7473,6 +7480,7 @@ export type SmartKeysSettings = {
 	tabOutOfPair?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
+	escapeOnPaste?: boolean,
 	smartIndent?: boolean,
 	/**  Enter › Insert documentation comment stub: Enter after `/**` closes the comment. */
 	insertDocStub?: boolean,

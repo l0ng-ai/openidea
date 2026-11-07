@@ -41,6 +41,7 @@
 
 pub mod commit;
 pub mod details;
+pub mod diagnostics;
 pub mod endpoints;
 pub mod file_actions;
 pub mod host;
@@ -157,6 +158,20 @@ pub mod semantic_bindings {
         export_macro_name: "__export_semantic_tokens_world",
         default_bindings_module: "openidea_plugin::semantic_bindings",
         with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod diagnostics_bindings {
+    wit_bindgen::generate!({
+        world: "editor-diagnostics", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_diagnostics_world",
+        default_bindings_module: "openidea_plugin::diagnostics_bindings",
+        with: {
+            "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/diagnostics@1.3.0": crate::bindings::openidea::plugin::diagnostics,
+        },
     });
 }
 
@@ -291,6 +306,9 @@ macro_rules! __optional_exports {
     };
     (details, $plugin:ty, $component:ident) => {
         $crate::__details_exports!($plugin, $component);
+    };
+    (diagnostics, $plugin:ty, $component:ident) => {
+        $crate::__diagnostics_exports!($plugin, $component);
     };
     (hover, $plugin:ty, $component:ident) => {
         $crate::__hover_exports!($plugin, $component);
@@ -530,6 +548,21 @@ macro_rules! __semantic_tokens_exports {
             }
         }
         $crate::semantic_bindings::__export_semantic_tokens_world!($component with_types_in $crate::semantic_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __diagnostics_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider::Guest for $component {
+            fn diagnostics(
+                doc: $crate::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider::Document,
+            ) -> ::std::vec::Vec<$crate::bindings::openidea::plugin::diagnostics::Diagnostic> {
+                $crate::__rt::diagnostics::<$plugin>(doc)
+            }
+        }
+        $crate::diagnostics_bindings::__export_diagnostics_world!($component with_types_in $crate::diagnostics_bindings);
     };
 }
 
@@ -818,6 +851,13 @@ pub mod __rt {
                 modifiers: t.modifiers.into_iter().map(|m| m.as_str().into()).collect(),
             })
             .collect()
+    }
+
+    pub fn diagnostics<T: Plugin + crate::diagnostics::DiagnosticsProvider + Default>(
+        d: crate::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider::Document,
+    ) -> Vec<b::diagnostics::Diagnostic> {
+        let doc = crate::providers::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        with::<T, _>(|p| p.diagnostics(&doc)).iter().map(crate::host::__diagnostic_to).collect()
     }
 
     pub fn hover<T: Plugin + crate::hover::HoverProvider + Default>(

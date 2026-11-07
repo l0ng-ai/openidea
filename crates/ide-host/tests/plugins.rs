@@ -656,6 +656,33 @@ fn plugin_processes_end_with_their_owner() {
     }
 }
 
+/// A task that keeps reporting progress is still working: each report renews
+/// the background budget, so the call outlives the 400 ms it began with. A task
+/// that goes quiet is still cut off (see `tasks_that_stop_reporting_are_cut_off`).
+#[test]
+fn a_reporting_task_outlives_its_background_budget() {
+    let f = fixture(Limits {
+        timeout: Duration::from_millis(1_000),
+        background: Duration::from_millis(2_000),
+        ..Limits::default()
+    });
+    f.install(&misbehave_pkg());
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+
+    // Twenty-five waits of 100 ms: 2.5 s of wall time, more than the
+    // budget, spent inside the host rather than the plugin.
+    let started = std::time::Instant::now();
+    let out = f.run("misbehave", "patient", None).expect("a patient task").expect("a result");
+    let took = started.elapsed();
+    assert_eq!(out, "still here");
+    assert!(took >= Duration::from_millis(2_500), "it really ran the waits: {took:?}");
+
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
 /// A missing capability is an error the plugin can handle, not a trap.
 #[test]
 fn ungranted_capabilities_are_denied_not_trapped() {
@@ -932,7 +959,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 23, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 24, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -4441,6 +4468,50 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
     let err =
         f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
     assert!(err.message.contains("limited to"), "{}", err.message);
+}
+
+#[test]
+fn web_log_tabs_use_the_web_pty_permission_boundary() {
+    use ide_host::plugins::web::WebPtyCommand;
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-log"), &Consent::default()).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "process:bash" && !c.granted));
+    assert_eq!(f.run("web-log", "ping", None).unwrap().as_deref(), Some("Web log ready"));
+    for command in ["open", "denied"] {
+        f.take_events();
+        assert_eq!(f.run("web-log", command, None).unwrap(), None);
+        assert!(
+            f.take_events()
+                .iter()
+                .any(|(_, event)| matches!(event, PluginEvent::ViewMessage { plugin_id, view, message }
+                if plugin_id == "web-log" && view == "logs" && message == command))
+        );
+    }
+    let command = |program: &str| WebPtyCommand {
+        program: program.into(),
+        args: vec!["--noprofile".into(), "--norc".into()],
+        env: Default::default(),
+        cols: 240,
+        rows: 40,
+    };
+    for program in ["bash", "sh", "/bin/bash"] {
+        assert_eq!(
+            f.host.web_pty_options("web-log", "logs", "main", command(program)).unwrap_err().kind,
+            ErrorKind::PermissionDenied
+        );
+    }
+    #[cfg(unix)]
+    {
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        let options = f.host.web_pty_options("web-log", "logs", "main", command("bash")).unwrap();
+        assert_eq!(options.shell.as_deref(), f.host.program_for("web-log", "bash").unwrap().to_str());
+        assert_eq!(options.cwd.0, f.project);
+        assert!(options.env.is_empty());
+        assert!(!options.shell_integration);
+        assert!(f.host.web_pty_options("web-log", "logs", "main", command("sh")).is_err());
+        f.host.set_capability("web-log", "process:bash", false).unwrap();
+        assert!(f.host.web_pty_options("web-log", "logs", "main", command("bash")).is_err());
+    }
 }
 
 #[test]
