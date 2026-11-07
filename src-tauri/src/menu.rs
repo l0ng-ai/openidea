@@ -987,7 +987,7 @@ fn item_action(id: &str) -> Option<&str> {
 
 /// Whether the item `id` is enabled given the disabled action ids.
 pub fn item_enabled(id: &str, disabled: &HashSet<String>) -> bool {
-    item_action(id).is_none_or(|a| !disabled.contains(a))
+    id != "recent.none" && item_action(id).is_none_or(|a| !disabled.contains(a))
 }
 
 /// Updates the enabled state of the installed menu's items in place (no rebuild).
@@ -1857,6 +1857,8 @@ mod tests {
         assert!(item_enabled("dyn:toolwindow.git", &disabled));
         assert!(item_enabled("recent:/p/refactor.rename", &disabled));
         assert!(item_enabled("submenu:refactor", &disabled));
+        assert!(!item_enabled("recent.none", &disabled));
+        assert!(!item_enabled("recent.none", &HashSet::new()));
     }
 
     #[test]
