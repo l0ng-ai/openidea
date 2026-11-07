@@ -66,6 +66,7 @@ struct State {
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
     remotes: Vec<(String, String)>,
+    commit: Option<CommitDraft>,
     fetches: u32,
     fetch_error: Option<Error>,
     clipboard: Option<String>,
@@ -248,6 +249,27 @@ impl MockHost {
     /// Views brought forward with [`crate::host::reveal_view`], in order.
     pub fn revealed_views(&self) -> Vec<String> {
         self.state.borrow().revealed_views.clone()
+    }
+
+    /// The commit being prepared that [`crate::host::pending_commit`] returns
+    /// (`None`: no repository).
+    pub fn set_commit_draft(&self, draft: Option<CommitDraft>) {
+        self.state.borrow_mut().commit = draft;
+    }
+
+    /// The draft as the plugin left it: [`crate::host::set_commit_message`]
+    /// replaces the message and moves the revision on.
+    pub fn commit_draft(&self) -> Option<CommitDraft> {
+        self.state.borrow().commit.clone()
+    }
+
+    /// The user edits the draft: its revision moves on, so a later
+    /// [`crate::host::set_commit_message`] for the old one is stale.
+    pub fn edit_commit_message(&self, message: &str) {
+        if let Some(d) = self.state.borrow_mut().commit.as_mut() {
+            d.message = message.to_owned();
+            d.revision += 1;
+        }
     }
 
     /// Makes `vcs-fetch` fail.
@@ -615,6 +637,26 @@ pub mod current {
         with(|s| {
             require(s, "vcs.read")?;
             Ok(s.remotes.clone())
+        })
+    }
+
+    pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+        with(|s| {
+            require(s, "vcs.read")?;
+            Ok(s.commit.clone())
+        })
+    }
+
+    pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "vcs.write")?;
+            let draft = s.commit.as_mut().ok_or_else(|| Error::Invalid("no repository".into()))?;
+            if draft.revision != revision {
+                return Err(Error::Stale);
+            }
+            draft.message = message.to_owned();
+            draft.revision += 1;
+            Ok(())
         })
     }
 

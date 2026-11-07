@@ -57,7 +57,7 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
   if (/\b(jest|vitest|npm|pnpm|yarn|bun|npx|deno)\b/.test(cmd)) return "js";
   if (/\bpytest\b/.test(cmd)) return "pytest";
   if (/\bmanage\.py test\b/.test(cmd)) return "unittest";
-  if (/(^|[/\\\s])phpunit(\.phar|\.bat)?(\s|$)/.test(cmd)) return "phpunit";
+  if (/(^|[/\\\s])(phpunit|pest)(\.phar|\.bat)?(\s|$)/.test(cmd)) return "phpunit";
   if (/\bgo\s+test\b/.test(cmd)) return "go";
   if (/\b(gradlew?|mvnw?)\b/.test(cmd)) return "jvm";
   return "auto";

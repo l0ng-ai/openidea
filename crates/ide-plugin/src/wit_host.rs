@@ -42,6 +42,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -69,6 +70,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -96,6 +98,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -109,8 +112,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks, types as wit, ui,
-    vcs, views, workspace,
+    commit, diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks,
+    types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -571,6 +574,62 @@ impl vcs::Host for StoreData {
     }
 }
 
+impl commit::Host for StoreData {
+    fn pending_commit(&mut self) -> Fallible<Option<commit::CommitDraft>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        // Waiting for the window (saving, diffing) doesn't count against the call's budget.
+        let client = self.invocation.client.clone();
+        let started = Instant::now();
+        let draft = self.host.pending_commit(client.as_deref(), &self.cancel.token());
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        Ok(draft.map(|d| d.map(commit_draft_to_wit)).map_err(to_wit))
+    }
+
+    fn set_commit_message(&mut self, revision: u64, message: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::VcsWrite) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        if message.len() > MAX_COMMIT_MESSAGE {
+            return Ok(Err(wit::Error::Invalid(format!("a commit message is at most {MAX_COMMIT_MESSAGE} bytes"))));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_commit_message(client.as_deref(), revision, message).map_err(to_wit))
+    }
+}
+
+/// Longest commit message a plugin may set.
+const MAX_COMMIT_MESSAGE: usize = 64 << 10;
+
+pub(crate) fn commit_draft_to_wit(d: crate::types::CommitDraft) -> commit::CommitDraft {
+    commit::CommitDraft {
+        revision: d.revision,
+        message: d.message,
+        amend: d.amend,
+        changes: d
+            .changes
+            .into_iter()
+            .map(|c| commit::CommitChange {
+                repository: c.repository,
+                path: c.path,
+                old_path: c.old_path,
+                status: c.status,
+                diff: c.diff,
+                truncated: c.truncated,
+            })
+            .collect(),
+    }
+}
+
 impl events::Host for StoreData {
     fn subscribe(&mut self, kind: String) -> Fallible<()> {
         let Some(kind) = EventKind::parse(&kind) else {
@@ -828,9 +887,30 @@ pub(crate) mod services_bindings {
     });
 }
 
+/// The optional `commit-checker` export.
+pub(crate) mod commit_checks_bindings {
+    wasmtime::component::bindgen!({
+        world: "commit-checks", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+        },
+    });
+}
+
 pub(crate) mod semantic_bindings {
     wasmtime::component::bindgen!({
         world: "semantic-tokens", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+pub(crate) mod hover_bindings {
+    wasmtime::component::bindgen!({
+        world: "hover", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }

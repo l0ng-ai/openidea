@@ -2,7 +2,8 @@
  * Client side of the plugin UI points: declarations the
  * backend validated, projected onto the workbench's own registries.
  *
- * - `menus`: editor / project view / editor tab context menus, and Tools in the main menu;
+ * - `menus`: editor / project view / editor tab context menus, Tools in the main menu, and the
+ *   toolbar above the commit message;
  * - `keymaps`: default shortcuts below the IDE's (a taken keystroke is dropped);
  * - `statusBar`: items shown before the code runs (its `set-status-item` with the same id updates them);
  * - `settings`: a page under Settings › Plugins generated from the schema;
@@ -10,7 +11,8 @@
  * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
  *   beside the text editor;
  * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
- * - `fileTemplates`: entries of the New menu.
+ * - `fileTemplates`: entries of the New menu;
+ * - `commitChecks`: before-commit checks listed in Commit Options, run by the plugin's code.
  */
 import { useMemo } from "react";
 import type { PluginInfo } from "@/bindings";
@@ -32,6 +34,7 @@ import { addContributedFileTemplate } from "@/features/templates/files/store";
 import {
   registerEditorKind,
   registerFileEditorProvider,
+  registerCommitCheckProvider,
   registerMenuGroup,
   registerMenuSlotItem,
   registerServiceProvider,
@@ -40,9 +43,11 @@ import {
   registerToolWindow,
   useSettingsForm,
   type ContextMenuId,
+  type ContributedCommitProblem,
   type ToolWindowAnchor,
 } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
+import { pluginIconName } from "./pluginIcon";
 import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
@@ -66,7 +71,13 @@ import styles from "./PluginsPage.module.css";
 // --- menus ------------------------------------------------------------------------
 
 interface MenuDecl {
-  menu: "editor.context" | "projectView.context" | "editorTab.context" | "viewItem.context" | "tools";
+  menu:
+    | "editor.context"
+    | "projectView.context"
+    | "editorTab.context"
+    | "viewItem.context"
+    | "tools"
+    | "commit.message";
   view?: string | null;
   command: string;
   when?: string | null;
@@ -118,9 +129,79 @@ function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () =
     const title = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
     return registerMenuSlotItem("pluginTools", { action, label: title });
   }
+  if (decl.menu === "commit.message") {
+    const action = pluginActionId(pluginId, decl.command);
+    const label = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
+    return registerMenuSlotItem("commitMessage", {
+      action,
+      label,
+      icon: pluginIconName(pluginId, plugin.icon),
+      when: decl.when ?? null,
+    });
+  }
   const key = `${++menuSeq}`;
   contextItems.set(key, { pluginId, decl });
   return () => void contextItems.delete(key);
+}
+
+// --- commit checks ----------------------------------------------------------------
+
+interface CommitCheckDecl {
+  id: string;
+  title: string;
+}
+
+/** Declared before-commit checks by `<plugin id>/<check id>`. */
+const commitChecks = new Map<string, { pluginId: string; check: string; title: string }>();
+let unregisterCommitChecks: (() => void) | null = null;
+
+/** (Re)publishes the checks, so Commit Options sees the change. */
+function publishCommitChecks() {
+  unregisterCommitChecks?.();
+  unregisterCommitChecks = null;
+  if (!commitChecks.size) return;
+  const snapshot = [...commitChecks.entries()];
+  unregisterCommitChecks = registerCommitCheckProvider({
+    checks: () => snapshot.map(([key, c]) => ({ key, title: c.title })),
+    run: async (selection, keys) => {
+      const refs = keys.flatMap((k) => {
+        const c = commitChecks.get(k);
+        return c ? [{ pluginId: c.pluginId, check: c.check }] : [];
+      });
+      const results = await pluginsBackend()
+        .commitChecks(selection, refs)
+        .catch((e: unknown) =>
+          refs.map((r) => ({
+            ...r,
+            title: commitChecks.get(`${r.pluginId}/${r.check}`)?.title ?? r.check,
+            problems: [],
+            error: e instanceof Error ? e.message : String(e),
+          })),
+        );
+      return results.flatMap((r): ContributedCommitProblem[] =>
+        r.error !== null
+          ? [{ title: r.title, message: couldNotRun(r.error) }]
+          : r.problems.map((p) => ({
+              title: r.title,
+              message: p.message,
+              path: p.path ?? undefined,
+              line: p.range?.start.line,
+            })),
+      );
+    },
+  });
+}
+
+const couldNotRun = (reason: string) => tx`The check could not run: ${reason}`;
+
+function projectCommitCheck(pluginId: string, decl: CommitCheckDecl): () => void {
+  const key = `${pluginId}/${decl.id}`;
+  commitChecks.set(key, { pluginId, check: decl.id, title: decl.title });
+  publishCommitChecks();
+  return () => {
+    commitChecks.delete(key);
+    publishCommitChecks();
+  };
 }
 
 // --- keymaps ----------------------------------------------------------------------
@@ -431,6 +512,10 @@ export function defineViewUiPoints(): () => void {
     defineUiPoint<FileIconDecl>("fileIcons", {
       title: "File Icons",
       project: ({ pluginId, decl }) => projectFileIcon(pluginId, decl),
+    }),
+    defineUiPoint<CommitCheckDecl>("commitChecks", {
+      title: "Commit Checks",
+      project: ({ pluginId, decl }) => projectCommitCheck(pluginId, decl),
     }),
     defineUiPoint<FileTemplateDecl>("fileTemplates", {
       title: "File Templates",

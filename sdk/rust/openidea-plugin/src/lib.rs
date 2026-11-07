@@ -39,7 +39,9 @@
 //! Build with `openidea-plugin build` (or `cargo build --release --target
 //! wasm32-wasip2`); see `plugins/README.md`.
 
+pub mod commit;
 pub mod host;
+pub mod hover;
 pub mod indexing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mock;
@@ -155,6 +157,34 @@ pub mod semantic_bindings {
     });
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod hover_bindings {
+    wit_bindgen::generate!({
+        world: "hover", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_hover_world",
+        default_bindings_module: "openidea_plugin::hover_bindings",
+        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod commit_checks_bindings {
+    wit_bindgen::generate!({
+        world: "commit-checks", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_commit_checks_world",
+        default_bindings_module: "openidea_plugin::commit_checks_bindings",
+        with: {
+            "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.3.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.3.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit@1.3.0": crate::bindings::openidea::plugin::commit,
+        },
+    });
+}
+
 /// The plugin API version this SDK targets.
 pub const API_VERSION: &str = "1.3";
 
@@ -214,6 +244,12 @@ macro_rules! __optional_exports {
     };
     (services, $plugin:ty, $component:ident) => {
         $crate::__services_exports!($plugin, $component);
+    };
+    (hover, $plugin:ty, $component:ident) => {
+        $crate::__hover_exports!($plugin, $component);
+    };
+    (commit_checks, $plugin:ty, $component:ident) => {
+        $crate::__commit_checks_exports!($plugin, $component);
     };
     (syntax, $plugin:ty, $component:ident) => {
         impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
@@ -367,6 +403,27 @@ macro_rules! __services_exports {
     };
 }
 
+/// `register_plugin!(T, commit_checks)`: `T` is also a [`commit::CommitChecks`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __commit_checks_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::Guest for $component {
+            fn check(
+                check: ::std::string::String,
+                draft: $crate::bindings::openidea::plugin::commit::CommitDraft,
+                ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
+            ) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::CommitProblem>,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
+                $crate::__rt::commit_check::<$plugin>(check, draft, ctx)
+            }
+        }
+        $crate::commit_checks_bindings::__export_commit_checks_world!($component with_types_in $crate::commit_checks_bindings);
+    };
+}
+
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __semantic_tokens_exports {
@@ -381,6 +438,22 @@ macro_rules! __semantic_tokens_exports {
             }
         }
         $crate::semantic_bindings::__export_semantic_tokens_world!($component with_types_in $crate::semantic_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __hover_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::hover_bindings::exports::openidea::plugin::hover_provider::Guest for $component {
+            fn hover(
+                doc: $crate::hover_bindings::exports::openidea::plugin::hover_provider::Document,
+                at: $crate::bindings::openidea::plugin::types::Position,
+            ) -> ::core::option::Option<$crate::hover_bindings::exports::openidea::plugin::hover_provider::HoverContent> {
+                $crate::__rt::hover::<$plugin>(doc, at)
+            }
+        }
+        $crate::hover_bindings::__export_hover_world!($component with_types_in $crate::hover_bindings);
     };
 }
 
@@ -639,6 +712,16 @@ pub mod __rt {
             .collect()
     }
 
+    pub fn hover<T: Plugin + crate::hover::HoverProvider + Default>(
+        d: crate::hover_bindings::exports::openidea::plugin::hover_provider::Document,
+        pos: b::types::Position,
+    ) -> Option<crate::hover_bindings::exports::openidea::plugin::hover_provider::HoverContent> {
+        use crate::hover_bindings::exports::openidea::plugin::hover_provider as w;
+        let doc = crate::providers::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        with::<T, _>(|p| p.hover(&doc, at(pos)))
+            .map(|h| w::HoverContent { markdown: h.markdown, range: h.range.map(crate::host::__range_to) })
+    }
+
     // ---- views ----
 
     use crate::views as v;
@@ -754,6 +837,27 @@ pub mod __rt {
             },
         };
         with::<T, _>(|p| p.detail(&view, &key, &ctx)).map(|tabs| tabs.into_iter().map(tab).collect()).map_err(error_out)
+    }
+
+    pub fn commit_check<T: Plugin + crate::commit::CommitChecks + Default>(
+        check: String,
+        draft: b::commit::CommitDraft,
+        ctx: &b::invocation::Invocation,
+    ) -> Result<
+        Vec<crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::CommitProblem>,
+        b::types::Error,
+    > {
+        use crate::commit_checks_bindings::exports::openidea::plugin::commit_checker as w;
+        let ctx = Invocation::__new(ctx);
+        let draft = crate::host::__draft_in(draft);
+        with::<T, _>(|p| p.check(&check, &draft, &ctx))
+            .map(|problems| {
+                problems
+                    .into_iter()
+                    .map(|p| w::CommitProblem { message: p.message, location: p.location.map(loc) })
+                    .collect()
+            })
+            .map_err(error_out)
     }
 
     pub fn view_event<T: Plugin + v::Views + Default>(
