@@ -88,7 +88,7 @@ async function ownedProcesses(pid: number): Promise<ProcessInfo[]> {
 }
 
 /** Revalidate identities so a group id reused during shutdown is never signalled. */
-async function killOwnedGroups(owned: ProcessInfo[]): Promise<number[]> {
+async function killOwnedGroups(owned: ProcessInfo[], errors: Set<unknown>): Promise<number[]> {
   const current = await processTable();
   const identities = new Map(owned.map((row) => [row.pid, row]));
   const groups = new Set<number>();
@@ -98,14 +98,16 @@ async function killOwnedGroups(owned: ProcessInfo[]): Promise<number[]> {
       groups.add(row.group);
     }
   }
+  const killed: number[] = [];
   for (const group of groups) {
     try {
       process.kill(-group, "SIGKILL");
+      killed.push(group);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") errors.add(error);
     }
   }
-  return [...groups];
+  return killed;
 }
 
 export class Server {
@@ -192,6 +194,7 @@ export class Server {
     const pid = this.child.pid;
     const owned = process.platform !== "win32" && pid !== undefined ? await ownedProcesses(pid) : [];
     const killedGroups = new Set<number>();
+    const errors = new Set<unknown>();
     const running = () => pid !== undefined && this.child.exitCode === null && this.child.signalCode === null;
     if (running()) {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -213,7 +216,7 @@ export class Server {
           await treeKill(pid);
         } else {
           if (pid !== undefined) owned.push(...(await ownedProcesses(pid)));
-          for (const group of await killOwnedGroups(owned)) killedGroups.add(group);
+          for (const group of await killOwnedGroups(owned, errors)) killedGroups.add(group);
         }
         // While the handle is running, its dedicated group cannot have been reused.
         // Preserve inherited-group cleanup even when ps is unavailable.
@@ -223,18 +226,35 @@ export class Server {
               process.kill(-pid, "SIGKILL");
               killedGroups.add(pid);
             } catch (error) {
-              if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+              if ((error as NodeJS.ErrnoException).code !== "ESRCH") errors.add(error);
             }
           }
-          this.child.kill("SIGKILL");
+          try {
+            this.child.kill("SIGKILL");
+          } catch (error) {
+            errors.add(error);
+          }
         }
-        await exited;
+        try {
+          await Promise.race([
+            exited,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, 5000);
+            }),
+          ]);
+          if (running()) errors.add(new Error(`openidea-server (${pid}) did not exit after forced cleanup`));
+        } finally {
+          clearTimeout(timer);
+        }
       }
     }
     if (process.platform !== "win32") {
-      for (const group of await killOwnedGroups(owned)) killedGroups.add(group);
+      for (const group of await killOwnedGroups(owned, errors)) killedGroups.add(group);
     }
-    await Promise.all([...killedGroups].map((group) => waitForGroupExit(group)));
+    const waits = await Promise.allSettled([...killedGroups].map((group) => waitForGroupExit(group)));
+    for (const result of waits) if (result.status === "rejected") errors.add(result.reason);
+    if (errors.size === 1) throw [...errors][0];
+    if (errors.size > 1) throw new AggregateError(errors, "Smoke server cleanup failed");
   }
 
   private request(method: string, params: unknown): Promise<unknown> {

@@ -8,7 +8,14 @@ const tool = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
   detached: mode !== "hang-inherited",
   stdio: "ignore",
 });
-writeFileSync(join(home, "pids.json"), JSON.stringify({ server: process.pid, tool: tool.pid }));
+const second =
+  mode === "signal-multiple"
+    ? spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        detached: true,
+        stdio: "ignore",
+      })
+    : undefined;
+writeFileSync(join(home, "pids.json"), JSON.stringify({ server: process.pid, tool: tool.pid, second: second?.pid }));
 let buffer = Buffer.alloc(0);
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
@@ -30,7 +37,7 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", () => {
   writeFileSync(join(home, "eof"), "received");
   if (mode.startsWith("hang")) return;
-  if (mode === "signal") return process.kill(process.pid, "SIGTERM");
+  if (mode.startsWith("signal")) return process.kill(process.pid, "SIGTERM");
   setTimeout(() => {
     tool.once("exit", () => {
       writeFileSync(join(home, "shutdown"), "tool reaped");

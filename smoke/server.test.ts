@@ -133,8 +133,8 @@ test("fixture consumes multiple requests including coalesced frames", options, a
   assert.deepEqual(ids, [1, 2, 3]);
 });
 
-test("unexpected group-kill errors are reported", options, async () => {
-  const { home, start } = await fixture("signal");
+test("group-kill errors are reported after cleaning the remaining owned groups", options, async () => {
+  const { home, start } = await fixture("signal-multiple");
   const server = await start();
   const pids = JSON.parse(readFileSync(join(home, "pids.json"), "utf8"));
   const kill = process.kill.bind(process);
@@ -145,6 +145,7 @@ test("unexpected group-kill errors are reported", options, async () => {
   });
   try {
     await assert.rejects(server.close(), denied);
+    assertGone(pids.second);
   } finally {
     spy.mockRestore();
   }
