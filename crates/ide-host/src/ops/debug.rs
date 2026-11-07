@@ -94,7 +94,12 @@ fn start_java_attach_listener(mut config: LaunchConfig) -> LaunchConfig {
     else {
         return config;
     };
-    let vm_args = extra.get("vmArgs").and_then(|v| v.as_str()).unwrap_or_default();
+    // java-debug also takes an array; rewriting one would drop the user's arguments.
+    let vm_args = match extra.get("vmArgs") {
+        None | Some(serde_json::Value::Null) => "",
+        Some(serde_json::Value::String(args)) => args,
+        Some(_) => return config,
+    };
     if !ide_jvm_attach::wants_listener_flag(vm_args) {
         return config;
     }
@@ -590,6 +595,16 @@ mod tests {
                 serde_json::json!({"vmArgs": "-Xmx1g"})
             ))),
             "-Xmx1g"
+        );
+    }
+
+    #[test]
+    fn java_debug_array_vm_args_are_left_alone() {
+        let config = launch("java-debug", "launch", serde_json::json!({"vmArgs": ["-Xmx1g", "-Dk=v"]}));
+        assert_eq!(start_java_attach_listener(config.clone()).extra_json, config.extra_json);
+        assert_eq!(
+            vm_args(&start_java_attach_listener(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})))),
+            "-XX:+StartAttachListener"
         );
     }
 
