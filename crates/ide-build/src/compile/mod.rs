@@ -853,18 +853,19 @@ mod tests {
         write(root, "app/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
         write(root, "../external/go.mod", "module example.com/external\ngo 1.22\nrequire example.com/lib v0.0.0\n");
         write(root, "../external/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
-        // std canonicalization supplies a verbatim path on Windows.
-        let root = std::fs::canonicalize(root).unwrap();
-        let plan = plan(&root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
-        for step in plan.steps {
-            let result = std::process::Command::new(&go)
-                .args(&step.args)
-                .envs(&step.env)
-                .env("GOPROXY", "off")
-                .current_dir(&step.cwd)
-                .output()
-                .unwrap();
-            assert!(result.status.success(), "{step:?}: {}", String::from_utf8_lossy(&result.stderr));
+        // std canonicalization also exercises verbatim paths on Windows.
+        for root in [root.to_path_buf(), std::fs::canonicalize(root).unwrap()] {
+            let plan = plan(&root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+            for step in plan.steps {
+                let result = std::process::Command::new(&go)
+                    .args(&step.args)
+                    .envs(&step.env)
+                    .env("GOPROXY", "off")
+                    .current_dir(&step.cwd)
+                    .output()
+                    .unwrap();
+                assert!(result.status.success(), "{step:?}: {}", String::from_utf8_lossy(&result.stderr));
+            }
         }
     }
 
