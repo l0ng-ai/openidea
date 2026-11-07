@@ -6601,7 +6601,9 @@ export type ReferencesIncomplete =
 /**  More project files mention the name than were checked. */
 "tooManyFiles" | 
 /**  Files that mention the name were too large or unreadable to check. */
-"filesSkipped";
+"filesSkipped" | 
+/**  A native query failed; indexed anchors are still available. */
+"serverFailed";
 
 /**  A registry agent this machine can run (or has installed). */
 export type RegistryAgent = {
@@ -6757,6 +6759,8 @@ export type RemoteTarget =
 { kind: "devContainer"; folder: string; config: string };
 
 export type Renamed = {
+	/**  Indexed names always require preview, including a single-file rename. */
+	preview?: boolean,
 	edit: WorkspaceEdit,
 	incomplete: ReferencesIncomplete | null,
 };
