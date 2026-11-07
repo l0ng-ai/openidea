@@ -39,14 +39,21 @@ pub(crate) fn local_jdwp_port(arguments: &Value) -> Option<u16> {
     port.filter(|&p| local && p != 0)
 }
 
+/// Pid of the local JVM listening on a JDWP port (first argument), given whether the session is
+/// suspended (second). Replaceable so tests never send attach requests to real JVMs.
+pub(crate) type JvmFinder = Arc<dyn Fn(u16, bool) -> Option<u32> + Send + Sync>;
+
+/// The [`JvmFinder`] of the attach-time scan.
+pub(crate) fn find_local_jvm(port: u16, suspended: bool) -> Option<u32> {
+    let may_query = |pid| !suspended || safe_while_suspended(ide_jvm_attach::java_version_of(pid).as_ref());
+    ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY, may_query)
+}
+
 /// Looks for the JVM behind a local attach in the background, so a JVM that never opens an
 /// attach socket does not hold the attach up.
-pub(crate) fn find_attached_jvm(session: &Arc<Session>, port: u16) {
+pub(crate) fn find_attached_jvm(session: &Arc<Session>, port: u16, finder: JvmFinder) {
     let _ = session.jdwp_port.set(port);
-    let find = move |suspended: bool| {
-        let may_query = |pid| !suspended || safe_while_suspended(ide_jvm_attach::java_version_of(pid).as_ref());
-        ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY, may_query)
-    };
+    let find = move |suspended: bool| finder(port, suspended);
     drop(watch_for_attached_jvm(session, port, find, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW));
 }
 

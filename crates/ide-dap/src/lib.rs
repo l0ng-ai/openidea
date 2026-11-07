@@ -308,6 +308,7 @@ pub struct DebugManager {
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
     /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
     stopping: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
+    jvm_finder: Mutex<jvm_memory::JvmFinder>,
 }
 
 /// Whether the debugged project depends on the Flutter SDK, so it must go
@@ -596,7 +597,13 @@ impl DebugManager {
             function_breakpoints: Mutex::default(),
             data_breakpoints: Mutex::default(),
             stopping: Mutex::default(),
+            jvm_finder: Mutex::new(Arc::new(jvm_memory::find_local_jvm)),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_jvm_finder(&self, finder: jvm_memory::JvmFinder) {
+        *self.jvm_finder.lock() = finder;
     }
 
     fn session(&self, s: DebugSessionId) -> IdeResult<Arc<Session>> {
@@ -897,7 +904,7 @@ impl DebugManager {
             && JVM_MEMORY_ADAPTERS.contains(&s.adapter.as_str())
             && let Some(port) = jvm_memory::local_jdwp_port(&arguments)
         {
-            jvm_memory::find_attached_jvm(s, port);
+            jvm_memory::find_attached_jvm(s, port, self.jvm_finder.lock().clone());
         }
         if s.adapter == kotlin::ADAPTER {
             let host = arguments

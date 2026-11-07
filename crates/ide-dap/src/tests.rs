@@ -292,6 +292,8 @@ fn harness(script: Script) -> Harness {
         Arc::new(LanguageRegistry::from_configs(Vec::new())),
         Arc::new(FakeLauncher { log: log.clone(), script }),
     );
+    // A local attach must not send requests to the developer's own JVMs.
+    manager.set_jvm_finder(Arc::new(|_, _| None));
     Harness { manager, log, events, owner }
 }
 
@@ -1696,11 +1698,26 @@ async fn remote_host_is_not_scanned() {
 #[tokio::test]
 async fn local_attach_remembers_its_jdwp_port() {
     let h = harness(Script::default());
+    let ports = Arc::new(Mutex::new(Vec::new()));
+    let asked = ports.clone();
+    h.manager.set_jvm_finder(Arc::new(move |port, _| {
+        asked.lock().push(port);
+        Some(4242)
+    }));
     let mut cfg = java_config("attach");
     cfg.extra_json = Some(json!({"hostName": "localhost", "port": "5005"}).to_string());
     let id = h.start(cfg).await.unwrap();
-    assert_eq!(h.manager.session(id).unwrap().jdwp_port.get(), Some(&5005));
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.jdwp_port.get(), Some(&5005));
     assert_eq!(h.request("attach")["arguments"]["port"], "5005");
+    for _ in 0..200 {
+        if session.jvm_pid.load(Ordering::Acquire) != 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+    assert_eq!(ports.lock().first(), Some(&5005));
 }
 
 /// A fake `find_jvm_by_jdwp_port` for the JVM 4242, recording whether each scan ran while
