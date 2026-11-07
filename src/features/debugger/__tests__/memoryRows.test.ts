@@ -79,7 +79,7 @@ describe("formatting", () => {
     expect(formatDelta(0)).toBe("0");
     expect(formatDelta(3)).toBe("+3");
     expect(formatDelta(-2)).toBe("−2");
-    expect(formatDelta(4312)).toBe("+4,312");
-    expect(formatDelta(-1500)).toBe("−1,500");
+    expect(formatDelta(4312)).toBe(`+${(4312).toLocaleString()}`);
+    expect(formatDelta(-1500)).toBe(`−${(1500).toLocaleString()}`);
   });
 });

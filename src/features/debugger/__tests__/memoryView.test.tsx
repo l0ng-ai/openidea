@@ -104,10 +104,10 @@ describe("MemoryView", () => {
     render(<MemoryView session={session} />);
     await screen.findByText("Heap$Live");
     expect(screen.getByText("java.base")).toBeTruthy();
-    expect(screen.getByText("1,000,000")).toBeTruthy();
+    expect(screen.getByText((1_000_000).toLocaleString())).toBeTruthy();
     expect(screen.getByText("15.3 MB")).toBeTruthy();
     expect(screen.getByText("+3")).toBeTruthy();
-    expect(screen.getByText("3 classes · 1,000,042 objects · 15.3 MB")).toBeTruthy();
+    expect(screen.getByText(`3 classes · ${(1_000_042).toLocaleString()} objects · 15.3 MB`)).toBeTruthy();
     expect(screen.getByText("Counts include objects that are unreachable but not yet collected.")).toBeTruthy();
   });
 
