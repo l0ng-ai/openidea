@@ -48,6 +48,10 @@ const KINDS: CompletionKind[] = [
   "keyword",
 ];
 
+// Completion details as a language server reports them (code, not UI text).
+const RESULT = "Promise<Result<Order>>";
+const qualified = (name: string) => ["com", "acme", name].join(".");
+
 function completionItem(i: number): CompletionItem {
   const kind = KINDS[i % KINDS.length]!;
   // Shared prefixes so typing narrows the list gradually, like real symbols.
@@ -55,7 +59,7 @@ function completionItem(i: number): CompletionItem {
   return {
     label,
     labelDetail: kind === "method" || kind === "function" ? "(id: string, options?: Options)" : null,
-    detail: kind === "class" || kind === "interface" ? `com.acme.${label}` : "Promise<Result<Order>>",
+    detail: kind === "class" || kind === "interface" ? qualified(label) : RESULT,
     kind,
     documentation: null,
     sortText: String(i).padStart(5, "0"),
