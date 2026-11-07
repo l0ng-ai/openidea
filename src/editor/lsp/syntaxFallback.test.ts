@@ -481,6 +481,24 @@ describe("rename wiring", () => {
     },
   );
 
+  it("keeps a native-owned rename refusal out of the syntax fallback even over broken code", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 6, 7)));
+    cmd.lspRename.mockReturnValueOnce(
+      Promise.resolve({
+        status: "error",
+        error: { kind: "invalidInput", message: "Native server declined rename" } as IdeError,
+      }),
+    );
+    cmd.syntaxErrors.mockReturnValueOnce(ok({ errors: [r(0, 0, 1)], truncated: false }));
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local()));
+    const view = editor("const x = 1;\nx;", "typescript", 6);
+    await renameNamePart(view, { from: 6, to: 7 }, "y");
+    expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+    expect(useLspPopup.getState().popup).toBeNull();
+    expect(view.state.doc.toString()).toBe("const x = 1;\nx;");
+  });
+
   it("does not fall back to a local-only rename when a contributed index is unavailable", async () => {
     const off = registerDocumentIndexSync(async () => {
       throw new Error("Index not ready");

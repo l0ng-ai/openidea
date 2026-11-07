@@ -247,15 +247,34 @@ fn usages_from_definitions_and_references_follow_aliases_module_scope_and_client
     f.index("a/child.idx", "alias child# parent#\n", &[], None, "a");
     let reference = f.index("a/use.idx", "ref child#item\n", &[], Some(1), "a");
     let other = f.index("b/source.idx", "def item\nsymbols parent#\n", &[method()], Some(1), "b");
+    let external = f.index("c/use.idx", "ref child#item\n", &[], Some(1), "c");
+    let unrelated = f.index("b/use.idx", "ref child#item\n", &[], Some(1), "b");
     for (path, pos) in [(&definition, Pos::new(0, 4)), (&reference, Pos::new(0, 6))] {
         let symbol = f.host.indexed_symbol_at(&f.root, path, pos, None).unwrap();
         assert!(symbol.files.iter().any(|f| f.path == definition));
         assert!(symbol.files.iter().any(|f| f.path == reference));
         assert!(!symbol.files.iter().any(|f| f.path == other), "prefer same-module definitions and their uses");
-        assert_eq!(symbol.files.iter().map(|f| f.ranges.len()).sum::<usize>(), 2);
+        assert!(symbol.files.iter().any(|f| f.path == external), "external reference resolves to this definition");
+        assert!(!symbol.files.iter().any(|f| f.path == unrelated), "reference resolves to its own module");
+        assert_eq!(symbol.files.iter().map(|f| f.ranges.len()).sum::<usize>(), 3);
     }
     assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 0), None).is_none());
     assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 4), Some("other-window")).is_none());
     f.host.set_project_policy(Arc::new(|_| false));
     assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 4), None).is_none());
+}
+
+#[test]
+fn cross_module_reference_and_definition_have_the_same_rename_anchors() {
+    let f = Fixture::new();
+    let definition = f.index("a/source.idx", "def item\nsymbols parent#\n", &[method()], Some(1), "a");
+    f.index("a/alias.idx", "alias child# parent#\n", &[], None, "a");
+    let external = f.index("b/use.idx", "ref item\n", &[], Some(1), "b");
+    let alias = f.index("c/use.idx", "ref child#item\n", &[], Some(1), "c");
+    for path in [&definition, &external, &alias] {
+        let symbol = f.host.indexed_symbol_at(&f.root, path, Pos::new(0, 4), None).unwrap();
+        let paths: Vec<_> = symbol.files.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(paths, vec![definition.clone(), external.clone(), alias.clone()]);
+        assert_eq!(symbol.files.iter().map(|f| f.ranges.len()).sum::<usize>(), 3);
+    }
 }

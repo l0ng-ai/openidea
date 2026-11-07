@@ -478,7 +478,6 @@ fn validate_indexed_symbol(
     symbol: &crate::plugins::navigation::IndexedSymbol,
     cancel: Option<&ide_core::CancellationToken>,
 ) -> IdeResult<()> {
-    use std::io::Read;
     for file in &symbol.files {
         if cancel.is_some_and(|cancel| cancel.is_cancelled()) {
             return Err(ide_core::IdeError::cancelled());
@@ -496,13 +495,14 @@ fn validate_indexed_symbol(
             }
             snapshot.text
         } else {
-            let mut text = String::new();
-            std::fs::File::open(&file.path)
-                .map_err(|_| stale())?
-                .take((crate::plugins::navigation::MAX_DOCUMENT_BYTES + 1) as u64)
-                .read_to_string(&mut text)
+            let loaded = project
+                .documents
+                .load_file_bounded(&file.path, crate::plugins::navigation::MAX_DOCUMENT_BYTES)
                 .map_err(|_| stale())?;
-            text
+            if loaded.binary || loaded.large {
+                return Err(stale());
+            }
+            loaded.text
         };
         if text.len() > crate::plugins::navigation::MAX_DOCUMENT_BYTES
             || crate::plugins::navigation::snapshot_hash(&text) != file.hash
@@ -887,6 +887,14 @@ pub async fn lsp_rename(
             }
             Err(e) => return Err(e),
         };
+        if native_owned
+            && !renamed.edit.files.iter().any(|file| match file {
+                ide_core::FileEdit::Edit { edits, .. } => !edits.is_empty(),
+                _ => true,
+            })
+        {
+            return Err(ide_core::IdeError::invalid("Native server declined rename"));
+        }
         blocking(move || {
             if project.documents.version(doc)? != version {
                 return Err(ide_core::IdeError::new(
@@ -940,13 +948,37 @@ fn merge_indexed_rename(
                 _ => {}
             }
         }
+        let covered: Vec<_> = server[at..]
+            .iter()
+            .take_while(|operation| matches!(operation, FileEdit::Edit { .. }))
+            .filter_map(|operation| match operation {
+                FileEdit::Edit { path: target, edits, .. } if dunce::simplified(target) == path.as_path() => {
+                    Some(edits)
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let edits: Vec<_> = file
+            .ranges
+            .iter()
+            .filter(|range| {
+                !covered.iter().any(|native| {
+                    native.range == **range || (native.range.start < range.end && range.start < native.range.end)
+                })
+            })
+            .map(|range| TextEdit { range: *range, new_text: new_name.to_owned() })
+            .collect();
+        if edits.is_empty() {
+            continue;
+        }
         additions[at].push(FileEdit::Edit {
             path: path.into(),
             version: documents
                 .by_path(&file.path)
                 .and_then(|id| documents.version(id).ok())
                 .and_then(|v| i32::try_from(v).ok()),
-            edits: file.ranges.iter().map(|range| TextEdit { range: *range, new_text: new_name.to_owned() }).collect(),
+            edits,
         });
     }
     for (index, operation) in server.into_iter().enumerate() {
@@ -1393,6 +1425,25 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&shared).unwrap(), "new new");
         assert_eq!(std::fs::read_to_string(&native).unwrap(), "new");
 
+        // Native rewrites preserve syntax (for example a shorthand property key).
+        std::fs::write(&shared, "old old").unwrap();
+        let mut rewritten = Renamed {
+            edit: WorkspaceEdit {
+                files: vec![FileEdit::Edit {
+                    path: shared.clone().into(),
+                    version: None,
+                    edits: vec![TextEdit { range, new_text: "old: new".into() }],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        merge_indexed_rename(&mut rewritten, &symbol, "new", &docs);
+        docs.prepare_workspace_edit(&mut rewritten.edit).unwrap();
+        docs.apply_workspace_edit(&rewritten.edit).unwrap();
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "old: new new");
+        std::fs::write(&shared, "new new").unwrap();
+
         // A class rename may move its file before editing the new path. Indexed
         // anchors still describe the original file and must join that text batch.
         let moved = root.join("moved.idx");
@@ -1416,6 +1467,68 @@ mod tests {
         docs.apply_workspace_edit(&renamed.edit).unwrap();
         assert!(!shared.exists());
         assert_eq!(std::fs::read_to_string(&moved).unwrap(), "moved moved");
+    }
+
+    #[test]
+    fn indexed_edits_yield_to_native_intersections_but_keep_boundary_insertions() {
+        use crate::plugins::navigation::{IndexedAnchors, IndexedSymbol};
+        use ide_core::{FileEdit, LanguageId};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("shared.idx");
+        std::fs::write(&path, "old old").unwrap();
+        let range = Range::new(Pos::new(0, 0), Pos::new(0, 3));
+        let symbol = IndexedSymbol {
+            range,
+            files: vec![IndexedAnchors {
+                path: path.clone(),
+                version: None,
+                hash: blake3::hash(b"old old"),
+                ranges: vec![range],
+            }],
+        };
+        let docs = ide_workspace::Documents::new(
+            std::sync::Arc::new(ide_core::NullSink),
+            Box::new(|_: &Path, _: Option<&str>| LanguageId::plain_text()),
+        );
+        for (start, end, expected) in [
+            (0, 3, "native old"),
+            (0, 4, "nativeold"),
+            (1, 4, "onativeold"),
+            (1, 2, "onatived old"),
+            (1, 1, "onativeld old"),
+            (0, 0, "nativeindexed old"),
+            (3, 3, "indexednative old"),
+            (3, 4, "indexednativeold"),
+            (4, 7, "indexed native"),
+        ] {
+            let native =
+                TextEdit { range: Range::new(Pos::new(0, start), Pos::new(0, end)), new_text: "native".into() };
+            let mut renamed = Renamed {
+                edit: WorkspaceEdit {
+                    files: vec![FileEdit::Edit {
+                        path: path.clone().into(),
+                        version: None,
+                        edits: vec![native.clone()],
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            merge_indexed_rename(&mut renamed, &symbol, "indexed", &docs);
+            let edits: Vec<_> = renamed
+                .edit
+                .files
+                .iter()
+                .flat_map(|file| match file {
+                    FileEdit::Edit { edits, .. } => edits.clone(),
+                    _ => vec![],
+                })
+                .collect();
+            assert!(edits.contains(&native));
+            let mut text = ide_text::Document::new("old old");
+            text.apply_edits(&edits).unwrap();
+            assert_eq!(text.text(), expected, "native range {start}..{end}");
+        }
     }
 
     #[test]
