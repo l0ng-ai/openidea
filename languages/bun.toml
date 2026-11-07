@@ -1,0 +1,22 @@
+id = "bun"
+name = "Bun"
+extensions = ["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "TypeScript"
+tree-sitter = "typescript"
+
+[[language-servers]]
+name = "bun-typescript"
+command = "bun-typescript-lsp"
+args = []
+root-markers = ["bun.lock", "tsconfig.json", "jsconfig.json", "package.json"]
+install-hint = "bun add --dev typescript-language-server typescript"
+
+[debugger]
+adapter = "bun-dap"
+command = "bun-dap"
+args = ["${port}", "127.0.0.1"]
+transport = "tcp"
+install-hint = "Install bun-dap: clone https://github.com/szelinskip/bun-dap, run `bun install && bun run build`, then place `dist/bun-dap` in your PATH"

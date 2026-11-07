@@ -75,6 +75,7 @@ const ICONS = {
   "file-ts": "fileTypes/typeScript",
   "file-tsx": "openidea/fileTypes/tsx",
   "file-npm": "openidea/fileTypes/npm",
+  "file-bun": "openidea/fileTypes/bun",
   "file-vue": "fileTypes/vue",
   "file-svelte": "openidea/fileTypes/svelte",
   "file-jsp": "openidea/fileTypes/jsp",
