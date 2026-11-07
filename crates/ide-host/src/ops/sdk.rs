@@ -149,25 +149,56 @@ pub async fn sdk_php_composer_install(
 
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
-pub async fn sdk_project_libraries(host: &Host, window: &str) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
+pub async fn sdk_project_libraries(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    on_groups: Channel<Vec<ide_sdk::libraries::LibraryGroup>>,
+) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    tokio::task::spawn_blocking(move || {
-        let model = crate::ops::build::load(&root, &cache, &settings);
-        let deps: Vec<ide_sdk::libraries::BuildDependency> = ide_build::dependency_coordinates(&root, &model)
-            .into_iter()
-            .map(|c| ide_sdk::libraries::BuildDependency {
-                gradle: c.gradle,
-                group: c.group_id,
-                artifact: c.artifact_id,
-                version: c.version,
+    let cancel = host.begin_project_request(window, request);
+    let libraries = {
+        let (root, settings, cancel, on_groups) = (root.clone(), settings.clone(), cancel.clone(), on_groups.clone());
+        tokio::task::spawn_blocking(move || {
+            ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
+                let _ = on_groups.send(groups);
             })
-            .collect();
-        ide_sdk::libraries::project_libraries(&root, &settings, &deps)
-    })
-    .await
-    .map_err(join_err)
+        })
+    };
+    let dependencies = {
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let model = crate::ops::build::load(&root, &cache, &settings);
+            let deps: Vec<ide_sdk::libraries::BuildDependency> = ide_build::dependency_coordinates(&root, &model)
+                .into_iter()
+                .map(|c| ide_sdk::libraries::BuildDependency {
+                    gradle: c.gradle,
+                    group: c.group_id,
+                    artifact: c.artifact_id,
+                    version: c.version,
+                })
+                .collect();
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let groups = ide_sdk::libraries::dependency_groups(&root, &settings, &deps);
+            if !cancel.is_cancelled() {
+                let _ = on_groups.send(groups.clone());
+            }
+            groups
+        })
+    };
+    let (libraries, dependencies) = tokio::join!(libraries, dependencies);
+    host.end_request(request);
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    Ok(ide_sdk::libraries::merge_groups([libraries.map_err(join_err)?, dependencies.map_err(join_err)?].concat()))
 }
 
 /// Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path.
@@ -268,7 +299,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "sdk_php_composer_install",
         |c| async move { sdk_php_composer_install(&c.host, &c.window, c.arg("path")?).await },
     );
-    d.add("sdk_project_libraries", |c| async move { sdk_project_libraries(&c.host, &c.window).await });
+    d.add("sdk_project_libraries", |c| async move {
+        sdk_project_libraries(&c.host, &c.window, c.arg("request")?, c.sender("onGroups")?).await
+    });
     d.add("sdk_locate_tools", |c| async move {
         sdk_locate_tools(&c.host, &c.window, c.arg("names")?, c.arg("near")?).await
     });

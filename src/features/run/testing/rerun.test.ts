@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { TestResults } from "./results";
-import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./rerun";
+import {
+  failedTestPaths,
+  leafTestPaths,
+  rerunFailedConfig,
+  rerunFailedConfigs,
+  testsConfig,
+  testsConfigs,
+} from "./rerun";
 
 const cfg = (kind: string, command: string, args: string[]): RunConfig => ({
   id: `${kind}:test`,
@@ -129,20 +136,17 @@ describe("rerunFailedConfig", () => {
     });
   });
 
-  it("go: -run with top-level names and packages", () => {
-    const c = rerunFailedConfig(cfg("go", "go", ["test", "-v", "./..."]), [
+  it("go: keeps full subtest paths separate for each package", () => {
+    const configs = rerunFailedConfigs(cfg("go", "go", ["test", "-v", "./..."]), [
       ["example.com/m/pkg", "TestAdd"],
       ["example.com/m/pkg", "TestSub", "case_1"],
       ["example.com/m/other", "TestX"],
-    ])!;
-    expect(c.args).toEqual([
-      "test",
-      "-v",
-      "-run",
-      "^(TestAdd|TestSub|TestX)$",
-      "example.com/m/pkg",
-      "example.com/m/other",
     ]);
+    expect(configs.map((config) => config.args)).toEqual([
+      ["test", "-v", "-run", "^TestAdd$|^TestSub$/^case_1$", "example.com/m/pkg"],
+      ["test", "-v", "-run", "^TestX$", "example.com/m/other"],
+    ]);
+    expect(new Set(configs.map((config) => config.id)).size).toBe(2);
   });
 
   it("gradle and maven filters", () => {
@@ -204,6 +208,15 @@ describe("withTestReporting", () => {
 });
 
 describe("Go rerun argument boundaries", () => {
+  it.each(["-test.v", "-test.short", "-test.benchmem", "-test.failfast", "-test.fullpath"])(
+    "does not retain package targets after the boolean flag %s",
+    (flag) => {
+      const config = cfg("go", "go", ["test", flag, "./..."]);
+      const rerun = rerunFailedConfig(config, [["example.com/selected", "TestOnly"]])!;
+      expect(rerun.args).toEqual(["test", flag, "-run", "^TestOnly$", "example.com/selected"]);
+    },
+  );
+
   it("replaces import-path targets without losing flag values or binary arguments", () => {
     const config = cfg("go", "go", ["test", "-tags", "demo", "-run", "old", "example.com/old", "-args", "-test.short"]);
     const rerun = rerunFailedConfig(config, [["example.com/new", "TestChild", "case"]])!;
@@ -218,18 +231,98 @@ describe("Go rerun argument boundaries", () => {
       "-test.short",
     ]);
   });
-  it("retains preparation of file-scoped configurations", () => {
+  it.each(["command-line-arguments", "example.com/app"])("retains file-scoped preparation for %s", (packageName) => {
     const config = {
       ...cfg("go", "go", ["test", "main_test.go"]),
       params: { goKind: "test", scope: "file", target: "main_test.go", module: "app", pattern: "", useTags: "true" },
     };
-    const rerun = rerunFailedConfig(config, [["command-line-arguments", "TestFail"]])!;
+    const rerun = rerunFailedConfig(config, [[packageName, "TestFail"]])!;
     expect(rerun.params).toMatchObject({
       goKind: "test",
       scope: "file",
       target: "main_test.go",
-      pattern: "^(TestFail)$",
+      pattern: "^TestFail$",
     });
-    expect(rerun.args).toEqual(["test", "-run", "^(TestFail)$", "main_test.go"]);
+    expect(rerun.args).toEqual(["test", "-run", "^TestFail$", "main_test.go"]);
+  });
+});
+
+describe("exact Go test and benchmark selections", () => {
+  it("keeps benchmark selectors and removes stale selectors from binary arguments", () => {
+    const base = cfg("go", "go", [
+      "test",
+      "-tags=demo",
+      "-run=Old",
+      "-bench",
+      "Old",
+      "./...",
+      "-args",
+      "-test.run",
+      "Old",
+      "-test.bench=Old",
+      "-test.skip=New",
+      "-custom",
+      "keep",
+    ]);
+    const [config] = testsConfigs(base, [["example.com/p", "BenchmarkNew", "case"]], "selected");
+    expect(config!.args).toEqual([
+      "test",
+      "-tags=demo",
+      "-run",
+      "^$",
+      "-bench",
+      "^BenchmarkNew$/^case$",
+      "example.com/p",
+      "-args",
+      "-custom",
+      "keep",
+    ]);
+  });
+
+  it("keeps independent alternatives for tests of different depths", () => {
+    const [config] = testsConfigs(
+      cfg("go", "go", ["test", "."]),
+      [
+        ["p", "TestA", "one"],
+        ["p", "TestB", "two", "leaf.with.dot"],
+        ["p", "BenchmarkC"],
+      ],
+      "selected",
+    );
+    expect(config!.args).toEqual([
+      "test",
+      "-run",
+      "^TestA$/^one$|^TestB$/^two$/^leaf\\.with\\.dot$",
+      "-bench",
+      "^BenchmarkC$",
+      "p",
+    ]);
+  });
+
+  it("keeps typed file benchmark flags and clears overridden binary selectors", () => {
+    const base = {
+      ...cfg("go", "go", ["test", "chosen_test.go", "-args", "-test.run=Old", "-custom", "keep"]),
+      params: {
+        goKind: "test",
+        scope: "file",
+        target: "chosen_test.go",
+        module: "app",
+        programArgs: "-test.run=Old -custom keep",
+      },
+    };
+    const [config] = testsConfigs(base, [["example.com/p", "BenchmarkNew"]], "selected");
+    expect(config!.params).toMatchObject({
+      target: "chosen_test.go",
+      pattern: "^$",
+      toolArgs: "-bench '^BenchmarkNew$'",
+      programArgs: "-custom keep",
+    });
+    expect(config!.args).toContain("chosen_test.go");
+  });
+
+  it("reruns an entire failed package with its original runner options", () => {
+    const base = cfg("go", "go", ["test", "-race", "-bench", ".", "./..."]);
+    const [config] = testsConfigs(base, [["example.com/p"]], "selected");
+    expect(config!.args).toEqual(["test", "-race", "-bench", ".", "example.com/p"]);
   });
 });

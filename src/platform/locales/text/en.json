@@ -195,6 +195,11 @@
   "Cannot choose a directory": "Cannot choose a directory",
   "Open in HTTP Client": "Open in HTTP Client",
   "Cannot generate the HTTP request": "Cannot generate the HTTP request",
+  "Cannot start container debugging": "Cannot start container debugging",
+  "The container exited before debugpy was ready. Check the Run console for errors.": "The container exited before debugpy was ready. Check the Run console for errors.",
+  "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.": "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.",
+  "Only Python can be debugged in containers": "Only Python can be debugged in containers",
+  "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine.": "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine.",
   "Use Project JDK": "Use Project JDK",
   "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
 }

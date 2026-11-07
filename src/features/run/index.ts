@@ -5,7 +5,7 @@
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
-import { onIdeEvent, type RunConfig } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
@@ -46,7 +46,8 @@ import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
-import { remoteDebugBlocked } from "./remote";
+import { containerDebuggable, remoteDebugBlocked } from "./remote";
+import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
@@ -116,6 +117,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain))) return;
   recordRun(config.id);
+  // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
+  if (containerDebuggable(config) && getAction("debug.attach")) {
+    await debugInContainer(config);
+    return;
+  }
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
     await executeAction("debug.startConfig", config);
@@ -437,6 +443,18 @@ export function activate(): () => void {
         icon: "stop",
         when: "projectOpen",
         run: ({ arg }) => stopAction(arg),
+      },
+      {
+        id: "run.stopProcess",
+        title: "Stop",
+        category: "Run",
+        hidden: true,
+        run: async ({ arg }) => {
+          if (typeof arg !== "number") return;
+          const session = useRun.getState().sessions.find((s) => s.runId === arg);
+          if (session) await stopSession(session.id);
+          else await call(commands.runStop(arg));
+        },
       },
       {
         id: "run.rerun",
