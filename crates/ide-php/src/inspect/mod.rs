@@ -561,7 +561,7 @@ impl PhpEngine {
     /// The code actions of a range: the quick-fixes of the problems that
     /// touch it (each problem's own fixes, then "suppress"), then the import
     /// actions, then the context actions on a declaration it touches, then
-    /// Extract variable / constant.
+    /// Extract variable / constant / method.
     /// Filtered by `only` (code action kinds). `None` when the engine
     /// doesn't hold the document.
     pub fn code_actions(&self, doc: DocId, range: Range, only: &[String]) -> Option<Vec<ImportAction>> {
@@ -595,7 +595,15 @@ impl PhpEngine {
             let (start, end) = parsed.line_index().byte_range(range);
             out.extend(intentions::intentions(self, &parsed, &path, start, end));
         }
-        if wanted(only, crate::refactor::EXTRACT_VARIABLE) || wanted(only, crate::refactor::EXTRACT_CONSTANT) {
+        if [
+            crate::refactor::EXTRACT_VARIABLE,
+            crate::refactor::EXTRACT_CONSTANT,
+            crate::refactor::EXTRACT_METHOD,
+            crate::refactor::EXTRACT_FUNCTION,
+        ]
+        .iter()
+        .any(|kind| wanted(only, kind))
+        {
             let parsed = self.parsed_document(doc)?;
             let path = self.document_path(doc)?;
             let (start, end) = parsed.line_index().byte_range(range);

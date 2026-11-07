@@ -1,5 +1,5 @@
-//! Extract variable / constant: the text before and after, and the
-//! suggested names.
+//! Extract variable / constant / method: the text before and after, and
+//! the suggested names.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,6 +71,11 @@ impl Project {
 
     fn constant(&mut self, marked: &str) -> Option<String> {
         self.extract(marked, EXTRACT_CONSTANT)
+    }
+
+    /// Extract method or function, whichever is offered.
+    fn method(&mut self, marked: &str) -> Option<String> {
+        self.extract(marked, EXTRACT_METHOD).or_else(|| self.extract(marked, EXTRACT_FUNCTION))
     }
 }
 
@@ -308,10 +313,11 @@ fn extract_constant_needs_a_constant_expression() {
     for marked in refused {
         assert_eq!(p.constant(marked), None, "{marked}");
     }
-    // Both actions on one expression when it's constant.
+    // Both actions on one expression when it's constant (and Extract
+    // function, which takes any expression).
     let titles: Vec<String> =
         p.actions("<?php\necho /*|*/1 + 2/*|*/;\n", "refactor.extract").into_iter().map(|(t, _)| t).collect();
-    assert_eq!(titles, ["Extract variable", "Extract constant"]);
+    assert_eq!(titles, ["Extract variable", "Extract constant", "Extract function"]);
     // Not when only other kinds are asked for.
     assert!(p.actions("<?php\necho /*|*/1 + 2/*|*/;\n", crate::imports::REWRITE).is_empty());
 }
@@ -379,4 +385,139 @@ fn words_and_unique_names() {
     let names = ["user".to_owned(), "value".to_owned()];
     assert_eq!(names::unique(&names, |n| taken.contains(&n)), "user2");
     assert_eq!(names::unique(&names, |n| n == "user"), "value");
+}
+
+// ------------------------------------------------------------ methods
+
+#[test]
+fn extract_statements_into_a_method_with_parameters_and_a_result() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let before = "<?php\nclass Shop\n{\n    private int $rate = 2;\n\n    /** @param int[] $items */\n    public function total(array $items): int\n    {\n        $sum = 0;\n        /*|*/foreach ($items as $item) {\n            $sum += $item * $this->rate;\n        }/*|*/\n        return $sum;\n    }\n}\n";
+    let after = "<?php\nclass Shop\n{\n    private int $rate = 2;\n\n    /** @param int[] $items */\n    public function total(array $items): int\n    {\n        $sum = 0;\n        $sum = $this->extracted($items, $sum);\n        return $sum;\n    }\n\n    private function extracted(array $items, int $sum): int\n    {\n        foreach ($items as $item) {\n            $sum += $item * $this->rate;\n        }\n\n        return $sum;\n    }\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+    // Nothing comes out: `void`; the body is indented for its new place.
+    let before = "<?php\nclass Log\n{\n    public function write(string $line, bool $loud): void\n    {\n        if ($loud) {\n            /*|*/$line = strtoupper($line);\n            echo $line;/*|*/\n        }\n    }\n}\n";
+    let after = "<?php\nclass Log\n{\n    public function write(string $line, bool $loud): void\n    {\n        if ($loud) {\n            $this->extracted($line);\n        }\n    }\n\n    private function extracted(string $line): void\n    {\n        $line = strtoupper($line);\n        echo $line;\n    }\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+    let titles: Vec<String> = p.actions(before, "refactor.extract").into_iter().map(|(t, _)| t).collect();
+    assert_eq!(titles, ["Extract method"]);
+}
+
+#[test]
+fn several_results_come_back_as_an_array() {
+    let body =
+        "        /*|*/$count = count($items);\n        $first = $items[0];/*|*/\n        return $count + $first;";
+    let mut p = Project::new(PhpVersion::LATEST);
+    assert_eq!(
+        p.method(&method(body)).as_deref(),
+        Some(
+            "<?php\nclass Shop\n{\n    public function total(Cart $cart, array $items): int\n    {\n        [$count, $first] = $this->extracted($items);\n        return $count + $first;\n    }\n\n    private function extracted(array $items): array\n    {\n        $count = count($items);\n        $first = $items[0];\n\n        return [$count, $first];\n    }\n}\n"
+        )
+    );
+    // `list()` before PHP 7.1, and no `void`.
+    let mut p = Project::new(PhpVersion::new(7, 0));
+    let found = p.method(&method(body)).unwrap();
+    assert!(found.contains("        list($count, $first) = $this->extracted($items);\n"), "{found}");
+    assert!(found.contains("    private function extracted(array $items): array\n"), "{found}");
+    let found = p.method(&method("        /*|*/echo count($items);/*|*/\n        return 1;")).unwrap();
+    assert!(found.contains("    private function extracted(array $items)\n"), "{found}");
+}
+
+#[test]
+fn a_value_assigned_in_a_loop_and_read_on_the_next_pass_is_a_result() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let before = "<?php\nfunction show(array $items): void\n{\n    $last = null;\n    foreach ($items as $item) {\n        echo $last;\n        /*|*/$last = strval($item);/*|*/\n    }\n}\n";
+    let after = "<?php\nfunction show(array $items): void\n{\n    $last = null;\n    foreach ($items as $item) {\n        echo $last;\n        $last = extracted($item);\n    }\n}\n\nfunction extracted($item): string\n{\n    $last = strval($item);\n\n    return $last;\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+}
+
+#[test]
+fn extract_an_expression_in_a_static_method() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let before = "<?php\nclass Circle\n{\n    public static function area(float $r): float\n    {\n        return /*|*/M_PI * $r * $r/*|*/;\n    }\n}\n";
+    let after = "<?php\nclass Circle\n{\n    public static function area(float $r): float\n    {\n        return self::extracted($r);\n    }\n\n    private static function extracted(float $r): float\n    {\n        return M_PI * $r * $r;\n    }\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+    // `$this` and an arrow function's free variables come along.
+    let before = "<?php\nclass A\n{\n    private array $all = [];\n\n    public function pick(int $min): array\n    {\n        return /*|*/array_filter($this->all, fn($x) => $x > $min)/*|*/;\n    }\n}\n";
+    let found = p.method(before).unwrap();
+    assert!(found.contains("        return $this->extracted($min);\n"), "{found}");
+    assert!(
+        found.contains(
+            "    private function extracted(int $min): array\n    {\n        return array_filter($this->all, fn($x) => $x > $min);\n    }\n"
+        ),
+        "{found}"
+    );
+}
+
+#[test]
+fn extract_a_function_from_a_function_and_from_top_level_code() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let before = "<?php\nnamespace App;\n\nfunction greet(string $name): string\n{\n    /*|*/$text = 'Hello ' . $name;\n    $text = trim($text);/*|*/\n    return $text;\n}\n";
+    let after = "<?php\nnamespace App;\n\nfunction greet(string $name): string\n{\n    $text = extracted($name);\n    return $text;\n}\n\nfunction extracted(string $name): string\n{\n    $text = 'Hello ' . $name;\n    $text = trim($text);\n\n    return $text;\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+    let titles: Vec<String> = p.actions(before, "refactor.extract").into_iter().map(|(t, _)| t).collect();
+    assert_eq!(titles, ["Extract function"]);
+    assert_eq!(
+        p.method("<?php\n$a = 1;\n/*|*/echo $a + 1;/*|*/\n").as_deref(),
+        Some("<?php\n$a = 1;\nextracted($a);\n\nfunction extracted(int $a): void\n{\n    echo $a + 1;\n}\n")
+    );
+    // The name is numbered when taken.
+    let found = p.method("<?php\nfunction extracted() {}\n$a = 1;\n/*|*/echo $a;/*|*/\n").unwrap();
+    assert!(found.contains("extracted1($a);"), "{found}");
+}
+
+#[test]
+fn a_final_return_of_the_body_is_kept() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let before = "<?php\nfunction clamp(int $x): int\n{\n    $y = $x * 2;\n    /*|*/if ($y > 10) {\n        $y = 10;\n    }\n    return $y;/*|*/\n}\n";
+    let after = "<?php\nfunction clamp(int $x): int\n{\n    $y = $x * 2;\n    return extracted($y);\n}\n\nfunction extracted(int $y): int\n{\n    if ($y > 10) {\n        $y = 10;\n    }\n    return $y;\n}\n";
+    assert_eq!(p.method(before).as_deref(), Some(after));
+}
+
+#[test]
+fn extract_method_is_refused_where_control_or_variables_would_change() {
+    let mut p = Project::new(PhpVersion::LATEST);
+    let refused = [
+        // Early returns, jumps out of the selection, generators.
+        "<?php\nfunction f($x)\n{\n    /*|*/if ($x) {\n        return 1;\n    }/*|*/\n    return 2;\n}\n",
+        "<?php\nfunction f($x)\n{\n    if ($x) {\n        /*|*/return 1;/*|*/\n    }\n    return 2;\n}\n",
+        "<?php\nfunction f($a)\n{\n    foreach ($a as $v) {\n        /*|*/if ($v) {\n            break;\n        }/*|*/\n    }\n}\n",
+        "<?php\nfunction f($a)\n{\n    foreach ($a as $v) {\n        /*|*/foreach ($v as $w) {\n            continue 2;\n        }/*|*/\n    }\n}\n",
+        "<?php\nfunction f($a)\n{\n    /*|*/yield $a;/*|*/\n}\n",
+        // References, scope declarations, dynamic variables.
+        "<?php\nfunction f($a)\n{\n    /*|*/$r = &$a;/*|*/\n    $r = 1;\n}\n",
+        "<?php\nfunction f()\n{\n    /*|*/global $g;/*|*/\n    return $g;\n}\n",
+        "<?php\nfunction f($n)\n{\n    /*|*/echo $$n;/*|*/\n}\n",
+        "<?php\nfunction f($n)\n{\n    extract($n);\n    /*|*/echo $a;/*|*/\n}\n",
+        // A result that might not exist.
+        "<?php\nfunction f($c)\n{\n    /*|*/if ($c) {\n        $z = 1;\n    }/*|*/\n    echo $z;\n}\n",
+        // Not whole statements or one expression; nothing selected.
+        "<?php\nfunction f($a)\n{\n    /*|*/$b = 1;\n    $c/*|*/ = 2;\n}\n",
+        "<?php\nfunction f($a)\n{\n    echo /*|*/$a/*|*/ + 1;\n}\n",
+        "<?php\nfunction f($a)\n{\n    echo /*|*/$a + 1;\n}\n",
+        // Expressions that write.
+        "<?php\nfunction f($a)\n{\n    echo /*|*/($a = 1) + 2/*|*/;\n}\n",
+        "<?php\nfunction f($a)\n{\n    echo /*|*/$a++ + 2/*|*/;\n}\n",
+        // Inside closures, arrow functions, anonymous classes, defaults.
+        "<?php\n$f = function ($a) {\n    /*|*/echo $a;/*|*/\n};\n",
+        "<?php\n$f = fn($a) => /*|*/$a + 1/*|*/;\n",
+        "<?php\n$o = new class {\n    public function f($a) {\n        /*|*/echo $a;/*|*/\n    }\n};\n",
+        "<?php\nfunction f($a = /*|*/1 + 2/*|*/) {\n}\n",
+        // Declarations.
+        "<?php\nfunction f()\n{\n    /*|*/function g() {}/*|*/\n}\n",
+        // Syntax errors.
+        "<?php\nfunction f($a)\n{\n    /*|*/echo $a;/*|*/\n    echo +;\n}\n",
+    ];
+    for marked in refused {
+        assert_eq!(p.method(marked), None, "{marked}");
+    }
+    // A `break` inside a loop that is selected whole is fine.
+    let found = p
+        .method(
+            "<?php\nfunction f($a)\n{\n    /*|*/foreach ($a as $v) {\n        if ($v) {\n            break;\n        }\n    }/*|*/\n}\n",
+        )
+        .unwrap();
+    assert!(found.contains("    extracted($a);\n"), "{found}");
+    // Not when only other kinds are asked for.
+    assert!(p.actions("<?php\n$a = 1;\n/*|*/echo $a;/*|*/\n", EXTRACT_VARIABLE).is_empty());
 }

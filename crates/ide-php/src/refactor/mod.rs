@@ -21,6 +21,9 @@
 //!   `const NAME = …;` in front of the top-level statement holding it
 //!   (inside the namespace), used as `NAME`.
 //!
+//! - **Extract method / function** (`refactor.extract.method` in methods,
+//!   `refactor.extract.function` elsewhere): see [`method`].
+//!
 //! The new name comes from the expression ([`names`], the conventions of
 //! the frontend's `src/editor/refactor/names.ts`) and is numbered when
 //! taken: variables used anywhere in the enclosing function (the file at
@@ -28,6 +31,7 @@
 //! it in place afterwards with its own suggestions. The rules are our own,
 //! after IntelliJ's documented Introduce Variable / Constant behaviour.
 
+mod method;
 pub(crate) mod names;
 #[cfg(test)]
 mod tests;
@@ -46,6 +50,8 @@ use crate::navigate::enclosing_class;
 use crate::stubs::PhpVersion;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::ParsedFile;
+
+pub use method::{EXTRACT_FUNCTION, EXTRACT_METHOD};
 
 /// The code action kind of Extract variable.
 pub const EXTRACT_VARIABLE: &str = "refactor.extract.variable";
@@ -246,7 +252,7 @@ fn variables_in(text: &str, start: u32, end: u32) -> Vec<String> {
     out
 }
 
-/// The Extract variable / constant actions for bytes `start..end` of an
+/// The Extract variable / constant / method actions for bytes `start..end` of an
 /// open document, filtered by `only`.
 pub(crate) fn extract_actions(
     engine: &PhpEngine,
@@ -258,7 +264,8 @@ pub(crate) fn extract_actions(
 ) -> Vec<ImportAction> {
     let want_variable = wanted(only, EXTRACT_VARIABLE);
     let want_constant = wanted(only, EXTRACT_CONSTANT);
-    if !want_variable && !want_constant {
+    let want_method = wanted(only, EXTRACT_METHOD) || wanted(only, EXTRACT_FUNCTION);
+    if !want_variable && !want_constant && !want_method {
         return Vec::new();
     }
     let summary = FileSummary::extract(parsed);
@@ -274,6 +281,12 @@ pub(crate) fn extract_actions(
         out.push(action);
     }
     if want_constant && let Some(action) = extract_constant(engine, parsed, path, &summary, &nodes, selection) {
+        out.push(action);
+    }
+    if want_method
+        && let Some(action) = method::extract_method(engine, parsed, path, &summary, &nodes, selection)
+        && wanted(only, action.kind)
+    {
         out.push(action);
     }
     out

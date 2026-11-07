@@ -379,7 +379,7 @@ The design:
 - [x] Phase 5.2: Extract variable and constant
       `refactor.extract.variable` and `refactor.extract.constant` code actions with name suggestions; reuse the conventions of `src/editor/refactor/names.ts` on the Rust side. They hook into `src/editor/refactor/catalog.ts`. Tests: before and after text.
 
-- [ ] Phase 5.3: Extract method
+- [x] Phase 5.3: Extract method
       `refactor.extract.function` / method. It finds the parameters and return values from the flow graph, handles `$this` and static context, and adds the return type. Tests: before and after text, including multiple outputs (returned as an array or a list()) and early returns, which are refused.
 
 - [ ] Phase 5.4: Inline
