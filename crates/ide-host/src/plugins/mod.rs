@@ -23,6 +23,7 @@ mod icon_patterns;
 mod icon_settings;
 mod icons;
 pub mod index_ops;
+mod inlay_hints;
 mod install;
 pub mod intellij;
 mod market;
@@ -44,6 +45,7 @@ pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
 };
+pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
     read_url as read_market_url, resolve as resolve_market_href,
@@ -696,6 +698,15 @@ impl PluginHost {
             return Err(IdeError::unavailable(format!("plugin {id:?} is not enabled")));
         }
         Ok(self.ui.assets_with_prefix(id, prefix).into_iter().map(|(k, v)| (k, v.to_string())).collect())
+    }
+
+    /// The UI language windows run in, as `locale()` reports it to plugin code.
+    pub fn set_ui_locale(&self, tag: &str) {
+        *self.shared.locale.write() = tag.to_owned();
+    }
+
+    pub fn ui_locale(&self) -> String {
+        self.shared.locale.read().clone()
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {

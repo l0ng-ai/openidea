@@ -117,12 +117,20 @@ mod imp {
         wit::ui::input(prompt, value).map_err(error)
     }
 
+    pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::input_multiline(prompt, value).map_err(error)
+    }
+
     pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
         wit::ui::confirm(title, body).map_err(error)
     }
 
     pub fn reveal_view(view: &str) -> Result<(), Error> {
         wit::views::reveal(view).map_err(error)
+    }
+
+    pub fn locale() -> String {
+        wit::ui::locale()
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -263,6 +271,26 @@ mod imp {
 
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         p.find_files(glob, limit).map_err(error)
+    }
+
+    pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
+        p.exists(path).map_err(error)
+    }
+
+    pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        use wit::workspace::FileKind as K;
+        p.stat(path)
+            .map(|s| FileStat {
+                kind: match s.kind {
+                    K::File => FileKind::File,
+                    K::Directory => FileKind::Directory,
+                    K::Symlink => FileKind::Symlink,
+                    K::Other => FileKind::Other,
+                },
+                size: s.size,
+                modified: s.modified,
+            })
+            .map_err(error)
     }
 
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
@@ -424,9 +452,23 @@ impl Project {
     }
 
     /// Reads a UTF-8 file inside the project (absolute or root-relative);
-    /// unsaved editor contents win. Needs `project.read`.
+    /// unsaved editor contents win. A missing path is `Error::NotFound`.
+    /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Whether `path` names an existing file or directory inside the project
+    /// — including hidden and ignored ones — without reading any content.
+    /// Needs `project.read`.
+    pub fn exists(&self, path: &str) -> Result<bool, Error> {
+        imp::project_exists(&self.inner, path)
+    }
+
+    /// Metadata of an existing path inside the project; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn stat(&self, path: &str) -> Result<FileStat, Error> {
+        imp::project_stat(&self.inner, path)
     }
 
     /// The repository containing the project (`None`: not under git). Needs `vcs.read`.
@@ -692,6 +734,12 @@ pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error>
     imp::input(prompt, value)
 }
 
+/// Asks for text over several lines, pre-filled with `value`; `None` when
+/// dismissed. Same rules as [`input`]; the dialog confirms on Cmd/Ctrl+Enter.
+pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    imp::input_multiline(prompt, value)
+}
+
 /// Asks for confirmation: `true` on OK, `false` on Cancel or Escape.
 /// Same rules as [`pick`].
 pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
@@ -702,6 +750,15 @@ pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
 /// current command or event came from.
 pub fn reveal_view(view: &str) -> Result<(), Error> {
     imp::reveal_view(view)
+}
+
+/// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …), for the
+/// text the plugin builds itself (notifications, error messages, HTML). The
+/// strings of the manifest and of views are translated by the IDE from the
+/// package's `locales/<tag>.json`. Read it when the text is made: it follows
+/// a change of language.
+pub fn locale() -> String {
+    imp::locale()
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
@@ -715,7 +772,8 @@ pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
 }
 
-/// The plugin's persistent key-value store (≤ 1 MiB). Needs `storage`.
+/// The plugin's persistent key-value store (≤ 64 MiB of UTF-8 keys and values).
+/// Needs `storage`; rejected writes preserve the stored data.
 pub mod storage {
     use super::imp;
     use crate::types::Error;

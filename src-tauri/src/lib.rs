@@ -211,6 +211,8 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            #[cfg(target_os = "macos")]
+            titlebar::forget(window);
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());

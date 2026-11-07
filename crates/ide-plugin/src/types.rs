@@ -77,14 +77,15 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
-/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`).
+/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+/// `ui.input-multiline`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Prompt {
     #[serde(rename_all = "camelCase")]
     QuickPick { title: String, items: Vec<PickItem>, multiple: bool },
     #[serde(rename_all = "camelCase")]
-    Input { prompt: String, value: Option<String> },
+    Input { prompt: String, value: Option<String>, multiline: bool },
     #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
 }
@@ -466,6 +467,16 @@ pub struct PluginHover {
     pub range: Option<ide_core::Range>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginInlayHint {
+    pub position: ide_core::Pos,
+    pub label: String,
+    pub kind: String,
+    pub tooltip: Option<String>,
+    pub padding_left: bool,
+    pub padding_right: bool,
+}
+
 // ---- declarative views (wit/views.wit) ---------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -545,7 +556,7 @@ pub struct View {
     pub status: Option<String>,
 }
 
-/// A tab of the Services pane of a plugin's node (`service-provider.detail`).
+/// A tab of the Services pane of a plugin's node (`detail-provider.detail`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceTab {

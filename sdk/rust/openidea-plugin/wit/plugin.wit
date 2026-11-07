@@ -67,11 +67,17 @@ world plugin-hover {
     export hover-provider;
 }
 
+/// A plugin with inlay hints (`inlay-hints` under `[[contributes.providers]]`).
+world plugin-inlay-hints {
+    include plugin;
+    export inlay-hints-provider;
+}
+
 /// A plugin whose views show in the Services tool window
 /// (`location = "services"`): their nodes' detail pane.
-world plugin-services {
+world plugin-details {
     include plugin;
-    export service-provider;
+    export detail-provider;
 }
 
 /// A plugin with before-commit checks (`[[contributes.commitChecks]]`).
@@ -109,9 +115,14 @@ world hover {
     export hover-provider;
 }
 
-/// Only the `service-provider` export, generated next to `plugin` like `syntax`.
-world services {
-    export service-provider;
+/// Only the `inlay-hints-provider` export, generated next to `plugin` like `syntax`.
+world inlay-hints {
+    export inlay-hints-provider;
+}
+
+/// Only the `detail-provider` export, generated next to `plugin` like `syntax`.
+world details {
+    export detail-provider;
 }
 
 /// Only the `commit-checker` export, generated next to `plugin` like `syntax`.

@@ -1041,6 +1041,8 @@ export const commands = {
 	pluginUnlink: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_unlink", { id })),
 	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
 	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
+	/**  The UI language (BCP 47) that plugin code reads with `ui.locale()`. */
+	pluginSetUiLocale: (tag: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_ui_locale", { tag })),
 	/**  An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`. */
 	pluginActivationEvent: (kind: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_activation_event", { kind, value })),
 	/**
@@ -6361,8 +6363,11 @@ export type ProjectStructureSettings = {
 	artifacts?: ArtifactConfig[],
 };
 
-/**  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`). */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
+/**
+ *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+ *  `ui.input-multiline`, `ui.confirm`).
+ */
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string };
 
 export type ProxyKind = "http" | "socks";
 
@@ -7146,7 +7151,7 @@ export type ServicePane = { kind: "message"; value: string } |
 /**  A program the IDE runs (with the plugin's `process:` grant), followed in a log. */
 { kind: "log"; value: ServiceLog };
 
-/**  A tab of the Services pane of a plugin's node (`service-provider.detail`). */
+/**  A tab of the Services pane of a plugin's node (`detail-provider.detail`). */
 export type ServiceTab = {
 	id: string,
 	label: string,

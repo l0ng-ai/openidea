@@ -31,6 +31,8 @@ export interface PromptInputOptions {
   signal?: AbortSignal;
   /** Resolve with the text as typed instead of trimmed. */
   keepWhitespace?: boolean;
+  /** A multi-line field: Enter adds a line, Cmd/Ctrl+Enter confirms. */
+  multiline?: boolean;
 }
 
 export interface ChooseItemOptions {
@@ -171,19 +173,43 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
             <T>{options.label}</T>
           </label>
         )}
-        <Input
-          data-autofocus
-          aria-label={options.label ?? options.title}
-          value={value}
-          placeholder={options.placeholder}
-          disabled={pending}
-          invalid={(touched || !!serverError) && !!error}
-          onChange={(e) => {
-            setTouched(true);
-            setValue(e.target.value);
-            setServerError(null);
-          }}
-        />
+        {options.multiline ? (
+          <textarea
+            data-autofocus
+            aria-label={options.label ?? options.title}
+            className={styles.area}
+            rows={5}
+            value={value}
+            placeholder={options.placeholder}
+            disabled={pending}
+            aria-invalid={(touched || !!serverError) && !!error}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey) {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+            onChange={(e) => {
+              setTouched(true);
+              setValue(e.target.value);
+              setServerError(null);
+            }}
+          />
+        ) : (
+          <Input
+            data-autofocus
+            aria-label={options.label ?? options.title}
+            value={value}
+            placeholder={options.placeholder}
+            disabled={pending}
+            invalid={(touched || !!serverError) && !!error}
+            onChange={(e) => {
+              setTouched(true);
+              setValue(e.target.value);
+              setServerError(null);
+            }}
+          />
+        )}
         {(touched || !!serverError) && error && (
           <div className={styles.error}>
             <T>{error}</T>

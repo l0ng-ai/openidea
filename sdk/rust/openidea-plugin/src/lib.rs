@@ -40,14 +40,15 @@
 //! wasm32-wasip2`); see `plugins/README.md`.
 
 pub mod commit;
+pub mod details;
 pub mod host;
 pub mod hover;
 pub mod indexing;
+pub mod inlay_hints;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mock;
 pub mod providers;
 pub mod semantic_tokens;
-pub mod services;
 pub mod syntax;
 pub mod text;
 mod types;
@@ -132,11 +133,11 @@ pub mod indexing_bindings {
 
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
-pub mod services_bindings {
+pub mod details_bindings {
     wit_bindgen::generate!({
-        world: "services", path: "wit", pub_export_macro: true,
-        export_macro_name: "__export_services_world",
-        default_bindings_module: "openidea_plugin::services_bindings",
+        world: "details", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_details_world",
+        default_bindings_module: "openidea_plugin::details_bindings",
         with: {
             "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
             "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
@@ -182,6 +183,17 @@ pub mod commit_checks_bindings {
             "openidea:plugin/invocation@1.3.0": crate::bindings::openidea::plugin::invocation,
             "openidea:plugin/commit@1.3.0": crate::bindings::openidea::plugin::commit,
         },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod inlay_bindings {
+    wit_bindgen::generate!({
+        world: "inlay-hints", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_inlay_hints_world",
+        default_bindings_module: "openidea_plugin::inlay_bindings",
+        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
     });
 }
 
@@ -242,14 +254,17 @@ macro_rules! __optional_exports {
     (semantic_tokens, $plugin:ty, $component:ident) => {
         $crate::__semantic_tokens_exports!($plugin, $component);
     };
-    (services, $plugin:ty, $component:ident) => {
-        $crate::__services_exports!($plugin, $component);
+    (details, $plugin:ty, $component:ident) => {
+        $crate::__details_exports!($plugin, $component);
     };
     (hover, $plugin:ty, $component:ident) => {
         $crate::__hover_exports!($plugin, $component);
     };
     (commit_checks, $plugin:ty, $component:ident) => {
         $crate::__commit_checks_exports!($plugin, $component);
+    };
+    (inlay_hints, $plugin:ty, $component:ident) => {
+        $crate::__inlay_hints_exports!($plugin, $component);
     };
     (syntax, $plugin:ty, $component:ident) => {
         impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
@@ -382,24 +397,24 @@ macro_rules! __indexing_exports {
     };
 }
 
-/// `register_plugin!(T, services)`: `T` is also a [`services::Services`].
+/// `register_plugin!(T, details)`: `T` is also a [`details::Details`].
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __services_exports {
+macro_rules! __details_exports {
     ($plugin:ty, $component:ident) => {
-        impl $crate::services_bindings::exports::openidea::plugin::service_provider::Guest for $component {
+        impl $crate::details_bindings::exports::openidea::plugin::detail_provider::Guest for $component {
             fn detail(
                 view: ::std::string::String,
                 key: ::std::string::String,
                 ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
             ) -> ::core::result::Result<
-                ::std::vec::Vec<$crate::services_bindings::openidea::plugin::service_types::Tab>,
+                ::std::vec::Vec<$crate::details_bindings::openidea::plugin::detail_types::Tab>,
                 $crate::bindings::openidea::plugin::types::Error,
             > {
                 $crate::__rt::service_detail::<$plugin>(view, key, ctx)
             }
         }
-        $crate::services_bindings::__export_services_world!($component with_types_in $crate::services_bindings);
+        $crate::details_bindings::__export_details_world!($component with_types_in $crate::details_bindings);
     };
 }
 
@@ -454,6 +469,22 @@ macro_rules! __hover_exports {
             }
         }
         $crate::hover_bindings::__export_hover_world!($component with_types_in $crate::hover_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __inlay_hints_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Guest for $component {
+            fn inlay_hints(
+                doc: $crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Document,
+                range: $crate::bindings::openidea::plugin::types::Range,
+            ) -> ::std::vec::Vec<$crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::InlayHint> {
+                $crate::__rt::inlay_hints::<$plugin>(doc, range)
+            }
+        }
+        $crate::inlay_bindings::__export_inlay_hints_world!($component with_types_in $crate::inlay_bindings);
     };
 }
 
@@ -722,6 +753,25 @@ pub mod __rt {
             .map(|h| w::HoverContent { markdown: h.markdown, range: h.range.map(crate::host::__range_to) })
     }
 
+    pub fn inlay_hints<T: Plugin + crate::inlay_hints::InlayHints + Default>(
+        d: crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Document,
+        range: b::types::Range,
+    ) -> Vec<crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::InlayHint> {
+        use crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider as w;
+        let doc = crate::providers::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        with::<T, _>(|p| p.inlay_hints(&doc, crate::host::__range_from(range)))
+            .into_iter()
+            .map(|h| w::InlayHint {
+                position: b::types::Position { line: h.position.line, character: h.position.character },
+                label: h.label,
+                kind: h.kind.as_str().into(),
+                tooltip: h.tooltip,
+                padding_left: h.padding_left,
+                padding_right: h.padding_right,
+            })
+            .collect()
+    }
+
     // ---- views ----
 
     use crate::views as v;
@@ -811,13 +861,13 @@ pub mod __rt {
         with::<T, _>(|p| p.render(&view, viewport, &ctx)).map(view_out).map_err(error_out)
     }
 
-    pub fn service_detail<T: Plugin + crate::services::Services + Default>(
+    pub fn service_detail<T: Plugin + crate::details::Details + Default>(
         view: String,
         key: String,
         ctx: &b::invocation::Invocation,
-    ) -> Result<Vec<crate::services_bindings::openidea::plugin::service_types::Tab>, b::types::Error> {
-        use crate::services as s;
-        use crate::services_bindings::openidea::plugin::service_types as w;
+    ) -> Result<Vec<crate::details_bindings::openidea::plugin::detail_types::Tab>, b::types::Error> {
+        use crate::details as s;
+        use crate::details_bindings::openidea::plugin::detail_types as w;
         let ctx = Invocation::__new(ctx);
         let tab = |t: s::Tab| w::Tab {
             id: t.id,

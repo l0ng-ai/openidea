@@ -53,14 +53,14 @@
 //! path = "templates/drawing.excalidraw"
 //! ```
 
-use ide_extension::{Package, UiDecl, decode, validate_item_id, validate_when};
+use ide_extension::{LOCALES_DIR, Package, UiDecl, decode, validate_item_id, validate_when};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 /// A view whose tree shows in the Services tool window; the plugin's
-/// `service-provider` renders the selected node's pane.
+/// `detail-provider` renders the selected node's pane.
 pub const SERVICES_LOCATION: &str = "services";
 pub const MENUS: &str = "menus";
 pub const KEYMAPS: &str = "keymaps";
@@ -122,6 +122,10 @@ struct MenuDecl {
     when: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     view: Option<String>,
+    /// Groups the plugin's entries of one context menu that name the same
+    /// submenu under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    submenu: Option<String>,
 }
 
 pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
@@ -135,6 +139,13 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
     if let Some(w) = &d.when {
         validate_when(w).map_err(|e| format!("contributes.menus: {e}"))?;
+    }
+    if let Some(submenu) = &d.submenu {
+        if !d.menu.ends_with(".context") {
+            return Err(format!("contributes.menus: `submenu` is only for context menus, not {:?}", d.menu));
+        }
+        title(MENUS, submenu)?;
+        pkg.manifest.needs_api("contributes.menus: submenu", 3)?;
     }
     let key = match (d.menu == VIEW_ITEM_MENU, &d.view) {
         (true, None) => return Err(format!("contributes.menus: {VIEW_ITEM_MENU} needs `view`")),
@@ -588,6 +599,57 @@ pub(super) fn commit_check(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
     Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
 }
 
+const MAX_CATALOG_ENTRIES: usize = 20_000;
+
+pub fn locale_asset(tag: &str) -> String {
+    format!("locale/{tag}")
+}
+
+fn locale_tag_ok(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let language = parts.next().unwrap_or_default();
+    (2..=3).contains(&language.len())
+        && language.chars().all(|c| c.is_ascii_alphabetic())
+        && parts.all(|p| (1..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// `locales/<tag>.json`: English source text → translation, for the plugin's own strings.
+pub(super) fn locales(pkg: &Package, _decl: toml::Value) -> Result<UiDecl, String> {
+    let dir = Path::new(LOCALES_DIR);
+    let mut names: Vec<String> = std::fs::read_dir(pkg.dir.join(dir))
+        .map_err(|e| format!("{LOCALES_DIR}: {e}"))?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    let mut tags = Vec::new();
+    let mut files = Vec::new();
+    let mut assets = Vec::new();
+    for name in names {
+        let tag = name.trim_end_matches(".json");
+        if !locale_tag_ok(tag) {
+            return Err(format!("{LOCALES_DIR}/{name}: the file name must be a language tag such as fr or zh-CN"));
+        }
+        let file = dir.join(&name);
+        let text = pkg.read_text(&file)?;
+        let catalog: BTreeMap<String, Value> = serde_json::from_str(&text)
+            .map_err(|e| format!("{}: not a JSON object of strings ({e})", file.display()))?;
+        if catalog.len() > MAX_CATALOG_ENTRIES {
+            return Err(format!("{}: more than {MAX_CATALOG_ENTRIES} entries", file.display()));
+        }
+        if let Some((key, _)) = catalog.iter().find(|(_, v)| !v.is_string()) {
+            return Err(format!("{}: the value of {key:?} is not a string", file.display()));
+        }
+        assets.push((locale_asset(tag), text));
+        tags.push(tag.to_owned());
+        files.push(file);
+    }
+    let mut out = UiDecl::new("locales", tags.join(", "), serde_json::json!({ "tags": tags }));
+    out.files = files;
+    out.assets = assets;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,5 +680,42 @@ mod tests {
         assert!(!s.iter().find(|x| x.key == "mode").unwrap().accepts(&Value::from("c")));
         assert!(parse_settings_schema(r#"{"properties": {"x": {"type": "string", "default": 3}}}"#).is_err());
         assert!(parse_settings_schema(r#"{"properties": {"x": {"type": "object"}}}"#).is_err());
+    }
+
+    fn package_with_catalogs(files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(LOCALES_DIR)).unwrap();
+        for (name, text) in files {
+            std::fs::write(dir.path().join(LOCALES_DIR).join(name), text).unwrap();
+        }
+        let src = "id = \"p\"\nname = \"P\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"";
+        let pkg = Package::new(ide_extension::Manifest::parse(src).unwrap(), dir.path().to_path_buf());
+        (dir, pkg)
+    }
+
+    #[test]
+    fn catalogs_become_assets_by_language_tag() {
+        let (_dir, pkg) = package_with_catalogs(&[
+            ("fr.json", r#"{"Refresh": "Actualiser"}"#),
+            ("zh-CN.json", r#"{"Refresh": "刷新"}"#),
+            ("notes.txt", "ignored"),
+        ]);
+        let decl = locales(&pkg, toml::Value::Table(Default::default())).unwrap();
+        assert_eq!(decl.json["tags"], serde_json::json!(["fr", "zh-CN"]));
+        assert_eq!(decl.assets.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["locale/fr", "locale/zh-CN"]);
+    }
+
+    #[test]
+    fn invalid_catalogs_are_refused() {
+        for (name, text) in [
+            ("fr.json", "{"),
+            ("fr.json", r#"["Refresh"]"#),
+            ("fr.json", r#"{"Refresh": 3}"#),
+            ("fr.json", r#"{"Refresh": {"a": "b"}}"#),
+            ("french!.json", "{}"),
+        ] {
+            let (_dir, pkg) = package_with_catalogs(&[(name, text)]);
+            assert!(locales(&pkg, toml::Value::Table(Default::default())).is_err(), "{name}: {text}");
+        }
     }
 }

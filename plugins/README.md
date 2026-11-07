@@ -34,7 +34,7 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
 The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.3.0`, world
@@ -179,6 +179,21 @@ A `commit.message` menu puts the command, with the plugin's icon, in the
 toolbar above the commit message of the Commit tool window and the Commit
 dialog (see _Commits_). It is new in API 1.3 (`engines.openidea = "^1.3"`).
 
+In a context menu (`editor.context`, `projectView.context`, `editorTab.context`,
+`viewItem.context`), entries can name a `submenu`: the plugin's entries of that
+menu with the same `submenu` are shown under it (`Arthas` ▸ _Watch_ / _Trace_),
+in declaration order; a submenu with one visible entry shows it as a plain
+entry, and entries without `submenu` stay where they are. The label goes
+through the plugin's translations. It is new in API 1.3
+(`engines.openidea = "^1.3"`):
+
+```toml
+[[contributes.menus]]
+menu = "editor.context"
+command = "arthas.watch"
+submenu = "Arthas"
+```
+
 Declared contributions are live as soon as the plugin is enabled — commands
 show in Find Action, menus and the status bar, shortcuts work, themes and icon
 themes can be applied, settings pages are there — **before** any plugin code
@@ -239,7 +254,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                    |
 | `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`, `host::pending_commit`, before-commit checks |
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                     |
-| `storage`           | low    | `host::storage` (1 MiB per plugin)                                                                                           |
+| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                 |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                                                                 |
 | `events.input`      | medium | `action-performed` events (which actions you run, and how)                                                                   |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                               |
@@ -351,7 +366,8 @@ then run `openidea-plugin check`.
 | `Plugin::activate` / `deactivate`                                        | export `lifecycle`               | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                  |
 | `TextEditor::document()` → `{version, text}`                             | `editor.text-editor.document`    | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                       |
 | `TextEditor::apply_edits(version, edits)`                                | `editor.text-editor.apply-edits` | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                      |
-| `Project::root()`, `read_file(path)`                                     | `workspace.project`              | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win.                                                                                       |
+| `Project::root()`, `read_file(path)`                                     | `workspace.project`              | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win; a missing path is `Error::NotFound`.                                                  |
+| `Project::exists(path)`, `stat(path)`                                    | `workspace.project`              | `exists` covers files and directories, hidden and ignored included, without reading content; `stat` gives kind, size and modified time (`Error::NotFound` for a missing path).                                       |
 | `host::projects()`                                                       | `workspace.projects`             | Every open project (for scheduled work without a window).                                                                                                                                                            |
 | `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                  | `vcs`                            | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                      |
 | `host::pending_commit()`, `host::set_commit_message(revision, text)`     | `commit`                         | The commit being prepared in the calling window and its message; see _Commits_.                                                                                                                                      |
@@ -365,7 +381,9 @@ then run `openidea-plugin check`.
 | `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
 | `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Asks the user to pick from `PickItem`s and waits: the chosen key(s), or `None` when dismissed. Only from a command or event of a window (else `invalid`); the wait isn't charged to the time limit.                  |
 | `host::input(prompt, value)`                                             | `ui.input`                       | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                            |
+| `host::input_multiline(prompt, value)`                                   | `ui.input-multiline`             | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Same rules as `input`.                                                                                                |
 | `host::confirm(title, body)`                                             | `ui.confirm`                     | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                     |
+| `host::locale()`                                                         | `ui.locale`                      | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                      |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
@@ -447,7 +465,7 @@ declaration matches the file's language are called (and loaded):
 
 ```toml
 [[contributes.providers]]
-kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover"
+kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
@@ -521,6 +539,27 @@ The host asks the language server and the plugins together, under the
 edit-path budget, and shows the server's hover first, then each plugin's
 below a rule. `range`, when given, is the text the hover describes (used when
 the server names none). At most 64 KiB of Markdown per plugin.
+
+#### Inlay hints
+
+The `inlay-hints` kind (API 1.3) shows short labels inside the code of
+documents of the declared languages, such as a type after a call. Register
+with `register_plugin!(MyPlugin, inlay_hints)` and implement
+`openidea_plugin::inlay_hints::InlayHints`:
+
+```rust
+impl InlayHints for MyPlugin {
+    fn inlay_hints(&mut self, doc: &Document, range: Range) -> Vec<InlayHint> {
+        vec![InlayHint::new(range.start, ": string").kind(InlayKind::Type).tooltip("returns string")]
+    }
+}
+```
+
+`range` is the visible part of the document; hints outside it are dropped. A
+hint's kind (`type`, `parameter` or `other`) decides which Inlay Hints setting
+shows it. The host asks the language server and the plugins together, under
+the edit-path budget, and shows both; the editor asks again after edits and
+scrolling. Labels are cut at 256 bytes and tooltips at 1 KiB.
 
 ### Network and secrets
 
@@ -628,13 +667,13 @@ optional = ["process:kubectl"]
 The items of the view's `tree` are Services nodes: `render`, `handle` and the
 toolbar work as in a tool window, the toolbar's buttons acting on the one
 selected node, and `viewItem.context` menus give the nodes a right-click menu.
-The pane beside the tree comes from the `service-provider` export: register
-`register_plugin!(MyPlugin, views, services)` and implement
-`openidea_plugin::services::Services`, which returns the selected node's tabs
+The pane beside the tree comes from the `detail-provider` export: register
+`register_plugin!(MyPlugin, views, details)` and implement
+`openidea_plugin::details::Details`, which returns the selected node's tabs
 (at most 8; asked again after `host::refresh_view("kube")`):
 
 ```rust
-impl Services for MyPlugin {
+impl Details for MyPlugin {
     fn detail(&mut self, view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
         let pod = key.trim_start_matches("pod:");
         let log = ProcessLog::new("kubectl", &["logs", "-f", "--tail=1000", pod])
@@ -696,6 +735,30 @@ pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
 sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
 checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
 before installing the plugin from the repository.
+
+### Translations
+
+A package translates its own text with `locales/<tag>.json`, one file per language
+(`fr.json`, `zh-CN.json`), no manifest entry needed. A catalog maps the English source
+text to its translation, like the IDE's text catalogs:
+
+```json
+{ "Count Words": "Compter les mots", "Refresh": "Actualiser" }
+```
+
+The IDE applies the catalog of the selected language (the exact tag, then the language,
+then a variant such as `zh-TW` for `zh`) to the titles, categories, labels and tooltips
+of the manifest's commands, views, editors, status bar items, settings (and their
+properties), file templates, themes and secrets, and to what views show: toolbar
+buttons, tree and list items, form field labels, table column names, messages and the
+status line, and status bar items set by code. Text without an entry, and every text
+when the language has no catalog, shows as written. A catalog applies to its own plugin
+only and never changes the IDE's text. `openidea-plugin check` refuses a catalog that is
+not a JSON object of strings.
+
+Text the plugin builds itself (notifications, error messages, `html` bodies, cell data)
+is not translated: read `host::locale()` when making it. It follows a change of
+language, and `MockHost::set_locale` sets it in tests.
 
 ### Settings
 
