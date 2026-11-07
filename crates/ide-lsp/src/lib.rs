@@ -507,6 +507,13 @@ impl LspManager {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
+        // The server root is the process's working directory: starting with one
+        // deleted from disk fails (`os error 267` on Windows), and the crash
+        // restart loop then respawns it forever while it locks nothing useful.
+        if !server.root.is_dir() {
+            tracing::info!("{}: workspace root {} is gone, not starting", server.name, server.root.display());
+            return;
+        }
         let Some(generation) = server.begin_start() else { return };
         let Some(me) = self.me.upgrade() else { return };
         let server = server.clone();
@@ -703,6 +710,14 @@ impl LspManager {
         self.file_watch_roots_changed();
         if intentional {
             server.announce_down();
+            return;
+        }
+        // The workspace root gone means this server can never serve again:
+        // restarting would respawn with a dead working directory, so the entry
+        // is dropped instead of staying "Crashed" forever.
+        if !server.root.is_dir() {
+            server.announce_down();
+            self.forget(std::slice::from_ref(&server));
             return;
         }
         let tail = server.stderr_tail(5);
@@ -2216,6 +2231,10 @@ impl LspManager {
                 },
             );
         for file in candidate {
+            // A move may have already removed the sampled entry on disk.
+            if !file.is_file() {
+                continue;
+            }
             let language = self.languages.detect(&file, None);
             if !languages.contains(&language) {
                 continue;
@@ -3072,6 +3091,13 @@ impl LspManager {
             .find(|s| s.id == server)
             .cloned()
             .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
+        if !s.root.is_dir() {
+            return Err(IdeError::unavailable(format!(
+                "the workspace root of {} is gone: {}",
+                s.name,
+                s.root.display()
+            )));
+        }
         self.stop_instance(&s, false).await;
         s.reset_for_restart();
         self.ensure_started(&s);
