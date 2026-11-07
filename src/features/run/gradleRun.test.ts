@@ -160,6 +160,13 @@ describe("Build and run using: Gradle", () => {
     expect(RUN_SCRIPT).toContain("t.dependsOn(p.tasks.named(sourceSet == 'test' ? 'testClasses' : 'classes'))");
   });
 
+  it("skips the compile dependency for Build, no error check", () => {
+    const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
+    const run = delegatedGradleConfig({ ...app, buildPolicy: "makeAndContinueOnErrors" }, "app", ctx)!;
+    expect(run.args).toContain("-Dopenidea.run.noErrorCheck=true");
+    expect(RUN_SCRIPT).toContain("openidea.run.noErrorCheck");
+  });
+
   it("uses a JRE chosen on the Application as the JavaExec launcher", () => {
     const app = applicationConfig(
       { className: "com.example.ShopApplication" },

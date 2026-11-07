@@ -60,6 +60,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   // A JRE chosen on the Application must be the JavaExec launcher, not Gradle's daemon JVM.
   const javaExec =
     /(?:^|[\\/])java(?:w)?(?:\.exe)?$/i.test(config.command) && config.command !== "java" ? config.command : "";
+  const noErrorCheck = config.buildPolicy === "makeAndContinueOnErrors";
   const args = [
     "--console=plain",
     "--init-script",
@@ -71,6 +72,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     `-Dopenidea.run.jvmArgs=${JSON.stringify(parsed.vmArgs)}`,
     `-Dopenidea.run.workingDir=${config.cwd ? absolute(ctx.root, config.cwd) : dir}`,
     ...(javaExec ? [`-Dopenidea.run.javaExec=${javaExec}`] : []),
+    ...(noErrorCheck ? ["-Dopenidea.run.noErrorCheck=true"] : []),
     ...(ctx.offline ? ["--offline"] : []),
     // Problems only warn: a build with incompatible plugins still runs, uncached.
     ...(ctx.configurationCache ? ["--configuration-cache", "--configuration-cache-problems=warn"] : []),

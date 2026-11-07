@@ -17,7 +17,9 @@ if (target != null) {
                 def sourceSet = System.getProperty('openidea.run.sourceSet', 'main')
                 t.classpath = p.sourceSets.getByName(sourceSet).runtimeClasspath
                 // JavaExec does not infer the classpath's build dependencies; compile first.
-                t.dependsOn(p.tasks.named(sourceSet == 'test' ? 'testClasses' : 'classes'))
+                if (System.getProperty('openidea.run.noErrorCheck') != 'true') {
+                    t.dependsOn(p.tasks.named(sourceSet == 'test' ? 'testClasses' : 'classes'))
+                }
                 t.mainClass.set(System.getProperty('openidea.run.main'))
                 t.args(list('openidea.run.args'))
                 t.jvmArgs(list('openidea.run.jvmArgs'))
