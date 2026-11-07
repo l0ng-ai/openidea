@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Largest storage of one plugin (keys + values).
-const MAX_STORAGE: usize = 1 << 20;
+const MAX_STORAGE: usize = 64 << 20;
 const MAX_KEY: usize = 256;
 /// Most status bar items per plugin.
 const MAX_STATUS_ITEMS: usize = 8;
@@ -856,7 +856,10 @@ impl HostApi for PluginApi {
         }
         let size: usize = map.iter().map(|(k, v)| k.len() + v.len()).sum();
         if size > MAX_STORAGE {
-            return Err(HostError::Invalid(format!("storage is limited to {} KiB", MAX_STORAGE >> 10)));
+            return Err(HostError::Invalid(format!(
+                "storage is limited to {} MiB (UTF-8 keys and values)",
+                MAX_STORAGE >> 20
+            )));
         }
         self.save_storage(&map)
     }
@@ -1290,6 +1293,40 @@ mod tests {
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
         let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new());
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
+    }
+
+    #[test]
+    fn storage_keeps_multimegabyte_indexes_after_host_recreation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let value = "é".repeat(2 << 20);
+        {
+            let api = api(tmp.path(), Arc::default());
+            api.storage_set("index", Some(value.clone())).unwrap();
+        }
+        let api = api(tmp.path(), Arc::default());
+        assert_eq!(api.storage_get("index").unwrap().as_deref(), Some(value.as_str()));
+        api.storage_set("index", None).unwrap();
+        assert_eq!(api.storage_get("index").unwrap(), None);
+    }
+
+    #[test]
+    fn storage_quota_counts_utf8_keys_and_values_and_preserves_data_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let key = "index";
+        let mut value = "é".repeat(((64 << 20) - key.len()) / 2);
+        value.push('x');
+        api.storage_set(key, Some(value.clone())).unwrap();
+
+        for (key, value) in [("x", String::new()), (key, format!("{value}x"))] {
+            let err = api.storage_set(key, Some(value)).unwrap_err();
+            assert!(matches!(err, HostError::Invalid(ref message) if message.contains("64 MiB")), "{err}");
+        }
+        assert_eq!(api.storage_keys("").unwrap(), [key]);
+        assert_eq!(api.storage_get(key).unwrap().as_deref(), Some(value.as_str()));
+        api.storage_set(key, Some("small".into())).unwrap();
+        api.storage_set("other", Some("value".into())).unwrap();
+        assert_eq!(api.storage_get("other").unwrap().as_deref(), Some("value"));
     }
 
     #[test]

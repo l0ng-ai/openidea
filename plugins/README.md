@@ -239,7 +239,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                    |
 | `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`, `host::pending_commit`, before-commit checks |
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                     |
-| `storage`           | low    | `host::storage` (1 MiB per plugin)                                                                                           |
+| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                 |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                                                                 |
 | `events.input`      | medium | `action-performed` events (which actions you run, and how)                                                                   |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                               |

@@ -1540,6 +1540,27 @@ fn official_key_promoter() {
     assert!(f.host.event_kinds().is_empty());
 }
 
+#[test]
+fn storage_keeps_multimegabyte_indexes_after_idle_reclaim_and_removes_them_on_uninstall() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/storage");
+    f.install(&pkg);
+    f.run("test.storage", "save", None).unwrap();
+    assert_eq!(f.host.instances(), 1);
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.reclaims, 1);
+    assert_eq!(f.run("test.storage", "load", None).unwrap().as_deref(), Some("4194304"));
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.activations, 2);
+    let storage_dir = f.plugins_dir.join(".data/test.storage");
+    assert!(storage_dir.join("storage.json").is_file());
+    f.host.uninstall("test.storage").unwrap();
+    assert!(!storage_dir.exists());
+    f.install(&pkg);
+    assert!(f.run("test.storage", "load", None).unwrap_err().contains("missing index"));
+}
+
 fn git(dir: &Path, args: &[&str]) {
     let out = std::process::Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"])
