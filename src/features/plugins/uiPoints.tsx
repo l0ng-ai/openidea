@@ -16,7 +16,7 @@
  */
 import { useMemo } from "react";
 import type { PluginInfo } from "@/bindings";
-import { getAction, type Action } from "@/platform/actions";
+import { getAction } from "@/platform/actions";
 import { evaluateWhen, getContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
@@ -81,6 +81,8 @@ interface MenuDecl {
   view?: string | null;
   command: string;
   when?: string | null;
+  /** Groups the plugin's entries of one context menu under this label. */
+  submenu?: string | null;
   /** The command's title in the plugin's language, when it ships one. */
   commandTitle?: string;
 }
@@ -95,31 +97,31 @@ const contextItems = new Map<string, { pluginId: string; decl: MenuDecl }>();
 let menuSeq = 0;
 
 /**
- * Adds `item` to `out`, collecting the commands of one plugin that share a
- * category under one submenu named after it.
+ * Adds `item` to `out`; the entries of one plugin that name the same
+ * `submenu` are collected under it.
  */
 function addGrouped(
   out: MenuItem[],
   groups: Map<string, MenuItem[]>,
   pluginId: string,
-  entry: Action,
+  submenu: string | null | undefined,
   item: MenuItem,
 ): void {
-  if (!entry.category) {
+  if (!submenu) {
     out.push(item);
     return;
   }
-  const key = `${pluginId}\u0000${entry.category}`;
+  const key = `${pluginId}\u0000${submenu}`;
   let group = groups.get(key);
   if (!group) {
     group = [];
     groups.set(key, group);
-    out.push({ kind: "item", label: entry.category, submenu: group });
+    out.push({ kind: "item", label: submenu, submenu: group });
   }
   group.push(item);
 }
 
-/** A category holding one visible command gains nothing from a submenu. */
+/** A submenu holding one visible entry gains nothing from nesting. */
 function flattenSingleGroups(items: MenuItem[]): MenuItem[] {
   return items.map((item) =>
     item.kind !== "action" && "submenu" in item && item.submenu?.length === 1 ? item.submenu[0]! : item,
@@ -133,10 +135,9 @@ export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): 
   for (const { pluginId, decl } of contextItems.values()) {
     if (CONTEXT_MENUS[decl.menu] !== menu || !evaluateWhen(decl.when ?? undefined)) continue;
     const action = pluginActionId(pluginId, decl.command);
-    const entry = getAction(action);
-    if (!entry) continue;
+    if (!getAction(action)) continue;
     // The editor menu runs with the focused editor; the others name their file.
-    addGrouped(out, groups, pluginId, entry, {
+    addGrouped(out, groups, pluginId, decl.submenu, {
       kind: "action",
       action,
       arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths] },
@@ -154,9 +155,8 @@ export function pluginViewItemMenuItems(pluginId: string, view: string, key: str
     if (owner !== pluginId || decl.menu !== "viewItem.context" || decl.view !== view) continue;
     if (!evaluateWhen(decl.when ?? undefined, ctx)) continue;
     const action = pluginActionId(pluginId, decl.command);
-    const entry = getAction(action);
-    if (!entry) continue;
-    addGrouped(out, groups, pluginId, entry, { kind: "action", action, arg: key });
+    if (!getAction(action)) continue;
+    addGrouped(out, groups, pluginId, decl.submenu, { kind: "action", action, arg: key });
   }
   return flattenSingleGroups(out);
 }

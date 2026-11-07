@@ -250,11 +250,12 @@ describe("plugin menus", () => {
     off();
   });
 
-  it("groups one plugin's commands that share a category under one submenu", () => {
+  it("groups one plugin's entries that name the same submenu", () => {
     const off = [
-      registerAction({ id: "plugin.p.watch", title: "Watch", category: "Arthas", run: () => {} }),
-      registerAction({ id: "plugin.p.trace", title: "Trace", category: "Arthas", run: () => {} }),
-      registerAction({ id: "plugin.p.single", title: "Single", category: "Other", run: () => {} }),
+      registerAction({ id: "plugin.p.watch", title: "Watch", category: "P", run: () => {} }),
+      registerAction({ id: "plugin.p.trace", title: "Trace", category: "P", run: () => {} }),
+      registerAction({ id: "plugin.p.single", title: "Single", category: "P", run: () => {} }),
+      registerAction({ id: "plugin.p.plain", title: "Plain", category: "P", run: () => {} }),
     ];
     const plugin = {
       id: "p",
@@ -268,19 +269,25 @@ describe("plugin menus", () => {
           pluginId: "p",
           point: "menus",
           key: "editor.context/watch",
-          decl: { menu: "editor.context", command: "watch" },
+          decl: { menu: "editor.context", command: "watch", submenu: "Arthas" },
         },
         {
           pluginId: "p",
           point: "menus",
           key: "editor.context/trace",
-          decl: { menu: "editor.context", command: "trace" },
+          decl: { menu: "editor.context", command: "trace", submenu: "Arthas" },
         },
         {
           pluginId: "p",
           point: "menus",
           key: "editor.context/single",
-          decl: { menu: "editor.context", command: "single" },
+          decl: { menu: "editor.context", command: "single", submenu: "Other" },
+        },
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/plain",
+          decl: { menu: "editor.context", command: "plain" },
         },
       ],
       [plugin],
@@ -295,6 +302,7 @@ describe("plugin menus", () => {
         ],
       },
       { kind: "action", action: "plugin.p.single", arg: undefined },
+      { kind: "action", action: "plugin.p.plain", arg: undefined },
     ]);
     for (const dispose of off) dispose();
   });

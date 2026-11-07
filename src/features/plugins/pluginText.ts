@@ -75,6 +75,7 @@ export function usePluginT(pluginId: string): PluginTranslate {
 /** The keys of each point's declaration that are shown text; ids, names of secrets and option values are not. */
 const TEXT_KEYS: Record<string, readonly string[]> = {
   commands: ["title", "category"],
+  menus: ["submenu"],
   views: ["title"],
   customEditors: ["title"],
   statusBar: ["text", "tooltip"],
@@ -102,7 +103,9 @@ export function localizeContributions(
   if (Object.keys(catalogs).length === 0) return items;
   const localized = items.map((item) => {
     const keys = TEXT_KEYS[item.point];
-    return keys && ownEntry(catalogs, item.pluginId)
+    const decl = item.decl as Record<string, unknown> | null;
+    const hasText = !!decl && (keys?.some((k) => typeof decl[k] === "string") || Array.isArray(decl.properties));
+    return keys && hasText && ownEntry(catalogs, item.pluginId)
       ? { ...item, decl: localizeDecl(item.decl, keys, translatorOf(catalogs, item.pluginId)) }
       : item;
   });

@@ -1981,6 +1981,35 @@ fn official_csv_editor_edits_the_shared_document() {
 }
 
 #[test]
+fn context_menu_entries_can_name_a_submenu() {
+    fn with_menu(version: &'static str, extra: &'static str) -> impl Fn(&str) -> String {
+        move |m: &str| {
+            let m = m.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = \"{version}\""));
+            format!("{m}\n[[contributes.menus]]\ncommand = \"word-count\"\n{extra}\n")
+        }
+    }
+    let f = fixture(Limits::default());
+    let dir = tempfile::tempdir().unwrap();
+    let ok = hello_variant(dir.path(), with_menu("^1.3", "menu = \"editor.context\"\nsubmenu = \"Words\""));
+    assert_eq!(f.install(&ok).status, PluginStatus::Inactive);
+    let submenus: Vec<_> =
+        f.host.ui_items("menus").into_iter().filter_map(|i| i.decl["submenu"].as_str().map(str::to_owned)).collect();
+    assert_eq!(submenus, ["Words"]);
+    f.host.uninstall("hello").unwrap();
+
+    for (version, extra, message) in [
+        ("^1.3", "menu = \"tools\"\nsubmenu = \"Words\"", "only for context menus"),
+        ("^1.3", "menu = \"editor.context\"\nsubmenu = \" \"", "titles are"),
+        ("^1.2", "menu = \"editor.context\"\nsubmenu = \"Words\"", "1.3"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(dir.path(), with_menu(version, extra));
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{extra}: {}", err.message);
+    }
+}
+
+#[test]
 fn view_item_menus_name_a_declared_view() {
     /// The menu is new in API 1.2.
     fn api_1_2(m: &str) -> String {
