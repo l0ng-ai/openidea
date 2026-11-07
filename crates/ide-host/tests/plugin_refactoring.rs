@@ -194,6 +194,25 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
     assert_eq!(std::fs::read_to_string(&second).unwrap(), usage);
     ops::lsp::redo_workspace_edit(&host, "main", id).await.unwrap();
     assert_eq!(std::fs::read_to_string(&second).unwrap(), "ref new.route\nref other\n");
+    // A matching native preparation owns the decision, including a null rename.
+    std::fs::write(&first, source).unwrap();
+    std::fs::write(&second, usage).unwrap();
+    project.documents.close(doc.id);
+    let doc = project.documents.open(&first).unwrap();
+    for (path, text, version) in [(&first, source, Some(doc.version)), (&second, usage, None)] {
+        plugins
+            .index_navigation(
+                &project.root,
+                Snapshot { path, text, version, symbols: &[], scope: "app" },
+                Invocation {
+                    client: Some("main".into()),
+                    workspace_root: Some(project.root.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    native_rename_refusal(&host, &project, doc.id, &first, source).await;
     plugins.set_enabled("test.indexer", false).unwrap();
     plugins.set_enabled("test.duplicate", false).unwrap();
     assert!(plugins.indexed_symbol_at(&project.root, &first, Pos::new(0, 4), Some("main")).is_none());
@@ -230,4 +249,142 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         ErrorKind::InvalidInput,
         "malformed UTF-16 anchors cannot split a character"
     );
+    project.documents.close(doc.id);
+    host.set_project_trust(&root, true, false).await.unwrap();
+    let project = host.open_project("main", &root).unwrap();
+    // BOM-less UTF-16 detection requires mostly ASCII pairs, even with emoji anchors.
+    let padding = format!("ignored {}\n", "x".repeat(128));
+    let encoded_source = format!("{source}{padding}");
+    let encoded_usage = format!("{usage}{padding}");
+    for (encoding, bom) in
+        [("utf-8", true), ("utf-16le", true), ("utf-16be", true), ("utf-16le", false), ("utf-16be", false)]
+    {
+        ide_vfs::save_text(&first, &encoded_source, encoding, bom).unwrap();
+        ide_vfs::save_text(&second, &encoded_usage, encoding, bom).unwrap();
+        let original_second = std::fs::read(&second).unwrap();
+        let doc = project.documents.open(&first).unwrap();
+        assert_eq!(doc.text, encoded_source, "decoded {encoding} BOM={bom}");
+        // Index open, close, then validate that decoded text retains the same hash.
+        let usage_doc = project.documents.open(&second).unwrap();
+        ide_host::plugins::index_ops::plugin_navigation_index(
+            &host,
+            plugins.clone(),
+            "main",
+            vec![first.clone(), second.clone()],
+            RequestId(100),
+        )
+        .await
+        .unwrap();
+        project.documents.close(usage_doc.id);
+        let refs = ops::lsp::lsp_references(
+            &host,
+            "main",
+            RequestId(101),
+            doc.id,
+            Pos::new(0, 5),
+            false,
+            false,
+            false,
+            ops::Channel::new(|_| {}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(refs.locations.len(), 3, "open-then-closed {encoding} BOM={bom}");
+        plugins.invalidate_client_navigation(&project.root, Some("main"), Some(std::slice::from_ref(&second)));
+        ide_host::plugins::index_ops::plugin_navigation_index(
+            &host,
+            plugins.clone(),
+            "main",
+            vec![second.clone()],
+            RequestId(102),
+        )
+        .await
+        .unwrap();
+        let renamed =
+            ops::lsp::lsp_rename(&host, "main", RequestId(103), doc.id, Pos::new(0, 5), "new😀".into()).await.unwrap();
+        assert_eq!(renamed.edit.preconditions.len(), 2);
+        assert_eq!(std::fs::read(&second).unwrap(), original_second, "preview preserves bytes");
+        ops::lsp::apply_workspace_edit(&host, "main", renamed.edit).await.unwrap();
+        assert_eq!(
+            std::fs::read(&second).unwrap(),
+            ide_vfs::encode(&format!("ref new😀\nref other\n{padding}"), encoding, bom).unwrap(),
+            "atomic rename preserves {encoding} BOM={bom}"
+        );
+        assert_eq!(project.documents.load_file(&first).unwrap().text, format!("def new😀\nref new😀\n{padding}"));
+        project.documents.close(doc.id);
+    }
+}
+
+async fn native_rename_refusal(
+    host: &Host,
+    project: &ide_host::Project,
+    doc: ide_core::DocId,
+    path: &Path,
+    text: &str,
+) {
+    use ide_jsonrpc::{Handler, Peer};
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    struct Native(Arc<AtomicU8>);
+    impl Handler for Native {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, method: &str, _: Value) -> Result<Value, (i64, String)> {
+            let mode = self.0.load(Ordering::SeqCst);
+            Ok(match method {
+                "initialize" => {
+                    json!({"capabilities": {"textDocumentSync": 1, "renameProvider": {"prepareProvider": true}}})
+                }
+                "textDocument/prepareRename" if mode < 2 => {
+                    json!({"start": {"line": 0, "character": 4}, "end": {"line": 0, "character": 11}})
+                }
+                "textDocument/prepareRename" if mode == 3 => {
+                    json!({"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}})
+                }
+                "textDocument/rename" if mode == 1 => json!({"changes": {}}),
+                _ => Value::Null,
+            })
+        }
+    }
+    let mode = Arc::new(AtomicU8::new(0));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peers = Arc::new(Mutex::new(Vec::<Peer>::new()));
+    let accepted = peers.clone();
+    let state = mode.clone();
+    let task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (reader, writer) = stream.into_split();
+            accepted.lock().push(Peer::connect(reader, writer, Arc::new(Native(state.clone()))));
+        }
+    });
+    let config: ide_language::LanguageServerConfig = toml::from_str(&format!(
+        "name = 'rename-refusal'\ncommand = 'no-process-required'\nconnect = '127.0.0.1:{port}'"
+    ))
+    .unwrap();
+    project.lsp.set_servers_hook(Box::new(move |_, _| vec![config.clone()]));
+    project.lsp.did_open(doc, path, &ide_core::LanguageId::plain_text(), 0, text);
+    for value in 0..4 {
+        mode.store(value, Ordering::SeqCst);
+        let renamed =
+            ops::lsp::lsp_rename(host, "main", RequestId(110 + value as u32), doc, Pos::new(0, 5), "new".into()).await;
+        if value < 2 {
+            assert_eq!(
+                renamed.unwrap_err().kind,
+                ErrorKind::InvalidInput,
+                "matching owner declines via null/empty edit"
+            );
+        } else {
+            let renamed = renamed.unwrap();
+            assert!(renamed.preview);
+            assert_eq!(renamed.edit.files.len(), 2, "unowned native range keeps indexed fallback");
+        }
+    }
+    project.lsp.did_close(doc);
+    project.lsp.shutdown_all().await;
+    project.lsp.set_servers_hook(Box::new(|_, _| vec![]));
+    task.abort();
+    let _ = task.await;
+    for peer in peers.lock().drain(..) {
+        peer.kill();
+    }
 }

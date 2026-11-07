@@ -251,6 +251,14 @@ its component with `plugins/build.sh crates/ide-plugin/tests/fixtures/file-templ
 aliases and gutter markers) in background batches, not on the editing path. See
 [Background document indexers](../docs/plugins/indexing.md).
 
+API 1.3 also uses this graph for Find Usages and Rename on published definitions
+and references, alongside language-server results. Name anchors must cover exactly
+the name in UTF-16 columns; markers are excluded. Indexed renames always show a
+preview and apply as one undoable workspace edit. No new WIT export or capability
+is required: the existing `project.read` declaration and trusted-project checks
+still apply. Use `engines.openidea = "^1.3"` when relying on this behavior. The
+[indexer fixture](../crates/ide-plugin/tests/fixtures/indexer) exercises both flows.
+
 ### Activation
 
 Code is instantiated lazily: when one of the plugin's commands runs, or when

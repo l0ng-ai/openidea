@@ -227,6 +227,45 @@ pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
     })
 }
 
+/// Bounded disk snapshots for background consumers that share editor decoding.
+pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
+    use std::io::Read;
+    let file = fs::File::open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.len() > max_bytes as u64 {
+        return Err(IdeError::invalid("document is too large or is not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(IdeError::invalid("document is too large"));
+    }
+    let len = bytes.len() as u64;
+    let (mut text, mut enc, has_bom, binary) = decode(&bytes);
+    if !binary
+        && !has_bom
+        && enc != UTF_8
+        && enc != UTF_16LE
+        && enc != UTF_16BE
+        && let Some(fallback) = fallback.and_then(|label| Encoding::for_label(label.trim().as_bytes()))
+    {
+        text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
+        enc = fallback;
+    }
+    if text.len() > max_bytes {
+        return Err(IdeError::invalid("decoded document is too large"));
+    }
+    Ok(LoadedText {
+        text,
+        encoding: encoding_label(enc),
+        has_bom,
+        binary,
+        large: len > LARGE_FILE_THRESHOLD,
+        too_large: len > READ_ONLY_THRESHOLD,
+        mtime_ms: mtime_ms(&meta),
+    })
+}
+
 /// Loads `path` decoded as `encoding` (a WHATWG label) instead of detecting it
 /// ("Reload with Encoding"). A matching BOM is stripped and reported.
 pub(crate) fn load_text_as(path: &Path, encoding: &str) -> IdeResult<LoadedText> {
@@ -539,6 +578,41 @@ mod tests {
         assert_eq!(decode_owned(b"\xEF\xBB\xBFhi".to_vec()).0, "hi");
         assert!(decode_owned(b"\x7FELF\x00\x00".to_vec()).3);
         assert_eq!(decode_owned(Vec::new()).0, "");
+    }
+
+    #[test]
+    fn bounded_snapshots_match_editor_decoding_and_enforce_both_limits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("text");
+        for (encoding, bom) in [
+            ("utf-8", true),
+            ("utf-16le", true),
+            ("utf-16be", true),
+            ("utf-16le", false),
+            ("utf-16be", false),
+            ("gbk", false),
+        ] {
+            let text = if encoding == "gbk" {
+                "中文测试，这是一段中文文本。"
+            } else {
+                "hello world 😀\nline two\n"
+            };
+            let text = format!("{text}{}", "padding ".repeat(16));
+            crate::save_text(&path, &text, encoding, bom).unwrap();
+            let ordinary = crate::load_text_with_fallback(&path, Some(encoding)).unwrap();
+            let bounded = load_text_bounded(&path, Some(encoding), 1024).unwrap();
+            assert!(!bounded.binary, "{encoding} BOM={bom}");
+            assert_eq!(bounded.text, text, "{encoding} BOM={bom}");
+            assert_eq!(
+                (&bounded.text, &bounded.encoding, bounded.has_bom),
+                (&ordinary.text, &ordinary.encoding, ordinary.has_bom)
+            );
+            assert!(load_text_bounded(&path, Some(encoding), 2).is_err());
+        }
+        fs::write(&path, [0xe9; 4]).unwrap();
+        assert!(load_text_bounded(&path, Some("windows-1252"), 4).is_err(), "decoded UTF-8 expansion is bounded");
+        fs::write(&path, b"\x7fELF\0\0").unwrap();
+        assert!(load_text_bounded(&path, None, 1024).unwrap().binary);
     }
 
     #[test]

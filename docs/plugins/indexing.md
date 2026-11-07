@@ -55,9 +55,13 @@ Anchors must cover **exactly the name**, without quotes, delimiters or surroundi
 syntax. Use UTF-16 columns, including two columns for an astral character.
 Rename always shows a preview, even for a single file; cancelling leaves files
 unchanged, and applying it creates one undoable workspace change. The host
-checks indexed snapshots against current buffers and disk before returning the
-edit, and checks preview fingerprints again before applying it. If a document
-changed, wait for indexing and request the rename again.
+checks snapshots containing returned anchors against current buffers and disk
+before returning the edit, and checks preview fingerprints again before applying
+it. If a document changed, wait for indexing and request the rename again.
+
+Queries flush queued indexing work; they do not rescan the project. External
+changes must reach the filesystem watcher and be indexed before newly added
+anchors appear. Files without matching anchors are not refreshed by the query.
 
 A language server that declines ownership of the indexed name does not prevent
 its indexed anchors from being renamed. Failed reference or name-preparation

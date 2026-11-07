@@ -62,6 +62,11 @@ impl Graph {
         }
         targets
     }
+    fn scoped_targets(&self, key: &str, scope: &str) -> Vec<&Location> {
+        let targets = self.targets(key);
+        let local = targets.iter().any(|t| self.files.get(&t.path.0).is_some_and(|f| f.scope == scope));
+        targets.into_iter().filter(|t| !local || self.files.get(&t.path.0).is_some_and(|f| f.scope == scope)).collect()
+    }
     fn remove(&mut self, path: &Path) {
         if let Some(file) = self.files.remove(path) {
             self.edges -= file.edges.definitions.len()
@@ -391,20 +396,27 @@ impl PluginHost {
                 .collect();
             let Some(primary) = anchors.first() else { continue };
             let keys: std::collections::HashSet<_> = anchors.iter().map(|anchor| anchor.key.as_str()).collect();
-            let targets: std::collections::HashSet<_> = keys.iter().flat_map(|key| graph.targets(key)).collect();
-            let local = targets.iter().any(|t| graph.files.get(&t.path.0).is_some_and(|f| f.scope == source.scope));
+            let targets: std::collections::HashSet<_> =
+                keys.iter().flat_map(|key| graph.scoped_targets(key, &source.scope)).collect();
             let answer = result.get_or_insert_with(|| IndexedSymbol { range: primary.range, files: vec![] });
-            let mut matches = HashMap::new();
             for (path, file) in &graph.files {
-                if local && file.scope != source.scope {
-                    continue;
-                }
                 let mut ranges = std::collections::BTreeSet::new();
-                for candidate in file.edges.definitions.iter().chain(&file.edges.references) {
+                for candidate in &file.edges.definitions {
+                    if targets.contains(&Location::file(path.clone(), candidate.range))
+                        || (targets.is_empty() && file.scope == source.scope && keys.contains(candidate.key.as_str()))
+                    {
+                        ranges.insert(candidate.range);
+                    }
+                }
+                let mut matches = HashMap::new();
+                for candidate in &file.edges.references {
                     let same = *matches.entry(candidate.key.as_str()).or_insert_with(|| {
-                        keys.contains(candidate.key.as_str())
-                            || (!targets.is_empty()
-                                && graph.targets(&candidate.key).iter().any(|target| targets.contains(target)))
+                        let resolved = graph.scoped_targets(&candidate.key, &file.scope);
+                        resolved.iter().any(|target| targets.contains(target))
+                            || (targets.is_empty()
+                                && resolved.is_empty()
+                                && file.scope == source.scope
+                                && keys.contains(candidate.key.as_str()))
                     });
                     if same {
                         ranges.insert(candidate.range);
