@@ -5905,6 +5905,8 @@ export type PluginEvent =
 { type: "copyToClipboard"; pluginId: string; text: string } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
 { type: "openUrl"; pluginId: string; url: string } | 
+/**  A window command/event requests the normal File > Open flow. */
+{ type: "openProject"; pluginId: string; path: string; newWindow: boolean } | 
 /**
  *  A command waits for the user's answer: show `prompt`, then report it with
  *  `plugin_answer_prompt(prompt_id, …)`.
@@ -6288,7 +6290,7 @@ export type ProjectStructureSettings = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string };
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null };
 
 export type ProxyKind = "http" | "socks";
 

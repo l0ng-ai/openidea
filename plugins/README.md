@@ -1239,3 +1239,17 @@ A new host function touches:
 Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
 plus fmt, clippy (host and wasm) and the tests of the SDK, the official
 plugins and the fixtures.
+
+### Directory selection and opening projects (API 1.3)
+
+`host::pick_directory(title, initial)` opens the window's native folder chooser
+and returns an absolute path, or `None` when dismissed. Like `pick`, it is only
+available during a command or event from a window; waiting for the user does not
+consume the plugin's call budget. `initial` is an optional absolute directory.
+
+`host::open_project(path, new_window)` requests the normal File › Open flow in
+that window (`false`) or a new window (`true`). Existing project windows are
+reused as usual, and the normal trust prompt and unsaved-change guard apply.
+The call acknowledges the request; cancellation or opening errors are handled by
+the window. Neither API needs a capability. Paths belong to the UI machine,
+including when plugin code runs on a remote host.

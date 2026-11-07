@@ -6445,5 +6445,6 @@
   "Couldn't regenerate the response": "无法重新生成回复",
   "Reasoning": "思考过程",
   "Cannot copy the value": "无法复制该值",
-  "The check could not run: {reason}": "检查无法运行：{reason}"
+  "The check could not run: {reason}": "检查无法运行：{reason}",
+  "Cannot choose a directory": "无法选择目录"
 }

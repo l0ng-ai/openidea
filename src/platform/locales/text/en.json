@@ -66,5 +66,6 @@
   "Couldn't regenerate the response": "Couldn't regenerate the response",
   "Reasoning": "Reasoning",
   "Branch '{name}'": "Branch '{name}'",
-  "Cannot copy the value": "Cannot copy the value"
+  "Cannot copy the value": "Cannot copy the value",
+  "Cannot choose a directory": "Cannot choose a directory"
 }

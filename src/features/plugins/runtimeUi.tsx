@@ -21,9 +21,12 @@ import { clearContext, setContext, type ContextValue } from "@/platform/context"
 import { onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
+import { ipcPath } from "@/platform/paths";
+import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
 import {
+  notifications,
   maybeCommitService,
   maybeEditorService,
   registerStatusItem,
@@ -319,6 +322,26 @@ const openPrompts = new Map<string, AbortController>();
 /** The user's answer in the shape `plugin_answer_prompt` takes: `null` when dismissed. */
 async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
   switch (prompt.kind) {
+    case "pickDirectory": {
+      if (signal.aborted) return null;
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        if (signal.aborted) return null;
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: prompt.title,
+          defaultPath: prompt.initial ?? undefined,
+        });
+        if (signal.aborted) return null;
+        const path = Array.isArray(selected) ? selected[0] : selected;
+        return path ? [ipcPath(path)] : null;
+      } catch (error) {
+        if (!signal.aborted)
+          notifications().notify({ level: "error", title: tx("Cannot choose a directory"), body: String(error) });
+        return null;
+      }
+    }
     case "quickPick":
       return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal });
     case "input": {
@@ -402,6 +425,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "copyToClipboard":
       void navigator.clipboard?.writeText(e.text);
+      return true;
+    case "openProject":
+      void executeAction("file.openProjectPath", { path: e.path, newWindow: e.newWindow });
       return true;
     case "openUrl":
       void openExternalUrl(e.url);
