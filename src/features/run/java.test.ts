@@ -305,6 +305,12 @@ describe("java command lines", () => {
     ).toEqual(["--module-path", "/m/x.jar"]);
   });
 
+  it("keeps a JRE chosen on the configuration instead of the project JDK", () => {
+    const c = applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java");
+    const r = resolveJavaCommand({ ...c, command: "/jdks/temurin-17/bin/java" }, info);
+    expect(r.command).toBe("/jdks/temurin-17/bin/java");
+  });
+
   it("colours a Spring Boot console unless the configuration sets the property", () => {
     const boot = (args: string[]) => ({
       ...applicationConfig({ className: "a.Main" }, "src/main/java/a/Main.java"),
