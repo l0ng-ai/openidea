@@ -32,9 +32,10 @@ export interface PerfProbe {
   fakeCompletion(items: number): void;
   /**
    * Answers the Git Log with `commits` generated commits (a main line with
-   * feature branches merging into it), paged like the backend. `0` removes it.
+   * feature branches merging into it), paged like the backend, each page after
+   * `latencyMs` (a `git log` call). `0` commits removes it.
    */
-  fakeGitLog(commits: number): void;
+  fakeGitLog(commits: number, latencyMs?: number): void;
 }
 
 const KINDS: CompletionKind[] = [
@@ -159,7 +160,7 @@ export function installPerfProbe(): () => void {
           : null,
       );
     },
-    fakeGitLog(count) {
+    fakeGitLog(count, latencyMs = 0) {
       const commits = Array.from({ length: count }, (_, i) => commit(i, count));
       setRoute(
         "gitLog",
@@ -169,7 +170,8 @@ export function installPerfProbe(): () => void {
               const { skip, limit, range } = (args as { query: LogQuery }).query;
               // Outgoing commits (`@{u}..HEAD`) and the like: none.
               if (range) return Promise.resolve([]);
-              return Promise.resolve(commits.slice(skip, limit ? skip + limit : undefined));
+              const page = commits.slice(skip, limit ? skip + limit : undefined);
+              return new Promise((resolve) => setTimeout(() => resolve(page), latencyMs));
             }
           : null,
       );

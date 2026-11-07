@@ -46,7 +46,7 @@
     "consoleOutput.keyMissedFramePct": 10,
     "consoleOutput.tbtMs": 50,
 
-    "gitLog.showMs": 150,
+    "gitLog.showMs": 300,
     "gitLog.droppedFramesPct": 2,
     "gitLog.tbtMs": 50,
     "gitLog.arrowKeyP95Ms": 20,

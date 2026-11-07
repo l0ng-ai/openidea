@@ -269,15 +269,18 @@ const scroll: Scenario = {
 
 /**
  * Git Log with 20,000 commits on branching lanes, loaded page by page as the
- * backend does: showing it, walking the selection with the arrow keys (the
- * details pane follows) and wheel-scrolling through it.
+ * backend does (150 ms a page, like `git log`): showing it, walking the
+ * selection with the arrow keys (the details pane follows) and wheel-scrolling
+ * through several pages.
  */
 const gitLog: Scenario = {
   id: "gitLog",
   title: "Show, navigate and scroll a 20k-commit Git Log",
   async run(h) {
     await h.page.evaluate(() =>
-      (window as never as { __openideaPerf: { fakeGitLog(n: number): void } }).__openideaPerf.fakeGitLog(20_000),
+      (
+        window as never as { __openideaPerf: { fakeGitLog(n: number, latencyMs?: number): void } }
+      ).__openideaPerf.fakeGitLog(20_000, 150),
     );
     const showMs = await h.measure(
       () =>
@@ -297,8 +300,9 @@ const gitLog: Scenario = {
     await h.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     const t0 = await h.now();
     await h.inPage((p) => p.startFrames());
-    for (let i = 0; i < 120; i++) {
-      await h.page.mouse.wheel(0, i < 80 ? 400 : -400);
+    // Far enough to load several more pages on the way.
+    for (let i = 0; i < 160; i++) {
+      await h.page.mouse.wheel(0, i < 120 ? 600 : -600);
       await h.page.waitForTimeout(16);
     }
     await h.page.waitForTimeout(200);
