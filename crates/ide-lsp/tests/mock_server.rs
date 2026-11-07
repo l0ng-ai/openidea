@@ -238,6 +238,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
@@ -1234,6 +1235,61 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
 }
 
+/// The whole workspace root deleted: the server can never start again
+/// (its cwd is gone), so the crash drops the entry instead of restarting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_below_a_deleted_workspace_root_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // A crash on a root that still exists restarts; removing it changes that.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    eventually(|| s.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    s.peer().kill();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 2, "no restart with a dead working directory");
+}
+
+/// The root deleted while a crash backoff is still sleeping: the pending
+/// restart must drop the server rather than leave a permanently "Crashed" row.
+#[tokio::test(flavor = "multi_thread")]
+async fn root_deleted_during_crash_backoff_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // Crash with the root alive: "Crashed" is published before the backoff
+    // sleep, so removing the root here lands inside that window.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    std::fs::remove_dir_all(&h.root).unwrap();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1, "no restart with a dead working directory");
+}
+
+/// A manual restart with the root gone fails instead of spawning into a dead cwd.
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_below_a_deleted_workspace_root_fails() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let id = h.mgr.servers()[0].id;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    let err = h.mgr.restart(id).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.message.contains("workspace root"), "{err:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_server_reports_once() {
     let h = harness(&[("ghost", json!({}))]);
@@ -1673,6 +1729,18 @@ async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn alternative_java_server_uses_lsp_without_jdt_commands() {
+    let h = harness_for("java", "java", &[("kmp-lsp", incremental_caps())], &[]);
+    let (doc, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("kmp-lsp", ServerStatus::Ready).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 7), Default::default()).await.is_ok());
+    let error = h.mgr.java_debug_server(&path).await.unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(error.message.contains("jdtls"));
+    assert!(h.launcher.state("kmp-lsp").requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
@@ -1823,10 +1891,11 @@ async fn java_implementations_come_from_sources_first() {
             .collect::<Value>()
     };
     *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
-        // Line 0 is declared in the sources; line 2 in a dependency, which implements it on line 3.
+        // Lines 0 and 1 are declared in the sources; 2 and 3 in a dependency, which implements 2 on line 3.
         "workspace/executeCommand" => Some(match params["arguments"][1].as_u64() {
             Some(0) => json!({ "locations": at(&[1]), "complete": true }),
             Some(2) => json!({ "locations": at(&[1]), "complete": false }),
+            Some(3) => json!({ "locations": [], "complete": false }),
             _ => json!({ "locations": [], "complete": true }),
         }),
         "textDocument/implementation" => Some(at(&[3, 1])),
@@ -1857,7 +1926,14 @@ async fn java_implementations_come_from_sources_first() {
     assert_eq!(lines(&found), vec![3, 1]);
     assert_eq!(s.requested("textDocument/implementation").len(), 2);
 
-    // None in the sources: the standard request, with the dependencies.
+    // Declared in the sources and implemented nowhere there: no search through the dependencies.
+    let found = h.mgr.goto(doc, Pos::new(1, 6), GotoKind::Implementation).await.unwrap();
+    assert!(found.is_empty());
+    let markers = h.mgr.implementations(doc, &[Pos::new(1, 6)], Default::default()).await.unwrap();
+    assert!(markers[0].is_empty());
+    assert_eq!(s.requested("textDocument/implementation").len(), 2);
+
+    // None in the sources of a dependency's type: the standard request, with the dependencies.
     let partial = Mutex::new(Vec::new());
     let found = h
         .mgr
@@ -2251,6 +2327,106 @@ async fn noop_handler_is_usable_for_raw_peers() {
 }
 
 // ------------------------------------------------------------------ virtual documents
+
+#[tokio::test(flavor = "multi_thread")]
+async fn csharp_metadata_navigation_and_generated_documents() {
+    let mut caps = incremental_caps();
+    caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let h = harness_for("csharp", "cs", &[("other-csharp", incremental_caps()), ("csharp-ls", caps)], &[]);
+    let (doc, path) = h.open("Player.cs", "class Player : MonoBehaviour {}\n");
+    h.wait_status("other-csharp", ServerStatus::Ready).await;
+    h.wait_status("csharp-ls", ServerStatus::Ready).await;
+    let s = h.launcher.state("csharp-ls");
+    let other = h.launcher.state("other-csharp");
+    eventually(|| !s.requested("textDocument/diagnostic").is_empty()).await;
+    assert_eq!(s.requested("initialize")[0]["capabilities"]["experimental"]["csharp"]["metadataUris"], true);
+    assert!(other.requested("initialize")[0]["capabilities"]["experimental"]["csharp"].is_null());
+
+    let uri = "csharp:/D:/My%20Game/Game.csproj/decompiled/UnityEngine.MonoBehaviour.cs";
+    let text = "namespace UnityEngine;\npublic class MonoBehaviour {\n    public void CancelInvoke() {}\n}\n";
+    s.respond("csharp/metadata", json!({ "assemblyName": "UnityEngine.CoreModule", "source": text }));
+    // Both Location and LocationLink preserve the server's type/member selection.
+    for (response, range) in [
+        (
+            json!({ "uri": uri.replace("%20", " "), "range": {"start":{"line":1,"character":13},"end":{"line":1,"character":26}} }),
+            rng(1, 13, 1, 26),
+        ),
+        (
+            json!([{ "targetUri": uri, "targetRange": {"start":{"line":0,"character":0},"end":{"line":3,"character":1}}, "targetSelectionRange": {"start":{"line":2,"character":16},"end":{"line":2,"character":28}} }]),
+            rng(2, 16, 2, 28),
+        ),
+    ] {
+        s.respond("textDocument/definition", response);
+        let defs = h.mgr.goto(doc, Pos::new(0, 16), GotoKind::Definition).await.unwrap();
+        assert_eq!(defs, vec![ide_core::Location { path: uri.into(), range, uri: Some(uri.into()) }]);
+        let vd = h.mgr.virtual_document(uri).await.unwrap();
+        assert_eq!(vd.text, text);
+        assert_eq!(vd.title, "UnityEngine.MonoBehaviour.cs");
+        assert_eq!(vd.language_id.as_str(), "csharp");
+        assert_eq!(vd.description.as_deref(), Some("UnityEngine.CoreModule"));
+        assert!(vd.decompiled);
+    }
+    assert_eq!(s.requested("csharp/metadata"), vec![json!({"textDocument":{"uri":uri}})]);
+    assert!(other.requested("csharp/metadata").is_empty());
+
+    let vdoc = DocId::next();
+    h.mgr.did_open_virtual(vdoc, uri, &h.lang, 0, text);
+    eventually(|| s.docs.lock().contains_key(uri)).await;
+    s.respond("textDocument/hover", json!({"contents":"class MonoBehaviour"}));
+    h.mgr.hover(vdoc, Pos::new(1, 13), Default::default()).await.unwrap();
+    assert_eq!(s.requested("textDocument/hover").last().unwrap()["textDocument"]["uri"], uri);
+    assert!(other.requested("textDocument/hover").is_empty());
+    h.mgr.did_close(vdoc);
+    eventually(|| !s.docs.lock().contains_key(uri)).await;
+    assert!(s.notified("textDocument/didChange").is_empty());
+
+    // Generated sources use the same request but are not decompiled, even under a directory named decompiled.
+    let generated = "csharp:/work/decompiled/Game.csproj/generated/Generator/Player.g.cs";
+    s.respond("csharp/metadata", json!({"source":"partial class Player {}"}));
+    let vd = h.mgr.virtual_document(generated).await.unwrap();
+    assert_eq!(vd.title, "Player.g.cs");
+    assert_eq!(vd.language_id.as_str(), "csharp");
+    assert!(vd.description.is_none());
+    assert!(!vd.decompiled);
+    // Generated and ordinary source still get diagnostics; decompiled assemblies do not.
+    let generated_doc = DocId::next();
+    h.mgr.did_open_virtual(generated_doc, generated, &vd.language_id, 0, &vd.text);
+    eventually(|| s.requested("textDocument/diagnostic").iter().any(|p| p["textDocument"]["uri"] == generated)).await;
+    assert!(s.requested("textDocument/diagnostic").iter().all(|p| p["textDocument"]["uri"] != uri));
+    h.mgr.did_close(generated_doc);
+
+    // Ordinary definitions still resolve to a disk path.
+    s.respond(
+        "textDocument/definition",
+        json!({"uri":uri_of(&path),"range":{"start":{"line":0,"character":6},"end":{"line":0,"character":12}}}),
+    );
+    let defs = h.mgr.goto(doc, Pos::new(0, 6), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].path, path);
+    assert!(defs[0].uri.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn csharp_metadata_failures_can_be_retried() {
+    let h = harness_for("csharp", "cs", &[("csharp-ls", incremental_caps())], &[]);
+    h.open("App.cs", "class App {}\n");
+    h.wait_status("csharp-ls", ServerStatus::Ready).await;
+    let s = h.launcher.state("csharp-ls");
+    let uri = "csharp:/work/App.csproj/decompiled/System.String.cs";
+    for response in [Value::Null, json!({"source":""})] {
+        s.respond("csharp/metadata", response);
+        let err = h.mgr.virtual_document(uri).await.unwrap_err();
+        assert_eq!(err.kind, ide_core::error::ErrorKind::NotFound);
+        assert!(err.message.contains("System.String.cs"));
+    }
+    s.errors.lock().insert("csharp/metadata".into(), (-32603, "decompilation failed".into()));
+    assert!(h.mgr.virtual_document(uri).await.unwrap_err().message.contains("decompilation failed"));
+    s.errors.lock().remove("csharp/metadata");
+    s.respond("csharp/metadata", json!({"source":"public class String {}", "assemblyName":""}));
+    let vd = h.mgr.virtual_document(uri).await.unwrap();
+    assert!(vd.decompiled);
+    assert!(vd.description.is_none());
+    assert_eq!(s.requested("csharp/metadata").len(), 4);
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn virtual_locations_and_text_document_content() {
@@ -2809,6 +2985,165 @@ async fn references_open_unopened_files_that_mention_the_name() {
     assert_eq!(seen.lock().len(), 2);
 }
 
+/// A Go project: the module at the root, `tools` replacing it with `../` and `other` requiring a
+/// published copy. The mock answers a definition in `tools` like gopls in that module's view.
+fn go_modules_harness() -> (Harness, Arc<MockState>, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let h = harness_for("go", "go", &[("gopls", incremental_caps())], &[]);
+    let s = h.launcher.state("gopls");
+    let write = |rel: &str, text: &str| {
+        let path = h.root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+    write("go.mod", "module example.com/app\n");
+    write("tools/go.mod", "module example.com/tools\n\nreplace example.com/app => ../\n");
+    write("other/go.mod", "module example.com/other\n\nrequire example.com/app v1.0.0\n");
+    let same = write("same.go", "package app\nvar x = New()\n");
+    // Line 1 uses the declaration; line 2 is a local `New` of the tools module.
+    let tools = write("tools/gen.go", "package tools\nvar a = app.New()\nfunc New() {}\n");
+    write("other/o.go", "package other\nvar b = app.New()\n");
+    // Built for plan9 only: outside gopls' default view of the root module.
+    let plan9 = write("boot_plan9.go", "package app\nfunc boot() { New() }\n");
+    let decl = h.root.join("a.go");
+    let candidates = vec![same.clone(), tools.clone(), h.root.join("other/o.go"), plan9.clone()];
+    h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+        files: candidates.clone(),
+        limit_hit: false,
+    }));
+    let at = |line: u32, col: u32| json!({ "start": { "line": line, "character": col }, "end": { "line": line, "character": col + 3 } });
+    let (decl_uri, same_uri, tools_uri, plan9_uri) = (uri_of(&decl), uri_of(&same), uri_of(&tools), uri_of(&plan9));
+    let span = |line: u32, from: u32, to: u32| json!({ "start": { "line": line, "character": from }, "end": { "line": line, "character": to } });
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
+        let line = params["position"]["line"].as_u64().unwrap_or(0);
+        match method {
+            // The view of the root module: the declaration and its usage in same.go.
+            "textDocument/references" => Some(json!([
+                { "uri": decl_uri, "range": at(0, 5) },
+                { "uri": same_uri, "range": at(1, 8) },
+            ])),
+            "textDocument/rename" => Some(json!({ "changes": {
+                decl_uri.clone(): [{ "range": at(0, 5), "newText": "Make" }],
+                same_uri.clone(): [{ "range": at(1, 8), "newText": "Make" }],
+            } })),
+            "textDocument/definition" if uri == decl_uri => Some(json!({ "uri": decl_uri, "range": at(0, 5) })),
+            "textDocument/definition" if uri == tools_uri && line == 1 => {
+                Some(json!({ "uri": decl_uri, "range": at(0, 5) }))
+            }
+            "textDocument/definition" if uri == tools_uri => Some(json!({ "uri": tools_uri, "range": at(2, 5) })),
+            "textDocument/definition" if uri == plan9_uri => Some(json!({ "uri": decl_uri, "range": at(0, 5) })),
+            "textDocument/documentSymbol" if uri == tools_uri => Some(json!([
+                { "name": "a", "kind": 13, "range": span(1, 0, 17), "selectionRange": span(1, 4, 5) },
+                { "name": "New", "kind": 12, "range": span(2, 0, 13), "selectionRange": span(2, 5, 8) },
+            ])),
+            "textDocument/documentSymbol" if uri == plan9_uri => Some(json!([
+                { "name": "boot", "kind": 12, "range": span(1, 0, 20), "selectionRange": span(1, 5, 9) },
+            ])),
+            "textDocument/prepareCallHierarchy" => Some(
+                json!([{ "name": "New", "kind": 12, "uri": decl_uri, "range": span(0, 0, 13), "selectionRange": at(0, 5) }]),
+            ),
+            "callHierarchy/incomingCalls" => Some(json!([{
+                "from": { "name": "x", "kind": 13, "uri": same_uri, "range": span(1, 0, 13), "selectionRange": span(1, 4, 5) },
+                "fromRanges": [at(1, 8)],
+            }])),
+            _ => None,
+        }
+    }));
+    (h, s, decl, same, tools, plan9)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_searches_resolve_other_modules_that_replace_the_declarations_module() {
+    let (h, s, decl, same, tools, plan9) = go_modules_harness();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let partials = Arc::new(Mutex::new(Vec::new()));
+    let seen = partials.clone();
+    let partial = move |r: ide_lsp::types::References| seen.lock().push(r.locations.len());
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), Some(&partial))
+        .await
+        .unwrap();
+    let mut found: Vec<(PathBuf, u32)> =
+        refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
+    found.sort();
+    let mut want = vec![(decl.clone(), 0), (same.clone(), 1), (tools.clone(), 1), (plan9.clone(), 1)];
+    want.sort();
+    assert_eq!(found, want);
+    // Those in gopls' reach arrive first.
+    assert_eq!(*partials.lock(), [2]);
+    // Only the module replacing the declaration's module was opened, never the root module's file.
+    let opened = uris(&s.notified("textDocument/didOpen"));
+    assert!(opened.contains(&uri_of(&tools)));
+    assert!(opened.contains(&uri_of(&plan9)));
+    assert!(!opened.contains(&uri_of(&same)));
+    assert!(!opened.iter().any(|u| u.ends_with("other/o.go")));
+    assert_eq!(s.requested("textDocument/references").len(), 1);
+
+    let renamed = h.mgr.rename(doc, Pos::new(0, 5), "Make".into(), Default::default()).await.unwrap();
+    let mut edited: Vec<(PathBuf, Vec<u32>)> = renamed
+        .edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            ide_core::FileEdit::Edit { path, edits, .. } => {
+                Some((path.to_path_buf(), edits.iter().map(|e| e.range.start.line).collect()))
+            }
+            _ => None,
+        })
+        .collect();
+    edited.sort();
+    let mut want = vec![(decl, vec![0]), (same, vec![1]), (tools, vec![1]), (plan9, vec![1])];
+    want.sort();
+    assert_eq!(edited, want);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_incoming_calls_include_callers_beyond_the_search() {
+    let (h, s, _, same, tools, plan9) = go_modules_harness();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let calls =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    let mut callers: Vec<(PathBuf, String, Vec<u32>)> = calls
+        .items
+        .iter()
+        .map(|i| (i.path.to_path_buf(), i.name.clone(), i.from_ranges.iter().map(|r| r.start.line).collect()))
+        .collect();
+    callers.sort();
+    let mut want = vec![
+        (same, "x".to_owned(), vec![1]),
+        (tools, "a".to_owned(), vec![1]),
+        (plan9.clone(), "boot".to_owned(), vec![1]),
+    ];
+    want.sort();
+    assert_eq!(callers, want);
+    let boot = calls.items.iter().find(|i| i.name == "boot").unwrap();
+    assert_eq!((boot.selection_range.start, boot.from_ranges[0].start), (Pos::new(1, 5), Pos::new(1, 14)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_searches_open_nothing_when_no_other_module_uses_the_declaration() {
+    let (h, s, _, same, _, plan9) = go_modules_harness();
+    std::fs::write(h.root.join("tools/go.mod"), "module example.com/tools\n").unwrap();
+    std::fs::remove_file(&plan9).unwrap();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert_eq!(uris(&s.notified("textDocument/didOpen")).len(), 1, "only a.go");
+    assert!(s.requested("textDocument/definition").len() <= 1);
+    assert!(!uris(&s.notified("textDocument/didOpen")).contains(&uri_of(&same)));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn references_never_reopen_or_close_the_users_files() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -2882,7 +3217,8 @@ async fn classified_java_references_widen_without_losing_metadata() {
     assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
     assert!(refs.classified.iter().all(|r| matches!(r.kind, ReferenceKind::Field)));
     assert_eq!(refs.incomplete, None);
-    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    // Scoped; then the sources, widened; then the dependencies too.
+    assert_eq!(s.requested("workspace/executeCommand").len(), 4);
     assert!(s.requested("textDocument/references").is_empty());
     eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
     for limit_hit in [true, false] {
@@ -2898,6 +3234,105 @@ async fn classified_java_references_widen_without_losing_metadata() {
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
         );
     }
+}
+
+/// A library method's usages in the sources are shown before the dependencies and the JDK
+/// are searched, which takes seconds; scope widening searches the sources alone again.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let library = json!({"uri": "jdt://contents/lib.jar/lib/Lib.class", "range": {
+        "start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 10}}});
+    *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+        (method == "workspace/executeCommand").then(|| {
+            let sources = params["arguments"].get(4) == Some(&json!("sources"));
+            let mut rows: Vec<Value> = s
+                .docs
+                .lock()
+                .iter()
+                .flat_map(|(uri, text)| occurrences(uri, text))
+                .map(|location| json!({"location": location, "kind": "unknown"}))
+                .chain((!sources).then(|| json!({"location": library, "kind": "unknown", "text": "    target();"})))
+                .collect();
+            rows.reverse();
+            Value::Array(rows)
+        })
+    }));
+    let b = h.root.join("b.java");
+    std::fs::write(&b, "target();").unwrap();
+    grep_candidates(&h);
+    let (doc, a) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let partials = Mutex::new(Vec::new());
+    let refs = h
+        .mgr
+        .references_streaming(
+            doc,
+            Pos::new(0, 5),
+            true,
+            true,
+            true,
+            Default::default(),
+            Some(&|r| partials.lock().push(r)),
+        )
+        .await
+        .unwrap();
+    let partials = partials.into_inner();
+    assert_eq!(partials.len(), 1);
+    let paths =
+        |r: &References| r.locations.iter().map(|l| (l.path.to_path_buf(), l.uri.is_some())).collect::<Vec<_>>();
+    let mut shown = paths(&partials[0]);
+    shown.sort();
+    assert_eq!(shown, [(a.clone(), false), (b.clone(), false)]);
+    assert_eq!(partials[0].classified.len(), 2);
+    // All of them, those in the sources first.
+    assert_eq!(refs.locations.len(), 3);
+    assert!(refs.locations[..2].iter().all(|l| l.uri.is_none()));
+    assert!(refs.locations[2].uri.is_some());
+    // The server gives a library class's line along.
+    let line = |r: &References| r.classified.iter().find(|c| c.location.uri.is_some()).and_then(|c| c.text.clone());
+    assert_eq!(line(&refs).as_deref(), Some("    target();"));
+    assert!(!refs.libraries_skipped);
+    let scopes: Vec<_> =
+        s.requested("workspace/executeCommand").iter().map(|p| p["arguments"].get(4).cloned()).collect();
+    assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources")), None]);
+    // Without the libraries: the sources alone, widened, and no partial answer.
+    let partials = Mutex::new(Vec::new());
+    let project = h
+        .mgr
+        .references_streaming(
+            doc,
+            Pos::new(0, 5),
+            true,
+            true,
+            false,
+            Default::default(),
+            Some(&|r| partials.lock().push(r)),
+        )
+        .await
+        .unwrap();
+    assert!(partials.into_inner().is_empty());
+    assert!(project.libraries_skipped);
+    assert_eq!(project.locations.len(), 2);
+    assert!(project.locations.iter().all(|l| l.uri.is_none()));
+    let scopes: Vec<_> =
+        s.requested("workspace/executeCommand")[3..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
+    assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources"))]);
+    // Scoped probes with the libraries search everything at once.
+    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    assert_eq!(scoped.locations.len(), 2);
+    // Usage counts and Safe Delete (no libraries): the sources alone, not widened.
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, false, Default::default(), None).await.unwrap();
+    assert_eq!(scoped.locations.len(), 1);
+    assert!(scoped.locations.iter().all(|l| l.uri.is_none()));
+    let scopes: Vec<_> =
+        s.requested("workspace/executeCommand")[5..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
+    assert_eq!(scopes, [None, Some(json!("sources"))]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3295,6 +3730,11 @@ async fn rename_edits_files_outside_the_analysis_scope() {
     eventually(|| uris(&s.notified("textDocument/didClose")) == vec![uri_of(&b)]).await;
 }
 
+/// tsserver project registrations sent through vtsls, without the `geterr` that follows the first.
+fn project_requests(s: &MockState) -> Vec<Value> {
+    s.requested("workspace/executeCommand").into_iter().filter(|r| r["arguments"][0] != "geterr").collect()
+}
+
 #[tokio::test]
 async fn external_projects_are_capability_gated_and_follow_lifecycle() {
     for capable in [false, true] {
@@ -3316,24 +3756,21 @@ async fn external_projects_are_capability_gated_and_follow_lifecycle() {
             assert!(s.requested("workspace/executeCommand").is_empty());
             continue;
         }
-        let requests = s.requested("workspace/executeCommand");
+        let requests = project_requests(&s);
         assert_eq!(requests[0]["arguments"][0], "openExternalProject");
         assert_eq!(requests[0]["arguments"][1]["rootFiles"].as_array().unwrap().len(), 2);
         assert_eq!(s.docs.lock().len(), 1, "registration must not open source documents");
         std::fs::write(h.root.join("new.ts"), "export const newHelper = 1;").unwrap();
         h.mgr.project_files_changed([&h.root.join("new.ts")]);
-        eventually(|| s.requested("workspace/executeCommand").len() >= 2).await;
-        assert_eq!(
-            s.requested("workspace/executeCommand")[1]["arguments"][1]["rootFiles"].as_array().unwrap().len(),
-            3
-        );
+        eventually(|| project_requests(&s).len() >= 2).await;
+        assert_eq!(project_requests(&s)[1]["arguments"][1]["rootFiles"].as_array().unwrap().len(), 3);
         std::fs::rename(h.root.join("new.ts"), h.root.join("renamed.ts")).unwrap();
         h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
-        eventually(|| s.requested("workspace/executeCommand").len() >= 3).await;
-        assert!(s.requested("workspace/executeCommand")[2].to_string().contains("renamed.ts"));
+        eventually(|| project_requests(&s).len() >= 3).await;
+        assert!(project_requests(&s)[2].to_string().contains("renamed.ts"));
         std::fs::remove_file(h.root.join("renamed.ts")).unwrap();
         h.mgr.project_files_changed([&h.root.join("renamed.ts")]);
-        eventually(|| s.requested("workspace/executeCommand").len() >= 4).await;
+        eventually(|| project_requests(&s).len() >= 4).await;
         let id = h.mgr.servers()[0].id;
         h.mgr.restart(id).await.unwrap();
         h.wait_status("arbitrary-name", ServerStatus::Ready).await;
@@ -3357,6 +3794,55 @@ async fn external_projects_are_capability_gated_and_follow_lifecycle() {
         .await;
         h.mgr.shutdown_all().await;
     }
+}
+
+#[tokio::test]
+async fn external_projects_carry_plugin_files_and_module_aliases() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({ "commands": ["typescript.tsserverRequest"] });
+    let h = harness_configured("vue", "vue", &[("vtsls", caps)], |cfg| {
+        cfg.tsserver_project = true;
+        cfg.tsserver_project_extras.extensions = vec!["vue".into()];
+        cfg.tsserver_project_extras.paths.insert("@/*".into(), vec!["/project/src/*".into()]);
+    });
+    let s = h.launcher.state("vtsls");
+    s.respond("workspace/executeCommand", json!({ "success": true, "body": true }));
+    s.respond("textDocument/references", json!([]));
+    // vtsls answers from one file until its project reports diagnostics: loading till then,
+    // so an empty usage count is not final.
+    let diagnostics = Arc::new(Gate::default());
+    let gate = diagnostics.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        if method == "workspace/executeCommand" && params["arguments"][0] == "geterr" {
+            gate.hold();
+            return Some(Value::Null);
+        }
+        None
+    }));
+    std::fs::write(h.root.join("format.js"), "export const sum = 1;").unwrap();
+    let (doc, app) = h.open("App.vue", "<script>import { sum } from '@/format'</script>");
+    h.wait_status("vtsls", ServerStatus::Busy).await;
+    eventually(|| diagnostics.entered()).await;
+    let geterr = s.requested("workspace/executeCommand").into_iter().find(|r| r["arguments"][0] == "geterr").unwrap();
+    assert_eq!(geterr["arguments"][1]["files"], json!([app]), "an open file has a project in tsserver");
+    assert_eq!(geterr["arguments"][2]["isAsync"], true);
+    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+    diagnostics.open();
+    h.wait_status("vtsls", ServerStatus::Ready).await;
+    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, None);
+    let requests = s.requested("workspace/executeCommand");
+    let args = &requests[0]["arguments"][1];
+    assert_eq!(requests[0]["arguments"][0], "openExternalProject");
+    assert_eq!(args["rootFiles"].as_array().unwrap().len(), 2, "{args}");
+    assert_eq!(args["options"]["paths"], json!({ "@/*": ["/project/src/*"] }));
+    std::fs::write(h.root.join("Cart.vue"), "<script></script>").unwrap();
+    h.mgr.project_files_changed([&h.root.join("Cart.vue")]);
+    eventually(|| project_requests(&s).len() >= 2).await;
+    assert!(project_requests(&s)[1].to_string().contains("Cart.vue"));
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3, "geterr only after the first registration");
+    h.mgr.shutdown_all().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

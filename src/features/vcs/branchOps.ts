@@ -35,15 +35,18 @@ function rememberBranch(name: string | null | undefined) {
 }
 
 /** Valid-enough git ref name check (mirrors `git check-ref-format` basics). */
-export function validateBranchName(name: string): string | null {
+export function validateBranchName(
+  name: string,
+  overwrite = false,
+  branches: readonly Branch[] = useVcs.getState().branches,
+): string | null {
   const n = name.trim();
   if (!n) return "Branch name must not be empty";
   if (/[\s~^:?*[\\\p{Cc}]/u.test(n)) return "Branch name contains invalid characters";
   if (n.startsWith("-") || n.startsWith("/") || n.endsWith("/") || n.endsWith(".") || n.endsWith(".lock"))
     return "Invalid branch name";
   if (n.includes("..") || n.includes("//") || n.includes("@{") || n === "@") return "Invalid branch name";
-  const exists = useVcs.getState().branches.some((b) => !b.remote && b.name === n);
-  if (exists) return `Branch '${n}' already exists`;
+  if (!overwrite && branches.some((b) => !b.remote && b.name === n)) return tx`Branch '${n}' already exists`;
   return null;
 }
 
@@ -154,16 +157,18 @@ export async function checkoutBranch(name: string) {
 }
 
 /** New Branch: creates a branch from HEAD (or `from`) and, by default, checks it out. */
-export async function newBranch(from?: string) {
-  const repo = currentRepo();
+export async function newBranch(from?: string, repo = currentRepo()) {
+  const state = useVcs.getState();
+  const selected = repo === state.repo;
+  const previous = selected ? state.branch?.head : repo ? state.heads[repo]?.head : null;
+  const branches =
+    selected && state.branchesLoaded
+      ? state.branches
+      : await call(commands.vcsBranches(repo)).catch(() => (selected ? state.branches : []));
   // IDEA opens the dialog with a suggestion instead of an empty field: a
   // remote's name without the prefix, the source ref as `-copy`, or the
   // current branch for a plain New Branch from HEAD.
-  const suggestion = from
-    ? from.includes("/")
-      ? shortRemoteName(from)
-      : `${from}-copy`
-    : (useVcs.getState().branch?.head ?? "");
+  const suggestion = from ? (from.includes("/") ? shortRemoteName(from) : `${from}-copy`) : (previous ?? "");
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: "New branch name:",
@@ -172,15 +177,15 @@ export async function newBranch(from?: string) {
     mono: true,
     okLabel: "Create",
     sanitize: cleanUpBranchNameOnTyping,
-    validate: validateBranchName,
+    validate: (name, overwrite) => validateBranchName(name, overwrite, branches),
+    overwriteBranch: (name) => branches.some((b) => !b.remote && b.name === name.trim()),
     validateInitial: true,
     checkbox: { label: "Checkout branch", initial: true },
   });
   if (!r) return;
   const checkout = r.checked;
-  const previous = useVcs.getState().branch?.head;
   if (checkout) await saveAll();
-  const create = () => call(commands.vcsCreateBranch(repo, r.value, from ?? null, checkout));
+  const create = () => call(commands.vcsCreateBranch(repo, r.value, from ?? null, checkout, r.overwrite ?? false));
   const ok = await runOp(tx`Create branch ${r.value}`, create, {
     success: checkout ? `Created and checked out ${r.value}` : `Created branch ${r.value}`,
   });
@@ -525,9 +530,13 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   await eachRepo(
     roots,
     (root) =>
-      runOp(tx`Create branch ${name}`, () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked)), {
-        refresh: false,
-      }).then((done) => (done === undefined ? undefined : true)),
+      runOp(
+        tx`Create branch ${name}`,
+        () => call(commands.vcsCreateBranch(root, name, from ?? null, r.checked, false)),
+        {
+          refresh: false,
+        },
+      ).then((done) => (done === undefined ? undefined : true)),
     r.checked ? `Created and checked out ${name}` : `Created branch ${name}`,
     {
       undo: tx`delete branch ${name}`,

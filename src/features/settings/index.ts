@@ -14,7 +14,7 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { isPopupOpen, lazyComponent } from "@/ui";
+import { isPopupOpen, lazyComponent, lazyWhen } from "@/ui";
 import { loadSettings, useProject } from "@/platform/project";
 import { logError } from "@/platform/errorLog";
 import { restoreRemote } from "@/platform/remote";
@@ -35,7 +35,7 @@ import { zoomActions } from "./appearanceRuntime";
 import { activateFileTypes } from "./fileTypesRuntime";
 import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
-import { AssignShortcutOverlay, showAssignShortcut } from "./keymap/AssignShortcut";
+import { showAssignShortcut, useAssignShortcut } from "./keymap/assignShortcutStore";
 import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
 import { activatePhpStatus } from "./languages/PhpStatus";
@@ -105,6 +105,8 @@ async function showSettings(page?: string, newProjects = false) {
   openSettings(page, { newProjects });
 }
 
+const useAssignShortcutOpen = () => useAssignShortcut((s) => s.actionId !== null);
+
 export function activate(): () => void {
   const disposers = [
     trackRuntimeSettings(),
@@ -116,7 +118,12 @@ export function activate(): () => void {
     registerActions(zoomActions()),
     registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
     activateFileTypes(),
-    registerOverlay({ id: "settings.assignShortcut", component: AssignShortcutOverlay }),
+    registerOverlay({
+      id: "settings.assignShortcut",
+      component: lazyWhen(useAssignShortcutOpen, () =>
+        import("./keymap/AssignShortcut").then((m) => m.AssignShortcutOverlay),
+      ),
+    }),
     registerActions([
       {
         // Search Everywhere's ⌥↵ on an action (arg: the action id).

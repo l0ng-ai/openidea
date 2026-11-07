@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import {
   commandLine,
   duplicateConfig,
@@ -14,6 +15,8 @@ import {
   validateConfig,
 } from "./configs";
 import { contextConfig, fileRole } from "./context";
+import { cacheRunTemplates } from "./runTemplates";
+import { registerBuiltinTypes } from "./types";
 import { envFromRows } from "./EnvDialog";
 import { configRemoved, defaultSelection, rerunConfig, useRun, type RunSession } from "./store";
 
@@ -379,6 +382,85 @@ describe("context configuration", () => {
     const plain = [cfg({ id: "python:module:app", kind: "python", command: "python3", args: ["-m", "app"] })];
     expect(contextConfig("tools/gen.py", plain)).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
     expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+  });
+
+  describe("system python per OS (#1885)", () => {
+    const os = usePlatform.getState().os;
+    afterEach(() => {
+      usePlatform.setState({ os });
+      cacheRunTemplates([]);
+    });
+
+    it("falls back to `python` on Windows, `python3` elsewhere", () => {
+      usePlatform.setState({ os: "windows" });
+      // `python3` is not a command on Windows.
+      expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python", args: ["tools/gen.py"] });
+      expect(contextConfig("worker/test_worker.py", [])).toMatchObject({
+        command: "python",
+        args: ["-m", "pytest", "worker/test_worker.py"],
+      });
+      usePlatform.setState({ os: "linux" });
+      expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+      expect(contextConfig("worker/test_worker.py", [])).toMatchObject({
+        command: "python3",
+        args: ["-m", "pytest", "worker/test_worker.py"],
+      });
+    });
+
+    it("seeds gutter pytest configs from the pytest template", () => {
+      const dispose = registerBuiltinTypes();
+      try {
+        cacheRunTemplates([
+          cfg({ id: "template:pytest", kind: "pytest", params: { command: "pixi", runnerArgs: "run pytest" } }),
+        ]);
+        expect(contextConfig("worker/test_worker.py", [])).toMatchObject({
+          command: "pixi",
+          args: ["run", "pytest", "worker/test_worker.py"],
+          isTest: true,
+        });
+        // Template options come along; the file stays the target.
+        cacheRunTemplates([
+          cfg({
+            id: "template:pytest",
+            kind: "pytest",
+            params: { command: "uv", runnerArgs: "run pytest", options: "-x" },
+          }),
+        ]);
+        expect(contextConfig("worker/test_worker.py", [])!.args).toEqual([
+          "run",
+          "pytest",
+          "-x",
+          "worker/test_worker.py",
+        ]);
+        // A target stored on the template itself is dropped: the gutter file is
+        // the target, or the run would execute both.
+        cacheRunTemplates([
+          cfg({
+            id: "template:pytest",
+            kind: "pytest",
+            params: { command: "pixi", runnerArgs: "run pytest", target: "tests", options: "-x" },
+          }),
+        ]);
+        expect(contextConfig("worker/test_worker.py", [])!.args).toEqual([
+          "run",
+          "pytest",
+          "-x",
+          "worker/test_worker.py",
+        ]);
+        // No template: the detected interpreter / system python as before.
+        cacheRunTemplates([]);
+        const venv = [
+          cfg({ id: "python:module:app", kind: "python", command: ".venv/bin/python", args: ["-m", "app"] }),
+        ];
+        expect(contextConfig("worker/test_worker.py", venv)).toMatchObject({
+          command: ".venv/bin/python",
+          args: ["-m", "pytest", "worker/test_worker.py"],
+        });
+      } finally {
+        dispose();
+        cacheRunTemplates([]);
+      }
+    });
   });
 });
 

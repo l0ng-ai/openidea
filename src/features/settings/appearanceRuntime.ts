@@ -24,6 +24,9 @@ function flag(root: HTMLElement, name: string, on: boolean, value = "") {
   else delete root.dataset[name];
 }
 
+/** The per-level indent `ui/Tree` reads when "Use smaller indents in trees" is on (IDEA parity). */
+export const SMALL_TREE_INDENT = "12px";
+
 /** Root attributes and CSS variables for the Appearance options. */
 export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = document.documentElement): void {
   const a = s.appearance;
@@ -42,6 +45,9 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   flag(root, "toolWindowBg", a.differentToolWindowBackground, "different");
   flag(root, "projectColors", !a.projectColorsInToolbar, "off");
   flag(root, "menuIcons", !a.menuIcons, "off");
+  // "Use smaller indents in trees": `ui/Tree` reads the variable as its per-level indent.
+  if (a.smallTreeIndents) root.style.setProperty("--tree-indent", SMALL_TREE_INDENT);
+  else root.style.removeProperty("--tree-indent");
   root.dataset.aaIde = a.ideAntialiasing;
   root.dataset.aaEditor = a.editorAntialiasing;
   applyZoom(a.zoom, root);

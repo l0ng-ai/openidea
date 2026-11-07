@@ -7,7 +7,7 @@
 /// or processes beyond WASI's clocks and randomness; everything else goes
 /// through the imports below, gated by the capabilities granted in
 /// `plugin.toml` (a missing one returns `error::denied`).
-package openidea:plugin@1.2.0;
+package openidea:plugin@1.3.0;
 
 world plugin {
     import log;
@@ -17,6 +17,7 @@ world plugin {
     import editor;
     import invocation;
     import vcs;
+    import commit;
     import events;
     import tasks;
     import diagnostics;
@@ -56,6 +57,35 @@ world plugin-indexing {
     export document-indexer;
 }
 
+world plugin-semantic-tokens {
+    include plugin;
+    export semantic-tokens-provider;
+}
+
+world plugin-hover {
+    include plugin;
+    export hover-provider;
+}
+
+/// A plugin with inlay hints (`inlay-hints` under `[[contributes.providers]]`).
+world plugin-inlay-hints {
+    include plugin;
+    export inlay-hints-provider;
+}
+
+/// A plugin whose views show in the Services tool window
+/// (`location = "services"`): their nodes' detail pane.
+world plugin-details {
+    include plugin;
+    export detail-provider;
+}
+
+/// A plugin with before-commit checks (`[[contributes.commitChecks]]`).
+world plugin-commit-checks {
+    include plugin;
+    export commit-checker;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -75,4 +105,27 @@ world views-provider {
 /// Only the `document-indexer` export, generated next to `plugin` like `syntax`.
 world indexing {
     export document-indexer;
+}
+
+world semantic-tokens {
+    export semantic-tokens-provider;
+}
+
+world hover {
+    export hover-provider;
+}
+
+/// Only the `inlay-hints-provider` export, generated next to `plugin` like `syntax`.
+world inlay-hints {
+    export inlay-hints-provider;
+}
+
+/// Only the `detail-provider` export, generated next to `plugin` like `syntax`.
+world details {
+    export detail-provider;
+}
+
+/// Only the `commit-checker` export, generated next to `plugin` like `syntax`.
+world commit-checks {
+    export commit-checker;
 }

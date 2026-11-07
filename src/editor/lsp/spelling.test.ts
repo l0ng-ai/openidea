@@ -77,15 +77,11 @@ describe("Typo inspection", () => {
     expect(diagnosticMarks(lint)).toEqual([]);
 
     view.dispatch({ selection: { anchor: 5 } });
-    expect(spellingIntentions(view).map((i) => i.label)).toEqual([
-      "Typo: Change to…",
-      "Save 'mesage' to project-level dictionary",
-      "Save 'mesage' to application-level dictionary",
-    ]);
-    // IDEA's → menu: the dictionaries and the inspection's controls.
+    expect(spellingIntentions(view).map((i) => i.label)).toEqual(["Typo: Change to…", "Save 'mesage' to dictionary"]);
+    // IDEA's → menu: each dictionary level and the inspection's controls.
     expect(spellingIntentions(view)[0]!.submenu?.map((i) => ("label" in i ? i.label : "-"))).toEqual([
-      "Save 'mesage' to project-level dictionary",
-      "Save 'mesage' to application-level dictionary",
+      "Save to project-level dictionary",
+      "Save to application-level dictionary",
       "-",
       "Edit inspection profile setting",
       "Disable inspection",
@@ -121,6 +117,27 @@ describe("Typo inspection", () => {
     await settle();
     view.dispatch({ selection: { anchor: 2 } });
     expect(spellingIntentions(view)[0]!.label).toBe("Typo: Rename to…");
+  });
+
+  it("in a read-only document saves to dictionaries but changes nothing in place", async () => {
+    vi.useFakeTimers();
+    useProject.setState({ project: { root: "/p" } as never, settings: {} as never });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "// mesage here",
+        extensions: [
+          lspDoc.of({ doc: 7, path: "/p/a.rs", language: "rust", uiMode: null, readOnly: true }),
+          spellingExtension(),
+        ],
+      }),
+    });
+    views.push(view);
+    await settle();
+    expect(spellCheck).toHaveBeenCalled();
+    view.dispatch({ selection: { anchor: 5 } });
+    expect(spellingIntentions(view).map((i) => i.label)).toEqual(["Save 'mesage' to dictionary"]);
+    await spellingIntentions(view)[0]!.run();
+    expect(settingsSet).toHaveBeenCalledWith("project", "spelling.projectWords", JSON.stringify(["mesage"]));
   });
 
   it("checks only what the Typo options include, and re-checks when they change", async () => {

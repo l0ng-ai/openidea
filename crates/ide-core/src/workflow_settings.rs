@@ -113,6 +113,8 @@ pub struct CommitSettings {
     pub body_limit: u32,
     pub show_right_margin: bool,
     pub wrap_at_margin: bool,
+    /// Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run.
+    pub disabled_plugin_checks: Vec<String>,
 }
 
 impl Default for CommitSettings {
@@ -132,6 +134,7 @@ impl Default for CommitSettings {
             body_limit: 72,
             show_right_margin: true,
             wrap_at_margin: false,
+            disabled_plugin_checks: Vec::new(),
         }
     }
 }

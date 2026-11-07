@@ -27,6 +27,7 @@ import {
   useRun,
   writeTerminal,
   type RunSession,
+  isLive,
 } from "./store";
 import { TestTreeView, formatDuration } from "./TestTreeView";
 import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
@@ -46,7 +47,7 @@ function failed(s: RunSession): boolean {
  * configuration's own icon (Services keeps the same model, see services.tsx).
  */
 export function sessionIcon(s: RunSession): string {
-  if (s.status === "running" || s.status === "starting") return s.config.isTest ? "check" : "run";
+  if (isLive(s)) return s.config.isTest ? "check" : "run";
   if (failed(s)) return "error";
   // Ended (exit or stop): the configuration's own icon — the green arrow stays "still running".
   return configIcon(s.config);
@@ -74,7 +75,7 @@ export function SessionPanel({
   const softWrap = wrapOverride ?? defaultWrap;
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
-  const running = session.status === "running" || session.status === "starting";
+  const running = isLive(session);
   const cwd = runDirectory(session.config.cwd);
 
   // Selecting a test with captured output shows just that output (like IDEA).
@@ -170,7 +171,7 @@ export function SessionPanel({
         <IconButton
           icon="stop"
           iconSize={13}
-          title="Stop"
+          title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
           tone={running || onStop ? "danger" : "default"}
           disabled={!running && !onStop}
           onClick={onStop ?? (() => void stopSession(session.id))}

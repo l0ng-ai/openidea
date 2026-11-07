@@ -3,16 +3,22 @@
 //! sandbox goes through [`HostApi`], implemented by the host; the imports
 //! themselves are in `wit_host`.
 
-use crate::types::{CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument};
 use crate::types::{
-    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput,
+    CodeAction, CommitDraft, CommitProblem, CompletionItem, InlineSuggestion, LineMarker, Location, PluginHover,
+    PluginInlayHint, ProviderDocument, SemanticToken,
+};
+use crate::types::{
+    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
-    FieldValue, TableSort, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem,
-    Viewport,
+    FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
+    ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
-use crate::wit_host::{bindings, indexing_bindings, providers_bindings, syntax_bindings, views_bindings};
+use crate::wit_host::{
+    bindings, commit_checks_bindings, details_bindings, hover_bindings, indexing_bindings, inlay_bindings,
+    providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+};
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -28,14 +34,20 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
+use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
+use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
+use details_bindings::openidea::plugin::detail_types as wit_dt;
+use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
+use inlay_bindings::exports::openidea::plugin::inlay_hints_provider as wit_inlay;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
+use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.2";
+pub const API_VERSION: &str = "1.3";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -56,8 +68,32 @@ pub trait HostApi: Send + Sync {
         let _ = (client, url);
         Ok(())
     }
+    /// Shows `prompt` in `client`'s window and waits for the answer until the
+    /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
+    /// text (`Input`, one element) or any value (`Confirm`: OK); `None` when
+    /// dismissed.
+    fn ask(
+        &self,
+        client: Option<&str>,
+        prompt: Prompt,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Vec<String>>, HostError> {
+        let _ = (client, prompt, cancel);
+        Ok(None)
+    }
+    /// Brings the plugin's declared view to the front in `client`'s window.
+    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
+        let _ = (client, view);
+        Ok(())
+    }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
+    /// for window `client` (every window if `None`).
+    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
+        let _ = (client, key, value);
+        Ok(())
+    }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
     /// Unsaved text of an open editor's file.
@@ -82,6 +118,22 @@ pub trait HostApi: Send + Sync {
         Ok(Vec::new())
     }
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
+    /// The commit being prepared in `client`'s window (`None`: no repository),
+    /// waiting for the window until `cancel` fires.
+    fn pending_commit(
+        &self,
+        client: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<CommitDraft>, HostError> {
+        let _ = (client, cancel);
+        Ok(None)
+    }
+    /// Replaces the commit message of `client`'s window if its draft is still at
+    /// `revision` (else [`HostError::Stale`]).
+    fn set_commit_message(&self, client: Option<&str>, revision: u64, message: String) -> Result<(), HostError> {
+        let _ = (client, revision, message);
+        Err(HostError::Invalid("no commit is being prepared".into()))
+    }
     /// Subscribes to (or unsubscribes from) a kind of workbench event.
     /// Project files matching `glob` (root-relative), at most `limit`.
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError>;
@@ -121,6 +173,8 @@ pub trait HostApi: Send + Sync {
         cwd: Option<&Path>,
     ) -> Result<(), HostError>;
     fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError>;
+    /// The IDE's UI language as a BCP 47 tag.
+    fn locale(&self) -> String;
     /// A setting of the plugin as JSON (project over global over the schema default).
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String>;
 }
@@ -359,6 +413,8 @@ pub struct StoreData {
     pub(crate) granted: Vec<Capability>,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
+    /// The running call is a command or an event, so it may ask the user.
+    pub(crate) interactive: bool,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
@@ -488,6 +544,11 @@ struct Exports {
     providers: Option<wit_prov::Guest>,
     indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
+    semantic: Option<wit_sem::Guest>,
+    details: Option<wit_detail::Guest>,
+    hover: Option<wit_hover::Guest>,
+    commit_checks: Option<wit_cc::Guest>,
+    inlay: Option<wit_inlay::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -539,6 +600,7 @@ impl Runtime {
             granted: setup.granted,
             host: setup.host,
             invocation: Invocation::default(),
+            interactive: false,
             open_tasks: Vec::new(),
             last_report: None,
         };
@@ -566,6 +628,11 @@ impl Runtime {
         let index_indices = wit_index::GuestIndices::new(&pre).ok();
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
+        let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
+        let detail_indices = wit_detail::GuestIndices::new(&pre).ok();
+        let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
+        let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
+        let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -584,9 +651,40 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let semantic = match semantic_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
+        let details = match detail_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
+        let hover = match hover_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
+        let commit_checks = match commit_check_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
+        let inlay = match inlay_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer },
+            exports: Exports {
+                plugin,
+                syntax,
+                providers,
+                views,
+                indexer,
+                semantic,
+                details,
+                hover,
+                commit_checks,
+                inlay,
+            },
             limits: setup.limits,
             version: setup.version,
         })
@@ -816,6 +914,91 @@ impl Runtime {
             .collect())
     }
 
+    pub fn provide_semantic_tokens(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<SemanticToken>, CallError> {
+        if self.exports.semantic.is_none() {
+            return Err(CallError::missing_export("semantic-tokens-provider"));
+        }
+        let d = wit_sem::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let tokens = self.call(Invocation::default(), timeout, |e, store| {
+            e.semantic.as_ref().expect("checked").call_semantic_tokens(store, &d)
+        })?;
+        Ok(tokens
+            .into_iter()
+            .take(MAX_SEMANTIC_TOKENS)
+            .map(|t| SemanticToken {
+                range: range_from_wit(t.range),
+                kind: clip(t.kind, 32),
+                modifiers: t.modifiers.into_iter().take(MAX_TOKEN_MODIFIERS).map(|m| clip(m, 32)).collect(),
+            })
+            .collect())
+    }
+
+    pub fn provide_hover(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        timeout: Duration,
+    ) -> Result<Option<PluginHover>, CallError> {
+        if self.exports.hover.is_none() {
+            return Err(CallError::missing_export("hover-provider"));
+        }
+        let d = wit_hover::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let hover = self.call(Invocation::default(), timeout, |e, store| {
+            e.hover.as_ref().expect("checked").call_hover(store, &d, pos_to_wit(at))
+        })?;
+        Ok(hover
+            .filter(|h| !h.markdown.trim().is_empty())
+            .map(|h| PluginHover { markdown: clip(h.markdown, MAX_HOVER_BYTES), range: h.range.map(range_from_wit) }))
+    }
+
+    pub fn provide_inlay_hints(
+        &mut self,
+        doc: &ProviderDocument,
+        range: ide_core::Range,
+        timeout: Duration,
+    ) -> Result<Vec<PluginInlayHint>, CallError> {
+        if self.exports.inlay.is_none() {
+            return Err(CallError::missing_export("inlay-hints-provider"));
+        }
+        let d = wit_inlay::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let r = wit_types::Range { start: pos_to_wit(range.start), end: pos_to_wit(range.end) };
+        let hints = self.call(Invocation::default(), timeout, |e, store| {
+            e.inlay.as_ref().expect("checked").call_inlay_hints(store, &d, r)
+        })?;
+        Ok(hints
+            .into_iter()
+            .filter(|h| !h.label.trim().is_empty())
+            .take(MAX_PROVIDER_ITEMS)
+            .map(|h| PluginInlayHint {
+                position: ide_core::Pos::new(h.position.line, h.position.character),
+                label: clip(h.label, 256),
+                kind: clip(h.kind, 32),
+                tooltip: h.tooltip.map(|t| clip(t, 1024)),
+                padding_left: h.padding_left,
+                padding_right: h.padding_right,
+            })
+            .collect())
+    }
+
     pub fn activate(&mut self) -> Result<(), CallError> {
         let data = self.store.data();
         let ctx = wit_types::Context {
@@ -838,6 +1021,7 @@ impl Runtime {
     ) -> Result<Option<String>, CallError> {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -880,6 +1064,53 @@ impl Runtime {
         }
     }
 
+    /// The Services pane of node `key` of the plugin's services view `view`.
+    pub fn service_detail(
+        &mut self,
+        view: &str,
+        key: &str,
+        invocation: Invocation,
+    ) -> Result<Vec<ServiceTab>, CallError> {
+        if self.exports.details.is_none() {
+            return Err(CallError::missing_export("detail-provider"));
+        }
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let details = e.details.as_ref().expect("checked");
+            let r = details.call_detail(&mut *store, view, key, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        match result {
+            Ok(tabs) => Ok(tabs.into_iter().take(MAX_SERVICE_TABS).map(service_tab_from_wit).collect()),
+            Err(e) => Err(CallError::Guest(e.into())),
+        }
+    }
+
+    /// Runs the plugin's before-commit check `check` on `draft`.
+    pub fn commit_check(
+        &mut self,
+        check: &str,
+        draft: CommitDraft,
+        invocation: Invocation,
+    ) -> Result<Vec<CommitProblem>, CallError> {
+        if self.exports.commit_checks.is_none() {
+            return Err(CallError::missing_export("commit-checker"));
+        }
+        let draft = crate::wit_host::commit_draft_to_wit(draft);
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let checks = e.commit_checks.as_ref().expect("checked");
+            let r = checks.call_check(&mut *store, check, &draft, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        match result {
+            Ok(problems) => Ok(problems.into_iter().take(MAX_COMMIT_PROBLEMS).map(commit_problem_from_wit).collect()),
+            Err(e) => Err(CallError::Guest(e.into())),
+        }
+    }
+
     /// A user action in a view or custom editor.
     pub fn view_event(&mut self, view: &str, event: ViewEvent, invocation: Invocation) -> Result<(), CallError> {
         if self.exports.views.is_none() {
@@ -888,6 +1119,7 @@ impl Runtime {
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -901,6 +1133,7 @@ impl Runtime {
         let events: Vec<wit_events::Event> = events.into_iter().take(MAX_BATCH).map(event_to_wit).collect();
         self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
+            store.data_mut().interactive = true;
             let r = e.plugin.openidea_plugin_event_handler().call_handle(
                 &mut *store,
                 &events,
@@ -937,6 +1170,7 @@ impl Runtime {
         let result = f(&self.exports, &mut self.store);
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
+        data.interactive = false;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
             data.host.task_end(id);
@@ -964,6 +1198,9 @@ impl Runtime {
 
 /// Most items one provider call may return (more are dropped).
 const MAX_PROVIDER_ITEMS: usize = 10_000;
+const MAX_SEMANTIC_TOKENS: usize = 1 << 16;
+const MAX_TOKEN_MODIFIERS: usize = 8;
+const MAX_HOVER_BYTES: usize = 64 * 1024;
 
 fn pos_to_wit(p: ide_core::Pos) -> wit_types::Position {
     wit_types::Position { line: p.line, character: p.col }
@@ -1070,6 +1307,50 @@ fn code_action_to_wit(a: &CodeAction) -> wit_prov::CodeAction {
 
 fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
     s.map(|s| clip(s, max))
+}
+
+const MAX_COMMIT_PROBLEMS: usize = 50;
+
+fn commit_problem_from_wit(p: wit_cc::CommitProblem) -> CommitProblem {
+    let (path, range) = match p.location {
+        Some(l) => (Some(clip(l.path, 4096)), Some(range_from_wit(l.range))),
+        None => (None, None),
+    };
+    CommitProblem { message: clip(p.message, 4096), path, range }
+}
+
+const MAX_SERVICE_TABS: usize = 8;
+const MAX_LOG_TOGGLES: usize = 8;
+const MAX_LOG_ARGS: usize = 256;
+const MAX_LOG_ARG: usize = 4096;
+
+fn service_tab_from_wit(t: wit_dt::Tab) -> ServiceTab {
+    let body = match t.body {
+        wit_dt::Pane::Message(m) => ServicePane::Message(clip(m, 16 << 10)),
+        wit_dt::Pane::Text(text) => ServicePane::Text(clip(text, MAX_TEXT)),
+        wit_dt::Pane::Log(log) => {
+            let args_fit = |args: &[String]| args.len() <= MAX_LOG_ARGS && args.iter().all(|a| a.len() <= MAX_LOG_ARG);
+            if args_fit(&log.args)
+                && log.toggles.len() <= MAX_LOG_TOGGLES
+                && log.toggles.iter().all(|t| args_fit(&t.args))
+            {
+                ServicePane::Log(ServiceLog {
+                    program: clip(log.program, 256),
+                    args: log.args,
+                    toggles: log
+                        .toggles
+                        .into_iter()
+                        .map(|t| ServiceLogToggle { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), args: t.args })
+                        .collect(),
+                })
+            } else {
+                ServicePane::Message(format!(
+                    "This log asks for more than {MAX_LOG_ARGS} arguments of {MAX_LOG_ARG} bytes or {MAX_LOG_TOGGLES} toggles."
+                ))
+            }
+        }
+    };
+    ServiceTab { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), body }
 }
 
 /// A `table` body carried by the `other` case (the sortable variant, plugins/
