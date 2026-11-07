@@ -78,6 +78,11 @@ async fn run(base: PathBuf) -> i32 {
             None
         }
     };
+    if let Some(root) = std::env::var_os(ide_host::trust::TRUSTED_ROOT_ENV)
+        && let Err(e) = host.trust.inherit(std::path::Path::new(&root))
+    {
+        tracing::warn!("cannot trust {}: {e}", root.to_string_lossy());
+    }
     tracing::info!("openidea-server {} ready", env!("CARGO_PKG_VERSION"));
     let mut dispatcher = Dispatcher::standard();
     if let Some(plugins) = &plugins {

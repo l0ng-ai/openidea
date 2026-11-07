@@ -571,7 +571,6 @@ const SPRING_SCAN_FILES: usize = 400;
 /// modules of the build in `build` that apply the Spring Boot plugin:
 /// `java -cp ${classpath} <class>` in the module, the classpath resolved at launch.
 fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
-    let mut budget = SPRING_SCAN_FILES;
     let mut modules = vec![build.to_path_buf()];
     let mut level = vec![build.to_path_buf()];
     for _ in 0..ide_core::project_roots::SEARCH_DEPTH {
@@ -579,12 +578,11 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
         modules.extend(level.iter().cloned());
     }
     for module in modules {
-        if budget == 0 {
-            break;
-        }
         if !applies_spring_boot(&module) {
             continue;
         }
+        // A budget per module: a large common library must not starve later app modules.
+        let mut budget = SPRING_SCAN_FILES;
         let module_rel = (module != root).then(|| relative(root, &module).to_string_lossy().replace('\\', "/"));
         for class in spring_boot_classes(&module, &mut budget) {
             let simple = class.rsplit(['.', '$']).next().unwrap_or(&class).to_owned();

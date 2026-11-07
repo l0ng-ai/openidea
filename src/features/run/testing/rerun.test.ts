@@ -326,3 +326,11 @@ describe("exact Go test and benchmark selections", () => {
     expect(config!.args).toEqual(["test", "-race", "-bench", ".", "example.com/p"]);
   });
 });
+
+it("keeps inherited Go build tags enabled when deriving a typed package rerun", () => {
+  const config = {
+    ...cfg("go", "go", ["test", "./..."]),
+    params: { goKind: "test", scope: "package", target: "./..." },
+  };
+  expect(rerunFailedConfig(config, [["example.com/p", "TestChosen"]])!.params?.useTags).toBe("true");
+});

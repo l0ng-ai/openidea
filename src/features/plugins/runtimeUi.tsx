@@ -25,19 +25,14 @@ import { useProject } from "@/platform/project";
 import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import {
-  notifications,
-  maybeCommitService,
-  maybeEditorService,
-  registerStatusItem,
-  toolWindowService,
-} from "@/workbench/contributions";
+import { notifications, maybeCommitService, maybeEditorService, registerStatusItem } from "@/workbench/contributions";
 import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
 import { usePluginT } from "./pluginText";
-import { bumpView, deliverViewMessage, pluginToolWindowId } from "./views/viewStore";
+import { bumpView, deliverViewMessage } from "./views/viewStore";
+import { revealWindowView } from "./views/viewWindows";
 import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
@@ -448,7 +443,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void answerCommit(e.requestId, e.request);
       return true;
     case "revealView":
-      toolWindowService().show(pluginToolWindowId(e.pluginId, e.view), true);
+      revealWindowView(e.pluginId, e.view);
       return true;
     default:
       return false;

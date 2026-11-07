@@ -51,18 +51,34 @@ export function withTarget(config: RunConfig, target: string): RunConfig {
   return target ? { ...rest, target } : rest;
 }
 
+/** A Python configuration on a Docker / Compose target: debugged in its container (`debugInContainer`). */
+export function containerDebuggable(
+  config: RunConfig,
+  targets: readonly RunTargetValid[] = workflowSettings().runTargets,
+): boolean {
+  const target = targetOf(config, targets);
+  return !!target && inContainer(target) && config.debugAdapter === "debugpy";
+}
+
 /**
- * Debugging on run targets isn't supported: tells so (offering Run) and returns
- * true when `config` runs on a target.
+ * Debugging on run targets isn't supported, except Python in containers: tells so
+ * (offering Run) and returns true when `config` can't be debugged where it runs.
  */
-export function remoteDebugBlocked(config: RunConfig): boolean {
-  if (!config.target) return false;
-  const target = targetName(config) ?? config.target;
+export function remoteDebugBlocked(
+  config: RunConfig,
+  targets: readonly RunTargetValid[] = workflowSettings().runTargets,
+): boolean {
+  if (!config.target || containerDebuggable(config, targets)) return false;
+  const target = targetName(config, targets) ?? config.target;
+  const container = targetOf(config, targets);
   notifications().notify({
     group: "run",
     level: "warning",
     key: "run.remoteDebug",
-    title: "Debugging on run targets is not supported",
+    title:
+      container && inContainer(container)
+        ? "Only Python can be debugged in containers"
+        : "Debugging on run targets is not supported",
     body: txTemplate(
       `'${config.name}' runs on ${target}. Run it, or choose “Local machine” under “Run on” to debug it.`,
     ),

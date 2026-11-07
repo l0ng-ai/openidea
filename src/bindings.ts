@@ -1328,8 +1328,9 @@ export const commands = {
 	/**  Browse before connecting, using the desktop's SSH configuration even in a remote window. */
 	remoteBootstrapList: (ssh: string, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_bootstrap_list", { ssh, path })),
 	/**
-	 *  File › Remote Development: opens `path` on `target` (an SSH host or a WSL distribution)
-	 *  in this window (installs / starts the server as needed).
+	 *  File › Remote Development: opens `path` on `target` (an SSH host, a WSL distribution, or a
+	 *  dev container, whose project folder is the container's own) in this window (installs /
+	 *  starts the server as needed).
 	 */
 	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
@@ -1375,7 +1376,7 @@ export const commands = {
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
 	dbSchemaObjects: (id: string, schema: string) => typedError<DbSchemaObjects, IdeError>(__TAURI_INVOKE("db_schema_objects", { id, schema })),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
-	dbExplain: (request: RequestId, id: string, statement: string) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement })),
+	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
@@ -1388,7 +1389,7 @@ export const commands = {
 	dbSetManualCommit: (id: string, manual: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_manual_commit", { id, manual })),
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
@@ -6663,7 +6664,7 @@ export type RemoteEntry = {
 	permissions: string,
 };
 
-/**  A project folder on an SSH host or in a WSL distribution. */
+/**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
 export type RemoteLaunch = {
 	target: RemoteTarget,
 	path: string,
@@ -6738,14 +6739,21 @@ export type RemoteSession = {
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
-export type RemoteStage = "connecting" | "checking" | "downloading" | "uploading" | "starting" | "opening";
+export type RemoteStage = "connecting" | 
+/**  `devcontainer up`: building or starting the container. */
+"container" | "checking" | "downloading" | "uploading" | "starting" | "opening";
 
 /**  Where a remote project lives and how the server there is reached. */
 export type RemoteTarget = 
 /**  The host of SSH configuration `config`. */
 { kind: "ssh"; config: string } | 
 /**  A WSL distribution on this machine. */
-{ kind: "wsl"; distro: string };
+{ kind: "wsl"; distro: string } | 
+/**
+ *  The dev container of local folder `folder`, built and started with the Dev Containers CLI;
+ *  `config` is its `devcontainer.json`, relative to the folder (empty = the default one).
+ */
+{ kind: "devContainer"; folder: string; config: string };
 
 export type Renamed = {
 	edit: WorkspaceEdit,
@@ -7947,7 +7955,9 @@ export type ToolInfo = {
 
 export type ToolKind = "languageServer" | "debugger" | 
 /**  Loaded into another tool's process, e.g. a jdtls agent. */
-"plugin" | "formatter";
+"plugin" | "formatter" | 
+/**  A command the IDE itself runs, e.g. the Dev Containers CLI. */
+"cli";
 
 export type ToolSettings = {
 	/**  Executable to launch instead of the managed / `PATH` one; empty = auto-detect. */
