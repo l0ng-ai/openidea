@@ -267,6 +267,103 @@ const scroll: Scenario = {
   },
 };
 
+/**
+ * Git Log with 20,000 commits on branching lanes, loaded page by page as the
+ * backend does: showing it, walking the selection with the arrow keys (the
+ * details pane follows) and wheel-scrolling through it.
+ */
+const gitLog: Scenario = {
+  id: "gitLog",
+  title: "Show, navigate and scroll a 20k-commit Git Log",
+  async run(h) {
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { fakeGitLog(n: number): void } }).__openideaPerf.fakeGitLog(20_000),
+    );
+    const showMs = await h.measure(
+      () =>
+        h.page.evaluate(() =>
+          (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
+            "vcs.showLog",
+          ),
+        ),
+      '[role="listbox"][aria-label="Commits"]',
+      "order flow step 0",
+    );
+    const refresh = await h.refreshMs();
+    const list = h.page.getByRole("listbox", { name: "Commits" });
+    await list.getByRole("option").first().click();
+    const keyLat = await h.pressMeasured(Array(40).fill("ArrowDown"), 50);
+    const box = (await list.boundingBox())!;
+    await h.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    const t0 = await h.now();
+    await h.inPage((p) => p.startFrames());
+    for (let i = 0; i < 120; i++) {
+      await h.page.mouse.wheel(0, i < 80 ? 400 : -400);
+      await h.page.waitForTimeout(16);
+    }
+    await h.page.waitForTimeout(200);
+    const frames = await h.inPage((p) => p.stopFrames());
+    return {
+      showMs,
+      ...frameSummary(frames, refresh),
+      tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+      ...keySummary(keyLat, refresh, "arrowKey"),
+    };
+  },
+};
+
+/**
+ * Dragging the splitters with an editor, the Project tree and the Git Log
+ * open: every pointer move resizes the islands, so each frame relays them out.
+ */
+const resizePanels: Scenario = {
+  id: "resizePanels",
+  title: "Drag the tool window splitters",
+  async run(h) {
+    await h.openFile(SAMPLE);
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { fakeGitLog(n: number): void } }).__openideaPerf.fakeGitLog(2_000),
+    );
+    await h.measure(
+      () =>
+        h.page.evaluate(() =>
+          (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
+            "vcs.showLog",
+          ),
+        ),
+      '[role="listbox"][aria-label="Commits"]',
+      "order flow step 0",
+    );
+    const refresh = await h.refreshMs();
+    const drag = async (name: string, dx: number, dy: number) => {
+      const box = (await h.page.getByRole("separator", { name }).boundingBox())!;
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      await h.page.mouse.move(x, y);
+      await h.page.mouse.down();
+      await h.inPage((p) => p.startFrames());
+      // Out and back twice, one pointer move a frame.
+      for (let i = 0; i < 120; i++) {
+        const t = Math.sin((i / 60) * Math.PI);
+        await h.page.mouse.move(x + dx * t, y + dy * t);
+        await h.page.waitForTimeout(16);
+      }
+      await h.page.mouse.up();
+      await h.page.waitForTimeout(200);
+      return frameSummary(await h.inPage((p) => p.stopFrames()), refresh);
+    };
+    const t0 = await h.now();
+    const side = await drag("Resize left tool window", 300, 0);
+    const bottom = await drag("Resize bottom tool window", 0, -250);
+    return {
+      ...side,
+      tbtMs: totalBlockingTime(await h.longTasksSince(t0)),
+      bottomFrameP95Ms: bottom.frameP95Ms,
+      bottomDroppedFramesPct: bottom.droppedFramesPct,
+    };
+  },
+};
+
 /** Cold load: navigation → Project tree painted. */
 const startup: Scenario = {
   id: "startup",
@@ -453,6 +550,8 @@ export const SCENARIOS: Scenario[] = [
   typingAngular,
   completion,
   consoleOutput,
+  gitLog,
+  resizePanels,
   keyRepeat,
   scroll,
   tabs,

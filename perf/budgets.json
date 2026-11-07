@@ -46,6 +46,16 @@
     "consoleOutput.keyMissedFramePct": 10,
     "consoleOutput.tbtMs": 50,
 
+    "gitLog.showMs": 150,
+    "gitLog.droppedFramesPct": 2,
+    "gitLog.tbtMs": 50,
+    "gitLog.arrowKeyP95Ms": 20,
+    "gitLog.arrowKeyMissedFramePct": 5,
+
+    "resizePanels.droppedFramesPct": 2,
+    "resizePanels.bottomDroppedFramesPct": 2,
+    "resizePanels.tbtMs": 50,
+
     "keyRepeat.p95Ms": 20,
     "keyRepeat.maxMs": 33,
     "keyRepeat.missedFramePct": 2,
