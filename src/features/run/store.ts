@@ -25,7 +25,7 @@ import {
   parseJavaArgs,
   prepareJavaLaunch,
 } from "@/platform/javaLaunch";
-import { consumeProjectBuild } from "@/platform/buildReceipt";
+import { clearProjectBuild, consumeProjectBuild } from "@/platform/buildReceipt";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
@@ -637,6 +637,8 @@ export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
 
 /** Runs `config`'s before launch tasks (none: true). `chain` holds the configurations already launching. */
 export async function prepareLaunch(config: RunConfig, chain: readonly string[] = []): Promise<boolean> {
+  // A Build Project receipt belongs to this launch only; compound children keep it.
+  if (!chain.length) clearProjectBuild();
   if (!config.beforeLaunch?.length || !beforeLaunch) return true;
   return beforeLaunch(config, [...chain, config.id]);
 }

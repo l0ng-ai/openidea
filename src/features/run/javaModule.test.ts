@@ -112,7 +112,7 @@ it.each(["noBuild", "rebuild"] as const)("passes the %s build policy to the reso
 it("reuses a successful Before launch Build Project instead of building again", async () => {
   useProject.setState({ project: { root: "/p" } as never });
   recordProjectBuild("/p");
-  await startRun({ ...config, module: "app" });
+  await startRun({ ...config, module: "app" }, undefined, undefined, { prepared: true });
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "noBuild", expect.any(Number));
   useProject.setState({ project: null });
 });
