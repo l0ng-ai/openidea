@@ -315,6 +315,11 @@ impl Manifest {
             self.needs_api("`icon`", 2)?;
             check_relative(icon, "icon")?;
         }
+        for cap in self.capabilities.required.iter().chain(&self.capabilities.optional) {
+            if matches!(cap, Capability::ProjectWrite | Capability::FsWrite(_)) {
+                self.needs_api(&format!("capability `{cap}`"), 3)?;
+            }
+        }
         if let Some(dark) = &self.icon_dark {
             if self.icon.is_none() {
                 return Err("`icon-dark` needs `icon`".into());
@@ -582,6 +587,16 @@ mod tests {
     }
 
     const BASE: &str = "id = \"ok\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n";
+
+    #[test]
+    fn write_capabilities_need_api_1_3() {
+        for cap in ["project.write", "fs.write:/opt/tool"] {
+            let caps = format!("[capabilities]\noptional = [\"{cap}\"]\n");
+            assert!(err(&format!("{BASE}{caps}")).contains("new in plugin API 1.3"), "{cap}");
+            let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.3"))).unwrap();
+            assert_eq!(m.capabilities.optional[0].to_string(), cap);
+        }
+    }
 
     #[test]
     fn parses_icons() {

@@ -27,7 +27,7 @@ fn joined_path(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), String> {
 /// the canonical path when it exists, else the canonicalized deepest existing
 /// ancestor with the still-missing tail resolved textually — so the location
 /// of a missing path is still judged where it would really land.
-fn resolve_real(joined: &Path) -> PathBuf {
+pub fn resolve_real(joined: &Path) -> PathBuf {
     let mut tail = Vec::new();
     let mut candidate = joined.to_path_buf();
     let mut real = loop {
@@ -74,28 +74,49 @@ pub fn inside_root(root: &Path, path: &str) -> Result<bool, String> {
     Ok(resolve_real(&joined).starts_with(&root))
 }
 
-/// Resolves the file `path` names inside `root` for writing, creating the
-/// directories it needs: `path` may not exist yet, so the deepest part that
-/// exists is canonicalized (following symlinks) and must stay inside `root`.
-pub fn resolve_writable_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+/// Like [`resolve_in_root`] for a path that may not exist yet (a file about to
+/// be created) or that names a symlink itself (to delete or rename it): the
+/// directory part is resolved through symlinks, the final name is kept as is,
+/// and the result must stay inside `root`.
+pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let outside = || format!("{path}: access outside the project root is not allowed");
     if path.is_empty() {
         return Err("empty path".into());
     }
     let root = root.canonicalize().map_err(|e| format!("project root unavailable: {e}"))?;
     let requested = Path::new(path);
     let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
-    let mut existing = joined.as_path();
+    let mut lexical = PathBuf::new();
+    for part in joined.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                lexical.pop();
+            }
+            std::path::Component::CurDir => {}
+            part => lexical.push(part),
+        }
+    }
+    let (Some(name), Some(parent)) = (lexical.file_name(), lexical.parent()) else {
+        return Err(outside());
+    };
+    let mut missing = Vec::new();
+    let mut existing = parent;
     while !existing.exists() {
-        existing = existing.parent().ok_or_else(|| format!("{path}: no such directory"))?;
+        let (Some(dir), Some(above)) = (existing.file_name(), existing.parent()) else {
+            return Err(outside());
+        };
+        missing.push(dir);
+        existing = above;
     }
-    let real = existing.canonicalize().map_err(|_| format!("{path}: no such directory"))?;
+    let mut real = existing.canonicalize().map_err(|e| format!("{path}: {e}"))?;
+    real.extend(missing.into_iter().rev());
+    real.push(name);
     if !real.starts_with(&root) {
-        return Err(format!("{path}: access outside the project root is not allowed"));
+        return Err(outside());
     }
-    let rest = joined.strip_prefix(existing).unwrap_or(Path::new(""));
-    // `join("")` would add a trailing separator, which names no file on Windows.
-    Ok(if rest.as_os_str().is_empty() { real } else { real.join(rest) })
+    Ok(real)
 }
+
 /// Reads a UTF-8 file that `resolve_in_root` already approved.
 pub fn read_text(real: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(real).map_err(|e| e.to_string())?;
@@ -200,11 +221,13 @@ fn resolve(granted: &[Capability], path: &str, wanted: Wanted) -> Result<PathBuf
             (Wanted::Read, Capability::FsRead(base)) | (Wanted::Write, Capability::FsWrite(base)) => base,
             _ => continue,
         };
-        // The grant may spell the home directory as `~`; the file side never does
-        // because it went through `expand_tilde` above.
-        let base = strip_verbatim(&expand_tilde(base));
-        let grant = wanted.capability(base.clone());
-        if !grant.covers(&cap) {
+        // The grant is compared where it really is too: `/tmp/x` is `/private/tmp/x`
+        // on macOS, and `~` is the home directory.
+        let base = match expand_tilde(base).canonicalize() {
+            Ok(real) => strip_verbatim(&real),
+            Err(_) => strip_verbatim(&expand_tilde(base)),
+        };
+        if !wanted.capability(base.clone()).covers(&cap) {
             continue;
         }
         // A directory that is its own parent is a root: `/`, `C:\`.
@@ -282,6 +305,36 @@ mod tests {
         assert!(inside_root(&root, "").is_err());
     }
 
+    #[test]
+    fn new_paths_are_confined_to_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let root_real = root.canonicalize().unwrap();
+
+        assert_eq!(resolve_new_in_root(&root, "src/new/a.txt").unwrap(), root_real.join("src/new/a.txt"));
+        assert_eq!(resolve_new_in_root(&root, "src/../b.txt").unwrap(), root_real.join("b.txt"));
+        assert!(resolve_new_in_root(&root, "../x.txt").unwrap_err().contains("outside"));
+        assert!(resolve_new_in_root(&root, "src/../../x.txt").unwrap_err().contains("outside"));
+        assert!(resolve_new_in_root(&root, "/etc/new.txt").is_err());
+        assert!(resolve_new_in_root(&root, "").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_named_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("target.txt"), "t").unwrap();
+        std::os::unix::fs::symlink(root.join("target.txt"), root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), root.join("out")).unwrap();
+        let root_real = root.canonicalize().unwrap();
+
+        assert_eq!(resolve_new_in_root(&root, "link.txt").unwrap(), root_real.join("link.txt"));
+        assert!(resolve_new_in_root(&root, "out/x.txt").unwrap_err().contains("outside"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinks_cannot_escape() {
@@ -350,6 +403,21 @@ mod tests {
         std::fs::create_dir_all(&sibling).unwrap();
         let other = text_at(&sibling, "app.properties", "x=1");
         assert!(matches!(resolve_granted(&[cap], other.to_str().unwrap()), Err(Refusal::Denied(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_grant_declared_through_a_symlinked_directory_covers_its_files() {
+        // `/tmp/tool` on macOS is `/private/tmp/tool`: the grant is resolved too.
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let file = text_at(&real, "a.txt", "a");
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let cap = Capability::FsRead(link.to_string_lossy().into_owned());
+        assert!(resolve_granted(std::slice::from_ref(&cap), link.join("a.txt").to_str().unwrap()).is_ok());
+        assert!(resolve_granted(&[cap], file.to_str().unwrap()).is_ok());
     }
 
     #[test]

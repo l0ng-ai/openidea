@@ -116,7 +116,7 @@ function addGrouped(
   if (!group) {
     group = [];
     groups.set(key, group);
-    out.push({ kind: "item", label: submenu, submenu: group });
+    out.push({ kind: "item", label: submenu, verbatim: true, submenu: group });
   }
   group.push(item);
 }
@@ -165,7 +165,7 @@ function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () =
   if (decl.menu === "tools") {
     const action = pluginActionId(pluginId, decl.command);
     const title = decl.commandTitle ?? getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
-    return registerMenuSlotItem("pluginTools", { action, label: title });
+    return registerMenuSlotItem("pluginTools", { action, label: title, verbatim: true });
   }
   if (decl.menu === "commit.message") {
     const action = pluginActionId(pluginId, decl.command);
@@ -173,6 +173,7 @@ function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () =
     return registerMenuSlotItem("commitMessage", {
       action,
       label,
+      verbatim: true,
       icon: pluginIconName(pluginId, plugin.icon),
       when: decl.when ?? null,
     });
@@ -437,6 +438,7 @@ function registerView(pluginId: string, decl: ViewDecl, icon: string): () => voi
   return registerToolWindow({
     id: pluginToolWindowId(pluginId, decl.id),
     title: decl.title,
+    verbatim: true,
     icon,
     anchor: decl.location,
     order: 900,
@@ -599,6 +601,7 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
               label: tx("Open With"),
               submenu: editors.map((e) => ({
                 label: e.decl.title,
+                verbatim: true,
                 run: () => openInput(customEditorInput(e.pluginId, e.decl, path)),
               })),
             });

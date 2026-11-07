@@ -183,7 +183,7 @@ impl FromStr for Capability {
             "project.read" | "project-read" => Self::ProjectRead,
             "editor.read" | "editor-read" => Self::EditorRead,
             "editor.write" | "editor-write" => Self::EditorWrite,
-            "project.write" | "project-write" => Self::ProjectWrite,
+            "project.write" => Self::ProjectWrite,
             "vcs.read" => Self::VcsRead,
             "vcs.write" => Self::VcsWrite,
             "storage" => Self::Storage,
@@ -237,6 +237,7 @@ mod tests {
         for s in [
             "project.read",
             "editor.write",
+            "project.write",
             "vcs.write",
             "storage",
             "secrets",
@@ -249,12 +250,12 @@ mod tests {
             assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
         }
         // Absolute paths are the platform's.
-        let (git, etc) = if cfg!(windows) {
-            (r"process:C:\Program Files\Git\bin\git.exe", r"fs.read:C:\Windows")
+        let (git, etc, out) = if cfg!(windows) {
+            (r"process:C:\Program Files\Git\bin\git.exe", r"fs.read:C:\Windows", r"fs.write:C:\out")
         } else {
-            ("process:/usr/bin/git", "fs.read:/etc")
+            ("process:/usr/bin/git", "fs.read:/etc", "fs.write:/out")
         };
-        for s in [git, etc] {
+        for s in [git, etc, out] {
             assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
         }
         assert_eq!("project-read".parse::<Capability>().unwrap(), Capability::ProjectRead);
@@ -262,6 +263,7 @@ mod tests {
         assert!("net:a b".parse::<Capability>().is_err());
         assert!("process:./evil".parse::<Capability>().is_err());
         assert!("fs.read:rel".parse::<Capability>().is_err());
+        assert!("fs.write:rel".parse::<Capability>().is_err());
         assert!("network".parse::<Capability>().is_err());
     }
 

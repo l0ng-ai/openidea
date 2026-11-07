@@ -157,6 +157,14 @@ pub(crate) fn to_wit(e: HostError) -> wit::Error {
     }
 }
 
+fn notification_level(level: wit::NotificationLevel) -> NotificationLevel {
+    match level {
+        wit::NotificationLevel::Info => NotificationLevel::Info,
+        wit::NotificationLevel::Warning => NotificationLevel::Warning,
+        wit::NotificationLevel::Error => NotificationLevel::Error,
+    }
+}
+
 /// A guest's `error` as text (`denied: net:example.com`, `stale`, …).
 impl From<wit::Error> for crate::runtime::GuestError {
     fn from(e: wit::Error) -> Self {
@@ -281,19 +289,40 @@ impl StoreData {
 }
 
 impl ui::Host for StoreData {
+    fn notify(
+        &mut self,
+        level: wit::NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ui::NotificationAction>,
+    ) -> Fallible<()> {
+        const MAX_ACTIONS: usize = 3;
+        if actions.len() > MAX_ACTIONS {
+            return Ok(Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions"))));
+        }
+        let mut checked = Vec::with_capacity(actions.len());
+        for a in actions {
+            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+                return Ok(Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label))));
+            }
+            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                return Ok(Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into())));
+            }
+            checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
+        }
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        Ok(self.host.notify(self.client(), notification_level(level), title, body, checked).map_err(to_wit))
+    }
+
     fn show_notification(
         &mut self,
         level: wit::NotificationLevel,
         title: String,
         body: String,
     ) -> wasmtime::Result<()> {
-        let level = match level {
-            wit::NotificationLevel::Info => NotificationLevel::Info,
-            wit::NotificationLevel::Warning => NotificationLevel::Warning,
-            wit::NotificationLevel::Error => NotificationLevel::Error,
-        };
-        let max = crate::runtime::MAX_TITLE;
-        self.host.notify(self.client(), level, clip(title, max), clip(body, 16 << 10));
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        // A plain notification has nothing the host could refuse.
+        let _ = self.host.notify(self.client(), notification_level(level), title, body, Vec::new());
         Ok(())
     }
 
@@ -365,6 +394,22 @@ impl ui::Host for StoreData {
         Ok(answer.map(|keys| keys.and_then(|keys| keys.into_iter().next())))
     }
 
+    fn pick_directory(&mut self, title: String, initial: Option<String>) -> Fallible<Option<String>> {
+        if let Some(path) = &initial
+            && let Err(error) = validate_ui_path(path)
+        {
+            return Ok(Err(error));
+        }
+        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
         Ok(self.pick_prompt(title, items, true))
     }
@@ -422,6 +467,18 @@ impl storage::Host for StoreData {
 }
 
 impl workspace::Host for StoreData {
+    fn open_project(&mut self, path: String, new_window: bool) -> Fallible<()> {
+        if let Err(error) = self.require_interactive().and_then(|_| validate_ui_path(&path)) {
+            return Ok(Err(error));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_project(client.as_deref(), path, new_window).map_err(to_wit))
+    }
+
+    fn project_of(&mut self, path: String) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
+        self.host.project_of(Path::new(&path)).map(|root| self.push(ProjectRes { root })).transpose()
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -491,25 +548,7 @@ impl workspace::HostProject for StoreData {
                 return Ok(Err(e));
             }
         };
-        let meta = match std::fs::symlink_metadata(&real) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Err(wit::Error::NotFound(format!("{path}: no such file"))));
-            }
-            Err(e) => return Ok(Err(wit::Error::Failed(e.to_string()))),
-        };
-        let kind = if meta.is_file() {
-            workspace::FileKind::File
-        } else if meta.is_dir() {
-            workspace::FileKind::Directory
-        } else if meta.is_symlink() {
-            workspace::FileKind::Symlink
-        } else {
-            workspace::FileKind::Other
-        };
-        let modified =
-            meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
-        Ok(Ok(workspace::FileStat { kind, size: meta.len(), modified }))
+        Ok(file_stat(&real, &path))
     }
 
     fn find_files(&mut self, this: Resource<ProjectRes>, glob: String, limit: u32) -> Fallible<Vec<String>> {
@@ -520,16 +559,25 @@ impl workspace::HostProject for StoreData {
         Ok(self.host.find_files(&root, &glob, limit.min(MAX_FIND) as usize).map_err(to_wit))
     }
 
-    fn write_file(&mut self, this: Resource<ProjectRes>, path: String, bytes: Vec<u8>) -> Fallible<()> {
+    fn write_file(&mut self, this: Resource<ProjectRes>, path: String, text: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::ProjectWrite) {
             return Ok(Err(e));
         }
+        if text.len() > sandbox::MAX_WRITE_BYTES {
+            return Ok(Err(too_much_to_write(&path)));
+        }
         let root = self.table.get(&this)?.root.clone();
-        let real = match sandbox::resolve_writable_in_root(&root, &path) {
+        let real = match sandbox::resolve_new_in_root(&root, &path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
-        Ok(self.host.write_project_file(&real, &bytes, sandbox::MAX_WRITE_BYTES).map_err(to_wit))
+        // The directories it goes in are created, like a new file in the project view.
+        if let Some(parent) = real.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return Ok(Err(wit::Error::Failed(format!("{path}: {e}"))));
+        }
+        Ok(self.host.write_text_file(&real, &text).map_err(to_wit))
     }
 
     fn drop(&mut self, rep: Resource<ProjectRes>) -> wasmtime::Result<()> {
@@ -732,14 +780,19 @@ impl events::Host for StoreData {
         {
             return Ok(Err(e));
         }
-        self.host.subscribe(kind, true);
+        self.host.subscribe(kind);
         Ok(Ok(()))
     }
 
-    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
-        if let Some(kind) = EventKind::parse(&kind) {
-            self.host.subscribe(kind, false);
+    fn subscribe_paths(&mut self, kind: String, globs: Vec<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
         }
+        Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
+    }
+
+    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
+        self.host.unsubscribe(&kind);
         Ok(())
     }
 }
@@ -956,6 +1009,28 @@ impl settings::Host for StoreData {
 
 impl views_bindings::openidea::plugin::view_types::Host for StoreData {}
 
+fn file_kind(t: std::fs::FileType) -> workspace::FileKind {
+    if t.is_file() {
+        workspace::FileKind::File
+    } else if t.is_dir() {
+        workspace::FileKind::Directory
+    } else if t.is_symlink() {
+        workspace::FileKind::Symlink
+    } else {
+        workspace::FileKind::Other
+    }
+}
+
+/// `project.stat` and `fs.stat`: the metadata of `real`, named `shown` in errors.
+fn file_stat(real: &Path, shown: &str) -> Result<workspace::FileStat, wit::Error> {
+    let meta = std::fs::symlink_metadata(real).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => wit::Error::NotFound(format!("{shown}: no such file")),
+        _ => wit::Error::Failed(e.to_string()),
+    })?;
+    let modified = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+    Ok(workspace::FileStat { kind: file_kind(meta.file_type()), size: meta.len(), modified })
+}
+
 /// A refused `fs` call as the plugin sees it: `denied` carries the capability
 /// string, so the plugin can say exactly what its manifest lacks.
 impl From<sandbox::Refusal> for wit::Error {
@@ -967,36 +1042,43 @@ impl From<sandbox::Refusal> for wit::Error {
     }
 }
 
-/// Files outside the windows' projects, gated by `fs.read:<path>` and
+/// Files outside the open projects, gated by `fs.read:<path>` and
 /// `fs.write:<path>` grants.
 impl fs::Host for StoreData {
-    fn read_text(&mut self, path: String) -> Fallible<String> {
+    fn read_file(&mut self, path: String) -> Fallible<String> {
         let real = match self.granted_file(&path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(e)),
         };
-        let max = sandbox::MAX_READ_BYTES as usize;
-        Ok(self.host.read_text_file(&real, max).map_err(to_wit))
+        Ok(self.host.read_text_file(&real, sandbox::MAX_READ_BYTES as usize).map_err(to_wit))
     }
 
     fn read_bytes(&mut self, path: String) -> Fallible<Vec<u8>> {
+        use std::io::Read;
         let real = match self.granted_file(&path) {
             Ok(real) => real,
             Err(e) => return Ok(Err(e)),
         };
-        let max = sandbox::MAX_READ_BYTES as usize;
-        Ok(self.host.read_bytes_file(&real, max).map_err(to_wit))
+        let max = sandbox::MAX_READ_BYTES;
+        let read = std::fs::File::open(&real).and_then(|file| {
+            let mut bytes = Vec::new();
+            // One byte over: a file that grew past the limit is refused, not truncated.
+            file.take(max + 1).read_to_end(&mut bytes).map(|_| bytes)
+        });
+        Ok(match read {
+            Ok(bytes) if bytes.len() as u64 > max => {
+                Err(wit::Error::Invalid(format!("{path}: larger than {} MiB", max >> 20)))
+            }
+            Ok(bytes) => Ok(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(wit::Error::NotFound(format!("{path}: no such file")))
+            }
+            Err(e) => Err(wit::Error::Failed(format!("{path}: {e}"))),
+        })
     }
 
-    fn stat(&mut self, path: String) -> Fallible<fs::FileKind> {
-        let real = match self.granted_file(&path) {
-            Ok(real) => real,
-            Err(e) => return Ok(Err(e)),
-        };
-        Ok(self.host.path_kind(&real).map_err(to_wit).map(|kind| match kind {
-            crate::types::PathKind::File => fs::FileKind::File,
-            crate::types::PathKind::Directory => fs::FileKind::Directory,
-        }))
+    fn stat(&mut self, path: String) -> Fallible<workspace::FileStat> {
+        Ok(self.granted_file(&path).and_then(|real| file_stat(&real, &path)))
     }
 
     fn read_dir(&mut self, path: String) -> Fallible<Vec<fs::DirEntry>> {
@@ -1004,41 +1086,44 @@ impl fs::Host for StoreData {
             Ok(real) => real,
             Err(e) => return Ok(Err(e)),
         };
-        let max = sandbox::MAX_LIST_ENTRIES;
-        Ok(self
-            .host
-            .list_dir(&real, max)
-            .map_err(to_wit)
-            .map(|entries| entries.into_iter().map(to_dir_entry).collect()))
-    }
-    fn write_text(&mut self, path: String, text: String) -> Fallible<()> {
-        let real = match self.writable_file(&path) {
-            Ok(real) => real,
-            Err(e) => return Ok(Err(e)),
+        let read = match std::fs::read_dir(&real) {
+            Ok(read) => read,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Err(wit::Error::NotFound(format!("{path}: no such directory"))));
+            }
+            Err(_) if real.is_file() => return Ok(Err(wit::Error::Invalid(format!("{path}: not a directory")))),
+            Err(e) => return Ok(Err(wit::Error::Failed(format!("{path}: {e}")))),
         };
-        let max = sandbox::MAX_WRITE_BYTES;
-        Ok(self.host.write_text_file(&real, &text, max).map_err(to_wit))
+        let mut entries: Vec<fs::DirEntry> = read
+            .flatten()
+            .take(sandbox::MAX_LIST_ENTRIES)
+            .map(|e| fs::DirEntry {
+                name: e.file_name().to_string_lossy().into_owned(),
+                kind: e.file_type().map_or(workspace::FileKind::Other, file_kind),
+            })
+            .collect();
+        // Sorted, so what a plugin picks doesn't depend on the disk's order.
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(Ok(entries))
+    }
+
+    fn write_file(&mut self, path: String, text: String) -> Fallible<()> {
+        if text.len() > sandbox::MAX_WRITE_BYTES {
+            return Ok(Err(too_much_to_write(&path)));
+        }
+        Ok(self.writable_file(&path).and_then(|real| self.host.write_text_file(&real, &text).map_err(to_wit)))
     }
 
     fn write_bytes(&mut self, path: String, bytes: Vec<u8>) -> Fallible<()> {
-        let real = match self.writable_file(&path) {
-            Ok(real) => real,
-            Err(e) => return Ok(Err(e)),
-        };
-        let max = sandbox::MAX_WRITE_BYTES;
-        Ok(self.host.write_bytes_file(&real, &bytes, max).map_err(to_wit))
+        if bytes.len() > sandbox::MAX_WRITE_BYTES {
+            return Ok(Err(too_much_to_write(&path)));
+        }
+        Ok(self.writable_file(&path).and_then(|real| self.host.write_bytes_file(&real, &bytes).map_err(to_wit)))
     }
 }
 
-/// A directory entry as `fs.read-dir` hands it over.
-fn to_dir_entry(entry: crate::types::DirEntryInfo) -> fs::DirEntry {
-    fs::DirEntry {
-        name: entry.name,
-        kind: match entry.kind {
-            crate::types::PathKind::File => fs::FileKind::File,
-            crate::types::PathKind::Directory => fs::FileKind::Directory,
-        },
-    }
+fn too_much_to_write(path: &str) -> wit::Error {
+    wit::Error::Invalid(format!("{path}: more than {} MiB to write", sandbox::MAX_WRITE_BYTES >> 20))
 }
 
 /// Largest message between a plugin and its view's frame.
@@ -1097,4 +1182,53 @@ pub(crate) mod inlay_bindings {
         world: "inlay-hints", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
+}
+
+pub(crate) mod endpoints_bindings {
+    wasmtime::component::bindgen!({
+        world: "endpoints", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
+/// The optional `file-actions` export.
+pub(crate) mod file_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "file-actions-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+/// Paths belong to the UI machine, which can have a different OS than the plugin host.
+fn validate_ui_path(path: &str) -> Result<(), wit::Error> {
+    let b = path.as_bytes();
+    let absolute = path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (b.first().is_some_and(u8::is_ascii_alphabetic)
+            && b.get(1) == Some(&b':')
+            && matches!(b.get(2), Some(b'/' | b'\\')));
+    if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
+        return Err(wit::Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod project_ui_tests {
+    use super::validate_ui_path;
+    #[test]
+    fn validates_ui_paths_without_using_the_plugin_hosts_os() {
+        for path in ["/work/repo", "C:/work/repo", r"C:\work\repo", r"\\server\share\repo"] {
+            assert!(validate_ui_path(path).is_ok(), "{path:?}");
+        }
+        for path in ["repo", "C:repo", "/bad\npath", ""] {
+            assert!(validate_ui_path(path).is_err(), "{path:?}");
+        }
+        assert!(validate_ui_path(&format!("/{}", "x".repeat(8192))).is_err());
+    }
 }

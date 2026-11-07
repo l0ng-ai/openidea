@@ -31,7 +31,7 @@ import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
 import { setContext } from "@/platform/context";
-import { tx } from "@/platform/i18n";
+import { useGivenTx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { useTreeDirectoryContext } from "./treeDirectoryContext";
 import { useIconRowHeight } from "./iconAppearance";
@@ -233,6 +233,7 @@ function useControllableSet(value: ReadonlySet<string> | undefined, initial: Ite
 }
 
 export function Tree<T>(props: TreeProps<T>) {
+  const given = useGivenTx();
   const {
     roots,
     getKey,
@@ -627,7 +628,7 @@ export function Tree<T>(props: TreeProps<T>) {
       <div
         ref={scrollRef}
         role="tree"
-        aria-label={tx(props["aria-label"])}
+        aria-label={given(props["aria-label"])}
         aria-multiselectable={multiSelect || undefined}
         aria-activedescendant={
           leadRow && !leadRow.loading && virtualizer.getVirtualItems().some((v) => v.index === leadIndex)

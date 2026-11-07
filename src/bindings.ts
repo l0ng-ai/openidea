@@ -42,6 +42,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	/**  This window kept its project open (unsaved-changes prompt cancelled); stops a batch close. */
 	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
+	/**
+	 *  This window closes next (its prompts passed): a fullscreen group's host first hands its Space
+	 *  to the tab that takes over.
+	 */
+	windowGroupBeforeClose: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_before_close")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
@@ -899,6 +904,11 @@ export const commands = {
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
 	windowSetTitlebarHeight: (height: number | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_titlebar_height", { height })),
 	/**
+	 *  Whether this window fills the screen: in native full screen, or (macOS) shown in its window
+	 *  group's full-screen Space.
+	 */
+	windowIsFullscreen: () => __TAURI_INVOKE<boolean>("window_is_fullscreen"),
+	/**
 	 *  Starts dragging `window` while the primary mouse button is still down; returns whether a drag began.
 	 * 
 	 *  macOS WebKit can deliver a tap's `mousedown` after the button is already up. AppKit would then run
@@ -1134,6 +1144,7 @@ export const commands = {
 	targets: Location[],
 } | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
+	pluginEndpoints: (pluginId: string) => typedError<PluginEndpoint[], IdeError>(__TAURI_INVOKE("plugin_endpoints", { pluginId })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -3781,7 +3792,10 @@ export type FacetConfig = {
 	webRoot?: string,
 };
 
-export type FieldValue = { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
+export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyText"; value: {
+	text: string,
+	multiline: boolean,
+} } | { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
 	options: string[],
 	selected: string,
 } };
@@ -4473,7 +4487,9 @@ export type IdeError = {
 
 export type IdeEvent = 
 /**  Project window membership or selection changed. */
-{ type: "windowGroupsChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+{ type: "windowGroupsChanged" } | 
+/**  A window entered or left full screen, itself or as a member of a full-screen window group. */
+{ type: "windowFullscreenChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[] } | 
 /**  Excluded or ignored folders whose contents changed; they stay out of `FsChanged`. */
@@ -5725,6 +5741,13 @@ export type NotebookSnapshot = {
 	cells: NotebookCell[],
 };
 
+/**  A notification button that runs one of the publishing plugin's commands. */
+export type NotificationAction = {
+	label: string,
+	command: string,
+	argument: string | null,
+};
+
 export type NotificationGroupSettings = {
 	/**  `balloon` | `sticky` | `none` */
 	display?: string,
@@ -5929,6 +5952,19 @@ export type PluginEditor = {
 	selections: Range[],
 };
 
+/**  A route as the UI gets it. */
+export type PluginEndpoint = {
+	/**  `None` accepts any method. */
+	method: string | null,
+	/**  Path parameters in braces: `/photos/{id}`. */
+	path: string,
+	framework: string,
+	/**  Display name, e.g. `PhotosController#show`. */
+	handler: string | null,
+	/**  Where the route is declared. */
+	location: Location,
+};
+
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
@@ -5936,10 +5972,17 @@ export type PluginEvent =
 /**  Cached document associations were disposed (reload, disable or failure). */
 { type: "documentIndexesChanged" } | 
 /**
+ *  The routes `plugin_id` reports for the project `root` may have changed:
+ *  ask `plugin_endpoints` again.
+ */
+{ type: "endpointsChanged"; pluginId: string; root: IpcPath } | 
+/**
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
  */
-{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
+{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string; 
+/**  Buttons running the plugin's own commands (`ui.notify`). */
+actions: NotificationAction[] } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**
@@ -5974,6 +6017,8 @@ export type PluginEvent =
 { type: "copyToClipboard"; pluginId: string; text: string } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
 { type: "openUrl"; pluginId: string; url: string } | 
+/**  A window command/event requests the normal File > Open flow. */
+{ type: "openProject"; pluginId: string; path: string; newWindow: boolean } | 
 /**
  *  A command waits for the user's answer: show `prompt`, then report it with
  *  `plugin_answer_prompt(prompt_id, …)`.
@@ -6379,7 +6424,7 @@ export type ProjectStructureSettings = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string };
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null };
 
 export type ProxyKind = "http" | "socks";
 
@@ -8085,7 +8130,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number };
 
 export type ViewField = {
 	key: string,

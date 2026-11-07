@@ -69,7 +69,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.7.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.8.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -103,6 +103,10 @@ Version 1.7.0 adds the `"sources"` scope to `openidea.java.usages`, searches eac
 file's decompiled source on its own and returns the line (`text`) of each usage in a library
 class; its reproducible SHA-256 is
 `56d35619d5be937b028ac143ba748365a66a74c803bc112e4788a7dce98b44fc`.
+Version 1.8.0 keeps each dependency JAR's configuration metadata across rebuilds of the
+configuration index (until the JAR or the project's classpath changes), so a source change no
+longer resolves every Spring Boot property again; its reproducible SHA-256 is
+`728ab33b5e01fa5e496818f25ddbc487458a92339026899b0e22abda5adfd67b`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

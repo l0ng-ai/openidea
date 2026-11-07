@@ -60,6 +60,28 @@ mod imp {
         wit::ui::show_notification(level, title, body)
     }
 
+    pub fn notify_with_actions(
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let level = match level {
+            NotificationLevel::Info => wit::types::NotificationLevel::Info,
+            NotificationLevel::Warning => wit::types::NotificationLevel::Warning,
+            NotificationLevel::Error => wit::types::NotificationLevel::Error,
+        };
+        let actions: Vec<_> = actions
+            .iter()
+            .map(|a| wit::ui::NotificationAction {
+                label: a.label.clone(),
+                command: a.command.clone(),
+                argument: a.argument.clone(),
+            })
+            .collect();
+        wit::ui::notify(level, title, body, &actions).map_err(error)
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         let item = wit::ui::StatusItem {
             text: item.text.clone(),
@@ -109,6 +131,13 @@ mod imp {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
     }
 
+    pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::pick_directory(title, initial).map_err(error)
+    }
+    pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+        wit::workspace::open_project(path, new_window).map_err(error)
+    }
+
     pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
         wit::ui::pick_many(title, &pick_items(items)).map_err(error)
     }
@@ -153,6 +182,10 @@ mod imp {
         wit::workspace::projects().map_err(error)
     }
 
+    pub fn project_of(path: &str) -> Option<ProjectRes> {
+        wit::workspace::project_of(path)
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         p.root().map_err(error)
     }
@@ -160,50 +193,9 @@ mod imp {
     pub fn project_read(p: &ProjectRes, path: &str) -> Result<String, Error> {
         p.read_file(path).map_err(error)
     }
-    pub fn project_write(p: &ProjectRes, path: &str, bytes: &[u8]) -> Result<(), Error> {
-        p.write_file(path, bytes).map_err(error)
-    }
 
-    pub fn fs_read_text(path: &str) -> Result<String, Error> {
-        wit::fs::read_text(path).map_err(error)
-    }
-
-    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
-        wit::fs::read_bytes(path).map_err(error)
-    }
-
-    pub fn fs_path_kind(path: &str) -> Result<super::PathKind, Error> {
-        use super::PathKind;
-        let kind = wit::fs::stat(path).map_err(error)?;
-        Ok(match kind {
-            wit::fs::FileKind::File => PathKind::File,
-            wit::fs::FileKind::Directory => PathKind::Directory,
-        })
-    }
-
-    pub fn fs_list(path: &str) -> Result<Vec<super::DirEntry>, Error> {
-        use super::{DirEntry, PathKind};
-        let entries = wit::fs::read_dir(path).map_err(error)?;
-        let mut entries: Vec<DirEntry> = entries
-            .into_iter()
-            .map(|e| DirEntry {
-                name: e.name,
-                kind: match e.kind {
-                    wit::fs::FileKind::File => PathKind::File,
-                    wit::fs::FileKind::Directory => PathKind::Directory,
-                },
-            })
-            .collect();
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
-    }
-
-    pub fn fs_write_text(path: &str, text: &str) -> Result<(), Error> {
-        wit::fs::write_text(path, text).map_err(error)
-    }
-
-    pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
-        wit::fs::write_bytes(path, bytes).map_err(error)
+    pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
+        p.write_file(path, text).map_err(error)
     }
 
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
@@ -294,6 +286,10 @@ mod imp {
         }
     }
 
+    pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+        wit::events::subscribe_paths(kind, &globs.iter().map(|g| (*g).to_owned()).collect::<Vec<_>>()).map_err(error)
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
     }
@@ -323,19 +319,46 @@ mod imp {
     }
 
     pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        p.stat(path).map(file_stat).map_err(error)
+    }
+
+    fn file_kind(kind: wit::workspace::FileKind) -> FileKind {
         use wit::workspace::FileKind as K;
-        p.stat(path)
-            .map(|s| FileStat {
-                kind: match s.kind {
-                    K::File => FileKind::File,
-                    K::Directory => FileKind::Directory,
-                    K::Symlink => FileKind::Symlink,
-                    K::Other => FileKind::Other,
-                },
-                size: s.size,
-                modified: s.modified,
-            })
-            .map_err(error)
+        match kind {
+            K::File => FileKind::File,
+            K::Directory => FileKind::Directory,
+            K::Symlink => FileKind::Symlink,
+            K::Other => FileKind::Other,
+        }
+    }
+
+    fn file_stat(s: wit::workspace::FileStat) -> FileStat {
+        FileStat { kind: file_kind(s.kind), size: s.size, modified: s.modified }
+    }
+
+    pub fn fs_read_file(path: &str) -> Result<String, Error> {
+        wit::fs::read_file(path).map_err(error)
+    }
+
+    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        wit::fs::read_bytes(path).map_err(error)
+    }
+
+    pub fn fs_stat(path: &str) -> Result<FileStat, Error> {
+        wit::fs::stat(path).map(file_stat).map_err(error)
+    }
+
+    pub fn fs_read_dir(path: &str) -> Result<Vec<super::fs::DirEntry>, Error> {
+        let entries = wit::fs::read_dir(path).map_err(error)?;
+        Ok(entries.into_iter().map(|e| super::fs::DirEntry { name: e.name, kind: file_kind(e.kind) }).collect())
+    }
+
+    pub fn fs_write_file(path: &str, text: &str) -> Result<(), Error> {
+        wit::fs::write_file(path, text).map_err(error)
+    }
+
+    pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        wit::fs::write_bytes(path, bytes).map_err(error)
     }
 
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
@@ -502,12 +525,14 @@ impl Project {
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
     }
-    /// Writes `bytes` to a file inside the project (absolute or root-relative),
-    /// creating the directories it needs and replacing the file in one step. At
-    /// most 16 MiB. An editor with unsaved changes for the file is refused.
-    /// Needs `project.write`; `project.read` is not implied.
-    pub fn write_file(&self, path: &str, bytes: &[u8]) -> Result<(), Error> {
-        imp::project_write(&self.inner, path, bytes)
+
+    /// Replaces the text of a file inside the project (absolute or
+    /// root-relative), or creates it with the directories it needs, at most
+    /// 16 MiB: in one step, keeping the file's encoding and BOM (a new file is
+    /// UTF-8). An editor holding unsaved changes for the file makes it
+    /// [`Error::Invalid`]. Needs `project.write`.
+    pub fn write_file(&self, path: &str, text: &str) -> Result<(), Error> {
+        imp::project_write(&self.inner, path, text)
     }
 
     /// Whether `path` names an existing file or directory inside the project
@@ -644,85 +669,10 @@ pub fn projects() -> Result<Vec<Project>, Error> {
     Ok(imp::projects()?.into_iter().map(|inner| Project { inner }).collect())
 }
 
-/// What an [`fs_read_text`] path is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PathKind {
-    File,
-    Directory,
-}
-
-impl PathKind {
-    pub fn is_file(self) -> bool {
-        self == Self::File
-    }
-
-    pub fn is_dir(self) -> bool {
-        self == Self::Directory
-    }
-}
-
-/// A direct child of a directory listed by [`fs_list`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DirEntry {
-    /// The name of the entry alone, without its directory.
-    pub name: String,
-    /// Whether the entry is a file or a directory.
-    pub kind: PathKind,
-}
-
-/// Reads a text file outside the project, decoded as the editor decodes it
-/// (BOM and encoding detection, GBK included), at most 16 MiB; unsaved editor
-/// contents win, as they do for project files. `path` is absolute, or starts
-/// with `~/` for the user's home. A file inside an open project is
-/// [`Project::read_file`].
-///
-/// Needs an `fs.read:<path>` grant covering the file; without one this returns
-/// [`Error::Denied`] naming the real path the manifest has to declare.
-pub fn fs_read_text(path: &str) -> Result<String, Error> {
-    imp::fs_read_text(path)
-}
-
-/// The bytes of a file outside the project (images, class files, archives), at
-/// most 16 MiB; the disk is read as it is (unsaved editor contents do not
-/// apply). Needs `fs.read:<path>`, as [`fs_read_text`] does.
-pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
-    imp::fs_read_bytes(path)
-}
-
-/// Whether a path outside the project is a file or a directory. Needs
-/// `fs.read:<path>`.
-pub fn fs_path_kind(path: &str) -> Result<PathKind, Error> {
-    imp::fs_path_kind(path)
-}
-
-/// What is directly under a directory outside the project, sorted by name and
-/// capped at 4096 entries, the same cap as `find-files`. Needs `fs.read:<path>`
-/// covering the directory; reading a file as a directory is [`Error::Invalid`].
-pub fn fs_list(path: &str) -> Result<Vec<DirEntry>, Error> {
-    imp::fs_list(path)
-}
-
-/// Replaces a text file outside the project, creating it when it is not there,
-/// at most 16 MiB. The write is atomic and keeps the file's encoding and BOM (a
-/// new file is UTF-8); `path` is absolute, or starts with `~/` for the user's
-/// home.
-///
-/// Fails with [`Error::Invalid`] when the parent directory is missing, the path
-/// is a directory, the text cannot be written in the file's encoding, or an
-/// editor holds unsaved changes for the file — save those first.
-///
-/// Needs an `fs.write:<path>` grant covering the file. Writing does not imply
-/// reading: a plugin that reads back what it wrote needs `fs.read:` too.
-pub fn fs_write_text(path: &str, text: &str) -> Result<(), Error> {
-    imp::fs_write_text(path, text)
-}
-
-/// Replaces the bytes of a file outside the project (images, class files,
-/// archives), creating it when it is not there, at most 16 MiB, atomically. The
-/// same failures as [`fs_write_text`], minus the encoding. Needs
-/// `fs.write:<path>`, as [`fs_write_text`] does.
-pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
-    imp::fs_write_bytes(path, bytes)
+/// The deepest open project containing an absolute document path, including in providers.
+/// Obtaining the handle needs no capability; reading it still needs `project.read`.
+pub fn project_of(path: &str) -> Option<Project> {
+    imp::project_of(path).map(|inner| Project { inner })
 }
 
 /// A file open in an editor.
@@ -894,6 +844,13 @@ pub fn locale() -> String {
     imp::locale()
 }
 
+/// Subscribe to project-relative path globs for file-opened or file-saved.
+/// Replaces the previous filter. Empty globs pause delivery; `subscribe` restores all paths.
+/// Requires `events`. Register during activation before the events you want to observe.
+pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+    imp::subscribe_paths(kind, globs)
+}
+
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
 /// the session (also after the instance is reclaimed: an event activates the
 /// plugin again). Needs `events` (`events.input` for `ActionPerformed`).
@@ -903,6 +860,64 @@ pub fn subscribe(kind: EventKind) -> Result<(), Error> {
 
 pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
+}
+
+/// Files outside the open projects, for a program the plugin integrates with
+/// or a tool installed elsewhere. Every path needs an `fs.read:<path>`
+/// (reading) or `fs.write:<path>` (writing) grant covering it; without one a
+/// call returns [`Error::Denied`] naming the capability the manifest has to
+/// declare. Paths are absolute, or start with `~/` for the user's home. A file
+/// inside a project is [`Project::read_file`] / [`Project::write_file`].
+pub mod fs {
+    use super::imp;
+    use crate::types::{Error, FileKind, FileStat};
+
+    /// An entry of a directory ([`read_dir`]).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct DirEntry {
+        /// The entry's name, without its directory.
+        pub name: String,
+        pub kind: FileKind,
+    }
+
+    /// A text file, decoded as the editor decodes it (BOM and encoding
+    /// detection), at most 16 MiB; unsaved editor contents win.
+    pub fn read_file(path: &str) -> Result<String, Error> {
+        imp::fs_read_file(path)
+    }
+
+    /// The bytes of a file (images, class files, archives), at most 16 MiB.
+    pub fn read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        imp::fs_read_bytes(path)
+    }
+
+    /// Metadata of an existing path; a missing path is [`Error::NotFound`].
+    pub fn stat(path: &str) -> Result<FileStat, Error> {
+        imp::fs_stat(path)
+    }
+
+    /// The entries directly under a directory, sorted by name, at most 4096;
+    /// a file is [`Error::Invalid`].
+    pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, Error> {
+        imp::fs_read_dir(path)
+    }
+
+    /// Replaces the text of a file, or creates it, at most 16 MiB: in one step,
+    /// keeping the file's encoding and BOM (a new file is UTF-8). Needs an
+    /// `fs.write:<path>` grant, which doesn't imply reading.
+    ///
+    /// [`Error::Invalid`] when the text can't be written in the file's
+    /// encoding, the directory is missing, the path is a directory, or an
+    /// editor holds unsaved changes for the file (save them first).
+    pub fn write_file(path: &str, text: &str) -> Result<(), Error> {
+        imp::fs_write_file(path, text)
+    }
+
+    /// Replaces the bytes of a file, or creates it, at most 16 MiB, in one
+    /// step; fails like [`write_file`].
+    pub fn write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        imp::fs_write_bytes(path, bytes)
+    }
 }
 
 /// The plugin's persistent key-value store (≤ 64 MiB of UTF-8 keys and values).
@@ -932,3 +947,29 @@ pub mod storage {
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub use imp::{event as __event, range_from as __range_from, range_to as __range_to};
+
+/// Chooses a directory on the UI machine. `None` when dismissed; no capability.
+/// Same window/command/event rules as [`pick`].
+pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+    imp::pick_directory(title, initial)
+}
+
+/// Requests the normal File > Open flow, including project trust, in the
+/// invoking window (`false`) or a new window (`true`). No capability.
+/// Only commands/events of a window can request this; errors opening the
+/// project are shown by that window. `path` belongs to the UI machine.
+pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+    imp::open_project(path, new_window)
+}
+
+/// [`notify`] with up to three buttons; each runs one of this plugin's
+/// declared commands in the balloon's window and dismisses the balloon. An
+/// invalid action or an undeclared command is an error and nothing is shown.
+pub fn notify_with_actions(
+    level: NotificationLevel,
+    title: &str,
+    body: &str,
+    actions: &[NotificationAction],
+) -> Result<(), Error> {
+    imp::notify_with_actions(level, title, body, actions)
+}

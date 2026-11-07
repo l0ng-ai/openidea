@@ -125,6 +125,21 @@ pub enum FieldValue {
     },
 }
 
+impl FieldValue {
+    /// A plain read-only value, carried by `other` kind `label` (API 1.3).
+    pub fn label(text: &str) -> Self {
+        Self::Other { kind: "label".into(), data: format!("\"{}\"", crate::text::escape_json(text)) }
+    }
+
+    /// Selectable text with no field-change events (API 1.3).
+    pub fn readonly_text(text: &str, multiline: bool) -> Self {
+        Self::Other {
+            kind: "readonly-text".into(),
+            data: format!(r#"{{"text":"{}","multiline":{multiline}}}"#, crate::text::escape_json(text)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
     pub key: String,
@@ -273,6 +288,21 @@ pub enum ViewEvent {
 }
 
 impl ViewEvent {
+    /// The absolute zero-based row selected in a table (API 1.3).
+    pub fn table_select(&self) -> Option<u32> {
+        self.table_row("table-select")
+    }
+
+    /// The absolute zero-based row activated in a table (API 1.3).
+    pub fn table_activate(&self) -> Option<u32> {
+        self.table_row("table-activate")
+    }
+
+    fn table_row(&self, expected: &str) -> Option<u32> {
+        let Self::Other { kind, data } = self else { return None };
+        (kind == expected).then(|| json_number(data, "row")).flatten()
+    }
+
     /// The click on a sortable table's header ([`Body::sortable_table`]): the
     /// column and the direction to order it by (`other` view-event, kind
     /// `sort`; the first click asks ascending, a second on the same column
@@ -341,6 +371,27 @@ pub trait Views {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readonly_fields_escape_text_without_changing_released_variants() {
+        assert_eq!(FieldValue::label("a\"\n"), FieldValue::Other { kind: "label".into(), data: r#""a\"\n""#.into() });
+        assert_eq!(
+            FieldValue::readonly_text("a\nβ", true),
+            FieldValue::Other { kind: "readonly-text".into(), data: r#"{"text":"a\nβ","multiline":true}"#.into() }
+        );
+    }
+
+    #[test]
+    fn table_row_events_only_decode_their_own_valid_payloads() {
+        let event = |kind: &str, data: &str| ViewEvent::Other { kind: kind.into(), data: data.into() };
+        assert_eq!(event("table-select", r#"{"row":51}"#).table_select(), Some(51));
+        assert_eq!(event("table-activate", r#"{"row":0}"#).table_activate(), Some(0));
+        for data in ["{}", r#"{"row":-1}"#, r#"{"row":4294967296}"#, r#"{"row":"1"}"#] {
+            assert_eq!(event("table-select", data).table_select(), None);
+        }
+        assert_eq!(event("select", r#"{"row":1}"#).table_select(), None);
+        assert_eq!(event("table-select", r#"{"row":1}"#).table_activate(), None);
+    }
 
     #[test]
     fn a_sortable_table_becomes_the_other_table_body() {

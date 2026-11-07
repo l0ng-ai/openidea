@@ -58,20 +58,6 @@ impl std::fmt::Display for HostError {
     }
 }
 
-/// What an `fs.read` grant covers the path of (WIT `fs.file-kind`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PathKind {
-    File,
-    Directory,
-}
-
-/// One entry of a directory an `fs.read` grant covers (WIT `fs.dir-entry`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DirEntryInfo {
-    pub name: String,
-    pub kind: PathKind,
-}
-
 /// A plugin's status bar item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +88,8 @@ pub enum Prompt {
     Input { prompt: String, value: Option<String>, multiline: bool },
     #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
+    #[serde(rename_all = "camelCase")]
+    PickDirectory { title: String, initial: Option<String> },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -456,8 +444,21 @@ pub struct CodeAction {
     pub kind: Option<String>,
     pub preferred: bool,
     pub edits: Vec<(PathBuf, Vec<ide_core::TextEdit>)>,
+    /// Applied before `edits`, in one workspace edit with them.
+    pub operations: Vec<FileOperation>,
+    /// Opened once the action is applied.
+    pub open: Option<PathBuf>,
     /// The plugin's reference: the edits come from `resolve_code_action`.
     pub data: Option<String>,
+    /// Listed by the `file-actions` export, which also resolves it.
+    pub file_action: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOperation {
+    Create { path: PathBuf, text: String, overwrite: bool },
+    Rename { from: PathBuf, to: PathBuf },
+    Delete { path: PathBuf },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -526,6 +527,8 @@ pub struct ViewListItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum FieldValue {
+    Label(String),
+    ReadonlyText { text: String, multiline: bool },
     Text(String),
     Multiline(String),
     Checkbox(bool),
@@ -643,4 +646,25 @@ pub enum ViewEvent {
     // A sortable table's header click: the column and the direction (leaves
     // as an `other` view-event, kind `sort`). See `TableSort`.
     Sort { column: u32, descending: bool },
+    TableSelect { row: u32 },
+    TableActivate { row: u32 },
+}
+
+/// A plugin's HTTP route declaration in a project.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub method: Option<String>,
+    pub path: String,
+    pub framework: String,
+    pub handler: Option<String>,
+    pub location: Location,
+}
+
+/// A notification button that runs one of the publishing plugin's commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
 }

@@ -20,10 +20,13 @@ import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
 import {
+  notifications,
   maybeCommitService,
   maybeEditorService,
   registerStatusItem,
@@ -91,13 +94,15 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
   const text = translate(item.text);
   return (
-    <BarButton
-      tooltip={tooltip}
-      aria-label={tooltip ?? text}
-      onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
-    >
-      {text}
-    </BarButton>
+    <VerbatimTextContext.Provider value={true}>
+      <BarButton
+        tooltip={tooltip}
+        aria-label={tooltip ?? text}
+        onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
+      >
+        {text}
+      </BarButton>
+    </VerbatimTextContext.Provider>
   );
 }
 
@@ -319,8 +324,28 @@ const openPrompts = new Map<string, AbortController>();
 /** The user's answer in the shape `plugin_answer_prompt` takes: `null` when dismissed. */
 async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
   switch (prompt.kind) {
+    case "pickDirectory": {
+      if (signal.aborted) return null;
+      try {
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        if (signal.aborted) return null;
+        const selected = await open({
+          directory: true,
+          multiple: false,
+          title: prompt.title,
+          defaultPath: prompt.initial ?? undefined,
+        });
+        if (signal.aborted) return null;
+        const path = Array.isArray(selected) ? selected[0] : selected;
+        return path ? [ipcPath(path)] : null;
+      } catch (error) {
+        if (!signal.aborted)
+          notifications().notify({ level: "error", title: tx("Cannot choose a directory"), body: String(error) });
+        return null;
+      }
+    }
     case "quickPick":
-      return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal });
+      return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal, verbatim: true });
     case "input": {
       const text = await promptInput({
         title: prompt.prompt,
@@ -329,11 +354,14 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
         keepWhitespace: true,
         multiline: prompt.multiline,
         signal,
+        verbatim: true,
       });
       return text === null ? null : [text];
     }
     case "confirm":
-      return (await confirm({ title: prompt.title, message: prompt.message, ok: "OK", signal })) ? [] : null;
+      return (await confirm({ title: prompt.title, message: prompt.message, ok: tx("OK"), signal, verbatim: true }))
+        ? []
+        : null;
   }
 }
 
@@ -402,6 +430,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       return true;
     case "copyToClipboard":
       void navigator.clipboard?.writeText(e.text);
+      return true;
+    case "openProject":
+      void executeAction("file.openProjectPath", { path: e.path, newWindow: e.newWindow });
       return true;
     case "openUrl":
       void openExternalUrl(e.url);

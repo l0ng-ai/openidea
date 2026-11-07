@@ -33,9 +33,23 @@ interface ui {
         text(string),
     }
 
+    /// A notification button that runs one of the plugin's commands.
+    record notification-action {
+        /// Up to 256 bytes, one line.
+        label: string,
+        /// The id of a command the plugin declares.
+        command: string,
+        /// Passed to the command as its argument (up to 64 KiB).
+        argument: option<string>,
+    }
+
     /// Shows a notification balloon in the window the current command or
     /// event came from (every window when there is none).
     show-notification: func(level: notification-level, title: string, body: string);
+    /// `show-notification` with up to three action buttons. Choosing one
+    /// dismisses the balloon and runs the command in its window. An invalid
+    /// action or an undeclared command fails the call and shows nothing.
+    notify: func(level: notification-level, title: string, body: string, actions: list<notification-action>) -> result<_, error>;
     /// Shows or updates the plugin's status bar item `id` in every window.
     set-status-item: func(id: string, item: status-item);
     remove-status-item: func(id: string);
@@ -57,6 +71,9 @@ interface ui {
     /// a window (including in editor providers). Waiting doesn't count against
     /// the call's budget.
     pick: func(title: string, items: list<pick-item>) -> result<option<string>, error>;
+    /// Native folder chooser; an absolute path, or `none` when dismissed.
+    /// Same window, command/event and budget rules as `pick`; no capability.
+    pick-directory: func(title: string, initial: option<string>) -> result<option<string>, error>;
     /// Like `pick`, with any number of items chosen.
     pick-many: func(title: string, items: list<pick-item>) -> result<option<list<string>>, error>;
     /// Asks for a line of text, pre-filled with `value`; `none` when dismissed.
