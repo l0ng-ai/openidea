@@ -133,6 +133,20 @@ describe("Settings dialog", () => {
     );
   });
 
+  it("finds the Maven active profiles setting", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Active profiles" } });
+    expect(within(dialog).getByLabelText("Active profiles")).toBeInTheDocument();
+  });
+
+  it("finds the Maven toolchains setting", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Toolchains" } });
+    expect(within(dialog).getByLabelText("Toolchains file")).toBeInTheDocument();
+  });
+
   it("searches pages and highlights matching option labels", async () => {
     const dialog = await openDialog("appearance");
     fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "soft wrap" } });
