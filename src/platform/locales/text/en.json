@@ -1,4 +1,5 @@
 {
+  "Marker Icons": "Marker Icons",
   "this data source does not list databases": "this data source does not list databases",
   "commit or roll back before clearing the selected database": "commit or roll back before clearing the selected database",
   "connect_timeout must be greater than zero": "connect_timeout must be greater than zero",

@@ -555,6 +555,27 @@ kinds = ["definition", "line-markers", "completion"]  # also "inline-completion"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
+Line marker `icon` accepts an icon name (including registered plugin icons),
+the aliases `navigate`, `implemented`, `implementing`, `overridden`, `overriding`
+and `run`, or a package SVG path. Declare package marker icons so installation
+includes and validates the SVGs (`engines.openidea = "^1.3"`):
+
+```toml
+[[contributes.markerIcons]]
+id = "resource"
+icon = "icons/resource.svg"
+iconDark = "icons/resource_dark.svg" # optional dark-theme variant
+```
+
+Return `icon = Some("icons/resource.svg".into())` from `line_markers` to use it.
+The referenced icon path is package-relative, up to 256 bytes; both SVGs use the same sandbox,
+64 KiB size limit and sanitization as view icons. Active content and external SVG or CSS
+references are rejected during installation. Missing or unknown icons retain the
+navigation glyph. A marker's optional target still navigates on click. For
+several cross-file targets, publish document-index mappings; the existing
+chooser lists every matching definition. Command clicks are deferred; use a
+code action on the same line.
+
 Then `register_plugin!(MyPlugin, providers)` and implement
 `openidea_plugin::providers::Providers` for it: `completion`,
 `inline_completion`, `code_actions`, `definition`, `line_markers`. Each gets
