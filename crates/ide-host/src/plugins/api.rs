@@ -167,6 +167,7 @@ struct TaskEntry {
 /// A question a plugin's call waits on: the user's (a prompt) or a window's.
 struct PromptEntry {
     plugin: String,
+    client: String,
     answer: Waiter,
 }
 
@@ -286,10 +287,13 @@ impl Shared {
             .collect()
     }
 
-    /// Drops the context keys scoped to window `client` (it closed), without events, and
-    /// refuses further writes for it (late commands) until [`Self::reopen_client`].
+    /// Cancels prompts and drops context keys scoped to window `client` (it closed).
+    /// Refuses further writes for it (late commands) until [`Self::reopen_client`].
     pub fn forget_client(&self, client: &str) {
-        self.closed_clients.lock().insert(client.to_owned());
+        let mut closed = self.closed_clients.lock();
+        closed.insert(client.to_owned());
+        self.prompts.lock().retain(|_, entry| entry.client != client);
+        drop(closed);
         self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
     }
 
@@ -643,14 +647,18 @@ impl PluginApi {
         let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
         let (answer, answers) = std::sync::mpsc::sync_channel(1);
         {
+            let closed = self.shared.closed_clients.lock();
+            if closed.contains(client) {
+                return Err(HostError::Cancelled);
+            }
             let blocked = self.shared.prompts_blocked.lock();
             if blocked.contains(self.id()) {
                 return Err(HostError::Cancelled);
             }
-            self.shared
-                .prompts
-                .lock()
-                .insert(id, PromptEntry { plugin: self.id().to_owned(), answer: Waiter::Commit(answer) });
+            self.shared.prompts.lock().insert(
+                id,
+                PromptEntry { plugin: self.id().to_owned(), client: client.to_owned(), answer: Waiter::Commit(answer) },
+            );
         }
         let request_id = id.to_string();
         self.shared.sink.emit(
@@ -769,14 +777,18 @@ impl HostApi for PluginApi {
         let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
         let (answer, answers) = std::sync::mpsc::sync_channel(1);
         {
+            let closed = self.shared.closed_clients.lock();
+            if closed.contains(client) {
+                return Err(HostError::Cancelled);
+            }
             let blocked = self.shared.prompts_blocked.lock();
             if blocked.contains(self.id()) {
                 return Err(HostError::Cancelled);
             }
-            self.shared
-                .prompts
-                .lock()
-                .insert(id, PromptEntry { plugin: self.id().to_owned(), answer: Waiter::Prompt(answer) });
+            self.shared.prompts.lock().insert(
+                id,
+                PromptEntry { plugin: self.id().to_owned(), client: client.to_owned(), answer: Waiter::Prompt(answer) },
+            );
         }
         let prompt_id = id.to_string();
         self.shared.sink.emit(
