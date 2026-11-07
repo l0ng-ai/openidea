@@ -63,7 +63,7 @@ impl FormatOptions {
 
 /// Mago's version for a language level: it decides syntax the printer may
 /// use (for example `new Foo()->m()` without parentheses from PHP 8.4).
-fn mago_version(version: PhpVersion) -> PHPVersion {
+pub(crate) fn mago_version(version: PhpVersion) -> PHPVersion {
     PHPVersion::new(u32::from(version.major), u32::from(version.minor), 0)
 }
 

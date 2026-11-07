@@ -376,7 +376,7 @@ The design:
 - [x] Phase 5.1: Formatting
       Document and range formatting through `mago-formatter`, with PSR-12 defaults. The options map from the editor settings (indent and line length). Tests: unit tests and the Native `language_smoke` format check.
 
-- [ ] Phase 5.2: Extract variable and constant
+- [x] Phase 5.2: Extract variable and constant
       `refactor.extract.variable` and `refactor.extract.constant` code actions with name suggestions; reuse the conventions of `src/editor/refactor/names.ts` on the Rust side. They hook into `src/editor/refactor/catalog.ts`. Tests: before and after text.
 
 - [ ] Phase 5.3: Extract method

@@ -58,13 +58,15 @@ pub const ORGANIZE_IMPORTS: &str = "source.organizeImports";
 /// type, add or update the PHPDoc).
 pub const REWRITE: &str = "refactor.rewrite";
 /// The code action kinds the engine offers.
-pub const ACTION_KINDS: [&str; 3] = [QUICKFIX, REWRITE, ORGANIZE_IMPORTS];
+pub const ACTION_KINDS: [&str; 5] =
+    [QUICKFIX, REWRITE, crate::refactor::EXTRACT_VARIABLE, crate::refactor::EXTRACT_CONSTANT, ORGANIZE_IMPORTS];
 
 /// One code action: a quick-fix, a context action or Optimize Imports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportAction {
     pub title: String,
-    /// [`QUICKFIX`], [`REWRITE`] or [`ORGANIZE_IMPORTS`].
+    /// [`QUICKFIX`], [`REWRITE`], [`ORGANIZE_IMPORTS`] or one of the
+    /// `refactor.extract.*` kinds of [`crate::refactor`].
     pub kind: &'static str,
     pub preferred: bool,
     pub edit: WorkspaceEdit,

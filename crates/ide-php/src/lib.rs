@@ -74,6 +74,7 @@ pub mod names;
 pub mod navigate;
 pub mod probe;
 pub mod project;
+pub mod refactor;
 pub mod semantic;
 pub mod signature;
 pub mod stubs;

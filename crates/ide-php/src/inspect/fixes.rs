@@ -381,29 +381,10 @@ fn member_insertion(
     level: PhpVersion,
 ) -> Option<(u32, u32, String)> {
     let nl = newline(text);
-    let close = class.loc.end.checked_sub(1)?;
-    if text.as_bytes().get(close as usize) != Some(&b'}') {
-        return None;
-    }
-    let open = class.name_loc.end + text[class.name_loc.end as usize..close as usize].find('{')? as u32;
-    let class_indent = line_indent(text, class.name_loc.start).to_owned();
-    let first_member = class
-        .methods
-        .iter()
-        .map(|m| m.loc.start)
-        .chain(class.properties.iter().filter(|p| !p.is_promoted).map(|p| p.loc.start))
-        .chain(class.constants.iter().map(|c| c.loc.start))
-        .chain(class.cases.iter().map(|c| c.loc.start))
-        .chain(class.trait_uses.iter().map(|t| t.loc.start))
-        .min();
-    let indent = match first_member {
-        Some(at) if starts_line(text, at) => line_indent(text, at).to_owned(),
-        _ => format!("{class_indent}{}", indent_unit(text)),
-    };
-    let scope = names.scope_at(open);
+    let scope = names.scope_at(class.name_loc.start);
     let visibility = if member.private { "private" } else { "public" };
     let static_word = if member.is_static { " static" } else { "" };
-    let declaration = match member.kind {
+    insert_member(text, class, member.kind, |indent| match member.kind {
         MemberKind::Method => {
             let params: Vec<String> = member
                 .params
@@ -425,13 +406,46 @@ fn member_insertion(
         }
         MemberKind::Property => format!("{visibility}{static_word} ${};", member.name),
         MemberKind::Constant => format!("{visibility} const {} = null;", member.name),
+    })
+}
+
+/// Where a new member of `kind` goes in `class`, with `declaration` (given
+/// the members' indentation) written there: `(start, end, text)` replacing
+/// bytes `start..end`. Constants and properties go after the last of their
+/// kind, else first; methods last.
+pub(crate) fn insert_member(
+    text: &str,
+    class: &ClassLike,
+    kind: MemberKind,
+    declaration: impl FnOnce(&str) -> String,
+) -> Option<(u32, u32, String)> {
+    let nl = newline(text);
+    let close = class.loc.end.checked_sub(1)?;
+    if text.as_bytes().get(close as usize) != Some(&b'}') {
+        return None;
+    }
+    let open = class.name_loc.end + text[class.name_loc.end as usize..close as usize].find('{')? as u32;
+    let class_indent = line_indent(text, class.name_loc.start).to_owned();
+    let first_member = class
+        .methods
+        .iter()
+        .map(|m| m.loc.start)
+        .chain(class.properties.iter().filter(|p| !p.is_promoted).map(|p| p.loc.start))
+        .chain(class.constants.iter().map(|c| c.loc.start))
+        .chain(class.cases.iter().map(|c| c.loc.start))
+        .chain(class.trait_uses.iter().map(|t| t.loc.start))
+        .min();
+    let indent = match first_member {
+        Some(at) if starts_line(text, at) => line_indent(text, at).to_owned(),
+        _ => format!("{class_indent}{}", indent_unit(text)),
     };
+    let declaration = declaration(&indent);
     let interior = &text[open as usize + 1..close as usize];
     if interior.trim().is_empty() {
         return Some((open + 1, close, format!("{nl}{indent}{declaration}{nl}{class_indent}")));
     }
     // After the last member of the same kind, on a line of its own.
-    let after = match member.kind {
+    let after = match kind {
         MemberKind::Method => None,
         MemberKind::Property => class.properties.iter().filter(|p| !p.is_promoted).map(|p| p.loc.end).max(),
         MemberKind::Constant => class.constants.iter().map(|c| c.loc.end).max(),
@@ -442,7 +456,7 @@ fn member_insertion(
             return Some((end, end, format!("{nl}{indent}{declaration}")));
         }
     }
-    if member.kind != MemberKind::Method {
+    if kind != MemberKind::Method {
         return Some((open + 1, open + 1, format!("{nl}{indent}{declaration}{nl}")));
     }
     // Last in the body.
