@@ -280,6 +280,32 @@ fn spring_boot_application_of_a_repository_nested_one_or_two_levels_down() {
 }
 
 #[test]
+fn a_large_common_module_does_not_starve_later_app_modules() {
+    // More source files than one scan budget in `a-common` (no app class): the app in `b-app` must still be found.
+    let mut files: Vec<(String, String)> = vec![
+        ("pom.xml".into(), "<project><modules><module>a-common</module><module>b-app</module></modules></project>".into()),
+        ("a-common/pom.xml".into(), BOOT_POM.into()),
+        ("b-app/pom.xml".into(), BOOT_POM.into()),
+        (
+            "b-app/src/main/java/demo/App.java".into(),
+            "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n".into(),
+        ),
+    ];
+    for i in 0..401 {
+        files.push((format!("a-common/src/main/java/demo/C{i}.java"), format!("package demo;\nclass C{i} {{}}\n")));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in &files {
+        let p = dir.path().join(path);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, content).unwrap();
+    }
+    let configs = detect(dir.path());
+    let app = find(&configs, "application:b-app:demo.App");
+    assert_eq!(app.kind, "spring-boot");
+}
+
+#[test]
 fn nested_builds_of_every_kind_and_depth() {
     let dir = project(&[
         ("services/api/settings.gradle.kts", "include(\"app\")"),
