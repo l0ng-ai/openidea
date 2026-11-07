@@ -396,7 +396,7 @@ The design:
 
 ## Plan 6: Parity gate and switch-over
 
-- [ ] Phase 6.1: Full Native smoke parity
+- [x] Phase 6.1: Full Native smoke parity
       Every check in the php `language_smoke` case passes with `engine = Native`. Fix the gaps found. Run it both ways and record both results in PROGRESS.
 
 - [ ] Phase 6.2: Comparison harness on the corpora

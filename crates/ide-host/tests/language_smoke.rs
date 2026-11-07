@@ -1069,16 +1069,50 @@ async fn php() {
     smoke("php", PHP).await;
 }
 
+/// The baseline's checklist with the checks Intelephense leaves to its Premium licence filled in:
+/// the native engine answers every one of them.
+const PHP_NATIVE: Checks = Checks {
+    quick_fix: Some(QuickFix {
+        typed: typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $g = Genre::Fiction;"),
+        diagnostic: "Undefined class 'Genre'",
+        title: r"Import class 'App\Model\Genre'",
+        result: "use App\\Model\\Genre;",
+    }),
+    intention: Some((
+        at("src/Library.php", "$lent = $book->withAvailability(false);", "$book->withAvailability(false)"),
+        "Extract variable",
+    )),
+    rename: Some((
+        // From a usage in another file: the declaration and every call are renamed.
+        at("src/Library.php", "return format_price($cents);", "format_price"),
+        "format_amount",
+        &["src/Library.php", "src/Reports/ShelfReport.php", "src/functions.php"],
+    )),
+    organize_imports: Some((
+        typed("src/Library.php", r"use App\Support\Collection;", r"use App\Model\Genre;"),
+        Imports::Removed,
+    )),
+    // A PSR-4 move changes the class's namespace and its imports.
+    file_move: Some((
+        "src/Support/Collection.php",
+        "src/Model/Collection.php",
+        "src/Library.php",
+        r"use App\Model\Collection;",
+    )),
+    ..PHP
+};
+
 /// The native engine (Settings › PHP › Engine set to Native) on the same fixture, with no language
-/// server: the checks it answers so far, the Structure view, go to definition of class names (in a
-/// `new`, an `extends` and a `use` import), of members and of variables, hover, completion
-/// (members, and a class name with auto-import), the auto-import quick fix, Optimize Imports,
-/// the baseline's undefined-method diagnostic and syntax-error diagnostics, parameter info, inlay
-/// hints, formatting and rename. Not ignored: it
-/// needs nothing installed.
+/// server. It first checks what goes beyond the baseline: the Structure view's PHP signatures, go
+/// to definition of class names (in a `new`, an `extends` and a `use` import), of members and of
+/// variables, Find Usages of a class, hover on members and variables, the auto-import quick fix
+/// being preferred, syntax-error diagnostics, inlay hints and a class rename that renames its file.
+/// Then it runs the whole shared checklist ([`PHP_NATIVE`]: every check of the Intelephense case
+/// plus quick fix, intention, rename, Optimize Imports and moving a file). Not ignored: it needs
+/// nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
-    let smoke = Smoke::start("php", &PHP).await;
+    let smoke = Smoke::start("php", &PHP_NATIVE).await;
     ops::project::set_settings(
         &smoke.host,
         WINDOW,
@@ -1134,18 +1168,14 @@ async fn php_native() {
     smoke
         .definition(at("src/Library.php", "return $lent;", "$lent"), at("src/Library.php", "$lent = $book", "$lent"))
         .await;
-    // Find usages: the baseline's function check, and a class used across files and in PHPDoc.
-    let (of, files) = PHP.references;
-    smoke.references(of, files).await;
+    // Find usages of a class used across files and in PHPDoc.
     smoke
         .references(
             at("src/Model/Book.php", "final class Book", "Book"),
             &["bin/library.php", "src/Library.php", "src/Model/Book.php"],
         )
         .await;
-    // Hover: the baseline's function check, a method with its resolved signature, a variable's type.
-    let (over, shows) = PHP.hover;
-    smoke.hover(over, shows).await;
+    // Hover: a method with its resolved signature, a variable's type.
     smoke
         .hover(
             at("src/Library.php", "$lent = $book->withAvailability(false);", "withAvailability"),
@@ -1153,12 +1183,8 @@ async fn php_native() {
         )
         .await;
     smoke.hover(at("src/Library.php", "return $lent;", "$lent"), r"App\Model\Book $lent").await;
-    // Completion: the baseline's member check, and a class name with its `use` import.
-    let (typed, offers) = PHP.completion;
-    smoke.completion(typed, offers).await;
-    smoke.auto_import(PHP.auto_import).await;
-    // The auto-import quick fix on an unresolved class name, and Optimize Imports dropping an
-    // unused import.
+    // The auto-import quick fix on an unresolved class name: the only candidate, preferred, and
+    // its import sorted among the others.
     let (doc, pos, before) = smoke
         .type_line(crate::typed(
             "src/Library.php",
@@ -1175,19 +1201,8 @@ async fn php_native() {
     let text = smoke.doc("src/Library.php").await.1;
     assert!(text.contains("use App\\Model\\Book;\nuse App\\Model\\Genre;\n"), "{text}");
     smoke.restore(doc, &before).await;
-    smoke
-        .organize_imports(
-            crate::typed("src/Library.php", r"use App\Support\Collection;", r"use App\Model\Genre;"),
-            Imports::Removed,
-        )
-        .await;
-    // Diagnostics: the baseline's check, the fixture's deliberate undefined method (an
-    // inspection). The engine inspects open documents in the background and publishes them under
-    // `php`; a syntax error typed into a file is reported on its line and goes away with the edit.
-    if let Some((file, message)) = PHP.diagnostic {
-        let _ = smoke.doc(file).await;
-        smoke.diagnostic(file, message).await;
-    }
+    // The engine inspects open documents in the background and publishes them under `php`; a
+    // syntax error typed into a file is reported on its line and goes away with the edit.
     let (doc, pos, before) = smoke
         .type_line(crate::typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $broken = ;"))
         .await;
@@ -1223,27 +1238,14 @@ async fn php_native() {
             }
         })
         .await;
-    // Parameter info: the baseline's check, and the engine's parameter-name and type hints.
-    let (call, parameter) = PHP.signature;
-    smoke.signature(call, parameter).await;
+    // The engine's parameter-name and type hints.
     let (doc, text) = smoke.doc("src/Library.php").await;
     let whole = Range::new(Pos::new(0, 0), Pos::new(text.lines().count() as u32, 0));
     let hints = ops::lsp::lsp_inlay_hints(&smoke.host, WINDOW, doc, whole).await.unwrap();
     let labels: Vec<&str> = hints.iter().map(|h| h.label.as_str()).collect();
     assert!(labels.contains(&"available:"), "a parameter name hint on withAvailability(false): {labels:?}");
     assert!(labels.contains(&": Book"), "a type hint on $lent: {labels:?}");
-    // Reformat Code: the baseline's check, through mago-formatter with the editor's indentation.
-    let (line, formatted) = PHP.format;
-    smoke.format(line, PHP.indent, formatted).await;
-    // Rename (last: it edits the fixture): a function from a usage in another file, and a class
-    // whose file is renamed with it.
-    smoke
-        .rename(
-            at("src/Library.php", "return format_price($cents);", "format_price"),
-            "format_amount",
-            &["src/Library.php", "src/Reports/ShelfReport.php", "src/functions.php"],
-        )
-        .await;
+    // Renaming a class renames its file (not applied: the checklist below uses the fixture).
     let (doc, pos) = smoke.locate(at("src/Model/Book.php", "final class Book", "Book")).await;
     let renamed = ops::lsp::lsp_rename(&smoke.host, WINDOW, RequestId(6), doc, pos, "Volume".into()).await.unwrap();
     let moved = renamed.edit.files.iter().any(|f| {
@@ -1257,4 +1259,7 @@ async fn php_native() {
         "Intelephense isn't started under the native engine: {:?}",
         servers.iter().map(|s| &s.name).collect::<Vec<_>>()
     );
+    // Full parity: every check of the Intelephense case, and the Premium ones, through the shared
+    // checklist (last: its rename and file move edit the fixture).
+    smoke.run(&PHP_NATIVE).await;
 }
