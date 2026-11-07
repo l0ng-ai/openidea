@@ -44,6 +44,7 @@ maven = { downloadSources = true, updateSnapshots = false }
 eclipse = { downloadSources = true }
 references = { includeDecompiledSources = true }
 signatureHelp = { enabled = true }
+symbols = { includeGeneratedCode = true }
 configuration = { updateBuildConfiguration = "automatic" }
 project = { referencedLibraries = ["lib/**/*.jar"] }
 # Generated code (implement methods, getters, toString…) indents like the editor (`indent` above).
