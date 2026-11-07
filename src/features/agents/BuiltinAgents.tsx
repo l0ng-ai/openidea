@@ -148,7 +148,6 @@ function Details({
             />
             <IconButton
               icon="folder-open"
-              size="small"
               title="Browse…"
               disabled={saving}
               onClick={async () => {
