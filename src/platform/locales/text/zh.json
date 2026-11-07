@@ -6781,5 +6781,8 @@
   "Allowed for this session": "已在此会话中允许",
   "Always allowed": "已设为始终允许",
   "Declined": "已拒绝",
-  "Always declined": "已设为始终拒绝"
+  "Always declined": "已设为始终拒绝",
+  "Cancel Hot Swap Build": "取消 Hot Swap 构建",
+  "Stop the compile a Reload Changed Classes action is waiting on": "停止 Reload Changed Classes 正在等待的编译",
+  "Hot Swap cancelled": "Hot Swap 已取消"
 }

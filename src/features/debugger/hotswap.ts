@@ -5,7 +5,7 @@
  * a save) java-debug reports `BUILD_COMPLETE` and, like IDEA's default
  * "Reload classes after compilation: Ask", we offer the reload.
  */
-import { call, commands, isTauri, type DebugEvent, type DebugSessionId } from "@/platform/ipc";
+import { call, commands, isTauri, nextRequestId, type DebugEvent, type DebugSessionId, type RequestId } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { isLive, useDebug, type DebugSession } from "./state";
 import { tx } from "@/platform/i18n";
@@ -14,6 +14,13 @@ import type { MenuItem } from "@/ui/Menu";
 const KEY = "debug.hotswap";
 /** `BUILD_COMPLETE` events of our own build are not worth a prompt. */
 let quietUntil = 0;
+/** The compile request HotSwap is waiting on, so it can be cancelled. */
+let activeBuild: RequestId | null = null;
+
+/** Cancels a running HotSwap compile; the reload is aborted rather than applied to stale classes. */
+export function cancelHotSwapBuild(): void {
+  if (activeBuild !== null) void commands.cancelRequest(activeBuild);
+}
 
 export function hotSwapSessions(): DebugSession[] {
   return Object.values(useDebug.getState().sessions).filter((s) => isLive(s) && !!s.caps?.hotCodeReplace);
@@ -55,8 +62,21 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
       }
       const modules = new Set(sessions.map((s) => s.launch?.cwd ?? ""));
       for (const module of modules) {
-        const status = await call(commands.javaBuildWorkspace(module)).catch(() => null);
-        if (status === "failed" || status === "withErrors") {
+        const request = nextRequestId();
+        activeBuild = request;
+        let status: "cancelled" | "failed" | "succeeded" | "withErrors" | null = null;
+        try {
+          status = await call(commands.javaBuildWorkspace(module, request));
+        } catch {
+          status = null;
+        } finally {
+          if (activeBuild === request) activeBuild = null;
+        }
+        if (status === "cancelled") {
+          notifications().notify({ group: "run", level: "info", key: KEY, title: "Hot Swap cancelled" });
+          return;
+        }
+        if (status === "failed" || status === "withErrors" || status === null) {
           notifications().notify({
             group: "run",
             level: "error",

@@ -29,7 +29,7 @@ import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./br
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
-import { reloadChangedClasses } from "./hotswap";
+import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import {
   isPythonAttachTarget,
@@ -448,6 +448,15 @@ export function registerDebugActions(): () => void {
             ? arg.configId
             : undefined,
         ),
+    },
+    {
+      id: "debug.cancelHotSwap",
+      title: "Cancel Hot Swap Build",
+      description: "Stop the compile a Reload Changed Classes action is waiting on",
+      category: "Debug",
+      icon: "stop",
+      when: "debugCanHotSwap",
+      run: () => cancelHotSwapBuild(),
     },
     {
       id: "debug.rerun",
