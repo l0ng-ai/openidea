@@ -113,6 +113,10 @@ const OWN_MODES = [
       },
     }),
   ),
+  LanguageDescription.of({
+    name: "Angular TypeScript",
+    load: () => import("./angular/inline").then((m) => m.angularTypescript()),
+  }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
   LanguageDescription.of({
     name: "ERB",
@@ -274,6 +278,7 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
   TypeScript: JS_TAGS,
+  "Angular TypeScript": JS_TAGS,
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
