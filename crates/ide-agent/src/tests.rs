@@ -9,6 +9,7 @@ struct FakeAgent {
     /// Every connection's agent side, kept open.
     servers: Mutex<Vec<Peer>>,
     calls: Mutex<Vec<String>>,
+    permission_replies: Mutex<Vec<Value>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
@@ -191,6 +192,7 @@ impl Handler for FakeAgent {
                             None,
                         ))
                         .unwrap();
+                    self.permission_replies.lock().push(answer.clone());
                     let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
                     self.say(&session, &format!("answered {chosen}"));
                     return Ok(json!({ "stopReason": "end_turn" }));
@@ -719,9 +721,10 @@ fn prompts_become_acp_content_blocks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn answered_questions_close_the_question_with_every_picked_label() {
+async fn claude_questions_keep_the_answer_object_as_the_option_id() {
     let tmp = tempfile::tempdir().unwrap();
-    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -739,13 +742,22 @@ async fn answered_questions_close_the_question_with_every_picked_label() {
         .unwrap()
         .iter()
         .find_map(|e| match e {
-            AgentEntry::Permission { id, .. } => Some(*id),
+            AgentEntry::Permission { id, title, questions, .. } => {
+                assert_eq!(title, "AskUserQuestion");
+                assert_eq!(questions.len(), 2);
+                assert_eq!(questions[0].question, "Which layout?");
+                assert!(!questions[0].multi_select);
+                assert_eq!(questions[1].question, "Which checks?");
+                assert!(questions[1].multi_select);
+                Some(*id)
+            }
             _ => None,
         })
         .unwrap();
     let reply = json!({"Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"]}).to_string();
-    mgr.respond(&task.id, question, Some(reply)).unwrap();
+    mgr.respond(&task.id, question, Some(reply.clone())).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(*agent.permission_replies.lock(), [json!({"outcome": {"outcome": "selected", "optionId": reply}})]);
 
     let entries = mgr.entries(&task.id, None).unwrap();
     assert!(
@@ -1354,6 +1366,64 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     mgr.cancel(&other.id, None).unwrap();
     wait_for(&mgr, &other.id, AgentStatus::Ready).await;
     mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bypass_approvals_keeps_both_question_dialects_pending_but_allows_permissions() {
+    for prompt in ["ask", "qwen ask"] {
+        for bypass_at_start in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+            // Cursor's client-side approval policy applies independently of the question dialect.
+            let task = mgr
+                .create(NewAgentTask {
+                    project_root: None,
+                    prompt: text(prompt),
+                    provider: "cursor".into(),
+                    config: if bypass_at_start {
+                        vec![AgentConfigChoice { id: config::CURSOR_APPROVAL.into(), value: "bypass".into() }]
+                    } else {
+                        vec![]
+                    },
+                    isolation: Isolation::Local,
+                    base: None,
+                })
+                .await
+                .unwrap();
+            wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+            let id = mgr
+                .entries(&task.id, None)
+                .unwrap()
+                .iter()
+                .find_map(|entry| match entry {
+                    AgentEntry::Permission { id, questions, chosen: None, .. } if questions.len() == 2 => Some(*id),
+                    _ => None,
+                })
+                .unwrap();
+            mgr.set_config(&task.id, config::CURSOR_APPROVAL, "bypass".into()).await.unwrap();
+            assert!(mgr.task(&task.id).unwrap().permissions.lock().contains_key(&id), "{prompt}, {bypass_at_start}");
+            assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::NeedsInput);
+            let reply = if prompt == "ask" {
+                json!({"Which layout?": ["Grid"], "Which checks?": ["Disk"]})
+            } else {
+                json!({"Which database?": ["Postgres"], "Which caches?": ["Memory"]})
+            };
+            mgr.respond(&task.id, id, Some(reply.to_string())).unwrap();
+            wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+            mgr.prompt(&task.id, text("Fix"), false).await.unwrap();
+            wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+            let entries = mgr.entries(&task.id, None).unwrap();
+            assert!(
+                entries.iter().any(|entry| matches!(entry,
+                    AgentEntry::Permission { questions, chosen: Some(name), .. }
+                    if questions.is_empty() && name == "Allow")),
+                "{entries:?}"
+            );
+            assert!(entries.iter().any(|entry| matches!(entry, AgentEntry::Agent { text } if text == "chose yes")));
+            mgr.shutdown();
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
