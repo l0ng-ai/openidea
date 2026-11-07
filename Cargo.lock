@@ -4216,6 +4216,7 @@ dependencies = [
  "ide-core",
  "ide-jsonrpc",
  "ide-language",
+ "libc",
  "memchr",
  "parking_lot",
  "portable-pty",

@@ -1468,6 +1468,8 @@ export interface DebugRunSession {
   configId: string | null;
   name: string;
   startedAt: number;
+  /** Set while the session shuts down after Stop. */
+  status?: "starting" | "running" | "paused" | "stopping" | "terminated";
   paused: boolean;
   rerun: (() => void) | null;
   stop: () => void;
@@ -1479,7 +1481,7 @@ export interface DebugServiceSession {
   id: number;
   config: RunConfig;
   startedAt: number;
-  status: "starting" | "running" | "paused" | "terminated";
+  status: "starting" | "running" | "paused" | "stopping" | "terminated";
   processId: number | null;
   /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
   httpPort?: number;
@@ -1508,6 +1510,11 @@ export interface RunningProcessesProvider {
   id: string;
   /** Processes this feature is running in the window right now. */
   running(): RunningProcess[] | Promise<RunningProcess[]>;
+  /**
+   * Stops them before a close: graceful first (stop command / SIGINT, as IDEA does), the
+   * whole set again when `kill` asks for SIGKILL.
+   */
+  stop?(kill: boolean): Promise<void> | void;
 }
 
 const runningProcessesProviders = new Map<string, RunningProcessesProvider>();
@@ -1517,6 +1524,11 @@ export function registerRunningProcessesProvider(p: RunningProcessesProvider): (
   return () => {
     if (runningProcessesProviders.get(p.id) === p) runningProcessesProviders.delete(p.id);
   };
+}
+
+/** Asks every provider to stop its processes: graceful, or killed when `kill` is set. */
+export async function stopRunningProcesses(kill: boolean): Promise<void> {
+  await Promise.all([...runningProcessesProviders.values()].map((p) => p.stop?.(kill)));
 }
 
 /** Live processes of every provider, one entry per name. */
