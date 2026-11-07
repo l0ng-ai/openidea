@@ -332,6 +332,9 @@ impl Manifest {
         }
         let mut seen = BTreeSet::new();
         for event in &self.activation {
+            if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
+                self.needs_api("`on-event:files-changed`", 3)?;
+            }
             if !seen.insert(event) {
                 return Err(format!("duplicate activation event {event}"));
             }
@@ -592,6 +595,19 @@ mod tests {
     }
 
     const BASE: &str = "id = \"ok\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n";
+
+    #[test]
+    fn files_changed_activation_needs_api_1_3() {
+        let activation = "wasm = \"plugin.wasm\"\nactivation = [\"on-event:files-changed\"]\n";
+        for engine in ["^1.0", "^1.2", ">=1.1, <2"] {
+            let base = BASE.replace("^1.2", engine);
+            assert!(err(&format!("{base}{activation}")).contains("new in plugin API 1.3"), "{engine}");
+        }
+        for engine in ["^1.3", ">=1.3, <2"] {
+            Manifest::parse(&format!("{}{activation}", BASE.replace("^1.2", engine))).unwrap();
+        }
+        Manifest::parse(&format!("{BASE}{}", activation.replace("files-changed", "file-saved"))).unwrap();
+    }
 
     #[test]
     fn write_capabilities_need_api_1_3() {

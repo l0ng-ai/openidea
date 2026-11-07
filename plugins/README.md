@@ -506,7 +506,8 @@ The released WIT event remains unchanged: `event::other` carries kind
 The Rust SDK exposes `Event::FilesChanged(FilesChanged)` and
 `EventKind::FilesChanged`. Paths have the same absolute form as `file-saved`.
 Subscribe with `host::subscribe(EventKind::FilesChanged)` or
-`activation = ["on-event:files-changed"]`.
+`activation = ["on-event:files-changed"]`. Plugins using this event must declare
+`engines.openidea = "^1.3"`.
 
 Kinds are names (`subscribe` takes a string), so later IDEs add kinds without
 a new API: an IDE refuses a kind it doesn't know with `invalid`, and a kind

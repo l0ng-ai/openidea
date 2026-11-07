@@ -180,7 +180,7 @@ mod tests {
             old.store(false, Ordering::Release);
             host.post_files_changed(
                 "main",
-                &root,
+                root,
                 &new,
                 &ide_vfs::FsBatch { created: vec![root.join("new.rs")], ..Default::default() },
             );
@@ -190,6 +190,40 @@ mod tests {
         let queue = queues.values().next().expect("new session queue");
         assert!(queue.files_source.as_ref().unwrap().same(&Source { active: Arc::downgrade(&new) }));
         assert_eq!(queue.events, [delta(0, &to_ipc(&root.join("new.rs")))]);
+    }
+
+    #[test]
+    fn files_changed_restarts_after_an_actor_drops_queued_work() {
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host = files_changed_host(&root);
+        let plugin = host.get("files-events").unwrap();
+        let (actor, _) = host.ensure_active(&plugin, Some("main")).unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let crash = actor
+            .submit(None, move |_| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                Err::<(), _>(ide_plugin::CallError::Trap(ide_plugin::CANCELLED.into()))
+            })
+            .unwrap();
+        waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+        host.post_events(Some("main"), vec![delta(0, &to_ipc(&root.join("discarded.rs")))]);
+        host.flush_events();
+        release.send(()).unwrap();
+        assert!(crash.wait().is_err());
+        host.flush_events();
+        host.post_events(Some("main"), vec![delta(0, &to_ipc(&root.join("after-restart.rs")))]);
+        host.flush_events();
+        assert!(host.wait_events(Duration::from_secs(1)), "dropped actor work must not keep its mailbox alive");
+        let data = host.run_command("files-events", "events", None, Default::default()).unwrap().unwrap();
+        let batches: Vec<FilesChanged> = serde_json::from_str(&data).unwrap();
+        assert_eq!(
+            batches,
+            [FilesChanged { created: vec![to_ipc(&root.join("after-restart.rs"))], ..Default::default() }]
+        );
     }
 
     #[test]

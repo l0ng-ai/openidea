@@ -4898,6 +4898,41 @@ fn files_changed_does_not_cancel_a_batch_blocked_in_a_host_call() {
 }
 
 #[test]
+fn files_changed_rechecks_filters_when_an_actor_batch_starts() {
+    for filter in ["", "other/**"] {
+        let f = fixture(Limits::default());
+        f.install(&sample("files-events"));
+        f.run("files-events", "filter-after-event", Some(filter)).unwrap();
+        std::fs::write(f.project.join("event-barrier.txt"), "ready").unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *f.workspace.event_read_gate.lock() = Some((entered, released));
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                created: vec![to_ipc(&f.project.join("__block__.txt"))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+        waiting.recv_timeout(Duration::from_secs(10)).expect("first batch blocks before replacing its filter");
+        f.host.post_events(
+            Some("main"),
+            vec![WorkbenchEvent::FilesChanged(ide_plugin::FilesChanged {
+                modified: vec![to_ipc(&f.project.join("queued.txt"))],
+                ..Default::default()
+            })],
+        );
+        f.host.flush_events();
+        release.send(()).unwrap();
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+        let batches: Vec<ide_plugin::FilesChanged> =
+            serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
+        assert_eq!(batches.len(), 1, "filter {filter:?} must suppress the batch waiting in the actor");
+    }
+}
+
+#[test]
 fn files_changed_filters_each_category_before_waking_idle_plugins() {
     let f = fixture(Limits { idle_timeout: Some(Duration::ZERO), ..Limits::default() });
     f.install(&sample("files-events"));

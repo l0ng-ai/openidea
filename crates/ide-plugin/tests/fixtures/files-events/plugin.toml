@@ -18,5 +18,9 @@ id = "filter"
 title = "Filter filesystem events"
 
 [[contributes.commands]]
+id = "filter-after-event"
+title = "Change the filter after the next event"
+
+[[contributes.commands]]
 id = "unsubscribe"
 title = "Unsubscribe from filesystem events"

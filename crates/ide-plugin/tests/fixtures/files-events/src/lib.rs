@@ -11,6 +11,10 @@ impl Plugin for FilesEvents {
                 host::subscribe_paths("files-changed", &arg.unwrap_or_default().lines().collect::<Vec<_>>())?;
                 Ok(None)
             }
+            "filter-after-event" => {
+                host::storage::set("next-filter", arg.unwrap_or_default())?;
+                Ok(None)
+            }
             "unsubscribe" => {
                 host::unsubscribe(openidea_plugin::EventKind::FilesChanged);
                 Ok(None)
@@ -32,6 +36,10 @@ impl Plugin for FilesEvents {
                     }
                 }
                 received.push(batch.clone());
+                if let Some(filter) = host::storage::get("next-filter").unwrap() {
+                    host::storage::delete("next-filter").unwrap();
+                    host::subscribe_paths("files-changed", &filter.lines().collect::<Vec<_>>()).unwrap();
+                }
             }
         }
         host::storage::set("events", &serde_json::to_string(&received).unwrap()).unwrap();
