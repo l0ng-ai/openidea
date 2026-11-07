@@ -1040,6 +1040,12 @@ async fn forks_rollbacks_and_steering() {
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
     mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    // Dropping every turn starts a fresh session instead of rewinding the agent's history.
+    let first = mgr.rollback(&task.id, 0).await.unwrap().unwrap();
+    assert_eq!(first.text, "again");
+    assert!(mgr.entries(&task.id, None).unwrap().is_empty());
+    assert!(mgr.task(&task.id).unwrap().state.lock().session_id.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
