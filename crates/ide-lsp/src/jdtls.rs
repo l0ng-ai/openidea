@@ -679,10 +679,11 @@ impl LspManager {
 
     /// Incremental build of the jdtls workspace (`java/buildWorkspace`), so
     /// class files are up to date before a launch.
-    pub async fn java_build(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
+    /// `full` asks jdtls for a clean build (`java/buildWorkspace(true)`, IDEA's Rebuild).
+    pub async fn java_build(&self, path: &Path, full: bool, cancel: &CancellationToken) -> IdeResult<JavaBuildStatus> {
         let (server, _) = self.jdtls(path, cancel).await?;
         let _lock = cancellable_wait(cancel, server.java_build_lock.lock()).await?;
-        let mut v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
+        let mut v = self.jdtls_request(path, "java/buildWorkspace", json!(full), BUILD_TIMEOUT, cancel).await?;
         // The first build can finish the Maven import before ServiceReady is handled.
         let (server, run) = self.jdtls(path, cancel).await?;
         let changed = cancellable_wait(cancel, self.java_configure_compiler(&server, &run)).await??;
@@ -690,7 +691,7 @@ impl LspManager {
         let recheck = v.as_i64() == Some(2)
             && compiler_defaults(&server.effective_config()).as_object().is_some_and(|o| !o.is_empty());
         if changed || recheck {
-            v = self.jdtls_request(path, "java/buildWorkspace", json!(false), BUILD_TIMEOUT, cancel).await?;
+            v = self.jdtls_request(path, "java/buildWorkspace", json!(full), BUILD_TIMEOUT, cancel).await?;
         }
         Ok(JavaBuildStatus::from_code(v.as_i64().unwrap_or(0)))
     }
@@ -733,10 +734,11 @@ impl LspManager {
         module: &Path,
         test: bool,
         build: bool,
+        full_build: bool,
         build_lock_held: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<JavaLaunchInfo> {
-        let build = if build { Some(self.java_build(module, cancel).await?) } else { None };
+        let build = if build { Some(self.java_build(module, full_build, cancel).await?) } else { None };
         if build == Some(JavaBuildStatus::Cancelled) {
             return Err(IdeError::cancelled());
         }

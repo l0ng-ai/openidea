@@ -1560,7 +1560,7 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
     assert_eq!(state.launches.load(Ordering::SeqCst), 1);
     state.respond("java/buildWorkspace", json!(1));
     assert_eq!(
-        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        h.mgr.java_build(&h.root, false, &Default::default()).await.unwrap(),
         ide_lsp::jdtls::JavaBuildStatus::Succeeded
     );
     assert_eq!(state.requested("java/buildWorkspace"), vec![json!(false)]);
@@ -1577,6 +1577,18 @@ async fn java_source_paths_reach_initialization_live_configuration_and_builds() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_build_asks_for_a_full_build_when_rebuilding() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let state = h.launcher.state("jdtls");
+    state.respond("java/buildWorkspace", json!(1));
+    assert_eq!(
+        h.mgr.java_build(&h.root, true, &Default::default()).await.unwrap(),
+        ide_lsp::jdtls::JavaBuildStatus::Succeeded
+    );
+    assert_eq!(state.requested("java/buildWorkspace"), vec![json!(true)]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     std::fs::create_dir_all(h.root.join("src/demo")).unwrap();
@@ -1588,7 +1600,7 @@ async fn unmanaged_java_run_imports_sources_without_an_open_editor() {
     let state = h.launcher.state("jdtls");
     state.respond("java/buildWorkspace", json!(1));
     assert_eq!(
-        h.mgr.java_build(&h.root, &Default::default()).await.unwrap(),
+        h.mgr.java_build(&h.root, false, &Default::default()).await.unwrap(),
         ide_lsp::jdtls::JavaBuildStatus::Succeeded
     );
     assert_eq!(state.requested("initialize")[0]["initializationOptions"]["triggerFiles"], json!([uri_of(&file)]));
@@ -1606,7 +1618,7 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
     // A launch with a build re-takes the lock after java_build has released it.
     let info = tokio::time::timeout(
         Duration::from_secs(30),
-        h.mgr.java_launch(&h.root, false, true, false, &Default::default()),
+        h.mgr.java_launch(&h.root, false, true, false, false, &Default::default()),
     )
     .await
     .expect("java_launch deadlocked on the build lock")
@@ -1616,10 +1628,13 @@ async fn java_launch_serializes_the_classpath_with_the_build_lock() {
     // The delegated external build holds the lock while java_launch resolves the
     // classpath; java_launch must not re-take it, or the launch would deadlock.
     let guard = h.mgr.java_external_build(&h.root, &Default::default()).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(30), h.mgr.java_launch(&h.root, false, false, true, &Default::default()))
-        .await
-        .expect("java_launch deadlocked on the delegated external build's lock")
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        h.mgr.java_launch(&h.root, false, false, false, true, &Default::default()),
+    )
+    .await
+    .expect("java_launch deadlocked on the delegated external build's lock")
+    .unwrap();
     drop(guard);
     let commands: Vec<_> = state
         .requested("workspace/executeCommand")

@@ -8,6 +8,7 @@ use super::build::load;
 use ide_build::compile;
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId};
 use ide_lsp::jdtls::{JavaBuildStatus, JavaLaunchInfo};
+use ide_run::BuildPolicy;
 use std::path::PathBuf;
 
 /// Cancellable with `cancel_request(request)`.
@@ -19,12 +20,12 @@ pub async fn java_resolve_launch(
     window: &str,
     module: PathBuf,
     test: bool,
-    build: bool,
+    policy: BuildPolicy,
     request: RequestId,
 ) -> IdeResult<JavaLaunchInfo> {
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result = resolve_launch(host, window, module, test, build, &cancel).await;
+    let result = resolve_launch(host, window, module, test, policy, &cancel).await;
     host.end_request(request);
     result
 }
@@ -34,13 +35,17 @@ async fn resolve_launch(
     window: &str,
     module: PathBuf,
     test: bool,
-    build: bool,
+    policy: BuildPolicy,
     cancel: &CancellationToken,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
     let project = host.project(window)?;
     let module = project.root.join(module);
     let settings = project.settings.effective();
+    // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
+    let build = policy != BuildPolicy::NoBuild;
+    let full = policy == BuildPolicy::Rebuild;
+    let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
     let (model, external, delegated) = {
         let project = project.clone();
         let settings = settings.clone();
@@ -59,7 +64,7 @@ async fn resolve_launch(
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
     let external_build = if delegated { Some(project.lsp.java_external_build(&module, cancel).await?) } else { None };
-    let mut info = project.lsp.java_launch(&module, test, build && !delegated, delegated, cancel).await?;
+    let mut info = project.lsp.java_launch(&module, test, build && !delegated, full, delegated, cancel).await?;
     let lsp_ms = started.elapsed().as_millis();
     let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
@@ -80,7 +85,7 @@ async fn resolve_launch(
             info.error_count = 0;
             copies
         } else if external {
-            compile::build_for_launch(&project.root, &model, &module, test, &cancel)?
+            compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?
         } else {
             Vec::new()
         };
@@ -239,13 +244,13 @@ pub async fn java_build_workspace(
     host.require_trust(window)?;
     let project = host.project(window)?;
     let module = project.root.join(module);
-    project.lsp.java_build(&module, &CancellationToken::new()).await
+    project.lsp.java_build(&module, false, &CancellationToken::new()).await
 }
 
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("java_resolve_launch", |c| async move {
-        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("build")?, c.arg("request")?)
+        java_resolve_launch(&c.host, &c.window, c.arg("module")?, c.arg("test")?, c.arg("policy")?, c.arg("request")?)
             .await
     });
     d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });

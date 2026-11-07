@@ -98,7 +98,7 @@ describe("updating a running Tomcat deployment", () => {
   it("compiles the selected WAR module and copies its outputs instead of rebuilding the WAR", async () => {
     const c = config({ deployment: "artifact", artifact: "maven:web/pom.xml" });
     expect(await syncTomcatOutputs(c, false)).toBe(true);
-    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, true, expect.anything());
+    expect(commands.javaResolveLaunch).toHaveBeenCalledWith("web", false, "make", expect.anything());
     expect(commands.runTomcatSync).toHaveBeenCalledWith(c, "web", ["/p/web/target/classes", "/m2/lib.jar"], false);
   });
 

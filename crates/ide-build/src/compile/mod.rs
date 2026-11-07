@@ -741,13 +741,7 @@ pub fn launch_has_non_java_sources(root: &Path, model: &BuildModel, module: &Pat
     has_non_java_sources(module)
 }
 
-fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool) -> IdeResult<BuildPlan> {
-    let kind = if model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| subdir(root, &p.dir) == module)) {
-        // JDT may have left newer error stubs in Maven's output directories.
-        BuildKind::Rebuild
-    } else {
-        BuildKind::Build
-    };
+fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool, kind: BuildKind) -> IdeResult<BuildPlan> {
     let mut plan = plan(root, model, kind, Some(module), None)?;
     if plan.system == BuildSystem::Maven && !test {
         for step in &mut plan.steps {
@@ -766,9 +760,10 @@ pub fn build_for_launch(
     model: &BuildModel,
     module: &Path,
     test: bool,
+    kind: BuildKind,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<PathBuf>> {
-    let plan = launch_plan(root, model, module, test)?;
+    let plan = launch_plan(root, model, module, test, kind)?;
     let result = run(root, &plan, cancel, &|_| {})?;
     if !result.success {
         let errors: Vec<String> = result
@@ -1205,13 +1200,17 @@ mod tests {
         write(root, "app/pom.xml", "<project/>");
         let model = reactor_model();
         for (test, goal) in [(false, "compile"), (true, "test-compile")] {
-            let plan = launch_plan(root, &model, &root.join("app"), test).unwrap();
+            // A normal launch is incremental: no `clean` (IDEA's Make, not Rebuild).
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Build).unwrap();
             let step = &plan.steps[0];
             assert_eq!(step.cwd, root);
             assert_eq!(step.program, "mvnw");
             assert_eq!(step.env["JAVA_HOME"], "/jdk");
+            assert_eq!(step.args, ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", goal]);
+            // Rebuild cleans first, as IDEA's Rebuild does.
+            let plan = launch_plan(root, &model, &root.join("app"), test, BuildKind::Rebuild).unwrap();
             assert_eq!(
-                step.args,
+                plan.steps[0].args,
                 ["-B", "-Dstyle.color=never", "-s", "settings.xml", "-pl", "app", "-am", "clean", goal]
             );
         }
@@ -1233,7 +1232,8 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut model = reactor_model();
         model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
-        let dirs = build_for_launch(root, &model, &root.join("app"), true, &CancellationToken::new()).unwrap();
+        let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
+            .unwrap();
         assert_eq!(
             dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
@@ -1244,12 +1244,14 @@ mod tests {
             "mvnw",
             "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
         );
-        let error = build_for_launch(root, &model, &root.join("app"), false, &CancellationToken::new()).unwrap_err();
+        let error =
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
+                .unwrap_err();
         assert!(error.message.contains("Kotlin compilation failed"), "{}", error.message);
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(
-            build_for_launch(root, &model, &root.join("app"), false, &cancel).unwrap_err().kind,
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel).unwrap_err().kind,
             ide_core::error::ErrorKind::Cancelled
         );
     }

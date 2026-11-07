@@ -3544,8 +3544,6 @@
   "What should the agent do?": "에이전트가 무엇을 해야 하나요?",
   "New worktree": "새 워크트리",
   "Building and resolving the classpath of {name}…": "{name}의 클래스 경로를 빌드하고 해결하는 중…",
-  "Build completed with errors; launching with the last compiled classes.": "빌드가 오류와 함께 완료되었습니다. 마지막으로 컴파일된 클래스로 실행합니다.",
-  "Build failed; launching with the last compiled classes.": "빌드에 실패했습니다. 마지막으로 컴파일된 클래스로 실행합니다.",
   "The classpath is empty: is the module imported by the Java language server?": "클래스 경로가 비어 있습니다. Java 언어 서버에서 모듈을 가져왔습니까?",
   "Launch cancelled.": "실행이 취소되었습니다.",
   "Starting debugger for {name}…": "{name}의 디버거 시작 중…",

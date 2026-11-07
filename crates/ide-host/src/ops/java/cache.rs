@@ -93,7 +93,7 @@ impl Session {
         if let Some(previous) = previous {
             self.unreferenced.push(previous.snapshot);
         }
-        let originals = compile::build_for_launch(root, model, module, test, cancel)?;
+        let originals = compile::build_for_launch(root, model, module, test, compile::BuildKind::Build, cancel)?;
         fs::create_dir_all(&snapshots)?;
         let snapshot = tempfile::Builder::new().prefix("launch-").tempdir_in(&snapshots)?.keep();
         // Retain every new snapshot even if copying or publishing its record fails.
