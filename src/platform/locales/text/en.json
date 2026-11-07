@@ -1,4 +1,8 @@
 {
+  "Native server declined rename": "Native server declined rename",
+  "document is too large or is not a regular file": "document is too large or is not a regular file",
+  "document is too large": "document is too large",
+  "decoded document is too large": "decoded document is too large",
   "Marker Icons": "Marker Icons",
   "this data source does not list databases": "this data source does not list databases",
   "commit or roll back before clearing the selected database": "commit or roll back before clearing the selected database",

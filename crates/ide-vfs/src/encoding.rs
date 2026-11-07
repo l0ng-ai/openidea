@@ -230,9 +230,13 @@ pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
 /// Bounded disk snapshots for background consumers that share editor decoding.
 pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
     use std::io::Read;
+    let regular = |meta: &fs::Metadata| meta.is_file() && meta.len() <= max_bytes as u64;
+    if !regular(&fs::metadata(path)?) {
+        return Err(IdeError::invalid("document is too large or is not a regular file"));
+    }
     let file = fs::File::open(path)?;
     let meta = file.metadata()?;
-    if !meta.is_file() || meta.len() > max_bytes as u64 {
+    if !regular(&meta) {
         return Err(IdeError::invalid("document is too large or is not a regular file"));
     }
     let mut bytes = Vec::new();
@@ -595,11 +599,12 @@ mod tests {
             let text = if encoding == "gbk" {
                 "中文测试，这是一段中文文本。"
             } else {
-                "hello world 😀\nline two\n"
+                "hello world 😁\nline two\n"
             };
             crate::save_text(&path, text, encoding, bom).unwrap();
             let ordinary = crate::load_text_with_fallback(&path, Some(encoding)).unwrap();
             let bounded = load_text_bounded(&path, Some(encoding), 1024).unwrap();
+            assert_eq!(bounded.text, text, "{encoding} BOM={bom}");
             assert_eq!(
                 (&bounded.text, &bounded.encoding, bounded.has_bom),
                 (&ordinary.text, &ordinary.encoding, ordinary.has_bom)

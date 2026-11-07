@@ -252,13 +252,16 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
     project.documents.close(doc.id);
     host.set_project_trust(&root, true, false).await.unwrap();
     let project = host.open_project("main", &root).unwrap();
+    let encoded_source = source.replace('😀', "😁");
+    let encoded_usage = usage.replace('😀', "😁");
     for (encoding, bom) in
         [("utf-8", true), ("utf-16le", true), ("utf-16be", true), ("utf-16le", false), ("utf-16be", false)]
     {
-        ide_vfs::save_text(&first, source, encoding, bom).unwrap();
-        ide_vfs::save_text(&second, usage, encoding, bom).unwrap();
+        ide_vfs::save_text(&first, &encoded_source, encoding, bom).unwrap();
+        ide_vfs::save_text(&second, &encoded_usage, encoding, bom).unwrap();
         let original_second = std::fs::read(&second).unwrap();
         let doc = project.documents.open(&first).unwrap();
+        assert_eq!(doc.text, encoded_source, "{encoding} BOM={bom} must decode as text");
         // Index open, close, then validate that decoded text retains the same hash.
         let usage_doc = project.documents.open(&second).unwrap();
         ide_host::plugins::index_ops::plugin_navigation_index(
@@ -271,6 +274,10 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         .await
         .unwrap();
         project.documents.close(usage_doc.id);
+        assert!(
+            plugins.indexed_symbol_at(&project.root, &first, Pos::new(0, 5), Some("main")).is_some(),
+            "{encoding} BOM={bom} must publish the open definition"
+        );
         let refs = ops::lsp::lsp_references(
             &host,
             "main",
@@ -285,7 +292,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         .await
         .unwrap();
         assert_eq!(refs.locations.len(), 3, "open-then-closed {encoding} BOM={bom}");
-        plugins.invalidate_client_navigation(&project.root, Some("main"), Some(&[second.clone()]));
+        plugins.invalidate_client_navigation(&project.root, Some("main"), Some(std::slice::from_ref(&second)));
         ide_host::plugins::index_ops::plugin_navigation_index(
             &host,
             plugins.clone(),
@@ -296,16 +303,16 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         .await
         .unwrap();
         let renamed =
-            ops::lsp::lsp_rename(&host, "main", RequestId(103), doc.id, Pos::new(0, 5), "new😀".into()).await.unwrap();
+            ops::lsp::lsp_rename(&host, "main", RequestId(103), doc.id, Pos::new(0, 5), "new😁".into()).await.unwrap();
         assert_eq!(renamed.edit.preconditions.len(), 2);
         assert_eq!(std::fs::read(&second).unwrap(), original_second, "preview preserves bytes");
         ops::lsp::apply_workspace_edit(&host, "main", renamed.edit).await.unwrap();
         assert_eq!(
             std::fs::read(&second).unwrap(),
-            ide_vfs::encode("ref new😀\nref other\n", encoding, bom).unwrap(),
+            ide_vfs::encode("ref new😁\nref other\n", encoding, bom).unwrap(),
             "atomic rename preserves {encoding} BOM={bom}"
         );
-        assert_eq!(project.documents.load_file(&first).unwrap().text, "def new😀\nref new😀\n");
+        assert_eq!(project.documents.load_file(&first).unwrap().text, "def new😁\nref new😁\n");
         project.documents.close(doc.id);
     }
 }
