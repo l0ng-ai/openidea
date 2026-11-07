@@ -90,25 +90,8 @@ async fn resolve_launch(
                 class_paths.push(p);
             }
         }
-        for lib in &settings.project_structure.libraries {
-            let include_scope = match lib.scope {
-                ide_core::settings::DependencyScope::Compile | ide_core::settings::DependencyScope::Runtime => true,
-                ide_core::settings::DependencyScope::Test => test,
-                ide_core::settings::DependencyScope::Provided => false,
-            };
-            if !include_scope {
-                continue;
-            }
-            for entry in &lib.classes {
-                if let Some(resolved) = ide_sdk::apply::setting_path(&project.root, entry) {
-                    let s = resolved.to_string_lossy().into_owned();
-                    if !class_paths.iter().any(|c| same_entry(c, &s, cfg!(windows))) {
-                        class_paths.push(s);
-                    }
-                }
-            }
-        }
         info.class_paths = class_paths;
+        apply_library_classpath(&mut info, &project.root, &settings.project_structure.libraries, test);
         let compile_ms = started.elapsed().as_millis() - lsp_ms;
         // The module/project JDK, else the JDK jdtls compiles the module against, else one matching its Java version.
         let project_jdk = ide_sdk::apply::module_jdk(&project.root, &module, &settings);
@@ -169,6 +152,41 @@ fn entry_key(path: &str, windows: bool) -> String {
         key.pop();
     }
     if windows { key.to_lowercase() } else { key }
+}
+
+fn apply_library_classpath(
+    info: &mut JavaLaunchInfo,
+    root: &std::path::Path,
+    libraries: &[ide_core::settings::ProjectLibrary],
+    test: bool,
+) {
+    use ide_core::settings::DependencyScope;
+    let entries: Vec<_> = libraries
+        .iter()
+        .flat_map(|lib| {
+            let allowed = match lib.scope {
+                DependencyScope::Compile | DependencyScope::Runtime => true,
+                DependencyScope::Test | DependencyScope::Provided => test,
+            };
+            lib.classes.iter().filter_map(move |entry| {
+                ide_sdk::apply::setting_path(root, entry).map(|path| (path.to_string_lossy().into_owned(), allowed))
+            })
+        })
+        .collect();
+    // JDT may already have returned these archives on either classpath.
+    for paths in [&mut info.class_paths, &mut info.module_paths] {
+        paths.retain(|path| {
+            let matching: Vec<_> = entries.iter().filter(|(entry, _)| same_entry(path, entry, cfg!(windows))).collect();
+            matching.is_empty() || matching.iter().any(|(_, allowed)| *allowed)
+        });
+    }
+    for (entry, allowed) in entries {
+        if allowed
+            && !info.class_paths.iter().chain(&info.module_paths).any(|path| same_entry(path, &entry, cfg!(windows)))
+        {
+            info.class_paths.push(entry);
+        }
+    }
 }
 
 fn same_entry(a: &str, b: &str, windows: bool) -> bool {
@@ -237,6 +255,36 @@ pub(crate) fn register(d: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_scopes_filter_jdt_classpaths_and_module_paths() {
+        use ide_core::settings::{DependencyScope, ProjectLibrary};
+        let root = tempfile::tempdir().unwrap();
+        let scopes =
+            [DependencyScope::Compile, DependencyScope::Runtime, DependencyScope::Test, DependencyScope::Provided];
+        let libraries: Vec<_> = scopes
+            .iter()
+            .enumerate()
+            .map(|(i, scope)| ProjectLibrary {
+                classes: vec![format!("lib/{i}.jar")],
+                scope: *scope,
+                ..Default::default()
+            })
+            .collect();
+        let paths: Vec<_> =
+            (0..4).map(|i| root.path().join(format!("lib/{i}.jar")).to_string_lossy().into_owned()).collect();
+        for test in [false, true] {
+            let mut info =
+                JavaLaunchInfo { class_paths: paths.clone(), module_paths: paths.clone(), ..Default::default() };
+            apply_library_classpath(&mut info, root.path(), &libraries, test);
+            let expected = if test { &paths[..] } else { &paths[..2] };
+            assert_eq!(info.class_paths, expected);
+            assert_eq!(info.module_paths, expected);
+        }
+        let mut info = JavaLaunchInfo::default();
+        apply_library_classpath(&mut info, root.path(), &libraries, false);
+        assert_eq!(info.class_paths, &paths[..2]);
+    }
 
     /// JDT LS and our build model spell a module output differently on Windows; the
     /// snapshot must still replace it, or resources (MyBatis mapper XML) load twice.

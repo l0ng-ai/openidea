@@ -657,3 +657,12 @@
   gap: 6px;
   color: var(--danger);
 }
+
+.pendingFeature {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}

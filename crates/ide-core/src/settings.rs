@@ -1076,6 +1076,15 @@ pub struct ProjectStructureSettings {
 }
 
 impl ProjectStructureSettings {
+    /// Overrides belong to the module's full path, never just its directory name.
+    pub fn module_settings(
+        &self,
+        root: &std::path::Path,
+        module: &std::path::Path,
+    ) -> Option<&ModuleStructureSettings> {
+        self.modules.iter().find_map(|(key, settings)| (root.join(key) == module).then_some(settings))
+    }
+
     /// The "Exclude files" name patterns.
     pub fn exclude_file_patterns(&self) -> Vec<String> {
         self.exclude_files.split(';').map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect()

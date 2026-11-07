@@ -123,6 +123,10 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
 }
 
 export function openProjectStructure(section?: string) {
+  if (useSettingsDialog.getState().projectStructureOpen) {
+    if (section) selectProjectStructureSection(parseProjectStructureSection(section));
+    return;
+  }
   const base = validateSettings(useProject.getState().settings);
   useSettingsDialog.setState({
     open: false,

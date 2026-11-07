@@ -385,7 +385,7 @@ function ProjectSection() {
 // ---------------------------------------------------------------------------
 // 2. Modules Section (Sources, Paths, Dependencies)
 
-function ModuleSourcesTab() {
+function ModuleSourcesTab({ moduleKey }: { moduleKey: string }) {
   const root = useProject((s) => s.project?.root ?? null);
   const name = useProject((s) => s.project?.name ?? "");
   const [ps, setPs] = useStructure();
@@ -393,7 +393,8 @@ function ModuleSourcesTab() {
   const roots = useMemo(() => effectiveRoots(detected, ps), [detected, ps]);
   useEffect(() => initProjectRoots(), []);
   const [children, setChildren] = useState<Map<string, DirNode[]>>(new Map());
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(root ? [root] : []));
+  const moduleRoot = root ? (moduleKey === "." ? root : `${root}/${moduleKey}`) : null;
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(moduleRoot ? [moduleRoot] : []));
   const [selected, setSelected] = useState<DirNode | null>(null);
 
   const load = useCallback(
@@ -405,13 +406,23 @@ function ModuleSourcesTab() {
     [root],
   );
 
-  const rootNode = useMemo<DirNode | null>(() => (root ? { path: root, name, rel: "" } : null), [root, name]);
+  const rootNode = useMemo<DirNode | null>(
+    () =>
+      moduleRoot
+        ? {
+            path: moduleRoot,
+            name: moduleKey === "." ? name : moduleKey.split("/").pop()!,
+            rel: moduleKey === "." ? "" : moduleKey,
+          }
+        : null,
+    [moduleRoot, moduleKey, name],
+  );
   const treeRoots = useMemo<DirNode[]>(
     () =>
       rootNode
         ? [
             rootNode,
-            ...ps.contentRoots.map((p) => ({
+            ...(moduleKey === "." ? ps.contentRoots : []).map((p) => ({
               path: p,
               name: p.slice(p.lastIndexOf("/") + 1) || p,
               rel: null,
@@ -419,19 +430,19 @@ function ModuleSourcesTab() {
             })),
           ]
         : [],
-    [rootNode, ps.contentRoots],
+    [rootNode, ps.contentRoots, moduleKey],
   );
   useEffect(() => {
     if (!root) return;
     let live = true;
-    for (const dir of [root, ...ps.contentRoots])
+    for (const dir of [moduleRoot!, ...(moduleKey === "." ? ps.contentRoots : [])])
       void readDirs(root, dir)
         .then((dirs) => live && setChildren((m) => new Map(m).set(dir, dirs)))
         .catch(() => {});
     return () => {
       live = false;
     };
-  }, [root, ps.contentRoots]);
+  }, [root, ps.contentRoots, moduleRoot, moduleKey]);
 
   if (!rootNode)
     return (
@@ -446,8 +457,12 @@ function ModuleSourcesTab() {
     if (markable === null) return;
     setPs(markFolder(ps, markable, role === r ? null : r, detected));
   };
-  const unmarkedDetected = unmarkedRoots(detected, ps);
-  const restore = () => setPs(restoreDetected(ps, detected));
+  const moduleDetected =
+    moduleKey === "."
+      ? detected
+      : detected.filter((folder) => folder.path === moduleKey || folder.path.startsWith(moduleKey + "/"));
+  const unmarkedDetected = unmarkedRoots(moduleDetected, ps);
+  const restore = () => setPs(restoreDetected(ps, moduleDetected));
 
   return (
     <div className={styles.structure}>
@@ -493,12 +508,15 @@ function ModuleSourcesTab() {
             getDetail={(n) => (n.rel === "" ? (root ?? undefined) : n.contentRoot ? n.path : undefined)}
           />
         </div>
-        <ExcludeFiles />
+        {moduleKey === "." && <ExcludeFiles />}
       </div>
       <div className={styles.roots} aria-label={tx("Marked folders")}>
-        <ContentRoots root={rootNode.path} />
+        {moduleKey === "." && <ContentRoots root={rootNode.path} />}
         {ROLES.map((r) => {
-          const list = roots.filter((x) => x.kind === r.role);
+          const list = roots.filter(
+            (x) =>
+              x.kind === r.role && (moduleKey === "." || x.path === moduleKey || x.path.startsWith(moduleKey + "/")),
+          );
           return (
             <div key={r.role} className={styles.rootGroup}>
               <div className={clsx(styles.rootTitle, r.cls)}>
@@ -572,6 +590,7 @@ function ModulesSection() {
   const [selectedModule, setSelectedModule] = useState<string>(".");
   const [subTab, setSubTab] = useState<"sources" | "paths" | "dependencies">("sources");
   const [selectedDepIdx, setSelectedDepIdx] = useState<number>(-1);
+  const [moduleError, setModuleError] = useState(false);
   const outId = useId();
   const testOutId = useId();
 
@@ -620,7 +639,12 @@ function ModulesSection() {
       defaultPath: root ?? undefined,
     });
     if (!picked) return;
-    const rel = root && inside(root, picked) ? normalizeFolder(relativePath(root, picked)) || "." : picked;
+    if (!root || !inside(root, picked)) {
+      setModuleError(true);
+      return;
+    }
+    setModuleError(false);
+    const rel = normalizeFolder(relativePath(root, picked)) || ".";
     if (!(modulesMap && modulesMap[rel])) {
       setModulesMap({
         ...(modulesMap ?? {}),
@@ -663,17 +687,22 @@ function ModulesSection() {
 
   return (
     <div className={styles.page}>
+      {moduleError && (
+        <div role="status" className={styles.note}>
+          <T>Select a module directory inside the project.</T>
+        </div>
+      )}
       <div className={styles.splitLayout}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
             <Button size="small" variant="ghost" icon="plus" onClick={() => void addModule()}>
-              <T>Add Module</T>
+              <T>Add Module Overrides</T>
             </Button>
             <span className={styles.spacer} />
             <IconButton
               icon="minus"
               size="small"
-              title="Remove Module"
+              title="Remove Module Overrides"
               disabled={activeKey === "." || !modulesMap?.[activeKey]}
               onClick={removeModule}
             />
@@ -731,11 +760,22 @@ function ModulesSection() {
             </button>
           </div>
 
-          {subTab === "sources" && <ModuleSourcesTab />}
+          {subTab === "sources" && <ModuleSourcesTab key={activeKey} moduleKey={activeKey} />}
 
           {subTab === "paths" && (
             <Section title="Module SDK & Compiler Output">
-              <Row label="Module SDK" hint="Override the Project SDK for this module, or leave on Project SDK.">
+              {activeKey !== "." && (
+                <div className={styles.note}>
+                  <T>
+                    Per-module language levels and compiler output overrides are not supported yet. Configure them in
+                    Maven or Gradle.
+                  </T>
+                </div>
+              )}
+              <Row
+                label="Module SDK"
+                hint="JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK."
+              >
                 <SdkField
                   kind="jdk"
                   value={currentModuleCfg.jdk}
@@ -749,23 +789,30 @@ function ModulesSection() {
               </Row>
               <Row label="Language level" hint="Override the Java language level for this module.">
                 <Select
+                  disabled={activeKey !== "."}
                   value={currentModuleCfg.languageLevel}
                   options={MODULE_JAVA_LEVEL_OPTIONS}
                   onChange={(v) => updateModuleCfg({ languageLevel: v as (typeof JAVA_LANGUAGE_LEVELS)[number] })}
                   aria-label="Module language level"
                 />
               </Row>
-              <Row label="Output path" htmlFor={outId} hint="Directory for production classes of this module.">
+              <Row
+                label="Output path"
+                htmlFor={outId}
+                hint="Directory for production classes, relative to the project root and inside this module."
+              >
                 <span className={styles.pathRow}>
                   <Input
                     id={outId}
                     mono
                     className={styles.pathInput}
+                    disabled={activeKey !== "."}
                     value={currentModuleCfg.compilerOutput}
-                    placeholder="target/classes"
+                    placeholder={activeKey === "." ? "target/classes" : `${activeKey}/target/classes`}
                     onChange={(e) => updateModuleCfg({ compilerOutput: e.target.value })}
                   />
                   <IconButton
+                    disabled={activeKey !== "."}
                     icon="folder-open"
                     size="small"
                     title="Browse…"
@@ -783,17 +830,23 @@ function ModulesSection() {
                   />
                 </span>
               </Row>
-              <Row label="Test output path" htmlFor={testOutId} hint="Directory for test classes of this module.">
+              <Row
+                label="Test output path"
+                htmlFor={testOutId}
+                hint="Custom test output paths are not supported yet. Maven and Gradle manage their own test output."
+              >
                 <span className={styles.pathRow}>
                   <Input
                     id={testOutId}
                     mono
                     className={styles.pathInput}
+                    disabled
                     value={currentModuleCfg.testCompilerOutput}
                     placeholder="target/test-classes"
                     onChange={(e) => updateModuleCfg({ testCompilerOutput: e.target.value })}
                   />
                   <IconButton
+                    disabled
                     icon="folder-open"
                     size="small"
                     title="Browse…"
@@ -816,96 +869,103 @@ function ModulesSection() {
 
           {subTab === "dependencies" && (
             <div className={styles.tablePanel}>
-              <div className={styles.tableToolbar}>
-                <Button size="small" variant="ghost" icon="plus" onClick={addLibraryDependency}>
-                  <T>Add Library</T>
-                </Button>
-                <Button size="small" variant="ghost" icon="plus" onClick={addModuleDependency}>
-                  <T>Add Module Dependency</T>
-                </Button>
-                <IconButton
-                  icon="minus"
-                  size="small"
-                  title="Remove dependency"
-                  disabled={selectedDepIdx < 0}
-                  onClick={removeDependency}
-                />
+              <div className={styles.note}>
+                <T>Custom module dependencies are not supported yet. Configure dependencies in Maven or Gradle.</T>
               </div>
-              <div className={styles.tableScroll}>
-                <table className={styles.table}>
-                  <thead>
-                    <tr>
-                      <th>
-                        <T>Export</T>
-                      </th>
-                      <th>
-                        <T>Dependency</T>
-                      </th>
-                      <th>
-                        <T>Kind</T>
-                      </th>
-                      <th>
-                        <T>Scope</T>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {currentModuleCfg.dependencies.length === 0 && (
+              <fieldset disabled className={styles.pendingFeature}>
+                <div className={styles.tableToolbar}>
+                  <Button size="small" variant="ghost" icon="plus" onClick={addLibraryDependency}>
+                    <T>Add Library</T>
+                  </Button>
+                  <Button size="small" variant="ghost" icon="plus" onClick={addModuleDependency}>
+                    <T>Add Module Dependency</T>
+                  </Button>
+                  <IconButton
+                    icon="minus"
+                    size="small"
+                    title="Remove dependency"
+                    disabled={selectedDepIdx < 0}
+                    onClick={removeDependency}
+                  />
+                </div>
+                <div className={styles.tableScroll}>
+                  <table className={styles.table}>
+                    <thead>
                       <tr>
-                        <td colSpan={4} className={styles.empty}>
-                          <T>No custom module dependencies configured.</T>
-                        </td>
+                        <th>
+                          <T>Export</T>
+                        </th>
+                        <th>
+                          <T>Dependency</T>
+                        </th>
+                        <th>
+                          <T>Kind</T>
+                        </th>
+                        <th>
+                          <T>Scope</T>
+                        </th>
                       </tr>
-                    )}
-                    {currentModuleCfg.dependencies.map((dep, idx) => (
-                      <tr
-                        key={`${dep.kind}-${dep.target}-${idx}`}
-                        className={clsx(idx === selectedDepIdx && styles.selected)}
-                        onClick={() => setSelectedDepIdx(idx)}
-                      >
-                        <td>
-                          <Checkbox
-                            checked={dep.exported}
-                            onChange={(exported) => {
-                              const next = [...currentModuleCfg.dependencies];
-                              next[idx] = { ...dep, exported };
-                              updateModuleCfg({ dependencies: next });
-                            }}
-                            aria-label="Export dependency"
-                          />
-                        </td>
-                        <td>
-                          <Input
-                            mono
-                            value={dep.target}
-                            aria-label="Dependency target"
-                            onChange={(e) => {
-                              const next = [...currentModuleCfg.dependencies];
-                              next[idx] = { ...dep, target: e.target.value };
-                              updateModuleCfg({ dependencies: next });
-                            }}
-                          />
-                        </td>
-                        <td>
-                          <span className={styles.badge}>{dep.kind === "module" ? <T>Module</T> : <T>Library</T>}</span>
-                        </td>
-                        <td>
-                          <Select
-                            value={dep.scope}
-                            options={SCOPE_OPTIONS}
-                            onChange={(scope) => {
-                              const next = [...currentModuleCfg.dependencies];
-                              next[idx] = { ...dep, scope: scope as DependencyScopeValid };
-                              updateModuleCfg({ dependencies: next });
-                            }}
-                            aria-label="Dependency scope"
-                          />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {currentModuleCfg.dependencies.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className={styles.empty}>
+                            <T>No custom module dependencies configured.</T>
+                          </td>
+                        </tr>
+                      )}
+                      {currentModuleCfg.dependencies.map((dep, idx) => (
+                        <tr
+                          key={`${dep.kind}-${dep.target}-${idx}`}
+                          className={clsx(idx === selectedDepIdx && styles.selected)}
+                          onClick={() => setSelectedDepIdx(idx)}
+                        >
+                          <td>
+                            <Checkbox
+                              checked={dep.exported}
+                              onChange={(exported) => {
+                                const next = [...currentModuleCfg.dependencies];
+                                next[idx] = { ...dep, exported };
+                                updateModuleCfg({ dependencies: next });
+                              }}
+                              aria-label="Export dependency"
+                            />
+                          </td>
+                          <td>
+                            <Input
+                              mono
+                              value={dep.target}
+                              aria-label="Dependency target"
+                              onChange={(e) => {
+                                const next = [...currentModuleCfg.dependencies];
+                                next[idx] = { ...dep, target: e.target.value };
+                                updateModuleCfg({ dependencies: next });
+                              }}
+                            />
+                          </td>
+                          <td>
+                            <span className={styles.badge}>
+                              {dep.kind === "module" ? <T>Module</T> : <T>Library</T>}
+                            </span>
+                          </td>
+                          <td>
+                            <Select
+                              value={dep.scope}
+                              options={SCOPE_OPTIONS}
+                              onChange={(scope) => {
+                                const next = [...currentModuleCfg.dependencies];
+                                next[idx] = { ...dep, scope: scope as DependencyScopeValid };
+                                updateModuleCfg({ dependencies: next });
+                              }}
+                              aria-label="Dependency scope"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </fieldset>
             </div>
           )}
         </div>
@@ -1040,7 +1100,7 @@ function LibrariesSection() {
               <Row label="Name" htmlFor={nameId}>
                 <Input id={nameId} value={current.name} onChange={(e) => updateCurrent({ name: e.target.value })} />
               </Row>
-              <Row label="Scope" hint="Classpath scope when compiling and launching the project.">
+              <Row label="Scope" hint="Scope controls Run/Debug only. JARs are also available to Java code assistance.">
                 <Select
                   value={current.scope}
                   options={SCOPE_OPTIONS}
@@ -1051,7 +1111,7 @@ function LibrariesSection() {
               <Row
                 label="Classes"
                 stacked
-                hint="Binary JAR archives or class folders added to the compile/runtime classpath."
+                hint="Binary JAR archives support Java code assistance and Run/Debug. Class folders are used by Run/Debug only."
               >
                 <div className={styles.entryList}>
                   <div className={styles.entryActions}>
@@ -1141,8 +1201,8 @@ function LibrariesSection() {
             <Section title="Project Libraries">
               <div className={styles.note}>
                 <T>
-                  Add JARs or class directories (such as lib/*.jar or WEB-INF/lib/*.jar) to include them on the Java
-                  language server and launch classpaths, and list them under External Libraries.
+                  Add JARs for Java code assistance and Run/Debug, or class directories for Run/Debug only. Libraries
+                  are listed under External Libraries.
                 </T>
               </div>
             </Section>
@@ -1450,156 +1510,165 @@ function ArtifactsSection() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.splitLayout}>
-        <div className={styles.sideList}>
-          <div className={styles.tableToolbar}>
-            <Button size="small" variant="ghost" icon="plus" onClick={() => addArtifact("jar")}>
-              <T>JAR</T>
-            </Button>
-            <Button size="small" variant="ghost" icon="plus" onClick={() => addArtifact("warExploded")}>
-              <T>WAR Exploded</T>
-            </Button>
-            <Button size="small" variant="ghost" icon="plus" onClick={() => addArtifact("war")}>
-              <T>WAR</T>
-            </Button>
-            <span className={styles.spacer} />
-            <IconButton
-              icon="minus"
-              size="small"
-              title="Remove Artifact"
-              disabled={activeIdx < 0}
-              onClick={removeArtifact}
-            />
-          </div>
-          <div className={styles.sideItems}>
-            {artifacts.length === 0 && (
-              <div className={styles.empty}>
-                <T>No custom artifacts configured.</T>
-              </div>
-            )}
-            {artifacts.map((a, idx) => (
-              <button
-                key={`${a.name}-${idx}`}
-                type="button"
-                className={clsx(styles.sideItem, idx === activeIdx && styles.sideItemActive)}
-                onClick={() => setSelectedIdx(idx)}
-              >
-                <Icon name="file-archive" size={14} />
-                <span className={styles.sideItemLabel}>{a.name}</span>
-                <span className={styles.sideItemMeta}>{a.kind}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className={styles.detailPane}>
-          {current ? (
-            <Section title="Artifact Settings">
-              <Row label="Name" htmlFor={nameId}>
-                <Input id={nameId} value={current.name} onChange={(e) => updateCurrent({ name: e.target.value })} />
-              </Row>
-              <Row label="Type">
-                <Select
-                  value={current.kind}
-                  options={ARTIFACT_KIND_OPTIONS}
-                  onChange={(v) => updateCurrent({ kind: v as ArtifactKindValid })}
-                  aria-label="Artifact type"
-                />
-              </Row>
-              <Row label="Module">
-                <Input
-                  mono
-                  value={current.module}
-                  aria-label="Artifact module"
-                  onChange={(e) => updateCurrent({ module: e.target.value })}
-                />
-              </Row>
-              <Row label="Output directory" htmlFor={outId}>
-                <span className={styles.pathRow}>
-                  <Input
-                    id={outId}
-                    mono
-                    className={styles.pathInput}
-                    value={current.outputDirectory}
-                    onChange={(e) => updateCurrent({ outputDirectory: e.target.value })}
-                  />
-                  <IconButton
-                    icon="folder-open"
-                    size="small"
-                    title="Browse…"
-                    onClick={async () => {
-                      const picked = await choosePath({
-                        directory: true,
-                        title: "Select Artifact Output Directory",
-                        defaultPath: root ?? undefined,
-                      });
-                      if (picked)
-                        updateCurrent({
-                          outputDirectory: root && inside(root, picked) ? relativePath(root, picked) : picked,
-                        });
-                    }}
-                  />
-                </span>
-              </Row>
-              {current.kind === "jar" && (
-                <Row label="Main class" htmlFor={mainClassId} hint="Entry-point class written to META-INF/MANIFEST.MF.">
-                  <Input
-                    id={mainClassId}
-                    mono
-                    value={current.mainClass}
-                    placeholder="com.example.Main"
-                    onChange={(e) => updateCurrent({ mainClass: e.target.value })}
-                  />
-                </Row>
-              )}
-              {(libraries ?? []).length > 0 && (
-                <Row label="Included libraries" stacked hint="Project libraries packaged into the artifact.">
-                  <div className={styles.entryList}>
-                    {(libraries ?? []).map((lib) => {
-                      const included = current.includeLibraries.includes(lib.name);
-                      return (
-                        <Checkbox
-                          key={lib.name}
-                          checked={included}
-                          label={lib.name}
-                          onChange={(checked) => {
-                            const next = checked
-                              ? [...current.includeLibraries, lib.name]
-                              : current.includeLibraries.filter((n) => n !== lib.name);
-                            updateCurrent({ includeLibraries: next });
-                          }}
-                        />
-                      );
-                    })}
-                  </div>
-                </Row>
-              )}
-            </Section>
-          ) : (
-            <Section title="Packaging Artifacts">
-              <div className={styles.note}>
-                <T>Configure JAR, WAR, or exploded WAR artifacts for packaging and application server deployment.</T>
-              </div>
-            </Section>
-          )}
-
-          {webArtifacts.length > 0 && (
-            <Section title="Detected Build Web Artifacts">
-              <div className={styles.entryList}>
-                {webArtifacts.map((w) => (
-                  <div key={w.id} className={styles.entryRow}>
-                    <Icon name="file-archive" size={14} />
-                    <span className={styles.rootPath}>
-                      {w.name} ({w.module || "."})
-                    </span>
-                    <span className={styles.badge}>{w.tool}</span>
-                  </div>
-                ))}
-              </div>
-            </Section>
-          )}
-        </div>
+      <div className={styles.note}>
+        <T>Custom artifact packaging is not supported yet. Build and deploy artifacts defined by Maven or Gradle.</T>
       </div>
+      <fieldset disabled className={styles.pendingFeature}>
+        <div className={styles.splitLayout}>
+          <div className={styles.sideList}>
+            <div className={styles.tableToolbar}>
+              <Button size="small" variant="ghost" icon="plus" onClick={() => addArtifact("jar")}>
+                <T>JAR</T>
+              </Button>
+              <Button size="small" variant="ghost" icon="plus" onClick={() => addArtifact("warExploded")}>
+                <T>WAR Exploded</T>
+              </Button>
+              <Button size="small" variant="ghost" icon="plus" onClick={() => addArtifact("war")}>
+                <T>WAR</T>
+              </Button>
+              <span className={styles.spacer} />
+              <IconButton
+                icon="minus"
+                size="small"
+                title="Remove Artifact"
+                disabled={activeIdx < 0}
+                onClick={removeArtifact}
+              />
+            </div>
+            <div className={styles.sideItems}>
+              {artifacts.length === 0 && (
+                <div className={styles.empty}>
+                  <T>No custom artifacts configured.</T>
+                </div>
+              )}
+              {artifacts.map((a, idx) => (
+                <button
+                  key={`${a.name}-${idx}`}
+                  type="button"
+                  className={clsx(styles.sideItem, idx === activeIdx && styles.sideItemActive)}
+                  onClick={() => setSelectedIdx(idx)}
+                >
+                  <Icon name="file-archive" size={14} />
+                  <span className={styles.sideItemLabel}>{a.name}</span>
+                  <span className={styles.sideItemMeta}>{a.kind}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className={styles.detailPane}>
+            {current ? (
+              <Section title="Artifact Settings">
+                <Row label="Name" htmlFor={nameId}>
+                  <Input id={nameId} value={current.name} onChange={(e) => updateCurrent({ name: e.target.value })} />
+                </Row>
+                <Row label="Type">
+                  <Select
+                    value={current.kind}
+                    options={ARTIFACT_KIND_OPTIONS}
+                    onChange={(v) => updateCurrent({ kind: v as ArtifactKindValid })}
+                    aria-label="Artifact type"
+                  />
+                </Row>
+                <Row label="Module">
+                  <Input
+                    mono
+                    value={current.module}
+                    aria-label="Artifact module"
+                    onChange={(e) => updateCurrent({ module: e.target.value })}
+                  />
+                </Row>
+                <Row label="Output directory" htmlFor={outId}>
+                  <span className={styles.pathRow}>
+                    <Input
+                      id={outId}
+                      mono
+                      className={styles.pathInput}
+                      value={current.outputDirectory}
+                      onChange={(e) => updateCurrent({ outputDirectory: e.target.value })}
+                    />
+                    <IconButton
+                      icon="folder-open"
+                      size="small"
+                      title="Browse…"
+                      onClick={async () => {
+                        const picked = await choosePath({
+                          directory: true,
+                          title: "Select Artifact Output Directory",
+                          defaultPath: root ?? undefined,
+                        });
+                        if (picked)
+                          updateCurrent({
+                            outputDirectory: root && inside(root, picked) ? relativePath(root, picked) : picked,
+                          });
+                      }}
+                    />
+                  </span>
+                </Row>
+                {current.kind === "jar" && (
+                  <Row
+                    label="Main class"
+                    htmlFor={mainClassId}
+                    hint="Entry-point class written to META-INF/MANIFEST.MF."
+                  >
+                    <Input
+                      id={mainClassId}
+                      mono
+                      value={current.mainClass}
+                      placeholder="com.example.Main"
+                      onChange={(e) => updateCurrent({ mainClass: e.target.value })}
+                    />
+                  </Row>
+                )}
+                {(libraries ?? []).length > 0 && (
+                  <Row label="Included libraries" stacked hint="Project libraries packaged into the artifact.">
+                    <div className={styles.entryList}>
+                      {(libraries ?? []).map((lib) => {
+                        const included = current.includeLibraries.includes(lib.name);
+                        return (
+                          <Checkbox
+                            key={lib.name}
+                            checked={included}
+                            label={lib.name}
+                            onChange={(checked) => {
+                              const next = checked
+                                ? [...current.includeLibraries, lib.name]
+                                : current.includeLibraries.filter((n) => n !== lib.name);
+                              updateCurrent({ includeLibraries: next });
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </Row>
+                )}
+              </Section>
+            ) : (
+              <Section title="Packaging Artifacts">
+                <div className={styles.note}>
+                  <T>Configure JAR, WAR, or exploded WAR artifacts for packaging and application server deployment.</T>
+                </div>
+              </Section>
+            )}
+
+            {webArtifacts.length > 0 && (
+              <Section title="Detected Build Web Artifacts">
+                <div className={styles.entryList}>
+                  {webArtifacts.map((w) => (
+                    <div key={w.id} className={styles.entryRow}>
+                      <Icon name="file-archive" size={14} />
+                      <span className={styles.rootPath}>
+                        {w.name} ({w.module || "."})
+                      </span>
+                      <span className={styles.badge}>{w.tool}</span>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            )}
+          </div>
+        </div>
+      </fieldset>
     </div>
   );
 }

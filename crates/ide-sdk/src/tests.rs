@@ -1809,6 +1809,10 @@ fn project_structure_module_jdk_language_level_and_external_libraries() {
 
     assert_eq!(crate::apply::module_jdk(root, root, &settings).map(|j| j.home), Some(jdk17));
     assert_eq!(crate::apply::module_jdk(root, &root.join("service"), &settings).map(|j| j.home), Some(jdk21));
+    assert_eq!(
+        crate::apply::module_jdk(root, &root.join("nested/service"), &settings).map(|j| j.home),
+        crate::apply::project_jdk(root, &settings).map(|j| j.home)
+    );
     assert_eq!(crate::apply::effective_java_language_level(root, root, &settings), Some("8"));
     assert_eq!(crate::apply::effective_java_language_level(root, &root.join("service"), &settings), Some("21"));
 

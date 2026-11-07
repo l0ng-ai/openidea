@@ -501,6 +501,47 @@ describe("Settings dialog", () => {
     expect(within(psDialog).getByRole("tab", { name: "Paths" })).toBeInTheDocument();
     expect(within(psDialog).getByRole("tab", { name: "Dependencies" })).toBeInTheDocument();
   });
+
+  it("preserves pending Project Structure edits when its shortcut is invoked again", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure"));
+    fireEvent.change(screen.getByLabelText("Compiler output"), { target: { value: "out/classes" } });
+    await act(async () => executeAction("file.projectStructure"));
+    expect(screen.getByLabelText("Compiler output")).toHaveValue("out/classes");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("project", "projectStructure.compilerOutput", '"out/classes"');
+  });
+
+  it("disables Project Structure controls whose settings have no execution support", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure", "modules"));
+    fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
+    expect(screen.getByLabelText("Test output path")).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "Dependencies" }));
+    expect(screen.getByRole("button", { name: "Add Library" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add Module Dependency" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
+    expect(screen.getByRole("button", { name: "JAR" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "WAR" })).toBeDisabled();
+  });
+
+  it("shows the selected module's source tree", async () => {
+    current = setAt(current, "projectStructure.modules", {
+      service: { jdk: "", languageLevel: "", compilerOutput: "", testCompilerOutput: "", dependencies: [] },
+    });
+    useProject.setState({ settings: current, project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure", "modules"));
+    fireEvent.click(screen.getByRole("button", { name: /service\s*custom/ }));
+    const tree = screen.getByRole("tree", { name: "Content root" });
+    expect(within(tree).getByRole("treeitem")).toHaveTextContent("service");
+    expect(within(tree).queryByText("demo")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
+    expect(screen.getByLabelText("Module language level")).toBeDisabled();
+    expect(screen.getByLabelText("Output path")).toBeDisabled();
+  });
 });
 
 describe("native Settings window root", () => {

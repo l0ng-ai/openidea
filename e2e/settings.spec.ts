@@ -1,5 +1,26 @@
 import { expect, test } from "./fixtures";
 
+test("Project Structure keeps edits across repeated shortcuts and applies them", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+;");
+  const dialog = page.getByRole("dialog", { name: "Project Structure", exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Compiler output", { exact: true }).fill("out/classes");
+  await page.keyboard.press("Meta+;");
+  await expect(dialog.getByLabel("Compiler output", { exact: true })).toHaveValue("out/classes");
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.keyboard.press("Meta+;");
+  await expect(dialog.getByLabel("Compiler output", { exact: true })).toHaveValue("out/classes");
+  await dialog.getByRole("button", { name: "Modules", exact: true }).click();
+  await dialog.getByRole("tab", { name: "Dependencies", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Add Library", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Artifacts", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "JAR", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});
+
 test("⌘, opens Settings with the page tree; Escape closes", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings" });

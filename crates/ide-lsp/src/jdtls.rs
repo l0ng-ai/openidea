@@ -71,29 +71,45 @@ pub fn configure_project_structure(
     if cfg.name != SERVER {
         return;
     }
-    let rel = server_root
-        .strip_prefix(root)
-        .ok()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .map(|p| if p.is_empty() { ".".to_owned() } else { p });
-    let module_cfg = rel
-        .as_deref()
-        .and_then(|key| structure.modules.get(key))
-        .or_else(|| (server_root == root).then(|| structure.modules.get(".")).flatten());
-    let output_path = module_cfg.map(|m| m.compiler_output.trim()).filter(|s| !s.is_empty()).or_else(|| {
-        let p = structure.compiler_output.trim();
-        (!p.is_empty()).then_some(p)
-    });
+    let module_cfg = structure.module_settings(root, server_root);
+    let module_output = module_cfg.map(|m| m.compiler_output.trim()).filter(|s| !s.is_empty());
+    let output_path = if let Some(output) = module_output {
+        // The dialog stores paths relative to the project, JDT expects the server root.
+        let path = root.join(output);
+        match path.strip_prefix(server_root) {
+            Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+            Err(_) => {
+                cfg.launch_error = Some(format!("Java compiler output must be inside its module: {}", path.display()));
+                None
+            }
+        }
+    } else {
+        let output = structure.compiler_output.trim();
+        if output.is_empty() {
+            None
+        } else if Path::new(output).is_absolute() {
+            match Path::new(output).strip_prefix(server_root) {
+                Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+                Err(_) => {
+                    cfg.launch_error = Some(format!("Java compiler output must be inside its module: {output}"));
+                    None
+                }
+            }
+        } else {
+            Some(output.replace('\\', "/"))
+        }
+    };
 
-    let mut include: Vec<String> = Vec::new();
-    let mut sources = serde_json::Map::new();
     let normalize = |entry: &str| -> Option<String> {
         let trimmed = entry.trim();
         if trimmed.is_empty() {
             return None;
         }
-        Some(trimmed.replace('\\', "/"))
+        // JDT resolves relative library globs against its own root, which may be a submodule.
+        Some(root.join(trimmed).to_string_lossy().replace('\\', "/"))
     };
+    let mut include: Vec<String> = Vec::new();
+    let mut sources = serde_json::Map::new();
     for lib in &structure.libraries {
         let class_entries: Vec<String> = lib.classes.iter().filter_map(|c| normalize(c)).collect();
         let source_entries: Vec<String> = lib.sources.iter().filter_map(|s| normalize(s)).collect();
@@ -102,20 +118,19 @@ pub fn configure_project_structure(
                 include.push(c.clone());
             }
         }
-        if let (Some(first_class), Some(first_src)) = (class_entries.first(), source_entries.first()) {
-            sources.insert(first_class.clone(), json!(first_src));
+        for (class, source) in class_entries.iter().zip(&source_entries) {
+            sources.insert(class.clone(), json!(source));
         }
     }
     for facet in &structure.facets {
-        if facet.kind == "web" {
-            let web_root = facet.web_root.trim().trim_matches(['/', '\\']);
-            let glob = if web_root.is_empty() {
-                "src/main/webapp/WEB-INF/lib/**/*.jar".to_owned()
-            } else {
-                format!("{}/WEB-INF/lib/**/*.jar", web_root.replace('\\', "/"))
-            };
-            if !include.contains(&glob) {
-                include.push(glob);
+        if facet.kind == "web" && root.join(&facet.module) == server_root {
+            let web_root = facet.web_root.trim();
+            let web_root = if web_root.is_empty() { "src/main/webapp" } else { web_root };
+            if let Some(path) = normalize(web_root) {
+                let glob = format!("{}/WEB-INF/lib/**/*.jar", path.trim_end_matches('/'));
+                if !include.contains(&glob) {
+                    include.push(glob);
+                }
             }
         }
     }
@@ -128,14 +143,28 @@ pub fn configure_project_structure(
         settings["java"]["project"]["outputPath"] = json!(output);
     }
     if !include.is_empty() {
-        if !include.iter().any(|p| p == "lib/**/*.jar") {
-            include.insert(0, "lib/**/*.jar".to_owned());
-        }
-        settings["java"]["project"]["referencedLibraries"] = if sources.is_empty() {
-            json!({ "include": include })
+        let existing = &settings["java"]["project"]["referencedLibraries"];
+        let mut libraries = if existing.is_object() {
+            existing.clone()
+        } else if existing.is_array() {
+            json!({ "include": existing })
         } else {
-            json!({ "include": include, "sources": sources })
+            json!({ "include": ["lib/**/*.jar"] })
         };
+        let mut entries = libraries["include"].as_array().cloned().unwrap_or_default();
+        for path in include {
+            let path = json!(path);
+            if !entries.contains(&path) {
+                entries.push(path);
+            }
+        }
+        libraries["include"] = json!(entries);
+        if !sources.is_empty() {
+            let mut attachments = libraries["sources"].as_object().cloned().unwrap_or_default();
+            attachments.extend(sources);
+            libraries["sources"] = json!(attachments);
+        }
+        settings["java"]["project"]["referencedLibraries"] = libraries;
     }
     cfg.settings = Some(settings);
 }
@@ -1126,7 +1155,50 @@ mod tests {
         configure_project_structure(&mut sub_cfg, root, &root.join("submod"), &structure);
         assert_eq!(
             sub_cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath").and_then(Value::as_str),
-            Some("submod/classes")
+            Some("classes")
         );
+        let sub_settings = sub_cfg.settings.as_ref().unwrap();
+        let libs = sub_settings.pointer("/java/project/referencedLibraries/include").unwrap().as_array().unwrap();
+        assert!(libs.contains(&json!(root.join("lib/helper.jar").to_string_lossy().replace('\\', "/"))));
+        assert!(!libs.iter().any(|v| v.as_str().is_some_and(|p| p.contains("WEB-INF"))));
+    }
+
+    #[test]
+    fn project_libraries_preserve_existing_globs_exclusions_and_source_attachments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        cfg.settings = Some(json!({"java": {"project": {"referencedLibraries": {
+            "include": ["vendor/**/*.jar"], "exclude": ["vendor/old.jar"],
+            "sources": {"vendor/base.jar": "vendor/base-sources.jar"}
+        }}}}));
+        let structure = ide_core::settings::ProjectStructureSettings {
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                classes: vec!["lib/new.jar".into()],
+                sources: vec!["lib/new-sources.jar".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        let libraries = cfg.settings.as_ref().unwrap().pointer("/java/project/referencedLibraries").unwrap();
+        assert_eq!(libraries["include"][0], "vendor/**/*.jar");
+        assert_eq!(libraries["exclude"], json!(["vendor/old.jar"]));
+        assert_eq!(libraries["sources"]["vendor/base.jar"], "vendor/base-sources.jar");
+        assert_eq!(libraries["sources"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn absolute_output_inside_the_module_becomes_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: tmp.path().join("out").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert_eq!(cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath"), Some(&json!("out")));
+        structure.compiler_output = tmp.path().parent().unwrap().join("elsewhere").to_string_lossy().into_owned();
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert!(cfg.launch_error.as_deref().unwrap().contains("inside its module"));
     }
 }

@@ -146,16 +146,7 @@ pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
 
 /// Module-specific JDK from `projectStructure.modules`, falling back to [`project_jdk`].
 pub fn module_jdk(root: &Path, module: &Path, s: &Settings) -> Option<crate::java::Jdk> {
-    let rel = module
-        .strip_prefix(root)
-        .ok()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .map(|p| if p.is_empty() { ".".to_owned() } else { p });
-    let module_cfg = rel
-        .as_deref()
-        .and_then(|key| s.project_structure.modules.get(key))
-        .or_else(|| module.file_name().and_then(|n| n.to_str()).and_then(|name| s.project_structure.modules.get(name)))
-        .or_else(|| (module == root).then(|| s.project_structure.modules.get(".")).flatten());
+    let module_cfg = s.project_structure.module_settings(root, module);
     if let Some(cfg) = module_cfg
         && let Some(jdk) = jdk_setting(root, &cfg.jdk)
     {
@@ -167,16 +158,7 @@ pub fn module_jdk(root: &Path, module: &Path, s: &Settings) -> Option<crate::jav
 /// Effective Java language level (`8`, `11`, `17`, `21`, `25`) for `module`, checking
 /// `projectStructure.modules` first, then `languages.java.languageLevel`.
 pub fn effective_java_language_level<'a>(root: &Path, module: &Path, s: &'a Settings) -> Option<&'a str> {
-    let rel = module
-        .strip_prefix(root)
-        .ok()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .map(|p| if p.is_empty() { ".".to_owned() } else { p });
-    let module_level = rel
-        .as_deref()
-        .and_then(|key| s.project_structure.modules.get(key))
-        .or_else(|| (module == root).then(|| s.project_structure.modules.get(".")).flatten())
-        .and_then(|m| non_empty(&m.language_level));
+    let module_level = s.project_structure.module_settings(root, module).and_then(|m| non_empty(&m.language_level));
     module_level.or_else(|| non_empty(&s.languages.java.language_level))
 }
 
