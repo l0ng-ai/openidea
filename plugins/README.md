@@ -239,7 +239,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                    |
 | `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`, `host::pending_commit`, before-commit checks |
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                     |
-| `storage`           | low    | `host::storage` (1 MiB per plugin)                                                                                           |
+| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                 |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                                                                 |
 | `events.input`      | medium | `action-performed` events (which actions you run, and how)                                                                   |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                               |
@@ -630,13 +630,13 @@ optional = ["process:kubectl"]
 The items of the view's `tree` are Services nodes: `render`, `handle` and the
 toolbar work as in a tool window, the toolbar's buttons acting on the one
 selected node, and `viewItem.context` menus give the nodes a right-click menu.
-The pane beside the tree comes from the `service-provider` export: register
-`register_plugin!(MyPlugin, views, services)` and implement
-`openidea_plugin::services::Services`, which returns the selected node's tabs
+The pane beside the tree comes from the `detail-provider` export: register
+`register_plugin!(MyPlugin, views, details)` and implement
+`openidea_plugin::details::Details`, which returns the selected node's tabs
 (at most 8; asked again after `host::refresh_view("kube")`):
 
 ```rust
-impl Services for MyPlugin {
+impl Details for MyPlugin {
     fn detail(&mut self, view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
         let pod = key.trim_start_matches("pod:");
         let log = ProcessLog::new("kubectl", &["logs", "-f", "--tail=1000", pod])

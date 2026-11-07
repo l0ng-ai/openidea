@@ -71,7 +71,8 @@ interface ui {
 }
 
 /// Persistent key-value storage of the plugin (survives restarts and idle
-/// reclaim; instance memory does not). Requires `storage`. At most 1 MiB.
+/// reclaim; instance memory does not). Requires `storage`. At most 64 MiB,
+/// counting UTF-8 bytes of keys and values; rejected writes preserve the data.
 interface storage {
     use types.{error};
 

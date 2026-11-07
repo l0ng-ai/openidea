@@ -935,10 +935,10 @@ pub(crate) mod indexing_bindings {
     });
 }
 
-/// The optional `service-provider` export.
-pub(crate) mod services_bindings {
+/// The optional `detail-provider` export.
+pub(crate) mod details_bindings {
     wasmtime::component::bindgen!({
-        world: "services", path: "../../wit",
+        world: "details", path: "../../wit",
         with: {
             "openidea:plugin/types": super::bindings::openidea::plugin::types,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
