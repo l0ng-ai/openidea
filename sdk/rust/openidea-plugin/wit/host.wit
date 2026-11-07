@@ -57,6 +57,9 @@ interface ui {
     /// a window (including in editor providers). Waiting doesn't count against
     /// the call's budget.
     pick: func(title: string, items: list<pick-item>) -> result<option<string>, error>;
+    /// Native folder chooser; an absolute path, or `none` when dismissed.
+    /// Same window, command/event and budget rules as `pick`; no capability.
+    pick-directory: func(title: string, initial: option<string>) -> result<option<string>, error>;
     /// Like `pick`, with any number of items chosen.
     pick-many: func(title: string, items: list<pick-item>) -> result<option<list<string>>, error>;
     /// Asks for a line of text, pre-filled with `value`; `none` when dismissed.

@@ -178,6 +178,7 @@
   "menu.file.openInNewWindow": "Open in New Window…",
   "menu.file.openProject": "Open…",
   "menu.file.save": "Save All",
+  "menu.file.projectStructure": "Project Structure…",
   "menu.file.settings": "Settings…",
   "menu.find": "Find",
   "menu.find.inFile": "Find…",

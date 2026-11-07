@@ -17,7 +17,7 @@
 
 mod api;
 pub mod commit;
-mod endpoints;
+pub mod endpoints;
 mod hover;
 mod icon_extensions;
 mod icon_patterns;
@@ -677,16 +677,8 @@ impl PluginHost {
             .cloned()
             .collect();
         let ids: BTreeSet<&str> = visible.iter().map(|p| p.id()).collect();
-        let ui: Vec<UiContribution> = self
-            .ui
-            .snapshot()
-            .into_iter()
-            .filter(|c| {
-                ids.contains(c.plugin_id.as_str())
-                    && (c.point != endpoints::RESULTS
-                        || project.is_some_and(|p| c.key == ide_core::ipc_path::to_ipc(p)))
-            })
-            .collect();
+        let ui: Vec<UiContribution> =
+            self.ui.snapshot().into_iter().filter(|c| ids.contains(c.plugin_id.as_str())).collect();
         let mut plugins: Vec<PluginInfo> = visible.iter().map(|p| self.info(p)).collect();
         plugins.sort_by_key(|p| p.name.to_lowercase());
         PluginsSnapshot { plugins, active_theme: self.active_theme(), ui }
@@ -1508,7 +1500,6 @@ impl PluginHost {
     /// don't keep waking them. Call it a few times a second.
     pub fn flush_events(&self) {
         self.flush_events_at(Instant::now());
-        self.refresh_endpoints();
     }
 
     #[doc(hidden)]
@@ -1770,7 +1761,6 @@ impl PluginHost {
     /// (which don't keep a plugin alive: it is reclaimed again when idle).
     pub fn tick(&self) {
         self.tick_at(Instant::now());
-        self.refresh_endpoints();
     }
 
     /// [`tick`](Self::tick) as if it were `now` (schedules only; tests).

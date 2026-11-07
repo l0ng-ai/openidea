@@ -1,7 +1,9 @@
-//! Project-scoped endpoint exports, refreshed on matching filesystem changes.
+//! `[[contributes.endpoints]]`: HTTP routes a plugin finds in a project. The UI
+//! asks for them (`plugin_endpoints`); the host caches each plugin's list per
+//! project until a file matching its globs changes, then emits `EndpointsChanged`.
 use super::{PluginEvent, PluginHost};
-use ide_core::ipc_path::to_ipc;
-use ide_extension::{Capability, Disposable, Package, UiContribution, UiDecl, decode};
+use ide_core::{IdeResult, ipc_path::to_ipc};
+use ide_extension::{Capability, Package, UiDecl, decode};
 use ide_plugin::{Endpoint, HostError, Invocation};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,7 +14,6 @@ use std::{
 };
 
 pub(super) const POINT: &str = "endpoints";
-pub(super) const RESULTS: &str = "endpointResults";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -46,133 +47,128 @@ fn matcher(glob: &str) -> Result<globset::GlobMatcher, globset::Error> {
     Ok(globset::GlobBuilder::new(glob).literal_separator(true).build()?.compile_matcher())
 }
 
-#[derive(Default)]
-struct Batch {
-    attempted: bool,
-    contribution: Option<Disposable>,
+/// A route as the UI gets it.
+#[derive(Clone, Debug, PartialEq, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginEndpoint {
+    /// `None` accepts any method.
+    pub method: Option<String>,
+    /// Path parameters in braces: `/photos/{id}`.
+    pub path: String,
+    pub framework: String,
+    /// Display name, e.g. `PhotosController#show`.
+    pub handler: Option<String>,
+    /// Where the route is declared.
+    pub location: ide_core::Location,
 }
+
 #[derive(Default)]
 pub(super) struct Endpoints {
-    generation: u64,
-    batches: BTreeMap<(String, PathBuf), Batch>,
+    /// Bumped by every invalidation: a list computed across one is kept but not trusted.
+    epoch: u64,
+    cache: BTreeMap<(String, PathBuf), Cached>,
+}
+
+struct Cached {
+    list: Arc<Vec<PluginEndpoint>>,
+    fresh: bool,
 }
 
 impl PluginHost {
+    /// `plugin`'s routes in the project `root`: the cached list while no file
+    /// matching its globs changed, else computed again. Runs plugin code, so
+    /// call it on a blocking thread. A failed or invalid run keeps the last list.
+    pub fn endpoints(&self, plugin: &str, root: &Path) -> IdeResult<Arc<Vec<PluginEndpoint>>> {
+        let Some(workspace) = self.shared.workspace() else { return Ok(Arc::default()) };
+        let open = |root: &Path| workspace.projects().iter().any(|r| r == root) && workspace.trusted(root);
+        let loaded = self.get(plugin)?;
+        let key = (plugin.to_owned(), root.to_path_buf());
+        let epoch = {
+            let mut state = self.endpoints.lock();
+            state.cache.retain(|(_, r), _| open(r));
+            if !open(root) || !self.endpoint_eligible(&loaded, root) {
+                return Ok(Arc::default());
+            }
+            if let Some(cached) = state.cache.get(&key).filter(|c| c.fresh) {
+                return Ok(cached.list.clone());
+            }
+            state.epoch
+        };
+        let invocation = Invocation { workspace_root: Some(root.to_path_buf()), ..Default::default() };
+        let result = self
+            .code_call(plugin, invocation, "endpoints", |rt, ctx| rt.endpoints(ctx, Duration::from_secs(2)))
+            .and_then(|items| {
+                validate(root, items, &*workspace).map_err(|e| ide_core::IdeError::invalid(e.to_string()))
+            });
+        let mut state = self.endpoints.lock();
+        // Disabled, replaced or closed meanwhile: its routes are gone.
+        let current = self.plugins.read().get(plugin).is_some_and(|p| Arc::ptr_eq(p, &loaded));
+        if !current || !open(root) || !self.endpoint_eligible(&loaded, root) {
+            state.cache.remove(&key);
+            return Ok(Arc::default());
+        }
+        let fresh = state.epoch == epoch;
+        let list = match result {
+            Ok(list) => Arc::new(list),
+            Err(e) => {
+                tracing::warn!(plugin, "endpoints failed: {e}");
+                state.cache.get(&key).map(|c| c.list.clone()).unwrap_or_default()
+            }
+        };
+        state.cache.insert(key, Cached { list: list.clone(), fresh });
+        Ok(list)
+    }
+
     pub(super) fn clear_plugin_endpoints(&self, plugin: &str) {
         let mut state = self.endpoints.lock();
-        state.generation = state.generation.wrapping_add(1);
-        let count = state.batches.len();
-        state.batches.retain(|(id, _), _| id != plugin);
-        if count != state.batches.len() {
-            self.emit(None, PluginEvent::CommandsChanged);
+        state.epoch += 1;
+        let roots: Vec<PathBuf> = state.cache.keys().filter(|(id, _)| id == plugin).map(|(_, r)| r.clone()).collect();
+        state.cache.retain(|(id, _), _| id != plugin);
+        drop(state);
+        for root in roots {
+            self.emit(None, PluginEvent::EndpointsChanged { plugin_id: plugin.to_owned(), root: to_ipc(&root).into() });
         }
     }
 
-    /// Called by the project's debounced watcher; does not execute plugin code.
+    /// Called by the project's file watcher; doesn't run plugin code.
     pub fn invalidate_endpoints(&self, root: &Path, paths: &[PathBuf]) {
+        let rel: Vec<&Path> = paths.iter().filter_map(|p| p.strip_prefix(root).ok()).collect();
+        if rel.is_empty() {
+            return;
+        }
         let declarations = self.ui.items(POINT, None);
         let mut state = self.endpoints.lock();
-        let mut dirty = false;
-        for ((plugin, project), batch) in &mut state.batches {
-            if project != root {
-                continue;
-            }
-            let matches = declarations.iter().filter(|d| &d.plugin_id == plugin).any(|d| {
-                d.decl["files"].as_array().is_some_and(|globs| {
-                    globs.iter().filter_map(|g| g.as_str()).any(|g| {
-                        matcher(g)
-                            .is_ok_and(|m| paths.iter().any(|p| p.strip_prefix(root).is_ok_and(|rel| m.is_match(rel))))
+        state.epoch += 1;
+        let mut changed = Vec::new();
+        for ((plugin, project), cached) in &mut state.cache {
+            let matches = project == root
+                && declarations.iter().filter(|d| &d.plugin_id == plugin).any(|d| {
+                    d.decl["files"].as_array().is_some_and(|globs| {
+                        globs
+                            .iter()
+                            .filter_map(|g| matcher(g.as_str()?).ok())
+                            .any(|m| rel.iter().any(|p| m.is_match(p)))
                     })
-                })
-            });
-            if matches {
-                batch.attempted = false;
-                dirty = true;
+                });
+            if matches && cached.fresh {
+                cached.fresh = false;
+                changed.push(plugin.clone());
             }
         }
-        if dirty {
-            state.generation = state.generation.wrapping_add(1);
-        }
-    }
-
-    pub(super) fn refresh_endpoints(&self) {
-        let Some(workspace) = self.shared.workspace() else { return };
-        let roots = workspace.projects();
-        let declarations = self.ui.items(POINT, None);
-        {
-            let mut state = self.endpoints.lock();
-            let count = state.batches.len();
-            state.batches.retain(|(id, root), _| {
-                roots.contains(root) && workspace.trusted(root) && declarations.iter().any(|d| &d.plugin_id == id)
-            });
-            if count != state.batches.len() {
-                state.generation = state.generation.wrapping_add(1);
-                self.emit(None, PluginEvent::CommandsChanged);
-            }
-        }
-        let ids: std::collections::BTreeSet<_> = declarations.iter().map(|d| d.plugin_id.clone()).collect();
-        for id in ids {
-            for root in &roots {
-                let prepared = {
-                    let _lifecycle = self.lifecycle.lock();
-                    let Ok(plugin) = self.get(&id) else { continue };
-                    if !workspace.trusted(root) || !self.endpoint_eligible(&plugin, root) {
-                        continue;
-                    }
-                    let mut state = self.endpoints.lock();
-                    let batch = state.batches.entry((id.clone(), root.clone())).or_default();
-                    if batch.attempted {
-                        continue;
-                    }
-                    batch.attempted = true;
-                    (plugin, state.generation)
-                };
-                let invocation = Invocation { workspace_root: Some(root.clone()), ..Default::default() };
-                let result = self
-                    .code_call(&id, invocation, "endpoints", |rt, ctx| rt.endpoints(ctx, Duration::from_secs(2)))
-                    .and_then(|items| {
-                        validate(root, items, &*workspace).map_err(|e| ide_core::IdeError::invalid(e.to_string()))
-                    });
-                let _lifecycle = self.lifecycle.lock();
-                let mut state = self.endpoints.lock();
-                if state.generation != prepared.1 {
-                    if let Some(batch) = state.batches.get_mut(&(id.clone(), root.clone())) {
-                        batch.attempted = false;
-                    }
-                    continue;
-                }
-                if !self.plugins.read().get(&id).is_some_and(|p| Arc::ptr_eq(p, &prepared.0))
-                    || !self.endpoint_eligible(&prepared.0, root)
-                    || !workspace.projects().contains(root)
-                    || !workspace.trusted(root)
-                {
-                    continue;
-                }
-                match result {
-                    Ok(endpoints) => {
-                        let Some(batch) = state.batches.get_mut(&(id.clone(), root.clone())) else { continue };
-                        batch.contribution = None;
-                        if !endpoints.is_empty() {
-                            batch.contribution = Some(self.ui.insert(UiContribution {
-                                plugin_id: id.clone(),
-                                point: RESULTS.into(),
-                                key: to_ipc(root),
-                                decl: serde_json::json!({"root": to_ipc(root), "endpoints": endpoints}),
-                            }));
-                        }
-                        self.emit(None, PluginEvent::CommandsChanged);
-                    }
-                    Err(e) => tracing::warn!(plugin = %id, "endpoint refresh failed: {e}"),
-                }
-            }
+        drop(state);
+        for plugin_id in changed {
+            self.emit(None, PluginEvent::EndpointsChanged { plugin_id, root: to_ipc(root).into() });
         }
     }
 
     fn endpoint_eligible(&self, plugin: &super::LoadedPlugin, root: &Path) -> bool {
-        plugin.status().is_live() && plugin.dev_root.as_deref().is_none_or(|r| r == root) && {
-            let meta = plugin.meta.lock();
-            meta.pending.is_empty() && meta.granted.contains(&Capability::ProjectRead)
-        }
+        plugin.status().is_live()
+            && plugin.dev_root.as_deref().is_none_or(|r| r == root)
+            && !self.ui.items(POINT, Some(plugin.id())).is_empty()
+            && {
+                let meta = plugin.meta.lock();
+                meta.pending.is_empty() && meta.granted.contains(&Capability::ProjectRead)
+            }
     }
 }
 
@@ -180,7 +176,7 @@ fn validate(
     root: &Path,
     items: Vec<Endpoint>,
     workspace: &dyn super::PluginWorkspace,
-) -> Result<Vec<serde_json::Value>, HostError> {
+) -> Result<Vec<PluginEndpoint>, HostError> {
     if items.len() > 10_000 {
         return Err(HostError::Invalid("at most 10,000 endpoints".into()));
     }
@@ -234,9 +230,13 @@ fn validate(
         {
             return Err(HostError::Invalid("endpoint location is outside its UTF-16 document range".into()));
         }
-        validated.push(serde_json::json!({"method": e.method, "path": e.path,
-            "framework": e.framework, "handler": e.handler,
-            "location": {"path": to_ipc(&path), "range": e.location.range}}));
+        validated.push(PluginEndpoint {
+            method: e.method,
+            path: e.path,
+            framework: e.framework,
+            handler: e.handler,
+            location: ide_core::Location { path: to_ipc(&path).into(), range, uri: None },
+        });
     }
     Ok(validated)
 }
@@ -286,8 +286,8 @@ mod tests {
         std::fs::write(&file, "😀x\n").unwrap();
         let good = endpoint(file.clone());
         let items = validate(&root, vec![good.clone()], &Workspace).unwrap();
-        assert_eq!(items[0]["location"]["range"]["end"]["col"], 3);
-        assert!(items[0]["handler"].is_null());
+        assert_eq!(items[0].location.range.end.col, 3);
+        assert!(items[0].handler.is_none());
         for bad in [
             Endpoint { method: Some("GET\nPOST".into()), ..good.clone() },
             Endpoint { path: "https://example.com".into(), ..good.clone() },

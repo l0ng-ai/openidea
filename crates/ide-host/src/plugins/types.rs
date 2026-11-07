@@ -168,6 +168,10 @@ pub enum PluginEvent {
     CommandsChanged,
     /// Cached document associations were disposed (reload, disable or failure).
     DocumentIndexesChanged,
+    /// The routes `plugin_id` reports for the project `root` may have changed:
+    /// ask `plugin_endpoints` again.
+    #[serde(rename_all = "camelCase")]
+    EndpointsChanged { plugin_id: String, root: ide_core::IpcPath },
     /// The marketplace offers newer versions of installed plugins (announced
     /// once per set of versions).
     UpdatesAvailable { updates: Vec<PluginUpdate> },
@@ -222,6 +226,9 @@ pub enum PluginEvent {
     /// Open `url` (`http(s)://`) in the system browser.
     #[serde(rename_all = "camelCase")]
     OpenUrl { plugin_id: String, url: String },
+    /// A window command/event requests the normal File > Open flow.
+    #[serde(rename_all = "camelCase")]
+    OpenProject { plugin_id: String, path: String, new_window: bool },
     /// A command waits for the user's answer: show `prompt`, then report it with
     /// `plugin_answer_prompt(prompt_id, …)`.
     #[serde(rename_all = "camelCase")]

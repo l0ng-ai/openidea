@@ -79,6 +79,56 @@ export const PHP_LANGUAGE_LEVELS = [
   "5.6",
 ] as const;
 
+/** `languages.java.languageLevel` values; `""` = SDK default (Auto). */
+export const JAVA_LANGUAGE_LEVELS = ["", "8", "11", "17", "21", "25"] as const;
+
+export type DependencyScopeValid = "compile" | "test" | "runtime" | "provided";
+
+export const DEPENDENCY_SCOPES = ["compile", "test", "runtime", "provided"] as const;
+
+export interface ProjectLibraryValid {
+  name: string;
+  classes: string[];
+  sources: string[];
+  javadocs: string[];
+  scope: DependencyScopeValid;
+}
+
+export interface ModuleDependencyValid {
+  kind: "library" | "module";
+  target: string;
+  scope: DependencyScopeValid;
+  exported: boolean;
+}
+
+export interface ModuleStructureValid {
+  jdk: string;
+  languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
+  compilerOutput: string;
+  testCompilerOutput: string;
+  dependencies: ModuleDependencyValid[];
+}
+
+export interface FacetConfigValid {
+  kind: "web" | "spring" | "jpa";
+  module: string;
+  descriptor: string;
+  webRoot: string;
+}
+
+export type ArtifactKindValid = "jar" | "war" | "warExploded";
+
+export const ARTIFACT_KINDS = ["jar", "war", "warExploded"] as const;
+
+export interface ArtifactConfigValid {
+  name: string;
+  kind: ArtifactKindValid;
+  module: string;
+  outputDirectory: string;
+  mainClass: string;
+  includeLibraries: string[];
+}
+
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   ruby: { interpreter: string };
@@ -109,6 +159,7 @@ export interface LanguagesValid {
   ruff: ExternalFormatterValid;
   java: {
     jdk: string;
+    languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
     jdtlsJdk: string;
     jdtlsVmArgs: string;
     gradle: {
@@ -148,6 +199,16 @@ export interface ProjectStructureValid {
   contentRoots: string[];
   /** "Exclude files": `;`-separated name patterns. */
   excludeFiles: string;
+  /** Project compiler output directory; empty = default. */
+  compilerOutput: string;
+  /** Per-module overrides keyed by module relative path (`"."` for root). */
+  modules: Record<string, ModuleStructureValid>;
+  /** Project-level libraries. */
+  libraries: ProjectLibraryValid[];
+  /** Module framework facets (`web`, `spring`, `jpa`). */
+  facets: FacetConfigValid[];
+  /** Packaging artifacts (`jar`, `war`, `warExploded`). */
+  artifacts: ArtifactConfigValid[];
 }
 
 /** The folder lists of `ProjectStructureValid` (marks). */
@@ -172,6 +233,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   ruff: DEFAULT_RUFF_FORMATTER,
   java: {
     jdk: "",
+    languageLevel: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
     gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
@@ -198,6 +260,11 @@ export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
   unmarked: [],
   contentRoots: [],
   excludeFiles: "",
+  compilerOutput: "",
+  modules: {},
+  libraries: [],
+  facets: [],
+  artifacts: [],
 };
 
 type Obj = Record<string, unknown>;
@@ -314,6 +381,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
+      languageLevel: oneOf(java.languageLevel, JAVA_LANGUAGE_LEVELS, d.java.languageLevel),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
       gradle: {
@@ -360,6 +428,97 @@ export function useMarkdownPreviewFontSize(): number {
   return useProject((s) => markdownPreviewFontSize(s.settings));
 }
 
+function validateModuleDependencies(raw: unknown): ModuleDependencyValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ModuleDependencyValid[] = [];
+  for (const item of raw) {
+    const m = obj(item);
+    const target = text(m.target, "");
+    if (!target) continue;
+    out.push({
+      kind: oneOf(m.kind, ["library", "module"] as const, "library"),
+      target,
+      scope: oneOf(m.scope, DEPENDENCY_SCOPES, "compile"),
+      exported: bool(m.exported, false),
+    });
+  }
+  return out;
+}
+
+function validateModulesMap(raw: unknown): Record<string, ModuleStructureValid> {
+  const m = obj(raw);
+  const out: Record<string, ModuleStructureValid> = {};
+  for (const [k, v] of Object.entries(m)) {
+    const key = normalizeFolder(k) || ".";
+    const mod = obj(v);
+    out[key] = {
+      jdk: text(mod.jdk, ""),
+      languageLevel: oneOf(mod.languageLevel, JAVA_LANGUAGE_LEVELS, ""),
+      compilerOutput: text(mod.compilerOutput, ""),
+      testCompilerOutput: text(mod.testCompilerOutput, ""),
+      dependencies: validateModuleDependencies(mod.dependencies),
+    };
+  }
+  return out;
+}
+
+function validateLibrariesList(raw: unknown): ProjectLibraryValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ProjectLibraryValid[] = [];
+  for (const item of raw) {
+    const l = obj(item);
+    const name = text(l.name, "");
+    const classes = strings(l.classes);
+    const sources = strings(l.sources);
+    const javadocs = strings(l.javadocs);
+    if (!name && classes.length === 0 && sources.length === 0) continue;
+    out.push({
+      name: name || (classes[0]?.split(/[\\/]/).pop() ?? "Library"),
+      classes,
+      sources,
+      javadocs,
+      scope: oneOf(l.scope, DEPENDENCY_SCOPES, "compile"),
+    });
+  }
+  return out;
+}
+
+function validateFacetsList(raw: unknown): FacetConfigValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FacetConfigValid[] = [];
+  for (const item of raw) {
+    const f = obj(item);
+    const kind = oneOf(f.kind, ["web", "spring", "jpa"] as const, "web");
+    const module = normalizeFolder(text(f.module, ".")) || ".";
+    out.push({
+      kind,
+      module,
+      descriptor: text(f.descriptor, ""),
+      webRoot: text(f.webRoot, ""),
+    });
+  }
+  return out;
+}
+
+function validateArtifactsList(raw: unknown): ArtifactConfigValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ArtifactConfigValid[] = [];
+  for (const item of raw) {
+    const a = obj(item);
+    const name = text(a.name, "");
+    if (!name) continue;
+    out.push({
+      name,
+      kind: oneOf(a.kind, ARTIFACT_KINDS, "jar"),
+      module: normalizeFolder(text(a.module, ".")) || ".",
+      outputDirectory: text(a.outputDirectory, ""),
+      mainClass: text(a.mainClass, ""),
+      includeLibraries: strings(a.includeLibraries),
+    });
+  }
+  return out;
+}
+
 export function validateProjectStructure(raw: unknown): ProjectStructureValid {
   const p = obj(raw);
   return {
@@ -373,6 +532,11 @@ export function validateProjectStructure(raw: unknown): ProjectStructureValid {
       ? [...new Set(p.contentRoots.filter((x): x is string => typeof x === "string" && !!x.trim()))]
       : [],
     excludeFiles: typeof p.excludeFiles === "string" ? p.excludeFiles : "",
+    compilerOutput: text(p.compilerOutput, ""),
+    modules: validateModulesMap(p.modules),
+    libraries: validateLibrariesList(p.libraries),
+    facets: validateFacetsList(p.facets),
+    artifacts: validateArtifactsList(p.artifacts),
   };
 }
 

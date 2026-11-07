@@ -2114,6 +2114,45 @@ fn sample_plugin_tool_window_with_a_tree() {
     }
 }
 
+/// The tables fixture sorts its own rows: a `table` body sent through `other`
+/// opts the headers in, and a header click leaves as an `other` view-event
+/// (kind `sort`) the plugin decodes and answers with the rows in the asked
+/// order (plugins/README.md §10: released types stay, `other` carries new
+/// cases).
+#[test]
+fn sortable_plugin_table_round_trips_sort_events() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("tables"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    let table = |f: &Fixture| match f.host.render_view("tables", "tables", None, f.inv()).unwrap().body {
+        ide_plugin::ViewBody::Table(t) => t,
+        other => panic!("{other:?}"),
+    };
+    // No sort yet: headers are clickable, rows in the plugin's own order.
+    let t = table(&f);
+    assert_eq!((t.columns.clone(), t.total_rows), (vec!["ext".to_owned(), "files".into()], 4));
+    assert_eq!((t.sortable, t.sort), (true, None), "a `table` through `other` opts the headers in");
+    assert_eq!(t.rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>(), ["rs", "md", "java", "toml"]);
+
+    f.take_events();
+    let sort = |f: &Fixture, descending| {
+        f.host.view_event("tables", "tables", ide_plugin::ViewEvent::Sort { column: 1, descending }, f.inv()).unwrap();
+        assert!(f.take_events().into_iter().any(
+            |(_, e)| matches!(e, PluginEvent::ViewChanged { ref plugin_id, ref view } if plugin_id == "tables" && view == "tables")
+        ));
+        table(f)
+    };
+
+    // The plugin reports the sort it ordered by, with the rows to match.
+    let t = sort(&f, false);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: false }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["3", "9", "12", "20"]);
+    let t = sort(&f, true);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: true }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["20", "12", "9", "3"]);
+}
+
 /// Regex Tester: an `html` body its script talks to; the plugin answers in
 /// view messages, in UTF-16 offsets.
 #[test]
@@ -2912,6 +2951,30 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
     assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
 
+    // File operations come from the `file-actions` export, next to the providers' own.
+    let mut actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default()).into_iter();
+    let (_, action) = actions.next().expect("offered");
+    let (plugin, later) = actions.next().expect("a lazy one too");
+    let dir = f.project.clone();
+    assert_eq!(action.title, "Reorganise");
+    assert_eq!(
+        action.operations,
+        vec![
+            ide_plugin::FileOperation::Create { path: dir.join("created.txt"), text: "hello".into(), overwrite: false },
+            ide_plugin::FileOperation::Rename { from: dir.join("old.txt"), to: dir.join("renamed.txt") },
+            ide_plugin::FileOperation::Delete { path: dir.join("gone.txt") },
+        ]
+    );
+    assert_eq!(action.open, Some(dir.join("created.txt")));
+    // Listed with `data` only: `resolve` on the same export computes its operations.
+    assert!(later.file_action && later.operations.is_empty() && later.data.is_some());
+    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later).unwrap();
+    assert_eq!(
+        resolved.operations,
+        vec![ide_plugin::FileOperation::Create { path: dir.join("later.txt"), text: "later".into(), overwrite: false }]
+    );
+    assert!(f.host.provide_code_actions(&doc("rich"), ide_core::Range::default()).is_empty());
+
     // A kind this IDE doesn't know is refused, not a trap.
     let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
     assert!(err.message.contains("no event kind"), "{}", err.message);
@@ -3296,46 +3359,43 @@ fn endpoint_exports_refresh_matching_files_and_follow_plugin_lifecycle() {
     let routes = f.project.join("routes.txt");
     std::fs::write(&routes, "/users/{id}\n").unwrap();
     f.install(&sample("endpoints"));
-    let entries =
-        || f.host.list(Some(&f.project)).ui.into_iter().filter(|c| c.point == "endpointResults").collect::<Vec<_>>();
-    f.host.flush_events();
-    assert_eq!(entries().len(), 1);
-    assert_eq!(entries()[0].decl["endpoints"][0]["path"], "/users/{id}");
-    assert!(entries()[0].decl["endpoints"][0]["method"].is_null(), "any method is preserved");
-    assert_eq!(entries()[0].decl["endpoints"][0]["location"]["path"], to_ipc(&routes));
-    assert!(
-        f.host.list(None).ui.iter().all(|c| c.point != "endpointResults"),
-        "no routes in a window without this project"
-    );
+    let id = "test.endpoints";
+    let paths = || f.host.endpoints(id, &f.project).unwrap().iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+    let first = f.host.endpoints(id, &f.project).unwrap();
+    assert_eq!(first[0].path, "/users/{id}");
+    assert!(first[0].method.is_none(), "any method is preserved");
+    assert_eq!(first[0].location.path, ide_core::IpcPath::from(to_ipc(&routes)));
     std::thread::sleep(Duration::from_millis(70));
     f.host.tick();
-    assert_eq!(f.host.instances(), 0, "cached routes survive idle reclamation");
-    assert_eq!(entries().len(), 1);
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(paths(), ["/users/{id}"]);
+    assert_eq!(f.host.instances(), 0, "a cached list doesn't wake the plugin");
+    let changed = |f: &Fixture| {
+        f.take_events()
+            .iter()
+            .any(|(_, e)| matches!(e, PluginEvent::EndpointsChanged { plugin_id, .. } if plugin_id == id))
+    };
     std::fs::write(&routes, "/updated\n").unwrap();
+    f.take_events();
     f.host.invalidate_endpoints(&f.project, &[f.project.join("unrelated.txt")]);
-    f.host.tick();
-    assert_eq!(entries()[0].decl["endpoints"][0]["path"], "/users/{id}");
+    assert!(!changed(&f));
+    assert_eq!(paths(), ["/users/{id}"]);
     f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
-    f.host.tick();
-    assert_eq!(entries()[0].decl["endpoints"][0]["path"], "/updated");
+    assert!(changed(&f), "windows are told to ask again");
+    assert_eq!(paths(), ["/updated"]);
     std::fs::write(&routes, "not-a-path\n").unwrap();
     f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
-    f.host.tick();
-    assert_eq!(
-        entries()[0].decl["endpoints"][0]["path"],
-        "/updated",
-        "an invalid batch cannot replace the last valid list"
-    );
-    f.host.set_enabled("test.endpoints", false).unwrap();
-    assert!(entries().is_empty());
-    f.host.set_enabled("test.endpoints", true).unwrap();
+    assert_eq!(paths(), ["/updated"], "an invalid list doesn't replace the last valid one");
+    f.host.set_enabled(id, false).unwrap();
+    assert!(paths().is_empty());
     std::fs::write(&routes, "/enabled\n").unwrap();
-    f.host.tick();
-    assert_eq!(entries()[0].decl["endpoints"][0]["path"], "/enabled");
-    assert!(f.run("test.endpoints", "crash", None).is_err());
-    assert!(entries().is_empty(), "recoverable crashes withdraw routes too");
-    f.host.uninstall("test.endpoints").unwrap();
-    assert!(entries().is_empty());
+    f.host.set_enabled(id, true).unwrap();
+    assert_eq!(paths(), ["/enabled"]);
+    f.take_events();
+    assert!(f.run(id, "crash", None).is_err());
+    assert!(changed(&f), "a crash withdraws the routes");
+    f.host.uninstall(id).unwrap();
+    assert!(f.host.endpoints(id, &f.project).is_err());
 }
 
 struct EndpointWorkspace {
@@ -3396,8 +3456,9 @@ fn late_endpoint_results_cannot_restore_a_disabled_plugin_or_closed_project() {
             release: Mutex::new(release_rx),
         });
         f.host.set_workspace(Some(workspace.clone()));
-        std::thread::scope(|scope| {
-            let refresh = scope.spawn(|| f.host.tick());
+        let late = std::thread::scope(|scope| {
+            // The plugin reads the file, then the host's check reads it again and waits here.
+            let query = scope.spawn(|| f.host.endpoints("test.endpoints", &f.project).unwrap());
             entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             if close_project {
                 workspace.roots.lock().clear();
@@ -3405,9 +3466,10 @@ fn late_endpoint_results_cannot_restore_a_disabled_plugin_or_closed_project() {
                 f.host.set_enabled("test.endpoints", false).unwrap();
             }
             release_tx.send(()).unwrap();
-            refresh.join().unwrap();
+            query.join().unwrap()
         });
-        assert!(f.host.ui_items("endpointResults").is_empty());
+        assert!(late.is_empty());
+        assert!(f.host.endpoints("test.endpoints", &f.project).unwrap().is_empty());
     }
 }
 
@@ -3428,14 +3490,48 @@ fn endpoint_results_are_isolated_per_root_and_withdraw_closed_roots() {
     });
     f.host.set_workspace(Some(workspace.clone()));
     f.install(&sample("endpoints"));
-    f.host.tick();
     for (root, route) in [(&f.project, "/first"), (&other, "/second")] {
-        let entries =
-            f.host.list(Some(root)).ui.into_iter().filter(|c| c.point == "endpointResults").collect::<Vec<_>>();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].decl["endpoints"][0]["path"], route);
+        let list = f.host.endpoints("test.endpoints", root).unwrap();
+        assert_eq!(list.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [route]);
     }
     workspace.roots.lock().retain(|r| r != &other);
-    f.host.tick();
-    assert_eq!(f.host.ui_items("endpointResults").len(), 1);
+    assert!(f.host.endpoints("test.endpoints", &other).unwrap().is_empty(), "a closed project has no routes");
+    assert_eq!(f.host.endpoints("test.endpoints", &f.project).unwrap()[0].path, "/first");
+}
+
+#[test]
+fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, prompt) =
+        run_and_answer(&f, "pick-directory", Some("C:/work"), Some(&["C:/work/repo"]), Duration::from_millis(700));
+    assert_eq!(result.unwrap().as_deref(), Some("C:/work/repo"));
+    assert_eq!(prompt, Prompt::PickDirectory { title: "Clone target".into(), initial: Some("C:/work".into()) });
+    assert_eq!(run_and_answer(&f, "pick-directory", None, None, Duration::ZERO).0.unwrap().as_deref(), Some("none"));
+    assert!(run_and_answer(&f, "pick-directory", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.run("jobs", "pick-directory", Some("relative")).is_err());
+    for (cmd, new_window) in [("open-project", false), ("open-project-new", true)] {
+        f.take_events();
+        let inv = Invocation { client: Some("second".into()), ..f.inv() };
+        f.host.run_command("jobs", cmd, Some("C:/work/repo"), inv).unwrap();
+        let requests = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenProject { plugin_id, path, new_window } => Some((client, plugin_id, path, new_window)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requests, vec![(Some("second".into()), "jobs".into(), "C:/work/repo".into(), new_window)]);
+        let error = f.host.run_command("jobs", cmd, Some("/work/repo"), Invocation::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{error:?}");
+    }
+    assert!(f.host.run_command("jobs", "pick-directory", None, Invocation::default()).is_err());
+    for path in ["relative", "/bad\npath", ""] {
+        f.take_events();
+        assert!(f.run("jobs", "open-project", Some(path)).is_err());
+        assert!(!f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::OpenProject { .. })));
+    }
 }

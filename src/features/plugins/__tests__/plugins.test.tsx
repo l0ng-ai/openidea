@@ -10,7 +10,12 @@ import { useProject } from "@/platform/project";
 import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
-import { searchEndpoints, provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import {
+  onEndpointsChanged,
+  provideNotificationService,
+  searchEndpoints,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { applyThemeAttributes, previewTheme, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
 import {
@@ -493,7 +498,7 @@ describe("bridge events", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     handlePluginEvent({ type: "notification", pluginId: "p", level: "info", title: "Done", body: "3 words" });
-    expect(notes).toEqual([{ group: "plugins", level: "info", title: "Done", body: "3 words" }]);
+    expect(notes).toEqual([{ group: "plugins", level: "info", title: "Done", body: "3 words", verbatim: true }]);
     handlePluginEvent({ type: "copyToClipboard", pluginId: "p", text: "https://github.com/o/r" });
     expect(writeText).toHaveBeenCalledWith("https://github.com/o/r");
     handlePluginEvent({ type: "openUrl", pluginId: "p", url: "https://github.com/o/r/blob/main/a.rs" });
@@ -1264,30 +1269,36 @@ describe("plugin context keys", () => {
   });
 });
 
-it("projects endpoint snapshots into root-scoped search providers and disposes stale results", async () => {
+it("asks the plugin for its routes once per plugin and again when they change", async () => {
   const plugins = [plugin({ id: "routes" })];
-  const item = {
-    pluginId: "routes",
-    point: "endpointResults",
-    key: "/p",
-    decl: {
-      root: "/p",
-      endpoints: [
-        {
-          method: null,
-          path: "/users/{id}",
-          framework: "Rails",
-          handler: "Users#show",
-          location: { path: "/p/config/routes.rb", range: { start: { line: 2, col: 4 }, end: { line: 2, col: 8 } } },
-        },
-      ],
+  const endpoints = vi.fn(async () => [
+    {
+      method: null,
+      path: "/users/{id}",
+      framework: "Rails",
+      handler: "Users#show",
+      location: { path: "/p/config/routes.rb", range: { start: { line: 2, col: 4 }, end: { line: 2, col: 8 } } },
     },
-  };
-  syncUiContributions([item], plugins);
-  expect(await searchEndpoints("/p")).toMatchObject([
-    { method: "*", url: "/users/{id}", handler: "Users#show", path: "/p/config/routes.rb", line: 2, col: 4 },
   ]);
-  expect(await searchEndpoints("/other")).toEqual([]);
+  setPluginsBackend({ ...createMemoryPluginsBackend(), endpoints });
+  const decl = (key: string) => ({ pluginId: "routes", point: "endpoints", key, decl: { files: [key] } });
+  syncUiContributions([decl("config/routes.rb"), decl("routes/*.rb")], plugins);
+  expect(await searchEndpoints("/p")).toMatchObject([
+    { method: "*", url: "/users/{id}", handler: "Users#show", rel: "config/routes.rb", line: 2, col: 4 },
+  ]);
+  expect(endpoints).toHaveBeenCalledWith("routes");
+  syncUiContributions([decl("config/routes.rb")], plugins);
+  expect(await searchEndpoints("/p")).toHaveLength(1);
+
+  const changed = vi.fn();
+  const stop = onEndpointsChanged(changed);
+  useProject.setState({ project: { root: "/p" } as never });
+  handlePluginEvent({ type: "endpointsChanged", pluginId: "routes", root: "/other" });
+  expect(changed).not.toHaveBeenCalled();
+  handlePluginEvent({ type: "endpointsChanged", pluginId: "routes", root: "/p" });
+  expect(changed).toHaveBeenCalledTimes(1);
+  stop();
+
   syncUiContributions([], plugins);
   expect(await searchEndpoints("/p")).toEqual([]);
 });

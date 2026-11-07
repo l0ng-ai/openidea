@@ -296,6 +296,7 @@ describe("plugin menus", () => {
       {
         kind: "item",
         label: "Arthas",
+        verbatim: true,
         submenu: [
           { kind: "action", action: "plugin.p.watch", arg: undefined },
           { kind: "action", action: "plugin.p.trace", arg: undefined },
@@ -400,7 +401,15 @@ describe("PluginView", () => {
       toolbar: [],
       body: {
         kind: "table",
-        value: { columns: ["name", "city"], totalRows: 1, firstRow: 0, rows: [["Ada", city]], editable: true },
+        value: {
+          columns: ["name", "city"],
+          totalRows: 1,
+          firstRow: 0,
+          rows: [["Ada", city]],
+          editable: true,
+          sortable: false,
+          sort: null,
+        },
       },
       status: null,
     });
@@ -417,6 +426,80 @@ describe("PluginView", () => {
     city = "Paris";
     bumpView("csv", "table");
     expect(await screen.findByText("Paris")).toBeInTheDocument();
+  });
+
+  it("sorts a sortable table from its column headers, inverting on a second click", async () => {
+    const events: ViewEvent[] = [];
+    let sort: { column: number; descending: boolean } | null = null;
+    const table = (): View => ({
+      toolbar: [],
+      body: {
+        kind: "table",
+        value: {
+          columns: ["ext", "files"],
+          totalRows: 1,
+          firstRow: 0,
+          rows: [["rs", "2"]],
+          editable: false,
+          sortable: true,
+          sort,
+        },
+      },
+      status: null,
+    });
+    setPluginsBackend(backendWith(table, events));
+    const user = userEvent.setup();
+    const { container } = render(<PluginView pluginId="ext" view="counts" />);
+    const header = await screen.findByRole("columnheader", { name: "files" });
+
+    await user.click(header);
+    await waitFor(() => expect(events).toContainEqual({ kind: "sort", column: 1, descending: false }));
+
+    sort = { column: 1, descending: false };
+    bumpView("ext", "counts");
+    await waitFor(() =>
+      expect(screen.getByRole("columnheader", { name: "files" })).toHaveAttribute("aria-sort", "ascending"),
+    );
+    expect(container.querySelector('[aria-sort="ascending"] svg')).not.toBeNull();
+
+    await user.click(screen.getByRole("columnheader", { name: "files" }));
+    await waitFor(() => expect(events).toContainEqual({ kind: "sort", column: 1, descending: true }));
+
+    sort = { column: 1, descending: true };
+    bumpView("ext", "counts");
+    await waitFor(() =>
+      expect(screen.getByRole("columnheader", { name: "files" })).toHaveAttribute("aria-sort", "descending"),
+    );
+
+    // Another column starts over at ascending.
+    await user.click(screen.getByRole("columnheader", { name: "ext" }));
+    await waitFor(() => expect(events).toContainEqual({ kind: "sort", column: 0, descending: false }));
+    expect(events.filter((e) => e.kind === "sort")).toHaveLength(3);
+  });
+
+  it("keeps plain table headers inert", async () => {
+    const events: ViewEvent[] = [];
+    const table = (): View => ({
+      toolbar: [],
+      body: {
+        kind: "table",
+        value: {
+          columns: ["name", "city"],
+          totalRows: 1,
+          firstRow: 0,
+          rows: [["Ada", "London"]],
+          editable: false,
+          sortable: false,
+          sort: null,
+        },
+      },
+      status: null,
+    });
+    setPluginsBackend(backendWith(table, events));
+    const user = userEvent.setup();
+    render(<PluginView pluginId="csv" view="table" />);
+    await user.click(await screen.findByRole("columnheader", { name: "city" }));
+    expect(events).toHaveLength(0);
   });
 
   it("keeps an HTML body loaded across theme switches and posts the new theme to it", async () => {

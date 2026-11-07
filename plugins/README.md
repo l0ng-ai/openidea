@@ -480,7 +480,16 @@ can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
 of its label, and bring `additional_edits` elsewhere in the document (an
 import). A code action can leave `edits` empty and set `data`: its edits are
 then computed by `resolve_code_action` when the user picks it, under the
-command budget instead of the 50 ms. Problems (`publish_diagnostics`) can name
+command budget instead of the 50 ms. A quick fix that creates, renames or
+deletes files implements `file_actions::FileActions` too
+(`register_plugin!(T, providers, file_actions)`; the `code-actions` kind
+covers both): a `FileAction` carries `operations` (`FileOperation::Create {
+path, text, overwrite }`, `Rename`, `Delete`) and `edits`, applied as one
+workspace edit, so a failure changes nothing and one undo reverses it. A path
+outside the project root disables the action; `open` shows a file once the
+action is applied. Like a code action, it can leave `operations` and `edits`
+empty and set `data`: `resolve_file_action` computes them when the user picks
+it. File actions are new in API 1.3. Problems (`publish_diagnostics`) can name
 the tool that found them (`source`) and be `unnecessary` (faded) or
 `deprecated` (struck through).
 Editor providers run under the edit-path budget: 50 ms, after which the
@@ -603,6 +612,12 @@ collapse of items, form fields, table cells, inserted and deleted rows, and
 `html` messages. A tree is a flat list whose items name their `parent`; an
 `expandable` item gets its children when it is expanded. A table gets only
 the rows it shows (`viewport`): report `total_rows` and return those.
+For a table the user can sort by clicking a header, build it with
+`Body::sortable_table(&table, sort)`: it travels as a `table` through `other`
+(so IDEs and plugins of any API version keep working), the IDE makes the
+column headers clickable and asks for a column and direction with
+`ViewEvent::sort()` — sort your rows and render again; the sort you report
+shows as an arrow in the header.
 Bodies, field types and view events added by later APIs travel as `Other {
 kind, data }`: an IDE that doesn't know a body says it needs updating, and
 leaves out a field type it doesn't know.
@@ -1240,6 +1255,20 @@ Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
 plus fmt, clippy (host and wasm) and the tests of the SDK, the official
 plugins and the fixtures.
 
+### Directory selection and opening projects (API 1.3)
+
+`host::pick_directory(title, initial)` opens the window's native folder chooser
+and returns an absolute path, or `None` when dismissed. Like `pick`, it is only
+available during a command or event from a window; waiting for the user does not
+consume the plugin's call budget. `initial` is an optional absolute directory.
+
+`host::open_project(path, new_window)` requests the normal File › Open flow in
+that window (`false`) or a new window (`true`). Existing project windows are
+reused as usual, and the normal trust prompt and unsaved-change guard apply.
+The call acknowledges the request; cancellation or opening errors are handled by
+the window. Neither API needs a capability. Paths belong to the UI machine,
+including when plugin code runs on a remote host.
+
 ### Project HTTP endpoints (API 1.3)
 
 A plugin with `project.read` can export `endpoints-provider` to share its routes
@@ -1258,9 +1287,10 @@ files = ["config/routes.rb", "routes/**/*.php"]
 
 Implement `endpoints::EndpointsProvider` and use
 `register_plugin!(MyPlugin, endpoints)` in the Rust SDK. `endpoints(ctx)` receives
-an explicit project invocation and runs on project open and after matching files
-are created, changed or removed. Return the complete list (an empty list clears
-it). `method = None` accepts any method; the optional handler is a display name.
+an explicit project invocation. It runs the first time the IDE needs that
+project's routes, and again after a file matching `files` is created, changed or
+removed; in between the host answers from its cache. Return the complete list
+(an empty list clears it). `method = None` accepts any method; the optional handler is a display name.
 Each endpoint has a required declaration location inside that project, with
 zero-based lines and UTF-16 columns. The generated request uses GET for any-method
 routes. Calls run in the background and cannot open prompts.

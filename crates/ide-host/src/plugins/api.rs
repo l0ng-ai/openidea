@@ -733,6 +733,14 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let client = from_window(client, "open a project")?;
+        self.shared
+            .sink
+            .emit(Some(client), PluginEvent::OpenProject { plugin_id: self.id().to_owned(), path, new_window });
+        Ok(())
+    }
+
     fn ask(
         &self,
         client: Option<&str>,

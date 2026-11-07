@@ -350,6 +350,22 @@ impl ui::Host for StoreData {
         Ok(answer.map(|keys| keys.and_then(|keys| keys.into_iter().next())))
     }
 
+    fn pick_directory(&mut self, title: String, initial: Option<String>) -> Fallible<Option<String>> {
+        if let Some(path) = &initial
+            && let Err(error) = validate_ui_path(path)
+        {
+            return Ok(Err(error));
+        }
+        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
         Ok(self.pick_prompt(title, items, true))
     }
@@ -407,6 +423,14 @@ impl storage::Host for StoreData {
 }
 
 impl workspace::Host for StoreData {
+    fn open_project(&mut self, path: String, new_window: bool) -> Fallible<()> {
+        if let Err(error) = self.require_interactive().and_then(|_| validate_ui_path(&path)) {
+            return Ok(Err(error));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_project(client.as_deref(), path, new_window).map_err(to_wit))
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -997,4 +1021,41 @@ pub(crate) mod endpoints_bindings {
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
         },
     });
+}
+
+/// The optional `file-actions` export.
+pub(crate) mod file_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "file-actions-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+/// Paths belong to the UI machine, which can have a different OS than the plugin host.
+fn validate_ui_path(path: &str) -> Result<(), wit::Error> {
+    let b = path.as_bytes();
+    let absolute = path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (b.first().is_some_and(u8::is_ascii_alphabetic)
+            && b.get(1) == Some(&b':')
+            && matches!(b.get(2), Some(b'/' | b'\\')));
+    if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
+        return Err(wit::Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod project_ui_tests {
+    use super::validate_ui_path;
+    #[test]
+    fn validates_ui_paths_without_using_the_plugin_hosts_os() {
+        for path in ["/work/repo", "C:/work/repo", r"C:\work\repo", r"\\server\share\repo"] {
+            assert!(validate_ui_path(path).is_ok(), "{path:?}");
+        }
+        for path in ["repo", "C:repo", "/bad\npath", ""] {
+            assert!(validate_ui_path(path).is_err(), "{path:?}");
+        }
+        assert!(validate_ui_path(&format!("/{}", "x".repeat(8192))).is_err());
+    }
 }

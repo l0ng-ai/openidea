@@ -15,6 +15,7 @@ import { addIconTheme, iconThemeKey, selectIconTheme, useSelectedIconTheme } fro
 import { defineUiPoint, type UiItem } from "./projection";
 import { SecretsDetails, type SecretDecl } from "./secrets";
 import { defineViewUiPoints, pluginSettingsPageId } from "./uiPoints";
+import { pluginsBackend } from "./backend";
 import { isLive, runPluginCommand } from "./store";
 import styles from "./PluginsPage.module.css";
 
@@ -142,41 +143,45 @@ function IconThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiIte
   );
 }
 
+const endpointPlugins = new Map<string, { declarations: number; dispose: () => void }>();
+
+/** One endpoint provider per plugin, however many `[[contributes.endpoints]]` it declares. */
+function providePluginEndpoints(pluginId: string): () => void {
+  let entry = endpointPlugins.get(pluginId);
+  if (!entry) {
+    const dispose = registerEndpointProvider({
+      id: `plugin:${pluginId}`,
+      endpoints: async (root): Promise<EndpointEntry[]> =>
+        (await pluginsBackend().endpoints(pluginId)).map((e) => ({
+          method: e.method ?? "*",
+          url: e.path,
+          framework: e.framework,
+          handler: e.handler ?? undefined,
+          controller: e.framework,
+          methodName: e.handler ?? "",
+          pluginId,
+          path: e.location.path,
+          rel: e.location.path.startsWith(`${root}/`) ? e.location.path.slice(root.length + 1) : e.location.path,
+          line: e.location.range.start.line,
+          col: e.location.range.start.col,
+        })),
+    });
+    entry = { declarations: 0, dispose };
+    endpointPlugins.set(pluginId, entry);
+  }
+  const held = entry;
+  held.declarations++;
+  return () => {
+    if (--held.declarations > 0) return;
+    held.dispose();
+    endpointPlugins.delete(pluginId);
+  };
+}
+
 /** Registers the client side of every first-party UI point. */
 export function defineBuiltinUiPoints(): () => void {
   const disposers = [
-    defineUiPoint("endpoints", {}),
-    defineUiPoint<{
-      root: string;
-      endpoints: Array<{
-        method: string | null;
-        path: string;
-        framework: string;
-        handler: string | null;
-        location: { path: string; range: { start: { line: number; col: number } } };
-      }>;
-    }>("endpointResults", {
-      project: ({ pluginId, key, decl }) =>
-        registerEndpointProvider({
-          id: `plugin:${pluginId}:${key}`,
-          endpoints: async (root): Promise<EndpointEntry[]> =>
-            root === decl.root
-              ? decl.endpoints.map((e) => ({
-                  method: e.method ?? "*",
-                  url: e.path,
-                  framework: e.framework,
-                  handler: e.handler ?? undefined,
-                  controller: e.framework,
-                  methodName: e.handler ?? "",
-                  pluginId,
-                  path: e.location.path,
-                  rel: e.location.path.slice(root.length + 1),
-                  line: e.location.range.start.line,
-                  col: e.location.range.start.col,
-                }))
-              : [],
-        }),
-    }),
+    defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",
       project: ({ pluginId, decl }, { plugin }) =>
@@ -186,6 +191,7 @@ export function defineBuiltinUiPoints(): () => void {
           category: decl.category ?? plugin.name,
           icon: "package",
           when: decl.when ?? undefined,
+          verbatim: true,
           keywords: ["plugin", plugin.name, pluginId],
           description: tx`From plugin ${plugin.name}`,
           run: async ({ arg }) => {

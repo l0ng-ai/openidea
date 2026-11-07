@@ -72,6 +72,7 @@ struct State {
     fetch_error: Option<Error>,
     clipboard: Option<String>,
     opened_urls: Vec<String>,
+    opened_projects: Vec<(String, bool)>,
     answers: VecDeque<Option<Vec<String>>>,
     revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
@@ -128,6 +129,11 @@ impl MockHost {
         }));
         CURRENT.with(|c| *c.borrow_mut() = Some(state.clone()));
         Self { state }
+    }
+
+    /// Project-open requests, in order: (UI path, new window).
+    pub fn opened_projects(&self) -> Vec<(String, bool)> {
+        self.state.borrow().opened_projects.clone()
     }
 
     /// Grants exactly these capabilities.
@@ -468,6 +474,33 @@ pub mod current {
             s.opened_urls.push(trimmed.to_owned());
             Ok(())
         })
+    }
+
+    pub fn pick_directory(_title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+        if let Some(path) = initial {
+            ui_path(path)?;
+        }
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+        ui_path(path)?;
+        with(|s| s.opened_projects.push((path.to_owned(), new_window)));
+        Ok(())
+    }
+
+    /// The host's check: an absolute path on the UI machine, whatever its OS.
+    fn ui_path(path: &str) -> Result<(), Error> {
+        let b = path.as_bytes();
+        let absolute = path.starts_with('/')
+            || path.starts_with("\\\\")
+            || (b.first().is_some_and(u8::is_ascii_alphabetic)
+                && b.get(1) == Some(&b':')
+                && matches!(b.get(2), Some(b'/' | b'\\')));
+        if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
+            return Err(Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
+        }
+        Ok(())
     }
 
     pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
@@ -1043,5 +1076,24 @@ mod tests {
         host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
             .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod project_ui_tests {
+    use super::MockHost;
+    use crate::host;
+    #[test]
+    fn folder_choices_and_project_requests_need_no_capability() {
+        let mock = MockHost::install().with_capabilities(&[]);
+        mock.answer_next_prompt(Some(&["C:/work/repo"]));
+        assert_eq!(host::pick_directory("Target", Some("C:/work")).unwrap().as_deref(), Some("C:/work/repo"));
+        assert_eq!(host::pick_directory("Target", None).unwrap(), None);
+        host::open_project("C:/work/repo", true).unwrap();
+        host::open_project("/home/user/repo", false).unwrap();
+        assert_eq!(mock.opened_projects(), vec![("C:/work/repo".into(), true), ("/home/user/repo".into(), false)]);
+        for path in ["relative", "C:relative", "/bad\npath", ""] {
+            assert!(host::open_project(path, false).is_err());
+        }
     }
 }
