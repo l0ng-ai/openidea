@@ -133,6 +133,13 @@ describe("Settings dialog", () => {
     );
   });
 
+  it("finds the Maven toolchains setting", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Toolchains" } });
+    expect(within(dialog).getByLabelText("Toolchains file")).toBeInTheDocument();
+  });
+
   it("finds the Maven JDK setting", async () => {
     useProject.setState({ project: { root: "/project" } as never });
     const dialog = await openDialog("build.maven");
