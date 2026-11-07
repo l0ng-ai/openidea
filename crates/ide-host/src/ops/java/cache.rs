@@ -89,6 +89,14 @@ impl Session {
             tracing::info!(module = %module.display(), test, "Reusing Maven launch snapshot");
             return Ok(previous.unwrap());
         }
+        tracing::info!(
+            module = %module.display(),
+            test,
+            rebuild,
+            had_record = previous.is_some(),
+            fingerprint_available = before.is_some(),
+            "Rebuilding Maven launch snapshot"
+        );
         // Retain a non-reusable record even on failure, so removing the final mixed
         // source still delegates to Maven to clean its old classes on the next launch.
         fs::create_dir_all(record.parent().unwrap())?;
