@@ -65,5 +65,6 @@
   "Branch Conversation from Here": "Branch Conversation from Here",
   "Couldn't regenerate the response": "Couldn't regenerate the response",
   "Reasoning": "Reasoning",
-  "Branch '{name}'": "Branch '{name}'"
+  "Branch '{name}'": "Branch '{name}'",
+  "Cannot copy the value": "Cannot copy the value"
 }
