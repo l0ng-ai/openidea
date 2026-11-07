@@ -1650,6 +1650,7 @@ mod tests {
                 operations: Vec::new(),
                 open: None,
                 data: None,
+                file_action: false,
             };
             assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
         }
