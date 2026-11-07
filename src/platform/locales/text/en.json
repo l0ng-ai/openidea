@@ -1,4 +1,10 @@
 {
+  "OpenIDEA or JetBrains settings": "OpenIDEA or JetBrains settings",
+  "Import JetBrains Settings": "Import JetBrains Settings",
+  "These settings will be imported:": "These settings will be imported:",
+  "Not imported:": "Not imported:",
+  "Current color scheme": "Current color scheme",
+  "No settings OpenIDEA can import were found in this archive": "No settings OpenIDEA can import were found in this archive",
   "Overwrite existing branch": "Overwrite existing branch",
   "Branch '{n}' already exists": "Branch '{n}' already exists",
   "Cannot copy reference": "Cannot copy reference",
