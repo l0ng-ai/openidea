@@ -14,6 +14,7 @@
 import type { EditorView } from "@codemirror/view";
 import {
   commands,
+  IpcError,
   isCancelled,
   isNoServer,
   nextRequestId,
@@ -41,6 +42,7 @@ import {
   type LocalRenamePlan,
 } from "./syntaxFallback";
 import { tx } from "@/platform/i18n";
+import { synchronizeDocumentIndexes } from "@/workbench/contributions";
 
 async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
@@ -48,6 +50,17 @@ async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
     await lspRequest(() => commands.applyWorkspaceEdit(edit));
   } catch (e) {
     reportLspError(view, e, true);
+  }
+}
+
+async function prepareIndexes(view: EditorView, path: string): Promise<boolean> {
+  const before = view.state.doc;
+  try {
+    await synchronizeDocumentIndexes(path);
+    return view.state.doc === before;
+  } catch (e) {
+    reportLspError(view, e, true);
+    return false;
   }
 }
 
@@ -76,11 +89,16 @@ export async function startRename(view: EditorView) {
   await whenSynced(view);
   const head = view.state.selection.main.head;
   const pos = offsetToPos(view.state.doc, head);
+  if (!(await prepareIndexes(view, doc.path))) return;
   let range;
   try {
     range = await lspRequest(() => commands.lspPrepareRename(doc.doc, pos));
   } catch (e) {
     if (isCancelled(e)) return;
+    if (e instanceof IpcError && (e.kind === "outOfSync" || e.kind === "invalidInput")) {
+      reportLspError(view, e, true);
+      return;
+    }
     if (await startSyntaxRename(view, doc, pos, e)) return;
     // No server covers this file (a plain text file): Shift+F6 renames the file, like IDEA.
     if (isNoServer(e) && (await executeAction("project.rename"))) return;
@@ -160,11 +178,16 @@ export async function renameNamePart(view: EditorView, part: Span, replacement: 
     );
     return true;
   };
+  if (!(await prepareIndexes(view, doc.path))) return;
   let range;
   try {
     range = await lspRequest(() => commands.lspPrepareRename(doc.doc, pos));
   } catch (e) {
     if (isCancelled(e)) return;
+    if (e instanceof IpcError && (e.kind === "outOfSync" || e.kind === "invalidInput")) {
+      reportLspError(view, e, true);
+      return;
+    }
     if (!(await viaSyntax())) refuse("no language server can rename this symbol");
     return;
   }
@@ -232,9 +255,14 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
   const request = nextRequestId();
   renameRequest = request;
   let renamed;
+  const before = view.state.doc;
   try {
+    await synchronizeDocumentIndexes(doc.path);
+    if (renameRequest !== request || view.state.doc !== before) return;
     renamed = await lspRequest(() => commands.lspRename(request, doc.doc, pos, newName));
+    if (renameRequest !== request) return;
   } catch (e) {
+    if (renameRequest !== request) return;
     reportLspError(view, e, true);
     return;
   } finally {
@@ -256,7 +284,7 @@ async function finishRename(view: EditorView, doc: EditorDocContext, pos: Pos, o
     return;
   }
   // An edit that may leave usages behind is never applied unseen.
-  if (!note && !needsPreview(summary)) {
+  if (!renamed.preview && !note && !needsPreview(summary)) {
     await applyEdit(view, edit);
     return;
   }

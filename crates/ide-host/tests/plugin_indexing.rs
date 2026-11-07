@@ -239,3 +239,23 @@ fn invalid_ranges_and_oversized_documents_never_publish() {
     }
     assert!(f.host.navigation_markers(&f.root, &[path], None, |_| None).is_empty());
 }
+
+#[test]
+fn usages_from_definitions_and_references_follow_aliases_module_scope_and_client() {
+    let f = Fixture::new();
+    let definition = f.index("a/source.idx", "def item\nsymbols parent#\n", &[method()], Some(1), "a");
+    f.index("a/child.idx", "alias child# parent#\n", &[], None, "a");
+    let reference = f.index("a/use.idx", "ref child#item\n", &[], Some(1), "a");
+    let other = f.index("b/source.idx", "def item\nsymbols parent#\n", &[method()], Some(1), "b");
+    for (path, pos) in [(&definition, Pos::new(0, 4)), (&reference, Pos::new(0, 6))] {
+        let symbol = f.host.indexed_symbol_at(&f.root, path, pos, None).unwrap();
+        assert!(symbol.files.iter().any(|f| f.path == definition));
+        assert!(symbol.files.iter().any(|f| f.path == reference));
+        assert!(!symbol.files.iter().any(|f| f.path == other), "prefer same-module definitions and their uses");
+        assert_eq!(symbol.files.iter().map(|f| f.ranges.len()).sum::<usize>(), 2);
+    }
+    assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 0), None).is_none());
+    assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 4), Some("other-window")).is_none());
+    f.host.set_project_policy(Arc::new(|_| false));
+    assert!(f.host.indexed_symbol_at(&f.root, &definition, Pos::new(0, 4), None).is_none());
+}

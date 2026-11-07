@@ -38,7 +38,7 @@ vi.mock("@/platform/actions", async (orig) => {
 });
 
 const openFile = vi.fn(async () => {});
-const { provideEditorService } = await import("@/workbench/contributions");
+const { provideEditorService, registerDocumentIndexSync } = await import("@/workbench/contributions");
 provideEditorService({ openFile } as never);
 
 const fb = await import("./syntaxFallback");
@@ -460,6 +460,56 @@ describe("rename wiring", () => {
     expect(preview.summary.files).toBe(2);
     preview.onConfirm();
     await vi.waitFor(() => expect(cmd.applyWorkspaceEdit).toHaveBeenCalledExactlyOnceWith(edit));
+  });
+
+  it.each(["outOfSync", "invalidInput"] as const)(
+    "never falls back to a partial local rename after %s preparation",
+    async (kind) => {
+      const failed = () =>
+        Promise.resolve({
+          status: "error" as const,
+          error: { kind, message: "Indexed anchors cannot be used" } as IdeError,
+        });
+      cmd.lspPrepareRename.mockReturnValueOnce(failed()).mockReturnValueOnce(failed());
+      const view = editor("old", "typescript", 0);
+      await startRename(view);
+      await renameNamePart(view, { from: 0, to: 3 }, "new");
+      expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+      expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe("old");
+    },
+  );
+
+  it("does not fall back to a local-only rename when a contributed index is unavailable", async () => {
+    const off = registerDocumentIndexSync(async () => {
+      throw new Error("Index not ready");
+    });
+    try {
+      const view = editor("old", "typescript", 0);
+      await renameNamePart(view, { from: 0, to: 3 }, "new");
+      expect(cmd.lspPrepareRename).not.toHaveBeenCalled();
+      expect(cmd.syntaxLocals).not.toHaveBeenCalled();
+      expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe("old");
+    } finally {
+      off();
+    }
+  });
+
+  it("requires confirmation for a single-file indexed rename and cancellation leaves every anchor unchanged", async () => {
+    cmd.lspPrepareRename.mockReturnValueOnce(ok(r(0, 0, 3)));
+    const edit = {
+      files: [{ kind: "edit", path: "/p/key.idx", edits: [{ range: r(0, 0, 3), new_text: "new" }] }],
+      preconditions: [{ path: "/p/key.idx", hash: "before" }],
+    };
+    cmd.lspRename.mockReturnValueOnce(ok({ edit, incomplete: null, preview: true }));
+    const view = editor("old", "text", 0);
+    await renameNamePart(view, { from: 0, to: 3 }, "new");
+    expect(useLspPopup.getState().popup?.kind).toBe("preview");
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
+    closePopup();
+    expect(view.state.doc.toString()).toBe("old");
+    expect(cmd.applyWorkspaceEdit).not.toHaveBeenCalled();
   });
 
   describe("Typo: Rename to (issue #42)", () => {

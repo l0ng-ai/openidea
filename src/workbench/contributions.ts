@@ -1673,3 +1673,15 @@ export function addContributedFileTemplate(t: import("@/platform/fileTemplates")
   useContributedFileTemplates.setState((s) => ({ templates: [...s.templates.filter((x) => x.id !== t.id), t] }));
   return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
 }
+
+/** Flush contributed document indexes before workspace usages or refactoring. */
+const documentIndexSync = new Set<(path: string) => Promise<void>>();
+export function registerDocumentIndexSync(sync: (path: string) => Promise<void>): () => void {
+  documentIndexSync.add(sync);
+  return () => {
+    documentIndexSync.delete(sync);
+  };
+}
+export async function synchronizeDocumentIndexes(path: string): Promise<void> {
+  await Promise.all([...documentIndexSync].map((sync) => sync(path)));
+}
