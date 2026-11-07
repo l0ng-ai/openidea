@@ -643,12 +643,12 @@ fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     std::fs::write(h.root.path().join("generate.go"), "//go:build ignore\n\npackage main\nfunc main() {}\n").unwrap();
     std::fs::write(
         h.root.path().join("demo_test.go"),
-        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if value()!=2 { t.Fatal(\"bad\") } }\n",
+        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if helper()!=2 { t.Fatal(\"bad\") } }\n",
     )
     .unwrap();
     std::fs::write(
         h.root.path().join("other_test.go"),
-        "package filetests\nimport \"testing\"\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
+        "package filetests\nimport (\"testing\"; \"os\")\nvar initialized int\nfunc TestMain(m *testing.M) { initialized=value(); os.Exit(m.Run()) }\nfunc helper() int { return initialized }\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
     )
     .unwrap();
     let mut c = cfg("go-file", &go.to_string_lossy(), &["test", "-json", "demo_test.go"]);
@@ -661,7 +661,30 @@ fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
     assert!(!c.args.iter().any(|a| a.ends_with("generate.go") || a.ends_with("other_test.go")));
     let (id, out) = start(&h, &c);
-    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&out, stderr));
+    assert_eq!(
+        wait_exit(&h, id, Duration::from_secs(60)),
+        Some(0),
+        "{} {} {:?}",
+        text(&out, stderr),
+        text(&out, stdout),
+        c.args
+    );
     assert!(text(&out, stdout).contains("TestChosen"));
     assert!(!text(&out, stdout).contains("TestOther"));
+    std::fs::write(
+        h.root.path().join("external_test.go"),
+        "package filetests_test\nimport t \"testing\"\nfunc TestExternal(\n t *t.T,\n) { if externalHelper()!=3 {t.Fail()} }\n",
+    ).unwrap();
+    std::fs::write(
+        h.root.path().join("external_helpers_test.go"),
+        "package filetests_test\nimport \"testing\"\nfunc externalHelper() int {return 3}\nfunc TestOutside(t *testing.T) {t.Fatal(\"must not run\")}\n",
+    ).unwrap();
+    c.args = vec!["test".into(), "-json".into(), "external_test.go".into()];
+    c.extras.params.insert("target".into(), "external_test.go".into());
+    ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{} {}", text(&out, stderr), text(&out, stdout));
+    assert!(text(&out, stdout).contains("TestExternal"));
+    assert!(!text(&out, stdout).contains("TestChosen"));
+    assert!(!text(&out, stdout).contains("TestOutside"));
 }
