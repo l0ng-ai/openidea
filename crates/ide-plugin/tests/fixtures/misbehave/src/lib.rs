@@ -20,7 +20,7 @@ use exports::openidea::plugin::providers::{
 };
 use exports::openidea::plugin::syntax_provider::{self, Fold, Symbol, Token};
 use exports::openidea::plugin::{commands, event_handler, lifecycle};
-use openidea::plugin::{invocation::Invocation, process, types};
+use openidea::plugin::{invocation::Invocation, process, tasks, types};
 
 struct Misbehave;
 
@@ -170,6 +170,19 @@ impl commands::Guest for Misbehave {
             }
             // The user gave up: not the plugin failing.
             "cancel" => Err(types::Error::Cancelled),
+            // Stays alive past the background budget by reporting between
+            // host calls (a report runs on the host while the guest waits).
+            "patient" => {
+                let task = tasks::begin("patient", false);
+                for i in 0..25u32 {
+                    let until = std::time::Instant::now() + std::time::Duration::from_millis(100);
+                    while std::time::Instant::now() < until {
+                        std::hint::black_box(0);
+                    }
+                    task.report(i + 1, Some(25), None);
+                }
+                Ok(Some("patient".into()))
+            }
             // Event kinds are names: one this IDE doesn't know is refused.
             "subscribe" => openidea::plugin::events::subscribe(&arg.unwrap_or_default()).map(|()| None),
             // Tagged problems from another tool on the line 0 of `arg`.

@@ -45,11 +45,15 @@ interface events {
 
 /// Long-running work with a progress indicator. While a task is open, the
 /// call that began it may run for the background budget (60 s) instead of 5 s.
+/// Each `report` or `is-cancelled` re-arms that budget, so work that keeps
+/// reporting is not cut off while work that goes quiet still is.
 interface tasks {
     resource task {
         /// `done` of `total` units (`none`: indeterminate), with a short status.
+        /// Renews the call's background budget.
         report: func(done: u32, total: option<u32>, message: option<string>);
         /// The user cancelled it: stop soon and return.
+        /// Renews the call's background budget.
         is-cancelled: func() -> bool;
     }
 

@@ -873,6 +873,7 @@ impl tasks::Host for StoreData {
             self.deadline = extended;
             self.timeout = self.limits.background;
         }
+        // Reports keep it alive from here on.
         self.push(TaskRes { id })
     }
 }
@@ -887,6 +888,8 @@ impl tasks::HostTask for StoreData {
     ) -> wasmtime::Result<()> {
         let id = self.table.get(&this)?.id;
         let now = Instant::now();
+        // Reporting keeps the call alive: renew the background budget.
+        self.renew(now);
         // At most ~10 updates per second reach the UI.
         if self.last_report.is_none_or(|t| now.duration_since(t).as_millis() >= 100) || total.is_some_and(|t| done >= t)
         {
@@ -898,6 +901,8 @@ impl tasks::HostTask for StoreData {
 
     fn is_cancelled(&mut self, this: Resource<TaskRes>) -> wasmtime::Result<bool> {
         let id = self.table.get(&this)?.id;
+        // Asking keeps the call alive too.
+        self.renew(Instant::now());
         Ok(self.cancel.token().is_cancelled() || self.host.task_cancelled(id))
     }
 
@@ -914,6 +919,17 @@ impl StoreData {
     /// can't be interrupted by the epoch callback, so they get this as timeout).
     fn remaining(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// A sign of life (`report`, `is-cancelled`) re-arms the budget of a call
+    /// that began a task: work that keeps saying it is alive is not cut off,
+    /// work that goes quiet still dies at `deadline`. The deadline only moves
+    /// forward, so nothing gets a longer lease than the background budget.
+    fn renew(&mut self, now: Instant) {
+        let extended = now + self.limits.background;
+        if extended > self.deadline {
+            self.deadline = extended;
+        }
     }
 }
 

@@ -101,3 +101,7 @@ title = "childdrop"
 [[contributes.commands]]
 id = "childtrap"
 title = "childtrap"
+
+[[contributes.commands]]
+id = "patient"
+title = "patient"

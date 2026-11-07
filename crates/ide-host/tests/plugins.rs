@@ -776,6 +776,20 @@ fn memory_limit_traps() {
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.crashes, 1);
 }
 
+/// A task that keeps reporting re-arms the background budget: `patient`
+/// reports 25 times, 100 ms apart, against a 300 ms budget.
+#[test]
+fn a_reporting_task_outlives_one_background_budget() {
+    let f = fixture(Limits {
+        fuel: u64::MAX,
+        timeout: Duration::from_millis(100),
+        background: Duration::from_millis(300),
+        ..Limits::default()
+    });
+    f.install(&misbehave_pkg());
+    assert_eq!(f.run("misbehave", "patient", None).unwrap().as_deref(), Some("patient"));
+}
+
 /// A running call can be interrupted from another thread; the
 /// instance is rebuilt on next use without counting as a crash.
 #[test]
@@ -932,7 +946,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 23, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 24, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
