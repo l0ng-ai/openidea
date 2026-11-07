@@ -474,7 +474,6 @@ fn maven_options_carry_active_profiles_into_the_command_line() {
     apply_to_run_configs(&mut configured, tmp.path(), &s);
     assert_eq!(configured[0].args, ["-P", "prod", "package"]);
 }
-}
 
 #[test]
 fn maven_options_carry_the_thread_count_into_the_command_line() {
