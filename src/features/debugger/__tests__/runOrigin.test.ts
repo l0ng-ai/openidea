@@ -75,6 +75,35 @@ it("stops shared-process debugger roots without stopping their process until req
   expect(ipc.runStop).toHaveBeenCalledWith(7);
 });
 
+it("stops associated processes through Run before disconnecting the debugger", async () => {
+  const order: string[] = [];
+  const stop = vi.fn((_process: unknown) => {
+    order.push("run");
+  });
+  const dispose = registerActions([
+    {
+      id: "run.stopProcess",
+      title: "Stop",
+      run: ({ arg }) => {
+        stop(arg);
+      },
+    },
+  ]);
+  ipc.debugStop.mockImplementationOnce(async () => {
+    order.push("debug");
+    return { status: "ok", data: null };
+  });
+  try {
+    adoptSession(1, { runConfig: config, process: 7 });
+    await stopSession(1);
+    expect(stop).toHaveBeenCalledWith(7);
+    expect(ipc.runStop).not.toHaveBeenCalled();
+    expect(order).toEqual(["run", "debug"]);
+  } finally {
+    dispose();
+  }
+});
+
 it("pins Show in Debug to the configured session and clears summaries with the project", () => {
   adoptSession(1, { runConfig: config });
   adoptSession(2, { runConfig: { ...config, id: "other" } });
