@@ -2932,7 +2932,7 @@ async fn references_open_unopened_files_that_mention_the_name() {
 
 /// A Go project: the module at the root, `tools` replacing it with `../` and `other` requiring a
 /// published copy. The mock answers a definition in `tools` like gopls in that module's view.
-fn go_modules_harness() -> (Harness, Arc<MockState>, PathBuf, PathBuf, PathBuf) {
+fn go_modules_harness() -> (Harness, Arc<MockState>, PathBuf, PathBuf, PathBuf, PathBuf) {
     let h = harness_for("go", "go", &[("gopls", incremental_caps())], &[]);
     let s = h.launcher.state("gopls");
     let write = |rel: &str, text: &str| {
@@ -2948,14 +2948,17 @@ fn go_modules_harness() -> (Harness, Arc<MockState>, PathBuf, PathBuf, PathBuf) 
     // Line 1 uses the declaration; line 2 is a local `New` of the tools module.
     let tools = write("tools/gen.go", "package tools\nvar a = app.New()\nfunc New() {}\n");
     write("other/o.go", "package other\nvar b = app.New()\n");
+    // Built for plan9 only: outside gopls' default view of the root module.
+    let plan9 = write("boot_plan9.go", "package app\nfunc boot() { New() }\n");
     let decl = h.root.join("a.go");
-    let candidates = vec![same.clone(), tools.clone(), h.root.join("other/o.go")];
+    let candidates = vec![same.clone(), tools.clone(), h.root.join("other/o.go"), plan9.clone()];
     h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
         files: candidates.clone(),
         limit_hit: false,
     }));
     let at = |line: u32, col: u32| json!({ "start": { "line": line, "character": col }, "end": { "line": line, "character": col + 3 } });
-    let (decl_uri, same_uri, tools_uri) = (uri_of(&decl), uri_of(&same), uri_of(&tools));
+    let (decl_uri, same_uri, tools_uri, plan9_uri) = (uri_of(&decl), uri_of(&same), uri_of(&tools), uri_of(&plan9));
+    let span = |line: u32, from: u32, to: u32| json!({ "start": { "line": line, "character": from }, "end": { "line": line, "character": to } });
     *s.responder.lock() = Some(Arc::new(move |_, method, params| {
         let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
         let line = params["position"]["line"].as_u64().unwrap_or(0);
@@ -2974,15 +2977,30 @@ fn go_modules_harness() -> (Harness, Arc<MockState>, PathBuf, PathBuf, PathBuf) 
                 Some(json!({ "uri": decl_uri, "range": at(0, 5) }))
             }
             "textDocument/definition" if uri == tools_uri => Some(json!({ "uri": tools_uri, "range": at(2, 5) })),
+            "textDocument/definition" if uri == plan9_uri => Some(json!({ "uri": decl_uri, "range": at(0, 5) })),
+            "textDocument/documentSymbol" if uri == tools_uri => Some(json!([
+                { "name": "a", "kind": 13, "range": span(1, 0, 17), "selectionRange": span(1, 4, 5) },
+                { "name": "New", "kind": 12, "range": span(2, 0, 13), "selectionRange": span(2, 5, 8) },
+            ])),
+            "textDocument/documentSymbol" if uri == plan9_uri => Some(json!([
+                { "name": "boot", "kind": 12, "range": span(1, 0, 20), "selectionRange": span(1, 5, 9) },
+            ])),
+            "textDocument/prepareCallHierarchy" => Some(
+                json!([{ "name": "New", "kind": 12, "uri": decl_uri, "range": span(0, 0, 13), "selectionRange": at(0, 5) }]),
+            ),
+            "callHierarchy/incomingCalls" => Some(json!([{
+                "from": { "name": "x", "kind": 13, "uri": same_uri, "range": span(1, 0, 13), "selectionRange": span(1, 4, 5) },
+                "fromRanges": [at(1, 8)],
+            }])),
             _ => None,
         }
     }));
-    (h, s, decl, same, tools)
+    (h, s, decl, same, tools, plan9)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn go_searches_resolve_other_modules_that_replace_the_declarations_module() {
-    let (h, s, decl, same, tools) = go_modules_harness();
+    let (h, s, decl, same, tools, plan9) = go_modules_harness();
     let (doc, _) = h.open("a.go", "func New() {}\n");
     h.wait_status("gopls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
@@ -2998,7 +3016,7 @@ async fn go_searches_resolve_other_modules_that_replace_the_declarations_module(
     let mut found: Vec<(PathBuf, u32)> =
         refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
     found.sort();
-    let mut want = vec![(decl.clone(), 0), (same.clone(), 1), (tools.clone(), 1)];
+    let mut want = vec![(decl.clone(), 0), (same.clone(), 1), (tools.clone(), 1), (plan9.clone(), 1)];
     want.sort();
     assert_eq!(found, want);
     // Those in gopls' reach arrive first.
@@ -3006,6 +3024,7 @@ async fn go_searches_resolve_other_modules_that_replace_the_declarations_module(
     // Only the module replacing the declaration's module was opened, never the root module's file.
     let opened = uris(&s.notified("textDocument/didOpen"));
     assert!(opened.contains(&uri_of(&tools)));
+    assert!(opened.contains(&uri_of(&plan9)));
     assert!(!opened.contains(&uri_of(&same)));
     assert!(!opened.iter().any(|u| u.ends_with("other/o.go")));
     assert_eq!(s.requested("textDocument/references").len(), 1);
@@ -3023,15 +3042,42 @@ async fn go_searches_resolve_other_modules_that_replace_the_declarations_module(
         })
         .collect();
     edited.sort();
-    let mut want = vec![(decl, vec![0]), (same, vec![1]), (tools, vec![1])];
+    let mut want = vec![(decl, vec![0]), (same, vec![1]), (tools, vec![1]), (plan9, vec![1])];
     want.sort();
     assert_eq!(edited, want);
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn go_incoming_calls_include_callers_beyond_the_search() {
+    let (h, s, _, same, tools, plan9) = go_modules_harness();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let calls =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    let mut callers: Vec<(PathBuf, String, Vec<u32>)> = calls
+        .items
+        .iter()
+        .map(|i| (i.path.to_path_buf(), i.name.clone(), i.from_ranges.iter().map(|r| r.start.line).collect()))
+        .collect();
+    callers.sort();
+    let mut want = vec![
+        (same, "x".to_owned(), vec![1]),
+        (tools, "a".to_owned(), vec![1]),
+        (plan9.clone(), "boot".to_owned(), vec![1]),
+    ];
+    want.sort();
+    assert_eq!(callers, want);
+    let boot = calls.items.iter().find(|i| i.name == "boot").unwrap();
+    assert_eq!((boot.selection_range.start, boot.from_ranges[0].start), (Pos::new(1, 5), Pos::new(1, 14)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn go_searches_open_nothing_when_no_other_module_uses_the_declaration() {
-    let (h, s, _, same, _) = go_modules_harness();
+    let (h, s, _, same, _, plan9) = go_modules_harness();
     std::fs::write(h.root.join("tools/go.mod"), "module example.com/tools\n").unwrap();
+    std::fs::remove_file(&plan9).unwrap();
     let (doc, _) = h.open("a.go", "func New() {}\n");
     h.wait_status("gopls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;

@@ -11,7 +11,7 @@
 
 use crate::server::{Running, Server};
 use crate::text::DocText;
-use crate::types::ReferencesIncomplete;
+use crate::types::{HierarchyItem, ReferencesIncomplete};
 use crate::{DocSnap, LspManager, Target};
 use futures::StreamExt;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId, Location, Pos};
@@ -52,6 +52,14 @@ pub struct CandidateFiles {
 /// Finds [`CandidateFiles`] (honouring the project's ignore rules); runs on a
 /// blocking thread and should stop early when cancelled.
 pub type CandidateFn = dyn Fn(&CandidateQuery, &CancellationToken) -> CandidateFiles + Send + Sync;
+
+/// What a Go search adds beyond gopls' own answer.
+#[derive(Default)]
+pub(crate) struct GoMentions {
+    pub locations: Vec<Location>,
+    /// The declarations containing them, as incoming calls (when asked for).
+    pub callers: Vec<HierarchyItem>,
+}
 
 /// A reference-based answer and, when files were opened for it, the second one.
 pub(crate) struct Widened<R> {
@@ -166,20 +174,21 @@ impl LspManager {
         }
     }
 
-    /// Go: usages of the symbol at `pos` in the project's other modules that use its module
-    /// through a local `replace`, which the search at `pos` does not reach (see `go_scope`).
-    /// Each mention of the name there is resolved in its own module's view.
-    pub(crate) async fn go_other_module_references(
+    /// Go: usages of the symbol at `pos` that the search at `pos` does not reach (see
+    /// `go_scope`), each mention of the name resolved in its own file's view; with `callers`,
+    /// also the declarations containing them, as incoming calls.
+    pub(crate) async fn go_mentions_beyond_search(
         &self,
         snap: &DocSnap,
         t: &Target,
         pos: Pos,
         cancel: &CancellationToken,
-    ) -> Vec<Location> {
+        callers: bool,
+    ) -> GoMentions {
         if snap.language.as_str() != "go" || !t.caps().open_close {
-            return Vec::new();
+            return GoMentions::default();
         }
-        let Some(word) = search_word(snap, pos) else { return Vec::new() };
+        let Some(word) = search_word(snap, pos) else { return GoMentions::default() };
         let declarations: Vec<Location> = self
             .goto_in(snap, std::slice::from_ref(t), "textDocument/definition", pos, Some(cancel), None)
             .await
@@ -187,11 +196,11 @@ impl LspManager {
             .into_iter()
             .filter(|l| l.uri.is_none())
             .collect();
-        let Some(declaration) = declarations.first() else { return Vec::new() };
-        let Some(candidates) = self.candidates(t, word.clone(), cancel).await else { return Vec::new() };
+        let Some(declaration) = declarations.first() else { return GoMentions::default() };
+        let Some(candidates) = self.candidates(t, word.clone(), cancel).await else { return GoMentions::default() };
         let (origin, declared) = (snap.path.clone(), declaration.path.to_path_buf());
         let files = tokio::task::spawn_blocking(move || {
-            crate::go_scope::other_module_files(&origin, &declared, candidates.files)
+            crate::go_scope::files_beyond_search(&origin, &declared, candidates.files)
                 .into_iter()
                 .filter_map(|f| {
                     let text = std::fs::read_to_string(&f).ok()?;
@@ -203,14 +212,17 @@ impl LspManager {
         .await
         .unwrap_or_default();
         if files.is_empty() || cancel.is_cancelled() {
-            return Vec::new();
+            return GoMentions::default();
         }
-        // Open, each file gives gopls a view of its module to resolve the mentions in.
+        // Open, each file gives gopls a view to resolve its mentions in (its module, its build).
         let _opened = self.open_transient(t, files.iter().map(|(f, _, _)| f.clone()).collect(), cancel).await;
+        let texts: Vec<(PathBuf, Arc<DocText>)> =
+            files.iter().map(|(path, text, _)| (path.clone(), Arc::new(text.clone()))).collect();
         let probes: Vec<(PathBuf, Arc<DocText>, ide_core::Range)> = files
             .into_iter()
-            .flat_map(|(path, text, ranges)| {
-                let text = Arc::new(text);
+            .zip(&texts)
+            .flat_map(|((path, _, ranges), (_, text))| {
+                let text = text.clone();
                 ranges.into_iter().map(move |r| (path.clone(), text.clone(), r))
             })
             .collect();
@@ -249,10 +261,86 @@ impl LspManager {
             .buffer_unordered(8)
             .collect()
             .await;
-        if cancel.is_cancelled() {
-            return Vec::new();
+        let locations: Vec<Location> = found.into_iter().flatten().collect();
+        let mut out = GoMentions { callers: Vec::new(), locations };
+        if callers && !cancel.is_cancelled() {
+            for (path, text) in &texts {
+                let here: Vec<ide_core::Range> =
+                    out.locations.iter().filter(|l| l.path == *path).map(|l| l.range).collect();
+                if !here.is_empty() {
+                    out.callers.extend(self.go_callers_in(t, path, text, &here, cancel).await);
+                }
+            }
         }
-        found.into_iter().flatten().collect()
+        if cancel.is_cancelled() {
+            return GoMentions::default();
+        }
+        out
+    }
+
+    /// The declarations of `path` containing `calls`, innermost first, each with its call sites.
+    async fn go_callers_in(
+        &self,
+        t: &Target,
+        path: &Path,
+        text: &DocText,
+        calls: &[ide_core::Range],
+        cancel: &CancellationToken,
+    ) -> Vec<HierarchyItem> {
+        let params = json!({ "textDocument": { "uri": crate::uri::path_to_uri_string(path) } });
+        let r: IdeResult<Option<lsp::DocumentSymbolResponse>> =
+            self.call(t, "textDocument/documentSymbol", params, Some(cancel), crate::DEFAULT_TIMEOUT).await;
+        let range =
+            |r: lsp::Range| ide_core::Range::new(text.lsp_to_ide(t.enc(), r.start), text.lsp_to_ide(t.enc(), r.end));
+        // (name, kind, detail, range, selection range) of every declaration.
+        let mut symbols = Vec::new();
+        match r {
+            Ok(Some(lsp::DocumentSymbolResponse::Nested(nested))) => {
+                let mut stack = nested;
+                while let Some(s) = stack.pop() {
+                    symbols.push((s.name, s.kind, s.detail, range(s.range), range(s.selection_range)));
+                    stack.extend(s.children.unwrap_or_default());
+                }
+            }
+            #[allow(deprecated)]
+            Ok(Some(lsp::DocumentSymbolResponse::Flat(flat))) => {
+                for s in flat {
+                    let r = range(s.location.range);
+                    symbols.push((s.name, s.kind, None, r, r));
+                }
+            }
+            _ => return Vec::new(),
+        }
+        let contains =
+            |outer: &ide_core::Range, inner: &ide_core::Range| outer.start <= inner.start && inner.end <= outer.end;
+        let mut items: Vec<HierarchyItem> = Vec::new();
+        for call in calls {
+            // The innermost function or method; a package-level declaration otherwise.
+            let callable = |k: lsp::SymbolKind| matches!(k, lsp::SymbolKind::FUNCTION | lsp::SymbolKind::METHOD);
+            let innermost = |pick: &dyn Fn(lsp::SymbolKind) -> bool| {
+                symbols
+                    .iter()
+                    .filter(|(_, kind, _, r, _)| pick(*kind) && contains(r, call))
+                    .min_by_key(|(_, _, _, r, _)| (r.end.line - r.start.line, r.end.col.saturating_sub(r.start.col)))
+            };
+            let Some((name, kind, detail, r, selection)) = innermost(&callable).or_else(|| innermost(&|_| true)) else {
+                continue;
+            };
+            match items.iter_mut().find(|i| i.range == *r && i.name == *name) {
+                Some(item) => item.from_ranges.push(*call),
+                None => items.push(HierarchyItem {
+                    name: name.clone(),
+                    kind: crate::convert::symbol_kind(*kind),
+                    detail: detail.clone(),
+                    path: path.to_path_buf().into(),
+                    uri: None,
+                    range: *r,
+                    selection_range: *selection,
+                    from_ranges: vec![*call],
+                }),
+            }
+        }
+        items
     }
 
     /// Opens `files` on `t` (read from disk) unless the user has them open;
