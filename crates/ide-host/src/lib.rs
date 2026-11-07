@@ -223,6 +223,7 @@ impl Host {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);
@@ -373,6 +374,7 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.plugin_diagnostics.close();
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }

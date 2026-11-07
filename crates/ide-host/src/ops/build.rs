@@ -488,15 +488,32 @@ pub async fn maven_exclude_dependency(
     .map_err(join_err)?
 }
 
+fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
+    let commands = ide_run::cmake_build_configs(configs, id)?;
+    let title = commands.last().map(|c| c.name.clone()).unwrap_or_default();
+    let mut steps = Vec::new();
+    for mut config in commands {
+        let cwd = ide_core::project_roots::resolve(root, config.cwd.as_deref().unwrap_or(Path::new("")));
+        ide_run::prepare_cmake(&config, &cwd)?;
+        if kind == BuildKind::Rebuild && config.args.first().is_some_and(|a| a == "--build") {
+            config.args.insert(2, "--clean-first".into());
+        }
+        steps.push(compile::BuildStep::cmake(&config.command, config.args, cwd, config.env));
+    }
+    Ok(compile::BuildPlan { system: compile::BuildSystem::CMake, title, steps })
+}
+
 /// Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
 /// module) / Build Artifacts, streaming the console and messages on `on_event`; cancellable
 /// with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 /// are cleared first; the new messages are published as `build` diagnostics.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_run(
     host: &Host,
     window: &str,
     kind: BuildKind,
     file: Option<std::path::PathBuf>,
+    cmake: Option<String>,
     request: RequestId,
     clear: Vec<std::path::PathBuf>,
     on_event: Channel<BuildEvent>,
@@ -515,7 +532,10 @@ pub async fn build_run(
                 items: Vec::new(),
             });
         }
-        let plan = if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
+        let plan = if let Some(id) = cmake {
+            let configs = super::run::project_configs(&root, &settings, &config_dir)?;
+            cmake_plan(&root, kind, &configs, &id)?
+        } else if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
@@ -612,6 +632,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
             &c.window,
             c.arg("kind")?,
             c.arg("file")?,
+            c.arg("cmake")?,
             c.arg("request")?,
             c.arg("clear")?,
             c.sender("onEvent")?,
@@ -623,6 +644,42 @@ pub(crate) fn register(d: &mut Dispatcher) {
 #[cfg(test)]
 mod build_tool_settings_tests {
     use super::*;
+
+    #[test]
+    fn cmake_builds_keep_target_configuration_environment_and_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let member = root.path().join("nested project");
+        std::fs::create_dir_all(&member).unwrap();
+        let config = |id: &str, args: &[&str]| -> ide_run::RunConfig {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"name":id,"kind":"cmake","command":"custom-cmake",
+                "args":args,"cwd":"nested project","env":{"PROFILE":"release"},
+                "detected":true,"isTest":false,"debugAdapter":null
+            }))
+            .unwrap()
+        };
+        let configure = config("configure", &["-S", ".", "-B", "release", "-G", "Ninja"]);
+        let mut build =
+            config("target", &["--build", "release", "--target", "hello", "--config", "Release", "-j", "8"]);
+        build.extras.before_launch.push(ide_run::BeforeLaunchTask { kind: "build".into(), target: "configure".into() });
+        let configs = [configure, build];
+        for kind in [BuildKind::Build, BuildKind::Rebuild] {
+            let plan = cmake_plan(root.path(), kind, &configs, "target").unwrap();
+            assert_eq!(plan.system, compile::BuildSystem::CMake);
+            assert_eq!(plan.steps.len(), 2);
+            assert_eq!(plan.steps[0].args, configs[0].args);
+            let mut args = configs[1].args.clone();
+            if kind == BuildKind::Rebuild {
+                args.insert(2, "--clean-first".into());
+            }
+            assert_eq!(plan.steps[1].args, args);
+            for step in plan.steps {
+                assert_eq!(step.program, "custom-cmake");
+                assert_eq!(step.cwd, member);
+                assert_eq!(step.env["PROFILE"], "release");
+            }
+        }
+    }
 
     #[test]
     fn builds_apply_the_same_explicit_toolchains_as_runs() {

@@ -377,39 +377,40 @@ mod imp {
         wit::fs::write_bytes(path, bytes).map_err(error)
     }
 
-    pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
+    pub fn diagnostic_to(d: &Diagnostic) -> wit::diagnostics::Diagnostic {
         use wit::diagnostics::{Diagnostic as D, RelatedInformation as R, Severity as S};
-        let items: Vec<D> = items
-            .iter()
-            .map(|d| D {
-                range: range_out(d.range),
-                severity: match d.severity {
-                    Severity::Error => S::Error,
-                    Severity::Warning => S::Warning,
-                    Severity::Info => S::Info,
-                    Severity::Hint => S::Hint,
-                },
-                message: d.message.clone(),
-                code: d.code.clone(),
-                source: d.source.clone(),
-                tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
-                    .into_iter()
-                    .filter(|(on, _)| *on)
-                    .map(|(_, tag)| tag.to_owned())
-                    .collect(),
-                related: d
-                    .related
-                    .iter()
-                    .map(|r| R {
-                        location: wit::types::Location {
-                            path: r.location.path.clone(),
-                            range: range_out(r.location.range),
-                        },
-                        message: r.message.clone(),
-                    })
-                    .collect(),
-            })
-            .collect();
+        D {
+            range: range_out(d.range),
+            severity: match d.severity {
+                Severity::Error => S::Error,
+                Severity::Warning => S::Warning,
+                Severity::Info => S::Info,
+                Severity::Hint => S::Hint,
+            },
+            message: d.message.clone(),
+            code: d.code.clone(),
+            source: d.source.clone(),
+            tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
+                .into_iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, tag)| tag.to_owned())
+                .collect(),
+            related: d
+                .related
+                .iter()
+                .map(|r| R {
+                    location: wit::types::Location {
+                        path: r.location.path.clone(),
+                        range: range_out(r.location.range),
+                    },
+                    message: r.message.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
+        let items: Vec<_> = items.iter().map(diagnostic_to).collect();
         wit::diagnostics::publish(path, &items).map_err(error)
     }
 
@@ -1140,4 +1141,10 @@ pub fn notify_with_actions(
     actions: &[NotificationAction],
 ) -> Result<(), Error> {
     imp::notify_with_actions(level, title, body, actions)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn __diagnostic_to(d: &Diagnostic) -> crate::bindings::openidea::plugin::diagnostics::Diagnostic {
+    imp::diagnostic_to(d)
 }
