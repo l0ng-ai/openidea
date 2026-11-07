@@ -1807,14 +1807,21 @@ fn project_structure_module_jdk_language_level_and_external_libraries() {
         },
     );
 
-    assert_eq!(crate::apply::module_jdk(root, root, &settings).map(|j| j.home), Some(jdk17));
-    assert_eq!(crate::apply::module_jdk(root, &root.join("service"), &settings).map(|j| j.home), Some(jdk21));
+    assert_eq!(crate::apply::module_jdk(root, root, &settings).map(|j| j.home), Some(jdk17.clone()));
+    assert_eq!(crate::apply::module_jdk(root, &root.join("service"), &settings).map(|j| j.home), Some(jdk21.clone()));
     assert_eq!(
         crate::apply::module_jdk(root, &root.join("nested/service"), &settings).map(|j| j.home),
         crate::apply::project_jdk(root, &settings).map(|j| j.home)
     );
     assert_eq!(crate::apply::effective_java_language_level(root, root, &settings), Some("8"));
     assert_eq!(crate::apply::effective_java_language_level(root, &root.join("service"), &settings), Some("21"));
+
+    // The same precedence in the other direction: module JDK 17 wins over project JDK 21.
+    let mut reverse = settings.clone();
+    reverse.languages.java.jdk = jdk21.to_string_lossy().into_owned();
+    reverse.project_structure.modules.get_mut("service").unwrap().jdk = jdk17.to_string_lossy().into_owned();
+    assert_eq!(crate::apply::module_jdk(root, root, &reverse).map(|j| j.home), Some(jdk21.clone()));
+    assert_eq!(crate::apply::module_jdk(root, &root.join("service"), &reverse).map(|j| j.home), Some(jdk17.clone()));
 
     let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
     crate::apply::configure_java_compiler_with_level(&mut cfg, root, &settings.inspections, Some("8"));
