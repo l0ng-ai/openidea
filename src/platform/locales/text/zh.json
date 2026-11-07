@@ -6445,6 +6445,7 @@
   "Reasoning": "思考过程",
   "Cannot copy the value": "无法复制该值",
   "The check could not run: {reason}": "检查无法运行：{reason}",
+  "Threads & Variables": "线程和变量",
   "Memory": "内存",
   "Refresh Memory View": "刷新内存视图",
   "Filter classes": "筛选类",

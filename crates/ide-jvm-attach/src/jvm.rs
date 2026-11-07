@@ -72,7 +72,7 @@ fn exe_path(pid: u32) -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsString::from_vec(buf)))
 }
 
-// JDK 8 and 11 were measured to hang while suspended (12–16 unmeasured).
+/// JDK 8 and 11 were measured to hang while suspended (12–16 unmeasured).
 pub fn histogram_safe_while_suspended(major: u32) -> bool {
     major >= 17
 }
