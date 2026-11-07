@@ -11,6 +11,7 @@ struct FakeAgent {
     calls: Mutex<Vec<String>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
+    auth_on_new: bool,
     /// Config options `session/new` reports after the model one (per-model efforts, say).
     extra_options: Mutex<Vec<Value>>,
 }
@@ -87,6 +88,11 @@ impl Handler for FakeAgent {
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         self.calls.lock().push(method.to_owned());
+        if (method == "session/new" && self.auth_on_new)
+            || (method == "session/prompt" && params.pointer("/prompt/0/text") == Some(&json!("auth")))
+        {
+            return Err((codes::INTERNAL_ERROR, "Authentication required".into()));
+        }
         let session = params.get("sessionId").and_then(Value::as_str).unwrap_or("s1").to_owned();
         match method {
             "initialize" => {
@@ -248,6 +254,49 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
         tokio::runtime::Handle::current(),
         connector,
     )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn authentication_failures_name_the_session_executable_at_start_and_during_prompts() {
+    for auth_on_new in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent { auth_on_new, ..Default::default() });
+        let mgr = manager(tmp.path(), agent);
+        let program = tmp.path().join("Agent Tools").join("renamed-cursor.cmd");
+        mgr.shared.providers.write().iter_mut().find(|s| s.id == "cursor").unwrap().command =
+            program.to_string_lossy().into_owned();
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("again"),
+                provider: "cursor".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        if !auth_on_new {
+            wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+            // A settings change must not redirect guidance for the already running process.
+            mgr.shared.providers.write().iter_mut().find(|s| s.id == "cursor").unwrap().command =
+                "different-cursor".into();
+            mgr.prompt(&task.id, text("auth"), false).await.unwrap();
+        }
+        wait_for(&mgr, &task.id, AgentStatus::Failed).await;
+        let entries = mgr.entries(&task.id, None).unwrap();
+        let error = entries
+            .iter()
+            .find_map(|e| match e {
+                AgentEntry::Error { message, .. } => Some(message),
+                _ => None,
+            })
+            .expect("authentication error");
+        assert!(error.starts_with("Cursor needs you to sign in. Run `"), "{error}");
+        assert!(error.contains(&*program.to_string_lossy()), "{error}");
+        assert!(error.ends_with(" login` in a terminal."), "{error}");
+        mgr.shutdown();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
