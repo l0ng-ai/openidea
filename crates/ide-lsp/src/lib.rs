@@ -517,7 +517,7 @@ impl LspManager {
         let Some(me) = self.me.upgrade() else { return };
         if !server.root.is_dir() {
             tracing::info!("{}: workspace root {} is gone, dropping", server.name, server.root.display());
-            server.begin_stop(&self.sink);
+            server.begin_stop(&self.sink, true);
             self.forget(std::slice::from_ref(server));
             return;
         }
@@ -540,7 +540,7 @@ impl LspManager {
             if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
-            tail.set_effective_config(cfg.clone());
+            tail.set_effective_config(generation, cfg.clone());
             let prepare = me.prepare_hook.read().clone();
             if !cancel.is_cancelled()
                 && me.launcher.available(&cfg, &tail.root)
@@ -549,7 +549,7 @@ impl LspManager {
                 prepare(&cfg, &tail.root, &cancel);
                 cfg = me.configured(&tail);
             }
-            tail.set_effective_config(cfg.clone());
+            tail.set_effective_config(generation, cfg.clone());
             let root = tail.root.clone();
             if let Some(message) = &cfg.launch_error {
                 // A missing binary still asks to be installed first.
@@ -559,14 +559,23 @@ impl LspManager {
             if !me.execution_allowed.load(Ordering::Acquire) || cancel.is_cancelled() {
                 return Err(LaunchError::Config("Project is in Restricted Mode".into()));
             }
-            me.launcher.launch_resolved(&cfg, &root, handler, Box::new(move |line| tail.push_stderr(line)), &cancel)
+            me.launcher.launch_resolved(
+                &cfg,
+                &root,
+                handler,
+                Box::new(move |line| tail.push_stderr(generation, line)),
+                &cancel,
+            )
         })
         .await
         .unwrap_or_else(|e| Err(LaunchError::Failed(e.to_string())));
 
         let peer = match launched {
             Ok((peer, binary)) => {
-                *server.resolved_binary.write() = binary;
+                if !server.set_resolved_binary(generation, binary) {
+                    peer.kill();
+                    return;
+                }
                 peer
             }
             Err(LaunchError::Missing) => {
@@ -2908,7 +2917,7 @@ impl LspManager {
                 && without_settings(&next) == without_settings(&current)
                 && !jdtls::source_paths_removed(&current, &next)
             {
-                s.set_effective_config(next);
+                s.set_effective_config(run.generation, next);
                 let params = json!({ "settings": handler::all_settings(&s.effective_config()) });
                 if let Err(e) = run.peer.notify("workspace/didChangeConfiguration", params) {
                     tracing::debug!("{}: didChangeConfiguration: {e}", s.name);
@@ -3099,12 +3108,7 @@ impl LspManager {
 
     /// Gracefully stops the current instance (`shutdown` + `exit`, then kill).
     async fn stop_instance(&self, server: &Arc<Server>, final_stop: bool) {
-        let Some(run) = server.begin_stop(&self.sink) else {
-            if final_stop {
-                server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
-            }
-            return;
-        };
+        let Some(run) = server.begin_stop(&self.sink, final_stop) else { return };
         let peer = run.peer.clone();
         // A server we connected to without starting it (an open Godot editor) is not
         // ours to shut down: only the connection closes.

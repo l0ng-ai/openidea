@@ -177,8 +177,20 @@ impl Server {
         config
     }
 
-    pub fn set_effective_config(&self, config: LanguageServerConfig) {
-        *self.effective.lock() = Some(config);
+    pub fn set_effective_config(&self, generation: u64, config: LanguageServerConfig) {
+        let st = self.state.lock();
+        if st.generation == generation && matches!(st.conn, Conn::Starting | Conn::Ready(_)) {
+            *self.effective.lock() = Some(config);
+        }
+    }
+
+    pub fn set_resolved_binary(&self, generation: u64, binary: Option<PathBuf>) -> bool {
+        let st = self.state.lock();
+        if st.generation != generation || !matches!(st.conn, Conn::Starting) {
+            return false;
+        }
+        *self.resolved_binary.write() = binary;
+        true
     }
 
     pub fn add_language(&self, language: &LanguageId) {
@@ -290,7 +302,7 @@ impl Server {
 
     /// Ready → Stopping, returning the instance to shut down. An in-flight
     /// start is abandoned instead.
-    pub fn begin_stop(&self, sink: &SharedSink) -> Option<Running> {
+    pub fn begin_stop(&self, sink: &SharedSink, final_stop: bool) -> Option<Running> {
         let mut st = self.state.lock();
         match std::mem::replace(&mut st.conn, Conn::Idle) {
             Conn::Ready(run) => {
@@ -310,6 +322,11 @@ impl Server {
             }
             other => {
                 st.conn = other;
+                if final_stop {
+                    self.queue_status(&mut st, ServerStatus::Stopped, None);
+                }
+                drop(st);
+                self.publish(sink);
                 None
             }
         }
@@ -401,11 +418,6 @@ impl Server {
 
     pub fn status_message(&self) -> Option<String> {
         self.status.lock().1.clone()
-    }
-
-    pub fn set_status(&self, sink: &SharedSink, status: ServerStatus, message: Option<String>) {
-        self.queue_status(&mut self.state.lock(), status, message);
-        self.publish(sink);
     }
 
     fn queue_status(&self, st: &mut State, status: ServerStatus, message: Option<String>) {
@@ -600,7 +612,11 @@ impl Server {
 
     // ---- bookkeeping ----
 
-    pub fn push_stderr(&self, line: String) {
+    pub fn push_stderr(&self, generation: u64, line: String) {
+        let st = self.state.lock();
+        if st.generation != generation {
+            return;
+        }
         let mut buf = self.stderr.lock();
         if buf.len() == STDERR_LINES {
             buf.pop_front();
@@ -824,7 +840,7 @@ mod tests {
         let s = server();
         let generation = s.begin_start().unwrap();
         let sink: SharedSink = Arc::new(|_: IdeEvent| {});
-        s.begin_stop(&sink); // abandons the start and invalidates its generation
+        s.begin_stop(&sink, false); // abandons the start and invalidates its generation
         assert!(!s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
         assert_eq!(s.status(), ServerStatus::Stopped);
     }
@@ -893,6 +909,52 @@ mod tests {
             assert_eq!(*s.phase.borrow(), Phase::Starting);
             assert_eq!(s.diagnostics_for(Path::new("new")).len(), 1);
         }
+    }
+
+    #[test]
+    fn a_start_keeps_its_cancel_token_when_publication_restarts_it() {
+        let s = Arc::new(server());
+        let generation = s.begin_start().unwrap();
+        let sink: SharedSink = {
+            let s = s.clone();
+            Arc::new(move |event: IdeEvent| {
+                if matches!(event, IdeEvent::LanguageServer { status: ServerStatus::Starting, .. })
+                    && s.state.lock().generation == generation
+                {
+                    let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+                    s.begin_stop(&sink, false);
+                    let next = s.begin_start().unwrap();
+                    assert!(s.starting_status(next, &sink).is_some());
+                }
+            })
+        };
+        let cancel = s.starting_status(generation, &sink).unwrap();
+        assert!(cancel.is_cancelled());
+        assert!(!s.start_token().is_cancelled());
+        assert!(s.starting_status(generation, &sink).is_none());
+        assert_eq!(*s.phase.borrow(), Phase::Starting);
+        assert_eq!(s.status(), ServerStatus::Starting);
+    }
+
+    #[test]
+    fn abandoned_start_cannot_replace_successor_launch_metadata() {
+        let s = server();
+        let old = s.begin_start().unwrap();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        s.begin_stop(&sink, false);
+        let next = s.begin_start().unwrap();
+        let mut config = s.config.clone();
+        config.command = "successor".into();
+        s.set_effective_config(next, config.clone());
+        assert!(s.set_resolved_binary(next, Some(PathBuf::from("successor"))));
+        s.push_stderr(next, "successor output".into());
+        config.command = "abandoned".into();
+        s.set_effective_config(old, config);
+        assert!(!s.set_resolved_binary(old, Some(PathBuf::from("abandoned"))));
+        s.push_stderr(old, "abandoned output".into());
+        assert_eq!(s.effective_config().command, "successor");
+        assert_eq!(*s.resolved_binary.read(), Some(PathBuf::from("successor")));
+        assert_eq!(s.stderr_tail(5), "successor output");
     }
 
     #[test]
