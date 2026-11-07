@@ -198,6 +198,7 @@
   "window.caption.minimize": "Minimize",
   "window.caption.maximize": "Maximize",
   "window.caption.restore": "Restore Down",
+  "window.caption.exitFullScreen": "Exit Full Screen",
   "window.caption.close": "Close",
   "menu.help.keymapReference": "Keymap Reference",
   "menu.help.showLog": "{os, select, macos {Show Log in Finder} windows {Show Log in Explorer} other {Show Log in Files}}",
