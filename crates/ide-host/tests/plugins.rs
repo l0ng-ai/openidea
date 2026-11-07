@@ -1189,6 +1189,25 @@ fn untrusted_or_unconfirmed_project_plugins_never_run() {
     assert!(f.host.reload("misbehave").is_err());
     assert!(f.host.set_enabled("misbehave", true).is_err());
     assert!(f.run("misbehave", "echo", None).is_err());
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "prompts".into(),
+    };
+    let action = ide_plugin::CodeAction {
+        title: "Ask input".into(),
+        kind: None,
+        preferred: false,
+        edits: Vec::new(),
+        operations: Vec::new(),
+        open: None,
+        data: Some("input".into()),
+        file_action: false,
+    };
+    let error = f.host.resolve_code_action("misbehave", &doc, action, f.inv()).unwrap_err();
+    assert!(error.message.contains("Restricted Mode"), "{}", error.message);
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
     f.host.sync_project(&f.project);
     assert!(f.host.list(Some(&f.project)).plugins.is_empty());
 }
@@ -2349,6 +2368,86 @@ fn view_item_menus_name_a_declared_view() {
     assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
 }
 
+#[test]
+fn conditional_and_grouped_views_need_api_1_3() {
+    for field in ["group = \"spring\"", "when = \"workspaceContains:pom.xml || plugin.hello.ready\""] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let old =
+            hello_variant(tmp.path(), |m| m.replace("location = \"right\"", &format!("location = \"right\"\n{field}")));
+        let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+        assert!(err.message.contains("new in plugin API 1.3"), "{err:?}");
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |m| {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"").replace(
+            "location = \"right\"",
+            "location = \"right\"\ngroup = \"spring\"\nwhen = \"workspaceContains:pom.xml || plugin.hello.ready\"",
+        )
+    });
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Inactive, "declaring views must not activate code");
+    let view = f.host.ui_items("views").remove(0);
+    assert_eq!(view.decl["group"], "spring");
+    assert_eq!(view.decl["when"], "workspaceContains:pom.xml || plugin.hello.ready");
+    f.host.set_enabled("hello", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+}
+
+#[test]
+fn grouped_views_fixture_renders_and_scopes_context_and_reveal() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("grouped-views"));
+    assert_eq!(info.status, PluginStatus::Inactive, "views stay lazy");
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let views = f.host.ui_items("views");
+    assert_eq!(views.len(), 3);
+    assert_eq!(views[0].decl["group"], "demo");
+    assert_eq!(views[1].decl["when"], "workspaceContains:grouped-views.txt");
+    f.take_events();
+    f.run("grouped-views", "show", None).unwrap();
+    assert!(f.take_events().iter().any(|(client, event)| matches!(
+        event,
+        PluginEvent::ContextChanged { plugin_id, key, value }
+            if client.as_deref() == Some("main") && plugin_id == "grouped-views"
+                && key == "ready" && value.as_deref() == Some("true")
+    )));
+    assert!(f.host.context_keys(Some("other")).is_empty());
+    for view in ["overview", "files", "legacy"] {
+        let rendered = f.host.render_view("grouped-views", view, None, f.inv()).unwrap();
+        assert!(matches!(rendered.body, ide_plugin::ViewBody::Message(_)));
+        f.run("grouped-views", "reveal", Some(view)).unwrap();
+        assert!(f.take_events().iter().any(|(client, event)| matches!(
+            event,
+            PluginEvent::RevealView { plugin_id, view: target }
+                if client.as_deref() == Some("main") && plugin_id == "grouped-views" && target == view
+        )));
+    }
+    assert!(f.run("grouped-views", "reveal", Some("plugin.hello.greetings")).is_err());
+    f.host.set_enabled("grouped-views", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+    assert!(f.host.context_keys(Some("main")).is_empty());
+}
+
+#[test]
+fn view_conditions_and_group_ids_are_validated() {
+    for (field, message) in [
+        ("group = \"\"", "invalid view group"),
+        ("group = \"../other\"", "invalid view group"),
+        ("when = \"ready && (\"", "when"),
+    ] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |m| {
+            m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = \"right\"\n{field}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{field}: {err:?}");
+    }
+}
+
 /// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.
@@ -2908,6 +3007,81 @@ path = "templates/new.draw"
     assert!(f.host.web_page("web-demo", "draw").is_err());
 }
 
+#[test]
+fn file_templates_fixture_installs_without_write_capabilities() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("file-templates"));
+    assert!(info.capabilities.is_empty());
+    let templates = f.host.ui_items("fileTemplates");
+    assert_eq!(templates.len(), 4);
+    let template = |id: &str| templates.iter().find(|t| t.decl["id"] == id).unwrap();
+    assert_eq!(template("dockerignore").decl["fileName"], ".dockerignore");
+    assert_eq!(template("attributes").decl["variables"].as_array().unwrap().len(), 2);
+    assert!(template("repository").decl["body"].as_str().unwrap().contains("$PACKAGE$"));
+    assert!(f.installed("file-templates").join("templates/repository.txt").is_file());
+    assert_eq!(f.run("file-templates", "ping", None).unwrap().as_deref(), Some("File templates ready"));
+    f.host.set_enabled("file-templates", false).unwrap();
+    assert!(f.host.ui_items("fileTemplates").is_empty());
+}
+
+#[test]
+fn file_templates_api_13_names_and_variables() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("template-demo");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("body.txt"), "$ENTITY$ $PACKAGE$\n").unwrap();
+    let install = |api: &str, fields: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "template-demo"
+name = "Templates"
+version = "1.0.0"
+engines.openidea = "{api}"
+[[contributes.fileTemplates]]
+id = "template"
+name = "Template"
+path = "body.txt"
+{fields}
+"#
+            ),
+        )
+        .unwrap();
+        f.host.install_from_dir(&pkg, &Consent::all())
+    };
+    for fields in [r#"fileName = ".dockerignore""#, "extension = \"java\"\nvariables = []"] {
+        let err = install("^1.2", fields).unwrap_err().message;
+        assert!(err.contains("1.3"), "{err}");
+    }
+    for name in ["", ".", "..", "../escape", "a/b", r"a\b", "/absolute", "C:evil", "a?", " a", "a.", "NUL.txt", "COM1"]
+    {
+        let fields = format!("fileName = {}", serde_json::to_string(name).unwrap());
+        assert!(install("^1.3", &fields).is_err(), "accepted {name:?}");
+    }
+    for vars in [
+        r#"[{ name = "", prompt = "Entity" }]"#,
+        r#"[{ name = "1bad", prompt = "Entity" }]"#,
+        r#"[{ name = "bad-name", prompt = "Entity" }]"#,
+        r#"[{ name = "PACKAGE", prompt = "Entity" }]"#,
+        r#"[{ name = "ENTITY", prompt = "" }]"#,
+        r#"[{ name = "ENTITY", prompt = "Entity" }, { name = "ENTITY", prompt = "Again" }]"#,
+    ] {
+        assert!(install("^1.3", &format!("extension = \"java\"\nvariables = {vars}")).is_err(), "accepted {vars}");
+    }
+    install(
+        "^1.3",
+        r#"fileName = ".dockerignore"
+variables = [{ name = "ENTITY", prompt = "Entity class" }]"#,
+    )
+    .unwrap();
+    let items = f.host.ui_items("fileTemplates");
+    assert_eq!(items[0].decl["fileName"], ".dockerignore");
+    assert_eq!(items[0].decl["extension"], "");
+    assert_eq!(items[0].decl["variables"][0]["prompt"], "Entity class");
+    assert_eq!(items[0].decl["body"], "$ENTITY$ $PACKAGE$\n");
+}
+
 /// A view needs a page or code to render it; a page's directory can't be the package itself.
 #[test]
 fn web_view_declarations_are_checked() {
@@ -3223,10 +3397,10 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let actions = f.host.provide_code_actions(&doc("lazy"), ide_core::Range::default());
     let (plugin, action) = actions.into_iter().next().expect("offered");
     assert!(action.edits.is_empty() && action.data.as_deref() == Some("fix"));
-    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone()).unwrap();
+    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone(), f.inv()).unwrap();
     assert_eq!(resolved.edits[0].1[0].new_text, "fixed ");
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
-    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
+    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign, f.inv()).is_err());
 
     // File operations come from the `file-actions` export, next to the providers' own.
     let mut actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default()).into_iter();
@@ -3245,7 +3419,7 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     assert_eq!(action.open, Some(dir.join("created.txt")));
     // Listed with `data` only: `resolve` on the same export computes its operations.
     assert!(later.file_action && later.operations.is_empty() && later.data.is_some());
-    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later).unwrap();
+    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later, f.inv()).unwrap();
     assert_eq!(
         resolved.operations,
         vec![ide_plugin::FileOperation::Create { path: dir.join("later.txt"), text: "later".into(), overwrite: false }]
@@ -3263,6 +3437,185 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
+}
+
+fn interactive_actions_fixture() -> (Fixture, ide_plugin::ProviderDocument) {
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    let pkg = f._tmp.path().join("interactive-actions");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml"))
+        .unwrap()
+        .replace("required = [\"project.read\"]", "required = [\"project.read\", \"clipboard\"]");
+    std::fs::write(pkg.join("plugin.toml"), format!(
+        "{manifest}\n[[contributes.providers]]\nkinds = [\"completion\", \"code-actions\"]\nlanguages = [\"text\"]\n"
+    )).unwrap();
+    f.install(&pkg);
+    f.host.run_command("misbehave", "echo", None, f.inv()).unwrap();
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "prompts".into(),
+    };
+    (f, doc)
+}
+
+fn action_prompt(f: &Fixture) -> (String, ide_plugin::Prompt) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some((client, id, prompt)) = f.take_events().into_iter().find_map(|(client, event)| match event {
+            PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+            _ => None,
+        }) {
+            assert_eq!(client.as_deref(), Some("editor-window"));
+            return (id, prompt);
+        }
+        assert!(Instant::now() < deadline, "code-action resolution never asked");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn action_invocation() -> Invocation {
+    Invocation { client: Some("editor-window".into()), ..Default::default() }
+}
+
+#[test]
+fn code_action_resolution_prompts_in_the_editor_window_under_the_command_budget() {
+    use ide_plugin::Prompt;
+    let (f, doc) = interactive_actions_fixture();
+    let actions = f.host.provide_code_actions(&doc, ide_core::Range::default());
+    assert_eq!(actions.len(), 10);
+    for (kind, answer, expected) in [
+        ("pick", vec!["b"], "b"),
+        ("pick-many", vec!["a", "b"], "a,b"),
+        ("input", vec!["Service😀"], "Service😀"),
+        ("confirm", vec![], "confirmed"),
+    ] {
+        let action = actions.iter().find(|(_, a)| a.data.as_deref() == Some(kind)).unwrap().1.clone();
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let (id, prompt) = action_prompt(&f);
+            assert!(match kind {
+                "pick" => matches!(prompt, Prompt::QuickPick { multiple: false, .. }),
+                "pick-many" => matches!(prompt, Prompt::QuickPick { multiple: true, .. }),
+                "input" => matches!(prompt, Prompt::Input { multiline: false, .. }),
+                _ => matches!(prompt, Prompt::Confirm { .. }),
+            });
+            // More than the command budget; waiting for the user is excluded.
+            std::thread::sleep(Duration::from_millis(650));
+            assert!(f.host.answer_prompt(&id, Some(answer.iter().map(|s| (*s).into()).collect())));
+            let resolved = running.join().unwrap().unwrap();
+            assert_eq!(resolved.edits[0].1[0].new_text, expected);
+        });
+    }
+    for kind in ["input-multiline", "reveal", "open-url", "clipboard", "pick-directory", "open-project"] {
+        let action = actions.iter().find(|(_, a)| a.data.as_deref() == Some(kind)).unwrap().1.clone();
+        let err = std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let mut prompted = false;
+            while !running.is_finished() {
+                for (_, event) in f.take_events() {
+                    if let PluginEvent::PromptRequested { prompt_id, .. } = event {
+                        prompted = true;
+                        f.host.answer_prompt(&prompt_id, None);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let result = running.join().unwrap();
+            assert!(!prompted, "{kind} must remain restricted to commands and events");
+            result.unwrap_err()
+        });
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "{kind}: {}", err.message);
+    }
+    let doc = ide_plugin::ProviderDocument { text: "prompt-provider".into(), ..doc };
+    assert!(eventually(|| !f.host.provide_completion(&doc, ide_core::Pos::new(0, 0), None).is_empty()));
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+}
+
+#[test]
+fn code_action_prompts_dismiss_cancel_and_close_without_edits_or_hanging() {
+    for (how, kind) in [
+        ("dismiss", "pick"),
+        ("dismiss", "pick-many"),
+        ("dismiss", "input"),
+        ("dismiss", "confirm"),
+        ("disable", "pick"),
+        ("close", "pick"),
+        ("close-reopen", "pick"),
+        ("no-window", "pick"),
+    ] {
+        let (f, doc) = interactive_actions_fixture();
+        let action = f
+            .host
+            .provide_code_actions(&doc, ide_core::Range::default())
+            .into_iter()
+            .find(|(_, action)| action.data.as_deref() == Some(kind))
+            .unwrap()
+            .1;
+        if how == "no-window" {
+            assert!(f.host.resolve_code_action("misbehave", &doc, action, Invocation::default()).is_err());
+            assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+            continue;
+        }
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let (id, _) = action_prompt(&f);
+            let started = Instant::now();
+            match how {
+                "dismiss" => {
+                    assert!(f.host.answer_prompt(&id, None));
+                }
+                "disable" => {
+                    f.host.set_enabled("misbehave", false).unwrap();
+                }
+                "close" => f.host.forget_client("editor-window"),
+                "close-reopen" => {
+                    f.host.forget_client("editor-window");
+                    f.host.reopen_client("editor-window");
+                }
+                _ => unreachable!(),
+            }
+            assert!(running.join().unwrap().is_err());
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(!f.host.answer_prompt(&id, Some(vec!["late".into()])));
+        });
+        assert!(!f.project.join("a.txt").exists(), "resolution must only return edits");
+        if how == "close-reopen" {
+            let action = f.host.provide_code_actions(&doc, ide_core::Range::default()).remove(0).1;
+            std::thread::scope(|scope| {
+                let running =
+                    scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+                let (id, _) = action_prompt(&f);
+                assert!(f.host.answer_prompt(&id, Some(vec!["b".into()])));
+                assert_eq!(running.join().unwrap().unwrap().edits[0].1[0].new_text, "b");
+            });
+        }
+    }
+}
+
+#[test]
+fn file_action_resolution_can_ask_before_returning_resource_operations() {
+    let (f, doc) = interactive_actions_fixture();
+    let doc = ide_plugin::ProviderDocument { text: "prompt-files".into(), ..doc };
+    let action = f.host.provide_code_actions(&doc, ide_core::Range::default()).remove(0).1;
+    assert!(action.file_action && action.operations.is_empty());
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+        let (id, _) = action_prompt(&f);
+        assert!(f.host.answer_prompt(&id, Some(vec!["Service".into()])));
+        let resolved = running.join().unwrap().unwrap();
+        assert_eq!(
+            resolved.operations,
+            vec![ide_plugin::FileOperation::Create {
+                path: f.project.join("Service.txt"),
+                text: "Service".into(),
+                overwrite: false,
+            }]
+        );
+        assert_eq!(resolved.open, Some(f.project.join("Service.txt")));
+        assert!(!f.project.join("Service.txt").exists(), "resolution does not apply the edit");
+    });
 }
 
 /// `hello` as a services view, which needs API 1.3.

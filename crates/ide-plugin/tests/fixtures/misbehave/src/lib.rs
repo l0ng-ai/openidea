@@ -229,9 +229,46 @@ impl syntax_provider::Guest for Misbehave {
     }
 }
 
+fn action_answer(kind: &str) -> Result<String, types::Error> {
+    use openidea::plugin::{ui, views};
+    let items = vec![
+        ui::PickItem { key: "a".into(), label: "Alpha".into(), description: None },
+        ui::PickItem { key: "b".into(), label: "Beta".into(), description: None },
+    ];
+    let answer = match kind {
+        "pick" => ui::pick("Choose translation file", &items)?,
+        "pick-many" => ui::pick_many("Choose services", &items)?.map(|keys| keys.join(",")),
+        "input" => ui::input("Service name", Some("Service"))?,
+        "confirm" => ui::confirm("Rewrite", "Apply this rewrite?")?.then(|| "confirmed".into()),
+        "input-multiline" => ui::input_multiline("Not allowed", None)?,
+        "reveal" => {
+            views::reveal("missing")?;
+            None
+        }
+        "open-url" => {
+            ui::open_url("https://example.com")?;
+            None
+        }
+        "clipboard" => {
+            ui::copy_to_clipboard("not allowed")?;
+            None
+        }
+        "pick-directory" => ui::pick_directory("Not allowed", None)?,
+        "open-project" => {
+            openidea::plugin::workspace::open_project("/not-allowed", false)?;
+            None
+        }
+        _ => return Err(types::Error::Invalid("unknown prompt".into())),
+    };
+    answer.ok_or(types::Error::Cancelled)
+}
+
 /// Completion: one item, labelled with the document's path, after [`behave`].
 impl providers::Guest for Misbehave {
     fn completion(doc: Document, _at: types::Position, _trigger: Option<String>) -> Vec<CompletionItem> {
+        if doc.text == "prompt-provider" {
+            assert!(matches!(action_answer("input"), Err(types::Error::Invalid(_))));
+        }
         behave(&doc.text);
         // `rich`: a snippet that also adds an import.
         let rich = doc.text == "rich";
@@ -260,6 +297,29 @@ impl providers::Guest for Misbehave {
 
     /// `lazy`: one action whose edits come from `resolve-code-action`.
     fn code_actions(doc: Document, _selection: types::Range) -> Vec<CodeAction> {
+        if doc.text == "prompts" {
+            return [
+                "pick",
+                "pick-many",
+                "input",
+                "confirm",
+                "input-multiline",
+                "reveal",
+                "open-url",
+                "clipboard",
+                "pick-directory",
+                "open-project",
+            ]
+            .into_iter()
+            .map(|kind| CodeAction {
+                title: format!("Ask {kind}"),
+                kind: Some("quickfix".into()),
+                preferred: false,
+                edits: Vec::new(),
+                data: Some(kind.into()),
+            })
+            .collect();
+        }
         if doc.text != "lazy" {
             return Vec::new();
         }
@@ -273,6 +333,19 @@ impl providers::Guest for Misbehave {
     }
 
     fn resolve_code_action(doc: Document, action: CodeAction) -> Result<CodeAction, types::Error> {
+        if doc.text == "prompts" {
+            let kind = action.data.as_deref().unwrap_or_default();
+            let answer = action_answer(kind)?;
+            // Longer than the 50 ms provider budget, within the command budget.
+            behave("sleep:80");
+            let start = types::Position { line: 0, character: 0 };
+            let edit = types::TextEdit { range: types::Range { start, end: start }, text: answer };
+            return Ok(CodeAction {
+                edits: vec![FileEdit { path: doc.path, edits: vec![edit] }],
+                data: None,
+                ..action
+            });
+        }
         if action.data.as_deref() != Some("fix") {
             return Err(types::Error::Invalid("not one of mine".into()));
         }
@@ -298,6 +371,17 @@ impl exports::openidea::plugin::file_actions::Guest for Misbehave {
         _selection: types::Range,
     ) -> Vec<exports::openidea::plugin::file_actions::FileAction> {
         use exports::openidea::plugin::file_actions::{CreateFile, DeleteFile, FileAction, FileOperation, RenameFile};
+        if doc.text == "prompt-files" {
+            return vec![FileAction {
+                title: "Create a service".into(),
+                kind: Some("quickfix".into()),
+                preferred: false,
+                operations: Vec::new(),
+                edits: Vec::new(),
+                open: None,
+                data: Some("input".into()),
+            }];
+        }
         if doc.text != "files" {
             return Vec::new();
         }
@@ -336,10 +420,25 @@ impl exports::openidea::plugin::file_actions::Guest for Misbehave {
     }
 
     fn resolve(
-        _doc: exports::openidea::plugin::file_actions::Document,
+        doc: exports::openidea::plugin::file_actions::Document,
         action: exports::openidea::plugin::file_actions::FileAction,
     ) -> Result<exports::openidea::plugin::file_actions::FileAction, types::Error> {
         use exports::openidea::plugin::file_actions::{CreateFile, FileOperation};
+        if doc.text == "prompt-files" {
+            let name = action_answer("input")?;
+            let dir = doc.path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            let path = format!("{dir}/{name}.txt");
+            return Ok(exports::openidea::plugin::file_actions::FileAction {
+                operations: vec![FileOperation::Create(CreateFile {
+                    path: path.clone(),
+                    text: name,
+                    overwrite: false,
+                })],
+                open: Some(path),
+                data: None,
+                ..action
+            });
+        }
         let dir = action.data.clone().ok_or_else(|| types::Error::Invalid("no data".into()))?;
         let operations = vec![FileOperation::Create(CreateFile {
             path: format!("{dir}/later.txt"),

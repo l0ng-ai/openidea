@@ -270,8 +270,16 @@ impl StoreData {
     /// Asks the user and waits; the wait doesn't count against the call's
     /// wall-clock budget.
     fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
-        self.require_interactive()?;
-        let client = self.invocation.client.clone();
+        let client = match (&prompt, &self.action_prompt_client) {
+            (
+                Prompt::QuickPick { .. } | Prompt::Input { multiline: false, .. } | Prompt::Confirm { .. },
+                Some(client),
+            ) => Some(client.clone()),
+            _ => {
+                self.require_interactive()?;
+                self.invocation.client.clone()
+            }
+        };
         let started = Instant::now();
         let answer = self.host.ask(client.as_deref(), prompt, &self.cancel.token());
         let waited = started.elapsed();
@@ -303,7 +311,7 @@ impl StoreData {
         self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
     }
 
-    /// Dialogs belong to commands and events; rendering and providers have no one to ask.
+    /// APIs reserved for commands and events exclude code-action resolution.
     fn require_interactive(&self) -> Result<(), wit::Error> {
         if self.interactive {
             return Ok(());

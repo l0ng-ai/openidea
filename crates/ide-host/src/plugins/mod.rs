@@ -1365,8 +1365,8 @@ impl PluginHost {
         self.shared.reopen_client(label);
     }
 
-    /// Window `label` closed: drops its context keys and queued events, and ignores
-    /// context writes of commands still running for it.
+    /// Window `label` closed: cancels its prompts, drops its context keys and queued
+    /// events, and ignores context writes of commands still running for it.
     pub fn forget_client(&self, label: &str) {
         self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
         self.shared.forget_client(label);
