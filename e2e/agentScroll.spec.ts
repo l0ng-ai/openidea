@@ -105,7 +105,7 @@ for (const selected of [false, true]) {
       expect(result.text).toContain("Reply 79");
       expect(result.after).toBe(result.text);
       await stream.focus();
-      await page.keyboard.press("Meta+c");
+      await page.keyboard.press("ControlOrMeta+c");
       expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(result.text);
       await page.evaluate(() => window.getSelection()!.removeAllRanges());
     }

@@ -272,7 +272,7 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(selected).toContain("Hi Bob!");
   expect(selected).toContain("What would you like me to proceed with?");
   expect(selected).not.toMatch(/AM|PM|5s|Reasoning|Requesting task context/);
-  await page.keyboard.press("Meta+c");
+  await page.keyboard.press("ControlOrMeta+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
   await stream.locator("[class*='_thought_'] > summary").click();
   await expect(stream.getByText("Requesting task context", { exact: true })).toBeVisible();
@@ -328,7 +328,7 @@ test("selects through code blocks and tables while keeping copy controls outside
   expect(selected).toContain(tree);
   expect(selected).toContain("程序入口");
   expect(selected).toContain(flow);
-  await page.keyboard.press("Meta+c");
+  await page.keyboard.press("ControlOrMeta+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
   await page.evaluate(() => window.getSelection()!.removeAllRanges());
   const copies = reply.getByRole("button", { name: "Copy Code", exact: true });
