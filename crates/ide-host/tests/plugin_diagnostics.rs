@@ -311,6 +311,43 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
     assert!(latest(&events, "elsewhere", project_source).is_none());
     plugins.restrict_project(&root);
     assert!(latest(&events, "left", project_source).unwrap().is_empty());
+    // A completed answer may still be waiting for a sibling when its plugin crashes.
+    let sibling = root.join("slow-sibling");
+    std::fs::create_dir_all(sibling.join("dist")).unwrap();
+    std::fs::copy(fixture().join("dist/plugin.wasm"), sibling.join("dist/plugin.wasm")).unwrap();
+    let manifest = std::fs::read_to_string(fixture().join("plugin.toml")).unwrap();
+    std::fs::write(
+        sibling.join("plugin.toml"),
+        manifest.replace(ID, "test.slow").replace("[\"text\", \"plaintext\"]", "[\"plaintext\"]"),
+    )
+    .unwrap();
+    plugins.install_from_dir(&sibling, &Consent::all()).unwrap();
+    plugins.run_command("test.slow", "calls", None, Invocation::default()).unwrap();
+    let calls = plugins.run_command(ID, "calls", None, Invocation::default()).unwrap();
+    events.lock().clear();
+    replace(&host, "left", &reopened, "BAD completed before crash");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let waiter = {
+        let plugins = plugins.clone();
+        std::thread::spawn(move || plugins.run_command("test.slow", "wait", None, Invocation::default()))
+    };
+    let started = Instant::now();
+    while plugins.run_command(ID, "calls", None, Invocation::default()).unwrap() == calls {
+        assert!(started.elapsed() < Duration::from_secs(5));
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        latest(&events, "left", SOURCE).is_none_or(|items| items.is_empty()),
+        "the sibling still holds the result: {:?}",
+        latest(&events, "left", SOURCE)
+    );
+    assert!(plugins.provide_diagnostics(&doc(&root, "text", "panic"), &CancellationToken::new()).is_empty());
+    waiter.join().unwrap().unwrap();
+    wait_for_source(&events, "left", "plugin-provider:test.slow", |items| !items.is_empty()).await;
+    assert!(
+        latest(&events, "left", SOURCE).is_none_or(|items| items.is_empty()),
+        "a crash invalidates completed answers"
+    );
     ops::doc::close(&host, "left", reopened.id).unwrap();
     host.shutdown().await;
     set_editor_providers(None);

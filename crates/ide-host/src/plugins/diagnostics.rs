@@ -23,6 +23,7 @@ struct Document {
 pub(super) struct State {
     closed: bool,
     documents: HashMap<DocId, Document>,
+    generations: HashMap<String, u64>,
 }
 
 /// One incarnation of one project's documents, shared by all its editors.
@@ -93,6 +94,7 @@ impl Diagnostics {
         let root = self.root.clone();
         let (mut snapshot, cancel, sink, documents) =
             (doc.snapshot.clone(), doc.cancel.clone(), self.sink.clone(), self.documents.clone());
+        let lifecycle_generations = state.generations.clone();
         self.runtime.spawn(async move {
             tokio::time::sleep(DEBOUNCE).await;
             if cancel.is_cancelled() || weak.strong_count() == 0 {
@@ -122,16 +124,17 @@ impl Diagnostics {
                 if state.closed || cancel.is_cancelled() {
                     return;
                 }
-                let Some(doc) = state.documents.get_mut(&id) else { return };
-                if doc.snapshot.version != snapshot.version || doc.snapshot.path != snapshot.path {
-                    return;
-                }
                 let matching: HashSet<_> = host
                     .diagnostic_plugins(Some(&root), &snapshot.language)
                     .into_iter()
                     .map(|p| p.id().to_owned())
+                    .filter(|p| lifecycle_generations.get(p) == state.generations.get(p))
                     .collect();
                 let latest = host.providers.diagnostic_generations(&snapshot.language);
+                let Some(doc) = state.documents.get_mut(&id) else { return };
+                if doc.snapshot.version != snapshot.version || doc.snapshot.path != snapshot.path {
+                    return;
+                }
                 let mut current = HashSet::new();
                 for (plugin, items) in results {
                     if !matching.contains(&plugin)
@@ -225,6 +228,8 @@ impl PluginHost {
         for (state, sink) in projects {
             if let Some(state) = state.upgrade() {
                 let mut state = state.lock();
+                // A completed answer can still be waiting for another provider.
+                *state.generations.entry(plugin.to_owned()).or_default() += 1;
                 for doc in state.documents.values_mut() {
                     if doc.sources.remove(plugin) {
                         sink.emit(IdeEvent::Diagnostics {

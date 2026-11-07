@@ -84,12 +84,12 @@ impl Providers {
         let mut seen = HashSet::new();
         items
             .iter()
-            .filter_map(|(seq, plugin, kinds, languages)| {
-                (kinds.contains(&kind)
+            .filter(|(_, plugin, kinds, languages)| {
+                kinds.contains(&kind)
                     && languages.iter().any(|l| l == "*" || l == language)
-                    && seen.insert(plugin.as_str()))
-                .then(|| (plugin.clone(), *seq))
+                    && seen.insert(plugin.as_str())
             })
+            .map(|(seq, plugin, ..)| (plugin.clone(), *seq))
             .collect()
     }
 
