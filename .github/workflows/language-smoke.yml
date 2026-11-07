@@ -111,6 +111,8 @@ jobs:
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
       - if: matrix.language == 'java'
+        run: cargo test --locked -p ide-lsp --test real_servers -- --ignored --exact lombok_generated_members_appear_in_document_symbols
+      - if: matrix.language == 'java'
         run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk
       - if: matrix.language == 'kotlin'
         run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact gradle_sync
