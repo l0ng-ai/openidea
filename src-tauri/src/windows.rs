@@ -112,7 +112,7 @@ pub struct FilePosition {
     pub column: u32,
 }
 
-/// A project folder on an SSH host or in a WSL distribution.
+/// A project folder on an SSH host, in a WSL distribution or in a dev container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteLaunch {
@@ -569,6 +569,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -817,7 +819,7 @@ pub enum Holds {
         distro: String,
         path: String,
     },
-    /// An SSH remote project.
+    /// An SSH or dev container remote project.
     Other,
 }
 
@@ -825,7 +827,7 @@ impl Holds {
     fn of_remote(remote: &RemoteLaunch) -> Self {
         match &remote.target {
             RemoteTarget::Wsl { distro } => Holds::Wsl { distro: distro.clone(), path: remote.path.clone() },
-            RemoteTarget::Ssh { .. } => Holds::Other,
+            RemoteTarget::Ssh { .. } | RemoteTarget::DevContainer { .. } => Holds::Other,
         }
     }
 
@@ -1237,6 +1239,8 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);

@@ -294,6 +294,26 @@ pub struct RepositoryStatus {
     pub changed_files: u32,
 }
 
+/// What a path inside a project is, as [`crate::host::Project::stat`] reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileKind {
+    File,
+    Directory,
+    Symlink,
+    #[default]
+    Other,
+}
+
+/// Metadata of a path inside a project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileStat {
+    pub kind: FileKind,
+    /// Bytes, for a file.
+    pub size: u64,
+    /// Seconds since the Unix epoch; `None` when the file system does not track it.
+    pub modified: Option<u64>,
+}
+
 /// A file the commit being prepared changes ([`crate::host::pending_commit`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitChange {
@@ -443,5 +463,24 @@ mod tests {
         assert_eq!(ActionSource::parse("pen"), ActionSource::Other, "a source of a newer IDE");
         let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
         assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
+    }
+}
+
+/// A notification button invoking a command declared by this plugin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
+}
+impl NotificationAction {
+    /// A button labelled `label`, invoking the plugin command `command`.
+    pub fn new(label: impl Into<String>, command: impl Into<String>) -> Self {
+        Self { label: label.into(), command: command.into(), argument: None }
+    }
+    /// Passes this text to the command when selected.
+    pub fn argument(mut self, argument: impl Into<String>) -> Self {
+        self.argument = Some(argument.into());
+        self
     }
 }

@@ -17,12 +17,15 @@
 
 mod api;
 pub mod commit;
+pub mod endpoints;
+mod event_paths;
 mod hover;
 mod icon_extensions;
 mod icon_patterns;
 mod icon_settings;
 mod icons;
 pub mod index_ops;
+mod inlay_hints;
 mod install;
 pub mod intellij;
 mod market;
@@ -44,6 +47,7 @@ pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
 };
+pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
     read_url as read_market_url, resolve as resolve_market_href,
@@ -321,6 +325,7 @@ pub struct PluginHost {
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
+    endpoints: Mutex<endpoints::Endpoints>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -410,6 +415,7 @@ impl PluginHost {
             run_detectors,
             providers,
             navigation: Mutex::default(),
+            endpoints: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -698,6 +704,15 @@ impl PluginHost {
         Ok(self.ui.assets_with_prefix(id, prefix).into_iter().map(|(k, v)| (k, v.to_string())).collect())
     }
 
+    /// The UI language windows run in, as `locale()` reports it to plugin code.
+    pub fn set_ui_locale(&self, tag: &str) {
+        *self.shared.locale.write() = tag.to_owned();
+    }
+
+    pub fn ui_locale(&self) -> String {
+        self.shared.locale.read().clone()
+    }
+
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
@@ -902,6 +917,7 @@ impl PluginHost {
                 level: ide_plugin::NotificationLevel::Warning,
                 title: format!("{name} update rolled back"),
                 body: message.clone(),
+                actions: Vec::new(),
             },
         );
         self.changed();
@@ -1435,7 +1451,7 @@ impl PluginHost {
         let mut out = BTreeSet::new();
         for p in self.plugins.read().values() {
             for kind in EventKind::ALL {
-                if self.wants(p, kind, subs.get(p.id())) {
+                if self.wants(p, kind, subs.kinds.get(p.id())) {
                     out.insert(kind);
                 }
             }
@@ -1468,7 +1484,8 @@ impl PluginHost {
         let mut queues = self.queues.lock();
         for p in plugins {
             let wanted: Vec<WorkbenchEvent> =
-                events.iter().filter(|e| self.wants(&p, e.kind(), subs.get(p.id()))).cloned().collect();
+                events.iter().filter(|e| self.wants(&p, e.kind(), subs.kinds.get(p.id()))).cloned().collect();
+            let wanted = self.filter_path_events(&p, client, &wanted, &subs);
             if wanted.is_empty() {
                 continue;
             }
@@ -1548,6 +1565,18 @@ impl PluginHost {
     /// Returns whether the plugin was activated.
     fn deliver(&self, id: &str, client: Option<String>, events: Vec<WorkbenchEvent>) -> bool {
         let Ok(plugin) = self.get(id) else { return false };
+        let subs = self.shared.subscriptions.lock().clone();
+        let events: Vec<_> = self
+            .filter_path_events(&plugin, client.as_deref(), &events, &subs)
+            .into_iter()
+            .filter(|event| {
+                !matches!(event, WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_))
+                    || self.wants(&plugin, event.kind(), subs.kinds.get(id))
+            })
+            .collect();
+        if events.is_empty() {
+            return false;
+        }
         if !plugin.meta.lock().pending.is_empty() {
             return false;
         }
@@ -2073,6 +2102,7 @@ impl PluginHost {
         }
         let Some(error) = actor.take_crash() else { return };
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         if error.starts_with(CANCELLED) {
             // Cancelled on request: restart on next use, no backoff.
             let mut meta = plugin.meta.lock();
@@ -2118,6 +2148,7 @@ impl PluginHost {
                     level: NotificationLevel::Warning,
                     title: format!("Plugin \u{201c}{}\u{201d} crashed", plugin.manifest().name),
                     body: format!("{error}\nIt restarts the next time it is needed."),
+                    actions: Vec::new(),
                 },
             );
         }
@@ -2145,6 +2176,7 @@ impl PluginHost {
 
     fn stop(&self, plugin: &LoadedPlugin) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         // A call waiting on the user would keep the join below waiting.
         self.shared.block_prompts(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
@@ -2157,6 +2189,7 @@ impl PluginHost {
 
     fn set_failed(&self, plugin: &LoadedPlugin, error: String) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
         let mut meta = plugin.meta.lock();
@@ -2166,6 +2199,7 @@ impl PluginHost {
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "disabled after failure: {error}");
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(false);
@@ -2179,6 +2213,7 @@ impl PluginHost {
                 level: NotificationLevel::Error,
                 title: format!("Plugin \u{201c}{}\u{201d} was disabled", plugin.manifest().name),
                 body: error.to_owned(),
+                actions: Vec::new(),
             },
         );
         self.changed();

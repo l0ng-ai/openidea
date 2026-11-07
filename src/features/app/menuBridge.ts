@@ -60,7 +60,7 @@ export function buildMenuConfig(os: HostOs): MenuConfig {
 /** View › Tool Windows (every registered window, by title) and Window › Tool Window Layouts. */
 export function dynamicMenuItems(): Record<string, DynamicItem[]> {
   const toolWindows = [...useContributions.getState().toolWindows.values()]
-    .map((tw) => ({ action: `toolwindow.${tw.id}`, arg: null, label: tx(tw.title) ?? tw.title }))
+    .map((tw) => ({ action: `toolwindow.${tw.id}`, arg: null, label: tw.verbatim ? tw.title : tx(tw.title) }))
     .sort((a, b) => a.label.localeCompare(b.label));
   const layouts = useToolWindowLayouts
     .getState()
@@ -69,7 +69,7 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
     Object.entries(useMenuSlotItems.getState().slots).map(([slot, items]) => [
       slot,
       [...items]
-        .map((i) => ({ action: i.action, arg: i.arg ?? null, label: tx(i.label) ?? i.label }))
+        .map((i) => ({ action: i.action, arg: i.arg ?? null, label: i.verbatim ? i.label : tx(i.label) }))
         .sort((a, b) => a.label.localeCompare(b.label)),
     ]),
   );
@@ -148,7 +148,8 @@ export function installMenuBridge(): () => void {
     pushEnablement(true);
   };
   // The menu bar is shared. A focused window re-pushes labels that can differ per window.
-  // An identical config does not replace the menu, so switching project tabs does not redraw it.
+  // The backend edits only submenus whose visible items changed, so switching project
+  // tabs does not redraw the macOS menu bar.
   window.addEventListener("focus", onFocus);
   const unsubs = [
     useI18n.subscribe((s, prev) => {

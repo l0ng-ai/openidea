@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Largest storage of one plugin (keys + values).
-const MAX_STORAGE: usize = 1 << 20;
+const MAX_STORAGE: usize = 64 << 20;
 const MAX_KEY: usize = 256;
 /// Most status bar items per plugin.
 const MAX_STATUS_ITEMS: usize = 8;
@@ -39,6 +39,11 @@ pub trait PluginWorkspace: Send + Sync {
     fn projects(&self) -> Vec<PathBuf>;
     /// Unsaved text of the open document at `path`.
     fn buffer_text(&self, path: &Path) -> Option<String>;
+    /// Whether the editor holds changes for `path` that are not on disk yet;
+    /// writing such a file would lose them.
+    fn buffer_dirty(&self, _path: &Path) -> bool {
+        false
+    }
     /// Up to `limit` files of the project index below `root` whose root-relative path satisfies
     /// `matches`; `None` when no index covers `root` yet (the caller walks the disk instead).
     fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
@@ -188,7 +193,7 @@ pub(super) struct Shared {
     contexts: Mutex<BTreeMap<ContextKey, String>>,
     closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
-    pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
+    pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
@@ -196,6 +201,8 @@ pub(super) struct Shared {
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
     /// Validated UI declarations (settings schemas, declared views).
     pub ui: Arc<ide_extension::UiStore>,
+    /// The UI language the windows report (BCP 47).
+    pub locale: RwLock<String>,
 }
 
 impl Shared {
@@ -207,6 +214,7 @@ impl Shared {
     ) -> Arc<Self> {
         Arc::new(Self {
             ui,
+            locale: RwLock::new("en".into()),
             sink,
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
@@ -328,7 +336,7 @@ impl Shared {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
         }
-        if subscriptions && self.subscriptions.lock().remove(plugin).is_some() {
+        if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -396,9 +404,60 @@ impl Shared {
         }
     }
 
-    pub fn storage_file(&self, plugin: &str) -> PathBuf {
-        self.data_dir.join(plugin).join("storage.json")
+    /// The plugin's stored values: one file per key, so a write only
+    /// rewrites its own value.
+    pub fn storage_dir(&self, plugin: &str) -> PathBuf {
+        self.data_dir.join(plugin).join("storage")
     }
+}
+
+fn storage_io(e: std::io::Error) -> HostError {
+    HostError::Failed(format!("storage: {e}"))
+}
+
+/// A key's file name: its hash, since keys may hold any character.
+fn entry_name(key: &str) -> String {
+    blake3::hash(key.as_bytes()).to_hex().to_string()
+}
+
+/// A stored entry: the key's length (2 bytes, little-endian), the key, then the value.
+fn decode_entry(bytes: &[u8]) -> Option<(&str, &str)> {
+    let len = usize::from(u16::from_le_bytes(bytes.get(..2)?.try_into().ok()?));
+    let key = std::str::from_utf8(bytes.get(2..2 + len)?).ok()?;
+    let value = std::str::from_utf8(&bytes[2 + len..]).ok()?;
+    Some((key, value))
+}
+
+fn write_entry(dir: &Path, key: &str, value: &str) -> Result<(), HostError> {
+    std::fs::create_dir_all(dir).map_err(storage_io)?;
+    let file = dir.join(entry_name(key));
+    let len = u16::try_from(key.len()).expect("keys are at most MAX_KEY bytes");
+    let mut bytes = Vec::with_capacity(2 + key.len() + value.len());
+    bytes.extend_from_slice(&len.to_le_bytes());
+    bytes.extend_from_slice(key.as_bytes());
+    bytes.extend_from_slice(value.as_bytes());
+    let tmp = file.with_extension("tmp");
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &file)).map_err(storage_io)
+}
+
+/// The stored entries' files and the bytes of their keys and values.
+fn entries(dir: &Path) -> Result<impl Iterator<Item = (PathBuf, usize)>, HostError> {
+    let list = match std::fs::read_dir(dir) {
+        Ok(list) => list,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new().into_iter()),
+        Err(e) => return Err(storage_io(e)),
+    };
+    let mut out = Vec::new();
+    for entry in list {
+        let entry = entry.map_err(storage_io)?;
+        let path = entry.path();
+        if path.extension().is_some() {
+            continue; // a write that didn't finish
+        }
+        let size = entry.metadata().map_err(storage_io)?.len();
+        out.push((path, usize::try_from(size).unwrap_or(usize::MAX).saturating_sub(2)));
+    }
+    Ok(out.into_iter())
 }
 
 pub(super) struct PluginApi {
@@ -411,21 +470,24 @@ impl PluginApi {
         self.pkg.id()
     }
 
-    fn load_storage(&self) -> Result<BTreeMap<String, String>, HostError> {
-        match std::fs::read(self.shared.storage_file(self.id())) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| HostError::Failed(format!("storage: {e}"))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-            Err(e) => Err(HostError::Failed(format!("storage: {e}"))),
+    /// The storage directory, after moving a `storage.json` written by an
+    /// older version into it.
+    fn storage(&self) -> Result<PathBuf, HostError> {
+        let dir = self.shared.storage_dir(self.id());
+        let legacy = self.shared.data_dir.join(self.id()).join("storage.json");
+        match std::fs::read(&legacy) {
+            Ok(bytes) => {
+                let map: BTreeMap<String, String> =
+                    serde_json::from_slice(&bytes).map_err(|e| HostError::Failed(format!("storage: {e}")))?;
+                for (key, value) in &map {
+                    write_entry(&dir, key, value)?;
+                }
+                std::fs::remove_file(&legacy).map_err(storage_io)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(storage_io(e)),
         }
-    }
-
-    fn save_storage(&self, map: &BTreeMap<String, String>) -> Result<(), HostError> {
-        let file = self.shared.storage_file(self.id());
-        let bytes = serde_json::to_vec(map).map_err(|e| HostError::Failed(e.to_string()))?;
-        let io = |e: std::io::Error| HostError::Failed(format!("storage: {e}"));
-        std::fs::create_dir_all(file.parent().expect("has parent")).map_err(io)?;
-        let tmp = file.with_extension("tmp");
-        std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &file)).map_err(io)
+        Ok(dir)
     }
 
     /// The program approved for the (already checked) `process:` grant,
@@ -658,10 +720,23 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String) {
-        self.shared
-            .sink
-            .emit(client, PluginEvent::Notification { plugin_id: self.id().to_owned(), level, title, body });
+    fn notify(
+        &self,
+        client: Option<&str>,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ide_plugin::NotificationAction>,
+    ) -> Result<(), HostError> {
+        if !actions.is_empty() {
+            let commands = self.shared.ui.items("commands", Some(self.id()));
+            if let Some(a) = actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
+                return Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command)));
+            }
+        }
+        let plugin_id = self.id().to_owned();
+        self.shared.sink.emit(client, PluginEvent::Notification { plugin_id, level, title, body, actions });
+        Ok(())
     }
 
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
@@ -673,6 +748,14 @@ impl HostApi for PluginApi {
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let client = from_window(client, "open a URL")?;
         self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
+    }
+
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let client = from_window(client, "open a project")?;
+        self.shared
+            .sink
+            .emit(Some(client), PluginEvent::OpenProject { plugin_id: self.id().to_owned(), path, new_window });
         Ok(())
     }
 
@@ -839,30 +922,47 @@ impl HostApi for PluginApi {
     }
 
     fn storage_get(&self, key: &str) -> Result<Option<String>, HostError> {
-        Ok(self.load_storage()?.get(key).cloned())
+        let file = self.storage()?.join(entry_name(key));
+        match std::fs::read(&file) {
+            Ok(bytes) => Ok(decode_entry(&bytes).filter(|(k, _)| *k == key).map(|(_, v)| v.to_owned())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(storage_io(e)),
+        }
     }
 
     fn storage_set(&self, key: &str, value: Option<String>) -> Result<(), HostError> {
         if key.is_empty() || key.len() > MAX_KEY {
             return Err(HostError::Invalid(format!("keys are 1–{MAX_KEY} bytes")));
         }
-        let mut map = self.load_storage()?;
-        let changed = match value {
-            Some(v) => map.insert(key.to_owned(), v.clone()).as_ref() != Some(&v),
-            None => map.remove(key).is_some(),
+        let dir = self.storage()?;
+        let file = dir.join(entry_name(key));
+        let Some(value) = value else {
+            return match std::fs::remove_file(&file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(storage_io(e)),
+                _ => Ok(()),
+            };
         };
-        if !changed {
-            return Ok(());
+        let others: usize = entries(&dir)?.filter(|(name, _)| *name != file).map(|(_, size)| size).sum();
+        if others + key.len() + value.len() > MAX_STORAGE {
+            return Err(HostError::Invalid(format!(
+                "storage is limited to {} MiB (UTF-8 keys and values)",
+                MAX_STORAGE >> 20
+            )));
         }
-        let size: usize = map.iter().map(|(k, v)| k.len() + v.len()).sum();
-        if size > MAX_STORAGE {
-            return Err(HostError::Invalid(format!("storage is limited to {} KiB", MAX_STORAGE >> 10)));
-        }
-        self.save_storage(&map)
+        write_entry(&dir, key, &value)
     }
 
     fn storage_keys(&self, prefix: &str) -> Result<Vec<String>, HostError> {
-        Ok(self.load_storage()?.into_keys().filter(|k| k.starts_with(prefix)).collect())
+        let dir = self.storage()?;
+        let mut keys = Vec::new();
+        for (file, _) in entries(&dir)? {
+            let bytes = std::fs::read(&file).map_err(storage_io)?;
+            if let Some((key, _)) = decode_entry(&bytes).filter(|(k, _)| k.starts_with(prefix)) {
+                keys.push(key.to_owned());
+            }
+        }
+        keys.sort();
+        Ok(keys)
     }
 
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError> {
@@ -1022,7 +1122,9 @@ impl HostApi for PluginApi {
         let binary = self.approved_program(program)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
-        let mut child = std::process::Command::new(&binary)
+        let mut cmd = std::process::Command::new(&binary);
+        ide_core::process::prepare(&mut cmd);
+        let mut child = cmd
             .args(&args)
             .current_dir(&cwd)
             .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
@@ -1071,13 +1173,22 @@ impl HostApi for PluginApi {
         })
     }
 
-    fn subscribe(&self, kind: EventKind, on: bool) {
-        let changed = {
-            let mut subs = self.shared.subscriptions.lock();
-            let set = subs.entry(self.id().to_owned()).or_default();
-            if on { set.insert(kind) } else { set.remove(&kind) }
-        };
-        if changed {
+    fn subscribe(&self, kind: EventKind) {
+        if self.shared.subscriptions.lock().set(self.id(), kind) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+        if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+        Ok(())
+    }
+
+    fn unsubscribe(&self, kind: &str) {
+        if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1167,6 +1278,10 @@ impl HostApi for PluginApi {
         Ok(())
     }
 
+    fn locale(&self) -> String {
+        self.shared.locale.read().clone()
+    }
+
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String> {
         let schema: Vec<super::ui_points::SettingSchema> = self
             .shared
@@ -1178,6 +1293,81 @@ impl HostApi for PluginApi {
         let user = self.shared.workspace().map(|w| w.plugin_settings(self.id(), root)).unwrap_or_default();
         let value = user.get(key).filter(|v| setting.accepts(v)).cloned().unwrap_or(setting.default);
         serde_json::to_string(&value).ok()
+    }
+
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
+        // Unsaved editor contents win, as they do for project files.
+        if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
+            return Ok(text);
+        }
+        let meta = std::fs::metadata(real).map_err(|e| not_a_file(real, e))?;
+        if !meta.is_file() {
+            return Err(HostError::Invalid(format!("{}: not a file", real.display())));
+        }
+        if meta.len() > max as u64 {
+            return Err(too_large(real, max));
+        }
+        let loaded = ide_vfs::load_text(real).map_err(failed)?;
+        if loaded.binary {
+            return Err(HostError::Invalid(format!("{}: not text; read it as bytes", real.display())));
+        }
+        Ok(loaded.text)
+    }
+
+    fn write_text_file(&self, real: &Path, text: &str) -> Result<(), HostError> {
+        check_unsaved(self.shared.workspace(), real)?;
+        // Write back in the file's own encoding, so a GBK properties file stays
+        // one; a file that is not there yet becomes UTF-8.
+        let (encoding, has_bom) = match ide_vfs::load_text(real) {
+            Ok(loaded) if loaded.binary => {
+                return Err(HostError::Invalid(format!("{}: not text; write it as bytes", real.display())));
+            }
+            Ok(loaded) => (loaded.encoding, loaded.has_bom),
+            Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => ("utf-8".to_string(), false),
+            Err(e) => return Err(not_writable(real, e)),
+        };
+        ide_vfs::save_text(real, text, &encoding, has_bom).map(drop).map_err(|e| not_writable(real, e))
+    }
+
+    fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError> {
+        check_unsaved(self.shared.workspace(), real)?;
+        ide_vfs::write_atomic(real, bytes).map(drop).map_err(|e| not_writable(real, e))
+    }
+}
+
+/// A file that is not there, or cannot be read, as the plugin sees it.
+fn not_a_file(path: &Path, e: std::io::Error) -> HostError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => HostError::NotFound(format!("{}: no such file", path.display())),
+        std::io::ErrorKind::PermissionDenied => HostError::Denied(format!("{}: {}", path.display(), "not readable")),
+        _ => failed(e),
+    }
+}
+
+fn too_large(path: &Path, max: usize) -> HostError {
+    HostError::Invalid(format!("{}: file is larger than {} MiB", path.display(), max >> 20))
+}
+
+/// Refuses to replace a file the editor holds unsaved changes for: the write
+/// would lose them.
+fn check_unsaved(workspace: Option<Arc<dyn PluginWorkspace>>, path: &Path) -> Result<(), HostError> {
+    match workspace {
+        Some(workspace) if workspace.buffer_dirty(path) => Err(HostError::Invalid(format!(
+            "{}: the editor has unsaved changes for it; save them first",
+            path.display()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// A write that did not land, as the plugin sees it.
+fn not_writable(path: &Path, e: ide_core::error::IdeError) -> HostError {
+    let message = format!("{}: {}", path.display(), e.message);
+    match e.kind {
+        ide_core::error::ErrorKind::NotFound => HostError::NotFound(message),
+        ide_core::error::ErrorKind::PermissionDenied => HostError::Denied(message),
+        ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(message),
+        _ => HostError::Failed(message),
     }
 }
 
@@ -1205,6 +1395,11 @@ impl PluginWorkspace for HostWorkspace {
 
     fn buffer_text(&self, path: &Path) -> Option<String> {
         HostWorkspace::projects(self).iter().find_map(|p| p.documents.text_of(path))
+    }
+
+    fn buffer_dirty(&self, path: &Path) -> bool {
+        let Some((project, doc)) = self.open_document(path) else { return false };
+        project.documents.is_dirty(doc).unwrap_or(false)
     }
 
     fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
@@ -1290,6 +1485,78 @@ mod tests {
         let sink: Arc<dyn PluginEventSink> = Arc::new(|_: Option<&str>, _: PluginEvent| {});
         let shared = Shared::new(sink, dir.join(".data"), pins, ide_extension::UiStore::new());
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
+    }
+
+    #[test]
+    fn storage_moves_an_older_storage_json_to_one_file_per_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join(".data/acme.lint/storage.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, r#"{"a":"1","b/c":"two"}"#).unwrap();
+        let api = api(tmp.path(), Arc::default());
+        assert_eq!(api.storage_keys("").unwrap(), ["a", "b/c"]);
+        assert_eq!(api.storage_get("b/c").unwrap().as_deref(), Some("two"));
+        assert!(!legacy.exists());
+        api.storage_set("a", Some("3".into())).unwrap();
+        api.storage_set("b/c", None).unwrap();
+        assert_eq!(api.storage_keys("").unwrap(), ["a"]);
+        assert_eq!(api.storage_get("a").unwrap().as_deref(), Some("3"));
+        assert_eq!(api.storage_get("b/c").unwrap(), None);
+    }
+
+    #[test]
+    fn storage_keeps_multimegabyte_indexes_after_host_recreation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let value = "é".repeat(2 << 20);
+        {
+            let api = api(tmp.path(), Arc::default());
+            api.storage_set("index", Some(value.clone())).unwrap();
+        }
+        let api = api(tmp.path(), Arc::default());
+        assert_eq!(api.storage_get("index").unwrap().as_deref(), Some(value.as_str()));
+        api.storage_set("index", None).unwrap();
+        assert_eq!(api.storage_get("index").unwrap(), None);
+    }
+
+    #[test]
+    fn storage_quota_counts_utf8_keys_and_values_and_preserves_data_on_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let key = "index";
+        let mut value = "é".repeat(((64 << 20) - key.len()) / 2);
+        value.push('x');
+        api.storage_set(key, Some(value.clone())).unwrap();
+
+        for (key, value) in [("x", String::new()), (key, format!("{value}x"))] {
+            let err = api.storage_set(key, Some(value)).unwrap_err();
+            assert!(matches!(err, HostError::Invalid(ref message) if message.contains("64 MiB")), "{err}");
+        }
+        assert_eq!(api.storage_keys("").unwrap(), [key]);
+        assert_eq!(api.storage_get(key).unwrap().as_deref(), Some(value.as_str()));
+        api.storage_set(key, Some("small".into())).unwrap();
+        api.storage_set("other", Some("value".into())).unwrap();
+        assert_eq!(api.storage_get("other").unwrap().as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn notification_actions_run_the_plugins_own_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let _command = api.shared.ui.insert(ide_extension::UiContribution {
+            plugin_id: api.id().into(),
+            point: "commands".into(),
+            key: "run".into(),
+            decl: serde_json::json!({}),
+        });
+        let action = |command: &str| ide_plugin::NotificationAction {
+            label: "Run".into(),
+            command: command.into(),
+            argument: Some("a\nb".into()),
+        };
+        let notify = |actions| api.notify(Some("main"), NotificationLevel::Info, "Done".into(), "".into(), actions);
+        notify(vec![]).unwrap();
+        notify(vec![action("run")]).unwrap();
+        assert!(matches!(notify(vec![action("run"), action("other.command")]), Err(HostError::NotFound(_))));
     }
 
     #[test]

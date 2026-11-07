@@ -17,9 +17,12 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+#[cfg(target_os = "macos")]
+mod page_swipe;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
+mod remote_container;
 mod remote_dev;
 mod remote_wsl;
 
@@ -211,6 +214,11 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            #[cfg(target_os = "macos")]
+            {
+                page_swipe::forget(window.label());
+                titlebar::forget(window);
+            }
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
@@ -288,7 +296,10 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
             // nothing else gets through. Others handle their own items; Close Tab closes the window.
             let label = match windows::auxiliary(w.label()) {
                 Some((_, parent))
-                    if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
+                    if matches!(
+                        route.action.as_str(),
+                        "app.quit" | "file.settings" | "file.projectStructure" | "file.newProjectsSettings"
+                    ) =>
                 {
                     parent
                 }

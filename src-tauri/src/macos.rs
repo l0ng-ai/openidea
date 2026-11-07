@@ -135,6 +135,7 @@ pub fn set_fullscreen_auxiliary(window: &WebviewWindow, host: Option<&WebviewWin
         if let Some(frame) = frame {
             native.setFrame_display(frame, true);
         }
+        target.state::<crate::state::AppState>().sink.emit(ide_core::IdeEvent::WindowFullscreenChanged);
     })
 }
 
@@ -171,6 +172,44 @@ pub fn watch_fullscreen_host(host: &WebviewWindow, left: impl Fn() + Send + 'sta
         );
         FULLSCREEN_HOSTS.with_borrow_mut(|hosts| hosts.insert(label, FullscreenObserver(observer)));
     })
+}
+
+thread_local! {
+    /// Windows being waited on to finish entering fullscreen.
+    static ENTERING_FULLSCREEN: std::cell::RefCell<std::collections::HashMap<String, FullscreenObserver>> = std::cell::RefCell::default();
+}
+
+/// Toggles `window` into native fullscreen and resolves once it is there, or after `timeout`.
+pub async fn enter_fullscreen_and_wait(window: &WebviewWindow, timeout: std::time::Duration) -> tauri::Result<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let label = window.label().to_owned();
+    let target = window.clone();
+    on_main(window, move || unsafe {
+        let Ok(pointer) = target.ns_window() else { return };
+        let native = &*pointer.cast::<NSWindow>();
+        let tx = std::cell::Cell::new(Some(tx));
+        let block = block2::RcBlock::new(move |_| {
+            if let Some(tx) = tx.take() {
+                let _ = tx.send(());
+            }
+        });
+        let observer = NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(objc2_app_kit::NSWindowDidEnterFullScreenNotification),
+            Some(native),
+            None,
+            &block,
+        );
+        ENTERING_FULLSCREEN.with_borrow_mut(|waits| waits.insert(label, FullscreenObserver(observer)));
+    })?;
+    let toggled = native_toggle_fullscreen(window);
+    if toggled.is_ok() {
+        let _ = tokio::time::timeout(timeout, rx).await;
+    }
+    let label = window.label().to_owned();
+    on_main(window, move || {
+        ENTERING_FULLSCREEN.with_borrow_mut(|waits| waits.remove(&label));
+    })?;
+    toggled
 }
 
 /// An observer on the workspace's notification center, removed when dropped.

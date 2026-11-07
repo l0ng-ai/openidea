@@ -154,7 +154,10 @@ export const useRemoteProgress = create<{ progress: RemoteProgress | null; locat
   location: null,
 }));
 
-/** Opens `path` of `target` (an SSH host or a WSL distribution) in this window. */
+/**
+ * Opens `path` of `target` (an SSH host or a WSL distribution) in this window. A dev container's
+ * project folder is the one in the container: `path` is then only a label.
+ */
 export async function connectRemote(target: RemoteTarget, path: string) {
   useProject.setState({ opening: true });
   const location = remoteLocation(target, path);
@@ -214,23 +217,35 @@ export async function disconnectRemote() {
 }
 
 // ---------------------------------------------------------------------------
-// Remote project locations: `ssh://<configuration id>/<absolute path>` or
-// `wsl://<distribution>/<absolute path>`, what the session and the recent projects
-// remember for a remote window.
+// Remote project locations: `ssh://<configuration id>/<absolute path>`,
+// `wsl://<distribution>/<absolute path>` or `devcontainer://<local folder>[:<config>]/<container path>`,
+// what the session and the recent projects remember for a remote window.
 
-const SCHEMES = { ssh: "ssh://", wsl: "wsl://" } as const;
+const SCHEMES = { ssh: "ssh://", wsl: "wsl://", devContainer: "devcontainer://" } as const;
 
-/** The SSH configuration id or the WSL distribution name. */
+/** The SSH configuration id, the WSL distribution name or the dev container's local folder. */
 export function targetName(target: RemoteTarget): string {
-  return target.kind === "ssh" ? target.config : target.distro;
+  switch (target.kind) {
+    case "ssh":
+      return target.config;
+    case "wsl":
+      return target.distro;
+    case "devContainer":
+      return target.folder;
+  }
 }
 
 export function sameTarget(a: RemoteTarget, b: RemoteTarget): boolean {
-  return a.kind === b.kind && targetName(a) === targetName(b);
+  return (
+    a.kind === b.kind &&
+    targetName(a) === targetName(b) &&
+    (a.kind !== "devContainer" || b.kind !== "devContainer" || a.config === b.config)
+  );
 }
 
 export function remoteLocation(target: RemoteTarget, path: string): string {
-  return `${SCHEMES[target.kind]}${encodeURIComponent(targetName(target))}${path.startsWith("/") ? "" : "/"}${path}`;
+  const config = target.kind === "devContainer" && target.config ? `:${encodeURIComponent(target.config)}` : "";
+  return `${SCHEMES[target.kind]}${encodeURIComponent(targetName(target))}${config}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
 export function parseRemoteLocation(location: string): { target: RemoteTarget; path: string } | null {
@@ -239,8 +254,12 @@ export function parseRemoteLocation(location: string): { target: RemoteTarget; p
   const rest = location.slice(SCHEMES[kind].length);
   const slash = rest.indexOf("/");
   if (slash <= 0) return null;
-  const name = decodeURIComponent(rest.slice(0, slash));
-  const target: RemoteTarget = kind === "ssh" ? { kind, config: name } : { kind, distro: name };
+  const authority = rest.slice(0, slash);
+  const colon = kind === "devContainer" ? authority.indexOf(":") : -1;
+  const name = decodeURIComponent(colon < 0 ? authority : authority.slice(0, colon));
+  const config = colon < 0 ? "" : decodeURIComponent(authority.slice(colon + 1));
+  const target: RemoteTarget =
+    kind === "ssh" ? { kind, config: name } : kind === "wsl" ? { kind, distro: name } : { kind, folder: name, config };
   return { target, path: rest.slice(slash) };
 }
 
@@ -338,7 +357,15 @@ export function forgetRemote(target: RemoteTarget, path: string) {
 }
 
 // Any way of leaving the remote project (Close Project, opening a local one) ends remote routing.
-useProject.subscribe((s) => {
+useProject.subscribe((s, prev) => {
   const session = useRemote.getState().session;
-  if (session && !s.opening && s.project?.root !== session.root) disableRemote();
+  if (!session || s.opening) return;
+  // Only a window whose project was the session's root can leave it. Auxiliary windows
+  // (comparison, deployment) hold no project of their own — they ride their parent's
+  // session, and a settings-only update (the comparison window keeps just the settings)
+  // must not drop the routing: its next commands would run here instead of on the host,
+  // where no project is open (`open_project` / `light_edit_open` / `close_project` end
+  // the session themselves, see `route`).
+  if (prev.project?.root !== session.root || s.project?.root === session.root) return;
+  disableRemote();
 });

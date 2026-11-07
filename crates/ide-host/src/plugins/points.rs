@@ -59,6 +59,7 @@ pub fn register_builtin_points(
     registry.register(Arc::new(super::navigation::IndexersPoint))?;
     registry.register(Arc::new(super::providers::ProvidersPoint::new(providers.clone())))?;
     registry.register(Arc::new(UiPoint::new(super::providers::SECRETS_POINT, ui.clone(), super::providers::secret)))?;
+    registry.register(Arc::new(UiPoint::new(super::endpoints::POINT, ui.clone(), super::endpoints::declaration)))?;
     use super::ui_points as p;
     registry.register(Arc::new(UiPoint::new(p::MENUS, ui.clone(), p::menu)))?;
     registry.register(Arc::new(UiPoint::new(p::KEYMAPS, ui.clone(), p::keymap)))?;
@@ -69,5 +70,6 @@ pub fn register_builtin_points(
     registry.register(Arc::new(UiPoint::new(p::FILE_ICONS, ui.clone(), p::file_icon)))?;
     registry.register(Arc::new(UiPoint::new(p::FILE_TEMPLATES, ui.clone(), p::file_template)))?;
     registry.register(Arc::new(UiPoint::new(p::COMMIT_CHECKS, ui.clone(), p::commit_check)))?;
+    registry.register(Arc::new(UiPoint::new(ide_extension::LOCALES_POINT, ui.clone(), p::locales)))?;
     Ok(())
 }

@@ -7,6 +7,7 @@ wit_bindgen::generate!({
         world misbehave {
             include openidea:plugin/plugin-syntax@1.3.0;
             export openidea:plugin/providers@1.3.0;
+            export openidea:plugin/file-actions@1.3.0;
         }
     ",
     path: "../../../../../wit",
@@ -62,6 +63,35 @@ impl commands::Guest for Misbehave {
                 project.read_file(&arg.unwrap_or_default()).map(Some)
             }
             "root" => ctx.project().map(|p| p.root()).transpose(),
+            // The `fs.read` grants: the text of `arg`, or the refusal naming what it needs.
+            "fsread" => openidea::plugin::fs::read_file(&arg.unwrap_or_default()).map(Some),
+            // The `fs.read-dir` listing: "name kind" lines.
+            "read-dir" => {
+                use openidea::plugin::workspace::FileKind;
+                let entries = openidea::plugin::fs::read_dir(&arg.unwrap_or_default())?;
+                let lines: Vec<String> = entries
+                    .iter()
+                    .map(|e| {
+                        let kind = match e.kind {
+                            FileKind::File => "file",
+                            FileKind::Directory => "dir",
+                            FileKind::Symlink => "link",
+                            FileKind::Other => "other",
+                        };
+                        format!("{kind} {}", e.name)
+                    })
+                    .collect();
+                Ok(Some(lines.join("\n")))
+            }
+            // The `fs.write` grant: replaces the file at `arg`.
+            "fswrite" => {
+                openidea::plugin::fs::write_file(&arg.unwrap_or_default(), "written by the plugin\n").map(|()| None)
+            }
+            // The `project.write` grant: writes `arg` inside the project.
+            "projwrite" => {
+                let project = ctx.project().ok_or_else(|| failed("no project is open"))?;
+                project.write_file(&arg.unwrap_or_default(), "written inside the project\n").map(|()| None)
+            }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {
                 let editor = ctx.editor().ok_or_else(|| failed("no editor"))?;
@@ -186,6 +216,66 @@ impl providers::Guest for Misbehave {
 
     fn line_markers(_doc: Document) -> Vec<LineMarker> {
         Vec::new()
+    }
+}
+
+/// `files`: one action that creates, renames and deletes files, then opens
+/// one, and one listed with `data` only, whose file `resolve` creates.
+impl exports::openidea::plugin::file_actions::Guest for Misbehave {
+    fn code_actions(
+        doc: exports::openidea::plugin::file_actions::Document,
+        _selection: types::Range,
+    ) -> Vec<exports::openidea::plugin::file_actions::FileAction> {
+        use exports::openidea::plugin::file_actions::{CreateFile, DeleteFile, FileAction, FileOperation, RenameFile};
+        if doc.text != "files" {
+            return Vec::new();
+        }
+        let dir = doc.path.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
+        vec![
+            FileAction {
+                title: "Reorganise".into(),
+                kind: Some("quickfix".into()),
+                preferred: false,
+                operations: vec![
+                    FileOperation::Create(CreateFile {
+                        path: format!("{dir}/created.txt"),
+                        text: "hello".into(),
+                        overwrite: false,
+                    }),
+                    FileOperation::Rename(RenameFile {
+                        path: format!("{dir}/old.txt"),
+                        new_path: format!("{dir}/renamed.txt"),
+                    }),
+                    FileOperation::Delete(DeleteFile { path: format!("{dir}/gone.txt") }),
+                ],
+                edits: Vec::new(),
+                open: Some(format!("{dir}/created.txt")),
+                data: None,
+            },
+            FileAction {
+                title: "Create later".into(),
+                kind: Some("quickfix".into()),
+                preferred: false,
+                operations: Vec::new(),
+                edits: Vec::new(),
+                open: None,
+                data: Some(dir),
+            },
+        ]
+    }
+
+    fn resolve(
+        _doc: exports::openidea::plugin::file_actions::Document,
+        action: exports::openidea::plugin::file_actions::FileAction,
+    ) -> Result<exports::openidea::plugin::file_actions::FileAction, types::Error> {
+        use exports::openidea::plugin::file_actions::{CreateFile, FileOperation};
+        let dir = action.data.clone().ok_or_else(|| types::Error::Invalid("no data".into()))?;
+        let operations = vec![FileOperation::Create(CreateFile {
+            path: format!("{dir}/later.txt"),
+            text: "later".into(),
+            overwrite: false,
+        })];
+        Ok(exports::openidea::plugin::file_actions::FileAction { operations, data: None, ..action })
     }
 }
 

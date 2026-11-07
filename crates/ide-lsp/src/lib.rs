@@ -1385,14 +1385,8 @@ impl LspManager {
             let mut first = Vec::new();
             if method == "textDocument/implementation" {
                 let (locs, complete) = self.java_source_implementations(snap, t, pos, cancel).await;
-                // A type declared in the sources has no implementations in the dependencies:
-                // none found there is the whole answer, without a type hierarchy over every jar.
-                if complete {
-                    if !locs.is_empty() {
-                        return Ok(locs);
-                    }
-                    out.value = Some(Vec::new());
-                    continue;
+                if complete && !locs.is_empty() {
+                    return Ok(locs);
                 }
                 if let Some(partial) = partial
                     && !locs.is_empty()
@@ -1450,9 +1444,9 @@ impl LspManager {
         self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
     }
 
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources are
-    /// searched (`libraries_skipped` when `project_wide`); with it and `project_wide`, those
-    /// found there arrive on `partial` before the dependencies and the JDK are searched.
+    /// [`Self::references`]. Java, `project_wide`: without `libraries`, only the
+    /// workspace's sources are searched (`libraries_skipped`); with it, those found
+    /// there arrive on `partial` before the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -1481,7 +1475,20 @@ impl LspManager {
         };
         let native =
             self.native_references(doc, pos, include_declaration, project_wide, libraries, cancel.clone(), partial);
-        let (configuration, result) = futures::join!(configuration, native);
+        futures::pin_mut!(configuration, native);
+        let (configuration, result) = match futures::future::select(configuration, native).await {
+            futures::future::Either::Left((configuration, native)) => (configuration, native.await),
+            futures::future::Either::Right((result, configuration)) => {
+                // The configuration index is rebuilt after Java changes, which takes seconds in a
+                // project with many dependencies: the usages found meanwhile are shown first.
+                if let (Some(partial), Ok(found)) = (partial, &result)
+                    && !found.locations.is_empty()
+                {
+                    partial(found.clone());
+                }
+                (configuration.await, result)
+            }
+        };
         let configuration = configuration?;
         let mut result = result?;
         if let Some(configuration) = configuration {
@@ -1605,10 +1612,7 @@ impl LspManager {
                     };
                     scope::Widened { first: all, second: Some(found), incomplete: sources.incomplete }
                 } else {
-                    // Bulk probes (usage counts, Safe Delete) ask about the sources' own symbols,
-                    // which no dependency uses: searching every jar and the JDK only adds seconds
-                    // per symbol and delays the searches the user asks for.
-                    let first = query(!libraries).await?;
+                    let first = query(false).await?;
                     let empty = first.is_empty();
                     scope::Widened::only(first, empty, &t.server)
                 };
@@ -2330,6 +2334,13 @@ impl LspManager {
     /// into `.venv` or a `go.mod` rewritten by `go get` is picked up without a restart. Other
     /// servers hear of their languages' files under their root; without it jdtls's incremental
     /// build never sees them, so a launch runs stale classes.
+    ///
+    /// Creates and changes for documents synced on a server's current instance are left out.
+    /// Their text reaches the server through `didOpen`/`didChange`, including clean-buffer
+    /// reloads. A server that re-reads the file on the watched change (csharp-ls) would apply
+    /// the reload and then the `didChange` computed against the pre-reload copy, so it would
+    /// keep analysing content that diverges from both the disk and the editor (#1780).
+    /// Deletions still reach it: document sync does not describe workspace membership.
     pub fn watched_files_changed(
         &self,
         created: &[PathBuf],
@@ -2339,19 +2350,43 @@ impl LspManager {
     ) {
         use file_watch::Change;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        let open: HashMap<(ide_core::ServerId, u64), HashSet<PathBuf>> = {
+            let docs = self.docs.lock();
+            let mut open: HashMap<_, HashSet<_>> = HashMap::new();
+            for d in docs.values() {
+                for a in &d.servers {
+                    if let Some(generation) = a.opened_gen {
+                        open.entry((a.server.id, generation))
+                            .or_default()
+                            .extend([d.path.clone(), d.canonical.clone()]);
+                    }
+                }
+            }
+            open
+        };
+        let canonical: HashMap<_, _> =
+            created.iter().chain(modified).filter_map(|p| dunce::canonicalize(p).ok().map(|c| (p, c))).collect();
         for s in servers {
             let Some(run) = s.running() else { continue };
+            let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            let send = |p: &PathBuf, change: Change| {
+                change == Change::Deleted
+                    || !open
+                        .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))
+            };
             let all = [(created, Change::Created), (modified, Change::Changed), (removed, Change::Deleted)]
                 .into_iter()
                 .flat_map(|(paths, change)| paths.iter().map(move |p| (p, change)));
             let watchers = run.watchers.read();
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
                 let languages = s.languages();
-                all.filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
-                    .collect()
+                all.filter(|(p, change)| {
+                    p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)) && send(p, *change)
+                })
+                .collect()
             } else {
                 all.chain(excluded_dirs.iter().map(|p| (p, Change::Created)))
-                    .filter(|(p, change)| watchers.wants(&s.root, p, *change))
+                    .filter(|(p, change)| watchers.wants(&s.root, p, *change) && send(p, *change))
                     .collect()
             };
             drop(watchers);

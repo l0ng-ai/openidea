@@ -15,8 +15,8 @@ export const intellijMacos: Record<string, string[]> = {
   "navigate.switcherBack": ["Ctrl+Shift+Tab"],
   "navigate.recentFiles": ["Meta+E"],
   "navigate.recentLocations": ["Meta+Shift+E"],
-  "navigate.back": ["Meta+[", "Meta+Alt+Left", "Button4"],
-  "navigate.forward": ["Meta+]", "Meta+Alt+Right", "Button5"],
+  "navigate.back": ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"],
+  "navigate.forward": ["Meta+]", "Meta+Alt+Right", "Button5", "SwipeLeft"],
   "navigate.gotoLine": ["Meta+L"],
   "navigate.declaration": ["Meta+B"],
   "navigate.implementation": ["Meta+Alt+B", "Meta+Alt+Button1"],
@@ -176,6 +176,7 @@ export const intellijMacos: Record<string, string[]> = {
   // File / editor tabs
   "file.save": ["Meta+S"],
   "file.settings": ["Meta+,"],
+  "file.projectStructure": ["Meta+;"],
   "file.openProject": ["Meta+Shift+Alt+O"],
   "file.newScratchFile": ["Meta+Shift+N"],
   "editor.closeTab": ["Meta+W"],

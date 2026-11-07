@@ -77,7 +77,11 @@ pub fn apply_to_run(config: &mut ide_run::RunConfig, tags: &GoBuildTags) {
             }
         }
     }
-    if config.extras.params.get("useTags").is_some_and(|v| v == "true") {
+    if config.extras.params.get("useTags").is_none_or(|value| value != "false")
+        && config.args.first().is_some_and(|operation| {
+            matches!(operation.as_str(), "run" | "build" | "test" | "generate" | "vet" | "list" | "install" | "clean")
+        })
+    {
         let extra = settings["buildFlags"]
             .as_array()
             .into_iter()
@@ -129,6 +133,8 @@ fn delve_build_flags(args: &[String], files: bool) -> Value {
 
 pub fn apply_to_debug(
     env: &mut std::collections::BTreeMap<String, String>,
+    program: &mut Option<String>,
+    program_args: &mut Vec<String>,
     extra_json: &mut Option<String>,
     tags: &GoBuildTags,
 ) -> ide_core::IdeResult<()> {
@@ -166,13 +172,17 @@ pub fn apply_to_debug(
         }
         if let Some(files) = extra.get("__goFiles").and_then(Value::as_array) {
             if extra["mode"] == "test" {
-                if let Some(dir) = files.first().and_then(Value::as_str).and_then(|f| std::path::Path::new(f).parent())
-                {
+                if let Some(file) = files.first().and_then(Value::as_str).map(std::path::Path::new) {
                     let mut command = std::process::Command::new("go");
                     ide_core::process::host_env(&mut command);
                     command.envs(env.iter());
-                    let sources = ide_run::go::package_sources(command, dir, &args)?;
-                    args.extend(sources.iter().map(|p| p.to_string_lossy().into_owned()));
+                    let exclusions = ide_run::go::file_test_exclusions(command, file, &args)?;
+                    *program = file
+                        .parent()
+                        .map(dunce::canonicalize)
+                        .transpose()?
+                        .map(|dir| dir.to_string_lossy().into_owned());
+                    ide_run::go::exclude_tests(program_args, &exclusions, true);
                 }
             } else {
                 args.extend(files.iter().skip(1).filter_map(Value::as_str).map(str::to_owned));
@@ -180,7 +190,7 @@ pub fn apply_to_debug(
         }
         // Delve appends its -o after array build flags; positional source files
         // require the string form so all compiler flags precede the file list.
-        extra["buildFlags"] = delve_build_flags(&args, extra.get("__goFiles").is_some());
+        extra["buildFlags"] = delve_build_flags(&args, extra.get("__goFiles").is_some() && extra["mode"] != "test");
     }
     if let Some(output) = extra.get("output").and_then(Value::as_str).and_then(|p| std::path::Path::new(p).parent()) {
         std::fs::create_dir_all(output)?;
@@ -198,6 +208,58 @@ pub fn apply_to_debug(
 mod command_tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn detected_go_runs_inherit_tags_only_for_commands_that_accept_build_flags() {
+        let tags = GoBuildTags { custom: "integration".into(), ..Default::default() };
+        for operation in
+            ["run", "build", "test", "generate", "vet", "list", "install", "clean", "mod", "work", "env", "version"]
+        {
+            let mut config: ide_run::RunConfig = serde_json::from_value(json!({
+                "id":"go", "name":"Go", "kind":"go", "command":"go", "args":[operation, "."],
+                "env":{}, "detected":true, "isTest":false
+            }))
+            .unwrap();
+            let accepts = !["mod", "work", "env", "version"].contains(&operation);
+            apply_to_run(&mut config, &tags);
+            assert_eq!(config.args.iter().any(|flag| flag == "-tags=integration"), accepts, "{operation}");
+            config.args = vec![operation.into(), "-tags=explicit".into(), ".".into()];
+            config.extras.params.insert("useTags".into(), "false".into());
+            apply_to_run(&mut config, &tags);
+            assert_eq!(config.args, [operation, "-tags=explicit", "."]);
+        }
+    }
+
+    #[test]
+    fn file_tests_debug_the_real_package_and_keep_sibling_test_helpers() {
+        if crate::exec::which("go").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::write(root.join("go.mod"), "module example.com/scoped\ngo 1.22\n").unwrap();
+        std::fs::write(
+            root.join("chosen_test.go"),
+            "package scoped\nimport t \"testing\"\nfunc TestChosen(\n t *t.T,\n) { helper() }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("helpers_test.go"),
+            "package scoped\nimport \"testing\"\nfunc helper() {}\nfunc TestOther(t *testing.T) {}\n",
+        )
+        .unwrap();
+        let mut env = BTreeMap::from([("GOWORK".into(), "off".into())]);
+        let mut program = Some(root.join("chosen_test.go").to_string_lossy().into_owned());
+        let mut args = vec!["-test.run".into(), "^TestChosen$".into(), "-test.skip=Old".into()];
+        let mut extra =
+            Some(json!({"mode":"test","__goToolArgs":[],"__goFiles":[program.as_ref().unwrap()]}).to_string());
+        apply_to_debug(&mut env, &mut program, &mut args, &mut extra, &GoBuildTags::default()).unwrap();
+        assert_eq!(program.as_deref(), root.to_str());
+        assert_eq!(args, ["-test.skip", "Old|^(TestOther)$", "-test.run", "^TestChosen$"]);
+        let extra: Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
+        assert_eq!(extra["buildFlags"], json!([]));
+        assert!(extra.get("__goFiles").is_none());
+    }
 
     #[test]
     fn merges_custom_tags_without_touching_program_arguments() {
@@ -219,16 +281,16 @@ mod command_tests {
         let mut env = BTreeMap::from([("GOOS".into(), "darwin".into())]);
         let mut extra =
             Some(json!({"mode":"test", "__goUseTags":true, "__goToolArgs":["-tags", "explicit"]}).to_string());
-        apply_to_debug(&mut env, &mut extra, &tags).unwrap();
+        apply_to_debug(&mut env, &mut None, &mut Vec::new(), &mut extra, &tags).unwrap();
         let extra: Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
         assert_eq!(extra["buildFlags"], json!(["-tags=project,explicit"]));
         assert!(extra.get("__goUseTags").is_none());
         assert_eq!(env["GOOS"], "darwin");
-        assert!(apply_to_debug(&mut env, &mut Some("{".into()), &tags).is_err());
+        assert!(apply_to_debug(&mut env, &mut None, &mut Vec::new(), &mut Some("{".into()), &tags).is_err());
     }
 }
 
-pub fn debug_environment(
+pub fn configure_environment(
     root: &std::path::Path,
     settings: &ide_core::settings::Settings,
     env: &mut std::collections::BTreeMap<String, String>,
