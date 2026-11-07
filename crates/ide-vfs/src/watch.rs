@@ -160,26 +160,13 @@ impl Watcher {
             mode,
             watcher: Mutex::new(None),
             watched: Mutex::default(),
+            limit: Mutex::default(),
             queue: Mutex::default(),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
         });
-        let weak: Weak<DirState> = Arc::downgrade(&state);
-        let watcher = W::new(
-            move |event: notify::Result<notify::Event>| {
-                let Some(state) = weak.upgrade() else { return };
-                match event {
-                    Ok(event) if polled && is_dir_touch(&event) => {}
-                    Ok(event) => {
-                        state.queue.lock().push((event, Instant::now()));
-                        state.wake.notify_one();
-                    }
-                    Err(e) => tracing::warn!("file watcher: {e}"),
-                }
-            },
-            config,
-        )
-        .map_err(|e| watcher_error("cannot start file watcher", e))?;
+        let watcher = W::new(event_handler(Arc::downgrade(&state), polled), config)
+            .map_err(|e| watcher_error("cannot start file watcher", e))?;
         *state.watcher.lock() = Some(Box::new(watcher));
         let deferred = if mode == WatchMode::PerDirectory {
             state.watch_tree_bounded(root, SYNC_WATCH_BUDGET)
@@ -187,6 +174,10 @@ impl Watcher {
             state.add_watch(root);
             Vec::new()
         };
+        // A partly watched tree would never report changes in the rest of it.
+        if let Some(limit) = state.limit.lock().take() {
+            return Err(io_error(limit));
+        }
         if state.watched.lock().is_empty() {
             return Err(io_error(format!("cannot watch {}", root.display())));
         }
@@ -219,6 +210,20 @@ impl Drop for Inner {
 
 fn io_error(msg: String) -> IdeError {
     IdeError::new(ide_core::error::ErrorKind::Io, msg)
+}
+
+fn event_handler(state: Weak<DirState>, polled: bool) -> impl FnMut(notify::Result<Event>) + Send + 'static {
+    move |event| {
+        let Some(state) = state.upgrade() else { return };
+        match event {
+            Ok(event) if polled && is_dir_touch(&event) => {}
+            Ok(event) => {
+                state.queue.lock().push((event, Instant::now()));
+                state.wake.notify_one();
+            }
+            Err(e) => tracing::warn!("file watcher: {e}"),
+        }
+    }
 }
 
 /// A directory's own mtime moving as entries come and go: polling sees it, the
@@ -256,6 +261,8 @@ struct DirState {
     mode: WatchMode,
     watcher: Mutex<Option<Box<dyn notify::Watcher + Send>>>,
     watched: Mutex<HashSet<PathBuf>>,
+    /// Why a watch was refused for the OS limit, until the tree is polled instead.
+    limit: Mutex<Option<String>>,
     queue: Mutex<Vec<(notify::Event, Instant)>>,
     wake: Condvar,
     stop: AtomicBool,
@@ -268,9 +275,10 @@ impl DirState {
 
     /// Debounce loop: finishes any deferred startup watches, then waits for a
     /// quiet period and processes each batch.
-    fn run(&self, deferred: Vec<(PathBuf, bool)>, emit: impl Fn(&FsBatch)) {
+    fn run(self: &Arc<Self>, deferred: Vec<(PathBuf, bool)>, emit: impl Fn(&FsBatch)) {
         if !deferred.is_empty() {
             self.watch_stack(deferred, false, &mut Vec::new(), None);
+            self.poll_if_limited();
         }
         loop {
             let events = {
@@ -302,6 +310,7 @@ impl DirState {
             let (mut batch, rule_dirs) = self.filter.batch_detailed(&events);
             if self.mode == WatchMode::PerDirectory {
                 self.update_watches(&mut batch, &rule_dirs);
+                self.poll_if_limited();
             }
             if !batch.is_empty() && !self.stopped() {
                 emit(&batch);
@@ -361,11 +370,43 @@ impl DirState {
                 self.watched.lock().insert(dir.to_path_buf());
                 true
             }
+            // notify reports inotify's ENOSPC (`fs.inotify.max_user_watches`) as `MaxFilesWatch`.
+            Err(mut e) if matches!(e.kind, ErrorKind::MaxFilesWatch) => {
+                e.paths.clear();
+                let mut limit = self.limit.lock();
+                if limit.is_none() {
+                    *limit = Some(watcher_error(&format!("cannot watch {}", dir.display()), e).message);
+                }
+                false
+            }
             Err(e) => {
                 tracing::debug!("cannot watch {}: {e}", dir.display());
                 false
             }
         }
+    }
+
+    /// Once the OS refused a watch for its limit, the directories left without
+    /// one would never report changes: poll the whole tree instead.
+    fn poll_if_limited(self: &Arc<Self>) {
+        let Some(limit) = self.limit.lock().take() else { return };
+        let config = notify::Config::default().with_poll_interval(POLL_INTERVAL);
+        let poller = match PollWatcher::new(event_handler(Arc::downgrade(self), true), config) {
+            Ok(poller) => poller,
+            Err(e) => return tracing::warn!("{limit}; cannot poll for changes instead: {e}"),
+        };
+        {
+            let mut watcher = self.watcher.lock();
+            // `None` once the watcher is being dropped.
+            if watcher.is_none() {
+                return;
+            }
+            // Drops the OS watcher, releasing its watches.
+            *watcher = Some(Box::new(poller));
+            self.watched.lock().clear();
+        }
+        tracing::warn!("{limit}; polling {} for changes instead", self.filter.root.display());
+        self.watch_tree(&self.filter.root, false, &mut Vec::new());
     }
 
     fn remove_watch(&self, dir: &Path) {
@@ -1251,6 +1292,102 @@ mod tests {
         assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("a.txt"))), "{:?}", batches.lock());
         std::thread::sleep(Duration::from_millis(300));
         assert!(!all_paths(&batches.lock()).contains(&root.join("sub/deep.txt")));
+    }
+
+    /// inotify that accepts `ALLOWED` watches and then runs out (`ENOSPC`, which
+    /// notify reports as `MaxFilesWatch`), and can't read directories named
+    /// `locked`. It reports no events, so only polling sees changes.
+    #[derive(Default)]
+    struct LimitedWatcher<const ALLOWED: usize> {
+        watched: usize,
+    }
+
+    impl<const ALLOWED: usize> notify::Watcher for LimitedWatcher<ALLOWED> {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Ok(Self::default())
+        }
+
+        fn watch(&mut self, path: &Path, _: RecursiveMode) -> notify::Result<()> {
+            if path.ends_with("locked") {
+                return Err(notify::Error::io(std::io::ErrorKind::PermissionDenied.into()).add_path(path.into()));
+            }
+            if self.watched == ALLOWED {
+                return Err(notify::Error::new(ErrorKind::MaxFilesWatch).add_path(path.into()));
+            }
+            self.watched += 1;
+            Ok(())
+        }
+
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+
+        fn kind() -> WatcherKind {
+            WatcherKind::Inotify
+        }
+    }
+
+    fn start_limited<const ALLOWED: usize>(root: &Path, batches: Arc<Mutex<Vec<FsBatch>>>) -> IdeResult<Inner> {
+        let emit: Emit = Arc::new(move |b: &FsBatch| batches.lock().push(b.clone()));
+        let filter = EventFilter::new(root.to_path_buf(), &[]);
+        Watcher::start_queued::<LimitedWatcher<ALLOWED>>(
+            root,
+            filter,
+            emit,
+            WatchMode::PerDirectory,
+            Default::default(),
+        )
+    }
+
+    #[test]
+    fn a_watch_refused_for_the_limit_fails_the_start_with_a_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        for d in ["a/b", "c"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        // On the last of its 4 directories, and on the root: either way part
+        // of the tree would go unwatched, so the caller polls it instead.
+        for result in [start_limited::<3>(&root, Arc::default()), start_limited::<0>(&root, Arc::default())] {
+            let Err(e) = result else { panic!("started with part of the tree unwatched") };
+            assert!(e.message.starts_with("cannot watch "), "{}", e.message);
+            assert!(e.message.contains("fs.inotify.max_user_watches"), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn other_watch_errors_skip_only_that_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        for d in ["a/locked/x", "c"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let inner = start_limited::<{ usize::MAX }>(&root, Arc::default()).unwrap();
+        // root, a, c
+        assert_eq!(inner.state.watched.lock().len(), 3);
+    }
+
+    #[test]
+    fn a_watch_refused_for_the_limit_after_start_polls_the_whole_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let dirs = SYNC_WATCH_BUDGET + 40;
+        for i in 0..dirs {
+            std::fs::create_dir_all(root.join(format!("d{i:03}"))).unwrap();
+        }
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        // Runs out while the rest of the tree is watched in the background.
+        let inner = start_limited::<{ SYNC_WATCH_BUDGET + 10 }>(&root, batches.clone()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while inner.state.watched.lock().len() < dirs + 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(inner.state.watched.lock().len(), dirs + 1);
+        for i in [0, dirs - 1] {
+            let file = root.join(format!("d{i:03}/f.rs"));
+            std::fs::write(&file, "x").unwrap();
+            assert!(wait_for(&batches, |b| all_paths(b).contains(&file)), "{file:?}");
+        }
     }
 
     /// The fallback used when the OS watcher cannot start.
