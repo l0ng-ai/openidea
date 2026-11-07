@@ -1696,7 +1696,7 @@ impl LspManager {
             {
                 partial(v.clone());
             }
-            v.locations.extend(self.go_other_module_references(&snap, t, pos, &cancel).await);
+            v.locations.extend(self.go_mentions_beyond_search(&snap, t, pos, &cancel, false).await.locations);
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
@@ -2136,7 +2136,7 @@ impl LspManager {
         // The second edit covers the first: its files stay analysed.
         let mut edit = w.second.unwrap_or(w.first);
         let mut more: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
-        for l in self.go_other_module_references(snap, t, pos, cancel).await {
+        for l in self.go_mentions_beyond_search(snap, t, pos, cancel, false).await.locations {
             more.entry(l.path.to_path_buf())
                 .or_default()
                 .push(TextEdit { range: l.range, new_text: new_name.to_owned() });
@@ -2592,6 +2592,15 @@ impl LspManager {
             }
             HierarchyDirection::Outgoing => (query().await?, None),
         };
+        let mut out = out;
+        if direction == HierarchyDirection::Incoming {
+            for caller in self.go_mentions_beyond_search(&snap, t, pos, cancel, true).await.callers {
+                match out.iter_mut().find(|i| i.path == caller.path && i.range == caller.range) {
+                    Some(item) => item.from_ranges.extend(caller.from_ranges),
+                    None => out.push(caller),
+                }
+            }
+        }
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }

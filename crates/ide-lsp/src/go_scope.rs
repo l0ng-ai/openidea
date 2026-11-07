@@ -1,20 +1,23 @@
-//! Go modules a gopls search does not reach.
+//! Go files a gopls search does not reach.
 //!
 //! gopls answers a search from the view of the file it is asked about: the
-//! modules of a `go.work`, or that file's own module. Opening more files does
-//! not widen it (each gets a view of its own), so the generic scope widening
-//! is skipped for Go. Usages in other modules of the project, which use the
-//! declaration's module through a local `replace` (a multi-module repository
-//! without `go.work`), are found as GoLand finds them: their mentions of the
-//! name are resolved one by one in their own module's view.
+//! modules of a `go.work`, or that file's own module, built for the host's
+//! GOOS/GOARCH without extra tags. Opening more files does not widen it (each
+//! gets a view of its own), so the generic scope widening is skipped for Go.
+//! Usages it leaves out are found as GoLand finds them, by resolving each
+//! mention of the name in its own file's view: files of other modules that use
+//! the declaration's module through a local `replace` (a multi-module
+//! repository without `go.work`), and files whose build constraints exclude
+//! them from the default build (`_windows.go`, `//go:build`).
 
 use ide_core::{Pos, Range};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// The files of `candidates` in modules the search at `origin` does not cover and
-/// that can refer to `declaration`: its own module, or one replacing it with its directory.
-pub(crate) fn other_module_files(origin: &Path, declaration: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+/// The files of `candidates` the search at `origin` does not cover and that can refer to
+/// `declaration`: those of the covered modules excluded from their default build, and those
+/// of the declaration's own module or one replacing it with its directory when not covered.
+pub(crate) fn files_beyond_search(origin: &Path, declaration: &Path, candidates: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut modules = ModuleRoots::default();
     let (Some(origin_module), Some(declaring)) = (modules.of(origin), modules.of(declaration)) else {
         return Vec::new();
@@ -27,8 +30,9 @@ pub(crate) fn other_module_files(origin: &Path, declaration: &Path, candidates: 
         .into_iter()
         .filter(|file| {
             let Some(module) = modules.of(file) else { return false };
+            // The covered modules share the search's view: only their excluded files are missed.
             if covered.contains(&module) {
-                return false;
+                return !in_default_build(file);
             }
             *uses.entry(module.clone()).or_insert_with(|| {
                 module == declaring
@@ -41,6 +45,108 @@ pub(crate) fn other_module_files(origin: &Path, declaration: &Path, candidates: 
         })
         .collect()
 }
+
+/// Whether gopls' default view builds `file`: no build constraint other than the host's
+/// own GOOS/GOARCH file name suffix.
+fn in_default_build(file: &Path) -> bool {
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = name.strip_suffix(".go").unwrap_or(&name);
+    let stem = stem.strip_suffix("_test").unwrap_or(stem);
+    let parts: Vec<&str> = stem.split('_').collect();
+    // `name_GOOS`, `name_GOARCH`, `name_GOOS_GOARCH`; a file named just `linux.go` has no constraint.
+    let host = |part: &&str| *part == host_goos() || *part == host_goarch();
+    if parts.len() > 1 {
+        let last = parts[parts.len() - 1];
+        if (GOOS.contains(&last) || GOARCH.contains(&last)) && !host(&last) {
+            return false;
+        }
+        if parts.len() > 2 && GOARCH.contains(&last) {
+            let os = parts[parts.len() - 2];
+            if GOOS.contains(&os) && !host(&os) {
+                return false;
+            }
+        }
+    }
+    std::fs::read_to_string(file).is_ok_and(|text| !constrained_header(&text))
+}
+
+/// A `//go:build` or `// +build` line before the package clause.
+fn constrained_header(text: &str) -> bool {
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("package ") {
+            return false;
+        }
+        if line.starts_with("//go:build") || line.starts_with("// +build") {
+            return true;
+        }
+    }
+    false
+}
+
+fn host_goos() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "darwin",
+        os => os,
+    }
+}
+
+fn host_goarch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "x86" => "386",
+        "powerpc64" => "ppc64",
+        arch => arch,
+    }
+}
+
+const GOOS: &[&str] = &[
+    "aix",
+    "android",
+    "darwin",
+    "dragonfly",
+    "freebsd",
+    "hurd",
+    "illumos",
+    "ios",
+    "js",
+    "linux",
+    "nacl",
+    "netbsd",
+    "openbsd",
+    "plan9",
+    "solaris",
+    "wasip1",
+    "windows",
+    "zos",
+];
+const GOARCH: &[&str] = &[
+    "386",
+    "amd64",
+    "amd64p32",
+    "arm",
+    "armbe",
+    "arm64",
+    "arm64be",
+    "loong64",
+    "mips",
+    "mipsle",
+    "mips64",
+    "mips64le",
+    "mips64p32",
+    "mips64p32le",
+    "ppc",
+    "ppc64",
+    "ppc64le",
+    "riscv",
+    "riscv64",
+    "s390",
+    "s390x",
+    "sparc",
+    "sparc64",
+    "wasm",
+];
 
 /// Whole-word occurrences of `word` in `text`, as ranges in UTF-16 columns.
 pub(crate) fn word_ranges(text: &str, word: &str) -> Vec<Range> {
@@ -185,14 +291,19 @@ mod tests {
         write(root, "example/d/go.mod", "module d\n\nreplace example.com/app => github.com/fork/app v1.0.0\n");
         let candidates = vec![
             write(root, "same.go", "package app\n"),
+            write(root, "same_plan9.go", "package app\n"),
+            write(root, &format!("same_{}.go", host_goos()), "package app\n"),
+            write(root, "same_plan9_test.go", "package app\n"),
+            write(root, "tagged.go", "// Copyright\n\n//go:build integration\n\npackage app\n"),
+            write(root, "plan9.go", "package app\n"),
             write(root, "example/a/main.go", "package main\n"),
             write(root, "example/b/main.go", "package main\n"),
             write(root, "example/c/main.go", "package main\n"),
             write(root, "example/d/main.go", "package main\n"),
         ];
         assert_eq!(
-            names(root, other_module_files(&origin, &origin, candidates)),
-            ["example/a/main.go", "example/b/main.go"]
+            names(root, files_beyond_search(&origin, &origin, candidates)),
+            ["same_plan9.go", "same_plan9_test.go", "tagged.go", "example/a/main.go", "example/b/main.go"]
         );
     }
 
@@ -205,9 +316,15 @@ mod tests {
         write(root, "app/go.mod", "module example.com/app\n\nreplace example.com/lib => ../lib\n");
         write(root, "tool/go.mod", "module example.com/tool\n\nreplace example.com/lib => ../lib\n");
         let declaration = write(root, "lib/lib.go", "package lib\n");
-        let candidates =
-            vec![write(root, "app/main.go", "package main\n"), write(root, "tool/main.go", "package main\n")];
-        assert_eq!(names(root, other_module_files(&declaration, &declaration, candidates)), ["tool/main.go"]);
+        let candidates = vec![
+            write(root, "app/main.go", "package main\n"),
+            write(root, "app/main_plan9.go", "package main\n"),
+            write(root, "tool/main.go", "package main\n"),
+        ];
+        assert_eq!(
+            names(root, files_beyond_search(&declaration, &declaration, candidates)),
+            ["app/main_plan9.go", "tool/main.go"]
+        );
     }
 
     #[test]
@@ -219,7 +336,7 @@ mod tests {
         write(root, "cmd/go.mod", "module cmd\n\nreplace example.com/app => ../\n");
         let origin = write(root, "cmd/main.go", "package main\n");
         let candidates = vec![write(root, "other.go", "package app\n"), write(root, "cmd/util.go", "package main\n")];
-        assert_eq!(names(root, other_module_files(&origin, &declaration, candidates)), ["other.go"]);
+        assert_eq!(names(root, files_beyond_search(&origin, &declaration, candidates)), ["other.go"]);
     }
 
     #[test]
