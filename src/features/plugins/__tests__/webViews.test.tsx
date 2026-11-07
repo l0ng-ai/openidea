@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { PluginInfo, ViewEvent } from "@/bindings";
 import { addFileIconProvider, fileIconName, registerExternalIcons } from "@/ui";
 import { provideEditorService, type EditorInput, type EditorService } from "@/workbench/contributions";
+import { useProject } from "@/platform/project";
+import { isToolWindowVisible, resetToolWindowLayout, showToolWindow } from "@/workbench/toolwindows/store";
+import { ToolWindowLayout } from "@/workbench/toolwindows/ToolWindows";
 import {
   addContributedFileTemplate,
   fileTemplates,
@@ -374,6 +377,129 @@ describe("WebView", () => {
     );
     expect(events).toEqual([]);
     view.unmount();
+  });
+
+  it("keeps the standard tool-window header unless header = 'none', preserves it while loading or on error, and renders keyboard-operable corner actions with inset vars when ready", async () => {
+    resetToolWindowLayout();
+    const prevProject = useProject.getState().project;
+    useProject.setState({ project: { root: "/proj", name: "proj", trusted: true } as never });
+    const undefine = defineViewUiPoints();
+    try {
+      let resolveUrl!: (url: string) => void;
+      let rejectUrl!: (err: Error) => void;
+      let mode: "pending" | "ready" | "error" = "ready";
+      setPluginsBackend({
+        ...createMemoryPluginsBackend([]),
+        webPageUrl: () =>
+          mode === "ready"
+            ? Promise.resolve("about:blank")
+            : mode === "error"
+              ? Promise.reject(new Error("page missing"))
+              : new Promise<string>((res, rej) => {
+                  resolveUrl = res;
+                  rejectUrl = rej;
+                }),
+      });
+      const plugin = { id: "acme.kube", version: "1.0.0", hasCode: false, capabilities: [] } as unknown as PluginInfo;
+      usePlugins.setState({ plugins: [plugin] });
+
+      // 1. Default web view (without header = "none"): keeps the standard <header>.
+      syncUiContributions(
+        [
+          {
+            pluginId: "acme.kube",
+            point: "views",
+            key: "normal",
+            decl: { id: "normal", title: "Normal View", location: "bottom", web: "web/index.html" },
+          },
+        ],
+        [plugin],
+      );
+      showToolWindow("plugin.acme.kube.normal");
+      const first = render(<ToolWindowLayout editor={null} />);
+      await frameOf(first.container);
+      expect(first.container.querySelector('[data-toolwindow="plugin.acme.kube.normal"] header')).not.toBeNull();
+      expect(screen.getByText("Normal View")).toBeInTheDocument();
+      first.unmount();
+      clearUiContributions();
+
+      // 2. Loading state with header = "none": keeps the standard <header> (title + Options + Hide) until ready.
+      mode = "pending";
+      syncUiContributions(
+        [
+          {
+            pluginId: "acme.kube",
+            point: "views",
+            key: "cluster",
+            decl: {
+              id: "cluster",
+              title: "Cluster Explorer",
+              location: "bottom",
+              web: "web/index.html",
+              header: "none",
+            },
+          },
+        ],
+        [plugin],
+      );
+      showToolWindow("plugin.acme.kube.cluster");
+      const second = render(<ToolWindowLayout editor={null} />);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(screen.getByText("Cluster Explorer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Options" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
+
+      // 3. Once the frame resolves, the standard <header> is replaced by corner actions and the frame gets the corner inset vars.
+      act(() => resolveUrl("about:blank"));
+      const { frame, posted } = await frameOf(second.container);
+      await waitFor(() =>
+        expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull(),
+      );
+      fireEvent.load(frame);
+      await waitFor(() =>
+        expect(
+          posted.some(
+            (m) =>
+              (m.theme as { vars?: Record<string, string> } | undefined)?.vars?.["--openidea-corner-inset-width"] ===
+                "64px" &&
+              (m.theme as { vars?: Record<string, string> } | undefined)?.vars?.["--openidea-corner-inset-height"] ===
+                "34px",
+          ),
+        ).toBe(true),
+      );
+
+      // Corner actions are present and keyboard-operable (focus + click/activate).
+      const optionsBtn = screen.getByRole("button", { name: "Options" });
+      optionsBtn.focus();
+      expect(document.activeElement).toBe(optionsBtn);
+      fireEvent.click(optionsBtn);
+      expect(optionsBtn).toHaveAttribute("aria-expanded", "true");
+      fireEvent.keyDown(optionsBtn, { key: "Escape" });
+
+      const hideBtn = screen.getByRole("button", { name: "Hide" });
+      hideBtn.focus();
+      expect(document.activeElement).toBe(hideBtn);
+      fireEvent.click(hideBtn);
+      expect(isToolWindowVisible("plugin.acme.kube.cluster")).toBe(false);
+      second.unmount();
+
+      // 4. Error state with header = "none": keeps the standard <header> so the user still has title, Options, and Hide.
+      mode = "pending";
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.1" }] }));
+      showToolWindow("plugin.acme.kube.cluster");
+      const third = render(<ToolWindowLayout editor={null} />);
+      act(() => rejectUrl(new Error("page missing")));
+      await waitFor(() => expect(screen.getByText("page missing")).toBeInTheDocument());
+      expect(third.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(screen.getByText("Cluster Explorer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
+      third.unmount();
+    } finally {
+      clearUiContributions();
+      undefine();
+      useProject.setState({ project: prevProject });
+      resetToolWindowLayout();
+    }
   });
 });
 

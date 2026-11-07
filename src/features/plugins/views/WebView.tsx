@@ -21,9 +21,10 @@ import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { ToolWindowCornerActions, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
-import { FRAME_TAG, frameTheme, frameThemeMessage } from "./frame";
+import { FRAME_TAG, HEADERLESS_CORNER_INSET, frameTheme, frameThemeMessage } from "./frame";
 import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
 import { logTabData } from "./logTab";
 import { webPtyBackend } from "./ptyBackend";
@@ -133,15 +134,20 @@ export interface WebViewProps {
   pluginId: string;
   view: string;
   label: string;
+  /** `none` hides the tool window's header row once the frame is ready and overlays corner actions. */
+  header?: "default" | "none";
   /** The custom editor's document; none in a tool window. */
   document?: FrameDocument | null;
   /** The backend document, for messages to the plugin's code. */
   doc?: number | null;
 }
 
-export function WebView({ pluginId, view, label, document = null, doc = null }: WebViewProps) {
+export function WebView({ pluginId, view, label, header = "default", document = null, doc = null }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
+  const ready = page !== null && !("error" in page);
+  const headless = !document && header === "none" && ready;
+  useOwnToolWindowHeader(headless);
   const hasCode = plugin?.hasCode ?? false;
   const clipboard = plugin?.capabilities.some((c) => c.id === "clipboard" && c.granted) ?? false;
   const frame = useRef<HTMLIFrameElement>(null);
@@ -149,7 +155,14 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
   const post = useCallback((message: object, transfer: Transferable[] = []) => {
     frame.current?.contentWindow?.postMessage({ tag: FRAME_TAG, ...message }, "*", transfer);
   }, []);
-  const postTheme = useCallback(() => post(frameThemeMessage(frameTheme())), [post]);
+  const postTheme = useCallback(() => {
+    const t = frameTheme();
+    if (headless) {
+      t.vars["--openidea-corner-inset-width"] = `${HEADERLESS_CORNER_INSET.width}px`;
+      t.vars["--openidea-corner-inset-height"] = `${HEADERLESS_CORNER_INSET.height}px`;
+    }
+    post(frameThemeMessage(t));
+  }, [headless, post]);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   useEffect(postTheme, [theme, postTheme]);
 
@@ -308,7 +321,7 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
       </EmptyState>
     );
   // No `allow-same-origin`: an opaque origin without access to the IDE. `onLoad` sends the theme.
-  return (
+  const iframe = (
     <iframe
       ref={frame}
       className={styles.frame}
@@ -318,5 +331,12 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
       src={page.url}
       onLoad={postTheme}
     />
+  );
+  if (!headless) return iframe;
+  return (
+    <div className={styles.webWrap}>
+      <ToolWindowCornerActions className={styles.cornerActions} />
+      {iframe}
+    </div>
   );
 }

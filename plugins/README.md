@@ -1038,6 +1038,13 @@ Save, the dirty mark and Undo are the document's, as for every custom editor.
 IDE shortcuts the page doesn't handle itself (Save, Close, Find Action…) still
 work while it has focus; editing keys (⌘C, ⌘V, ⌘Z…) stay with the page. With
 the `clipboard` capability the page may use `navigator.clipboard`.
+An ungrouped tool-window web view that renders its own top bar can declare
+`header = "none"` (API 1.3: `engines.openidea = "^1.3"`): once the page is
+ready, the IDE replaces the standard tool-window header with top-right corner
+actions (`Options` and `Hide`) and sets `--openidea-corner-inset-width` (`64px`)
+and `--openidea-corner-inset-height` (`34px`) on the frame's root element (and
+in `openidea.theme.vars`) so the page can pad its top bar around them. Loading
+and error states keep the standard tool-window header.
 `plugins/official/excalidraw` is a complete example: a Vite + React page in
 `web-src/`, built into `web/` by `plugins/build.sh`. `plugins/official/graphviz`
 pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
