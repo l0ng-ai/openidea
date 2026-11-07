@@ -1409,3 +1409,32 @@ fn spelling_regions_cover_declared_names_only() {
         .collect();
     assert_eq!(names, ["Bird", "fly", "text"]);
 }
+
+// ---------------------------------------------------------------------------
+// Script regions of Vue SFCs and HTML documents (docs/vue-ts-semantic-index.md)
+
+#[test]
+fn script_regions_skip_typed_blocks() {
+    let src = "<html><body><script type=\"module\">var x = 1;</script>\
+               <script type=\"application/json\">{\"a\":1}</script>\
+               <script type=\"importmap\">{}</script>\
+               <script>var y = 2;</script></body></html>";
+    let regions = syntax().script_regions(&lang("html"), src);
+    assert_eq!(regions.len(), 2, "module and plain scripts; json/importmap skipped");
+    assert_eq!(regions[0].language.as_str(), "javascript");
+}
+
+#[test]
+fn script_regions_pick_the_lang_attribute() {
+    let src = "<script setup lang=\"tsx\">\nconst App = () => <div/>\n</script>\n";
+    let regions = syntax().script_regions(&lang("vue"), src);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].language.as_str(), "tsx");
+    assert!(regions[0].text.contains("const App"));
+}
+
+#[test]
+fn script_regions_empty_for_other_languages() {
+    assert!(syntax().script_regions(&lang("rust"), "fn main() {}").is_empty());
+    assert!(syntax().script_regions(&lang("vue"), "<template><div/></template>").is_empty());
+}

@@ -10,9 +10,10 @@ pub(crate) mod lines;
 mod literals;
 mod outline;
 mod selection;
+mod sfc;
 mod web;
 
-use crate::{FoldRange, LanguageConfig, LanguageRegistry, SymbolTag};
+use crate::{FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
 pub use configuration::ConfigurationKey;
 pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};
@@ -246,6 +247,13 @@ impl Syntax {
     /// Value ranges of the `id="name"` / `name="name"` attributes in an HTML document.
     pub fn web_anchors(&self, lang: &LanguageId, text: &str, name: &str) -> Vec<Range> {
         self.with_web_tree(lang, text, |_, _, tree| web::anchors(tree, text, name)).unwrap_or_default()
+    }
+
+    /// The `<script>` regions of a Vue SFC / HTML document (empty for other
+    /// languages): what the project index's module-facts extraction parses
+    /// per block (see `docs/vue-ts-semantic-index.md`).
+    pub fn script_regions(&self, lang: &LanguageId, text: &str) -> Vec<ScriptRegion> {
+        self.with_web_tree(lang, text, |_g, _css, tree| sfc::script_regions(tree, text)).unwrap_or_default()
     }
 
     /// Highlighting from the grammar's own query; `None` without one.
