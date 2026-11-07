@@ -1042,7 +1042,11 @@ impl PluginHost {
         std::fs::remove_dir_all(if root.is_dir() { root } else { plugin.dir().to_path_buf() })?;
         self.updates.lock().remove(id);
         // Its storage goes with it.
-        let _ = std::fs::remove_dir_all(self.shared.data_dir.join(id));
+        match std::fs::remove_dir_all(self.shared.data_dir.join(id)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
         {
             let mut ledger = self.ledger.lock();
             ledger.remove(&plugin.subject());

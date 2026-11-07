@@ -3,8 +3,9 @@ package openidea:plugin@1.3.0;
 /// Files outside the open projects: the configuration of the program a
 /// plugin integrates with, a tool installed elsewhere, a licence file.
 ///
-/// A plugin's own WASI has no preopened directory, so every path here is
-/// checked against its `fs.read:<path>` (reading) or `fs.write:<path>`
+/// A plugin's own WASI has no preopened directory. Every path outside its
+/// own `plugin-dir` is checked against its `fs.read:<path>` (reading) or
+/// `fs.write:<path>`
 /// (writing; it doesn't imply reading) grants; without one covering the path a
 /// call returns `denied` naming the capability the manifest has to declare. A
 /// file inside a project is `workspace.project.read-file` / `write-file`.
@@ -12,6 +13,11 @@ package openidea:plugin@1.3.0;
 interface fs {
     use types.{error};
     use workspace.{file-kind, file-stat};
+
+    /// The plugin's persistent private directory, created owner-only (0700,
+    /// owner-only ACL on Windows), removed on uninstall. Reading and writing
+    /// under it needs no fs.* grant; files created there are owner-only.
+    plugin-dir: func() -> result<string, error>;
 
     /// A text file, decoded as the editor decodes it (BOM and encoding
     /// detection), at most 16 MiB. Unsaved editor contents win, as they do

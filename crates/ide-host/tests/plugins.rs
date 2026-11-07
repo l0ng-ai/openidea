@@ -683,6 +683,161 @@ fn a_reporting_task_outlives_its_background_budget() {
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
+#[test]
+fn private_directory_is_owned_persistent_and_removed_on_uninstall() {
+    let f = fixture(Limits {
+        timeout: Duration::from_secs(30),
+        idle_timeout: Some(Duration::from_millis(100)),
+        ..Limits::default()
+    });
+    let pkg = sample("private-dir");
+    f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    let run = |cmd: &str, arg: Option<&str>| f.host.run_command("test.private-dir", cmd, arg, Invocation::default());
+    let dir = PathBuf::from(run("directory", None).unwrap().unwrap());
+    assert!(!dir.starts_with(f.installed("test.private-dir")));
+    assert_eq!(run("roundtrip", None).unwrap().as_deref(), Some("fake private data\n"));
+    assert_eq!(run("large-cache", None).unwrap().as_deref(), Some("83886080"));
+    let file = dir.join("fake-secret.txt");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        for name in ["fake-secret.txt", "cache.bin"] {
+            assert_eq!(std::fs::metadata(dir.join(name)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+    for path in [f._tmp.path().join("secret.txt"), dir.parent().unwrap().join("adjacent.txt")] {
+        std::fs::write(&path, "other content").unwrap();
+        for cmd in ["read", "write"] {
+            assert_eq!(run(cmd, path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "other content");
+    }
+    let other_pkg = f._tmp.path().join("other-plugin");
+    copy_dir(&pkg, &other_pkg);
+    let manifest = other_pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("test.private-dir", "test.private-dir-other");
+    std::fs::write(manifest, text).unwrap();
+    f.host.install_from_dir(&other_pkg, &Consent::default()).unwrap();
+    f.host.run_command("test.private-dir-other", "roundtrip", None, Invocation::default()).unwrap();
+    let other_dir = PathBuf::from(
+        f.host.run_command("test.private-dir-other", "directory", None, Invocation::default()).unwrap().unwrap(),
+    );
+    for cmd in ["read", "write"] {
+        assert_eq!(run(cmd, other_dir.join("fake-secret.txt").to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    }
+    for path in [
+        dir.join("../adjacent.txt"),
+        dir.join("../../test.private-dir-other/files/fake-secret.txt"),
+        dir.join("../../test.private-dir-other/files/new.txt"),
+    ] {
+        assert_eq!(run("write", path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        if path.exists() {
+            assert_eq!(run("read", path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        }
+    }
+    assert!(!other_dir.join("new.txt").exists());
+    assert_eq!(std::fs::read_to_string(dir.parent().unwrap().join("adjacent.txt")).unwrap(), "other content");
+    assert_eq!(std::fs::read_to_string(other_dir.join("fake-secret.txt")).unwrap(), "fake private data\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(other_dir.join("fake-secret.txt"), dir.join("escape.txt")).unwrap();
+        symlink(&other_dir, dir.join("escape-dir")).unwrap();
+        for path in [dir.join("escape.txt"), dir.join("escape-dir/fake-secret.txt")] {
+            for cmd in ["read", "write"] {
+                assert_eq!(run(cmd, path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+            }
+        }
+        assert_eq!(
+            run("write", dir.join("escape-dir/new.txt").to_str()).unwrap_err().kind,
+            ErrorKind::PermissionDenied
+        );
+    }
+    // The same real file opens and saves through Documents, preserving privacy.
+    f.workspace.documents.open(&file).unwrap();
+    let doc = f.workspace.documents.by_path(&file).unwrap();
+    f.workspace
+        .documents
+        .apply_edits(doc, &[ide_core::TextEdit { range: ide_core::Range::default(), new_text: "edited ".into() }])
+        .unwrap();
+    assert!(run("write", None).unwrap_err().message.contains("unsaved changes"));
+    assert_eq!(run("read", None).unwrap().as_deref(), Some("edited fake private data\n"));
+    f.workspace.documents.save(doc).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited fake private data\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    // Reload and idle reclaim never remove content.
+    f.host.reload("test.private-dir").unwrap();
+    assert_eq!(run("directory", None).unwrap().as_deref(), dir.to_str());
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.status("test.private-dir"), PluginStatus::Inactive);
+    assert!(file.exists());
+    f.host.uninstall("test.private-dir").unwrap();
+    assert!(!dir.exists());
+    assert!(other_dir.join("fake-secret.txt").exists());
+    f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert!(run("read", None).unwrap_err().message.contains("no such file"));
+}
+
+#[test]
+fn private_directory_is_available_to_providers_without_a_project() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+    f.host.set_workspace(None);
+    f.host.run_command("test.private-dir", "roundtrip", None, Invocation::default()).unwrap();
+    let doc = ide_plugin::ProviderDocument {
+        path: f._tmp.path().join("outside.txt"),
+        language: "private-fixture".into(),
+        version: 1,
+        text: String::new(),
+    };
+    assert!(eventually(|| f
+        .host
+        .provide_completion(&doc, ide_core::Pos::new(0, 0), None)
+        .iter()
+        .any(|(_, item)| item.label == "fake private data\n")));
+}
+
+#[test]
+fn private_directory_survives_host_restart_and_inactive_uninstall() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+    f.run("test.private-dir", "roundtrip", None).unwrap();
+    let dir = PathBuf::from(f.run("test.private-dir", "directory", None).unwrap().unwrap());
+    f.host.shutdown();
+    let host =
+        PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+            .unwrap();
+    host.load_all();
+    host.startup_finished();
+    assert_eq!(
+        host.run_command("test.private-dir", "read", None, Invocation::default()).unwrap().as_deref(),
+        Some("fake private data\n")
+    );
+    host.shutdown();
+    host.uninstall("test.private-dir").unwrap();
+    assert!(!dir.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn private_paths_work_with_open_location_and_approved_process_arguments() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+    f.run("test.private-dir", "roundtrip", None).unwrap();
+    let path = PathBuf::from(f.run("test.private-dir", "open", None).unwrap().unwrap());
+    assert!(f.take_events().iter().any(|(client, event)| client.as_deref() == Some("main")
+        && matches!(event, PluginEvent::OpenLocation { path: opened, line: 0, column: 0, .. } if opened.0 == path)));
+    assert!(f.run("test.private-dir", "process", None).unwrap_err().contains("process:cat"));
+    f.host.set_capability("test.private-dir", "process:cat", true).unwrap();
+    assert_eq!(f.run("test.private-dir", "process", None).unwrap().as_deref(), Some("fake private data\n"));
+}
+
 /// A missing capability is an error the plugin can handle, not a trap.
 #[test]
 fn ungranted_capabilities_are_denied_not_trapped() {
