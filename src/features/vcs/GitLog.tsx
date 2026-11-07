@@ -1388,6 +1388,28 @@ function CommitList() {
     else if (e.metaKey || e.ctrlKey) toggleCommitSelection(id);
     else selectCommit(id);
   }, []);
+  // CommitRow is memoized: rows get handlers that stay the same across renders and
+  // call this render's (assigned before rendering).
+  const rowEvents = useRef<RowEvents | null>(null);
+  const rowHandlers = useMemo<RowEvents>(
+    () => ({
+      onHover: (edge) => rowEvents.current?.onHover(edge),
+      onFragment: (from, target, expand) => rowEvents.current?.onFragment(from, target, expand),
+      onNavigate: (index, key) => rowEvents.current?.onNavigate(index, key),
+    }),
+    [],
+  );
+  // Called while a row renders its graph, so it changes with what it reads.
+  const targetTitle = useCallback(
+    (index: number, key?: string) => {
+      const target = commits[index];
+      return target
+        ? `${target.shortId} ${target.summary} — ${target.author}`
+        : (key && boundaryTitles.get(key)) ||
+            `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
+    },
+    [commits, boundaryTitles],
+  );
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === "Backspace" || e.key === "Escape")) {
@@ -1559,6 +1581,38 @@ function CommitList() {
     }
   };
 
+  rowEvents.current = {
+    onHover: (edge) => {
+      setHoverColor(edge);
+      if (!edge) return;
+      const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
+      const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
+      if (!source || !target || commits.some((c) => commitKey(c) === target) || boundaryRequests.current.has(target))
+        return;
+      const original = all.find((c) => commitKey(c) === source.id);
+      if (!original) return;
+      boundaryRequests.current.add(target);
+      const split = target.lastIndexOf("\0"),
+        id = target.slice(split + 1);
+      void loadLogDetails({ ...original, id })
+        .then((details) =>
+          setBoundaryTitles((current) =>
+            new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
+          ),
+        )
+        .catch(() => undefined);
+    },
+    onFragment: fragment,
+    onNavigate: (index, key) => {
+      const target = commits[index];
+      if (target) selectCommit(commitKey(target), true);
+      else if (key) {
+        const split = key.lastIndexOf("\0");
+        void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
+      }
+    },
+  };
+
   return (
     <div className={styles.listWrap}>
       {earlier && (
@@ -1647,52 +1701,15 @@ function CommitList() {
                 mine={opts.highlightMine && isMine(c, user)}
                 onBranch={!!onBranch?.has(commitKey(c))}
                 opts={opts}
-                remoteNames={new Set((c as RepoCommit).remoteNames ?? remoteNames)}
+                remoteNames={rowRemoteNames((c as RepoCommit).remoteNames, remoteNames)}
                 onPick={pick}
                 hoverColor={hoverColor}
                 highlighted={highlighted}
                 highlightedNodes={highlightedNodes}
-                onHover={(edge) => {
-                  setHoverColor(edge);
-                  if (!edge) return;
-                  const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
-                  const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
-                  if (
-                    !source ||
-                    !target ||
-                    commits.some((c) => commitKey(c) === target) ||
-                    boundaryRequests.current.has(target)
-                  )
-                    return;
-                  const original = all.find((c) => commitKey(c) === source.id);
-                  if (!original) return;
-                  boundaryRequests.current.add(target);
-                  const split = target.lastIndexOf("\0"),
-                    id = target.slice(split + 1);
-                  void loadLogDetails({ ...original, id })
-                    .then((details) =>
-                      setBoundaryTitles((current) =>
-                        new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
-                      ),
-                    )
-                    .catch(() => undefined);
-                }}
-                onFragment={fragment}
-                onNavigate={(index, key) => {
-                  const target = commits[index];
-                  if (target) selectCommit(commitKey(target), true);
-                  else if (key) {
-                    const split = key.lastIndexOf("\0");
-                    void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
-                  }
-                }}
-                targetTitle={(index, key) => {
-                  const target = commits[index];
-                  return target
-                    ? `${target.shortId} ${target.summary} — ${target.author}`
-                    : (key && boundaryTitles.get(key)) ||
-                        `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
-                }}
+                onHover={rowHandlers.onHover}
+                onFragment={rowHandlers.onFragment}
+                onNavigate={rowHandlers.onNavigate}
+                targetTitle={targetTitle}
                 columns={columns}
                 bookmarked={!!bookmarks[commitKey(c)]}
               />
@@ -1802,6 +1819,22 @@ function LogColumnHeader({
       />
     </span>
   );
+}
+
+type RowEvents = {
+  onHover: (edge: string | null) => void;
+  onFragment: (from: string, target: string, expand: boolean) => void;
+  onNavigate: (index: number, key?: string) => void;
+};
+
+const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
+
+/** A commit's own remote names (multi-root logs) as one set per array, else the shared one. */
+function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<string>): ReadonlySet<string> {
+  if (!own) return shared;
+  let set = remoteNameSets.get(own);
+  if (!set) remoteNameSets.set(own, (set = new Set(own)));
+  return set;
 }
 
 const CommitRow = memo(function CommitRow({
