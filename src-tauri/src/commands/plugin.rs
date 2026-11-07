@@ -259,6 +259,14 @@ pub async fn plugin_assets(
     blocking(move || host.assets(&plugin_id, &prefix)).await
 }
 
+/// The UI language (BCP 47) that plugin code reads with `ui.locale()`.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_set_ui_locale(state: State<'_, AppState>, tag: String) -> IdeResult<()> {
+    state.plugins.set_ui_locale(&tag);
+    Ok(())
+}
+
 /// An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`.
 #[tauri::command]
 #[specta::specta]

@@ -14,8 +14,8 @@
 //! The commands a window needs at run time (`plugin_run_command`,
 //! `plugin_post_events`, `plugin_event_kinds`, `plugin_status_items`,
 //! `plugin_context_keys`, `plugin_cancel_task`, `plugin_answer_prompt`, `plugin_set_active_file`,
-//! `plugin_line_markers`, `plugin_view_render`, `plugin_view_event`, `plugin_service_detail`,
-//! `plugin_service_log`, `plugin_answer_commit`, `plugin_commit_checks`)
+//! `plugin_line_markers`, `plugin_set_ui_locale`, `plugin_view_render`, `plugin_view_event`,
+//! `plugin_service_detail`, `plugin_service_log`, `plugin_answer_commit`, `plugin_commit_checks`)
 //! carry the desktop commands' names and arguments, so a remote window's UI
 //! routes them here unchanged. Plugin results come back as `plugin`
 //! notifications ([`PluginEventMessage`]); secrets stay in the desktop's
@@ -381,6 +381,14 @@ impl RemotePlugins {
                     selected_paths: paths.unwrap_or_default(),
                 };
                 blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_set_ui_locale", move |c| {
+            let h = h.clone();
+            async move {
+                alive(&h)?.set_ui_locale(&c.arg::<String>("tag")?);
+                Ok(())
             }
         });
         let h = host.clone();

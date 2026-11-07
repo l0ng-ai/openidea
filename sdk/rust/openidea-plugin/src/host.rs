@@ -129,6 +129,10 @@ mod imp {
         wit::views::reveal(view).map_err(error)
     }
 
+    pub fn locale() -> String {
+        wit::ui::locale()
+    }
+
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         wit::storage::get(key).map_err(error)
     }
@@ -746,6 +750,15 @@ pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
 /// current command or event came from.
 pub fn reveal_view(view: &str) -> Result<(), Error> {
     imp::reveal_view(view)
+}
+
+/// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …), for the
+/// text the plugin builds itself (notifications, error messages, HTML). The
+/// strings of the manifest and of views are translated by the IDE from the
+/// package's `locales/<tag>.json`. Read it when the text is made: it follows
+/// a change of language.
+pub fn locale() -> String {
+    imp::locale()
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
