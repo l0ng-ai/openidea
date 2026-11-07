@@ -20,6 +20,7 @@ pub mod commit;
 pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
+mod files_changed;
 mod hover;
 mod icon_extensions;
 mod icon_patterns;
@@ -187,6 +188,7 @@ const LATENCY_WINDOW: usize = 128;
 struct EventQueue {
     since: Instant,
     events: Vec<WorkbenchEvent>,
+    files_source: Option<files_changed::Source>,
 }
 
 /// Most events queued per plugin and window; older ones are dropped.
@@ -217,6 +219,39 @@ struct Batches {
     pending: u32,
     /// Kinds of the batch being handled right now.
     running: Option<BTreeSet<EventKind>>,
+    files_pending: HashMap<FilesQueueKey, PendingFiles>,
+    running_token: Option<Arc<()>>,
+}
+
+type FilesQueueKey = (Option<String>, Option<PathBuf>);
+
+struct PendingFiles {
+    queue: EventQueue,
+    actor: std::sync::Weak<Actor>,
+    token: Arc<()>,
+}
+
+/// Dropping a posted job must release its mailbox even when the actor never runs it.
+struct BatchTicket {
+    batches: Arc<Mutex<Batches>>,
+    files_key: Option<FilesQueueKey>,
+    token: Arc<()>,
+}
+
+impl Drop for BatchTicket {
+    fn drop(&mut self) {
+        let mut batches = self.batches.lock();
+        if let Some(key) = &self.files_key
+            && batches.files_pending.get(key).is_some_and(|p| Arc::ptr_eq(&p.token, &self.token))
+        {
+            batches.files_pending.remove(key);
+        }
+        batches.pending = batches.pending.saturating_sub(1);
+        if batches.running_token.as_ref().is_some_and(|token| Arc::ptr_eq(token, &self.token)) {
+            batches.running = None;
+            batches.running_token = None;
+        }
+    }
 }
 
 impl LoadedPlugin {
@@ -1547,7 +1582,7 @@ impl PluginHost {
         let mut out = BTreeSet::new();
         for p in self.plugins.read().values() {
             for kind in EventKind::ALL {
-                if self.wants(p, kind, subs.kinds.get(p.id())) {
+                if Self::wants(p, kind, subs.kinds.get(p.id())) {
                     out.insert(kind);
                 }
             }
@@ -1557,7 +1592,7 @@ impl PluginHost {
 
     /// Whether `plugin` gets `kind` events: subscribed at run time or with
     /// `on-event:<kind>`, the capability granted, and able to run.
-    fn wants(&self, plugin: &LoadedPlugin, kind: EventKind, runtime: Option<&BTreeSet<EventKind>>) -> bool {
+    fn wants(plugin: &LoadedPlugin, kind: EventKind, runtime: Option<&BTreeSet<EventKind>>) -> bool {
         let declared =
             plugin.manifest().activation.iter().any(|a| matches!(a, ActivationEvent::Event(k) if k == kind.name()));
         if !declared && !runtime.is_some_and(|s| s.contains(&kind)) {
@@ -1571,6 +1606,15 @@ impl PluginHost {
     /// Queues workbench events from window `client` for the plugins that want
     /// them; [`flush_events`](Self::flush_events) delivers them in batches.
     pub fn post_events(&self, client: Option<&str>, events: Vec<WorkbenchEvent>) {
+        self.post_events_from(client, events, None);
+    }
+
+    fn post_events_from(
+        &self,
+        client: Option<&str>,
+        events: Vec<WorkbenchEvent>,
+        source: Option<files_changed::Source>,
+    ) {
         if events.is_empty() {
             return;
         }
@@ -1578,32 +1622,60 @@ impl PluginHost {
         let plugins: Vec<_> = self.plugins.read().values().cloned().collect();
         let now = Instant::now();
         let mut queues = self.queues.lock();
+        let mut events = events;
+        files_changed::retain_live(&mut events, source.as_ref());
         for p in plugins {
-            let wanted: Vec<WorkbenchEvent> =
-                events.iter().filter(|e| self.wants(&p, e.kind(), subs.kinds.get(p.id()))).cloned().collect();
-            let wanted = self.filter_path_events(&p, client, &wanted, &subs);
+            let wanted: Vec<WorkbenchEvent> = events
+                .iter()
+                .filter(|e| Self::wants(&p, e.kind(), subs.kinds.get(p.id())))
+                .filter(|e| {
+                    !matches!(e, WorkbenchEvent::FilesChanged(_))
+                        || p.dev_root
+                            .as_ref()
+                            .is_none_or(|root| client.and_then(|c| self.shared.project_of(c)).as_ref() == Some(root))
+                })
+                .cloned()
+                .collect();
+            let wanted = Self::filter_path_events(&self.shared, &p, client, &wanted, &subs);
             if wanted.is_empty() {
                 continue;
             }
-            let queue = queues
-                .entry((p.id().to_owned(), client.map(str::to_owned)))
-                .or_insert_with(|| EventQueue { since: now, events: Vec::new() });
-            queue.events.extend(wanted);
+            let queue = queues.entry((p.id().to_owned(), client.map(str::to_owned))).or_insert_with(|| EventQueue {
+                since: now,
+                events: Vec::new(),
+                files_source: None,
+            });
+            if let Some(source) = &source {
+                if !queue.files_source.as_ref().is_some_and(|old| old.same(source)) {
+                    queue.events.retain(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)));
+                }
+                queue.files_source = Some(source.clone());
+            }
+            files_changed::append(&mut queue.events, wanted);
             let excess = queue.events.len().saturating_sub(MAX_QUEUED_EVENTS);
-            queue.events.drain(..excess);
+            let mut remaining = excess;
+            queue.events.retain(|event| {
+                if remaining > 0 && !matches!(event, WorkbenchEvent::FilesChanged(_)) {
+                    remaining -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
         }
     }
 
     /// Delivers queued events: to running plugins right away, to idle ones
     /// (which must be activated) after [`IDLE_BATCH`], so frequent events
-    /// don't keep waking them. Call it a few times a second.
+    /// don't keep waking them. Filesystem events are already debounced by
+    /// the watcher and bypass that delay. Call it a few times a second.
     pub fn flush_events(&self) {
         self.flush_events_at(Instant::now());
     }
 
     #[doc(hidden)]
     pub fn flush_events_at(&self, now: Instant) {
-        let due: Vec<(QueueKey, Vec<WorkbenchEvent>)> = {
+        let due: Vec<(QueueKey, EventQueue)> = {
             let mut queues = self.queues.lock();
             let plugins = self.plugins.read();
             let keys: Vec<_> = queues
@@ -1614,15 +1686,17 @@ impl PluginHost {
                     running
                         || now.saturating_duration_since(q.since) >= IDLE_BATCH
                         || q.events.len() >= MAX_QUEUED_EVENTS / 2
-                        || q.events.contains(&WorkbenchEvent::Scheduled)
+                        || q.events
+                            .iter()
+                            .any(|e| matches!(e, WorkbenchEvent::FilesChanged(_) | WorkbenchEvent::Scheduled))
                 })
                 .map(|(k, _)| k.clone())
                 .collect();
-            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q.events))).collect()
+            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q))).collect()
         };
         let mut changed = false;
-        for ((id, client), events) in due {
-            changed |= self.deliver(&id, client, events);
+        for ((id, client), queue) in due {
+            changed |= self.deliver(&id, client, queue);
         }
         // Batches that crashed since.
         let plugins: Vec<_> = self.plugins.read().values().cloned().collect();
@@ -1655,22 +1729,50 @@ impl PluginHost {
         }
     }
 
+    fn filter_delivery_events(
+        shared: &api::Shared,
+        plugin: &LoadedPlugin,
+        client: Option<&str>,
+        events: &[WorkbenchEvent],
+        subs: &event_paths::Subscriptions,
+    ) -> Vec<WorkbenchEvent> {
+        Self::filter_path_events(shared, plugin, client, events, subs)
+            .into_iter()
+            .filter(|event| {
+                !matches!(
+                    event,
+                    WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_) | WorkbenchEvent::FilesChanged(_)
+                ) || Self::wants(plugin, event.kind(), subs.kinds.get(plugin.id()))
+            })
+            .collect()
+    }
+
     /// Hands one batch to the plugin's `event-handler.handle` without waiting
     /// for it. A newer batch of the same kinds cooperatively cancels the one
     /// being handled (a save while the previous save is still being checked).
+    /// Filesystem deltas must all run: a newer delta cannot replace an older one.
     /// Returns whether the plugin was activated.
-    fn deliver(&self, id: &str, client: Option<String>, events: Vec<WorkbenchEvent>) -> bool {
+    fn deliver(&self, id: &str, client: Option<String>, mut queue: EventQueue) -> bool {
+        files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
+        if queue.events.is_empty() {
+            return false;
+        }
+        if queue.events.iter().any(|e| matches!(e, WorkbenchEvent::FilesChanged(_)))
+            && queue.events.iter().any(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)))
+        {
+            let (files, other) = queue.events.into_iter().partition(|e| matches!(e, WorkbenchEvent::FilesChanged(_)));
+            let changed =
+                self.deliver(id, client.clone(), EventQueue { since: queue.since, events: other, files_source: None });
+            return self.deliver(
+                id,
+                client,
+                EventQueue { since: queue.since, events: files, files_source: queue.files_source },
+            ) | changed;
+        }
         let Ok(plugin) = self.get(id) else { return false };
         let subs = self.shared.subscriptions.lock().clone();
-        let events: Vec<_> = self
-            .filter_path_events(&plugin, client.as_deref(), &events, &subs)
-            .into_iter()
-            .filter(|event| {
-                !matches!(event, WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_))
-                    || self.wants(&plugin, event.kind(), subs.kinds.get(id))
-            })
-            .collect();
-        if events.is_empty() {
+        let eligible = Self::filter_delivery_events(&self.shared, &plugin, client.as_deref(), &queue.events, &subs);
+        if eligible.is_empty() {
             return false;
         }
         if !plugin.meta.lock().pending.is_empty() {
@@ -1683,20 +1785,92 @@ impl PluginHost {
             editor: None,
             selected_paths: Vec::new(),
         };
-        let kinds: BTreeSet<EventKind> = events.iter().map(WorkbenchEvent::kind).collect();
+        let kinds: BTreeSet<EventKind> = queue.events.iter().map(WorkbenchEvent::kind).collect();
+        let filesystem = kinds.contains(&EventKind::FilesChanged);
+        let mailbox_key = (client.clone(), invocation.workspace_root.clone());
+        let mut ordinary = None;
+        let token = Arc::new(());
         {
             let mut batches = plugin.batches.lock();
-            if batches.running.as_ref() == Some(&kinds) && !kinds.contains(&EventKind::Scheduled) {
+            if batches.running.as_ref() == Some(&kinds)
+                && !kinds.contains(&EventKind::Scheduled)
+                && !kinds.contains(&EventKind::FilesChanged)
+            {
                 actor.cancel_soft();
+            }
+            if filesystem {
+                files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
+                if queue.events.is_empty() {
+                    return activated;
+                }
+                if let Some(pending) = batches.files_pending.get_mut(&mailbox_key)
+                    && pending.actor.upgrade().is_some_and(|owner| Arc::ptr_eq(&owner, &actor))
+                {
+                    let pending = &mut pending.queue;
+                    if queue
+                        .files_source
+                        .as_ref()
+                        .is_some_and(|source| !pending.files_source.as_ref().is_some_and(|old| old.same(source)))
+                    {
+                        pending.events.clear();
+                        pending.files_source = queue.files_source.clone();
+                    }
+                    files_changed::append(&mut pending.events, queue.events);
+                    return activated;
+                }
+                batches.files_pending.insert(
+                    mailbox_key.clone(),
+                    PendingFiles { queue, actor: Arc::downgrade(&actor), token: token.clone() },
+                );
+            } else {
+                ordinary = Some(queue);
             }
             batches.pending += 1;
         }
         let started = Instant::now();
-        let (start, finish) = (plugin.batches.clone(), plugin.batches.clone());
+        let start = plugin.batches.clone();
+        let ticket = BatchTicket {
+            batches: plugin.batches.clone(),
+            files_key: filesystem.then(|| mailbox_key.clone()),
+            token: token.clone(),
+        };
         let done_plugin = plugin.clone();
+        let delivery_plugin = plugin.clone();
+        let shared = self.shared.clone();
         actor.post(
             move |rt| {
-                start.lock().running = Some(kinds);
+                let _ticket = ticket;
+                let mut queue = {
+                    let mut batches = start.lock();
+                    let queue = if filesystem {
+                        if !batches.files_pending.get(&mailbox_key).is_some_and(|p| Arc::ptr_eq(&p.token, &token)) {
+                            return Ok(());
+                        }
+                        batches.files_pending.remove(&mailbox_key).expect("owned filesystem batch").queue
+                    } else {
+                        ordinary.expect("ordinary event batch")
+                    };
+                    batches.running = Some(kinds);
+                    batches.running_token = Some(token);
+                    queue
+                };
+                files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
+                if filesystem
+                    && invocation.workspace_root != invocation.client.as_deref().and_then(|c| shared.project_of(c))
+                {
+                    return Ok(());
+                }
+                let subs = shared.subscriptions.lock().clone();
+                let events = Self::filter_delivery_events(
+                    &shared,
+                    &delivery_plugin,
+                    invocation.client.as_deref(),
+                    &queue.events,
+                    &subs,
+                );
+                if events.is_empty() {
+                    return Ok(());
+                }
                 rt.handle_events(events, invocation)
             },
             move |result| {
@@ -1713,9 +1887,6 @@ impl PluginHost {
                     }
                     _ => {}
                 }
-                let mut batches = finish.lock();
-                batches.pending = batches.pending.saturating_sub(1);
-                batches.running = None;
             },
         );
         activated
@@ -1913,7 +2084,7 @@ impl PluginHost {
                 self.queues
                     .lock()
                     .entry((p.id().to_owned(), None))
-                    .or_insert_with(|| EventQueue { since: now, events: Vec::new() })
+                    .or_insert_with(|| EventQueue { since: now, events: Vec::new(), files_source: None })
                     .events
                     .push(WorkbenchEvent::Scheduled);
             }

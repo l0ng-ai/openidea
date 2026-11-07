@@ -3,6 +3,19 @@
 The Rust API is documented by `cargo doc`. Web pages shipped alongside a Rust
 component use `window.openidea` rather than Rust imports.
 
+API 1.3 adds `Event::FilesChanged(FilesChanged)` for debounced external file
+creation, modification and removal in open projects. Declare
+`engines.openidea = "^1.3"`, the `events` capability and
+`activation = ["on-event:files-changed"]`, then handle the typed event in
+`Plugin::handle_events`. Use `host::subscribe_paths("files-changed", &["config/**"])`
+to receive only matching project-relative paths in each category. An empty
+filter pauses delivery. Paths are absolute, like `Event::FileSaved`; pending
+batches are discarded when their project closes. The released WIT variant
+is unchanged: the SDK decodes `event::other` with kind `files-changed`.
+
+See [the event contract](../../../plugins/README.md#events)
+and the [real Wasm fixture](../../../crates/ide-plugin/tests/fixtures/files-events).
+
 API 1.3 adds capability-gated interactive PTYs to that web bridge. Declare
 `engines.openidea = "^1.3"` and `process:<program>` in `plugin.toml`, then send
 `pty-spawn`, `pty-input`, `pty-resize` and `pty-kill` JSON strings using
@@ -13,6 +26,15 @@ See [the protocol, permission and resource limits](../../../plugins/README.md#we
 and the [minimal fixture](../../../crates/ide-plugin/tests/fixtures/web-pty).
 The frame cannot access IPC directly. Its sessions belong to that frame and
 end with its view or plugin. There is no new WIT import for this API.
+
+API 1.3 also answers Find Usages and Rename from `DocumentIndexer` definitions
+and references. Existing indexers work without another export; declare
+`engines.openidea = "^1.3"` when requiring these host features. Each anchor must
+cover exactly the name, using UTF-16 columns. The host merges native results,
+previews indexed renames and applies them as one undoable workspace edit.
+The existing `project.read` capability and trusted-project boundary apply.
+See [the indexing contract](../../../docs/plugins/indexing.md#find-usages-and-rename-api-13)
+and [the minimal fixture](../../../crates/ide-plugin/tests/fixtures/indexer).
 
 API 1.3 also adds diagnostics for unsaved documents. Declare
 `kinds = ["diagnostics"]` and the supported `languages` under

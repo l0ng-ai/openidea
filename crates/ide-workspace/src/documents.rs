@@ -255,6 +255,16 @@ impl Documents {
         Self::load_with_defaults(path, &self.file_defaults())
     }
 
+    /// Bounded closed-file snapshots use the same project defaults as open documents.
+    pub fn load_file_bounded(&self, path: &Path, max_bytes: usize) -> IdeResult<ide_vfs::LoadedText> {
+        let defaults = self.file_defaults();
+        let mut loaded = ide_vfs::load_text_bounded(path, defaults.fallback_for(&absolute(path)), max_bytes)?;
+        if !loaded.binary && defaults.native_to_ascii_for(path) {
+            loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
+        }
+        Ok(loaded)
+    }
+
     pub fn load_file_as(&self, path: &Path, encoding: &str) -> IdeResult<ide_vfs::LoadedText> {
         Self::load_as(path, encoding, self.native_to_ascii_for(path))
     }

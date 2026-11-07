@@ -534,7 +534,7 @@ mod imp {
                 source: ActionSource::parse(&a.source),
                 shortcut: a.shortcut,
             }),
-            E::Other(x) => Event::Other { kind: x.kind, data: x.data },
+            E::Other(x) => Event::from_other(x.kind, x.data),
         }
     }
 }
@@ -1017,7 +1017,7 @@ pub fn locale() -> String {
     imp::locale()
 }
 
-/// Subscribe to project-relative path globs for file-opened or file-saved.
+/// Subscribe to project-relative path globs for file-opened, file-saved or files-changed.
 /// Replaces the previous filter. Empty globs pause delivery; `subscribe` restores all paths.
 /// Requires `events`. Register during activation before the events you want to observe.
 pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
