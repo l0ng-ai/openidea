@@ -43,7 +43,7 @@ function resolveReply(arg: unknown) {
 }
 
 const pending = new Set<string>();
-async function runReplyOperation(task: string, title: string, run: () => Promise<void>) {
+async function runReplyOperation(task: string, title: string, run: () => Promise<unknown>) {
   if (pending.has(task)) return;
   pending.add(task);
   try {
