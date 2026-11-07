@@ -1,0 +1,21 @@
+package openidea:plugin@1.3.0;
+
+/// HTTP endpoints found in a project (`[[contributes.endpoints]]`).
+interface endpoints-provider {
+    use types.{error, location};
+    use invocation.{invocation};
+
+    record endpoint {
+        /// `none` accepts any HTTP method.
+        method: option<string>,
+        /// Path parameters use braces, e.g. `/photos/{id}`.
+        path: string,
+        framework: string,
+        /// Display name, e.g. `PhotosController#show`.
+        handler: option<string>,
+        location: location,
+    }
+
+    /// Called on project open and after matching declaration files change.
+    endpoints: func(ctx: borrow<invocation>) -> result<list<endpoint>, error>;
+}

@@ -10,7 +10,7 @@ import { useProject } from "@/platform/project";
 import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
-import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import { searchEndpoints, provideNotificationService, type NotificationService } from "@/workbench/contributions";
 import { applyThemeAttributes, previewTheme, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
 import {
@@ -1262,4 +1262,32 @@ describe("plugin context keys", () => {
     pending[1]!.resolve([{ pluginId: "p", key: "f", value: "true" }]);
     await waitFor(() => expect(evaluateWhen("plugin.p.f")).toBe(true));
   });
+});
+
+it("projects endpoint snapshots into root-scoped search providers and disposes stale results", async () => {
+  const plugins = [plugin({ id: "routes" })];
+  const item = {
+    pluginId: "routes",
+    point: "endpointResults",
+    key: "/p",
+    decl: {
+      root: "/p",
+      endpoints: [
+        {
+          method: null,
+          path: "/users/{id}",
+          framework: "Rails",
+          handler: "Users#show",
+          location: { path: "/p/config/routes.rb", range: { start: { line: 2, col: 4 }, end: { line: 2, col: 8 } } },
+        },
+      ],
+    },
+  };
+  syncUiContributions([item], plugins);
+  expect(await searchEndpoints("/p")).toMatchObject([
+    { method: "*", url: "/users/{id}", handler: "Users#show", path: "/p/config/routes.rb", line: 2, col: 4 },
+  ]);
+  expect(await searchEndpoints("/other")).toEqual([]);
+  syncUiContributions([], plugins);
+  expect(await searchEndpoints("/p")).toEqual([]);
 });

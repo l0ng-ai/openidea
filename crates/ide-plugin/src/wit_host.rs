@@ -986,3 +986,15 @@ pub(crate) mod inlay_bindings {
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }
+
+pub(crate) mod endpoints_bindings {
+    wasmtime::component::bindgen!({
+        world: "endpoints", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}

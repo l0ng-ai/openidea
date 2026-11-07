@@ -66,5 +66,7 @@
   "Couldn't regenerate the response": "Couldn't regenerate the response",
   "Reasoning": "Reasoning",
   "Branch '{name}'": "Branch '{name}'",
-  "Cannot copy the value": "Cannot copy the value"
+  "Cannot copy the value": "Cannot copy the value",
+  "Open in HTTP Client": "Open in HTTP Client",
+  "Cannot generate the HTTP request": "Cannot generate the HTTP request"
 }

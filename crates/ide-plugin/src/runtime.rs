@@ -16,8 +16,8 @@ use crate::types::{
     ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, commit_checks_bindings, details_bindings, hover_bindings, indexing_bindings, inlay_bindings,
-    providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, details_bindings, endpoints_bindings, hover_bindings, indexing_bindings,
+    inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -37,6 +37,7 @@ use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
 use details_bindings::openidea::plugin::detail_types as wit_dt;
+use endpoints_bindings::exports::openidea::plugin::endpoints_provider as wit_endpoints;
 use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use inlay_bindings::exports::openidea::plugin::inlay_hints_provider as wit_inlay;
@@ -549,6 +550,7 @@ struct Exports {
     hover: Option<wit_hover::Guest>,
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
+    endpoints: Option<wit_endpoints::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -633,6 +635,7 @@ impl Runtime {
         let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
+        let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -671,6 +674,10 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let endpoints = match endpoint_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
             exports: Exports {
@@ -684,6 +691,7 @@ impl Runtime {
                 hover,
                 commit_checks,
                 inlay,
+                endpoints,
             },
             limits: setup.limits,
             version: setup.version,
@@ -1062,6 +1070,37 @@ impl Runtime {
             Ok(v) => Ok(view_from_wit(v)),
             Err(e) => Err(CallError::Guest(e.into())),
         }
+    }
+
+    /// Project routes, with an explicit project invocation and background budget.
+    pub fn endpoints(&mut self, invocation: Invocation, timeout: Duration) -> Result<Vec<crate::Endpoint>, CallError> {
+        if self.exports.endpoints.is_none() {
+            return Err(CallError::missing_export("endpoints-provider"));
+        }
+        let result = self.call(invocation, timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let r = e
+                .endpoints
+                .as_ref()
+                .expect("checked")
+                .call_endpoints(&mut *store, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        let entries = result.map_err(|e| CallError::Guest(e.into()))?;
+        if entries.len() > MAX_PROVIDER_ITEMS {
+            return Err(CallError::Guest(GuestError::Invalid("too many endpoints".into())));
+        }
+        Ok(entries
+            .into_iter()
+            .map(|e| crate::Endpoint {
+                method: e.method,
+                path: e.path,
+                framework: e.framework,
+                handler: e.handler,
+                location: location_from_wit(e.location),
+            })
+            .collect())
     }
 
     /// The Services pane of node `key` of the plugin's services view `view`.

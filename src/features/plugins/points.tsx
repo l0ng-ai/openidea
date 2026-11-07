@@ -3,6 +3,7 @@
  * declaration is projected onto the workbench, and how its items appear on
  * the plugin details page. One `defineUiPoint` per contribution type.
  */
+import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
 import type { PluginInfo, ThemeDef } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
@@ -144,6 +145,38 @@ function IconThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiIte
 /** Registers the client side of every first-party UI point. */
 export function defineBuiltinUiPoints(): () => void {
   const disposers = [
+    defineUiPoint("endpoints", {}),
+    defineUiPoint<{
+      root: string;
+      endpoints: Array<{
+        method: string | null;
+        path: string;
+        framework: string;
+        handler: string | null;
+        location: { path: string; range: { start: { line: number; col: number } } };
+      }>;
+    }>("endpointResults", {
+      project: ({ pluginId, key, decl }) =>
+        registerEndpointProvider({
+          id: `plugin:${pluginId}:${key}`,
+          endpoints: async (root): Promise<EndpointEntry[]> =>
+            root === decl.root
+              ? decl.endpoints.map((e) => ({
+                  method: e.method ?? "*",
+                  url: e.path,
+                  framework: e.framework,
+                  handler: e.handler ?? undefined,
+                  controller: e.framework,
+                  methodName: e.handler ?? "",
+                  pluginId,
+                  path: e.location.path,
+                  rel: e.location.path.slice(root.length + 1),
+                  line: e.location.range.start.line,
+                  col: e.location.range.start.col,
+                }))
+              : [],
+        }),
+    }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",
       project: ({ pluginId, decl }, { plugin }) =>

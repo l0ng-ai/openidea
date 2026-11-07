@@ -615,3 +615,13 @@ pub enum ViewEvent {
     DeleteRows { rows: Vec<u32> },
     Message { text: String },
 }
+
+/// A plugin's HTTP route declaration in a project.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub method: Option<String>,
+    pub path: String,
+    pub framework: String,
+    pub handler: Option<String>,
+    pub location: Location,
+}

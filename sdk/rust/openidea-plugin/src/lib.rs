@@ -41,6 +41,7 @@
 
 pub mod commit;
 pub mod details;
+pub mod endpoints;
 pub mod host;
 pub mod hover;
 pub mod indexing;
@@ -197,6 +198,22 @@ pub mod inlay_bindings {
     });
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod endpoints_bindings {
+    wit_bindgen::generate!({
+        world: "endpoints", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_endpoints_world",
+        default_bindings_module: "openidea_plugin::endpoints_bindings",
+        with: {
+            "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.3.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.3.0": crate::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
 /// The plugin API version this SDK targets.
 pub const API_VERSION: &str = "1.3";
 
@@ -253,6 +270,9 @@ macro_rules! __optional_exports {
     };
     (semantic_tokens, $plugin:ty, $component:ident) => {
         $crate::__semantic_tokens_exports!($plugin, $component);
+    };
+    (endpoints, $plugin:ty, $component:ident) => {
+        $crate::__endpoints_exports!($plugin, $component);
     };
     (details, $plugin:ty, $component:ident) => {
         $crate::__details_exports!($plugin, $component);
@@ -394,6 +414,22 @@ macro_rules! __indexing_exports {
             }
         }
         $crate::indexing_bindings::__export_indexing_world!($component with_types_in $crate::indexing_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __endpoints_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::endpoints_bindings::exports::openidea::plugin::endpoints_provider::Guest for $component {
+            fn endpoints(ctx: &$crate::bindings::openidea::plugin::invocation::Invocation) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::endpoints_bindings::exports::openidea::plugin::endpoints_provider::Endpoint>,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
+                $crate::__rt::endpoints::<$plugin>(ctx)
+            }
+        }
+        $crate::endpoints_bindings::__export_endpoints_world!($component with_types_in $crate::endpoints_bindings);
     };
 }
 
@@ -859,6 +895,28 @@ pub mod __rt {
         let ctx = Invocation::__new(ctx);
         let viewport = viewport.map(|v| v::Viewport { first_row: v.first_row, rows: v.rows });
         with::<T, _>(|p| p.render(&view, viewport, &ctx)).map(view_out).map_err(error_out)
+    }
+
+    pub fn endpoints<T: Plugin + crate::endpoints::EndpointsProvider + Default>(
+        ctx: &b::invocation::Invocation,
+    ) -> Result<Vec<crate::endpoints_bindings::exports::openidea::plugin::endpoints_provider::Endpoint>, b::types::Error>
+    {
+        use crate::endpoints_bindings::exports::openidea::plugin::endpoints_provider as w;
+        let ctx = Invocation::__new(ctx);
+        with::<T, _>(|p| p.endpoints(&ctx))
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|e| w::Endpoint {
+                        method: e.method,
+                        path: e.path,
+                        framework: e.framework,
+                        handler: e.handler,
+                        location: loc(e.location),
+                    })
+                    .collect()
+            })
+            .map_err(error_out)
     }
 
     pub fn service_detail<T: Plugin + crate::details::Details + Default>(

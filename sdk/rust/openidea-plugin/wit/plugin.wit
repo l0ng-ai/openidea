@@ -129,3 +129,13 @@ world details {
 world commit-checks {
     export commit-checker;
 }
+
+/// A plugin with project HTTP endpoints (`[[contributes.endpoints]]`).
+world plugin-endpoints {
+    include plugin;
+    export endpoints-provider;
+}
+
+world endpoints {
+    export endpoints-provider;
+}

@@ -17,6 +17,7 @@
 
 mod api;
 pub mod commit;
+mod endpoints;
 mod hover;
 mod icon_extensions;
 mod icon_patterns;
@@ -323,6 +324,7 @@ pub struct PluginHost {
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
+    endpoints: Mutex<endpoints::Endpoints>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -412,6 +414,7 @@ impl PluginHost {
             run_detectors,
             providers,
             navigation: Mutex::default(),
+            endpoints: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -674,8 +677,16 @@ impl PluginHost {
             .cloned()
             .collect();
         let ids: BTreeSet<&str> = visible.iter().map(|p| p.id()).collect();
-        let ui: Vec<UiContribution> =
-            self.ui.snapshot().into_iter().filter(|c| ids.contains(c.plugin_id.as_str())).collect();
+        let ui: Vec<UiContribution> = self
+            .ui
+            .snapshot()
+            .into_iter()
+            .filter(|c| {
+                ids.contains(c.plugin_id.as_str())
+                    && (c.point != endpoints::RESULTS
+                        || project.is_some_and(|p| c.key == ide_core::ipc_path::to_ipc(p)))
+            })
+            .collect();
         let mut plugins: Vec<PluginInfo> = visible.iter().map(|p| self.info(p)).collect();
         plugins.sort_by_key(|p| p.name.to_lowercase());
         PluginsSnapshot { plugins, active_theme: self.active_theme(), ui }
@@ -1497,6 +1508,7 @@ impl PluginHost {
     /// don't keep waking them. Call it a few times a second.
     pub fn flush_events(&self) {
         self.flush_events_at(Instant::now());
+        self.refresh_endpoints();
     }
 
     #[doc(hidden)]
@@ -1758,6 +1770,7 @@ impl PluginHost {
     /// (which don't keep a plugin alive: it is reclaimed again when idle).
     pub fn tick(&self) {
         self.tick_at(Instant::now());
+        self.refresh_endpoints();
     }
 
     /// [`tick`](Self::tick) as if it were `now` (schedules only; tests).
@@ -2084,6 +2097,7 @@ impl PluginHost {
         }
         let Some(error) = actor.take_crash() else { return };
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         if error.starts_with(CANCELLED) {
             // Cancelled on request: restart on next use, no backoff.
             let mut meta = plugin.meta.lock();
@@ -2156,6 +2170,7 @@ impl PluginHost {
 
     fn stop(&self, plugin: &LoadedPlugin) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         // A call waiting on the user would keep the join below waiting.
         self.shared.block_prompts(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
@@ -2168,6 +2183,7 @@ impl PluginHost {
 
     fn set_failed(&self, plugin: &LoadedPlugin, error: String) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
         let mut meta = plugin.meta.lock();
@@ -2177,6 +2193,7 @@ impl PluginHost {
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "disabled after failure: {error}");
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(false);
