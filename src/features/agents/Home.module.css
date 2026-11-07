@@ -11,7 +11,8 @@
   color: var(--fg);
 }
 .inner {
-  width: min(720px, 100%);
+  /* The same width as a running session's composer and conversation. */
+  width: min(var(--agent-conversation-width), 100%);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -69,7 +70,6 @@
   gap: 8px;
 }
 .docked .where {
-  order: -1;
   flex-wrap: nowrap;
   min-width: 0;
   gap: 6px;

@@ -53,16 +53,13 @@ export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
   | { kind: "command"; query: string; from: number; to: number };
 
-/** The `@file` or leading `/command` being typed at `caret`, if any. */
+/** The `@file` or `/command` being typed at `caret`, if any; both may follow other text. */
 export function completionAt(text: string, caret: number): Completion | null {
   const before = text.slice(0, caret);
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
-  // Commands only as the message's first word.
-  if (word[2] === "/")
-    return before.slice(0, from).trim() === "" ? { kind: "command", query: word[3]!, from, to: caret } : null;
-  return { kind: "file", query: word[3]!, from, to: caret };
+  return { kind: word[2] === "/" ? "command" : "file", query: word[3]!, from, to: caret };
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */

@@ -676,6 +676,130 @@ fn cmake_detection_is_read_only_and_preserves_existing_build_directories() {
     assert_eq!(test.extras.before_launch[0].target, build.id);
 }
 
+fn cmake_reply(root: &Path, dir: &str, configurations: &[(&str, &[&str])]) {
+    let reply = root.join(dir).join(".cmake/api/v1/reply");
+    fs::create_dir_all(&reply).unwrap();
+    fs::write(root.join(dir).join("CMakeCache.txt"), "").unwrap();
+    let write = |name: &str, value: serde_json::Value| fs::write(reply.join(name), value.to_string()).unwrap();
+    write(
+        "index-1.json",
+        serde_json::json!({
+            "objects": [{"kind": "codemodel", "version": {"major": 2}, "jsonFile": "model.json"}]
+        }),
+    );
+    let configurations: Vec<_> = configurations
+        .iter()
+        .map(|(configuration, targets)| {
+            let targets: Vec<_> = targets
+                .iter()
+                .map(|target| {
+                    let file = format!("{configuration}-{target}.json");
+                    write(
+                        &file,
+                        serde_json::json!({
+                            "name": target, "type": "EXECUTABLE", "artifacts": [{"path": target}]
+                        }),
+                    );
+                    serde_json::json!({"jsonFile": file})
+                })
+                .collect();
+            serde_json::json!({"name": configuration, "targets": targets})
+        })
+        .collect();
+    write("model.json", serde_json::json!({"paths": {"source": root}, "configurations": configurations}));
+}
+
+#[test]
+fn cmake_names_only_include_context_that_distinguishes_duplicates() {
+    for configuration in ["", "Debug"] {
+        let root = project(&[("CMakeLists.txt", "project(demo)")]);
+        cmake_reply(root.path(), "build", &[(configuration, &["hello", "other"])]);
+        let single = detect(root.path());
+        let expected = ["CMake Configure", "CMake Build", "CTest", "Build hello", "hello", "Build other", "other"];
+        assert_eq!(single.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), expected);
+        assert_eq!(find(&single, &format!("cmake:build:{configuration}:hello")).name, "hello");
+
+        cmake_reply(root.path(), "build-debug", &[(configuration, &["hello", "unique"])]);
+        let multiple = detect(root.path());
+        let context = if configuration.is_empty() { "build/" } else { "Debug · build/" };
+        assert_eq!(find(&multiple, &format!("cmake:build:{configuration}:hello")).name, format!("hello [{context}]"));
+        assert_eq!(
+            find(&multiple, &format!("cmake:build:{configuration}:hello:build")).name,
+            format!("Build hello [{context}]")
+        );
+        let context = if configuration.is_empty() { "build-debug/" } else { "Debug · build-debug/" };
+        assert_eq!(
+            find(&multiple, &format!("cmake:build-debug:{configuration}:hello")).name,
+            format!("hello [{context}]")
+        );
+        for (id, name) in [("configure", "CMake Configure"), ("build", "CMake Build"), ("test", "CTest")] {
+            for dir in ["build", "build-debug"] {
+                assert_eq!(find(&multiple, &format!("cmake:{dir}:{id}")).name, format!("{name} [{dir}/]"));
+            }
+        }
+        assert_eq!(find(&multiple, &format!("cmake:build:{configuration}:other")).name, "other");
+        assert_eq!(find(&multiple, &format!("cmake:build-debug:{configuration}:unique")).name, "unique");
+        for mut config in single {
+            let renamed = find(&multiple, &config.id);
+            config.name = renamed.name.clone();
+            assert_eq!(&config, renamed, "only names may change when another directory appears");
+        }
+    }
+}
+
+#[test]
+fn cmake_multiconfig_names_use_configuration_without_redundant_directory() {
+    let root = project(&[("CMakeLists.txt", "project(demo)")]);
+    cmake_reply(root.path(), "build", &[("Debug", &["hello"]), ("Release", &["hello"])]);
+    let configs = detect(root.path());
+    for configuration in ["Debug", "Release"] {
+        assert_eq!(
+            find(&configs, &format!("cmake:build:{configuration}:hello")).name,
+            format!("hello [{configuration}]")
+        );
+        assert_eq!(
+            find(&configs, &format!("cmake:build:{configuration}:hello:build")).name,
+            format!("Build hello [{configuration}]")
+        );
+    }
+    assert_eq!(find(&configs, "cmake:build:build").name, "CMake Build");
+}
+
+#[test]
+fn cmake_profile_names_disambiguate_before_adding_directory_locations() {
+    use ide_core::settings::CMakeProfile;
+    let root = project(&[("CMakeLists.txt", "project(demo)")]);
+    cmake_reply(root.path(), "out/debug", &[("Debug", &["hello"])]);
+    cmake_reply(root.path(), "out/release", &[("Release", &["hello"])]);
+    for same_name in [false, true] {
+        let profiles = [
+            CMakeProfile { name: "Development".into(), build_dir: "out/debug".into(), ..Default::default() },
+            CMakeProfile {
+                name: if same_name { "Development" } else { "Production" }.into(),
+                build_type: "Release".into(),
+                build_dir: "out/release".into(),
+                ..Default::default()
+            },
+        ];
+        let configs = ide_run::detect_with_profiles(root.path(), &[], Some(&profiles));
+        for (index, profile) in profiles.iter().enumerate() {
+            let context =
+                if same_name { format!("{} · {}/", profile.name, profile.build_dir) } else { profile.name.clone() };
+            for (id, name) in [("configure", "CMake Configure"), ("build", "CMake Build"), ("test", "CTest")] {
+                assert_eq!(find(&configs, &format!("cmake:profile:{index}:{id}")).name, format!("{name} [{context}]"));
+            }
+            assert_eq!(
+                find(&configs, &format!("cmake:profile:{index}:{}:hello", profile.build_type)).name,
+                format!("hello [{context}]")
+            );
+            assert_eq!(
+                find(&configs, &format!("cmake:profile:{index}:{}:hello:build", profile.build_type)).name,
+                format!("Build hello [{context}]")
+            );
+        }
+    }
+}
+
 #[test]
 fn cmake_configures_before_the_first_build() {
     let dir = project(&[("CMakeLists.txt", "project(demo)")]);
@@ -693,7 +817,7 @@ fn cmake_ignores_malformed_file_api_replies() {
     ]);
     let configs = detect(dir.path());
     assert_eq!(configs.iter().filter(|c| c.kind == "cmake").count(), 3);
-    assert!(!configs.iter().any(|c| c.kind == "native"));
+    assert!(!configs.iter().any(|c| c.kind == "cmake-application"));
 }
 
 #[test]
@@ -789,7 +913,7 @@ fn cmake_profiles_control_commands_names_and_environment() {
             "",
         ]);
         assert_eq!(configure.args, expected);
-        assert_eq!(configure.name, "CMake Configure (output dir)");
+        assert_eq!(configure.name, "CMake Configure");
         let build = find(&configs, "cmake:profile:0:build");
         assert_eq!(build.args, ["--build", "output dir", "--config", "Release", "-j", "8", "--", "VERBOSE=1"]);
         assert_eq!(build.extras.before_launch[0].target, configure.id);

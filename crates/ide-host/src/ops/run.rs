@@ -9,14 +9,20 @@ use std::time::Duration;
 pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let root = project.root.clone();
-    let user = ide_run::load_user_configs(&root)?;
-    let root_suppressed = ide_run::load_suppressed_config_ids(&root)?;
-    let settings = project.settings.effective();
-    let mut all = detected_and_saved(&root, &settings, &user, &root_suppressed);
-    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
+    project_configs(&project.root, &project.settings.effective(), &host.config_dir)
+}
+
+pub(super) fn project_configs(
+    root: &std::path::Path,
+    settings: &ide_core::settings::Settings,
+    config_dir: &std::path::Path,
+) -> IdeResult<Vec<RunConfig>> {
+    let user = ide_run::load_user_configs(root)?;
+    let root_suppressed = ide_run::load_suppressed_config_ids(root)?;
+    let mut all = detected_and_saved(root, settings, &user, &root_suppressed);
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(root)? {
         for member in workspace.projects.into_iter().filter(|p| p.is_dir()) {
-            let settings = ide_workspace::SettingsStore::load(&host.config_dir, Some(&member)).effective();
+            let settings = ide_workspace::SettingsStore::load(config_dir, Some(&member)).effective();
             let saved = ide_run::load_user_configs(&member)?;
             let suppressed = ide_run::load_suppressed_config_ids(&member)?;
             let configs = detected_and_saved(&member, &settings, &saved, &suppressed);
@@ -24,7 +30,7 @@ pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
             let name = member.file_name().unwrap_or_default().to_string_lossy();
             for mut config in configs {
                 for task in &mut config.extras.before_launch {
-                    if task.kind == "run" {
+                    if matches!(task.kind.as_str(), "run" | "build") && !task.target.is_empty() {
                         task.target = format!("workspace:{}:{}", key, task.target);
                     }
                 }

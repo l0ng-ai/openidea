@@ -1,4 +1,11 @@
 {
+  "CMake Configure": "CMake Configure",
+  "CMake Build": "CMake Build",
+  "CTest": "CTest",
+  "Build {0}": "Build {0}",
+  "Not a CMake configure or build configuration": "Not a CMake configure or build configuration",
+  "CMake builds require configure/build prerequisites": "CMake builds require configure/build prerequisites",
+  "CMake Application": "CMake Application",
   "Invalid PTY request": "Invalid PTY request",
   "Cannot write to PTY": "Cannot write to PTY",
   "Cannot resize PTY": "Cannot resize PTY",
@@ -334,8 +341,16 @@
   "\n[Log stream stopped]": "\n[Log stream stopped]",
   "Toggle Log Option": "Toggle Log Option",
   "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory",
+  "devcontainer up exited with {status}": "devcontainer up exited with {status}",
+  "Rename Agent Task": "Rename Agent Task",
+  "Couldn't rename the task": "Couldn't rename the task",
+  "Start a Fresh Agent Session": "Start a Fresh Agent Session",
+  "Start Fresh": "Start Fresh",
+  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.",
   "You": "You",
   "Jump to Latest": "Jump to Latest",
   "Retract Message": "Retract Message",
-  "Retract": "Retract"
+  "Retract": "Retract",
+  "Couldn't retract the message": "Couldn't retract the message",
+  "The agent is still stopping. Try again once it has stopped.": "The agent is still stopping. Try again once it has stopped."
 }

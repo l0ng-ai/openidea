@@ -1070,8 +1070,7 @@ function UserMessage({
         later={turn < turnCount - 1}
         onCancel={() => setEditing(false)}
         onSend={async (text, images) => {
-          await rerunFrom(task.id, turn, text, images);
-          setEditing(false);
+          if (await rerunFrom(task.id, turn, text, images)) setEditing(false);
         }}
       />
     );
@@ -1649,7 +1648,13 @@ function QuestionForm({
     void respond(task.id, entry.id, option).finally(() => setBusy(false));
   };
   const submit = () =>
-    send(JSON.stringify(Object.fromEntries(answers.map((answer) => [answer.question.question, answerItems(answer)]))));
+    send(
+      JSON.stringify(
+        Object.fromEntries(
+          answers.map((answer) => [answer.question.answerKey ?? answer.question.question, answerItems(answer)]),
+        ),
+      ),
+    );
   const update = (previous: QuestionAnswer, next: QuestionAnswer) =>
     setAnswers(answers.map((answer) => (answer === previous ? next : answer)));
   const choose = (answer: QuestionAnswer, label: string, checked: boolean) =>
