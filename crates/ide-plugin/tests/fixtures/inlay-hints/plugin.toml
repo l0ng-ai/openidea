@@ -1,0 +1,9 @@
+id = "test.inlay-hints"
+name = "Inlay hints fixture"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+
+[[contributes.providers]]
+kinds = ["inlay-hints"]
+languages = ["php"]

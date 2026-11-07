@@ -380,6 +380,10 @@ pub struct References {
     pub classified: Vec<ClassifiedReference>,
     pub locations: Vec<Location>,
     pub incomplete: Option<ReferencesIncomplete>,
+    /// The dependencies and the JDK were not searched (asked for without `libraries`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub libraries_skipped: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -503,4 +507,8 @@ pub struct ClassifiedReference {
     pub access: Option<ReferenceAccess>,
     pub location: Location,
     pub kind: ReferenceKind,
+    /// The usage's line, when the server has it at hand (a library class's).
+    #[serde(default)]
+    #[specta(optional)]
+    pub text: Option<String>,
 }

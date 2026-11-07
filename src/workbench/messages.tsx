@@ -81,6 +81,8 @@ export interface ConfirmOptions {
   checkbox?: string;
   /** Initial state of `checkbox`. */
   checked?: boolean;
+  /** Closes the dialog as cancelled when aborted. */
+  signal?: AbortSignal;
 }
 
 /** OK / Cancel question; resolves `null` when cancelled, else the checkbox state. */
@@ -92,6 +94,7 @@ export async function confirmChecked(opts: ConfirmOptions): Promise<{ checked: b
     checkbox: opts.checkbox,
     checked: opts.checked,
     buttons: [{ id: "ok", label: opts.ok, primary: true }],
+    signal: opts.signal,
   });
   return r.button === "ok" ? { checked: r.checked } : null;
 }

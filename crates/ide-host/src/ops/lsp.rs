@@ -3,6 +3,7 @@ use crate::Host;
 use crate::apply_workspace_edit as apply_edit;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
+use ide_core::error::ErrorKind;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
@@ -47,7 +48,7 @@ pub async fn lsp_completion(
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
     let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
     if items.is_empty() {
-        return result;
+        return Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }));
     }
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
     list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
@@ -88,6 +89,9 @@ struct PluginActionRef {
     data: Option<String>,
     /// Opened once the action is applied.
     open: Option<ide_core::IpcPath>,
+    /// Listed by the plugin's `file-actions` export, which resolves it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    file: bool,
 }
 
 /// A plugin's `completion-item.kind` (wit/providers.wit lists them).
@@ -197,9 +201,24 @@ pub async fn lsp_hover(
 ) -> IdeResult<Option<Hover>> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.hover(doc, pos, cancel).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Hover) else {
+        let result = lsp.hover(doc, pos, cancel).await;
+        host.end_request(request);
+        return result;
+    };
+    let (result, hovers) =
+        tokio::join!(lsp.hover(doc, pos, cancel), plugin_call(move || plugins.provide_hover(&d, pos)));
     host.end_request(request);
-    result
+    let hovers = hovers.unwrap_or_default();
+    if hovers.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => None,
+        Err(e) => return Err(e),
+    };
+    Ok(crate::plugins::merge_hover(server, hovers))
 }
 
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
@@ -224,12 +243,63 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
     }
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Definition) else { return result };
     let found = plugin_call(move || plugins.provide_definition(&d, pos)).await.unwrap_or_default();
-    if found.is_empty() {
-        return result;
+    let found: Vec<Location> =
+        found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect();
+    let in_string = !found.is_empty() && in_string_literal(host, window, doc, pos).await;
+    definition_targets(result, found, in_string)
+}
+
+async fn in_string_literal(host: &Host, window: &str, doc: DocId, pos: Pos) -> bool {
+    let Ok(project) = host.project(window) else { return false };
+    blocking(move || {
+        let snap = project.documents.text_snapshot(doc)?;
+        if snap.large {
+            return Ok(false);
+        }
+        let s = ide_syntax::Snapshot::doc(doc, snap.version, &snap.language, &snap.text);
+        Ok(string_at(&project.structure, &s, pos))
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn string_at(structure: &ide_syntax::StructureService, snap: &ide_syntax::Snapshot, pos: Pos) -> bool {
+    let cancel = ide_core::CancellationToken::new();
+    let Ok(Some(at)) = structure.node_at(snap, Range::new(pos, pos), &cancel) else { return false };
+    let stringy = |kind: &str| kind.contains("string") || kind.contains("heredoc") || kind.contains("nowdoc");
+    let part = |kind: &str| kind.contains("content") || kind.contains("fragment") || kind.contains("escape");
+    stringy(&at.node.kind) || (part(&at.node.kind) && at.ancestors.first().is_some_and(|parent| stringy(&parent.kind)))
+}
+
+fn definition_targets(
+    server: IdeResult<Vec<Location>>,
+    plugin: Vec<Location>,
+    in_string: bool,
+) -> IdeResult<Vec<Location>> {
+    if plugin.is_empty() {
+        return server.map(without_generated_helpers);
     }
-    let mut out = result.unwrap_or_default();
-    out.extend(found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }));
+    if in_string {
+        return Ok(plugin);
+    }
+    let same_place = |l: &Location| plugin.iter().any(|p| p.path == l.path && p.range.start.line == l.range.start.line);
+    let server: Vec<Location> =
+        without_generated_helpers(server.unwrap_or_default()).into_iter().filter(|l| !same_place(l)).collect();
+    let mut out = plugin;
+    out.extend(server);
     Ok(out)
+}
+
+fn without_generated_helpers(locations: Vec<Location>) -> Vec<Location> {
+    let generated = |l: &Location| {
+        let path = l.path.to_string_lossy().replace('\\', "/");
+        let file = path.rsplit('/').next().unwrap_or(&path);
+        file.starts_with("_ide_helper") || file == ".phpstorm.meta.php" || path.contains("/vendor/_laravel_ide")
+    };
+    if locations.iter().all(generated) {
+        return locations;
+    }
+    locations.into_iter().filter(|l| !generated(l)).collect()
 }
 
 /// Gutter markers from plugins (`line-markers` providers) for `doc`.
@@ -310,7 +380,11 @@ pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Cancel with `cancel_request(request)`.
+/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
+/// are not searched; with it, those found in the sources arrive on `on_partial` before
+/// the slower search for the rest, and the result has them all. Cancel with
+/// `cancel_request(request)`.
+#[allow(clippy::too_many_arguments)]
 pub async fn lsp_references(
     host: &Host,
     window: &str,
@@ -319,10 +393,24 @@ pub async fn lsp_references(
     pos: Pos,
     include_declaration: bool,
     project_wide: bool,
+    libraries: bool,
+    on_partial: super::Channel<References>,
 ) -> IdeResult<References> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.references(doc, pos, include_declaration, project_wide, cancel).await;
+    let result = lsp
+        .references_streaming(
+            doc,
+            pos,
+            include_declaration,
+            project_wide,
+            libraries,
+            cancel,
+            Some(&|refs| {
+                let _ = on_partial.send(refs);
+            }),
+        )
+        .await;
     host.end_request(request);
     result
 }
@@ -389,6 +477,7 @@ fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> C
             plugin: plugin.to_owned(),
             data: a.data.filter(|_| lazy),
             open: open.map(Into::into),
+            file: a.file_action,
         })
         .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
@@ -469,6 +558,7 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
         operations: Vec::new(),
         open: None,
         data: r.data,
+        file_action: r.file,
     };
     let plugin = r.plugin.clone();
     let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending)).await?;
@@ -665,11 +755,41 @@ pub async fn lsp_format(
 }
 
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
-    host.project(window)?.lsp.inlay_hints(doc, range).await
+    let lsp = host.project(window)?.lsp.clone();
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::InlayHints) else {
+        return lsp.inlay_hints(doc, range).await;
+    };
+    let (result, hints) =
+        tokio::join!(lsp.inlay_hints(doc, range), plugin_call(move || plugins.provide_inlay_hints(&d, range)));
+    let hints = hints.unwrap_or_default();
+    if hints.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    Ok(crate::plugins::merge_inlay_hints(server, hints, range))
 }
 
 pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<SemanticTokens>> {
-    host.project(window)?.lsp.semantic_tokens(doc).await
+    let lsp = host.project(window)?.lsp.clone();
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::SemanticTokens) else {
+        return lsp.semantic_tokens(doc).await;
+    };
+    let (result, tokens) =
+        tokio::join!(lsp.semantic_tokens(doc), plugin_call(move || plugins.provide_semantic_tokens(&d)));
+    let tokens = tokens.unwrap_or_default();
+    if tokens.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => None,
+        Err(e) => return Err(e),
+    };
+    Ok(Some(crate::plugins::merge_semantic_tokens(server, tokens)))
 }
 
 pub async fn lsp_code_lens(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<CodeLens>> {
@@ -862,6 +982,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("lsp_virtual_document", |c| async move { lsp_virtual_document(&c.host, &c.window, c.arg("uri")?).await });
     d.add("lsp_references", |c| async move {
+        let on_partial = c.sender("onPartial")?;
         lsp_references(
             &c.host,
             &c.window,
@@ -870,6 +991,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("pos")?,
             c.arg("includeDeclaration")?,
             c.arg("projectWide")?,
+            c.arg("libraries")?,
+            on_partial,
         )
         .await
     });
@@ -983,6 +1106,7 @@ mod tests {
             operations: Vec::new(),
             open: None,
             data: data.map(str::to_owned),
+            file_action: false,
         };
         let root = Path::new("/p");
         let lazy = plugin_code_action("acme.x", root, action(Vec::new(), Some("ref")));
@@ -993,6 +1117,79 @@ mod tests {
         let edit = TextEdit { range: Range::default(), new_text: "x".into() };
         let eager = plugin_code_action("acme.x", root, action(vec![("/a".into(), vec![edit])], Some("ref")));
         assert!(eager.edit.is_some() && eager.data.is_none());
+    }
+
+    #[test]
+    fn plugin_definitions_own_strings_and_join_the_server_elsewhere() {
+        let at = |path: &str, line: u32| Location {
+            path: path.into(),
+            range: Range::new(Pos::new(line, 0), Pos::new(line, 4)),
+            uri: None,
+        };
+        let paths = |found: IdeResult<Vec<Location>>| {
+            found.unwrap().into_iter().map(|l| l.path.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
+        let xml = at("/p/src/main/resources/UserMapper.xml", 3);
+        let java = at("/p/src/main/java/UserMapper.java", 7);
+        let helper = at("/p/_ide_helper.php", 1);
+        let route = at("/p/routes/web.php", 2);
+        let guess = at("/p/app/helpers.php", 9);
+
+        assert_eq!(
+            paths(definition_targets(Ok(vec![java.clone(), helper.clone()]), vec![xml.clone()], false)),
+            ["/p/src/main/resources/UserMapper.xml", "/p/src/main/java/UserMapper.java"]
+        );
+        assert_eq!(
+            paths(definition_targets(Ok(vec![xml.clone(), java.clone()]), vec![xml.clone()], false)),
+            ["/p/src/main/resources/UserMapper.xml", "/p/src/main/java/UserMapper.java"]
+        );
+        assert_eq!(
+            paths(definition_targets(Ok(vec![guess.clone(), helper.clone()]), vec![route.clone()], true)),
+            ["/p/routes/web.php"]
+        );
+        assert_eq!(
+            paths(definition_targets(Err(ide_core::IdeError::unavailable("no server")), vec![route.clone()], false)),
+            ["/p/routes/web.php"]
+        );
+        assert_eq!(paths(definition_targets(Ok(vec![helper, guess]), Vec::new(), false)), ["/p/app/helpers.php"]);
+    }
+
+    #[test]
+    fn positions_inside_string_literals_are_told_apart() {
+        let syntax = std::sync::Arc::new(ide_language::Syntax::new());
+        let structure = ide_syntax::StructureService::new(std::sync::Arc::new(ide_language::SyntaxCache::new(syntax)));
+        let php = ide_core::LanguageId::new("php");
+        let text = "<?php\nreturn to_route('users.show', $user);\necho \"Hi {$name}\";\n";
+        let snap = ide_syntax::Snapshot::text(&php, text);
+        assert!(string_at(&structure, &snap, Pos::new(1, 20)), "inside 'users.show'");
+        assert!(!string_at(&structure, &snap, Pos::new(1, 9)), "on to_route");
+        assert!(!string_at(&structure, &snap, Pos::new(1, 35)), "on $user");
+        assert!(!string_at(&structure, &snap, Pos::new(2, 12)), "on an interpolated variable");
+        let java = ide_core::LanguageId::new("java");
+        let text = "class A {\n    User find(long id) { return mapper.selectById(\"users\"); }\n}\n";
+        let snap = ide_syntax::Snapshot::text(&java, text);
+        assert!(!string_at(&structure, &snap, Pos::new(1, 9)), "on a method name");
+        assert!(string_at(&structure, &snap, Pos::new(1, 53)), "inside \"users\"");
+    }
+
+    #[test]
+    fn generated_ide_helpers_give_way_to_real_declarations() {
+        let at = |path: &str| Location { path: path.into(), range: Range::default(), uri: None };
+        let paths =
+            |found: Vec<Location>| found.into_iter().map(|l| l.path.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        let real = at("/app/app/Models/User.php");
+        let helper = at("/app/_ide_helper_models.php");
+        let meta = at("/app/.phpstorm.meta.php");
+        let vendor = at("/app/vendor/_laravel_idea/_ide_helper.php");
+        assert_eq!(
+            paths(without_generated_helpers(vec![helper.clone(), real.clone(), meta.clone(), vendor])),
+            ["/app/app/Models/User.php"]
+        );
+        assert_eq!(
+            paths(without_generated_helpers(vec![helper.clone(), meta.clone()])),
+            ["/app/_ide_helper_models.php", "/app/.phpstorm.meta.php"]
+        );
+        assert!(without_generated_helpers(Vec::new()).is_empty());
     }
 
     #[test]
@@ -1011,6 +1208,7 @@ mod tests {
             operations,
             open: Some(root.join("views/home.html")),
             data: None,
+            file_action: true,
         };
 
         let created = plugin_code_action(
@@ -1034,6 +1232,7 @@ mod tests {
         assert!(matches!(&files[4], FileEdit::Edit { path, .. } if **path == root.join("a.txt")));
         let r: PluginActionRef = serde_json::from_value(created.data.unwrap()).unwrap();
         assert_eq!(r.data, None);
+        assert!(r.file, "resolved by the file-actions export");
         let opened = r.open.unwrap().to_path_buf();
         assert!(opened.components().eq(dunce::simplified(&home).components()), "{opened:?}");
 
@@ -1060,6 +1259,14 @@ mod tests {
                 assert!(rejected.edit.unwrap().files.is_empty());
             }
         }
+
+        // `data` and nothing to apply: the file-actions export computes it when picked.
+        let mut lazy = action(Vec::new());
+        (lazy.edits, lazy.open, lazy.data) = (Vec::new(), None, Some("ref".into()));
+        let lazy = plugin_code_action("acme.x", &root, lazy);
+        assert!(lazy.edit.is_none());
+        let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
+        assert_eq!((r.data.as_deref(), r.file), (Some("ref"), true));
     }
 
     #[test]

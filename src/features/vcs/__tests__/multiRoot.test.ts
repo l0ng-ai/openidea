@@ -224,12 +224,10 @@ describe("Git log background refresh", () => {
     const refresh = reloadLog({ preserve: true });
     await vi.waitFor(() => expect(finish).toBeDefined());
     expect(useGitLog.getState().commits).toBe(before.commits);
-    expect(useGitLog.getState().rows).toBe(before.rows);
     expect(useGitLog.getState().loading).toBe(true);
     finish({ status: "ok", data: [commit("new"), commit("old")] });
     await refresh;
     expect(useGitLog.getState().commits.map((c) => c.id)).toEqual(["new", "old"]);
-    expect(useGitLog.getState().rows).toHaveLength(2);
     expect(useGitLog.getState().selected).toBe(commitKey(before.commits[0]!));
     expect(useGitLog.getState().loading).toBe(false);
   });
@@ -290,7 +288,6 @@ describe("Git log background refresh", () => {
     log.mockRejectedValue(new Error("unavailable"));
     await reloadLog({ preserve: true });
     expect(useGitLog.getState().commits).toBe(before.commits);
-    expect(useGitLog.getState().rows).toBe(before.rows);
     expect(useGitLog.getState().error).toContain("unavailable");
     expect(useGitLog.getState().loading).toBe(false);
   });

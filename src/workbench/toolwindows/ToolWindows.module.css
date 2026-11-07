@@ -161,15 +161,17 @@
   /* --stripe-drag: the width under the pointer while the stripe edge is dragged. */
   --stripe-button: var(--stripe-drag, var(--stripe-icon-button));
   /* Outer padding: narrower than the island gap so the side frame stays close to the status bar's height, as in IDEA. */
-  --stripe-pad: 4px;
+  --stripe-pad: var(--stripe-outer-padding);
   width: calc(var(--stripe-button) + var(--stripe-pad) + var(--island-gap));
   container-type: inline-size;
   flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 0 0 6px;
+  /* Icon buttons repeat at the title bar's height, so the title bar's Settings button reads as the right stripe's first one, as in IDEA. */
+  --stripe-gap: calc(var(--h-titlebar) - var(--stripe-icon-button));
+  gap: var(--stripe-gap);
+  padding: calc(var(--stripe-gap) / 2) 0 6px;
   /* Transparent: stripes sit on the window frame so the project-colour wash flows from the title bar. */
   background: transparent;
   /* Short windows: scroll the buttons instead of clipping the last ones. */
@@ -182,8 +184,8 @@
 }
 .stripeWithNames {
   --stripe-button: var(--stripe-drag, var(--stripe-button-w, 56px));
-  --stripe-pad: 4px;
-  gap: 4px;
+  --stripe-gap: 4px;
+  padding-top: 0;
 }
 .stripeSideLeft {
   padding-left: var(--stripe-pad);
@@ -257,7 +259,7 @@
   padding: 6px 2px 5px;
 }
 .stripeMore {
-  height: 30px;
+  height: var(--stripe-icon-button);
 }
 .stripeWithNames .stripeMore {
   width: var(--stripe-button);
@@ -427,9 +429,17 @@
   display: flex;
   flex-direction: column;
 }
+/* The drop target after a group's last button is empty: don't let it add a gap between groups. */
+.stripeSlotEnd {
+  margin-top: calc(-1 * var(--stripe-gap));
+}
+.stripeSlotEnd .stripeDrop {
+  top: calc(var(--stripe-gap) / 2 - 1px);
+}
 .stripeDrop {
   position: absolute;
-  top: -3px;
+  /* Centred in the gap above the slot; the end slot sits on the last button's bottom edge, so below it. */
+  top: calc(var(--stripe-gap) / -2 - 1px);
   left: 6px;
   right: 6px;
   height: 2px;

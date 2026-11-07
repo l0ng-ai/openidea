@@ -6,7 +6,7 @@ import type { View, ViewEvent } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { bindingsFor, effectiveBindings, registerExtensionBindings, useKeymap } from "@/platform/keymap";
 import { createMemoryPluginsBackend, setPluginsBackend, type PluginsBackend } from "../backend";
-import { defineBuiltinUiPoints } from "../points";
+import { commandArgs, defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, syncUiContributions } from "../projection";
 import { pluginMenuItems, pluginViewItemMenuItems, withPluginSetting } from "../uiPoints";
 import { matchesPattern } from "../views/customEditor";
@@ -162,6 +162,13 @@ describe("plugin keymaps", () => {
 });
 
 describe("plugin menus", () => {
+  it("unpacks command arguments", () => {
+    expect(commandArgs("x")).toEqual(["x", []]);
+    expect(commandArgs({ path: "/a", paths: ["/a", "/b"] })).toEqual(["/a", ["/a", "/b"]]);
+    expect(commandArgs(undefined)).toEqual([null, []]);
+    expect(commandArgs({ path: 3 })).toEqual([null, []]);
+  });
+
   it("projects context menu entries for their command's action", () => {
     const off = registerAction({ id: "plugin.p.check", title: "Check", run: () => {} });
     const plugin = {
@@ -188,9 +195,26 @@ describe("plugin menus", () => {
       [plugin],
     );
     expect(pluginMenuItems("projectView", ["/p/a.java"])).toEqual([
-      { kind: "action", action: "plugin.p.check", arg: "/p/a.java" },
+      { kind: "action", action: "plugin.p.check", arg: { path: "/p/a.java", paths: ["/p/a.java"] } },
     ]);
+    expect(pluginMenuItems("projectView", ["/p/a.java", "/p/b.java"])[0]).toMatchObject({
+      arg: { path: "/p/a.java", paths: ["/p/a.java", "/p/b.java"] },
+    });
     expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([]);
+    syncUiContributions(
+      [
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/always",
+          decl: { menu: "editor.context", command: "check" },
+        },
+      ],
+      [plugin],
+    );
+    expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([
+      { kind: "action", action: "plugin.p.check", arg: undefined },
+    ]);
     off();
   });
 
@@ -201,9 +225,9 @@ describe("plugin menus", () => {
         {
           pluginId: "k",
           point: "menus",
-          key: "view.item.context/res/logs",
+          key: "viewItem.context/res/logs",
           decl: {
-            menu: "view.item.context",
+            menu: "viewItem.context",
             view: "res",
             command: "logs",
             when: "viewItemKind == pod",
@@ -224,6 +248,63 @@ describe("plugin menus", () => {
     expect(pluginViewItemMenuItems("other", "res", "pod:x")).toEqual([]);
     expect(pluginMenuItems("projectView", ["/p/a"])).toEqual([]);
     off();
+  });
+
+  it("groups one plugin's entries that name the same submenu", () => {
+    const off = [
+      registerAction({ id: "plugin.p.watch", title: "Watch", category: "P", run: () => {} }),
+      registerAction({ id: "plugin.p.trace", title: "Trace", category: "P", run: () => {} }),
+      registerAction({ id: "plugin.p.single", title: "Single", category: "P", run: () => {} }),
+      registerAction({ id: "plugin.p.plain", title: "Plain", category: "P", run: () => {} }),
+    ];
+    const plugin = {
+      id: "p",
+      name: "P",
+      status: "active",
+      enabled: true,
+    } as unknown as Parameters<typeof syncUiContributions>[1][number];
+    syncUiContributions(
+      [
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/watch",
+          decl: { menu: "editor.context", command: "watch", submenu: "Arthas" },
+        },
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/trace",
+          decl: { menu: "editor.context", command: "trace", submenu: "Arthas" },
+        },
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/single",
+          decl: { menu: "editor.context", command: "single", submenu: "Other" },
+        },
+        {
+          pluginId: "p",
+          point: "menus",
+          key: "editor.context/plain",
+          decl: { menu: "editor.context", command: "plain" },
+        },
+      ],
+      [plugin],
+    );
+    expect(pluginMenuItems("editor", ["/p/a.java"])).toEqual([
+      {
+        kind: "item",
+        label: "Arthas",
+        submenu: [
+          { kind: "action", action: "plugin.p.watch", arg: undefined },
+          { kind: "action", action: "plugin.p.trace", arg: undefined },
+        ],
+      },
+      { kind: "action", action: "plugin.p.single", arg: undefined },
+      { kind: "action", action: "plugin.p.plain", arg: undefined },
+    ]);
+    for (const dispose of off) dispose();
   });
 });
 
@@ -319,7 +400,15 @@ describe("PluginView", () => {
       toolbar: [],
       body: {
         kind: "table",
-        value: { columns: ["name", "city"], totalRows: 1, firstRow: 0, rows: [["Ada", city]], editable: true },
+        value: {
+          columns: ["name", "city"],
+          totalRows: 1,
+          firstRow: 0,
+          rows: [["Ada", city]],
+          editable: true,
+          sortable: false,
+          sort: null,
+        },
       },
       status: null,
     });
@@ -336,6 +425,80 @@ describe("PluginView", () => {
     city = "Paris";
     bumpView("csv", "table");
     expect(await screen.findByText("Paris")).toBeInTheDocument();
+  });
+
+  it("sorts a sortable table from its column headers, inverting on a second click", async () => {
+    const events: ViewEvent[] = [];
+    let sort: { column: number; descending: boolean } | null = null;
+    const table = (): View => ({
+      toolbar: [],
+      body: {
+        kind: "table",
+        value: {
+          columns: ["ext", "files"],
+          totalRows: 1,
+          firstRow: 0,
+          rows: [["rs", "2"]],
+          editable: false,
+          sortable: true,
+          sort,
+        },
+      },
+      status: null,
+    });
+    setPluginsBackend(backendWith(table, events));
+    const user = userEvent.setup();
+    const { container } = render(<PluginView pluginId="ext" view="counts" />);
+    const header = await screen.findByRole("columnheader", { name: "files" });
+
+    await user.click(header);
+    await waitFor(() => expect(events).toContainEqual({ kind: "sort", column: 1, descending: false }));
+
+    sort = { column: 1, descending: false };
+    bumpView("ext", "counts");
+    await waitFor(() =>
+      expect(screen.getByRole("columnheader", { name: "files" })).toHaveAttribute("aria-sort", "ascending"),
+    );
+    expect(container.querySelector('[aria-sort="ascending"] svg')).not.toBeNull();
+
+    await user.click(screen.getByRole("columnheader", { name: "files" }));
+    await waitFor(() => expect(events).toContainEqual({ kind: "sort", column: 1, descending: true }));
+
+    sort = { column: 1, descending: true };
+    bumpView("ext", "counts");
+    await waitFor(() =>
+      expect(screen.getByRole("columnheader", { name: "files" })).toHaveAttribute("aria-sort", "descending"),
+    );
+
+    // Another column starts over at ascending.
+    await user.click(screen.getByRole("columnheader", { name: "ext" }));
+    await waitFor(() => expect(events).toContainEqual({ kind: "sort", column: 0, descending: false }));
+    expect(events.filter((e) => e.kind === "sort")).toHaveLength(3);
+  });
+
+  it("keeps plain table headers inert", async () => {
+    const events: ViewEvent[] = [];
+    const table = (): View => ({
+      toolbar: [],
+      body: {
+        kind: "table",
+        value: {
+          columns: ["name", "city"],
+          totalRows: 1,
+          firstRow: 0,
+          rows: [["Ada", "London"]],
+          editable: false,
+          sortable: false,
+          sort: null,
+        },
+      },
+      status: null,
+    });
+    setPluginsBackend(backendWith(table, events));
+    const user = userEvent.setup();
+    render(<PluginView pluginId="csv" view="table" />);
+    await user.click(await screen.findByRole("columnheader", { name: "city" }));
+    expect(events).toHaveLength(0);
   });
 
   it("keeps an HTML body loaded across theme switches and posts the new theme to it", async () => {

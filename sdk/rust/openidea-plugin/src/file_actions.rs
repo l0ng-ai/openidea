@@ -1,8 +1,9 @@
 //! Quick fixes that create, rename or delete files: implement
-//! [`FileActions`] and register with `register_plugin!(T, file_actions)` (or
-//! `register_plugin!(T, providers, file_actions)`). Declare the `code-actions`
-//! kind in `[[contributes.providers]]`; the actions are listed with those of
-//! [`crate::providers::Providers::code_actions`] and have the same budget.
+//! [`FileActions`] and register with `register_plugin!(T, file_actions)` (with
+//! any other exports, e.g. `register_plugin!(T, providers, file_actions)`).
+//! Declare the `code-actions` kind in `[[contributes.providers]]`; the actions
+//! are listed with those of [`crate::providers::Providers::code_actions`] and
+//! have the same budget.
 
 use crate::providers::Document;
 use crate::types::{Range, TextEdit};
@@ -40,8 +41,19 @@ pub struct FileAction {
     pub edits: Vec<(String, Vec<TextEdit>)>,
     /// Opened once the action is applied.
     pub open: Option<String>,
+    /// The plugin's own reference: with it and no `operations` or `edits`,
+    /// they come from [`FileActions::resolve_file_action`] when the user picks
+    /// the action.
+    pub data: Option<String>,
 }
 
 pub trait FileActions {
     fn file_actions(&mut self, doc: &Document, selection: Range) -> Vec<FileAction>;
+
+    /// The operations and edits of an action [`FileActions::file_actions`]
+    /// returned with `data`, when the user picks it (the command budget
+    /// applies, not 50 ms).
+    fn resolve_file_action(&mut self, _doc: &Document, action: FileAction) -> Result<FileAction, crate::Error> {
+        Ok(action)
+    }
 }

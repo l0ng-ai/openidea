@@ -56,10 +56,14 @@
 .tableToolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 2px;
-  height: 28px;
-  padding: 0 4px;
+  min-height: 28px;
+  padding: 2px 4px;
   border-bottom: 1px solid var(--border);
+}
+.tableToolbar > * {
+  flex-shrink: 0;
 }
 .spacer {
   flex: 1;
@@ -205,7 +209,7 @@
 /* Project Structure */
 .structure {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 260px;
+  grid-template-columns: minmax(0, 1fr) 220px;
   gap: 10px;
   min-height: 420px;
 }
@@ -220,13 +224,15 @@
 .markBar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
-  height: 30px;
-  padding: 0 6px;
+  min-height: 30px;
+  padding: 4px 6px;
   border-bottom: 1px solid var(--border);
   color: var(--fg-secondary);
 }
 .markButton {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -237,6 +243,7 @@
   background: transparent;
   color: var(--fg);
   font: inherit;
+  white-space: nowrap;
 }
 .markButton:hover:not(:disabled) {
   background: var(--bg-toolbar-hover);
@@ -371,4 +378,291 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+/* Project Structure sections (Project, Modules, Libraries, Facets, Artifacts, SDKs) */
+.sectionTabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.sectionTab {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: transparent;
+  color: var(--fg-secondary);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sectionTab:hover {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg);
+}
+.sectionTab[aria-selected="true"] {
+  background: var(--bg-toolbar-selected);
+  color: var(--fg);
+  font-weight: 500;
+}
+.splitLayout {
+  display: grid;
+  grid-template-columns: 268px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 360px;
+}
+.sideList {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+  min-height: 0;
+}
+.sideList .tableToolbar button {
+  flex-shrink: 0;
+  padding: 0 6px;
+  gap: 3px;
+  font-size: var(--fs-small);
+}
+.sideItems {
+  flex: 1;
+  overflow: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sideItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: var(--h-list-row);
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-row);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sideItem:hover {
+  background: var(--bg-hover);
+}
+.sideItemActive,
+.sideItemActive:hover {
+  background: var(--bg-list-selected);
+}
+.sideItemLabel {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sideItemMeta {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.detailPane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.subTabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.entryList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.entryRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.entryActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 18px;
+  border-radius: var(--radius-small);
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+
+/* Standalone IntelliJ IDEA-style Project Structure Dialog */
+.psDialog {
+  height: min(720px, calc(100vh - 48px));
+  background: var(--bg-dialog, var(--bg-elev));
+}
+.psDialogLayout {
+  height: 100%;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.psNavSidebar {
+  flex: none;
+  width: 196px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  padding: 8px 0;
+  overflow-y: auto;
+}
+.psNavGroup {
+  display: flex;
+  flex-direction: column;
+}
+.psNavGroup + .psNavGroup {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.psNavGroupHeader {
+  padding: 4px 14px 4px;
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--fg-subtle);
+  user-select: none;
+}
+.psNavItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 26px;
+  padding: 0 14px 0 22px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.psNavItem:hover {
+  background: var(--bg-hover);
+}
+.psNavItemActive,
+.psNavItemActive:hover {
+  background: var(--bg-tree-selected);
+  color: var(--fg-strong);
+  font-weight: 500;
+}
+.psDialogMain {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.psDialogHeader {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 38px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+}
+.psDialogCrumbs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.psDialogCrumbSep {
+  color: var(--fg-subtle);
+}
+.psDialogReset {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.psDialogReset:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.psDialogBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px 18px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.psModuleHeader {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.psModuleTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.psFooterStatus {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.psFooterError {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger);
+}
+
+.pendingFeature {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }

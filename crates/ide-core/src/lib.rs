@@ -16,6 +16,7 @@ pub mod jsonc;
 pub mod output_encoding;
 pub mod process;
 pub mod project_dir;
+pub mod project_roots;
 pub mod proxy_settings;
 pub mod remote_settings;
 pub mod settings;
