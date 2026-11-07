@@ -251,6 +251,7 @@ pub struct SmartKeysSettings {
     pub tab_out_of_pair: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
     pub reformat_on_paste: String,
+    pub escape_on_paste: bool,
     pub smart_indent: bool,
     /// Enter › Insert documentation comment stub: Enter after `/**` closes the comment.
     pub insert_doc_stub: bool,
@@ -268,6 +269,7 @@ impl Default for SmartKeysSettings {
             surround_selection: true,
             tab_out_of_pair: true,
             reformat_on_paste: "indentEachLine".into(),
+            escape_on_paste: true,
             smart_indent: true,
             insert_doc_stub: true,
             backspace_unindent: "autoindent".into(),

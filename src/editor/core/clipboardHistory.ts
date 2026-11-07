@@ -6,6 +6,7 @@
 import { EditorView } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
 import { tx } from "@/platform/i18n";
+import { filterCopiedText } from "./cm/clipboard";
 
 export const MAX_CLIPBOARD_ENTRIES = 30;
 
@@ -44,10 +45,13 @@ export function removeClipboardEntries(texts: readonly string[]) {
 export function copiedText(state: EditorState): string {
   const ranges = state.selection.ranges;
   if (ranges.some((r) => !r.empty))
-    return ranges
-      .filter((r) => !r.empty)
-      .map((r) => state.sliceDoc(r.from, r.to))
-      .join(state.lineBreak);
+    return filterCopiedText(
+      state,
+      ranges
+        .filter((r) => !r.empty)
+        .map((r) => state.sliceDoc(r.from, r.to))
+        .join(state.lineBreak),
+    );
   const lines: string[] = [];
   let last = -1;
   for (const r of ranges) {

@@ -151,6 +151,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     surroundSelection: true,
     tabOutOfPair: true,
     reformatOnPaste: "indentEachLine",
+    escapeOnPaste: true,
     smartIndent: true,
     insertDocStub: true,
     backspaceUnindent: "autoindent",

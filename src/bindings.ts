@@ -7472,6 +7472,7 @@ export type SmartKeysSettings = {
 	tabOutOfPair?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
+	escapeOnPaste?: boolean,
 	smartIndent?: boolean,
 	/**  Enter › Insert documentation comment stub: Enter after `/**` closes the comment. */
 	insertDocStub?: boolean,

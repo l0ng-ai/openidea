@@ -13,6 +13,7 @@
   "Invalid name": "Invalid name",
   "Invalid file name": "Invalid file name",
   "Enter a value for each variable": "Enter a value for each variable",
+  "Escape text on paste in string literals": "Escape text on paste in string literals",
   "OpenIDEA or JetBrains settings": "OpenIDEA or JetBrains settings",
   "Import JetBrains Settings": "Import JetBrains Settings",
   "These settings will be imported:": "These settings will be imported:",
