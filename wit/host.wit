@@ -62,6 +62,10 @@ interface ui {
     /// Asks for a line of text, pre-filled with `value`; `none` when dismissed.
     /// Same rules as `pick`.
     input: func(prompt: string, value: option<string>) -> result<option<string>, error>;
+    /// Asks for multi-line text, pre-filled with `value` (up to 64 KiB).
+    /// Enter inserts a line break; Cmd/Ctrl+Enter confirms. `none` when
+    /// dismissed. Same window and waiting rules as `input`.
+    input-multiline: func(prompt: string, value: option<string>) -> result<option<string>, error>;
     /// Asks for confirmation with OK and Cancel: `true` on OK, `false` on
     /// Cancel or Escape. Same rules as `pick`.
     confirm: func(title: string, body: string) -> result<bool, error>;

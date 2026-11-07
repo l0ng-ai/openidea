@@ -359,6 +359,12 @@ impl ui::Host for StoreData {
         Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
     }
 
+    fn input_multiline(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
+        let prompt =
+            Prompt::InputMultiline { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 64 << 10)) };
+        Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
+    }
+
     fn confirm(&mut self, title: String, body: String) -> Fallible<bool> {
         let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(body, 16 << 10) };
         Ok(self.ask(prompt).map(|answer| answer.is_some()))

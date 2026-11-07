@@ -560,6 +560,51 @@ describe("plugin prompts", () => {
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("4", ["  Main  "]));
   });
 
+  it.each(["Meta", "Control"])("preserves multiline input and submits only on %s+Enter", async (modifier) => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() =>
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "multiline",
+        prompt: { kind: "inputMultiline", prompt: "Description", value: "  First\nSecond  " },
+      }),
+    );
+    const field = await screen.findByRole("textbox", { name: "Description" });
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field).toHaveValue("  First\nSecond  ");
+    await user.click(field);
+    await user.keyboard("{End}{Enter}Third");
+    expect(answerPrompt).not.toHaveBeenCalled();
+    await user.keyboard(`{${modifier}>}{Enter}{/${modifier}}`);
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("multiline", ["  First\nSecond  \nThird"]));
+  });
+
+  it.each(["cancel", "escape", "plugin stop"])("dismisses multiline input on %s", async (how) => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() =>
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "multiline-cancel",
+        prompt: { kind: "inputMultiline", prompt: "Description", value: null },
+      }),
+    );
+    await screen.findByRole("textbox", { name: "Description" });
+    if (how === "cancel") await user.click(screen.getByRole("button", { name: "Cancel" }));
+    else if (how === "escape") await user.keyboard("{Escape}");
+    else act(() => handlePluginEvent({ type: "promptClosed", promptId: "multiline-cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    if (how === "plugin stop") expect(answerPrompt).not.toHaveBeenCalled();
+    else expect(answerPrompt).toHaveBeenCalledWith("multiline-cancel", null);
+  });
+
   it("closes a question the plugin gave up on without answering", async () => {
     const answerPrompt = vi.fn().mockResolvedValue(undefined);
     setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });

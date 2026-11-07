@@ -131,3 +131,12 @@
     outline: 2px solid Highlight;
   }
 }
+
+.textarea {
+  height: auto;
+  min-height: calc(var(--h-field) * 4);
+  padding: 8px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}

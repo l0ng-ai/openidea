@@ -86,6 +86,8 @@ pub enum Prompt {
     #[serde(rename_all = "camelCase")]
     Input { prompt: String, value: Option<String> },
     #[serde(rename_all = "camelCase")]
+    InputMultiline { prompt: String, value: Option<String> },
+    #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
 }
 

@@ -38,3 +38,8 @@ category = "Jobs"
 [contributes.settings]
 title = "Jobs"
 schema = "settings.schema.json"
+
+[[contributes.commands]]
+id = "input-multiline"
+title = "Jobs: Enter Description"
+category = "Jobs"

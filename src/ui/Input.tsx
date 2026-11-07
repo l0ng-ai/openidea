@@ -275,3 +275,24 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
     </div>
   );
 });
+
+export interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
+  invalid?: boolean;
+}
+
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
+  { invalid, className, placeholder, "aria-label": ariaLabel, ...rest },
+  ref,
+) {
+  const tx = useTx();
+  return (
+    <textarea
+      ref={ref}
+      aria-invalid={invalid || undefined}
+      placeholder={tx(placeholder)}
+      aria-label={tx(ariaLabel)}
+      className={clsx(styles.input, styles.framed, styles.textarea, className)}
+      {...rest}
+    />
+  );
+});

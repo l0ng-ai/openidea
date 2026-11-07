@@ -74,6 +74,9 @@ impl Plugin for Jobs {
                 };
                 Ok(Some(picked.map_or("none".to_owned(), |keys| keys.join(","))))
             }
+            "input-multiline" => {
+                Ok(Some(host::input_multiline("Description", arg)?.unwrap_or_else(|| "none".to_owned())))
+            }
             "input" => Ok(Some(host::input("Name", arg)?.unwrap_or_else(|| "none".to_owned()))),
             "confirm" => Ok(Some(host::confirm("Delete", "Really?")?.to_string())),
             "reveal" => host::reveal_view(arg.unwrap_or_default()).map(|()| None),

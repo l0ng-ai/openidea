@@ -315,12 +315,14 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
   switch (prompt.kind) {
     case "quickPick":
       return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal });
-    case "input": {
+    case "input":
+    case "inputMultiline": {
       const text = await promptInput({
         title: prompt.prompt,
         initial: prompt.value ?? "",
         validate: () => null,
         keepWhitespace: true,
+        multiline: prompt.kind === "inputMultiline",
         signal,
       });
       return text === null ? null : [text];

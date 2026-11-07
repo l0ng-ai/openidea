@@ -1177,3 +1177,12 @@ A new host function touches:
 Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
 plus fmt, clippy (host and wasm) and the tests of the SDK, the official
 plugins and the fixtures.
+
+### Multi-line input prompts
+
+`host::input_multiline(prompt, value)` asks for text in a multi-line dialog and
+preserves whitespace and line breaks. Enter inserts a newline; Cmd+Enter on
+macOS or Ctrl+Enter confirms. Cancel or Escape returns `None`. Like `input`, it
+needs no capability, must run inside a command or event of a window, and time
+spent waiting for the user does not count against the call budget. The initial
+value is limited to 64 KiB.

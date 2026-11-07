@@ -117,6 +117,10 @@ mod imp {
         wit::ui::input(prompt, value).map_err(error)
     }
 
+    pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::input_multiline(prompt, value).map_err(error)
+    }
+
     pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
         wit::ui::confirm(title, body).map_err(error)
     }
@@ -724,6 +728,13 @@ pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>,
 /// Same rules as [`pick`].
 pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
     imp::input(prompt, value)
+}
+
+/// Asks for multi-line text (up to 64 KiB initially). Enter inserts a line
+/// break, Cmd/Ctrl+Enter confirms; `None` on dismissal. Like [`input`], only
+/// from a command or event of a window; waiting does not use the call budget.
+pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    imp::input_multiline(prompt, value)
 }
 
 /// Asks for confirmation: `true` on OK, `false` on Cancel or Escape.

@@ -6283,7 +6283,7 @@ export type ProjectStructureSettings = {
 };
 
 /**  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`). */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "inputMultiline"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
 
 export type ProxyKind = "http" | "socks";
 

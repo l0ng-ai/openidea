@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { t } from "@/platform/i18n";
-import { Checkbox, Dialog, Input, List, T } from "@/ui";
+import { Checkbox, Dialog, Input, Textarea, List, T } from "@/ui";
 import styles from "./inputDialogs.module.css";
 
 export interface PromptInputOptions {
@@ -31,6 +31,8 @@ export interface PromptInputOptions {
   signal?: AbortSignal;
   /** Resolve with the text as typed instead of trimmed. */
   keepWhitespace?: boolean;
+  /** Enter inserts a newline; Cmd/Ctrl+Enter submits. */
+  multiline?: boolean;
 }
 
 export interface ChooseItemOptions {
@@ -143,6 +145,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
       }
     }
   };
+  const Field = options.multiline ? Textarea : Input;
   return (
     <Dialog
       open
@@ -171,7 +174,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
             <T>{options.label}</T>
           </label>
         )}
-        <Input
+        <Field
           data-autofocus
           aria-label={options.label ?? options.title}
           value={value}
