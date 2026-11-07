@@ -62,6 +62,11 @@ struct State {
     root: Option<String>,
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
+
+    /// Files outside every project, for `fs.read` (absolute paths).
+    external: BTreeMap<String, String>,
+    /// The same, for what `fs::write_bytes` put there.
+    external_bytes: BTreeMap<String, Vec<u8>>,
     dirs: BTreeSet<String>,
     editor: Option<Editor>,
     selected_paths: Vec<String>,
@@ -72,6 +77,7 @@ struct State {
     context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
+    path_subscriptions: BTreeMap<String, Vec<String>>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
     remotes: Vec<(String, String)>,
@@ -176,6 +182,13 @@ impl MockHost {
         self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
     }
 
+    /// A file outside every project, for [`crate::host::fs`]: it is readable
+    /// once an `fs.read:<a directory above it>` capability is granted, writable
+    /// with `fs.write:`. Directories are inferred from the paths it holds.
+    pub fn add_external_file(&self, path: &str, text: &str) {
+        self.state.borrow_mut().external.insert(path.to_owned(), text.to_owned());
+    }
+
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
     pub fn open_editor(&self, path: &str, language: &str, text: &str, selections: &[(u32, u32, u32, u32)]) {
         let selections =
@@ -228,6 +241,10 @@ impl MockHost {
 
     pub fn storage(&self) -> BTreeMap<String, String> {
         self.state.borrow().storage.clone()
+    }
+
+    pub fn path_subscriptions(&self) -> BTreeMap<String, Vec<String>> {
+        self.state.borrow().path_subscriptions.clone()
     }
 
     pub fn subscriptions(&self) -> BTreeSet<EventKind> {
@@ -441,6 +458,88 @@ pub mod current {
         if s.capabilities.iter().any(|c| c == cap) { Ok(()) } else { Err(Error::Denied(cap.to_owned())) }
     }
 
+    /// `fs.read:<base>` (or `fs.write:<base>`) covers `<base>` itself and what is
+    /// under it: `/a` covers `/a/b` but not `/ab`.
+    fn require_fs(s: &State, kind: &str, path: &str) -> Result<(), Error> {
+        let prefix = format!("{kind}:");
+        let covered = s.capabilities.iter().any(|c| match c.strip_prefix(&prefix) {
+            Some(base) => {
+                let base = base.trim_end_matches(['/', '\\']);
+                !base.is_empty()
+                    && (path == base
+                        || matches!(path.strip_prefix(base), Some(rest) if rest.starts_with('/') || rest.starts_with('\\')))
+            }
+            None => false,
+        });
+        if covered { Ok(()) } else { Err(Error::Denied(format!("{prefix}{path}"))) }
+    }
+
+    /// The paths `fs` takes are absolute; `~/…` is the user's home on the real
+    /// host, and the mock resolves nothing, so add it to the mock as it is.
+    fn check_absolute(path: &str) -> Result<(), Error> {
+        let bytes = path.as_bytes();
+        let drive = bytes.len() > 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'/' || bytes[2] == b'\\');
+        if path.starts_with('/') || drive {
+            Ok(())
+        } else {
+            Err(Error::Invalid(format!("{path}: use an absolute path (or ~/…)")))
+        }
+    }
+
+    /// `fs` checks what the real host checks, minus canonicalisation: absolute
+    /// path, then a grant covering it.
+    fn check_external(s: &State, kind: &str, path: &str) -> Result<(), Error> {
+        check_absolute(path)?;
+        require_fs(s, kind, path)
+    }
+
+    /// The directory `path` lives in: `/a/b` → `/a`, `/a` → `/`, `C:\a` → `C:\`.
+    fn parent_dir(path: &str) -> Option<&str> {
+        let cut = path.rfind(['/', '\\'])?;
+        let root = cut == 0 || (cut == 2 && path.as_bytes()[1] == b':');
+        Some(&path[..if root { cut + 1 } else { cut }])
+    }
+
+    /// Files the mock holds under `dir`.
+    fn has_children(s: &State, dir: &str) -> bool {
+        let under =
+            |p: &String| matches!(p.strip_prefix(dir), Some(rest) if rest.starts_with('/') || rest.starts_with('\\'));
+        s.external.keys().any(under) || s.external_bytes.keys().any(under)
+    }
+
+    /// The mock holds no file system, so a directory exists when a grant names
+    /// it or a registered file lives under it — plus the root of a volume.
+    fn dir_exists(s: &State, dir: &str) -> bool {
+        let dir = dir.trim_end_matches(['/', '\\']);
+        if dir.is_empty() || dir.ends_with(':') {
+            return true;
+        }
+        let granted = ["fs.read:", "fs.write:"].iter().any(|kind| {
+            s.capabilities
+                .iter()
+                .filter_map(|c| c.strip_prefix(kind))
+                .any(|base| base.trim_end_matches(['/', '\\']) == dir)
+        });
+        granted || has_children(s, dir)
+    }
+
+    /// What a write has to get past: an `fs.write` grant, a path that is not a
+    /// directory, and a parent directory that exists.
+    fn check_writable(s: &State, path: &str) -> Result<(), Error> {
+        check_external(s, "fs.write", path)?;
+        if has_children(s, path) {
+            return Err(Error::Invalid(format!("{path}: is a directory")));
+        }
+        match parent_dir(path) {
+            Some(dir) if dir_exists(s, dir) => Ok(()),
+            Some(dir) => Err(Error::Invalid(format!("{dir}: no such directory"))),
+            None => Err(Error::Invalid(format!("{path}: expected a file path"))),
+        }
+    }
+
     pub fn log(level: LogLevel, message: &str) {
         with(|s| s.logs.push((level, message.to_owned())))
     }
@@ -613,6 +712,27 @@ pub mod current {
         })
     }
 
+    pub fn project_of(path: &str) -> Option<ProjectRes> {
+        let path = path.replace('\\', "/");
+        let absolute =
+            path.starts_with('/') || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'/'));
+        if !absolute || path.split('/').any(|part| part == "..") {
+            return None;
+        }
+        with(|s| {
+            s.root
+                .iter()
+                .chain(&s.other_projects)
+                .filter(|root| {
+                    let root = root.replace('\\', "/");
+                    path == root
+                        || path.strip_prefix(root.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))
+                })
+                .max_by_key(|root| root.replace('\\', "/").split('/').count())
+                .map(|root| MockProject { root: root.clone() })
+        })
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         with(|s| {
             require(s, "project.read")?;
@@ -653,6 +773,18 @@ pub mod current {
         })
     }
 
+    pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.write")?;
+            let rel = rel_in_root(p, path)?;
+            if s.editor.as_ref().is_some_and(|e| e.path == path || e.path == format!("{}/{rel}", p.root)) {
+                return Err(Error::Invalid(format!("{path}: the editor has unsaved changes; save it first")));
+            }
+            s.files.insert(rel.to_string(), text.to_owned());
+            Ok(())
+        })
+    }
+
     pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
         with(|s| {
             require(s, "project.read")?;
@@ -677,6 +809,102 @@ pub mod current {
             let kind = if file.is_some() || open.is_some() { FileKind::File } else { FileKind::Directory };
             let size = file.or_else(|| open.map(|e| &e.text)).map_or(0, |t| t.len() as u64);
             Ok(FileStat { kind, size, modified: None })
+        })
+    }
+
+    pub fn fs_read_file(path: &str) -> Result<String, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            // Unsaved editor contents win, as on the real host.
+            if let Some(e) = s.editor.as_ref().filter(|e| e.path == path) {
+                return Ok(e.text.clone());
+            }
+            if let Some(text) = s.external.get(path) {
+                return Ok(text.clone());
+            }
+            match s.external_bytes.get(path) {
+                Some(bytes) => String::from_utf8(bytes.clone())
+                    .map_err(|_| Error::Invalid(format!("{path}: not valid UTF-8 text"))),
+                None => Err(Error::NotFound(path.into())),
+            }
+        })
+    }
+
+    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            if let Some(bytes) = s.external_bytes.get(path) {
+                return Ok(bytes.clone());
+            }
+            let text = s.external.get(path).ok_or_else(|| Error::NotFound(path.into()))?;
+            Ok(text.clone().into_bytes())
+        })
+    }
+
+    pub fn fs_stat(path: &str) -> Result<FileStat, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            if let Some(text) = s.external.get(path) {
+                return Ok(FileStat { kind: FileKind::File, size: text.len() as u64, modified: None });
+            }
+            if let Some(bytes) = s.external_bytes.get(path) {
+                return Ok(FileStat { kind: FileKind::File, size: bytes.len() as u64, modified: None });
+            }
+            // A directory is a prefix of the files the mock holds.
+            if has_children(s, path) {
+                Ok(FileStat { kind: FileKind::Directory, size: 0, modified: None })
+            } else {
+                Err(Error::NotFound(path.into()))
+            }
+        })
+    }
+
+    pub fn fs_write_file(path: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            check_writable(s, path)?;
+            s.external_bytes.remove(path);
+            s.external.insert(path.to_owned(), text.to_owned());
+            Ok(())
+        })
+    }
+
+    pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        with(|s| {
+            check_writable(s, path)?;
+            s.external.remove(path);
+            s.external_bytes.insert(path.to_owned(), bytes.to_vec());
+            Ok(())
+        })
+    }
+
+    pub fn fs_read_dir(path: &str) -> Result<Vec<crate::host::fs::DirEntry>, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            if s.external.contains_key(path) || s.external_bytes.contains_key(path) {
+                return Err(Error::Invalid(format!("{path}: not a directory")));
+            }
+            let mut entries: BTreeMap<String, FileKind> = BTreeMap::new();
+            for file in s.external.keys().chain(s.external_bytes.keys()) {
+                let rest = match file.strip_prefix(path) {
+                    Some(rest) if rest.starts_with('/') || rest.starts_with('\\') => &rest[1..],
+                    _ => continue,
+                };
+                match rest.split(['/', '\\']).next() {
+                    Some(name) if !name.is_empty() => {
+                        let kind = if rest.contains('/') || rest.contains('\\') {
+                            FileKind::Directory
+                        } else {
+                            FileKind::File
+                        };
+                        entries.insert(name.to_owned(), kind);
+                    }
+                    _ => {}
+                }
+            }
+            if entries.is_empty() {
+                return Err(Error::NotFound(path.into()));
+            }
+            Ok(entries.into_iter().map(|(name, kind)| crate::host::fs::DirEntry { name, kind }).collect())
         })
     }
 
@@ -797,6 +1025,38 @@ pub mod current {
         })
     }
 
+    pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "events")?;
+            if !matches!(kind, "file-opened" | "file-saved")
+                || globs.len() > 64
+                || globs.iter().any(|g| {
+                    let relative = g.trim_start_matches("./");
+                    relative.is_empty()
+                        || g.len() > 1024
+                        || relative.starts_with('/')
+                        || g.contains('\\')
+                        || g.contains(':')
+                        || g.chars().any(char::is_control)
+                        || g.split('/').any(|p| p == "..")
+                })
+            {
+                return Err(Error::Invalid("invalid event path filter".into()));
+            }
+            match kind {
+                "file-opened" => {
+                    s.subscriptions.insert(EventKind::FileOpened);
+                }
+                "file-saved" => {
+                    s.subscriptions.insert(EventKind::FileSaved);
+                }
+                _ => {}
+            }
+            s.path_subscriptions.insert(kind.to_owned(), globs.iter().map(|g| (*g).to_owned()).collect());
+            Ok(())
+        })
+    }
+
     pub fn subscribe(kind: EventKind) -> Result<(), Error> {
         with(|s| {
             let cap = match kind {
@@ -807,13 +1067,17 @@ pub mod current {
             if let Some(cap) = cap {
                 require(s, cap)?;
             }
+            s.path_subscriptions.remove(kind.name());
             s.subscriptions.insert(kind);
             Ok(())
         })
     }
 
     pub fn unsubscribe(kind: EventKind) {
-        with(|s| s.subscriptions.remove(&kind));
+        with(|s| {
+            s.path_subscriptions.remove(kind.name());
+            s.subscriptions.remove(&kind);
+        });
     }
 
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
@@ -966,6 +1230,38 @@ mod tests {
     use crate::host;
 
     #[test]
+    fn path_subscriptions_replace_pause_and_restore() {
+        let mock = MockHost::install();
+        host::subscribe_paths("file-opened", &["config/*.yaml"]).unwrap();
+        assert_eq!(mock.path_subscriptions()["file-opened"], ["config/*.yaml"]);
+        host::subscribe_paths("file-opened", &[]).unwrap();
+        assert!(mock.path_subscriptions()["file-opened"].is_empty());
+        assert!(host::subscribe_paths("file-opened", &["../secret"]).is_err());
+        host::subscribe(EventKind::FileOpened).unwrap();
+        assert!(mock.path_subscriptions().is_empty());
+        host::subscribe_paths("file-saved", &["**/*.rs"]).unwrap();
+        host::unsubscribe(EventKind::FileSaved);
+        assert!(mock.path_subscriptions().is_empty());
+        let _denied = MockHost::install().with_capabilities(&[]);
+        assert!(matches!(host::subscribe_paths("file-opened", &[]), Err(Error::Denied(_))));
+    }
+
+    #[test]
+    fn project_lookup_uses_deepest_root_without_granting_read_access() {
+        let mock = MockHost::install();
+        mock.add_project("/project/nested");
+        assert_eq!(host::project_of("/project/nested/new.txt").unwrap().root().unwrap(), "/project/nested");
+        assert!(host::project_of("/project-other/file").is_none());
+        assert!(host::project_of("relative/file").is_none());
+        mock.add_project("C:/workspace");
+        assert_eq!(host::project_of(r"C:\workspace\file.txt").unwrap().root().unwrap(), "C:/workspace");
+        mock.add_project("//server/share");
+        assert_eq!(host::project_of(r"\\server\share\file.txt").unwrap().root().unwrap(), "//server/share");
+        let _denied = MockHost::install().with_capabilities(&[]);
+        assert!(matches!(host::project_of("/project/file").unwrap().root(), Err(Error::Denied(_))));
+    }
+
+    #[test]
     fn invocations_carry_selected_paths() {
         let host = MockHost::install();
         assert!(host.invocation().selected_paths().is_empty());
@@ -1088,6 +1384,21 @@ mod tests {
     }
 
     #[test]
+    fn files_outside_the_project_need_an_fs_read_grant() {
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/tool"]);
+        mock.add_external_file("/opt/tool/conf/app.yaml", "port: 8080");
+        mock.add_external_file("/opt/tool/README", "hi");
+        mock.add_external_file("/opt/other/secret", "no");
+        assert_eq!(host::fs::read_file("/opt/tool/conf/app.yaml").unwrap(), "port: 8080");
+        assert_eq!(host::fs::read_bytes("/opt/tool/README").unwrap(), b"hi");
+        assert_eq!(host::fs::stat("/opt/tool/conf").unwrap().kind, FileKind::Directory);
+        let names: Vec<_> = host::fs::read_dir("/opt/tool").unwrap().into_iter().map(|e| (e.name, e.kind)).collect();
+        assert_eq!(names, [("README".into(), FileKind::File), ("conf".into(), FileKind::Directory)]);
+        assert!(matches!(host::fs::read_file("/opt/other/secret"), Err(Error::Denied(_))));
+        assert!(matches!(host::fs::read_file("relative"), Err(Error::Invalid(_))));
+    }
+
+    #[test]
     fn missing_capabilities_are_denied() {
         let mock = MockHost::install().with_capabilities(&["project.read"]);
         mock.open_editor("/project/a.txt", "text", "x", &[]);
@@ -1126,6 +1437,45 @@ mod tests {
         host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
             .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
+    }
+
+    #[test]
+    fn fs_write_needs_a_grant_of_its_own() {
+        // `fs.read` does not let a plugin write.
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/seeyon"]);
+        mock.add_external_file("/opt/seeyon/app.properties", "name=YonBIP\n");
+        assert_eq!(
+            host::fs::write_file("/opt/seeyon/app.properties", "name=YonBIP2\n"),
+            Err(Error::Denied("fs.write:/opt/seeyon/app.properties".into()))
+        );
+        assert_eq!(host::fs::read_file("/opt/seeyon/app.properties").unwrap(), "name=YonBIP\n");
+
+        // Nor does `fs.write` imply reading.
+        let mock = MockHost::install().with_capabilities(&["fs.write:/opt/seeyon"]);
+        mock.add_external_file("/opt/seeyon/app.properties", "name=YonBIP\n");
+        host::fs::write_file("/opt/seeyon/app.properties", "name=YonBIP2\n").unwrap();
+        assert_eq!(
+            host::fs::read_file("/opt/seeyon/app.properties"),
+            Err(Error::Denied("fs.read:/opt/seeyon/app.properties".into()))
+        );
+
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/seeyon", "fs.write:/opt/seeyon"]);
+        mock.add_external_file("/opt/seeyon/app.properties", "name=YonBIP\n");
+        mock.add_external_file("/opt/seeyon/conf/licence.xml", "<licence/>");
+        host::fs::write_file("/opt/seeyon/app.properties", "name=YonBIP2\n").unwrap();
+        assert_eq!(host::fs::read_file("/opt/seeyon/app.properties").unwrap(), "name=YonBIP2\n");
+        assert_eq!(host::fs::read_bytes("/opt/seeyon/app.properties").unwrap(), b"name=YonBIP2\n".to_vec());
+        // A file that was not there is created; bytes stay bytes.
+        host::fs::write_bytes("/opt/seeyon/blob.bin", &[0xff, 0x00, 0x7f]).unwrap();
+        assert_eq!(host::fs::read_bytes("/opt/seeyon/blob.bin").unwrap(), [0xff, 0x00, 0x7f]);
+        assert_eq!(host::fs::stat("/opt/seeyon/blob.bin").unwrap().size, 3);
+        assert!(matches!(host::fs::read_file("/opt/seeyon/blob.bin"), Err(Error::Invalid(_))));
+
+        // Relative paths are path errors, a directory is not a file, and a
+        // missing parent directory is not created.
+        assert!(matches!(host::fs::write_file("opt/seeyon/app.properties", "x"), Err(Error::Invalid(_))));
+        assert!(matches!(host::fs::write_file("/opt/seeyon/conf", "x"), Err(Error::Invalid(_))));
+        assert!(matches!(host::fs::write_bytes("/opt/seeyon/no/dir/x.bin", &[1]), Err(Error::Invalid(_))));
     }
 }
 

@@ -789,6 +789,16 @@ pub async fn plugin_navigation_goto(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn plugin_endpoints(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> IdeResult<Vec<ide_host::plugins::endpoints::PluginEndpoint>> {
+    ide_host::plugins::index_ops::plugin_endpoints(&state.host, state.plugins.clone(), window.label(), plugin_id).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn plugin_navigation_markers(
     window: Window,
     state: State<'_, AppState>,

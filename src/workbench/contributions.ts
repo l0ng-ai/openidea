@@ -1474,6 +1474,9 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
 export interface EndpointEntry {
   /** `GET`, `POST`, … */
   method: string;
+  framework?: string;
+  handler?: string;
+  pluginId?: string;
   /** Class-level and method-level mapping joined; `{var}` kept. */
   url: string;
   controller: string;
@@ -1490,17 +1493,33 @@ export interface EndpointProvider {
 }
 
 const endpointProviders = new Map<string, EndpointProvider>();
+const endpointListeners = new Set<() => void>();
+export function onEndpointsChanged(listener: () => void): () => void {
+  endpointListeners.add(listener);
+  return () => {
+    endpointListeners.delete(listener);
+  };
+}
+/** Endpoints a provider reports may have changed: `onEndpointsChanged` listeners ask again. */
+export function endpointsChanged() {
+  for (const listener of endpointListeners) listener();
+}
 
 export function registerEndpointProvider(p: EndpointProvider): () => void {
   endpointProviders.set(p.id, p);
+  endpointsChanged();
   return () => {
-    if (endpointProviders.get(p.id) === p) endpointProviders.delete(p.id);
+    if (endpointProviders.get(p.id) === p) {
+      endpointProviders.delete(p.id);
+      endpointsChanged();
+    }
   };
 }
 
 export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
   if (!root) return [];
-  return (await Promise.all([...endpointProviders.values()].map((p) => p.endpoints(root)))).flat();
+  const results = await Promise.allSettled([...endpointProviders.values()].map(async (p) => p.endpoints(root)));
+  return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
 // ---------------------------------------------------------------------------
@@ -1544,6 +1563,8 @@ export interface DebugServiceSession {
   /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
   httpPort?: number;
   rerun: (() => void) | null;
+  /** Rerun without opening the Debug tool window (the Services panel debugs in place). */
+  rerunInPlace?: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
 }

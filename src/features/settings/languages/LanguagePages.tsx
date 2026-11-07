@@ -499,6 +499,16 @@ export function MavenPage() {
     <div className={styles.page}>
       <Section>
         <SdkRow
+          k="languages.java.maven.runnerJre"
+          label="JRE"
+          kind="jdk"
+          emptyLabel="Use Project JDK"
+          directory
+          browseTitle="Select JDK Home Directory"
+          aria-label="JRE"
+          hint="JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
+        />
+        <SdkRow
           k="languages.java.maven.home"
           label="Maven home path"
           kind="maven"

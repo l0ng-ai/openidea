@@ -1,7 +1,7 @@
 /** Built-in launch settings; each executable is staged independently until Apply. */
 import { useCallback, useEffect, useState } from "react";
 import type { AgentProvider } from "@/bindings";
-import { tx, useTx } from "@/platform/i18n";
+import { tx, useTxTemplate } from "@/platform/i18n";
 import clsx from "clsx";
 import { Button, Icon, IconButton, Input, List, Spinner, T } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
@@ -242,7 +242,7 @@ const formatEnv = (env: Record<string, string>) =>
 
 /** Login hints are plain text with optional backtick-delimited command spans. */
 function LoginHint({ text }: { text: string }) {
-  const translate = useTx();
+  const translate = useTxTemplate();
   return translate(text)
     .split(/(`[^`]+`)/g)
     .map((part, i) => (i % 2 === 1 ? <code key={i}>{part.slice(1, -1)}</code> : part));

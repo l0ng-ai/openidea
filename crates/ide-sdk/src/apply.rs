@@ -187,19 +187,37 @@ fn not_a_jdk(p: &Path) -> String {
     }
 }
 
+/// Maven runner JRE, falling back to the project JDK and then the POM's Java version.
+pub fn maven_jdk(root: &Path, s: &Settings, release: Option<u32>) -> Option<crate::java::Jdk> {
+    match jdk_setting(root, &s.languages.java.maven.runner_jre) {
+        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("Maven runner JRE {}", not_a_jdk(p))).ok(),
+        None => project_jdk(root, s).or_else(|| {
+            let installed = crate::java::installed_jdks();
+            release.and_then(|r| crate::java::pick_jdk(&installed, Some(r))).cloned()
+        }),
+    }
+}
+
+/// Default environment shared by Maven sync, builds and run configurations.
+pub fn maven_build_env(root: &Path, s: &Settings, release: Option<u32>) -> std::collections::BTreeMap<String, String> {
+    maven_jdk(root, s, release)
+        .map(|jdk| std::collections::BTreeMap::from([("JAVA_HOME".into(), jdk.home.to_string_lossy().into_owned())]))
+        .unwrap_or_default()
+}
+
 /// `mvn` of the configured Maven home (`languages.java.maven.home`): the
 /// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
 /// pins for mise / asdf when it has no Maven wrapper. With `maven.daemon` on, the
 /// Maven Daemon (`mvnd`) replaces all of that — it embeds its own Maven — unless
-/// it is not installed or the project JDK is older than the Java 17 its daemon
+/// it is not installed or the runner JRE is older than the Java 17 its daemon
 /// needs, in which case the build stays on mvn (with a logged warning).
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
     if s.languages.java.maven.daemon {
         match mvnd_command(root, s) {
-            // No project JDK at all lets mvnd pick its own Java, which may still be new enough.
-            Some(mvnd) if project_jdk(root, s).is_none_or(|j| j.major >= 17) => return Some(mvnd),
+            // Without a selected JDK, mvnd picks its own Java, which may still be new enough.
+            Some(mvnd) if maven_jdk(root, s, None).is_none_or(|j| j.major >= 17) => return Some(mvnd),
             Some(_) => tracing::warn!(
-                "Maven daemon: the project JDK is older than the Java 17 its daemon needs; building with mvn"
+                "Maven daemon: the runner JRE is older than the Java 17 its daemon needs; building with mvn"
             ),
             None => tracing::warn!("Maven daemon is enabled but mvnd was not found; building with mvn"),
         }
@@ -1134,7 +1152,7 @@ fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
 
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
-/// cargo / go configs the selected toolchain, Maven / Gradle the project JDK
+/// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
 /// (and Maven the configured home and options).
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
     let explicit_python = setting_path(root, &s.languages.python.interpreter);
@@ -1281,20 +1299,23 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     path_dirs.push(bin);
                 }
             }
-            "maven" | "tomcat" => {
+            "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-                if c.kind == "maven" {
-                    if let Some(mvn) = &mvn
-                        && (c.detected
-                            || generated_maven_goal(c)
-                            || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
-                    {
-                        c.command = mvn.to_string_lossy().into_owned();
-                    }
-                    add_maven_options(&mut c.args, &mvn_options);
+            }
+            "maven" => {
+                for (key, value) in maven_build_env(root, s, None) {
+                    c.env.entry(key).or_insert(value);
                 }
+                if let Some(mvn) = &mvn
+                    && (c.detected
+                        || generated_maven_goal(c)
+                        || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
+                {
+                    c.command = mvn.to_string_lossy().into_owned();
+                }
+                add_maven_options(&mut c.args, &mvn_options);
             }
             _ => {}
         }

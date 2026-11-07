@@ -17,9 +17,12 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+#[cfg(target_os = "macos")]
+mod page_swipe;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
+mod remote_container;
 mod remote_dev;
 mod remote_wsl;
 
@@ -212,7 +215,10 @@ pub fn run() {
         }
         tauri::WindowEvent::Destroyed => {
             #[cfg(target_os = "macos")]
-            titlebar::forget(window);
+            {
+                page_swipe::forget(window.label());
+                titlebar::forget(window);
+            }
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());

@@ -124,6 +124,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::PromptClosed { .. }
             | PluginEvent::RevealView { .. }
             | PluginEvent::CommitRequested { .. }
+            | PluginEvent::EndpointsChanged { .. }
     )
 }
 
@@ -566,6 +567,11 @@ impl RemotePlugins {
             async move {
                 super::index_ops::plugin_navigation_markers(&c.host, alive(&h)?, &c.window, c.arg("paths")?).await
             }
+        });
+        let h = host.clone();
+        d.add("plugin_endpoints", move |c| {
+            let h = h.clone();
+            async move { super::index_ops::plugin_endpoints(&c.host, alive(&h)?, &c.window, c.arg("pluginId")?).await }
         });
         d.add("plugin_line_markers", |c| async move {
             crate::ops::lsp::plugin_line_markers(&c.host, &c.window, c.arg("doc")?).await
