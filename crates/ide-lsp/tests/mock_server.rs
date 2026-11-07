@@ -4128,6 +4128,52 @@ async fn configuration_usages_merge_native_and_unsaved_profiles_without_sibling_
     assert_eq!(refs.incomplete, None);
 }
 
+/// The configuration index is rebuilt after Java changes, which can take seconds: Show Usages
+/// shows the Java usages meanwhile, then adds the configuration ones.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_arrive_before_configuration_usages() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages", "openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    let yaml = h.root.join("application.yml");
+    std::fs::write(&yaml, "app:\n  target: 1\n").unwrap();
+    let property = json!({"uri": uri_of(&yaml), "range": {
+        "start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 8}}});
+    let gate = Arc::new(Gate::default());
+    let held = gate.clone();
+    *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+        (method == "workspace/executeCommand").then(|| {
+            if params["command"] == "openidea.java.configuration" {
+                held.hold();
+                return json!({"locations": [property.clone()], "keys": [{"name": "app.target", "relaxed": true}], "roots": []});
+            }
+            let docs = s.docs.lock();
+            let rows = docs.iter().flat_map(|(uri, text)| occurrences(uri, text));
+            Value::Array(rows.map(|location| json!({"location": location, "kind": "unknown"})).collect())
+        })
+    }));
+    let (doc, a) = h.open("a.java", "int target;");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+    let partials = Mutex::new(Vec::<References>::new());
+    let push = |r| partials.lock().push(r);
+    let search = h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, false, Default::default(), Some(&push));
+    let release = async {
+        eventually(|| !partials.lock().is_empty()).await;
+        assert!(gate.entered(), "shown before the configuration lookup started");
+        gate.open();
+    };
+    let (refs, ()) = tokio::join!(search, release);
+    let refs = refs.unwrap();
+    let partials = partials.into_inner();
+    assert_eq!(partials.len(), 1);
+    let paths = |r: &References| r.locations.iter().map(|l| l.path.to_path_buf()).collect::<Vec<_>>();
+    assert_eq!(paths(&partials[0]), std::slice::from_ref(&a));
+    assert_eq!(partials[0].classified.len(), 1);
+    assert_eq!(paths(&refs), [a, yaml]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn configuration_extension_failure_preserves_native_java_navigation() {
     let mut caps = incremental_caps();
