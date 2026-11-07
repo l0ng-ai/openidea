@@ -322,5 +322,15 @@
   "devcontainer up exited with {status}": "devcontainer up exited with {status}",
   "Select an item to view details": "Select an item to view details",
   "Nothing to show": "Nothing to show",
-  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory"
+  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory",
+  "Invalid log stream configuration": "Invalid log stream configuration",
+  "Find in Logs": "Find in Logs",
+  "Waiting for output…": "Waiting for output…",
+  "Soft-wrap": "Soft-wrap",
+  "Clear": "Clear",
+  "\n[Process finished]": "\n[Process finished]",
+  "\n[Process finished with exit code {exitCode}]": "\n[Process finished with exit code {exitCode}]",
+  "\nError: {error}": "\nError: {error}",
+  "\n[Log stream stopped]": "\n[Log stream stopped]",
+  "Toggle Log Option": "Toggle Log Option"
 }
