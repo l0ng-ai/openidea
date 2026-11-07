@@ -58,7 +58,8 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   // IDEA's Rebuild before launch: clean the module's outputs, then run the task.
   const clean = config.buildPolicy === "rebuild" ? [project.path === ":" ? ":clean" : `${project.path}:clean`] : [];
   // A JRE chosen on the Application must be the JavaExec launcher, not Gradle's daemon JVM.
-  const javaExec = /(?:^|[\\/])java(?:w)?(?:\.exe)?$/i.test(config.command) && config.command !== "java" ? config.command : "";
+  const javaExec =
+    /(?:^|[\\/])java(?:w)?(?:\.exe)?$/i.test(config.command) && config.command !== "java" ? config.command : "";
   const args = [
     "--console=plain",
     "--init-script",
