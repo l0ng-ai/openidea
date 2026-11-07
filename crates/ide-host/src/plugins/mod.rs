@@ -219,7 +219,39 @@ struct Batches {
     pending: u32,
     /// Kinds of the batch being handled right now.
     running: Option<BTreeSet<EventKind>>,
-    files_pending: HashMap<(Option<String>, Option<PathBuf>), EventQueue>,
+    files_pending: HashMap<FilesQueueKey, PendingFiles>,
+    running_token: Option<Arc<()>>,
+}
+
+type FilesQueueKey = (Option<String>, Option<PathBuf>);
+
+struct PendingFiles {
+    queue: EventQueue,
+    actor: std::sync::Weak<Actor>,
+    token: Arc<()>,
+}
+
+/// Dropping a posted job must release its mailbox even when the actor never runs it.
+struct BatchTicket {
+    batches: Arc<Mutex<Batches>>,
+    files_key: Option<FilesQueueKey>,
+    token: Arc<()>,
+}
+
+impl Drop for BatchTicket {
+    fn drop(&mut self) {
+        let mut batches = self.batches.lock();
+        if let Some(key) = &self.files_key
+            && batches.files_pending.get(key).is_some_and(|p| Arc::ptr_eq(&p.token, &self.token))
+        {
+            batches.files_pending.remove(key);
+        }
+        batches.pending = batches.pending.saturating_sub(1);
+        if batches.running_token.as_ref().is_some_and(|token| Arc::ptr_eq(token, &self.token)) {
+            batches.running = None;
+            batches.running_token = None;
+        }
+    }
 }
 
 impl LoadedPlugin {
@@ -1667,6 +1699,7 @@ impl PluginHost {
         let filesystem = kinds.contains(&EventKind::FilesChanged);
         let mailbox_key = (client.clone(), invocation.workspace_root.clone());
         let mut ordinary = None;
+        let token = Arc::new(());
         {
             let mut batches = plugin.batches.lock();
             if batches.running.as_ref() == Some(&kinds)
@@ -1680,7 +1713,10 @@ impl PluginHost {
                 if queue.events.is_empty() {
                     return activated;
                 }
-                if let Some(pending) = batches.files_pending.get_mut(&mailbox_key) {
+                if let Some(pending) = batches.files_pending.get_mut(&mailbox_key)
+                    && pending.actor.upgrade().is_some_and(|owner| Arc::ptr_eq(&owner, &actor))
+                {
+                    let pending = &mut pending.queue;
                     if queue
                         .files_source
                         .as_ref()
@@ -1692,27 +1728,41 @@ impl PluginHost {
                     files_changed::append(&mut pending.events, queue.events);
                     return activated;
                 }
-                batches.files_pending.insert(mailbox_key.clone(), queue);
+                batches.files_pending.insert(
+                    mailbox_key.clone(),
+                    PendingFiles { queue, actor: Arc::downgrade(&actor), token: token.clone() },
+                );
             } else {
                 ordinary = Some(queue);
             }
             batches.pending += 1;
         }
         let started = Instant::now();
-        let (start, finish) = (plugin.batches.clone(), plugin.batches.clone());
+        let start = plugin.batches.clone();
+        let ticket = BatchTicket {
+            batches: plugin.batches.clone(),
+            files_key: filesystem.then(|| mailbox_key.clone()),
+            token: token.clone(),
+        };
         let done_plugin = plugin.clone();
         let delivery_plugin = plugin.clone();
         let shared = self.shared.clone();
         actor.post(
             move |rt| {
+                let _ticket = ticket;
                 let mut queue = {
                     let mut batches = start.lock();
-                    batches.running = Some(kinds);
-                    if filesystem {
-                        batches.files_pending.remove(&mailbox_key).expect("pending filesystem batch")
+                    let queue = if filesystem {
+                        if !batches.files_pending.get(&mailbox_key).is_some_and(|p| Arc::ptr_eq(&p.token, &token)) {
+                            return Ok(());
+                        }
+                        batches.files_pending.remove(&mailbox_key).expect("owned filesystem batch").queue
                     } else {
                         ordinary.expect("ordinary event batch")
-                    }
+                    };
+                    batches.running = Some(kinds);
+                    batches.running_token = Some(token);
+                    queue
                 };
                 files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
                 if filesystem
@@ -1747,9 +1797,6 @@ impl PluginHost {
                     }
                     _ => {}
                 }
-                let mut batches = finish.lock();
-                batches.pending = batches.pending.saturating_sub(1);
-                batches.running = None;
             },
         );
         activated
