@@ -1,4 +1,7 @@
 {
+  "Run `{command}` in a terminal.": "在终端中运行 `{command}`。",
+  "Run `{command}` in a terminal and sign in.": "在终端中运行 `{command}` 并登录。",
+  "{name} needs you to sign in. {hint}": "{name} 需要你登录。{hint}",
   "Cannot copy reference": "无法复制引用",
   "Group actions": "分组操作",
   "New Project Group": "新建项目组",
@@ -5352,7 +5355,6 @@
   "Context path": "上下文路径",
   "Enter / or a context path such as /app": "请输入 / 或 /app 等上下文路径",
   "HTTP port": "HTTP 端口",
-  "JRE": "Java 运行环境",
   "Java installation directory; empty uses the project JDK": "Java 安装目录；留空则使用项目 JDK",
   "Open browser after launch": "启动后打开浏览器",
   "Browser URL": "浏览器网址",
@@ -6563,5 +6565,8 @@
   "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.": "此模块运行和调试使用的 JDK。编译 JDK 由 Maven 和 Gradle 管理。",
   "Remove Module Overrides": "移除模块覆盖设置",
   "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}",
-  "Cannot choose a directory": "无法选择目录"
+  "Cannot choose a directory": "无法选择目录",
+  "Open in HTTP Client": "在 HTTP 客户端中打开",
+  "Use Project JDK": "使用项目 SDK",
+  "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "用于 Maven 同步、构建、目标和测试的 JDK。运行配置中显式设置的 JAVA_HOME 优先。"
 }

@@ -39,6 +39,11 @@ pub trait PluginWorkspace: Send + Sync {
     fn projects(&self) -> Vec<PathBuf>;
     /// Unsaved text of the open document at `path`.
     fn buffer_text(&self, path: &Path) -> Option<String>;
+    /// Whether the editor holds changes for `path` that are not on disk yet;
+    /// writing such a file would lose them.
+    fn buffer_dirty(&self, _path: &Path) -> bool {
+        false
+    }
     /// Up to `limit` files of the project index below `root` whose root-relative path satisfies
     /// `matches`; `None` when no index covers `root` yet (the caller walks the disk instead).
     fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
@@ -188,7 +193,7 @@ pub(super) struct Shared {
     contexts: Mutex<BTreeMap<ContextKey, String>>,
     closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
-    pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
+    pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
@@ -331,7 +336,7 @@ impl Shared {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
         }
-        if subscriptions && self.subscriptions.lock().remove(plugin).is_some() {
+        if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1166,13 +1171,22 @@ impl HostApi for PluginApi {
         })
     }
 
-    fn subscribe(&self, kind: EventKind, on: bool) {
-        let changed = {
-            let mut subs = self.shared.subscriptions.lock();
-            let set = subs.entry(self.id().to_owned()).or_default();
-            if on { set.insert(kind) } else { set.remove(&kind) }
-        };
-        if changed {
+    fn subscribe(&self, kind: EventKind) {
+        if self.shared.subscriptions.lock().set(self.id(), kind) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+        if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+        Ok(())
+    }
+
+    fn unsubscribe(&self, kind: &str) {
+        if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1278,6 +1292,81 @@ impl HostApi for PluginApi {
         let value = user.get(key).filter(|v| setting.accepts(v)).cloned().unwrap_or(setting.default);
         serde_json::to_string(&value).ok()
     }
+
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
+        // Unsaved editor contents win, as they do for project files.
+        if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
+            return Ok(text);
+        }
+        let meta = std::fs::metadata(real).map_err(|e| not_a_file(real, e))?;
+        if !meta.is_file() {
+            return Err(HostError::Invalid(format!("{}: not a file", real.display())));
+        }
+        if meta.len() > max as u64 {
+            return Err(too_large(real, max));
+        }
+        let loaded = ide_vfs::load_text(real).map_err(failed)?;
+        if loaded.binary {
+            return Err(HostError::Invalid(format!("{}: not text; read it as bytes", real.display())));
+        }
+        Ok(loaded.text)
+    }
+
+    fn write_text_file(&self, real: &Path, text: &str) -> Result<(), HostError> {
+        check_unsaved(self.shared.workspace(), real)?;
+        // Write back in the file's own encoding, so a GBK properties file stays
+        // one; a file that is not there yet becomes UTF-8.
+        let (encoding, has_bom) = match ide_vfs::load_text(real) {
+            Ok(loaded) if loaded.binary => {
+                return Err(HostError::Invalid(format!("{}: not text; write it as bytes", real.display())));
+            }
+            Ok(loaded) => (loaded.encoding, loaded.has_bom),
+            Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => ("utf-8".to_string(), false),
+            Err(e) => return Err(not_writable(real, e)),
+        };
+        ide_vfs::save_text(real, text, &encoding, has_bom).map(drop).map_err(|e| not_writable(real, e))
+    }
+
+    fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError> {
+        check_unsaved(self.shared.workspace(), real)?;
+        ide_vfs::write_atomic(real, bytes).map(drop).map_err(|e| not_writable(real, e))
+    }
+}
+
+/// A file that is not there, or cannot be read, as the plugin sees it.
+fn not_a_file(path: &Path, e: std::io::Error) -> HostError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => HostError::NotFound(format!("{}: no such file", path.display())),
+        std::io::ErrorKind::PermissionDenied => HostError::Denied(format!("{}: {}", path.display(), "not readable")),
+        _ => failed(e),
+    }
+}
+
+fn too_large(path: &Path, max: usize) -> HostError {
+    HostError::Invalid(format!("{}: file is larger than {} MiB", path.display(), max >> 20))
+}
+
+/// Refuses to replace a file the editor holds unsaved changes for: the write
+/// would lose them.
+fn check_unsaved(workspace: Option<Arc<dyn PluginWorkspace>>, path: &Path) -> Result<(), HostError> {
+    match workspace {
+        Some(workspace) if workspace.buffer_dirty(path) => Err(HostError::Invalid(format!(
+            "{}: the editor has unsaved changes for it; save them first",
+            path.display()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// A write that did not land, as the plugin sees it.
+fn not_writable(path: &Path, e: ide_core::error::IdeError) -> HostError {
+    let message = format!("{}: {}", path.display(), e.message);
+    match e.kind {
+        ide_core::error::ErrorKind::NotFound => HostError::NotFound(message),
+        ide_core::error::ErrorKind::PermissionDenied => HostError::Denied(message),
+        ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(message),
+        _ => HostError::Failed(message),
+    }
 }
 
 /// [`PluginWorkspace`] over the desktop host's open projects.
@@ -1304,6 +1393,11 @@ impl PluginWorkspace for HostWorkspace {
 
     fn buffer_text(&self, path: &Path) -> Option<String> {
         HostWorkspace::projects(self).iter().find_map(|p| p.documents.text_of(path))
+    }
+
+    fn buffer_dirty(&self, path: &Path) -> bool {
+        let Some((project, doc)) = self.open_document(path) else { return false };
+        project.documents.is_dirty(doc).unwrap_or(false)
     }
 
     fn indexed_files(&self, root: &Path, matches: &dyn Fn(&Path) -> bool, limit: usize) -> Option<Vec<PathBuf>> {
