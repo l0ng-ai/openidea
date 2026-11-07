@@ -44,7 +44,9 @@ interface events {
 }
 
 /// Long-running work with a progress indicator. While a task is open, the
-/// call that began it may run for the background budget (60 s) instead of 5 s.
+/// call that began it may run for the background budget (60 s) instead of 5 s,
+/// and each `report` or `is-cancelled` renews that budget: work that keeps
+/// saying it is alive is not cut off, while work that goes quiet is.
 interface tasks {
     resource task {
         /// `done` of `total` units (`none`: indeterminate), with a short status.

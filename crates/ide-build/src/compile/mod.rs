@@ -67,6 +67,11 @@ impl BuildStep {
         }
     }
 
+    /// A CMake configure/build invocation, parsed as compiler output in the Build view.
+    pub fn cmake(program: &str, args: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> Self {
+        Self { program: program.into(), args, cwd, env, format: Format::Gcc }
+    }
+
     /// The command line as echoed in the console.
     pub fn display(&self) -> String {
         let program = Path::new(&self.program).file_name().map_or(self.program.clone(), |n| n.to_string_lossy().into());
@@ -387,6 +392,8 @@ fn go_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
             if !module.join("go.mod").is_file() {
                 return Err(IdeError::not_found(format!("Go workspace module has no go.mod: {}", module.display())));
             }
+            // Go compares workspace membership against cwd paths lexically.
+            let module = dunce::canonicalize(module)?;
             let mut module_steps = go_module_steps(&module, kind);
             for step in &mut module_steps {
                 step.env.insert("GOWORK".into(), work_file.to_string_lossy().into_owned());
@@ -851,16 +858,19 @@ mod tests {
         write(root, "app/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
         write(root, "../external/go.mod", "module example.com/external\ngo 1.22\nrequire example.com/lib v0.0.0\n");
         write(root, "../external/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
-        let plan = plan(root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
-        for step in plan.steps {
-            let result = std::process::Command::new(&go)
-                .args(&step.args)
-                .envs(&step.env)
-                .env("GOPROXY", "off")
-                .current_dir(&step.cwd)
-                .output()
-                .unwrap();
-            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        // std canonicalization also exercises verbatim paths on Windows.
+        for root in [root.to_path_buf(), std::fs::canonicalize(root).unwrap()] {
+            let plan = plan(&root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+            for step in plan.steps {
+                let result = std::process::Command::new(&go)
+                    .args(&step.args)
+                    .envs(&step.env)
+                    .env("GOPROXY", "off")
+                    .current_dir(&step.cwd)
+                    .output()
+                    .unwrap();
+                assert!(result.status.success(), "{step:?}: {}", String::from_utf8_lossy(&result.stderr));
+            }
         }
     }
 
@@ -872,15 +882,23 @@ mod tests {
         for module in ["api", "lib with spaces", "../shared"] {
             write(&root.join(module), "go.mod", "module example.com/p\ngo 1.22\n");
         }
-        for kind in [BuildKind::Build, BuildKind::Rebuild, BuildKind::Artifacts] {
-            let p = plan(&root, &BuildModel::default(), kind, None, None).unwrap();
-            assert_eq!(p.system, BuildSystem::Go);
-            assert_eq!(p.steps.len(), 3);
-            for (step, module) in p.steps.iter().zip(["api", "lib with spaces", "../shared"]) {
-                assert_eq!(step.cwd, root.join(module));
-                let expected =
-                    if kind == BuildKind::Rebuild { vec!["build", "-a", "./..."] } else { vec!["build", "./..."] };
-                assert_eq!(step.args, expected);
+        // Cover native paths, Windows verbatim paths and non-normalized module paths.
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        for root in [&root, &canonical, &canonical.join("..").join("workspace")] {
+            for kind in [BuildKind::Build, BuildKind::Rebuild, BuildKind::Artifacts] {
+                let p = plan(root, &BuildModel::default(), kind, None, None).unwrap();
+                assert_eq!(p.system, BuildSystem::Go);
+                assert_eq!(p.steps.len(), 3);
+                for (step, module) in p.steps.iter().zip(["api", "lib with spaces", "../shared"]) {
+                    assert_eq!(step.cwd, dunce::canonicalize(root.join(module)).unwrap());
+                    assert_eq!(
+                        step.env["GOWORK"],
+                        dunce::canonicalize(root.join("go.work")).unwrap().to_string_lossy()
+                    );
+                    let expected =
+                        if kind == BuildKind::Rebuild { vec!["build", "-a", "./..."] } else { vec!["build", "./..."] };
+                    assert_eq!(step.args, expected);
+                }
             }
         }
         let member =

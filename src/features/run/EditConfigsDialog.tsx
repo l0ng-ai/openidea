@@ -504,7 +504,9 @@ function EditConfigsDialog() {
                       >
                         <Icon name={collapsed.has(r.key) ? "chevron-right" : "chevron-down"} size={12} />
                         <Icon name={r.icon} size={13} className={styles.chooserIcon} />
-                        <span className={clsx(styles.chooserName, styles.editGroupName)}>{r.label}</span>
+                        <span className={clsx(styles.chooserName, styles.editGroupName)}>
+                          <T>{r.label}</T>
+                        </span>
                       </button>
                     );
                   if (r.type === "folder") {

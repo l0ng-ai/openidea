@@ -45,6 +45,16 @@ describe("config merge / override", () => {
     ]);
   });
 
+  it("keeps saved CMake names when generated context changes", () => {
+    const id = "cmake:build:Debug:hello";
+    const saved = cfg({ id, kind: "cmake-application", name: "My hello (build)", detected: false });
+    for (const name of ["hello", "hello [Debug · build/]"]) {
+      const generated = cfg({ id, kind: "cmake-application", name });
+      const merged = mergeConfigs([generated], [saved]);
+      expect(merged).toEqual([saved]);
+    }
+  });
+
   it("editing a detected config creates a user copy with the same id", () => {
     const edited = upsertConfig(detected, { ...detected[0]!, args: ["run", "dev", "--port", "3001"] });
     expect(edited[0]).toMatchObject({ id: "npm:dev", detected: false, args: ["run", "dev", "--port", "3001"] });

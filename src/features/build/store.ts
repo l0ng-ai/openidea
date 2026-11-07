@@ -41,15 +41,16 @@ export interface BuildBackend {
     request: RequestId,
     clear: string[],
     onEvent: (e: BuildEvent) => void,
+    cmake: string | null,
   ): Promise<BuildResult>;
   cancel(request: RequestId): void;
 }
 
 const tauriBackend: BuildBackend = {
-  run(kind, file, request, clear, onEvent) {
+  run(kind, file, request, clear, onEvent, cmake) {
     const channel = new Channel<BuildEvent>();
     channel.onmessage = onEvent;
-    return call(commands.buildRun(kind, file, request, clear, channel));
+    return call(commands.buildRun(kind, file, cmake, request, clear, channel));
   },
   cancel(request) {
     void commands.cancelRequest(request);
@@ -130,6 +131,7 @@ export async function startBuild(
   kind: BuildKind,
   file: string | null = null,
   activate = true,
+  cmake: string | null = null,
 ): Promise<BuildResult | null> {
   if (isBuilding() || !useProject.getState().project) return null;
   const request = nextRequestId();
@@ -170,7 +172,7 @@ export async function startBuild(
 
   let result: BuildResult | null = null;
   try {
-    result = await backend.run(kind, file, request, previous, onEvent);
+    result = await backend.run(kind, file, request, previous, onEvent, cmake);
     clearTimeout(timer);
     flush();
     const status: BuildStatus = result.success ? "success" : "failed";

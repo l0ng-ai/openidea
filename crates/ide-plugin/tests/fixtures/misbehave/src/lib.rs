@@ -163,6 +163,28 @@ impl commands::Guest for Misbehave {
                     Ok(Some(process::run_command(&cmd, None, None)?.stdout))
                 }
             }
+            // A task that keeps reporting is still working: the call may run
+            // past the background budget it began with.
+            "patient" => {
+                let task = openidea::plugin::tasks::begin("waiting", false);
+                let cmd = process::Command {
+                    program: "git".into(),
+                    args: vec!["hash-object".into(), "--stdin".into()],
+                    env: Vec::new(),
+                };
+                let child = process::start(&cmd, None)?;
+                for step in 0..25 {
+                    task.report(step, Some(25), Some("waiting"));
+                    // Waiting blocks in the host for 100 ms: wall time passes
+                    // while the plugin itself is not running.
+                    let _ = child.wait(100);
+                }
+                // Let it finish on its own: no kill, no slow teardown.
+                child.close_stdin()?;
+                let _ = child.wait(5_000);
+                task.report(25, Some(25), Some("done"));
+                Ok(Some("still here".into()))
+            }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {
                 let editor = ctx.editor().ok_or_else(|| failed("no editor"))?;
