@@ -36,7 +36,14 @@ import { defineBuiltinUiPoints } from "./points";
 import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, selectPluginTheme, updateAllPlugins, usePlugins } from "./store";
+import {
+  grantPlugin,
+  runPluginCommand,
+  refreshPlugins,
+  selectPluginTheme,
+  updateAllPlugins,
+  usePlugins,
+} from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -287,6 +294,10 @@ export function handlePluginEvent(e: PluginEvent) {
         title: e.title || name,
         body: e.body || undefined,
         verbatim: true,
+        actions: e.actions.map((a) => ({
+          label: a.label,
+          run: () => void runPluginCommand(e.pluginId, a.command, a.argument),
+        })),
       });
       break;
     }

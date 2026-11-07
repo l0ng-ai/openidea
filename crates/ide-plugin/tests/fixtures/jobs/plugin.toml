@@ -40,6 +40,11 @@ title = "Jobs"
 schema = "settings.schema.json"
 
 [[contributes.commands]]
+id = "notify-actions"
+title = "Jobs: Show Notification Actions"
+category = "Jobs"
+
+[[contributes.commands]]
 id = "pick-directory"
 title = "Pick directory"
 [[contributes.commands]]

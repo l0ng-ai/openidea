@@ -176,7 +176,14 @@ pub enum PluginEvent {
     /// once per set of versions).
     UpdatesAvailable { updates: Vec<PluginUpdate> },
     #[serde(rename_all = "camelCase")]
-    Notification { plugin_id: String, level: NotificationLevel, title: String, body: String },
+    Notification {
+        plugin_id: String,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        /// Buttons running the plugin's own commands (`ui.notify`).
+        actions: Vec<ide_plugin::NotificationAction>,
+    },
     /// A plugin's status bar item was set (`item`) or removed.
     #[serde(rename_all = "camelCase")]
     StatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },

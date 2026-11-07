@@ -60,6 +60,28 @@ mod imp {
         wit::ui::show_notification(level, title, body)
     }
 
+    pub fn notify_with_actions(
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let level = match level {
+            NotificationLevel::Info => wit::types::NotificationLevel::Info,
+            NotificationLevel::Warning => wit::types::NotificationLevel::Warning,
+            NotificationLevel::Error => wit::types::NotificationLevel::Error,
+        };
+        let actions: Vec<_> = actions
+            .iter()
+            .map(|a| wit::ui::NotificationAction {
+                label: a.label.clone(),
+                command: a.command.clone(),
+                argument: a.argument.clone(),
+            })
+            .collect();
+        wit::ui::notify(level, title, body, &actions).map_err(error)
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         let item = wit::ui::StatusItem {
             text: item.text.clone(),
@@ -819,4 +841,16 @@ pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<Strin
 /// project are shown by that window. `path` belongs to the UI machine.
 pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
     imp::open_project(path, new_window)
+}
+
+/// [`notify`] with up to three buttons; each runs one of this plugin's
+/// declared commands in the balloon's window and dismisses the balloon. An
+/// invalid action or an undeclared command is an error and nothing is shown.
+pub fn notify_with_actions(
+    level: NotificationLevel,
+    title: &str,
+    body: &str,
+    actions: &[NotificationAction],
+) -> Result<(), Error> {
+    imp::notify_with_actions(level, title, body, actions)
 }

@@ -916,6 +916,7 @@ impl PluginHost {
                 level: ide_plugin::NotificationLevel::Warning,
                 title: format!("{name} update rolled back"),
                 body: message.clone(),
+                actions: Vec::new(),
             },
         );
         self.changed();
@@ -2133,6 +2134,7 @@ impl PluginHost {
                     level: NotificationLevel::Warning,
                     title: format!("Plugin \u{201c}{}\u{201d} crashed", plugin.manifest().name),
                     body: format!("{error}\nIt restarts the next time it is needed."),
+                    actions: Vec::new(),
                 },
             );
         }
@@ -2197,6 +2199,7 @@ impl PluginHost {
                 level: NotificationLevel::Error,
                 title: format!("Plugin \u{201c}{}\u{201d} was disabled", plugin.manifest().name),
                 body: error.to_owned(),
+                actions: Vec::new(),
             },
         );
         self.changed();
