@@ -766,6 +766,28 @@ Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
 `openidea.onThemeChange(fn)`, for drawing on a canvas, say. Variables are only
 ever added.
 
+#### List and detail views
+
+With API 1.3 (`engines.openidea = "^1.3"`), a rendered `tree` or `list` view
+in any location can declare `detail = true`:
+
+```toml
+[[contributes.views]]
+id = "endpoints"
+title = "Endpoints"
+location = "bottom"
+detail = true
+```
+
+Implement the same `details::Details` export shown below. The host requests
+the selected item's tabs after its `select` event finishes, and again after
+`host::refresh_view(view)`. The list and tabs appear side by side with a
+resizable divider remembered per plugin/view. Changing or removing the selected
+item closes its pane and stops its log. Changing projects or remote hosts clears
+selection; hiding the window stops its log. Other body kinds render as before;
+`detail` cannot be combined with `web`. Services uses its existing single
+list/detail split, so this declaration never adds a nested split.
+
 #### Services views
 
 `location = "services"` (API 1.3: `engines.openidea = "^1.3"`) puts a view's
