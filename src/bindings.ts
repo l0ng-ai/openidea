@@ -5516,6 +5516,8 @@ export type MavenProject = {
 
 /**  Build Tools › Maven. */
 export type MavenSettings = {
+	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
+	runnerJre?: string,
 	/**  Project-relative root POMs removed from the Maven project model. */
 	unlinkedProjects?: string[],
 	/**  Project-relative POMs outside the root reactor added as independent top-level projects. */

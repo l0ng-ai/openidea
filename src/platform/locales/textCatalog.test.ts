@@ -206,6 +206,7 @@ const UNTRANSLATED = new Set<string>([
   "JDK 1.4.x",
   "JDK 5 - 8",
   "JPA",
+  "JRE",
   "LTS",
   "NULL",
   "ORDER BY",

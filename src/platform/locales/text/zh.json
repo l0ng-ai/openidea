@@ -5352,7 +5352,6 @@
   "Context path": "上下文路径",
   "Enter / or a context path such as /app": "请输入 / 或 /app 等上下文路径",
   "HTTP port": "HTTP 端口",
-  "JRE": "Java 运行环境",
   "Java installation directory; empty uses the project JDK": "Java 安装目录；留空则使用项目 JDK",
   "Open browser after launch": "启动后打开浏览器",
   "Browser URL": "浏览器网址",
@@ -6564,5 +6563,7 @@
   "Remove Module Overrides": "移除模块覆盖设置",
   "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}",
   "Cannot choose a directory": "无法选择目录",
-  "Open in HTTP Client": "在 HTTP 客户端中打开"
+  "Open in HTTP Client": "在 HTTP 客户端中打开",
+  "Use Project JDK": "使用项目 SDK",
+  "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "用于 Maven 同步、构建、目标和测试的 JDK。运行配置中显式设置的 JAVA_HOME 优先。"
 }
