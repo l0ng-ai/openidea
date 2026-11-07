@@ -1029,6 +1029,14 @@ impl PluginHost {
             .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
             .collect();
         self.stop(&plugin);
+        {
+            let store = self.shared.secrets.read().clone();
+            for name in &secrets {
+                if let Err(e) = store.set(id, name, None) {
+                    tracing::warn!(plugin = %id, "cannot delete secret {name:?}: {e}");
+                }
+            }
+        }
         // Keep the installed package and registration available until cleanup succeeds.
         let cleanup = || -> std::io::Result<()> {
             match std::fs::remove_dir_all(self.shared.data_dir.join(id)) {
@@ -1046,14 +1054,6 @@ impl PluginHost {
             return Err(e.into());
         }
         self.unload(id);
-        {
-            let store = self.shared.secrets.read().clone();
-            for name in &secrets {
-                if let Err(e) = store.set(id, name, None) {
-                    tracing::warn!(plugin = %id, "cannot delete secret {name:?}: {e}");
-                }
-            }
-        }
         self.updates.lock().remove(id);
         {
             let mut ledger = self.ledger.lock();
