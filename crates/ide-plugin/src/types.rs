@@ -28,6 +28,8 @@ pub struct Invocation {
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
     pub editor: Option<EditorContext>,
+    /// Files and folders the command was run on.
+    pub selected_paths: Vec<PathBuf>,
 }
 
 /// A failed host call, as the plugin sees it (WIT `types.error`).
@@ -64,6 +66,30 @@ pub struct StatusItem {
     pub tooltip: Option<String>,
     /// One of the plugin's commands, run on click.
     pub command: Option<String>,
+}
+
+/// An entry of a plugin's `pick` or `pick-many`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PickItem {
+    pub key: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+/// `ui.input-multiline`, `ui.confirm`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Prompt {
+    #[serde(rename_all = "camelCase")]
+    QuickPick { title: String, items: Vec<PickItem>, multiple: bool },
+    #[serde(rename_all = "camelCase")]
+    Input { prompt: String, value: Option<String>, multiline: bool },
+    #[serde(rename_all = "camelCase")]
+    Confirm { title: String, message: String },
+    #[serde(rename_all = "camelCase")]
+    PickDirectory { title: String, initial: Option<String> },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -185,6 +211,40 @@ pub struct RepositoryStatus {
     pub behind: u32,
     pub operation: Option<String>,
     pub changed_files: u32,
+}
+
+/// A file a pending commit changes (WIT `commit.commit-change`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitChange {
+    pub repository: String,
+    pub path: String,
+    pub old_path: Option<String>,
+    /// `added`, `modified`, `deleted`, `renamed`, `copied` or `type-changed`.
+    pub status: String,
+    /// `git diff` of the included changes; `None` for binary content.
+    pub diff: Option<String>,
+    pub truncated: bool,
+}
+
+/// What Commit would commit (WIT `commit.commit-draft`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDraft {
+    pub revision: u64,
+    pub message: String,
+    pub amend: bool,
+    pub changes: Vec<CommitChange>,
+}
+
+/// A problem a plugin's before-commit check reported (WIT `commit-checker.commit-problem`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitProblem {
+    pub message: String,
+    /// Absolute path of the file it is in, if any (IPC form).
+    pub path: Option<String>,
+    pub range: Option<ide_core::Range>,
 }
 
 /// Resource limits and supervision policy for plugin code.
@@ -384,8 +444,21 @@ pub struct CodeAction {
     pub kind: Option<String>,
     pub preferred: bool,
     pub edits: Vec<(PathBuf, Vec<ide_core::TextEdit>)>,
+    /// Applied before `edits`, in one workspace edit with them.
+    pub operations: Vec<FileOperation>,
+    /// Opened once the action is applied.
+    pub open: Option<PathBuf>,
     /// The plugin's reference: the edits come from `resolve_code_action`.
     pub data: Option<String>,
+    /// Listed by the `file-actions` export, which also resolves it.
+    pub file_action: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOperation {
+    Create { path: PathBuf, text: String, overwrite: bool },
+    Rename { from: PathBuf, to: PathBuf },
+    Delete { path: PathBuf },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -394,6 +467,29 @@ pub struct LineMarker {
     pub icon: Option<String>,
     pub tooltip: String,
     pub target: Option<Location>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SemanticToken {
+    pub range: ide_core::Range,
+    pub kind: String,
+    pub modifiers: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginHover {
+    pub markdown: String,
+    pub range: Option<ide_core::Range>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginInlayHint {
+    pub position: ide_core::Pos,
+    pub label: String,
+    pub kind: String,
+    pub tooltip: Option<String>,
+    pub padding_left: bool,
+    pub padding_right: bool,
 }
 
 // ---- declarative views (wit/views.wit) ---------------------------------------
@@ -431,6 +527,8 @@ pub struct ViewListItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum FieldValue {
+    Label(String),
+    ReadonlyText { text: String, multiline: bool },
     Text(String),
     Multiline(String),
     Checkbox(bool),
@@ -445,6 +543,14 @@ pub struct ViewField {
     pub value: FieldValue,
 }
 
+/// A sortable table's order: the column and the direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSort {
+    pub column: u32,
+    pub descending: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewTable {
@@ -453,6 +559,10 @@ pub struct ViewTable {
     pub first_row: u32,
     pub rows: Vec<Vec<String>>,
     pub editable: bool,
+    /// The plugin opted its headers in to click-to-sort (a `table` body through `other`).
+    pub sortable: bool,
+    /// The sort the plugin orders by (none: no arrow yet).
+    pub sort: Option<TableSort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -473,6 +583,42 @@ pub struct View {
     pub toolbar: Vec<ViewButton>,
     pub body: ViewBody,
     pub status: Option<String>,
+}
+
+/// A tab of the Services pane of a plugin's node (`detail-provider.detail`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceTab {
+    pub id: String,
+    pub label: String,
+    pub body: ServicePane,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum ServicePane {
+    Message(String),
+    /// Read-only text that can be selected and copied.
+    Text(String),
+    /// A program the IDE runs (with the plugin's `process:` grant), followed in a log.
+    Log(ServiceLog),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceLog {
+    pub program: String,
+    pub args: Vec<String>,
+    pub toggles: Vec<ServiceLogToggle>,
+}
+
+/// A switch above the log; when on, `args` are appended and the program restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceLogToggle {
+    pub id: String,
+    pub label: String,
+    pub args: Vec<String>,
 }
 
 /// The table rows the UI shows.
@@ -497,4 +643,28 @@ pub enum ViewEvent {
     InsertRow { before: u32 },
     DeleteRows { rows: Vec<u32> },
     Message { text: String },
+    // A sortable table's header click: the column and the direction (leaves
+    // as an `other` view-event, kind `sort`). See `TableSort`.
+    Sort { column: u32, descending: bool },
+    TableSelect { row: u32 },
+    TableActivate { row: u32 },
+}
+
+/// A plugin's HTTP route declaration in a project.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub method: Option<String>,
+    pub path: String,
+    pub framework: String,
+    pub handler: Option<String>,
+    pub location: Location,
+}
+
+/// A notification button that runs one of the publishing plugin's commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
 }

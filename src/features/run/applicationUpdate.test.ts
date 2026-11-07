@@ -102,7 +102,7 @@ describe("Tomcat application updates", () => {
   it("waits for clean shutdown before restarting a debug server", async () => {
     await updateTomcat(session, "restart");
     expect(mocks.stop).toHaveBeenCalledWith("run1");
-    expect(mocks.wait).toHaveBeenCalledWith(["run1"]);
+    expect(mocks.wait).toHaveBeenCalledWith(["run1"], null);
     expect(mocks.wait.mock.invocationCallOrder[0]).toBeLessThan(mocks.action.mock.invocationCallOrder[0]!);
     expect(mocks.action).toHaveBeenCalledWith("run.debugConfig", session.config);
   });

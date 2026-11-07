@@ -244,6 +244,14 @@ try:
     while not query('added.size')['locations']:
         assert time.monotonic() < deadline, 'a new source on disk did not reach the index'
         time.sleep(0.2)
+    # That rebuild reused the library's metadata; a changed archive is read again.
+    assert query('vendor.port')['locations'], 'a source rebuild lost the library metadata'
+    metadata['properties'].append({'name': 'vendor.speed', 'type': 'java.lang.Integer', 'sourceType': 'vendor.LibrarySettings'})
+    with zipfile.ZipFile(library, 'w') as z:
+        z.write(classes / 'vendor/LibrarySettings.class', 'vendor/LibrarySettings.class')
+        z.writestr('META-INF/spring-configuration-metadata.json', json.dumps(metadata))
+    assert query('vendor.speed')['locations'], 'a changed library archive kept its old metadata'
+    assert query('vendor.port')['locations']
     # Unsaved changes must replace old keys, and closing must restore disk keys.
     changed = source.replace('prefix="app"', 'prefix="edited"').replace('${app.time-out:30}', '${edited.timeout:30}')
     send({'jsonrpc': '2.0', 'method': 'textDocument/didChange', 'params': {'textDocument': {'uri': file.as_uri(), 'version': 2}, 'contentChanges': [{'text': changed}]}})

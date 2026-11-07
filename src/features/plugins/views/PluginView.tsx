@@ -14,9 +14,11 @@ import {
   useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
+import clsx from "clsx";
 import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import {
   Checkbox,
   EmptyState,
@@ -32,6 +34,7 @@ import {
 import { pluginsBackend } from "../backend";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { FRAME_TAG, frameDocument, frameTheme, frameThemeMessage } from "./frame";
+import { localizeView, usePluginT } from "../pluginText";
 import { onViewMessage, useViewRevision } from "./viewStore";
 import styles from "./PluginView.module.css";
 
@@ -44,14 +47,27 @@ export interface PluginViewProps {
   revision?: number;
   /** Called after an event was handled (custom editors re-render on the document instead). */
   label?: string;
+  /** Context menu entries by item key (tables use the absolute row index). */
+  itemMenu?: (key: string) => MenuItem[];
 }
 
 /** Table rows asked for beyond the visible ones (each side). */
 const OVERSCAN = 50;
 const ROW_HEIGHT = 24;
 
-export function PluginView({ pluginId, view, doc = null, revision = 0, label }: PluginViewProps) {
-  const [content, setContent] = useState<View | null>(null);
+/** Plugin text is shown as written: the plugin translates it through its own catalog. */
+export function PluginView(props: PluginViewProps) {
+  return (
+    <VerbatimTextContext.Provider value={true}>
+      <PluginViewContent {...props} />
+    </VerbatimTextContext.Provider>
+  );
+}
+
+function PluginViewContent({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
+  const [rendered, setContent] = useState<View | null>(null);
+  const t = usePluginT(pluginId);
+  const content = useMemo(() => rendered && localizeView(rendered, t), [rendered, t]);
   const [error, setError] = useState<string | null>(null);
   const [viewport, setViewport] = useState<Viewport | null>(null);
   const pluginRevision = useViewRevision(pluginId, view);
@@ -127,7 +143,14 @@ export function PluginView({ pluginId, view, doc = null, revision = 0, label }: 
         </div>
       )}
       <div className={styles.body}>
-        <Body content={content} send={send} pluginId={pluginId} view={view} onViewport={setViewport} />
+        <Body
+          content={content}
+          send={send}
+          pluginId={pluginId}
+          view={view}
+          onViewport={setViewport}
+          itemMenu={itemMenu}
+        />
       </div>
       {content.status && <div className={styles.status}>{content.status}</div>}
     </div>
@@ -140,15 +163,16 @@ interface BodyProps {
   pluginId: string;
   view: string;
   onViewport: (v: Viewport) => void;
+  itemMenu?: (key: string) => MenuItem[];
 }
 
-function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
+function Body({ content, send, pluginId, view, onViewport, itemMenu }: BodyProps) {
   const body = content.body;
   switch (body.kind) {
     case "message":
       return <EmptyState className={styles.empty} title={body.value} />;
     case "tree":
-      return <TreeBody items={body.value} send={send} />;
+      return <TreeBody items={body.value} send={send} itemMenu={itemMenu} />;
     case "list":
       return (
         <ul className={styles.list} role="listbox">
@@ -162,6 +186,7 @@ function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
               onClick={() => send({ kind: "select", key: i.key })}
               onDoubleClick={() => send({ kind: "activate", key: i.key })}
               onKeyDown={(e) => e.key === "Enter" && send({ kind: "activate", key: i.key })}
+              onContextMenu={(e) => openItemMenu(e, itemMenu, i.key)}
             >
               {i.icon && <Icon name={i.icon} size={14} />}
               <span>{i.label}</span>
@@ -179,7 +204,7 @@ function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
         </div>
       );
     case "table":
-      return <TableBody table={body.value} send={send} onViewport={onViewport} />;
+      return <TableBody table={body.value} send={send} onViewport={onViewport} itemMenu={itemMenu} />;
     case "html":
       return <HtmlBody html={body.value} send={send} pluginId={pluginId} view={view} />;
   }
@@ -187,17 +212,17 @@ function Body({ content, send, pluginId, view, onViewport }: BodyProps) {
 
 // --- tree -------------------------------------------------------------------------
 
-interface Node {
+export interface TreeNode {
   item: ViewTreeItem;
-  children: Node[];
+  children: TreeNode[];
 }
 
 /** The flat item list as nodes (items naming an unknown parent are roots). */
-export function treeNodes(items: readonly ViewTreeItem[]): Node[] {
-  const byKey = new Map<string, Node>();
-  const roots: Node[] = [];
+export function treeNodes(items: readonly ViewTreeItem[]): TreeNode[] {
+  const byKey = new Map<string, TreeNode>();
+  const roots: TreeNode[] = [];
   for (const item of items) {
-    const node: Node = { item, children: [] };
+    const node: TreeNode = { item, children: [] };
     if (!byKey.has(item.key)) byKey.set(item.key, node);
     const parent = item.parent != null ? byKey.get(item.parent) : undefined;
     (parent ? parent.children : roots).push(node);
@@ -205,11 +230,28 @@ export function treeNodes(items: readonly ViewTreeItem[]): Node[] {
   return roots;
 }
 
-function TreeBody({ items, send }: { items: ViewTreeItem[]; send: (e: ViewEvent) => void }) {
+function openItemMenu(
+  e: ReactMouseEvent | MouseEvent,
+  itemMenu: ((key: string) => MenuItem[]) | undefined,
+  key: string,
+) {
+  const items = itemMenu?.(key) ?? [];
+  if (items.length === 0) return;
+  e.preventDefault();
+  showContextMenu(e, items);
+}
+
+interface TreeBodyProps {
+  items: ViewTreeItem[];
+  send: (e: ViewEvent) => void;
+  itemMenu?: (key: string) => MenuItem[];
+}
+
+function TreeBody({ items, send, itemMenu }: TreeBodyProps) {
   const roots = useMemo(() => treeNodes(items), [items]);
   const expanded = useMemo(() => new Set(items.filter((i) => i.expanded).map((i) => i.key)), [items]);
   return (
-    <Tree<Node>
+    <Tree<TreeNode>
       roots={roots}
       getKey={(n) => n.item.key}
       getLabel={(n) => n.item.label}
@@ -224,6 +266,7 @@ function TreeBody({ items, send }: { items: ViewTreeItem[]; send: (e: ViewEvent)
       onSelectionChange={(_, lead) => lead && send({ kind: "select", key: lead.item.key })}
       onActivate={(n) => send({ kind: "activate", key: n.item.key })}
       multiSelect={false}
+      onContextMenu={itemMenu ? (node, _, e) => node && openItemMenu(e, itemMenu, node.item.key) : undefined}
     />
   );
 }
@@ -241,6 +284,17 @@ function FormField({ field, send }: { field: ViewField; send: (e: ViewEvent) => 
           {field.label}
         </label>
       )}
+      {v.kind === "label" && (
+        <output id={id} className={styles.readonlyValue}>
+          {v.value}
+        </output>
+      )}
+      {v.kind === "readonlyText" &&
+        (v.value.multiline ? (
+          <textarea id={id} className={clsx(styles.textarea, styles.readonlyField)} value={v.value.text} readOnly />
+        ) : (
+          <Input id={id} className={styles.readonlyField} value={v.value.text} readOnly />
+        ))}
       {v.kind === "text" && <TextField id={id} initial={v.value} onCommit={commit} />}
       {v.kind === "multiline" && <TextField id={id} initial={v.value} onCommit={commit} multiline />}
       {v.kind === "checkbox" && (
@@ -305,10 +359,12 @@ function TableBody({
   table,
   send,
   onViewport,
+  itemMenu,
 }: {
   table: ViewTable;
   send: (e: ViewEvent) => void;
   onViewport: (v: Viewport) => void;
+  itemMenu?: (key: string) => MenuItem[];
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -333,10 +389,13 @@ function TableBody({
     if (first < table.firstRow || shownEnd > loadedEnd) onViewport(wantedViewport(first, visible, table.totalRows));
   }, [first, visible, shownEnd, loadedEnd, table.firstRow, table.totalRows, onViewport]);
 
-  const rowMenu = (row: number, e: React.MouseEvent) => {
+  const rowMenu = (row: number, e: ReactMouseEvent | ReactKeyboardEvent) => {
     e.preventDefault();
     const rows = selected.has(row) ? [...selected].sort((a, b) => a - b) : [row];
-    if (!selected.has(row)) setSelected(new Set([row]));
+    if (!selected.has(row)) {
+      setSelected(new Set([row]));
+      send({ kind: "tableSelect", row });
+    }
     const items: MenuItem[] = [
       { label: tx("Insert Row Above"), icon: "plus", run: () => send({ kind: "insertRow", before: row }) },
       { label: tx("Insert Row Below"), run: () => send({ kind: "insertRow", before: row + 1 }) },
@@ -348,8 +407,22 @@ function TableBody({
         run: () => send({ kind: "deleteRows", rows }),
       },
     ];
-    if (table.editable) showContextMenu(e, items);
+    const contributed = itemMenu?.(String(row)) ?? [];
+    const menu = table.editable
+      ? [...contributed, ...(contributed.length ? [{ kind: "separator" } as const] : []), ...items]
+      : contributed;
+    if (menu.length) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      showContextMenu("clientX" in e ? e : { x: rect.left, y: rect.bottom }, menu);
+    }
   };
+
+  // A sortable table (`table` through the plugin API's `other` body case):
+  // the plugin sorts its own rows, so a header click only asks it to — the
+  // first click ascending, a second on the same column reversed.
+  const sort = table.sortable ? table.sort : null;
+  const sortColumn = (column: number) =>
+    send({ kind: "sort", column, descending: sort?.column === column ? !sort.descending : false });
 
   const rows: React.ReactNode[] = [];
   for (let r = Math.max(first, table.firstRow); r < Math.min(shownEnd, loadedEnd); r++) {
@@ -362,15 +435,35 @@ function TableBody({
         aria-selected={selected.has(r)}
         className={styles.tableRow}
         style={{ top: (r + 1) * ROW_HEIGHT }}
-        onClick={(e) =>
+        tabIndex={0}
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest("input, textarea")) return;
           setSelected((s) => {
             if (!(e.metaKey || e.ctrlKey)) return new Set([r]);
             const next = new Set(s);
             if (next.has(r)) next.delete(r);
             else next.add(r);
             return next;
-          })
-        }
+          });
+          send({ kind: "tableSelect", row: r });
+        }}
+        onDoubleClick={(e) => {
+          if (!table.editable || (e.target as HTMLElement).closest('[role="rowheader"]'))
+            send({ kind: "tableActivate", row: r });
+        }}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter") {
+            e.preventDefault();
+            send({ kind: "tableActivate", row: r });
+          } else if (e.key === " ") {
+            e.preventDefault();
+            setSelected(new Set([r]));
+            send({ kind: "tableSelect", row: r });
+          } else if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+            rowMenu(r, e);
+          }
+        }}
         onContextMenu={(e) => rowMenu(r, e)}
       >
         <div className={styles.rowNumber} role="rowheader">
@@ -413,11 +506,30 @@ function TableBody({
       <div className={styles.tableCanvas} style={{ height: (table.totalRows + 1) * ROW_HEIGHT }}>
         <div className={`${styles.tableRow} ${styles.tableHeader}`} role="row" aria-rowindex={1}>
           <div className={styles.rowNumber} />
-          {table.columns.map((c, i) => (
-            <div key={i} role="columnheader" className={styles.cell} title={c}>
-              {c}
-            </div>
-          ))}
+          {table.columns.map((c, i) => {
+            const sorted = sort?.column === i;
+            return (
+              <div
+                key={i}
+                role="columnheader"
+                className={table.sortable ? `${styles.cell} ${styles.headerCell}` : styles.cell}
+                title={c}
+                aria-sort={sorted ? (sort.descending ? "descending" : "ascending") : undefined}
+                tabIndex={table.sortable ? 0 : undefined}
+                onClick={table.sortable ? () => sortColumn(i) : undefined}
+                onKeyDown={
+                  table.sortable
+                    ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), sortColumn(i))
+                    : undefined
+                }
+              >
+                {c}
+                {sorted && (
+                  <Icon name={sort.descending ? "chevron-down" : "chevron-up"} size={12} className={styles.sortIcon} />
+                )}
+              </div>
+            );
+          })}
         </div>
         {rows}
       </div>

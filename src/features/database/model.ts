@@ -23,6 +23,17 @@ export function toTsv(header: readonly string[] | null, rows: ReadonlyArray<read
   return lines.join("\n");
 }
 
+/**
+ * Every value on a single `, `-separated line (IDEA's One-Row extractor, for
+ * `IN (…)` lists): NULL for nulls, numbers unquoted, everything else
+ * single-quoted with `'` doubled. `numeric(c)` decides quoting per column.
+ */
+export function toOneRow(rows: ReadonlyArray<readonly Cell[]>, numeric: (col: number) => boolean): string {
+  const literal = (v: Cell, c: number) =>
+    v === null ? "NULL" : numeric(c) && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
+  return rows.flatMap((r) => r.map(literal)).join(", ");
+}
+
 /** RFC 4180 CSV; NULL is an empty field. */
 export function toCsv(header: readonly string[] | null, rows: ReadonlyArray<readonly Cell[]>): string {
   const field = (v: Cell) => {

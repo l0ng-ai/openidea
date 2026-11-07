@@ -164,6 +164,9 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     let kinds = invoke(&peer, "plugin_event_kinds", json!({})).await.unwrap();
     assert!(kinds.as_array().unwrap().contains(&json!("file-saved")), "{kinds}");
 
+    invoke(&peer, "plugin_set_ui_locale", json!({ "tag": "fr" })).await.unwrap();
+    assert_eq!(plugins.host().ui_locale(), "fr");
+
     // Saving a file that exists only on the server: Checkstyle reads that file.
     let java = project.join("src/A.java");
     std::fs::write(&java, "class A {\n\tint x;\n}\n").unwrap();
@@ -300,5 +303,31 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
         })
     })
     .await;
+
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "jobs", "commandId": "context", "arg": "mode=true", "editor": null }),
+    )
+    .await
+    .unwrap();
+    until("the context key's event", 5, || {
+        client.plugin_events.lock().iter().any(|m| {
+            m.window.as_deref() == Some("main")
+                && matches!(&m.event, PluginEvent::ContextChanged { key, value, .. } if key == "mode" && value.as_deref() == Some("true"))
+        })
+    })
+    .await;
+    let keys = invoke(&peer, "plugin_context_keys", json!({})).await.unwrap();
+    assert_eq!(keys, json!([{ "pluginId": "jobs", "key": "mode", "value": "true" }]), "{keys}");
+
+    let selected = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "jobs", "commandId": "selection", "arg": null, "editor": null, "paths": ["/srv/src/a.txt"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(selected, "/srv/src/a.txt");
     plugins.host().shutdown();
 }

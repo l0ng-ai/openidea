@@ -7,7 +7,6 @@
  */
 import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
-import { setContext } from "@/platform/context";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -412,13 +411,10 @@ export function DatabaseView() {
   return (
     <div className={styles.dbView}>
       <DatabaseToolbar />
-      <div
-        className={styles.treeHost}
-        onFocus={(e) => setContext(DB_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")}
-        onBlur={() => setContext(DB_VIEW_FOCUS, false)}
-      >
+      <div className={styles.treeHost}>
         <Tree<Node>
           aria-label="Data sources"
+          focusContext={DB_VIEW_FOCUS}
           roots={roots}
           handleRef={tree}
           expanded={st.treeExpanded}

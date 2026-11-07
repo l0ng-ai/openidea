@@ -66,7 +66,8 @@ import { tx } from "@/platform/i18n";
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
-export const SQL_LANGUAGE = "sql";
+import { SQL_LANGUAGE } from "./sqlLanguage";
+export { SQL_LANGUAGE };
 const ROW_LIMITS = ["100", "500", "1000", "5000", "50000"];
 
 /** Statement outcomes of the last run, kept on the text (IDEA's gutter check / error and timing). */

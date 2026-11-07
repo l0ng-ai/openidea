@@ -71,7 +71,8 @@ pub struct BuildDependency {
 /// `dependencies` (from the build model) are listed when their jars are in the local repositories.
 pub fn project_libraries(root: &Path, settings: &Settings, dependencies: &[BuildDependency]) -> Vec<LibraryGroup> {
     type Detect = fn(&Path, &Settings) -> Vec<LibraryGroup>;
-    let detectors: [Detect; 6] = [python_groups, jdk_groups, node_groups, rust_groups, go_groups, ruby_groups];
+    let detectors: [Detect; 7] =
+        [python_groups, jdk_groups, node_groups, rust_groups, go_groups, ruby_groups, project_structure_groups];
     std::thread::scope(|s| {
         let handles: Vec<_> = detectors.iter().map(|d| s.spawn(move || d(root, settings))).collect();
         let deps = s.spawn(|| dependency_groups(root, settings, dependencies));
@@ -82,7 +83,7 @@ pub fn project_libraries(root: &Path, settings: &Settings, dependencies: &[Build
 // ------------------------------------------------------------------ cache
 
 /// Size and modification time of each manifest (`None`: missing).
-type Stamp = Vec<(PathBuf, Option<(SystemTime, u64)>)>;
+pub(crate) type Stamp = Vec<(PathBuf, Option<(SystemTime, u64)>)>;
 
 struct Cached {
     /// Settings the result depends on.
@@ -97,7 +98,7 @@ pub fn invalidate_go(root: &Path) {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).remove(&(root.to_path_buf(), "go"));
 }
 
-fn stamp(files: &[PathBuf]) -> Stamp {
+pub(crate) fn stamp(files: &[PathBuf]) -> Stamp {
     files
         .iter()
         .map(|f| {
@@ -217,13 +218,41 @@ fn ruby_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
 // ------------------------------------------------------------------ jdk
 
 fn jdk_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
-    let Some(files) = manifests(root, JAVA_MANIFESTS) else { return Vec::new() };
+    let files = match manifests(root, JAVA_MANIFESTS) {
+        Some(files) => files,
+        None if !s.languages.java.jdk.trim().is_empty() || !s.project_structure.source_roots.is_empty() => Vec::new(),
+        None => return Vec::new(),
+    };
     cached(root, "jdk", s.languages.java.jdk.clone(), &files, || {
         let jdk = crate::apply::project_jdk(root, s).or_else(|| {
             crate::java::pick_jdk(&crate::java::installed_jdks(), crate::java::project_java_version(root)).cloned()
         });
         jdk.and_then(|j| jdk_library(&j)).into_iter().collect()
     })
+}
+
+fn project_structure_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+    let mut out = Vec::new();
+    for lib in &s.project_structure.libraries {
+        let mut roots = Vec::new();
+        for entry in lib.classes.iter().chain(&lib.sources) {
+            let Some(path) = crate::apply::setting_path(root, entry) else { continue };
+            let label = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            if path.is_file() {
+                roots.push(LibraryRoot { name: label, path: ide_vfs::archive_root(&path).into() });
+            } else if path.is_dir() {
+                roots.push(LibraryRoot { name: label, path: path.into() });
+            }
+        }
+        if !roots.is_empty() {
+            let name = if lib.name.trim().is_empty() { roots[0].name.clone() } else { lib.name.trim().to_owned() };
+            out.push(LibraryGroup { name, kind: "library".into(), roots });
+        }
+    }
+    out
 }
 
 /// The JDK home and its sources (`lib/src.zip`, `src.zip` in JDK 8) as library roots.

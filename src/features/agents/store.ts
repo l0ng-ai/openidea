@@ -555,9 +555,12 @@ export async function rerunFrom(task: string, turn: number, text: string, images
   try {
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
-    // Rollback removes the inline editor; recover its text in the session composer.
+    // Rollback removes the original turn; recover its prompt in the session composer.
     const current = composerDraft(task);
-    updateComposer(task, { text: current.text ? `${text}\n${current.text}` : text });
+    updateComposer(task, {
+      text: current.text ? `${text}\n${current.text}` : text,
+      images: [...images, ...current.images],
+    });
     focusComposer(task);
     throw e;
   }
@@ -625,6 +628,8 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
 
 /** Stops the task's turn, or with `subagent` only that subagent's work. */
 export const cancelTask = (task: string, subagent: string | null = null) => call(commands.agentCancel(task, subagent));
+export const stopBackgroundTask = (task: string, background: string) =>
+  call(commands.agentStopBackground(task, background));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
 export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));
