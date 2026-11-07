@@ -347,7 +347,7 @@ describe("debugging build tool configurations", () => {
     expect(merged.args[1]).toMatch(/^-Dspring-boot\.run\.jvmArguments=-Xmx1g -agentlib:jdwp=/);
     const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", "-Dtest=A#b"], isTest: true }))!;
     expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-agentlib:jdwp="))).toBe(true);
-    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toEqual(["bootRun", "--debug-jvm"]);
+    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toContain(DELEGATED_DEBUG);
     const gradleTest = jdwpLaunch(cfg({ id: "gt", kind: "gradle", args: ["test"], isTest: true }))!;
     expect(gradleTest.args).toContain(DELEGATED_DEBUG);
     expect(gradleTest.args).not.toContain("--debug-jvm");

@@ -7,6 +7,7 @@
  */
 import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import TESTS_SCRIPT from "./gradleTests.gradle?raw";
+import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { call, commands, isTauri, type GradleModel, type RunConfig } from "@/platform/ipc";
 import { findJavaModule, isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
@@ -130,6 +131,17 @@ export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<
     return withTestEvents(config, await writeScript("openidea-gradle-tests", TESTS_SCRIPT));
   } catch (e) {
     console.warn("Gradle test init script not written", e);
+    return config;
+  }
+}
+
+/** Gives a direct Gradle BootRun a dynamic JDWP port for the forked application JVM. */
+export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<T> {
+  if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)bootRun$/.test(a))) return config;
+  try {
+    return withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+  } catch (e) {
+    console.warn("Gradle BootRun init script not written", e);
     return config;
   }
 }
