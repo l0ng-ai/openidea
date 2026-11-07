@@ -2,7 +2,7 @@
  * A plugin view declared with `location = "services"`: its tree's items are
  * nodes of the Services tool window, its toolbar the Services toolbar for one
  * selected node, `viewItem.context` its nodes' right-click menu, and the
- * plugin's `service-provider` the selected node's pane.
+ * plugin's `detail-provider` the selected node's pane.
  */
 import { useEffect, useMemo, useState } from "react";
 import type { View, ViewEvent } from "@/bindings";
@@ -11,7 +11,7 @@ import type { ServiceProviderContribution, ServiceTreeItem } from "@/workbench/c
 import { pluginsBackend } from "../backend";
 import { treeNodes, type TreeNode } from "./PluginView";
 import { ServicePane } from "./ServicePane";
-import { useViewRevision } from "./viewStore";
+import { currentViewLocation, useViewLocation, useViewRevision } from "./viewStore";
 
 interface ServicesViewDecl {
   id: string;
@@ -30,8 +30,11 @@ export function pluginServiceProvider(
   // Events of one node stay in order (a toolbar button after the select it acts on).
   let queue = Promise.resolve();
   const send = (event: ViewEvent) => {
+    const location = currentViewLocation();
     queue = queue
-      .then(() => pluginsBackend().viewEvent(pluginId, decl.id, event, null))
+      .then(() =>
+        location === currentViewLocation() ? pluginsBackend().viewEvent(pluginId, decl.id, event, null) : undefined,
+      )
       .catch((e: unknown) => console.warn(`plugin ${pluginId}: view ${decl.id}`, e));
   };
   const toItem = (n: TreeNode): ServiceTreeItem => ({
@@ -49,7 +52,9 @@ export function pluginServiceProvider(
     order: 900,
     useRoots() {
       const revision = useViewRevision(pluginId, decl.id);
+      const location = useViewLocation();
       const [view, setView] = useState<View | null>(null);
+      const [renderedLocation, setRenderedLocation] = useState(location);
       useEffect(() => {
         let alive = true;
         pluginsBackend()
@@ -59,14 +64,23 @@ export function pluginServiceProvider(
               if (!alive) return;
               toolbar = v.toolbar;
               setView(v);
+              setRenderedLocation(location);
             },
             (e: unknown) => console.warn(`plugin ${pluginId}: view ${decl.id}`, e),
           );
         return () => {
           alive = false;
         };
-      }, [revision]);
-      return useMemo(() => (view?.body.kind === "tree" ? treeNodes(view.body.value).map(toItem) : []), [view]);
+      }, [revision, location]);
+      return useMemo(() => {
+        if (renderedLocation !== location) return [];
+        if (view?.body.kind === "tree") return treeNodes(view.body.value).map(toItem);
+        if (view?.body.kind === "list")
+          return view.body.value.map((item) =>
+            toItem({ item: { ...item, parent: null, expandable: false, expanded: false }, children: [] }),
+          );
+        return [];
+      }, [view, location, renderedLocation]);
     },
     // Ids per node: the Services toolbar offers an action of several selected
     // nodes only when they share its id, and a plugin's buttons act on one.
@@ -89,6 +103,6 @@ export function pluginServiceProvider(
   };
 
   function Detail({ item }: { item: ServiceTreeItem }) {
-    return <ServicePane pluginId={pluginId} view={decl.id} itemKey={rawKey(item)} />;
+    return <ServicePane pluginId={pluginId} view={decl.id} itemKey={rawKey(item)} after={queue} />;
   }
 }
