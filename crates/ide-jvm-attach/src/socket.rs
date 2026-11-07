@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use crate::properties::parse_properties;
 #[cfg(unix)]
 use std::{
     io::{self, Read, Write},
@@ -118,13 +121,37 @@ fn check_socket(path: &Path) -> Result<(), AttachError> {
     }
 }
 
+/// JVM agent properties (`sun.jdwp.listenerAddress`, ...) via the `agentProperties` operation.
+pub fn agent_properties(pid: u32, timeout: Duration) -> Result<HashMap<String, String>, AttachError> {
+    #[cfg(unix)]
+    {
+        agent_properties_at(&socket_path(pid), timeout)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, timeout);
+        Err(AttachError::Unsupported)
+    }
+}
+
 #[cfg(unix)]
-fn has_listener_at(path: &Path) -> bool {
+pub(crate) fn has_listener_at(path: &Path) -> bool {
     check_socket(path).is_ok()
 }
 
 #[cfg(unix)]
 pub(crate) fn jcmd_at(path: &Path, command_line: &str, timeout: Duration) -> Result<String, AttachError> {
+    request_at(path, "jcmd", [command_line, "", ""], timeout)
+}
+
+#[cfg(unix)]
+pub(crate) fn agent_properties_at(path: &Path, timeout: Duration) -> Result<HashMap<String, String>, AttachError> {
+    request_at(path, "agentProperties", ["", "", ""], timeout).map(|body| parse_properties(&body))
+}
+
+/// One attach-protocol v1 request: `1\0<op>\0<arg>\0<arg>\0<arg>\0`, always three argument slots.
+#[cfg(unix)]
+fn request_at(path: &Path, operation: &str, args: [&str; 3], timeout: Duration) -> Result<String, AttachError> {
     let deadline = Instant::now() + timeout;
     check_socket(path)?;
     let mut stream = connect_before(path, deadline)?;
@@ -135,7 +162,7 @@ pub(crate) fn jcmd_at(path: &Path, command_line: &str, timeout: Duration) -> Res
     // A suspended VM may never drain the socket; bound the write by the same budget.
     let remaining = deadline.saturating_duration_since(Instant::now());
     stream.set_write_timeout(Some(remaining.max(Duration::from_millis(1))))?;
-    let request = format!("1\0jcmd\0{command_line}\0\0\0");
+    let request = format!("1\0{operation}\0{}\0{}\0{}\0", args[0], args[1], args[2]);
     stream.write_all(request.as_bytes()).map_err(map_timeout)?;
     read_reply(&mut stream, deadline, MAX_OUTPUT)
 }
@@ -375,6 +402,16 @@ mod tests {
         let out = jcmd_at(&path, "GC.class_histogram -all", Duration::from_secs(2)).unwrap();
         assert_eq!(out, "hello\n");
         assert_eq!(server.join().unwrap(), b"1\0jcmd\0GC.class_histogram -all\0\0\0");
+    }
+
+    #[test]
+    fn sends_v1_agent_properties_request_and_parses_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, listener) = bind_private(dir.path());
+        let server = serve_once(listener, b"0\n#Mon\nsun.jdwp.listenerAddress=dt_socket\\:64390\n");
+        let props = agent_properties_at(&path, Duration::from_secs(2)).unwrap();
+        assert_eq!(props.get("sun.jdwp.listenerAddress").map(String::as_str), Some("dt_socket:64390"));
+        assert_eq!(server.join().unwrap(), b"1\0agentProperties\0\0\0\0");
     }
 
     #[test]

@@ -1,11 +1,15 @@
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use ide_jvm_attach::{AttachError, has_listener, java_version_of, jcmd, parse_class_histogram, parse_release};
+use ide_jvm_attach::{
+    AttachError, agent_properties, find_jvm_by_jdwp_port, has_listener, java_version_of, jcmd, jdwp_port,
+    parse_class_histogram, parse_release,
+};
 
 const MAIN_JAVA: &str = r#"
 import java.util.ArrayList;
@@ -82,4 +86,65 @@ fn attaches_to_a_real_jvm() {
     assert_eq!(item.instances, 1000);
 
     assert!(matches!(jcmd(pid, "No.such", Duration::from_secs(10)), Err(AttachError::Command { .. })));
+}
+
+/// Port from JDWP's "Listening for transport dt_socket at address: N" line, which JDKs print on
+/// stdout or stderr depending on the version.
+fn read_jdwp_port(child: &mut Child) -> u16 {
+    let (lines, received) = mpsc::channel::<String>();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    for stream in [Box::new(stdout) as Box<dyn Read + Send>, Box::new(stderr)] {
+        let lines = lines.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                if lines.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(lines);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while let Ok(line) = received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        if let Some((_, port)) = line.split_once("Listening for transport dt_socket at address:") {
+            return port.trim().parse().expect("numeric JDWP port");
+        }
+    }
+    panic!("the JVM never reported its JDWP port");
+}
+
+#[test]
+#[ignore = "needs a real JDK: set OPENIDEA_TEST_JAVA to its bin/java"]
+fn finds_a_real_jvm_by_its_jdwp_port() {
+    let Some(java) = std::env::var_os("OPENIDEA_TEST_JAVA").map(PathBuf::from) else {
+        eprintln!("OPENIDEA_TEST_JAVA is not set; skipping");
+        return;
+    };
+    let child = Command::new(&java)
+        .arg("-XX:+StartAttachListener")
+        .arg("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0")
+        .arg("-version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn java");
+    let mut guard = JvmGuard(child);
+    let pid = guard.0.id();
+    let port = read_jdwp_port(&mut guard.0);
+
+    // The listener thread may start a moment after the JDWP banner.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut found = None;
+    while found.is_none() && Instant::now() < deadline {
+        found = find_jvm_by_jdwp_port(port, Duration::from_secs(1), Duration::from_secs(2));
+        if found.is_none() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    assert_eq!(found, Some(pid), "port {port}");
+
+    let props = agent_properties(pid, Duration::from_secs(2)).unwrap();
+    assert_eq!(jdwp_port(&props), Some(port));
+    assert_eq!(find_jvm_by_jdwp_port(port ^ 1, Duration::from_secs(1), Duration::from_secs(2)), None);
 }
