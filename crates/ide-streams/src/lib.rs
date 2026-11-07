@@ -3,6 +3,7 @@
 mod catalog;
 mod chain;
 mod facts;
+mod generate;
 mod model;
 mod normalize;
 mod qualify;
@@ -11,5 +12,6 @@ mod qualify_tables;
 pub use catalog::OpRole;
 pub use chain::*;
 pub use facts::{Adjustment, Capture, ChainFacts, TextEdit, TypeQuery};
+pub use generate::*;
 pub use model::*;
 pub use normalize::*;

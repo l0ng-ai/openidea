@@ -1,0 +1,5 @@
+---
+source: crates/ide-streams/tests/generate.rs
+expression: "build_plan(&chain, \"n1\", DEFAULT_BUDGET_ENTRIES).e1"
+---
+java.util.ArrayList __oi = (java.util.ArrayList) System.getProperties().get("oi.n1"); Thread __oiT = Thread.currentThread(); Map __c_m = m; Object __r = nums.stream().peek(__oiX -> { if (__oi.size() >= 100000) throw new IllegalStateException("oi-budget:n1"); if (Thread.currentThread() != __oiT) throw new IllegalStateException("oi-thread:n1"); __oi.add(Integer.valueOf(0)); __oi.add(__oiX); }).flatMap(x -> ((Map<String, List<Integer>>) __c_m).get("a").stream()).peek(__oiX -> { if (__oi.size() >= 100000) throw new IllegalStateException("oi-budget:n1"); if (Thread.currentThread() != __oiT) throw new IllegalStateException("oi-thread:n1"); __oi.add(Integer.valueOf(1)); __oi.add(__oiX); }).toList(); __oi.add(Integer.valueOf(-1)); __oi.add(__r); return __r;
