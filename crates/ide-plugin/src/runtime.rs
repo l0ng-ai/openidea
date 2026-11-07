@@ -8,8 +8,8 @@ use crate::types::{
     PluginInlayHint, ProviderDocument, SemanticToken,
 };
 use crate::types::{
-    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
-    RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
+    DirEntryInfo, EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, PathKind,
+    ProcessOutput, Prompt, RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
@@ -177,6 +177,17 @@ pub trait HostApi: Send + Sync {
     fn locale(&self) -> String;
     /// A setting of the plugin as JSON (project over global over the schema default).
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String>;
+    /// Reads and decodes a text file outside the project, whose real path an
+    /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
+    /// `max` bounds the bytes read.
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
+    /// The bytes of a file outside the project, at most `max`.
+    fn read_bytes_file(&self, real: &Path, max: usize) -> Result<Vec<u8>, HostError>;
+    /// Whether the granted path is a file or a directory.
+    fn path_kind(&self, real: &Path) -> Result<PathKind, HostError>;
+    /// The entries directly under a granted directory, sorted by name; `max`
+    /// bounds how many.
+    fn list_dir(&self, real: &Path, max: usize) -> Result<Vec<DirEntryInfo>, HostError>;
 }
 
 /// Shared compilation engine plus an epoch ticker thread for wall-clock limits.

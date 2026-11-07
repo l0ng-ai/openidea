@@ -62,6 +62,24 @@ impl commands::Guest for Misbehave {
                 project.read_file(&arg.unwrap_or_default()).map(Some)
             }
             "root" => ctx.project().map(|p| p.root()).transpose(),
+            // The `fs.read` grants: the text of `arg`, or the refusal naming what it needs.
+            "fsread" => openidea::plugin::fs::read_text(&arg.unwrap_or_default()).map(Some),
+            // The `fs.read-dir` listing: "name kind" lines.
+            "read-dir" => {
+                use openidea::plugin::fs::FileKind;
+                let entries = openidea::plugin::fs::read_dir(&arg.unwrap_or_default())?;
+                let lines: Vec<String> = entries
+                    .iter()
+                    .map(|e| {
+                        let kind = match e.kind {
+                            FileKind::File => "file",
+                            FileKind::Directory => "dir",
+                        };
+                        format!("{kind} {}", e.name)
+                    })
+                    .collect();
+                Ok(Some(lines.join("\n")))
+            }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {
                 let editor = ctx.editor().ok_or_else(|| failed("no editor"))?;

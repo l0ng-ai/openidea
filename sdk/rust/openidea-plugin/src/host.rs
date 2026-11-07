@@ -161,6 +161,40 @@ mod imp {
         p.read_file(path).map_err(error)
     }
 
+    pub fn fs_read_text(path: &str) -> Result<String, Error> {
+        wit::fs::read_text(path).map_err(error)
+    }
+
+    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        wit::fs::read_bytes(path).map_err(error)
+    }
+
+    pub fn fs_path_kind(path: &str) -> Result<super::PathKind, Error> {
+        use super::PathKind;
+        let kind = wit::fs::stat(path).map_err(error)?;
+        Ok(match kind {
+            wit::fs::FileKind::File => PathKind::File,
+            wit::fs::FileKind::Directory => PathKind::Directory,
+        })
+    }
+
+    pub fn fs_list(path: &str) -> Result<Vec<super::DirEntry>, Error> {
+        use super::{DirEntry, PathKind};
+        let entries = wit::fs::read_dir(path).map_err(error)?;
+        let mut entries: Vec<DirEntry> = entries
+            .into_iter()
+            .map(|e| DirEntry {
+                name: e.name,
+                kind: match e.kind {
+                    wit::fs::FileKind::File => PathKind::File,
+                    wit::fs::FileKind::Directory => PathKind::Directory,
+                },
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
+    }
+
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
         i.project()
     }
@@ -590,6 +624,64 @@ pub fn run_process(program: &str, args: &[String], stdin: Option<&str>) -> Resul
 /// Projects open in any window. Needs `project.read`.
 pub fn projects() -> Result<Vec<Project>, Error> {
     Ok(imp::projects()?.into_iter().map(|inner| Project { inner }).collect())
+}
+
+/// What an [`fs_read_text`] path is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathKind {
+    File,
+    Directory,
+}
+
+impl PathKind {
+    pub fn is_file(self) -> bool {
+        self == Self::File
+    }
+
+    pub fn is_dir(self) -> bool {
+        self == Self::Directory
+    }
+}
+
+/// A direct child of a directory listed by [`fs_list`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirEntry {
+    /// The name of the entry alone, without its directory.
+    pub name: String,
+    /// Whether the entry is a file or a directory.
+    pub kind: PathKind,
+}
+
+/// Reads a text file outside the project, decoded as the editor decodes it
+/// (BOM and encoding detection, GBK included), at most 16 MiB; unsaved editor
+/// contents win, as they do for project files. `path` is absolute, or starts
+/// with `~/` for the user's home. A file inside an open project is
+/// [`Project::read_file`].
+///
+/// Needs an `fs.read:<path>` grant covering the file; without one this returns
+/// [`Error::Denied`] naming the real path the manifest has to declare.
+pub fn fs_read_text(path: &str) -> Result<String, Error> {
+    imp::fs_read_text(path)
+}
+
+/// The bytes of a file outside the project (images, class files, archives), at
+/// most 16 MiB; the disk is read as it is (unsaved editor contents do not
+/// apply). Needs `fs.read:<path>`, as [`fs_read_text`] does.
+pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+    imp::fs_read_bytes(path)
+}
+
+/// Whether a path outside the project is a file or a directory. Needs
+/// `fs.read:<path>`.
+pub fn fs_path_kind(path: &str) -> Result<PathKind, Error> {
+    imp::fs_path_kind(path)
+}
+
+/// What is directly under a directory outside the project, sorted by name and
+/// capped at 4096 entries, the same cap as `find-files`. Needs `fs.read:<path>`
+/// covering the directory; reading a file as a directory is [`Error::Invalid`].
+pub fn fs_list(path: &str) -> Result<Vec<DirEntry>, Error> {
+    imp::fs_list(path)
 }
 
 /// A file open in an editor.

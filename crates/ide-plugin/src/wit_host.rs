@@ -49,6 +49,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
         },
@@ -77,6 +78,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
         },
@@ -105,6 +107,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
         },
@@ -112,7 +115,7 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks,
+    commit, diagnostics, editor, events, fs, invocation, log, net, process, secrets, settings, storage, tasks,
     types as wit, ui, vcs, views, workspace,
 };
 
@@ -183,6 +186,12 @@ fn range_to_wit(r: &ide_core::Range) -> wit::Range {
 impl StoreData {
     fn require(&self, cap: Capability) -> Result<(), wit::Error> {
         if self.granted.iter().any(|g| g.covers(&cap)) { Ok(()) } else { Err(wit::Error::Denied(cap.to_string())) }
+    }
+
+    /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
+    /// should be told instead (`denied` naming the capability to declare).
+    fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
+        sandbox::resolve_granted(&self.granted, path).map_err(Into::into)
     }
 
     fn client(&self) -> Option<&str> {
@@ -928,6 +937,73 @@ impl settings::Host for StoreData {
 }
 
 impl views_bindings::openidea::plugin::view_types::Host for StoreData {}
+
+/// A refused `fs.read` as the plugin sees it: `denied` carries the capability
+/// string, so the plugin can say exactly what its manifest lacks.
+impl From<sandbox::Refusal> for wit::Error {
+    fn from(refusal: sandbox::Refusal) -> Self {
+        match refusal {
+            sandbox::Refusal::Denied(cap) => Self::Denied(cap),
+            sandbox::Refusal::Invalid(message) => Self::Invalid(message),
+        }
+    }
+}
+
+/// Files outside the windows' projects, gated by `fs.read:<path>` grants.
+impl fs::Host for StoreData {
+    fn read_text(&mut self, path: String) -> Fallible<String> {
+        let real = match self.granted_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let max = sandbox::MAX_READ_BYTES as usize;
+        Ok(self.host.read_text_file(&real, max).map_err(to_wit))
+    }
+
+    fn read_bytes(&mut self, path: String) -> Fallible<Vec<u8>> {
+        let real = match self.granted_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let max = sandbox::MAX_READ_BYTES as usize;
+        Ok(self.host.read_bytes_file(&real, max).map_err(to_wit))
+    }
+
+    fn stat(&mut self, path: String) -> Fallible<fs::FileKind> {
+        let real = match self.granted_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.path_kind(&real).map_err(to_wit).map(|kind| match kind {
+            crate::types::PathKind::File => fs::FileKind::File,
+            crate::types::PathKind::Directory => fs::FileKind::Directory,
+        }))
+    }
+
+    fn read_dir(&mut self, path: String) -> Fallible<Vec<fs::DirEntry>> {
+        let real = match self.granted_file(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        let max = sandbox::MAX_LIST_ENTRIES;
+        Ok(self
+            .host
+            .list_dir(&real, max)
+            .map_err(to_wit)
+            .map(|entries| entries.into_iter().map(to_dir_entry).collect()))
+    }
+}
+
+/// A directory entry as `fs.read-dir` hands it over.
+fn to_dir_entry(entry: crate::types::DirEntryInfo) -> fs::DirEntry {
+    fs::DirEntry {
+        name: entry.name,
+        kind: match entry.kind {
+            crate::types::PathKind::File => fs::FileKind::File,
+            crate::types::PathKind::Directory => fs::FileKind::Directory,
+        },
+    }
+}
 
 /// Largest message between a plugin and its view's frame.
 const MAX_VIEW_MESSAGE: usize = 1 << 20;

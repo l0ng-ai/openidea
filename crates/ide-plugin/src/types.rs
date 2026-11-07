@@ -58,6 +58,20 @@ impl std::fmt::Display for HostError {
     }
 }
 
+/// What an `fs.read` grant covers the path of (WIT `fs.file-kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathKind {
+    File,
+    Directory,
+}
+
+/// One entry of a directory an `fs.read` grant covers (WIT `fs.dir-entry`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirEntryInfo {
+    pub name: String,
+    pub kind: PathKind,
+}
+
 /// A plugin's status bar item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

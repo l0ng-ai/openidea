@@ -128,6 +128,7 @@ pub mod indexing_bindings {
         export_macro_name: "__export_indexing_world",
         default_bindings_module: "openidea_plugin::indexing_bindings",
         with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+
     });
 }
 
@@ -190,10 +191,10 @@ pub mod commit_checks_bindings {
 #[doc(hidden)]
 pub mod inlay_bindings {
     wit_bindgen::generate!({
-        world: "inlay-hints", path: "wit", pub_export_macro: true,
-        export_macro_name: "__export_inlay_hints_world",
-        default_bindings_module: "openidea_plugin::inlay_bindings",
-        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+         world: "inlay-hints", path: "wit", pub_export_macro: true,
+         export_macro_name: "__export_inlay_hints_world",
+         default_bindings_module: "openidea_plugin::inlay_bindings",
+         with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
     });
 }
 

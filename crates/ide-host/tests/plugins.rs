@@ -124,6 +124,19 @@ fn misbehave_pkg() -> PathBuf {
     repo().join("crates/ide-plugin/tests/fixtures/misbehave")
 }
 
+/// `misbehave` with `fs.read:<granted>` added to its capabilities.
+fn misbehave_granted(dir: &Path, granted: &Path) -> PathBuf {
+    let pkg = dir.join("misbehave-granted");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let path = granted.to_string_lossy().replace('\\', "/");
+    let required = format!("required = [\"project.read\", \"fs.read:{path}\"]");
+    let text = text.replace("required = [\"project.read\"]", &required);
+    std::fs::write(&manifest, text).unwrap();
+    pkg
+}
+
 /// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
 /// another (or behind a new instance starting) holds once it caught up.
 fn eventually(mut f: impl FnMut() -> bool) -> bool {
@@ -370,6 +383,64 @@ fn read_file_is_confined_to_the_project() {
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
+/// `fs.read` reaches the granted paths and nothing else, through the real
+/// component: the same checks the runtime makes, against a real file system.
+#[test]
+fn fs_read_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "outside the project\n").unwrap();
+    // A sibling whose name starts with the grant's: not covered by it.
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    assert_eq!(f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap().unwrap(), "outside the project\n");
+    let err = f.run("misbehave", "fsread", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "the refusal names what to grant: {err}");
+    let err = f.run("misbehave", "fsread", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fsread", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let err = f.run("misbehave", "fsread", Some(shared.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
+    let missing = shared.join("gone.txt");
+    let err = f.run("misbehave", "fsread", Some(missing.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("no such file"), "{err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.read-dir` lists a granted directory, sorted, and refuses the rest.
+#[test]
+fn fs_read_dir_lists_a_granted_directory() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(shared.join("zeta")).unwrap();
+    std::fs::write(shared.join("beta.txt"), "b").unwrap();
+    std::fs::write(shared.join("alpha.txt"), "a").unwrap();
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    let listing = f.run("misbehave", "read-dir", Some(shared.to_str().unwrap())).unwrap().unwrap();
+    let lines: Vec<&str> = listing.lines().collect();
+    assert_eq!(lines, vec!["file alpha.txt", "file beta.txt", "dir zeta"], "{listing}");
+
+    // A file is not a directory, and a path outside the grant is refused.
+    let file = shared.join("alpha.txt");
+    let err = f.run("misbehave", "read-dir", Some(file.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a directory"), "{err}");
+    let err = f.run("misbehave", "read-dir", Some(f._tmp.path().to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "{err}");
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
 /// A missing capability is an error the plugin can handle, not a trap.
@@ -648,7 +719,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 10, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 12, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 

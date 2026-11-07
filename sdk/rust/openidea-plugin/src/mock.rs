@@ -5,7 +5,7 @@
 //! editor with a versioned document, and enforces the capabilities you give
 //! it like the real host (a missing one returns [`Error::Denied`]).
 
-use crate::host::Invocation;
+use crate::host::{Invocation, PathKind};
 use crate::types::*;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -55,6 +55,9 @@ struct State {
     root: Option<String>,
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
+
+    /// Files outside every project, for `fs.read` (absolute paths).
+    external: BTreeMap<String, String>,
     dirs: BTreeSet<String>,
     editor: Option<Editor>,
     selected_paths: Vec<String>,
@@ -160,6 +163,13 @@ impl MockHost {
     /// Sets the paths invocations report as selected.
     pub fn select_paths(&self, paths: &[&str]) {
         self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
+    /// A file outside every project, for [`crate::host::fs_read_text`]: it is
+    /// readable once an `fs.read:<a directory above it>` capability is granted.
+    /// Directories are inferred from the paths it holds.
+    pub fn add_external_file(&self, path: &str, text: &str) {
+        self.state.borrow_mut().external.insert(path.to_owned(), text.to_owned());
     }
 
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
@@ -422,6 +432,43 @@ pub mod current {
         if s.capabilities.iter().any(|c| c == cap) { Ok(()) } else { Err(Error::Denied(cap.to_owned())) }
     }
 
+    /// `fs.read:<base>` covers `<base>` itself and what is under it: `/a` covers
+    /// `/a/b` but not `/ab`.
+    fn require_fs(s: &State, path: &str) -> Result<(), Error> {
+        let covered = s.capabilities.iter().any(|c| match c.strip_prefix("fs.read:") {
+            Some(base) => {
+                let base = base.trim_end_matches(['/', '\\']);
+                !base.is_empty()
+                    && (path == base
+                        || matches!(path.strip_prefix(base), Some(rest) if rest.starts_with('/') || rest.starts_with('\\')))
+            }
+            None => false,
+        });
+        if covered { Ok(()) } else { Err(Error::Denied(format!("fs.read:{path}"))) }
+    }
+
+    /// The paths `fs` takes are absolute; `~/…` is the user's home on the real
+    /// host, and the mock resolves nothing, so add it to the mock as it is.
+    fn check_absolute(path: &str) -> Result<(), Error> {
+        let bytes = path.as_bytes();
+        let drive = bytes.len() > 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'/' || bytes[2] == b'\\');
+        if path.starts_with('/') || drive {
+            Ok(())
+        } else {
+            Err(Error::Invalid(format!("{path}: use an absolute path (or ~/…)")))
+        }
+    }
+
+    /// `fs` checks what the real host checks, minus canonicalisation: absolute
+    /// path, then a grant covering it.
+    fn check_external(s: &State, path: &str) -> Result<(), Error> {
+        check_absolute(path)?;
+        require_fs(s, path)
+    }
+
     pub fn log(level: LogLevel, message: &str) {
         with(|s| s.logs.push((level, message.to_owned())))
     }
@@ -605,6 +652,70 @@ pub mod current {
             let kind = if file.is_some() || open.is_some() { FileKind::File } else { FileKind::Directory };
             let size = file.or_else(|| open.map(|e| &e.text)).map_or(0, |t| t.len() as u64);
             Ok(FileStat { kind, size, modified: None })
+        })
+    }
+
+    pub fn fs_read_text(path: &str) -> Result<String, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            // Unsaved editor contents win, as on the real host.
+            if let Some(e) = s.editor.as_ref().filter(|e| e.path == path) {
+                return Ok(e.text.clone());
+            }
+            s.external.get(path).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })
+    }
+
+    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            let text = s.external.get(path).ok_or_else(|| Error::NotFound(path.into()))?;
+            Ok(text.clone().into_bytes())
+        })
+    }
+
+    pub fn fs_path_kind(path: &str) -> Result<PathKind, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            if s.external.contains_key(path) {
+                return Ok(PathKind::File);
+            }
+            // A directory is a prefix of the files the mock holds.
+            let holds_files = s.external.keys().any(
+                |file| matches!(file.strip_prefix(path), Some(rest) if rest.starts_with('/') || rest.starts_with('\\')),
+            );
+            if holds_files { Ok(PathKind::Directory) } else { Err(Error::NotFound(path.into())) }
+        })
+    }
+
+    pub fn fs_list(path: &str) -> Result<Vec<crate::host::DirEntry>, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            if s.external.contains_key(path) {
+                return Err(Error::Invalid(format!("{path}: not a directory")));
+            }
+            let mut entries: BTreeMap<String, PathKind> = BTreeMap::new();
+            for file in s.external.keys() {
+                let rest = match file.strip_prefix(path) {
+                    Some(rest) if rest.starts_with('/') || rest.starts_with('\\') => &rest[1..],
+                    _ => continue,
+                };
+                match rest.split(['/', '\\']).next() {
+                    Some(name) if !name.is_empty() => {
+                        let kind = if rest.contains('/') || rest.contains('\\') {
+                            PathKind::Directory
+                        } else {
+                            PathKind::File
+                        };
+                        entries.insert(name.to_owned(), kind);
+                    }
+                    _ => {}
+                }
+            }
+            if entries.is_empty() {
+                return Err(Error::NotFound(path.into()));
+            }
+            Ok(entries.into_iter().map(|(name, kind)| crate::host::DirEntry { name, kind }).collect())
         })
     }
 

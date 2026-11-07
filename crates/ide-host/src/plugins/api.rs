@@ -1257,6 +1257,79 @@ impl HostApi for PluginApi {
         let value = user.get(key).filter(|v| setting.accepts(v)).cloned().unwrap_or(setting.default);
         serde_json::to_string(&value).ok()
     }
+
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
+        // Unsaved editor contents win, as they do for project files.
+        if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
+            return Ok(text);
+        }
+        let meta = std::fs::metadata(real).map_err(|e| not_a_file(real, e))?;
+        if !meta.is_file() {
+            return Err(HostError::Invalid(format!("{}: not a file", real.display())));
+        }
+        if meta.len() > max as u64 {
+            return Err(too_large(real, max));
+        }
+        let loaded = ide_vfs::load_text(real).map_err(failed)?;
+        if loaded.binary {
+            return Err(HostError::Invalid(format!("{}: not text; read it as bytes", real.display())));
+        }
+        Ok(loaded.text)
+    }
+
+    fn read_bytes_file(&self, real: &Path, max: usize) -> Result<Vec<u8>, HostError> {
+        use std::io::Read;
+        let file = std::fs::File::open(real).map_err(|e| not_a_file(real, e))?;
+        let mut bytes = Vec::new();
+        // One byte over the limit, so a file that grew after the metadata check
+        // is still refused instead of truncated.
+        file.take(max as u64 + 1).read_to_end(&mut bytes).map_err(failed)?;
+        if bytes.len() > max {
+            return Err(too_large(real, max));
+        }
+        Ok(bytes)
+    }
+
+    fn path_kind(&self, real: &Path) -> Result<ide_plugin::PathKind, HostError> {
+        let meta =
+            std::fs::metadata(real).map_err(|_| HostError::NotFound(format!("{}: no such file", real.display())))?;
+        Ok(if meta.is_dir() { ide_plugin::PathKind::Directory } else { ide_plugin::PathKind::File })
+    }
+
+    fn list_dir(&self, real: &Path, max: usize) -> Result<Vec<ide_plugin::DirEntryInfo>, HostError> {
+        let meta = std::fs::metadata(real).map_err(|e| not_a_file(real, e))?;
+        if !meta.is_dir() {
+            return Err(HostError::Invalid(format!("{}: not a directory", real.display())));
+        }
+        let read = std::fs::read_dir(real).map_err(|e| not_a_file(real, e))?;
+        let mut entries = Vec::new();
+        for entry in read.flatten() {
+            if entries.len() == max {
+                break;
+            }
+            let kind = match entry.file_type() {
+                Ok(t) if t.is_dir() => ide_plugin::PathKind::Directory,
+                _ => ide_plugin::PathKind::File,
+            };
+            entries.push(ide_plugin::DirEntryInfo { name: entry.file_name().to_string_lossy().into_owned(), kind });
+        }
+        // Sorted, so a plugin's pick of "the first jar" doesn't depend on the disk.
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
+    }
+}
+
+/// A file that is not there, or cannot be read, as the plugin sees it.
+fn not_a_file(path: &Path, e: std::io::Error) -> HostError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => HostError::NotFound(format!("{}: no such file", path.display())),
+        std::io::ErrorKind::PermissionDenied => HostError::Denied(format!("{}: {}", path.display(), "not readable")),
+        _ => failed(e),
+    }
+}
+
+fn too_large(path: &Path, max: usize) -> HostError {
+    HostError::Invalid(format!("{}: file is larger than {} MiB", path.display(), max >> 20))
 }
 
 /// [`PluginWorkspace`] over the desktop host's open projects.

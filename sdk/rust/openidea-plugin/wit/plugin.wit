@@ -3,16 +3,18 @@
 /// API"); a 2.0 keeps 1.0 running through an adapter in the host.
 ///
 /// A plugin is a WebAssembly component targeting the `plugin` world (or
-/// `plugin-syntax`). It runs sandboxed: no filesystem, network, environment
-/// or processes beyond WASI's clocks and randomness; everything else goes
-/// through the imports below, gated by the capabilities granted in
-/// `plugin.toml` (a missing one returns `error::denied`).
+/// `plugin-syntax`). It runs sandboxed: no file system, network, environment
+/// or processes beyond WASI's clocks and randomness; files are read through
+/// `fs` and `workspace`, and everything else goes through the imports below,
+/// gated by the capabilities granted in `plugin.toml` (a missing one returns
+/// `error::denied`).
 package openidea:plugin@1.3.0;
 
 world plugin {
     import log;
     import ui;
     import storage;
+    import fs;
     import workspace;
     import editor;
     import invocation;
