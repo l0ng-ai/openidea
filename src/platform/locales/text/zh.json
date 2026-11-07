@@ -5007,6 +5007,7 @@
   "Sort by Modification Time": "按修改时间排序",
   "Add Mouse Shortcut": "添加鼠标快捷键",
   "Click here with Ctrl, Alt or Command held, or use a mouse side button": "按住 Ctrl、Alt 或 Command 在此点击，或使用鼠标侧键",
+  "Click here with Ctrl, Alt or Command held, use a mouse side button, or swipe between pages on the trackpad": "按住 Ctrl、Alt 或 Command 在此点击，使用鼠标侧键，或在触控板上轻扫切换页面",
   "Mouse shortcut": "鼠标快捷键",
   "Mouse Shortcut: {action}": "鼠标快捷键：{action}",
   "Accept Left Side": "接受左侧",

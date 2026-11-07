@@ -8,7 +8,8 @@
  * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
  * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
  * name the button 1-based (`Button1` = left, `Button4` = back side button, `Button5` = forward),
- * optionally with modifiers (`Alt+Button4`); they are single strokes.
+ * optionally with modifiers (`Alt+Button4`); they are single strokes. So are the macOS trackpad
+ * page swipes `SwipeRight` / `SwipeLeft`, named by the direction the fingers move.
  */
 import { create } from "zustand";
 import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
@@ -84,6 +85,33 @@ export function isMouseBinding(binding: string): boolean {
   return !/\s/.test(b) && MOUSE_KEY_RE.test(b.split("+").pop()!);
 }
 
+const GESTURE_KEY_RE = /^Swipe(Left|Right)$/i;
+
+/** A trackpad page swipe (`SwipeRight`, `Alt+SwipeLeft`) rather than a keystroke. */
+export function isGestureBinding(binding: string): boolean {
+  const b = binding.trim();
+  return !/\s/.test(b) && GESTURE_KEY_RE.test(b.split("+").pop()!);
+}
+
+/** Bindings fired by a pointing device, which menus and tooltips do not show. */
+export function isPointerBinding(binding: string): boolean {
+  return isMouseBinding(binding) || isGestureBinding(binding);
+}
+
+/** A page swipe on the trackpad. `direction` is where the fingers move: right is "back". */
+export interface SwipeGesture {
+  direction: "left" | "right";
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}
+
+export function gestureStrokeOf(g: SwipeGesture): string {
+  const mods = [g.ctrlKey && "Ctrl", g.altKey && "Alt", g.shiftKey && "Shift", g.metaKey && "Meta"].filter(Boolean);
+  return [...mods, g.direction === "right" ? "SwipeRight" : "SwipeLeft"].join("+");
+}
+
 /**
  * Side buttons, or a left click with Ctrl/Alt/Meta. Plain and Shift-only
  * left clicks keep selection semantics; middle/right clicks keep their own meaning.
@@ -118,6 +146,8 @@ export function isValidBinding(binding: unknown): binding is string {
   const b = binding.trim();
   if (parseDoubleModifier(b)) return true;
   const strokes = b.split(/\s+/);
+  // A swipe is a single stroke: it cannot be the first or second half of a chord.
+  if (strokes.length > 1 && strokes.some((s) => GESTURE_KEY_RE.test(s.split("+").pop()!))) return false;
   return strokes.length >= 1 && strokes.length <= 2 && strokes.every((s) => STROKE_RE.test(s));
 }
 
@@ -260,7 +290,15 @@ export function normalizeBinding(binding: string): string {
       const key = parts.pop()!;
       const mods = MOD_ORDER.filter((m) => parts.some((p) => p.toLowerCase() === m.toLowerCase()));
       const mouse = MOUSE_KEY_RE.exec(key);
-      return [...mods, mouse ? `Button${mouse[1]}` : key.length === 1 ? key.toUpperCase() : key].join("+");
+      const swipe = GESTURE_KEY_RE.exec(key);
+      const name = mouse
+        ? `Button${mouse[1]}`
+        : swipe
+          ? `Swipe${swipe[1]!.charAt(0).toUpperCase()}${swipe[1]!.slice(1).toLowerCase()}`
+          : key.length === 1
+            ? key.toUpperCase()
+            : key;
+      return [...mods, name].join("+");
     })
     .join(" ");
 }
@@ -361,11 +399,15 @@ const KEY_LABELS: Record<string, string> = {
  * Windows/Linux: `Ctrl+Shift+N`, chords as `Ctrl+K, Ctrl+I`, `Shift, Shift`, `Ctrl, Ctrl+Up`.
  */
 export function formatBinding(binding: string, mac = isMacHost()): string {
-  if (isMouseBinding(binding)) {
+  if (isPointerBinding(binding)) {
     const parts = normalizeBinding(binding).split("+");
-    const key = parts.pop();
-    const button = key === "Button1" ? "Left Click" : `${key} Click`;
-    return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
+    const key = parts.pop()!;
+    const label = isGestureBinding(binding)
+      ? key.replace(/^Swipe/, "Swipe ")
+      : key === "Button1"
+        ? "Left Click"
+        : `${key} Click`;
+    return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + label : [...parts, label].join("+");
   }
   if (!mac)
     return normalizeBinding(binding)
@@ -387,7 +429,7 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
 
 /** The first keyboard binding of an action: what menus and tooltips show. */
 export function primaryKeyBinding(actionId: string): string | undefined {
-  return bindingsFor(actionId).find((b) => !isMouseBinding(b));
+  return bindingsFor(actionId).find((b) => !isPointerBinding(b));
 }
 
 export function shortcutLabel(actionId: string): string | undefined {
@@ -467,6 +509,17 @@ export function dispatchMouseShortcut(e: MouseEvent, prepare?: (id: string) => b
     void executeAction(id, arg);
     return true;
   }
+  return false;
+}
+
+/** Run the action bound to a trackpad page swipe. Returns whether one ran. */
+export function dispatchGestureStroke(g: SwipeGesture): boolean {
+  if (suspended > 0) return false;
+  const stroke = gestureStrokeOf(g);
+  const ids = effectiveBindings()
+    .filter(([b]) => b === stroke)
+    .map(([, id]) => id);
+  for (const id of ids.reverse()) if (runIfEnabled(id)) return true;
   return false;
 }
 

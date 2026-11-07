@@ -18,6 +18,7 @@ import { installErrorLogging } from "./platform/errorLog";
 import { guessOs } from "./platform/platformInfo";
 import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { installKeyboardDispatcher } from "./platform/keymap";
+import { installSwipeDispatch } from "./platform/trackpadSwipe";
 import { installPointerFocus } from "./platform/pointerFocus";
 import { isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
@@ -51,6 +52,7 @@ if (aux?.kind === "settings") {
   activateSecondaryWindow();
   activateComparisonWindowFeatures(aux.parent);
   installKeyboardDispatcher();
+  installSwipeDispatch();
 } else if (aux?.kind === "deployment") {
   activateSecondaryWindow();
   activateDeploymentWindowFeatures(aux.parent);
@@ -70,6 +72,7 @@ if (aux?.kind === "settings") {
   // that must run before the global dispatcher.
   activateFeatures();
   installKeyboardDispatcher();
+  installSwipeDispatch();
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -7,7 +7,8 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { Checkbox, Dialog, Icon, Kbd, T } from "@/ui";
 import type { Action } from "@/platform/actions";
-import { formatBinding, mouseStrokeOf, normalizeBinding, suspendKeyboardDispatch } from "@/platform/keymap";
+import { formatBinding, isMacHost, mouseStrokeOf, normalizeBinding, suspendKeyboardDispatch } from "@/platform/keymap";
+import { captureSwipes } from "@/platform/trackpadSwipe";
 import { ask } from "@/workbench/messages";
 import { findConflicts, resolveBindings, type Conflict, type KeymapDraft } from "./model";
 import { groupPath } from "./groups";
@@ -178,9 +179,14 @@ function KeyStrokes({ first, second, useSecond, setFirst, setSecond, setUseSecon
   );
 }
 
-/** Record modified left clicks and side buttons; shortcuts stay off while the dialog is open. */
+/**
+ * Record modified left clicks, side buttons and, on macOS, trackpad page swipes; shortcuts stay
+ * off while the dialog is open.
+ */
 function MouseRecorder({ value, onChange }: { value: string; onChange: (binding: string) => void }) {
   useEffect(() => suspendKeyboardDispatch(), []);
+  const mac = isMacHost();
+  useEffect(() => (mac ? captureSwipes(onChange) : undefined), [mac, onChange]);
   const record = (e: MouseEvent<HTMLDivElement>) => {
     const stroke = mouseStrokeOf(e.nativeEvent);
     if (!stroke) return;
@@ -202,7 +208,13 @@ function MouseRecorder({ value, onChange }: { value: string; onChange: (binding:
         <span className={styles.recorded}>{formatBinding(value)}</span>
       ) : (
         <span className={styles.recorderPlaceholder}>
-          <T>Click here with Ctrl, Alt or Command held, or use a mouse side button</T>
+          {mac ? (
+            <T>
+              Click here with Ctrl, Alt or Command held, use a mouse side button, or swipe between pages on the trackpad
+            </T>
+          ) : (
+            <T>Click here with Ctrl, Alt or Command held, or use a mouse side button</T>
+          )}
         </span>
       )}
     </div>
