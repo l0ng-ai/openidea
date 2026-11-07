@@ -2930,6 +2930,119 @@ async fn references_open_unopened_files_that_mention_the_name() {
     assert_eq!(seen.lock().len(), 2);
 }
 
+/// A Go project: the module at the root, `tools` replacing it with `../` and `other` requiring a
+/// published copy. The mock answers a definition in `tools` like gopls in that module's view.
+fn go_modules_harness() -> (Harness, Arc<MockState>, PathBuf, PathBuf, PathBuf) {
+    let h = harness_for("go", "go", &[("gopls", incremental_caps())], &[]);
+    let s = h.launcher.state("gopls");
+    let write = |rel: &str, text: &str| {
+        let path = h.root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+    write("go.mod", "module example.com/app\n");
+    write("tools/go.mod", "module example.com/tools\n\nreplace example.com/app => ../\n");
+    write("other/go.mod", "module example.com/other\n\nrequire example.com/app v1.0.0\n");
+    let same = write("same.go", "package app\nvar x = New()\n");
+    // Line 1 uses the declaration; line 2 is a local `New` of the tools module.
+    let tools = write("tools/gen.go", "package tools\nvar a = app.New()\nfunc New() {}\n");
+    write("other/o.go", "package other\nvar b = app.New()\n");
+    let decl = h.root.join("a.go");
+    let candidates = vec![same.clone(), tools.clone(), h.root.join("other/o.go")];
+    h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+        files: candidates.clone(),
+        limit_hit: false,
+    }));
+    let at = |line: u32, col: u32| json!({ "start": { "line": line, "character": col }, "end": { "line": line, "character": col + 3 } });
+    let (decl_uri, same_uri, tools_uri) = (uri_of(&decl), uri_of(&same), uri_of(&tools));
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
+        let line = params["position"]["line"].as_u64().unwrap_or(0);
+        match method {
+            // The view of the root module: the declaration and its usage in same.go.
+            "textDocument/references" => Some(json!([
+                { "uri": decl_uri, "range": at(0, 5) },
+                { "uri": same_uri, "range": at(1, 8) },
+            ])),
+            "textDocument/rename" => Some(json!({ "changes": {
+                decl_uri.clone(): [{ "range": at(0, 5), "newText": "Make" }],
+                same_uri.clone(): [{ "range": at(1, 8), "newText": "Make" }],
+            } })),
+            "textDocument/definition" if uri == decl_uri => Some(json!({ "uri": decl_uri, "range": at(0, 5) })),
+            "textDocument/definition" if uri == tools_uri && line == 1 => {
+                Some(json!({ "uri": decl_uri, "range": at(0, 5) }))
+            }
+            "textDocument/definition" if uri == tools_uri => Some(json!({ "uri": tools_uri, "range": at(2, 5) })),
+            _ => None,
+        }
+    }));
+    (h, s, decl, same, tools)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_searches_resolve_other_modules_that_replace_the_declarations_module() {
+    let (h, s, decl, same, tools) = go_modules_harness();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let partials = Arc::new(Mutex::new(Vec::new()));
+    let seen = partials.clone();
+    let partial = move |r: ide_lsp::types::References| seen.lock().push(r.locations.len());
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), Some(&partial))
+        .await
+        .unwrap();
+    let mut found: Vec<(PathBuf, u32)> =
+        refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
+    found.sort();
+    let mut want = vec![(decl.clone(), 0), (same.clone(), 1), (tools.clone(), 1)];
+    want.sort();
+    assert_eq!(found, want);
+    // Those in gopls' reach arrive first.
+    assert_eq!(*partials.lock(), [2]);
+    // Only the module replacing the declaration's module was opened, never the root module's file.
+    let opened = uris(&s.notified("textDocument/didOpen"));
+    assert!(opened.contains(&uri_of(&tools)));
+    assert!(!opened.contains(&uri_of(&same)));
+    assert!(!opened.iter().any(|u| u.ends_with("other/o.go")));
+    assert_eq!(s.requested("textDocument/references").len(), 1);
+
+    let renamed = h.mgr.rename(doc, Pos::new(0, 5), "Make".into(), Default::default()).await.unwrap();
+    let mut edited: Vec<(PathBuf, Vec<u32>)> = renamed
+        .edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            ide_core::FileEdit::Edit { path, edits, .. } => {
+                Some((path.to_path_buf(), edits.iter().map(|e| e.range.start.line).collect()))
+            }
+            _ => None,
+        })
+        .collect();
+    edited.sort();
+    let mut want = vec![(decl, vec![0]), (same, vec![1]), (tools, vec![1])];
+    want.sort();
+    assert_eq!(edited, want);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_searches_open_nothing_when_no_other_module_uses_the_declaration() {
+    let (h, s, _, same, _) = go_modules_harness();
+    std::fs::write(h.root.join("tools/go.mod"), "module example.com/tools\n").unwrap();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert_eq!(uris(&s.notified("textDocument/didOpen")).len(), 1, "only a.go");
+    assert!(s.requested("textDocument/definition").len() <= 1);
+    assert!(!uris(&s.notified("textDocument/didOpen")).contains(&uri_of(&same)));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn references_never_reopen_or_close_the_users_files() {
     let h = harness(&[("mock", incremental_caps())]);

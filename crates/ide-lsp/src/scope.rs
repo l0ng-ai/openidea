@@ -10,9 +10,11 @@
 //! closed again. Diagnostics the server publishes for them are dropped.
 
 use crate::server::{Running, Server};
+use crate::text::DocText;
 use crate::types::ReferencesIncomplete;
 use crate::{DocSnap, LspManager, Target};
-use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId, Pos};
+use futures::StreamExt;
+use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId, Location, Pos};
 use lsp_types as lsp;
 use serde_json::json;
 use std::collections::HashSet;
@@ -110,7 +112,9 @@ impl LspManager {
         Fut: Future<Output = IdeResult<R>>,
     {
         let busy = t.server.is_busy();
-        let word = search_word(snap, pos).filter(|_| t.caps().open_close);
+        // gopls searches the view of the file asked about; files opened for it only get views of
+        // their own (see `go_scope`).
+        let word = search_word(snap, pos).filter(|_| t.caps().open_close && snap.language.as_str() != "go");
         let candidates = async {
             match word {
                 Some(w) => self.candidates(t, w, cancel).await,
@@ -160,6 +164,95 @@ impl LspManager {
                 Ok(Widened { first, second: None, incomplete })
             }
         }
+    }
+
+    /// Go: usages of the symbol at `pos` in the project's other modules that use its module
+    /// through a local `replace`, which the search at `pos` does not reach (see `go_scope`).
+    /// Each mention of the name there is resolved in its own module's view.
+    pub(crate) async fn go_other_module_references(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        cancel: &CancellationToken,
+    ) -> Vec<Location> {
+        if snap.language.as_str() != "go" || !t.caps().open_close {
+            return Vec::new();
+        }
+        let Some(word) = search_word(snap, pos) else { return Vec::new() };
+        let declarations: Vec<Location> = self
+            .goto_in(snap, std::slice::from_ref(t), "textDocument/definition", pos, Some(cancel), None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|l| l.uri.is_none())
+            .collect();
+        let Some(declaration) = declarations.first() else { return Vec::new() };
+        let Some(candidates) = self.candidates(t, word.clone(), cancel).await else { return Vec::new() };
+        let (origin, declared) = (snap.path.clone(), declaration.path.to_path_buf());
+        let files = tokio::task::spawn_blocking(move || {
+            crate::go_scope::other_module_files(&origin, &declared, candidates.files)
+                .into_iter()
+                .filter_map(|f| {
+                    let text = std::fs::read_to_string(&f).ok()?;
+                    let ranges = crate::go_scope::word_ranges(&text, &word);
+                    (!ranges.is_empty()).then(|| (f, DocText::new(&text), ranges))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        if files.is_empty() || cancel.is_cancelled() {
+            return Vec::new();
+        }
+        // Open, each file gives gopls a view of its module to resolve the mentions in.
+        let _opened = self.open_transient(t, files.iter().map(|(f, _, _)| f.clone()).collect(), cancel).await;
+        let probes: Vec<(PathBuf, Arc<DocText>, ide_core::Range)> = files
+            .into_iter()
+            .flat_map(|(path, text, ranges)| {
+                let text = Arc::new(text);
+                ranges.into_iter().map(move |r| (path.clone(), text.clone(), r))
+            })
+            .collect();
+        let declarations = &declarations;
+        let found: Vec<Option<Location>> = futures::stream::iter(probes)
+            .map(|(path, text, range)| async move {
+                let params = json!({
+                    "textDocument": { "uri": crate::uri::path_to_uri_string(&path) },
+                    "position": text.ide_to_lsp(t.enc(), range.start),
+                });
+                let r = crate::loading::while_loading(
+                    &t.server,
+                    Some(cancel),
+                    crate::loading::LOADING_WAIT,
+                    crate::goto_is_empty,
+                    || {
+                        self.call::<_, Option<lsp::GotoDefinitionResponse>>(
+                            t,
+                            "textDocument/definition",
+                            params.clone(),
+                            Some(cancel),
+                            crate::DEFAULT_TIMEOUT,
+                        )
+                    },
+                )
+                .await;
+                let targets = match r {
+                    Ok(Some(r)) => crate::convert::goto_response(&self.conv(t.enc()), r),
+                    _ => return None,
+                };
+                let same = targets
+                    .iter()
+                    .any(|l| declarations.iter().any(|d| d.path == l.path && d.range.start == l.range.start));
+                same.then(|| Location { path: path.into(), range, uri: None })
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
+        found.into_iter().flatten().collect()
     }
 
     /// Opens `files` on `t` (read from disk) unless the user has them open;
