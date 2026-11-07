@@ -109,6 +109,9 @@ struct Shared {
 struct Known {
     #[serde(default)]
     config: Vec<AgentConfigOption>,
+    /// Thinking levels reported for each model value, including its last choice.
+    #[serde(default, rename = "thoughtLevels")]
+    thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// By project root: skills and custom commands differ per project.
     #[serde(default, rename = "projectCommands")]
     commands: HashMap<String, Vec<AgentCommand>>,
@@ -128,10 +131,7 @@ impl Shared {
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
         let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
-        // A thinking level's values depend on the model (low/medium/high on one, none or a
-        // different set on another), but what ran last is remembered wholesale — after a
-        // model switch the New Task page would offer the previous model's levels. Until the
-        // session reports the new model's own, don't show the option at all.
+        // Model-specific options are offered separately, never as provider-wide defaults.
         config.retain(|o| o.category.as_deref() != Some("thought_level"));
         config::add_client_options(provider, &mut config);
         if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
@@ -155,14 +155,31 @@ impl Shared {
         self.paths.project_root.to_string_lossy().into_owned()
     }
 
-    fn remember(&self, provider: &str, config: Option<&[AgentConfigOption]>, commands: Option<&[AgentCommand]>) {
+    /// Cache levels only when `model` confirms which model the session reported them for.
+    fn remember(
+        &self,
+        provider: &str,
+        config: Option<&[AgentConfigOption]>,
+        commands: Option<&[AgentCommand]>,
+        model: Option<&str>,
+    ) {
         let snapshot = {
             let mut cache = self.known.lock();
             let known = cache.entry(provider.to_owned()).or_default();
             let mut changed = false;
-            if let Some(c) = config.filter(|c| !c.is_empty() && known.config != *c) {
-                known.config = c.to_vec();
-                changed = true;
+            if let Some(c) = config {
+                if let Some(model) = model {
+                    let levels: Vec<_> =
+                        c.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+                    if known.thought_levels.get(model) != Some(&levels) {
+                        known.thought_levels.insert(model.to_owned(), levels);
+                        changed = true;
+                    }
+                }
+                if !c.is_empty() && known.config != c {
+                    known.config = c.to_vec();
+                    changed = true;
+                }
             }
             let root = self.root_key();
             if let Some(c) =
@@ -340,6 +357,8 @@ impl AgentManager {
             .map(|p| {
                 let mut info = provider::describe(p);
                 info.config = self.shared.known_config(&p.id);
+                info.thought_levels =
+                    self.shared.known.lock().get(&p.id).map(|k| k.thought_levels.clone()).unwrap_or_default();
                 info.commands = self.shared.known_commands(&p.id);
                 info
             })
@@ -458,6 +477,18 @@ impl AgentManager {
             if let Some(o) = config.iter_mut().find(|o| o.id == choice.id) {
                 o.current = Some(choice.value.clone());
             }
+        }
+        if let Some(model) = model_of(&config)
+            && let Some(levels) = self.shared.known.lock().get(&spec.id).and_then(|k| k.thought_levels.get(&model))
+        {
+            config.extend(levels.iter().cloned().map(|mut o| {
+                if let Some(choice) =
+                    req.config.iter().find(|c| c.id == o.id && o.values.iter().any(|v| v.value == c.value))
+                {
+                    o.current = Some(choice.value.clone());
+                }
+                o
+            }));
         }
         let now = now_ms();
         let task = AgentTask {
@@ -606,6 +637,8 @@ impl AgentManager {
             o.clone()
         };
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
+        let mut model_options =
+            target.category.as_deref() != Some("model") || target.current.as_deref() == Some(value.as_str());
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
@@ -613,10 +646,14 @@ impl AgentManager {
                 live.peer.request(method, params, None).await.map_err(|e| IdeError::internal(task.describe(e)))?;
             if let Some(options) = reply.get("configOptions") {
                 config::merge_update(&mut task.state.lock().task.config, options);
+                model_options = true;
             }
         }
         {
             let mut s = task.state.lock();
+            if !model_options {
+                s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
+            }
             s.wanted.retain(|c| c.id != option);
             s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
@@ -625,8 +662,9 @@ impl AgentManager {
             s.task.model = model_of(&s.task.config).or(s.task.model.take());
             let provider = s.task.provider.clone();
             let config = s.task.config.clone();
+            let model = s.task.model.clone().filter(|_| model_options);
             drop(s);
-            task.shared.remember(&provider, Some(&config), None);
+            task.shared.remember(&provider, Some(&config), None, model.as_deref());
         }
         task.approve_pending();
         task.persist();
@@ -1396,11 +1434,21 @@ impl Task {
         // A session that reports none keeps the last known ones, but what is set is unknown.
         let reported = config::options_of(&result);
         let known = !reported.is_empty();
-        let (mut options, wanted) = {
+        if known {
+            self.shared.remember(&provider_id, Some(&reported), None, model_of(&reported).as_deref());
+        }
+        let (mut options, mut wanted) = {
             let s = self.state.lock();
             (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
         };
         config::add_client_options(&provider_id, &mut options);
+        // Changing model can replace the effort choices; validate those only afterwards.
+        wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id).and_then(|o| o.category.as_deref()) {
+            Some("model") => 0,
+            Some("thought_level") => 2,
+            _ => 1,
+        });
+        let mut model_options = known;
         for choice in &wanted {
             // An option the session doesn't offer yet is set once it does (`apply_late_choices`).
             let Some(o) = options.iter().find(|o| o.id == choice.id).cloned() else { continue };
@@ -1408,6 +1456,9 @@ impl Task {
                 if o.values.iter().any(|v| v.value == choice.value) {
                     options.iter_mut().find(|o| o.id == choice.id).unwrap().current = Some(choice.value.clone());
                 }
+                continue;
+            }
+            if o.category.as_deref() == Some("thought_level") && !model_options {
                 continue;
             }
             let already = known && o.current.as_deref() == Some(choice.value.as_str());
@@ -1421,6 +1472,12 @@ impl Task {
                 Ok(reply) => {
                     if let Some(fresh) = reply.get("configOptions") {
                         config::merge_update(&mut options, fresh);
+                        model_options = true;
+                    } else if o.category.as_deref() == Some("model") {
+                        if o.current.as_deref() != Some(choice.value.as_str()) {
+                            options.retain(|o| o.category.as_deref() != Some("thought_level"));
+                        }
+                        model_options = false;
                     }
                     if let Some(o) = options.iter_mut().find(|o| o.id == choice.id) {
                         o.current = Some(choice.value.clone());
@@ -1429,7 +1486,8 @@ impl Task {
                 Err(e) => tracing::warn!("agent task {}: setting {} to {} failed: {e}", self.id, o.id, choice.value),
             }
         }
-        self.shared.remember(&provider_id, Some(&options), None);
+        let model = model_of(&options).filter(|_| model_options);
+        self.shared.remember(&provider_id, Some(&options), None, model.as_deref());
         {
             let mut s = self.state.lock();
             s.task.model = model_of(&options).or(s.task.model.take());
@@ -1478,11 +1536,19 @@ impl Task {
                         let mut s = task.state.lock();
                         if let Some(fresh) = reply.get("configOptions") {
                             config::merge_update(&mut s.task.config, fresh);
+                        } else if option.category.as_deref() == Some("model") {
+                            s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
                         }
                         if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option.id) {
                             o.current = Some(value);
                         }
                         s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                        let model = s.task.model.clone().filter(|_| {
+                            reply.get("configOptions").is_some() || option.category.as_deref() != Some("model")
+                        });
+                        let (provider, options) = (s.task.provider.clone(), s.task.config.clone());
+                        drop(s);
+                        task.shared.remember(&provider, Some(&options), None, model.as_deref());
                     }
                     Err(e) => tracing::warn!("agent task {}: setting {} to {value} failed: {e}", task.id, option.id),
                 }
@@ -1581,11 +1647,15 @@ impl Task {
             }
         };
         if task_changed {
-            let (config, commands) = {
+            let (config, commands, model) = {
                 let s = self.state.lock();
-                (s.task.config.clone(), s.task.commands.clone())
+                (
+                    s.task.config.clone(),
+                    s.task.commands.clone(),
+                    s.task.model.clone().filter(|_| kind == "config_option_update"),
+                )
             };
-            self.shared.remember(&provider, Some(&config), Some(&commands));
+            self.shared.remember(&provider, Some(&config), Some(&commands), model.as_deref());
             if kind != "usage_update" {
                 self.persist();
             }

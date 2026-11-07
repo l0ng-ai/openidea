@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import clsx from "clsx";
+import { Channel } from "@tauri-apps/api/core";
 import {
   Button,
   Checkbox,
@@ -22,7 +23,8 @@ import {
   T,
 } from "@/ui";
 import { SettingsFormContext } from "@/workbench/contributions";
-import { call, commands, isTauri, type FileEntry } from "@/platform/ipc";
+import { call, commands, isTauri, nextRequestId, type FileEntry } from "@/platform/ipc";
+import { mergeLibraryGroups } from "@/platform/libraries";
 import type { BuildModel, LibraryGroup, WebArtifact } from "@/bindings";
 import { relativePath, useProject } from "@/platform/project";
 import { PageContext, useSettingsFormFor } from "../components/context";
@@ -988,11 +990,22 @@ function LibrariesSection() {
   useEffect(() => {
     if (!root || !isTauri()) return;
     let live = true;
-    call(commands.sdkProjectLibraries())
-      .then((groups) => live && setDetectedGroups(groups))
+    const request = nextRequestId();
+    const channel = new Channel<LibraryGroup[]>();
+    let collected: LibraryGroup[] = [];
+    channel.onmessage = (groups) => {
+      collected = mergeLibraryGroups([...collected, ...groups]);
+      if (live) setDetectedGroups(collected);
+    };
+    call(commands.sdkProjectLibraries(request, channel))
+      .then((groups) => {
+        collected = groups;
+        if (live) setDetectedGroups(groups);
+      })
       .catch(() => {});
     return () => {
       live = false;
+      void commands.cancelRequest(request).catch(() => {});
     };
   }, [root, libs.length]);
 

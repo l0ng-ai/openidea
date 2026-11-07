@@ -250,7 +250,9 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | Capability          | Risk   | Unlocks today                                                                                                                |
 | ------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics`                                          |
+| `project.write`     | medium | `Project::write_file` — creates and replaces text files inside the open projects                                             |
 | `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory            |
+| `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                         |
 | `editor.read`       | low    | `TextEditor::document`, `selections`                                                                                         |
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                    |
 | `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`, `host::pending_commit`, before-commit checks |
@@ -280,6 +282,16 @@ vs `/opt/seeyon`) is not covered. Granting a whole file system (`/`, `C:\`) is
 refused when the manifest is read: declare the directories you need. Reads are
 capped — text over the limit fails rather than truncating, and files that are
 not text have to be read as bytes.
+
+`fs.write:<path>` grants replacing files outside the projects under that path,
+creating them when they are not there. A write is separate from a read and does
+not imply one. Writes are atomic (a temporary file is renamed over the old one),
+keep the file's encoding and BOM (a new file is UTF-8), are capped at 16 MiB,
+and are refused while the editor holds unsaved changes for the same file. The
+path is resolved as a read's is, so a link inside a granted directory cannot be
+used to write outside it. `project.write` does the same inside the open
+projects, creating missing directories. Both are new in API 1.3
+(`engines.openidea = "^1.3"`).
 
 Logging, notifications, status bar items, tasks and run-time contributions
 are always available. Calling a gated function without its capability returns

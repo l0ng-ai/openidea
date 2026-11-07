@@ -7,6 +7,7 @@ pub(crate) mod cmake;
 mod dotnet;
 
 use crate::RunConfig;
+use ide_core::project_roots::expand_members;
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -213,33 +214,6 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
     ide_core::project_roots::children(dir)
 }
 
-/// Expands workspace member patterns one level deep: `dir`, `dir/*`, `dir/**`.
-fn expand_members(root: &Path, patterns: &[String], marker: &str) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    for pattern in patterns {
-        let pattern = pattern.trim().trim_start_matches("./").trim_end_matches('/');
-        if pattern.is_empty() || pattern.starts_with('!') {
-            continue;
-        }
-        let base = pattern.strip_suffix("/**").or_else(|| pattern.strip_suffix("/*"));
-        match base {
-            Some(base) if !base.contains('*') => {
-                dirs.extend(subdirs(&root.join(base)).into_iter().filter(|d| d.join(marker).is_file()))
-            }
-            None if !pattern.contains('*') => {
-                let dir = root.join(pattern);
-                if dir.join(marker).is_file() {
-                    dirs.push(dir);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut seen = HashSet::new();
-    dirs.retain(|d| seen.insert(d.clone()));
-    dirs
-}
-
 fn relative(root: &Path, dir: &Path) -> PathBuf {
     dir.strip_prefix(root).map(Path::to_path_buf).unwrap_or_else(|_| dir.to_path_buf())
 }
@@ -272,33 +246,6 @@ fn push_scripts(pkg: &Json, pm: &str, prefix: Option<&str>, cwd: Option<PathBuf>
     }
 }
 
-fn node_workspace_patterns(root: &Path, pkg: &Json) -> Vec<String> {
-    let mut patterns: Vec<String> = Vec::new();
-    let ws = pkg.get("workspaces");
-    let list = ws.and_then(Json::as_array).or_else(|| ws.and_then(|w| w.get("packages")).and_then(Json::as_array));
-    if let Some(list) = list {
-        patterns.extend(list.iter().filter_map(Json::as_str).map(str::to_owned));
-    }
-    if let Some(yaml) = read(&root.join("pnpm-workspace.yaml")) {
-        let mut in_packages = false;
-        for line in yaml.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                continue;
-            }
-            if !line.starts_with([' ', '\t', '-']) {
-                in_packages = trimmed.starts_with("packages:");
-                continue;
-            }
-            if in_packages && let Some(item) = trimmed.strip_prefix('-') {
-                let item = item.split(" #").next().unwrap_or_default().trim().trim_matches(['"', '\'']);
-                patterns.push(item.to_owned());
-            }
-        }
-    }
-    patterns
-}
-
 fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
     let mut covered = HashSet::new();
     let projects =
@@ -314,7 +261,7 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
         let rel = relative(root, &dir);
         let label = ide_core::ipc_path::to_ipc(&rel);
         push_scripts(&pkg, pm, (dir != root).then_some(label.as_str()), (dir != root).then_some(rel), out);
-        for member_dir in expand_members(&dir, &node_workspace_patterns(&dir, &pkg), "package.json") {
+        for member_dir in ide_core::project_roots::node_workspace_members(&dir) {
             if !covered.insert(member_dir.clone()) {
                 continue;
             }

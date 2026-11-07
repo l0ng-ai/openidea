@@ -77,8 +77,11 @@ pub async fn sdk_php_composer_install(
 pub async fn sdk_project_libraries(
     window: Window,
     state: State<'_, AppState>,
+    request: RequestId,
+    on_groups: Channel<Vec<ide_sdk::libraries::LibraryGroup>>,
 ) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
-    ide_host::ops::sdk::sdk_project_libraries(&state.host, window.label()).await
+    ide_host::ops::sdk::sdk_project_libraries(&state.host, window.label(), request, crate::commands::sender(on_groups))
+        .await
 }
 
 /// Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path.

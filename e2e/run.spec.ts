@@ -80,3 +80,66 @@ test("⌘F2 stops a running process", async ({ workbench: page }) => {
   await expect(run.getByRole("button", { name: "Stop" })).toBeDisabled();
   await expect(run.getByRole("tab", { name: "dev" })).toHaveAttribute("data-tooltip", /exit code 143$/);
 });
+
+test("Go reruns keep each package's exact failures and the original configuration", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const config = {
+      id: "go:test",
+      name: "All tests",
+      kind: "go",
+      command: "go",
+      args: ["test", "-json", "./..."],
+      cwd: "/dev/acme-api",
+      env: {},
+      detected: false,
+      isTest: true,
+      debugAdapter: "delve",
+    };
+    const h = window.__ipc.handlers;
+    h.run_configs = () => [config];
+    h.run_apply_settings = (args) => args.configs;
+    let id = 20;
+    h.run_start = (args) => {
+      const run = id++;
+      setTimeout(() => {
+        for (const [pkg, name] of [
+          ["example.com/a", "TestA/one"],
+          ["example.com/b", "TestB/two/leaf"],
+        ]) {
+          for (const event of [
+            { Action: "run", Package: pkg, Test: name },
+            { Action: "fail", Package: pkg, Test: name },
+            { Action: "fail", Package: pkg },
+          ])
+            window.__ipc.send(args.onOutput, { kind: "stdout", text: JSON.stringify(event) + "\n" });
+        }
+        window.__ipc.emit({ type: "runExited", run, code: 1 });
+      }, 50);
+      return { id: run, configId: config.id, name: config.name, pid: 4242, running: true, pty: false };
+    };
+    const module = "/src/features/run/store.ts";
+    const { loadConfigs, selectConfig } = await import(/* @vite-ignore */ module);
+    await loadConfigs();
+    selectConfig(config.id);
+  });
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  await expect(run.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
+  await run.getByRole("button", { name: "Rerun Failed Tests", exact: true }).click();
+  await expect.poll(async () => (await ipcCalls(page, "run_start")).length).toBe(3);
+  const calls = await ipcCalls(page, "run_start");
+  expect(calls.slice(1).map((call) => (call.config as { args: string[] }).args)).toEqual([
+    ["test", "-json", "-run", "^TestA$/^one$", "example.com/a"],
+    ["test", "-json", "-run", "^TestB$/^two$/^leaf$", "example.com/b"],
+  ]);
+  const originals = await page.evaluate(async () => {
+    const module = "/src/features/run/store.ts";
+    const { useRun } = await import(/* @vite-ignore */ module);
+    return useRun.getState().sessions.map((session: { baseConfig?: { args: string[] } }) => session.baseConfig?.args);
+  });
+  expect(originals).toEqual([
+    ["test", "-json", "./..."],
+    ["test", "-json", "./..."],
+  ]);
+});

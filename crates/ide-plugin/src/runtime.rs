@@ -210,6 +210,13 @@ pub trait HostApi: Send + Sync {
     /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
     /// `max` bounds the bytes read.
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
+    /// Replaces the text of a file whose real path the caller already checked:
+    /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
+    /// while an editor holds unsaved changes for it.
+    fn write_text_file(&self, real: &Path, text: &str) -> Result<(), HostError>;
+    /// Replaces the bytes of a file whose real path the caller already checked,
+    /// in one step. Refused while an editor holds unsaved changes for it.
+    fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError>;
 }
 
 /// Shared compilation engine plus an epoch ticker thread for wall-clock limits.
