@@ -4,10 +4,9 @@
 
 use std::future::Future;
 
+use ide_core::CancellationToken;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-
-use ide_core::CancellationToken;
 
 use crate::decode::{DecodeError, DecodedTrace, E1Value, EvalFailure, Recording, classify_eval_error, decode};
 use crate::generate::TracePlan;
