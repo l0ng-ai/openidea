@@ -100,7 +100,7 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
-  /** The Services pane of node `key` of a plugin's services view. */
+  /** The detail tabs of item `key` in a Services or `detail = true` view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
   endpoints(pluginId: string): Promise<PluginEndpoint[]>;

@@ -3642,6 +3642,17 @@ fn detail_fixture_tracks_selection_and_refresh_for_tree_list_and_services() {
         let refreshed = f.host.service_detail("test.detail-views", view, "beta", f.inv()).unwrap();
         assert_ne!(tabs, refreshed);
     }
+    let selections = [("tree", "alpha"), ("list", "beta"), ("services", "alpha")];
+    for (view, key) in selections {
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Select { key: key.into() }, f.inv())
+            .unwrap();
+    }
+    for (view, key) in selections {
+        let tabs = f.host.service_detail("test.detail-views", view, key, f.inv()).unwrap();
+        let ide_plugin::ServicePane::Text(text) = &tabs[0].body else { panic!("text detail") };
+        assert!(text.starts_with(&format!("{view}: {key}")));
+    }
 }
 
 /// `hello` as a services view that may run `sh`, granted or not.

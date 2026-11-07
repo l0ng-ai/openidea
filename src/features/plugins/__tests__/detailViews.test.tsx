@@ -95,6 +95,18 @@ describe("detail views", () => {
     expect(await screen.findByRole("document")).toHaveTextContent("Details a");
   });
 
+  it.each(["tree", "list"] as const)("updates %s details on keyboard selection", async (kind) => {
+    const { b } = setup(kind);
+    render(<PluginView pluginId="p" view={kind} detail />);
+    await screen.findByText("a");
+    select("a");
+    await screen.findByRole("document");
+    const row = screen.getByText("a").closest('[role="treeitem"], [role="option"]')!;
+    fireEvent.keyDown(row, { key: "ArrowDown" });
+    await waitFor(() => expect(screen.getByRole("document")).toHaveTextContent("Details b"));
+    expect(b.serviceDetail).toHaveBeenLastCalledWith("p", kind, "b");
+  });
+
   it("keeps ordinary bodies unchanged and does not request details without opt-in", async () => {
     const { b } = setup("list");
     render(<PluginView pluginId="p" view="plain" />);

@@ -1,11 +1,13 @@
 //! A tree/list detail-provider fixture for host and native UI verification.
+use std::collections::BTreeMap;
+
 use openidea_plugin::details::{Details, Pane, Tab};
 use openidea_plugin::views::{Body, Button, ListItem, TreeItem, View, ViewEvent, Viewport, Views};
 use openidea_plugin::{Error, Invocation, Plugin, host, register_plugin};
 
 #[derive(Default)]
 struct DetailViews {
-    selected: Option<String>,
+    selected: BTreeMap<String, String>,
     removed: bool,
     revision: u32,
 }
@@ -31,7 +33,9 @@ impl Views for DetailViews {
 
     fn handle(&mut self, view: &str, event: ViewEvent, _ctx: &Invocation) -> Result<(), Error> {
         match event {
-            ViewEvent::Select(key) => self.selected = Some(key),
+            ViewEvent::Select(key) => {
+                self.selected.insert(view.to_owned(), key);
+            }
             ViewEvent::Button(id) => {
                 if id == "remove" {
                     self.removed = true;
@@ -47,7 +51,7 @@ impl Views for DetailViews {
 
 impl Details for DetailViews {
     fn detail(&mut self, view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
-        if self.selected.as_deref() != Some(key) {
+        if self.selected.get(view).map(String::as_str) != Some(key) {
             return Err(Error::Failed("select must finish before detail".into()));
         }
         Ok(vec![
