@@ -218,7 +218,7 @@ export async function disconnectRemote() {
 
 // ---------------------------------------------------------------------------
 // Remote project locations: `ssh://<configuration id>/<absolute path>`,
-// `wsl://<distribution>/<absolute path>` or `devcontainer://<local folder>/<path in the container>`,
+// `wsl://<distribution>/<absolute path>` or `devcontainer://<local folder>[:<config>]/<container path>`,
 // what the session and the recent projects remember for a remote window.
 
 const SCHEMES = { ssh: "ssh://", wsl: "wsl://", devContainer: "devcontainer://" } as const;
@@ -244,7 +244,8 @@ export function sameTarget(a: RemoteTarget, b: RemoteTarget): boolean {
 }
 
 export function remoteLocation(target: RemoteTarget, path: string): string {
-  return `${SCHEMES[target.kind]}${encodeURIComponent(targetName(target))}${path.startsWith("/") ? "" : "/"}${path}`;
+  const config = target.kind === "devContainer" && target.config ? `:${encodeURIComponent(target.config)}` : "";
+  return `${SCHEMES[target.kind]}${encodeURIComponent(targetName(target))}${config}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
 export function parseRemoteLocation(location: string): { target: RemoteTarget; path: string } | null {
@@ -253,14 +254,12 @@ export function parseRemoteLocation(location: string): { target: RemoteTarget; p
   const rest = location.slice(SCHEMES[kind].length);
   const slash = rest.indexOf("/");
   if (slash <= 0) return null;
-  const name = decodeURIComponent(rest.slice(0, slash));
+  const authority = rest.slice(0, slash);
+  const colon = kind === "devContainer" ? authority.indexOf(":") : -1;
+  const name = decodeURIComponent(colon < 0 ? authority : authority.slice(0, colon));
+  const config = colon < 0 ? "" : decodeURIComponent(authority.slice(colon + 1));
   const target: RemoteTarget =
-    kind === "ssh"
-      ? { kind, config: name }
-      : kind === "wsl"
-        ? { kind, distro: name }
-        : // The default configuration: a location doesn't carry another one.
-          { kind, folder: name, config: "" };
+    kind === "ssh" ? { kind, config: name } : kind === "wsl" ? { kind, distro: name } : { kind, folder: name, config };
   return { target, path: rest.slice(slash) };
 }
 

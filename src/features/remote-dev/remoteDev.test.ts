@@ -73,6 +73,14 @@ describe("remote project locations", () => {
     expect(parseRemoteLocation(loc)).toEqual({ target: container("/Users/me/my app"), path: "/workspaces/my app" });
   });
 
+  it("round-trips container configurations and Windows folders with reserved characters", () => {
+    const target = { ...container("C:\\work\\my app"), config: ".devcontainer/a:b?c/devcontainer.json" };
+    expect(parseRemoteLocation(remoteLocation(target, "/workspaces/app"))).toEqual({
+      target,
+      path: "/workspaces/app",
+    });
+  });
+
   it("remembers recent remote projects most recent first, once each", () => {
     localStorage.clear();
     rememberRemote({ target: ssh("a"), path: "/p", name: "p", host: "me@a", openedAtMs: 1 });
@@ -98,7 +106,10 @@ describe("remote project locations", () => {
     rememberRemote({ target: container("/w/app"), path: "/workspaces/app", name: "app", host: "app", openedAtMs: 1 });
     rememberRemote({ target: python, path: "/workspaces/app", name: "app", host: "app", openedAtMs: 2 });
     expect(recentRemotes()).toHaveLength(2);
-    forgetRemote(python, "/workspaces/app");
+    const saved = remoteLocation(python, "/workspaces/app");
+    expect(saved).not.toBe(remoteLocation(container("/w/app"), "/workspaces/app"));
+    expect(parseRemoteLocation(saved)).toEqual({ target: python, path: "/workspaces/app" });
+    forgetRemote(parseRemoteLocation(saved)!.target, "/workspaces/app");
     expect(recentRemotes().map((r) => r.target)).toEqual([container("/w/app")]);
   });
 

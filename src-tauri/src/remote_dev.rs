@@ -429,8 +429,6 @@ pub async fn remote_connect(
     });
     progress(RemoteStage::Connecting, None);
     let label = AppState::owner_window(window.label()).to_owned();
-    state.remote_dev.disconnect(&label);
-    state.host.close_project(&label);
     let channels: Channels = Arc::default();
     let handler =
         Arc::new(ClientHandler { app: window.app_handle().clone(), window: label.clone(), channels: channels.clone() });
@@ -509,6 +507,8 @@ pub async fn remote_connect(
         session,
         forwards: Mutex::new(Vec::new()),
     });
+    state.remote_dev.disconnect(&label);
+    state.host.close_project(&label);
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
     let plugins = state.plugins.clone();
     tauri::async_runtime::spawn(async move {

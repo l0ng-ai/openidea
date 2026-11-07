@@ -223,6 +223,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("file.renameProject", "Rename Project…"),
         SEP,
         act("remote.connect", "Remote Development…"),
+        act("remote.reopenInContainer", "Reopen in Container"),
         act("remote.disconnect", "Disconnect from Remote Host"),
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,

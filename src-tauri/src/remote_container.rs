@@ -9,7 +9,7 @@ use crate::remote_dev::{Progress, RemoteStage, SERVER_BIN};
 use crate::remote_wsl::{Probe, Tail, install_script, parse_probe, probe_script, upload, version_dir};
 use ide_core::{IdeError, IdeResult};
 use ide_jsonrpc::{Handler, Peer};
-use serde::Deserialize;
+use ide_remote::devcontainer::{Up, parse_up};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -19,63 +19,6 @@ use tokio::io::AsyncBufReadExt;
 /// Building an image (and its features) can take a while on a first open.
 const UP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// The container `devcontainer up` started, as it reported it.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Up {
-    pub container: String,
-    /// The user the IDE works as (`remoteUser`).
-    pub user: String,
-    /// The project folder in the container (`remoteWorkspaceFolder`).
-    pub folder: String,
-}
-
-/// The JSON line `devcontainer up` ends with.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpResult {
-    outcome: String,
-    container_id: Option<String>,
-    remote_user: Option<String>,
-    remote_workspace_folder: Option<String>,
-    message: Option<String>,
-    description: Option<String>,
-}
-
-fn is_container_id(id: &str) -> bool {
-    (12..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-
-/// A user name or `uid[:gid]`, never something `docker exec` could read as an option.
-fn is_user(user: &str) -> bool {
-    !user.is_empty()
-        && !user.starts_with('-')
-        && user.len() <= 64
-        && user.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
-}
-
-fn is_container_path(path: &str) -> bool {
-    path.starts_with('/') && !path.chars().any(char::is_control)
-}
-
-/// Reads the result of `devcontainer up` from its stdout (the last JSON line).
-fn parse_up(stdout: &str) -> IdeResult<Up> {
-    let line = stdout.lines().rev().map(str::trim).find(|l| l.starts_with('{'));
-    let result: UpResult = line
-        .and_then(|l| serde_json::from_str(l).ok())
-        .ok_or_else(|| IdeError::unavailable("devcontainer up did not report a result"))?;
-    if result.outcome != "success" {
-        let why = [result.message, result.description].into_iter().flatten().collect::<Vec<_>>().join(": ");
-        return Err(IdeError::unavailable(format!("devcontainer up failed: {why}")));
-    }
-    let container = result.container_id.filter(|id| is_container_id(id));
-    let user = result.remote_user.filter(|u| is_user(u));
-    let folder = result.remote_workspace_folder.filter(|f| is_container_path(f));
-    match (container, user, folder) {
-        (Some(container), Some(user), Some(folder)) => Ok(Up { container, user, folder }),
-        _ => Err(IdeError::unavailable("devcontainer up reported an unexpected container, user or folder")),
-    }
-}
 
 /// The Dev Containers CLI: the IDE-managed copy (Settings › Tools) or one on `PATH`.
 fn cli(data_dir: &Path) -> IdeResult<PathBuf> {
@@ -122,9 +65,16 @@ async fn up(cli: &Path, docker: &Path, folder: &Path, config: &str, tail: &Tail)
         .map_err(|_| IdeError::unavailable("devcontainer up did not finish in time"))?
         .map_err(|e| IdeError::unavailable(format!("devcontainer up failed: {e}")))?;
     let _ = reader.await;
-    parse_up(&String::from_utf8_lossy(&out.stdout)).map_err(|e| match tail.text() {
-        t if t.is_empty() || out.status.success() => e,
-        t => IdeError::unavailable(format!("{}\n{t}", e.message)),
+    let result = parse_up(&String::from_utf8_lossy(&out.stdout));
+    if out.status.success() {
+        return result;
+    }
+    let error = result
+        .err()
+        .unwrap_or_else(|| IdeError::unavailable(format!("devcontainer up exited with {status}", status = out.status)));
+    Err(match tail.text() {
+        t if t.is_empty() => error,
+        t => IdeError::unavailable(format!("{}\n{t}", error.message)),
     })
 }
 
@@ -253,7 +203,9 @@ pub(crate) async fn connect(
             "The Docker daemon of the current context is not on this machine; dev containers need a local one.",
         ));
     }
-    let cli = cli(&state.host.local_data_dir)?;
+    let data = state.host.local_data_dir.clone();
+    let cli =
+        tokio::task::spawn_blocking(move || cli(&data)).await.map_err(|e| IdeError::internal(e.to_string()))??;
     let up = up(&cli, &docker, &local, config, tail).await?;
     let bin = ensure_server(state, &docker, &up, progress).await?;
     progress(RemoteStage::Starting, None);
@@ -273,40 +225,6 @@ mod tests {
     use super::*;
 
     const ID: &str = "3f1c2b9a7d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";
-
-    fn result(fields: &str) -> String {
-        format!("[1 ms] Start: Run: docker build\n{{\"outcome\":\"success\",{fields}}}\n")
-    }
-
-    #[test]
-    fn reads_the_container_from_the_last_json_line() {
-        let out =
-            result(&format!(r#""containerId":"{ID}","remoteUser":"vscode","remoteWorkspaceFolder":"/workspaces/app""#));
-        let up = parse_up(&out).unwrap();
-        assert_eq!(up, Up { container: ID.into(), user: "vscode".into(), folder: "/workspaces/app".into() });
-    }
-
-    #[test]
-    fn a_failure_reports_the_cli_message() {
-        let out = r#"{"outcome":"error","message":"Command failed: docker build","description":"An error occurred"}"#;
-        let err = parse_up(out).unwrap_err();
-        assert!(err.message.contains("Command failed: docker build: An error occurred"), "{}", err.message);
-        assert!(parse_up("no json at all").is_err());
-    }
-
-    #[test]
-    fn unexpected_values_never_reach_docker_exec() {
-        for fields in [
-            r#""containerId":"--privileged","remoteUser":"vscode","remoteWorkspaceFolder":"/w""#.to_owned(),
-            format!(r#""containerId":"{ID}","remoteUser":"-u0","remoteWorkspaceFolder":"/w""#),
-            format!(r#""containerId":"{ID}","remoteUser":"a b","remoteWorkspaceFolder":"/w""#),
-            format!(r#""containerId":"{ID}","remoteUser":"vscode","remoteWorkspaceFolder":"relative""#),
-            format!(r#""containerId":"{ID}","remoteUser":"vscode""#),
-        ] {
-            assert!(parse_up(&result(&fields)).is_err(), "{fields}");
-        }
-        assert!(is_user("1000:1000") && is_user("node") && is_user("dev.user"));
-    }
 
     #[test]
     fn the_server_starts_in_the_folder_trusted_and_without_the_lifecycle() {
@@ -371,6 +289,20 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
         let err = up(&cli, Path::new("docker"), dir.path(), "", &Tail::default()).await.unwrap_err();
         assert!(err.message.contains("Dockerfile not found"), "{}", err.message);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_exit_never_connects_even_with_a_success_result() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("devcontainer");
+        let output =
+            format!(r#"{{"outcome":"success","containerId":"{ID}","remoteUser":"root","remoteWorkspaceFolder":"/w"}}"#);
+        std::fs::write(&cli, format!("#!/bin/sh\ncat <<'RESULT'\n{output}\nRESULT\nexit 1\n")).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = up(&cli, Path::new("docker"), dir.path(), "", &Tail::default()).await.unwrap_err();
+        assert!(err.message.contains("exited with"), "{}", err.message);
     }
 
     struct Silent;

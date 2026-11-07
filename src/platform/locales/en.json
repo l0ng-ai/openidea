@@ -172,6 +172,7 @@
   "menu.file.newProjectsSettings": "Settings for New Projects…",
   "menu.file.toggleReadOnly": "Make File Read-only / Writable",
   "menu.file.closeProject": "Close Project",
+  "menu.remote.reopenInContainer": "Reopen in Container",
   "menu.remote.reloadEnvironment": "Reload Environment",
   "menu.file.new": "New…",
   "menu.file.newScratchFile": "New Scratch File…",
