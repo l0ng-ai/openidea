@@ -20,6 +20,16 @@ const MAX_CACHED_KEYS: usize = 100_000;
 #[derive(Default)]
 pub(crate) struct ConfigurationCache {
     files: HashMap<PathBuf, CachedFile>,
+    roots: HashMap<PathBuf, CachedPaths>,
+}
+struct CachedPaths {
+    paths: Vec<PathBuf>,
+    incomplete: Option<ReferencesIncomplete>,
+}
+impl ConfigurationCache {
+    pub(crate) fn invalidate_paths(&mut self) {
+        self.roots.clear();
+    }
 }
 struct CachedFile {
     stamp: (SystemTime, u64),
@@ -219,10 +229,27 @@ impl LspManager {
         // navigation survives an unavailable or outdated Java extension.
         let local = if placeholder {
             let name = key.clone().unwrap_or_default();
+            let path = snap.path.clone();
+            let project_root = self.project_root.clone();
+            let root = tokio::task::spawn_blocking(move || {
+                path.parent()
+                    .into_iter()
+                    .flat_map(Path::ancestors)
+                    .take_while(|p| p.starts_with(&project_root))
+                    .find(|p| {
+                        ["pom.xml", "build.gradle", "build.gradle.kts", ".classpath"]
+                            .iter()
+                            .any(|name| p.join(name).is_file())
+                    })
+                    .map(Path::to_path_buf)
+                    .unwrap_or(project_root)
+            })
+            .await
+            .map_err(|_| IdeError::unavailable("configuration search worker stopped"))?;
             Some(
                 self.configuration_declarations(
                     vec![Pattern { name, relaxed: true }],
-                    std::slice::from_ref(&self.project_root),
+                    std::slice::from_ref(&root),
                     cancel,
                 )
                 .await?,
@@ -277,9 +304,14 @@ impl LspManager {
             result.locations.extend(local.locations);
             result.incomplete = result.incomplete.or(local.incomplete);
         }
-        if key.is_none() || usages {
+        if key.is_none() || usages || placeholder {
             let roots: Vec<PathBuf> = response.roots.iter().filter_map(|uri| super::project_path(uri)).collect();
-            let files = self.configuration_declarations(response.keys, &roots, cancel).await?;
+            let patterns = if placeholder {
+                vec![Pattern { name: key.clone().unwrap_or_default(), relaxed: true }]
+            } else {
+                response.keys
+            };
+            let files = self.configuration_declarations(patterns, &roots, cancel).await?;
             result.locations.extend(files.locations);
             result.incomplete = result.incomplete.or(files.incomplete);
         }
@@ -354,11 +386,15 @@ fn configuration_files(
 ) -> References {
     let mut result = References::default();
     let mut paths = std::collections::BTreeSet::new();
-    // Do not scan a source root twice when its enclosing module is also present.
-    let roots: Vec<_> =
-        roots.iter().filter(|root| !roots.iter().any(|other| other != *root && root.starts_with(other))).collect();
-    for root in &roots {
-        let module = (*root).clone();
+    let mut cache = cache.lock();
+    for root in roots {
+        if let Some(cached) = cache.roots.get(root) {
+            paths.extend(cached.paths.iter().cloned());
+            result.incomplete = result.incomplete.or(cached.incomplete);
+            continue;
+        }
+        let mut found = CachedPaths { paths: Vec::new(), incomplete: None };
+        let module = root.clone();
         let walker = ignore::WalkBuilder::new(root)
             .follow_links(false)
             .filter_entry(move |entry| {
@@ -382,21 +418,26 @@ fn configuration_files(
             if cancel.is_cancelled() {
                 return result;
             }
-            if visited >= 50_000 || paths.len() >= MAX_FILES {
-                result.incomplete = Some(ReferencesIncomplete::TooManyFiles);
+            if visited >= 50_000 || found.paths.len() >= MAX_FILES {
+                found.incomplete = Some(ReferencesIncomplete::TooManyFiles);
                 break;
             }
             match entry {
                 Ok(entry) if entry.file_type().is_some_and(|t| t.is_file()) && language(entry.path()).is_some() => {
-                    paths.insert(entry.into_path());
+                    found.paths.push(entry.into_path());
                 }
-                Err(_) => result.incomplete = Some(ReferencesIncomplete::FilesSkipped),
+                Err(_) => found.incomplete = Some(ReferencesIncomplete::FilesSkipped),
                 _ => {}
             }
         }
+        paths.extend(found.paths.iter().cloned());
+        result.incomplete = result.incomplete.or(found.incomplete);
+        if cache.roots.len() >= MAX_FILES {
+            cache.roots.clear();
+        }
+        cache.roots.insert(root.clone(), found);
     }
     paths.extend(overlays.keys().filter(|p| roots.iter().any(|r| in_module(r, p))).cloned());
-    let mut cache = cache.lock();
     if cache.files.len() > MAX_FILES {
         cache.files.clear();
     }

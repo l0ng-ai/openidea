@@ -4413,6 +4413,77 @@ async fn configuration_placeholder_definition_lands_in_spring_xml_and_properties
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholders_use_java_module_roots_and_utf16_columns() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(
+        h.root.join("pom.xml"),
+        "<project><packaging>pom</packaging><modules><module>child</module></modules></project>",
+    )
+    .unwrap();
+    let child = h.root.join("child");
+    let resources = child.join("src/main/resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    std::fs::write(child.join("pom.xml"), "<project/>").unwrap();
+    let definition = resources.join("application.properties");
+    std::fs::write(&definition, "db.user=sa\n").unwrap();
+    let sibling = h.root.join("sibling");
+    std::fs::create_dir(&sibling).unwrap();
+    std::fs::write(sibling.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(sibling.join("application.properties"), "db.user=wrong\n").unwrap();
+    h.launcher.state("jdtls").respond("workspace/executeCommand", json!({
+        "locations": [], "keys": [], "roots": [uri_of(&h.root), uri_of(&child), uri_of(&child.join("src/main/java"))]
+    }));
+    for (file, language, text) in [
+        ("references.properties", "properties", "message=你好😀 ${db.user}"),
+        ("references.yml", "yaml", "message: 你好😀 ${db.user}"),
+        ("context.xml", "xml", "<bean value=\"你好😀 ${db.user}\"/>"),
+    ] {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &h.root.join(file), &LanguageId::new(language), 1, text);
+        let col = text[..text.find("db.user").unwrap()].encode_utf16().count() as u32;
+        let locations = h.mgr.goto(doc, Pos::new(0, col + 2), GotoKind::Definition).await.unwrap();
+        assert_eq!(locations.len(), 1, "{file}: {locations:?}");
+        assert_eq!(locations[0].path.to_path_buf(), definition);
+        assert_eq!(locations[0].range.start, Pos::new(0, 0));
+        assert_eq!(locations[0].range.end, Pos::new(0, 7));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_file_list_refreshes_on_watched_changes_and_renames() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let child = h.root.join("child");
+    std::fs::create_dir(&child).unwrap();
+    std::fs::write(child.join("pom.xml"), "<project/>").unwrap();
+    let file = child.join("application.properties");
+    std::fs::write(&file, "db.user=sa\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &child.join("reference.yml"), &LanguageId::new("yaml"), 1, "message: ${db.user}");
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+    let profile = child.join("application-dev.properties");
+    std::fs::write(&profile, "db.user=dev\n").unwrap();
+    // No notification yet: the existing file list is reused.
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+    h.mgr.watched_files_changed(std::slice::from_ref(&profile), &[], &[], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 2);
+    std::fs::write(&profile, "db.user=development\n").unwrap();
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&profile), &[], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 2);
+    let renamed = child.join("application-test.properties");
+    std::fs::rename(&profile, &renamed).unwrap();
+    h.mgr.did_rename_files(&[(profile, renamed.clone())]);
+    let locations = h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap();
+    assert_eq!(locations.len(), 2);
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == renamed));
+    std::fs::remove_file(&renamed).unwrap();
+    h.mgr.watched_files_changed(&[], &[], &[renamed], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn configuration_placeholder_definition_merges_java_members_with_xml_declarations() {
     let mut caps = incremental_caps();
     caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});

@@ -40,23 +40,28 @@ impl Syntax {
     /// braces name `b`. Empty names (`${}`) name nothing.
     pub fn configuration_placeholder(&self, text: &str, pos: Pos) -> Option<String> {
         let at = byte_at(text, pos)?;
-        // The innermost `${` at or before `at` that is not closed before it
-        // wins, so a click inside a nested default picks the inner name.
+        let mut braces = Vec::new();
         let mut best: Option<(usize, usize)> = None;
-        let mut from = 0;
-        while let Some(open) = text[from..].find("${") {
-            let open = from + open;
-            if open > at {
-                break;
+        for (i, byte) in text.bytes().enumerate() {
+            match byte {
+                b'{' => braces.push((i, None, i > 0 && text.as_bytes()[i - 1] == b'$')),
+                b':' => {
+                    if let Some((_, end, true)) = braces.last_mut() {
+                        end.get_or_insert(i);
+                    }
+                }
+                b'}' => {
+                    if let Some((open, end, true)) = braces.pop() {
+                        let open = open - 1;
+                        if open <= at && at <= i && best.is_none_or(|(previous, _)| open > previous) {
+                            best = Some((open, end.unwrap_or(i)));
+                        }
+                    }
+                }
+                _ => {}
             }
-            let Some(close) = text[open..].find('}').map(|close| open + close) else { break };
-            if at <= close {
-                best = Some((open, close));
-            }
-            from = open + 2;
         }
-        let (open, close) = best?;
-        let end = open + text[open..close].find([':', '}']).unwrap_or(close - open);
+        let (open, end) = best?;
         let name = text[open + 2..end].trim();
         (!name.is_empty()).then(|| name.to_owned())
     }
@@ -505,6 +510,42 @@ class A {
         assert_eq!(syntax.configuration_placeholder("no placeholder", Pos::new(0, 3)), None);
         assert_eq!(syntax.configuration_placeholder("trailing ${open", Pos::new(0, 12)), None);
     }
+    #[test]
+    fn nested_placeholder_defaults_are_brace_balanced() {
+        let syntax = Syntax::new();
+        let text = "${outer:${inner}suffix}";
+        for col in 0..text.len() {
+            let expected = if (8..=15).contains(&col) { "inner" } else { "outer" };
+            assert_eq!(
+                syntax.configuration_placeholder(text, Pos::new(0, col as u32)).as_deref(),
+                Some(expected),
+                "column {col}"
+            );
+        }
+        let text = "${outer:${middle:${inner}}suffix}";
+        for (needle, expected) in [("outer", "outer"), ("middle", "middle"), ("inner", "inner"), ("suffix", "outer")] {
+            assert_eq!(
+                syntax.configuration_placeholder(text, Pos::new(0, text.find(needle).unwrap() as u32)).as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            syntax.configuration_placeholder("${outer:{default}suffix}", Pos::new(0, 19)).as_deref(),
+            Some("outer")
+        );
+        assert_eq!(syntax.configuration_placeholder("${outer:${inner}suffix", Pos::new(0, 18)), None);
+    }
+
+    #[test]
+    fn configuration_placeholders_use_utf16_columns() {
+        let syntax = Syntax::new();
+        for text in ["message=你好😀 ${db.user}", "message: 你好😀 ${db.user}", "<bean value=\"你好😀 ${db.user}\"/>"]
+        {
+            let col = text[..text.find("db.user").unwrap()].encode_utf16().count() as u32;
+            assert_eq!(syntax.configuration_placeholder(text, Pos::new(0, col + 2)).as_deref(), Some("db.user"));
+        }
+    }
+
     #[test]
     fn spring_xml_declares_prop_and_configurer_property_keys() {
         let text = r#"<?xml version="1.0" encoding="UTF-8"?>
