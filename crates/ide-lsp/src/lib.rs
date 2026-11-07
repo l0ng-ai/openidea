@@ -2335,11 +2335,12 @@ impl LspManager {
     /// servers hear of their languages' files under their root; without it jdtls's incremental
     /// build never sees them, so a launch runs stale classes.
     ///
-    /// Documents open on a server's current instance are left out: their text reaches the
-    /// server through `didOpen`/`didChange` (the editor's reload of a clean buffer arrives as
-    /// one), and a server that re-reads the file on the watched change (csharp-ls) would apply
+    /// Creates and changes for documents synced on a server's current instance are left out.
+    /// Their text reaches the server through `didOpen`/`didChange`, including clean-buffer
+    /// reloads. A server that re-reads the file on the watched change (csharp-ls) would apply
     /// the reload and then the `didChange` computed against the pre-reload copy, so it would
     /// keep analysing content that diverges from both the disk and the editor (#1780).
+    /// Deletions still reach it: document sync does not describe workspace membership.
     pub fn watched_files_changed(
         &self,
         created: &[PathBuf],
@@ -2349,39 +2350,43 @@ impl LspManager {
     ) {
         use file_watch::Change;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
-        let open: HashMap<ide_core::ServerId, HashSet<PathBuf>> = {
+        let open: HashMap<(ide_core::ServerId, u64), HashSet<PathBuf>> = {
             let docs = self.docs.lock();
             let mut open: HashMap<_, HashSet<_>> = HashMap::new();
             for d in docs.values() {
                 for a in &d.servers {
-                    if let Some(run) = a.server.running()
-                        && a.opened_gen == Some(run.generation)
-                    {
-                        open.entry(a.server.id).or_default().extend([d.path.clone(), d.canonical.clone()]);
+                    if let Some(generation) = a.opened_gen {
+                        open.entry((a.server.id, generation))
+                            .or_default()
+                            .extend([d.path.clone(), d.canonical.clone()]);
                     }
                 }
             }
             open
         };
+        let canonical: HashMap<_, _> =
+            created.iter().chain(modified).filter_map(|p| dunce::canonicalize(p).ok().map(|c| (p, c))).collect();
         for s in servers {
             let Some(run) = s.running() else { continue };
+            let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            let send = |p: &PathBuf, change: Change| {
+                change == Change::Deleted
+                    || !open
+                        .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))
+            };
             let all = [(created, Change::Created), (modified, Change::Changed), (removed, Change::Deleted)]
                 .into_iter()
                 .flat_map(|(paths, change)| paths.iter().map(move |p| (p, change)));
             let watchers = run.watchers.read();
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
                 let languages = s.languages();
-                all.filter(|(p, _)| {
-                    p.starts_with(&s.root)
-                        && languages.contains(&self.languages.detect(p, None))
-                        && !open.get(&s.id).is_some_and(|o| o.contains(*p))
+                all.filter(|(p, change)| {
+                    p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)) && send(p, *change)
                 })
                 .collect()
             } else {
                 all.chain(excluded_dirs.iter().map(|p| (p, Change::Created)))
-                    .filter(|(p, change)| {
-                        watchers.wants(&s.root, p, *change) && !open.get(&s.id).is_some_and(|o| o.contains(*p))
-                    })
+                    .filter(|(p, change)| watchers.wants(&s.root, p, *change) && send(p, *change))
                     .collect()
             };
             drop(watchers);
