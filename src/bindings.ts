@@ -1128,6 +1128,7 @@ export const commands = {
 	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
 	/**  The page of a plugin's web view or custom editor (`web = …`). */
 	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
+	pluginWebPtySpawn: (pluginId: string, view: string, command: WebPtyCommand, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_web_pty_spawn", { pluginId, view, command, onOutput })),
 	/**
 	 *  Writes what a web view saves (`openidea.saveFile`) to the path the user
 	 *  chose in the save dialog, on this machine.
@@ -8275,6 +8276,15 @@ export type WebPage = {
 	 *  stale; relative URLs in the page resolve to the package's files.
 	 */
 	path: string,
+};
+
+/**  A web frame's API 1.3 PTY request. The frame never supplies an executable path or cwd. */
+export type WebPtyCommand = {
+	program: string,
+	args: string[],
+	env: { [key in string]: string },
+	cols: number,
+	rows: number,
 };
 
 export type WebReference = {

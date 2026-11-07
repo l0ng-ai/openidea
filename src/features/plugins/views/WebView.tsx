@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { tx } from "@/platform/i18n";
-import { call, commands, isTauri, onIdeEvent, type TerminalId } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
@@ -26,6 +26,7 @@ import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
 import { FRAME_TAG, frameTheme, frameThemeMessage } from "./frame";
 import { onViewMessage } from "./viewStore";
+import { ptyBridge } from "./ptyBridge";
 import styles from "./PluginView.module.css";
 
 /** One change of a document, in UTF-16 offsets of the text it applies to. */
@@ -155,153 +156,54 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
 
   useEffect(() => {
     let dialog = false;
-    interface PtyEntry {
-      id?: TerminalId;
-      killed?: boolean;
-      pendingInputs: string[];
-      pendingResize?: { cols: number; rows: number };
-    }
-    const ptySessions = new Map<string, PtyEntry>();
-    const ptyByTermId = new Map<TerminalId, string>();
-    const offTermEvent = onIdeEvent("terminalExited", (ev) => {
-      const sid = ptyByTermId.get(ev.terminal);
-      if (sid) {
-        ptyByTermId.delete(ev.terminal);
-        ptySessions.delete(sid);
-        post({ text: JSON.stringify({ op: "pty-exit", sessionId: sid, exitCode: ev.code }) });
-      }
-    });
-
-    const handlePtyMessage = (rawText: string): boolean => {
-      if (!rawText.startsWith("{") || !rawText.includes('"pty-')) return false;
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(rawText) as Record<string, unknown>;
-      } catch {
-        return false;
-      }
-      const op = parsed.op;
-      if (op !== "pty-spawn" && op !== "pty-input" && op !== "pty-resize" && op !== "pty-kill") {
-        return false;
-      }
-      const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId : "default";
-      if (op === "pty-spawn") {
-        const program = typeof parsed.program === "string" ? parsed.program.trim() : "";
-        if (!program) return true;
-        const currentPlugin = usePlugins.getState().plugins.find((p) => p.id === pluginId);
-        const allowed = currentPlugin?.capabilities.some((c) => c.id === `process:${program}` && c.granted) ?? false;
-        if (!allowed || !isTauri()) {
-          post({
-            text: JSON.stringify({
-              op: "pty-data",
-              sessionId,
-              data: `\r\n\x1b[31mCannot start PTY: process:${program} capability not granted or not running in desktop app.\x1b[0m\r\n`,
-            }),
-          });
-          return true;
-        }
-        const prev = ptySessions.get(sessionId);
-        if (prev) {
-          prev.killed = true;
-          if (prev.id !== undefined) {
-            ptyByTermId.delete(prev.id);
-            void commands.termKill(prev.id);
-          }
-          ptySessions.delete(sessionId);
-        }
-        const args = Array.isArray(parsed.args) ? parsed.args.filter((a): a is string => typeof a === "string") : [];
-        const cols = typeof parsed.cols === "number" ? Math.max(20, parsed.cols) : 100;
-        const rows = typeof parsed.rows === "number" ? Math.max(5, parsed.rows) : 28;
-        const cwd = useProject.getState().project?.root ?? "/";
-        const entry: PtyEntry = { pendingInputs: [] };
-        ptySessions.set(sessionId, entry);
-        const channel = new Channel<string>();
-        channel.onmessage = (chunk) => {
-          if (entry.killed) return;
-          post({ text: JSON.stringify({ op: "pty-data", sessionId, data: chunk }) });
-        };
-        void call(
-          commands.termSpawn(
-            {
-              cwd,
-              shell: program,
-              args,
-              env: { TERM: "xterm-256color" },
-              cols,
-              rows,
-              shellIntegration: false,
-            },
-            channel,
-          ),
-        ).then(
-          (info) => {
-            if (entry.killed || ptySessions.get(sessionId) !== entry) {
-              void commands.termKill(info.id);
-              return;
-            }
-            entry.id = info.id;
-            ptyByTermId.set(info.id, sessionId);
-            if (entry.pendingResize) {
-              void commands.termResize(
-                info.id,
-                Math.max(2, entry.pendingResize.cols),
-                Math.max(1, entry.pendingResize.rows),
-              );
-              entry.pendingResize = undefined;
-            }
-            for (const data of entry.pendingInputs.splice(0)) {
-              void commands.termWrite(info.id, data);
-            }
+    const createPtys = () =>
+      ptyBridge(
+        pluginId,
+        {
+          spawn: async (command, output) => {
+            const current = usePlugins.getState().plugins.find((p) => p.id === pluginId);
+            if (
+              !isTauri() ||
+              !current?.enabled ||
+              !current.capabilities.some((c) => c.id === `process:${command.program}` && c.granted)
+            )
+              throw new Error(tx`Cannot start PTY: process:${command.program} capability not granted.`);
+            const channel = new Channel<string>();
+            channel.onmessage = output;
+            return call(commands.pluginWebPtySpawn(pluginId, view, command, channel));
           },
-          (err: unknown) => {
-            if (entry.killed) return;
-            post({
-              text: JSON.stringify({
-                op: "pty-data",
-                sessionId,
-                data: `\r\n\x1b[31mFailed to spawn PTY: ${errorText(err)}\x1b[0m\r\n`,
-              }),
-            });
-          },
-        );
-        return true;
-      }
-      if (op === "pty-input") {
-        const entry = ptySessions.get(sessionId);
-        if (entry && !entry.killed && typeof parsed.data === "string") {
-          if (entry.id !== undefined) {
-            void commands.termWrite(entry.id, parsed.data);
-          } else {
-            entry.pendingInputs.push(parsed.data);
-          }
-        }
-        return true;
-      }
-      if (op === "pty-resize") {
-        const entry = ptySessions.get(sessionId);
-        if (entry && !entry.killed && typeof parsed.cols === "number" && typeof parsed.rows === "number") {
-          if (entry.id !== undefined) {
-            void commands.termResize(entry.id, Math.max(2, parsed.cols), Math.max(1, parsed.rows));
-          } else {
-            entry.pendingResize = { cols: parsed.cols, rows: parsed.rows };
-          }
-        }
-        return true;
-      }
-      if (op === "pty-kill") {
-        const entry = ptySessions.get(sessionId);
-        if (entry) {
-          entry.killed = true;
-          if (entry.id !== undefined) {
-            ptyByTermId.delete(entry.id);
-            void commands.termKill(entry.id);
-          }
-          ptySessions.delete(sessionId);
-        }
-        return true;
-      }
-      return false;
+          write: (id, data) => call(commands.termWrite(id, data)),
+          resize: (id, cols, rows) => call(commands.termResize(id, cols, rows)),
+          kill: (id) => call(commands.termKill(id)),
+          onExit: (listener) => onIdeEvent("terminalExited", (ev) => listener(ev.terminal, ev.code)),
+        },
+        (message) => post({ text: JSON.stringify(message) }),
+      );
+    let ptys = createPtys();
+    const resetPtys = () => {
+      ptys.close();
+      ptys = createPtys();
     };
+    const offProject = useProject.subscribe((state, previous) => {
+      if (state.project !== previous.project) resetPtys();
+    });
+    const pluginKey = (plugins: ReturnType<typeof usePlugins.getState>["plugins"]) => {
+      const p = plugins.find((p) => p.id === pluginId);
+      return p && JSON.stringify([p.path, p.version, p.enabled, p.status, p.capabilities]);
+    };
+    const offPlugins = usePlugins.subscribe((state, previous) => {
+      if (pluginKey(state.plugins) !== pluginKey(previous.plugins)) resetPtys();
+    });
+    const onUnload = () => ptys.close();
+    window.addEventListener("pagehide", onUnload);
+    const currentFrame = frame.current;
+    // A navigation keeps the iframe's WindowProxy, but must drop its old sessions.
+    let loaded = false;
+    const onLoad = () => {
+      if (loaded) resetPtys();
+      loaded = true;
+    };
+    currentFrame?.addEventListener("load", onLoad);
 
     const run = async (op: string, args: Record<string, unknown>): Promise<[unknown, Transferable[]?]> => {
       switch (op) {
@@ -370,7 +272,7 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
           (err: unknown) => post({ reply: id, error: errorText(err) }),
         );
       } else if (typeof m.text === "string") {
-        if (handlePtyMessage(m.text)) return;
+        if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()
             .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
@@ -383,17 +285,13 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
     return () => {
       window.removeEventListener("message", onMessage);
       off();
-      offTermEvent();
-      for (const entry of ptySessions.values()) {
-        entry.killed = true;
-        if (entry.id !== undefined) {
-          void commands.termKill(entry.id);
-        }
-      }
-      ptySessions.clear();
-      ptyByTermId.clear();
+      ptys.close();
+      offPlugins();
+      offProject();
+      window.removeEventListener("pagehide", onUnload);
+      currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, hasCode, post]);
+  }, [pluginId, view, document, doc, hasCode, post, page]);
 
   if (!page)
     return (

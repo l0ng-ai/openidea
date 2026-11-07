@@ -326,6 +326,7 @@ pub struct PluginHost {
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
     endpoints: Mutex<endpoints::Endpoints>,
+    web_ptys: Mutex<BTreeMap<String, Vec<web::WebPtySession>>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -416,6 +417,7 @@ impl PluginHost {
             providers,
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
+            web_ptys: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -1370,6 +1372,7 @@ impl PluginHost {
     pub fn forget_client(&self, label: &str) {
         self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
         self.shared.forget_client(label);
+        self.forget_web_ptys(label);
     }
 
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
@@ -1762,6 +1765,7 @@ impl PluginHost {
         let actors: Vec<_> = self.plugins.read().values().filter_map(|p| p.runtime.lock().take()).collect();
         for id in self.plugins.read().keys() {
             self.shared.block_prompts(id);
+            self.stop_web_ptys(id);
         }
         for a in &actors {
             a.stop(false);
@@ -2175,6 +2179,7 @@ impl PluginHost {
     }
 
     fn stop(&self, plugin: &LoadedPlugin) {
+        self.stop_web_ptys(plugin.id());
         self.clear_plugin_navigation(plugin.id());
         self.clear_plugin_endpoints(plugin.id());
         // A call waiting on the user would keep the join below waiting.
@@ -2195,6 +2200,8 @@ impl PluginHost {
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Failed;
         meta.error = Some(error);
+        drop(meta);
+        self.stop_web_ptys(plugin.id());
     }
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {

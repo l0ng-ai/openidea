@@ -22,6 +22,7 @@ struct TestWorkspace {
     other_roots: Mutex<Vec<PathBuf>>,
     documents: Arc<ide_workspace::Documents>,
     trusted: bool,
+    project_queries_left: Mutex<Option<usize>>,
     /// (producer, path) → published diagnostics.
     diagnostics: Mutex<std::collections::BTreeMap<(String, PathBuf), Vec<ide_core::Diagnostic>>>,
     /// plugin → its settings as the user set them.
@@ -39,6 +40,7 @@ impl TestWorkspace {
             other_roots: Mutex::default(),
             documents: Arc::new(documents),
             trusted: true,
+            project_queries_left: Mutex::new(None),
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
         })
@@ -93,6 +95,12 @@ impl PluginWorkspace for TestWorkspace {
         self.trusted
     }
     fn project_of(&self, _window: &str) -> Option<PathBuf> {
+        if let Some(left) = self.project_queries_left.lock().as_mut() {
+            if *left == 0 {
+                return None;
+            }
+            *left -= 1;
+        }
         Some(self.root.clone())
     }
     fn publish_diagnostics(
@@ -1850,6 +1858,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     git(&f.project, &["init", "-b", "main"]);
     f.install(&official("git-toolbox"));
     let untrusted = Arc::new(TestWorkspace {
+        project_queries_left: Mutex::new(None),
         root: f.project.clone(),
         other_roots: Mutex::default(),
         documents: f.workspace.documents.clone(),
@@ -4238,4 +4247,167 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
     let err =
         f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
     assert!(err.message.contains("limited to"), "{}", err.message);
+}
+
+#[test]
+fn web_ptys_require_a_current_exact_program_grant_and_project() {
+    use ide_host::plugins::web::WebPtyCommand;
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-pty"), &Consent::default()).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "process:git" && !c.granted));
+    let command = || WebPtyCommand {
+        program: "git".into(),
+        args: vec!["--version".into()],
+        env: Default::default(),
+        cols: 80,
+        rows: 24,
+    };
+    let options = |cmd| f.host.web_pty_options("web-pty", "terminal", "main", cmd);
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_capability("web-pty", "process:git", true).unwrap();
+    let approved = f.host.program_for("web-pty", "git").unwrap();
+    let got = options(command()).unwrap();
+    assert_eq!(got.shell.as_deref(), approved.to_str());
+    assert!(approved.is_absolute());
+    assert_eq!(got.cwd.0, f.project);
+    assert!(!got.shell_integration);
+    assert_eq!(f.run("web-pty", "ping", None).unwrap().as_deref(), Some("Web PTY ready"));
+    for program in ["sh", "bash", "git-other", "./git", "/tmp/git"] {
+        let cmd = WebPtyCommand { program: program.into(), ..command() };
+        assert!(options(cmd).is_err(), "{program}");
+    }
+    for cmd in [
+        WebPtyCommand { cols: 0, ..command() },
+        WebPtyCommand { rows: 501, ..command() },
+        WebPtyCommand { args: vec!["x".repeat(4097)], ..command() },
+        WebPtyCommand { args: vec!["x".into(); 257], ..command() },
+        WebPtyCommand { args: vec!["\0".into()], ..command() },
+        WebPtyCommand { env: [("PATH".into(), "/tmp".into())].into(), ..command() },
+        WebPtyCommand { env: [("a=b".into(), "x".into())].into(), ..command() },
+        WebPtyCommand { env: [("a".into(), "x".repeat(4097))].into(), ..command() },
+    ] {
+        assert!(options(cmd).is_err());
+    }
+    let got = options(WebPtyCommand { env: [("OPENIDEA_WEB_PTY_TEST_NEW".into(), "yes".into())].into(), ..command() })
+        .unwrap();
+    assert_eq!(got.env["OPENIDEA_WEB_PTY_TEST_NEW"], "yes");
+    assert!(f.host.web_pty_options("web-pty", "missing", "main", command()).is_err());
+    f.host.set_workspace(None);
+    assert!(options(command()).is_err());
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted));
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_workspace(Some(f.workspace.clone()));
+    std::fs::rename(&f.project, f.project.with_extension("moved")).unwrap();
+    assert!(options(command()).unwrap_err().message.contains("no longer exists"));
+    std::fs::rename(f.project.with_extension("moved"), &f.project).unwrap();
+    f.host.set_capability("web-pty", "process:git", false).unwrap();
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_enabled("web-pty", false).unwrap();
+    assert!(options(command()).is_err());
+    f.host.uninstall("web-pty").unwrap();
+    assert!(options(command()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn web_ptys_keep_the_approved_file_and_require_api_1_3() {
+    use ide_host::plugins::web::WebPtyCommand;
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits::default());
+    let bin = f.plugins_dir.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let executable = bin.join("git");
+    std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = bin.clone();
+    f.host.set_program_path(Arc::new(move || Some(path.clone().into_os_string())));
+    f.install(&sample("web-pty"));
+    let command = || WebPtyCommand { program: "git".into(), args: vec![], env: Default::default(), cols: 80, rows: 24 };
+    f.host.set_program_path(Arc::new(|| Some("/unapproved-path".into())));
+    assert_eq!(
+        f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap().shell.unwrap(),
+        executable.canonicalize().unwrap().to_string_lossy()
+    );
+    std::fs::write(&executable, "#!/bin/sh\nexit 42\n").unwrap();
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap_err().message.contains("changed"));
+    std::fs::remove_file(&executable).unwrap();
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).is_err());
+
+    let old = tempfile::tempdir().unwrap();
+    let pkg = old.path().join("old");
+    copy_dir(&sample("web-pty"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("^1.3", "^1.2");
+    std::fs::write(manifest, text).unwrap();
+    let f = fixture(Limits::default());
+    f.install(&pkg);
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap_err().message.contains("1.3"));
+}
+
+#[tokio::test]
+async fn web_ptys_are_capped_across_windows_and_end_with_the_plugin() {
+    use ide_host::{Host, HostConfig, plugins::web::WebPtyCommand};
+    let f = fixture(Limits::default());
+    f.install(&sample("web-pty"));
+    let root = tempfile::tempdir().unwrap();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: root.path().join("config"),
+        data_dir: root.path().join("data"),
+        local_data_dir: root.path().join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let spawn = |window: &str| {
+        f.host.spawn_web_pty(
+            &host,
+            "web-pty",
+            "terminal",
+            window,
+            WebPtyCommand {
+                program: "git".into(),
+                args: vec!["hash-object".into(), "--stdin".into()],
+                env: Default::default(),
+                cols: 80,
+                rows: 24,
+            },
+            Arc::new(|_| {}),
+        )
+    };
+    *f.workspace.project_queries_left.lock() = Some(1);
+    assert!(spawn("main").is_err(), "project closed while spawning");
+    assert!(host.terminals.list().is_empty());
+    *f.workspace.project_queries_left.lock() = None;
+    let mut ids = Vec::new();
+    for i in 0..8 {
+        ids.push(spawn(&format!("window-{i}")).unwrap().id);
+    }
+    assert!(spawn("ninth-window").unwrap_err().message.contains("8 PTYs"));
+    host.terminals.kill(ids[0]).unwrap();
+    let replacement = spawn("another-window").unwrap();
+    f.host.reload("web-pty").unwrap();
+    assert!(!host.terminals.contains(replacement.id));
+    assert!(ids.into_iter().all(|id| !host.terminals.contains(id)));
+    let id = spawn("main").unwrap().id;
+    f.host.set_capability("web-pty", "process:git", false).unwrap();
+    assert!(!host.terminals.contains(id));
+    assert!(spawn("main").is_err());
+    f.host.set_capability("web-pty", "process:git", true).unwrap();
+    let id = spawn("main").unwrap().id;
+    f.host.set_enabled("web-pty", false).unwrap();
+    assert!(!host.terminals.contains(id));
+    f.host.set_enabled("web-pty", true).unwrap();
+    let id = spawn("main").unwrap().id;
+    f.host.forget_client("main");
+    assert!(!host.terminals.contains(id));
+    assert!(spawn("main").is_err());
+    f.host.reopen_client("main");
+    let id = spawn("main").unwrap().id;
+    f.host.uninstall("web-pty").unwrap();
+    assert!(!host.terminals.contains(id));
 }
