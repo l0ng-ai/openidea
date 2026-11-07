@@ -375,5 +375,13 @@
   "Retract Message": "Retract Message",
   "Retract": "Retract",
   "Couldn't retract the message": "Couldn't retract the message",
-  "The agent is still stopping. Try again once it has stopped.": "The agent is still stopping. Try again once it has stopped."
+  "The agent is still stopping. Try again once it has stopped.": "The agent is still stopping. Try again once it has stopped.",
+  "Invalid content editor configuration": "Invalid content editor configuration",
+  "No save action is configured for this tab": "No save action is configured for this tab",
+  "Content editor action timed out": "Content editor action timed out",
+  "Find in Editor": "Find in Editor",
+  "Run Content Editor Action": "Run Content Editor Action",
+  "Modified": "Modified",
+  "Before": "Before",
+  "After": "After"
 }

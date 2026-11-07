@@ -375,6 +375,62 @@ describe("WebView", () => {
     expect(events).toEqual([]);
     view.unmount();
   });
+
+  it("opens a generic plugin content editor tab and reports invalid requests via content-tab-error", async () => {
+    const opened: EditorInput[] = [];
+    provideEditorService({
+      openFile: async () => {},
+      openVirtual: () => {},
+      openInput: async (input: EditorInput) => void opened.push(input),
+      openDiff: () => {},
+      openMerge: () => {},
+      closeFile: () => {},
+      activeFile: () => null,
+    } as unknown as EditorService);
+
+    const { view, events } = setup(true);
+    usePlugins.setState({
+      plugins: [{ id: "acme.draw", enabled: true, hasCode: true, capabilities: [] } as unknown as PluginInfo],
+    });
+    const { posted, send } = await frameOf(view.container);
+
+    // Invalid payload sends content-tab-error back to the frame.
+    send({ text: JSON.stringify({ op: "open-content-tab", title: "", content: "x" }) });
+    await waitFor(() =>
+      expect(posted.some((m) => typeof m.text === "string" && m.text.includes('"op":"content-tab-error"'))).toBe(true),
+    );
+    expect(opened).toHaveLength(0);
+
+    // Valid payload opens a pluginContent editor tab.
+    send({
+      text: JSON.stringify({
+        op: "open-content-tab",
+        key: "cfg",
+        title: "service.toml",
+        fileName: "service.toml",
+        language: "toml",
+        content: 'name = "demo"\n',
+        actions: [{ id: "save", label: "Apply", icon: "green-checkmark", primary: true, save: true }],
+      }),
+    });
+    await waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toMatchObject({
+      kind: "pluginContent",
+      key: `pluginContent:${JSON.stringify(["acme.draw", "draw", "cfg"])}`,
+      data: {
+        pluginId: "acme.draw",
+        view: "draw",
+        key: "cfg",
+        title: "service.toml",
+        fileName: "service.toml",
+        language: "toml",
+        content: 'name = "demo"\n',
+        readOnly: false,
+      },
+    });
+    expect(events).toHaveLength(0);
+    view.unmount();
+  });
 });
 
 describe("contributed file icons and templates", () => {

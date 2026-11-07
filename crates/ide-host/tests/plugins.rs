@@ -4637,6 +4637,20 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
 }
 
 #[test]
+fn web_content_fixture_installs_and_bridges_view_messages() {
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-content"), &Consent::default()).unwrap();
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+    assert_eq!(f.run("web-content", "ping", None).unwrap().as_deref(), Some("Web content ready"));
+    f.take_events();
+    assert_eq!(f.run("web-content", "open", None).unwrap(), None);
+    assert!(
+        f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::ViewMessage { plugin_id, view, message }
+                if plugin_id == "web-content" && view == "inspector" && message == "open"))
+    );
+}
+
+#[test]
 fn web_log_tabs_use_the_web_pty_permission_boundary() {
     use ide_host::plugins::web::WebPtyCommand;
     let f = fixture(Limits::default());
