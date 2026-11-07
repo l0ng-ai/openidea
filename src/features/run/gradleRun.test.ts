@@ -12,6 +12,7 @@ import { jdwpLaunch } from "./javaDebug";
 import { isJvmApplication } from "@/platform/javaLaunch";
 import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import TESTS_SCRIPT from "./gradleTests.gradle?raw";
+import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 
@@ -135,6 +136,11 @@ describe("Build and run using: Gradle", () => {
     const run = delegatedGradleConfig({ ...app, params: { vmOptions: "-Xmx1g" } }, "app", ctx)!;
     expect(isJvmApplication(run)).toBe(false);
     expect(run.params).toBeUndefined();
+  });
+
+  it("gives Gradle BootRun a dynamic JDWP port when debugging", () => {
+    expect(BOOT_SCRIPT).toContain("openidea.run.debug");
+    expect(BOOT_SCRIPT).toContain("address=127.0.0.1:0");
   });
 
   it("gives Gradle test workers a dynamic JDWP port when debugging", () => {
