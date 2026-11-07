@@ -1139,6 +1139,13 @@ fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
 /// project interpreter, npm scripts the chosen package manager and Node.js,
 /// cargo / go configs the selected toolchain, Maven / Gradle the project JDK
 /// (and Maven the configured home and options).
+/// The JDK for Maven builds and run configurations: `maven.jdk` when set and valid,
+/// else the Project JDK.
+pub fn maven_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
+    let configured = setting_path(root, &s.languages.java.maven.jdk);
+    configured.and_then(|home| crate::java::jdk_at(&home)).or_else(|| project_jdk(root, s))
+}
+
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
     let explicit_python = setting_path(root, &s.languages.python.interpreter);
     let pm = non_empty(&s.languages.node.package_manager);
@@ -1146,6 +1153,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
     let rust = rust_bin(root, s);
     let gopath = setting_path(root, &s.languages.go.gopath);
     let jdk = project_jdk(root, s);
+    let maven_jdk = maven_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
 
@@ -1285,7 +1293,8 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
             }
             "maven" | "tomcat" => {
-                if let Some(jdk) = &jdk {
+                let run_jdk = if c.kind == "maven" { &maven_jdk } else { &jdk };
+                if let Some(jdk) = run_jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
                 if c.kind == "maven" {

@@ -37,11 +37,7 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     );
     let jdk = ide_sdk::apply::project_jdk(root, settings);
     // Maven has its own JDK setting; empty inherits the Project JDK.
-    let maven_jdk = if settings.languages.java.maven.jdk.trim().is_empty() {
-        jdk.clone()
-    } else {
-        ide_sdk::java::jdk_at(Path::new(&settings.languages.java.maven.jdk)).or_else(|| jdk.clone())
-    };
+    let maven_jdk = ide_sdk::apply::maven_jdk(root, settings);
     if let Some(m) = &mut model.maven {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);

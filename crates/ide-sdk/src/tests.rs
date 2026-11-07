@@ -271,6 +271,9 @@ fn project_jdk_and_maven_settings() {
 
     // Project-relative paths, a JDK's `bin/java`, a Maven home.
     s.languages.java.jdk = "jdk17/bin/java".into();
+    let maven_jdk = tmp.path().join("maven-jdk");
+    fake_jdk(&maven_jdk);
+    s.languages.java.maven.jdk = maven_jdk.to_string_lossy().into_owned();
     s.languages.java.maven.home = maven.to_string_lossy().into_owned();
     s.languages.java.maven.user_settings = "/m2/settings.xml".into();
     s.languages.java.maven.toolchains = "/m2/toolchains.xml".into();
@@ -285,12 +288,13 @@ fn project_jdk_and_maven_settings() {
     let mut configs = vec![run("maven", "./mvnw", &["package"]), run("gradle", "./gradlew", &["build"])];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     let home = project_jdk(tmp.path(), &s).unwrap().home.to_string_lossy().into_owned();
+    let maven_home = crate::java::jdk_at(&maven_jdk).unwrap().home.to_string_lossy().into_owned();
     assert_eq!(configs[0].command, maven.join("bin/mvn").to_string_lossy());
     assert_eq!(
         configs[0].args,
         ["-s", "/m2/settings.xml", "-t", "/m2/toolchains.xml", "-Dmaven.repo.local=/m2/repo", "package"]
     );
-    assert_eq!(configs[0].env["JAVA_HOME"], home);
+    assert_eq!(configs[0].env["JAVA_HOME"], maven_home);
     assert_eq!(configs[1].env["JAVA_HOME"], home);
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].args.len(), 6, "applied once");
