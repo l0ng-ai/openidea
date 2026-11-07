@@ -6,12 +6,13 @@ mod snapshot;
 mod tests;
 
 use crate::session::Session;
+use crate::session::Suspension;
 use ide_core::IdeResult;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 #[cfg(all(test, unix))]
@@ -148,12 +149,12 @@ enum Lookup {
 /// another must not decide on a state from before the program hit a breakpoint.
 pub(crate) async fn snapshot(
     state: &tokio::sync::Mutex<JvmMemoryState>,
-    suspended: &AtomicBool,
+    suspended: &Suspension,
     probe: impl FnOnce(bool) -> Arc<dyn AttachProbe>,
     target: JvmTarget<'_>,
 ) -> IdeResult<JvmMemoryResult> {
     let mut state = state.lock().await;
-    let suspended = suspended.load(Ordering::Acquire);
+    let suspended = suspended.get();
     let unavailable = |reason| Ok(JvmMemoryResult::Unavailable { reason });
     let lookup = match target {
         JvmTarget::Launched(pid) => Lookup::Tree(pid),

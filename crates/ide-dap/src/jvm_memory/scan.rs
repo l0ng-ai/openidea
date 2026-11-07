@@ -76,7 +76,7 @@ where
                 if s.jvm_pid.load(Ordering::Acquire) > 0 {
                     ScanGate::Ended
                 } else {
-                    ScanGate::Scan { suspended: s.suspended.load(Ordering::Acquire) }
+                    ScanGate::Scan { suspended: s.suspended.get() }
                 }
             }
             _ => ScanGate::Ended,

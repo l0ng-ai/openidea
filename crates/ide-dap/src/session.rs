@@ -61,11 +61,7 @@ pub(crate) struct Session {
     pub jdwp_port: std::sync::OnceLock<u16>,
     /// The attach goes through the listen-mode relay of [`crate::jdwp::listen_for_jvm`].
     pub listen_relay: AtomicBool,
-    /// True from a `stopped` event until `continued` or a successful resume/step request.
-    /// Never cleared elsewhere: a stale `true` only makes a later check refuse.
-    pub suspended: AtomicBool,
-    /// Counts `stopped` events so a request's late reply cannot clear a newer stop.
-    stop_seq: AtomicU64,
+    pub suspended: Suspension,
     /// Pids signalled for the current stop: the reported pid and everything it started (an
     /// adapter may report the launcher shell, whose child is the program).
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -80,6 +76,42 @@ pub(crate) struct Session {
     pub kotlin_relay: Mutex<Option<crate::kotlin_jdwp::StartupRelay>>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
+}
+
+/// Whether the program is suspended: from a `stopped` event until `continued` or a successful
+/// resume/step request. Never cleared elsewhere, since a stale "suspended" only makes a later
+/// check refuse.
+///
+/// Packs a count of `stopped` events with the flag (`count << 1 | suspended`), so a resume
+/// reply clears the flag with one compare-exchange that fails when a stop arrived after the
+/// request was sent: a separate counter and flag would leave a window between the check and
+/// the clear in which that stop is lost.
+#[derive(Default)]
+pub(crate) struct Suspension(AtomicU64);
+
+impl Suspension {
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::Acquire) & 1 == 1
+    }
+
+    pub fn stopped(&self) {
+        let _ = self.0.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.wrapping_add(2) | 1));
+    }
+
+    pub fn continued(&self) {
+        self.0.fetch_and(!1, Ordering::AcqRel);
+    }
+
+    /// Take before sending a resume-like request and pass to [`Self::resumed`].
+    pub fn ticket(&self) -> u64 {
+        self.0.load(Ordering::Acquire) >> 1
+    }
+
+    /// Clears the flag after a successful resume-like request, unless the program stopped
+    /// again since `ticket` (its `stopped` event can overtake the reply).
+    pub fn resumed(&self, ticket: u64) {
+        let _ = self.0.compare_exchange(ticket << 1 | 1, ticket << 1, Ordering::AcqRel, Ordering::Acquire);
+    }
 }
 
 /// Adapters that only match files by their resolved path: Godot maps a script to
@@ -123,8 +155,7 @@ impl Session {
             jvm_pid: AtomicI64::new(0),
             jdwp_port: std::sync::OnceLock::new(),
             listen_relay: AtomicBool::new(false),
-            suspended: AtomicBool::new(false),
-            stop_seq: AtomicU64::new(0),
+            suspended: Suspension::default(),
             stop_pids: parking_lot::Mutex::new(Vec::new()),
             pending_restore: Mutex::default(),
             breakpoint_ids: Mutex::new(HashMap::new()),
@@ -133,24 +164,6 @@ impl Session {
             kotlin_relay: Mutex::new(None),
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
-        }
-    }
-
-    fn mark_stopped(&self) {
-        self.stop_seq.fetch_add(1, Ordering::AcqRel);
-        self.suspended.store(true, Ordering::Release);
-    }
-
-    /// Call before sending a resume-like request and pass the result to [`Self::mark_resumed`].
-    pub fn resume_ticket(&self) -> u64 {
-        self.stop_seq.load(Ordering::Acquire)
-    }
-
-    /// Clears `suspended` after a successful resume-like request, unless the program already
-    /// stopped again (its `stopped` event can overtake the reply).
-    pub fn mark_resumed(&self, ticket: u64) {
-        if self.stop_seq.load(Ordering::Acquire) == ticket {
-            self.suspended.store(false, Ordering::Release);
         }
     }
 
@@ -503,7 +516,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             s.emit(DebugEvent::Initialized);
         }
         "stopped" => {
-            s.mark_stopped();
+            s.suspended.stopped();
             mgr.restore_breakpoints(s).await;
             s.emit(DebugEvent::Stopped {
                 thread_id: int("threadId").unwrap_or(0),
@@ -513,7 +526,7 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             });
         }
         "continued" => {
-            s.suspended.store(false, Ordering::Release);
+            s.suspended.continued();
             s.emit(DebugEvent::Continued {
                 thread_id: int("threadId").unwrap_or(0),
                 all_threads_continued: body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true),
@@ -853,7 +866,62 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
 
 #[cfg(test)]
 mod tests {
-    use super::kotlin_jvm_args;
+    use super::{Suspension, kotlin_jvm_args};
+
+    #[test]
+    fn a_resume_reply_clears_the_stop_it_was_sent_for() {
+        let s = Suspension::default();
+        assert!(!s.get());
+        s.stopped();
+        let ticket = s.ticket();
+        s.resumed(ticket);
+        assert!(!s.get());
+    }
+
+    #[test]
+    fn a_stop_after_the_resume_request_keeps_the_session_suspended() {
+        let s = Suspension::default();
+        s.stopped();
+        let ticket = s.ticket();
+        // The next breakpoint's `stopped` event overtakes the reply to `continue`.
+        s.continued();
+        s.stopped();
+        s.resumed(ticket);
+        assert!(s.get());
+        // A reply for the new stop still clears it.
+        s.resumed(s.ticket());
+        assert!(!s.get());
+    }
+
+    #[test]
+    fn a_reply_after_a_continued_event_changes_nothing() {
+        let s = Suspension::default();
+        s.stopped();
+        let ticket = s.ticket();
+        s.continued();
+        s.resumed(ticket);
+        assert!(!s.get());
+        s.stopped();
+        assert!(s.get());
+    }
+
+    #[test]
+    fn concurrent_stops_are_never_lost() {
+        let s = std::sync::Arc::new(Suspension::default());
+        s.stopped();
+        let ticket = s.ticket();
+        let stopping = {
+            let s = s.clone();
+            std::thread::spawn(move || (0..10_000).for_each(|_| s.stopped()))
+        };
+        for _ in 0..10_000 {
+            s.resumed(ticket);
+        }
+        stopping.join().unwrap();
+        // However they interleave, a resume for the old ticket never clears a later stop.
+        assert!(s.get());
+        assert_eq!(s.ticket(), ticket + 10_000);
+    }
 
     #[test]
     fn kotlin_launch_starts_attach_listener_first() {

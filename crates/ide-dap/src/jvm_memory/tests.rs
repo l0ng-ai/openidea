@@ -3,7 +3,7 @@ use super::snapshot::*;
 use super::*;
 use ide_jvm_attach::{AttachError, HistogramRow, JavaVersion};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn row(name: &str, instances: u64, bytes: u64) -> HistogramRow {
     HistogramRow { name: name.into(), module: None, instances, bytes }
@@ -203,7 +203,7 @@ fn local_jdwp_port_accepts_loopback_only() {
 #[tokio::test]
 async fn attach_with_pid_takes_snapshot() {
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let running = AtomicBool::new(false);
+    let running = Suspension::default();
     let jvm_pid = AtomicI64::new(4242);
     let fake = Arc::new(FakeProbe::new(4242, vec![Ok(HISTOGRAM.into())]));
     let probe: Arc<dyn AttachProbe> = fake.clone();
@@ -218,7 +218,7 @@ async fn attach_with_pid_takes_snapshot() {
 #[tokio::test]
 async fn refresh_rescans_local_attach_without_pid() {
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let running = AtomicBool::new(false);
+    let running = Suspension::default();
     let jvm_pid = AtomicI64::new(0);
 
     let missing = Arc::new(FakeProbe::new(4242, Vec::new()));
@@ -246,7 +246,7 @@ async fn refresh_rescans_local_attach_without_pid() {
 #[tokio::test]
 async fn remote_attach_without_pid_is_not_scanned() {
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let running = AtomicBool::new(false);
+    let running = Suspension::default();
     let jvm_pid = AtomicI64::new(0);
     let mut fake = FakeProbe::new(4242, Vec::new());
     fake.jdwp = Some((5005, 4242));
@@ -301,7 +301,8 @@ fn only_a_known_jdk_17_or_later_is_safe_while_suspended() {
 /// A suspended local attach session whose JVM (pid 4242, JDWP 5005) is not known yet.
 async fn suspended_scan(fake: FakeProbe) -> (JvmMemoryResult, Arc<FakeProbe>, i64) {
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let suspended = AtomicBool::new(true);
+    let suspended = Suspension::default();
+    suspended.stopped();
     let jvm_pid = AtomicI64::new(0);
     let fake = Arc::new(fake);
     let probe: Arc<dyn AttachProbe> = fake.clone();
@@ -379,7 +380,7 @@ async fn retry_find_stops_when_the_session_ends() {
 async fn histogram_lock_released_after_timeout() {
     let pid = std::process::id();
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let running = AtomicBool::new(false);
+    let running = Suspension::default();
     let probe: Arc<dyn AttachProbe> =
         Arc::new(FakeProbe::new(pid, vec![Err(AttachError::Timeout), Ok(HISTOGRAM.into())]));
     let first = snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32)).await.unwrap();
@@ -405,7 +406,7 @@ async fn one_histogram_at_a_time_per_session() {
     fake.delay = Duration::from_millis(100);
     let fake = Arc::new(fake);
     let probe: Arc<dyn AttachProbe> = fake.clone();
-    let running = AtomicBool::new(false);
+    let running = Suspension::default();
     let (a, b) = tokio::join!(
         snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32)),
         snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32))
@@ -425,7 +426,7 @@ async fn one_histogram_at_a_time_per_session() {
 async fn queued_request_reads_suspension_under_the_lock() {
     let pid = std::process::id();
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let suspended = AtomicBool::new(false);
+    let suspended = Suspension::default();
     let mut fake = FakeProbe::new(pid, Vec::new());
     fake.version = Some(JavaVersion { major: 11, text: "11.0.25".into() });
     let probe: Arc<dyn AttachProbe> = Arc::new(fake);
@@ -443,7 +444,7 @@ async fn queued_request_reads_suspension_under_the_lock() {
     ));
     assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
     // The program hits a breakpoint while the request waits behind another one.
-    suspended.store(true, Ordering::Release);
+    suspended.stopped();
     drop(running);
     assert_eq!(
         queued.await.unwrap(),
@@ -457,7 +458,7 @@ async fn queued_request_reads_suspension_under_the_lock() {
 async fn failed_blocking_task_keeps_the_baseline() {
     let pid = std::process::id();
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
-    let running = AtomicBool::new(false);
+    let running = Suspension::default();
     let probe = |histograms: Vec<_>| -> Arc<dyn AttachProbe> { Arc::new(FakeProbe::new(pid, histograms)) };
     snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), JvmTarget::Launched(pid as i32)).await.unwrap();
     // An empty fake panics on its histogram call, failing the blocking task.

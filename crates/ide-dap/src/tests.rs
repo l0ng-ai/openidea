@@ -1618,7 +1618,7 @@ fn delve_leftovers_are_removed_without_touching_other_files() {
 }
 
 fn is_suspended(h: &Harness, id: DebugSessionId) -> bool {
-    h.manager.session(id).unwrap().suspended.load(std::sync::atomic::Ordering::Acquire)
+    h.manager.session(id).unwrap().suspended.get()
 }
 
 #[tokio::test]
@@ -1636,9 +1636,9 @@ async fn resume_clears_suspended_without_continued_event() {
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
     // The fake adapter ends the session after `continue`, so keep the session alive here.
     let session = h.manager.session(id).unwrap();
-    assert!(session.suspended.load(std::sync::atomic::Ordering::Acquire));
+    assert!(session.suspended.get());
     h.manager.resume(id, 1).await.unwrap();
-    assert!(!session.suspended.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!session.suspended.get());
 }
 
 #[tokio::test]
@@ -1775,7 +1775,7 @@ async fn suspended_remote_attach(h: &Harness) -> Arc<Session> {
     let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
     let session = h.manager.session(id).unwrap();
-    assert!(session.suspended.load(Ordering::Acquire));
+    assert!(session.suspended.get());
     session
 }
 
@@ -1791,7 +1791,7 @@ async fn background_scan_skips_an_old_jdk_while_suspended() {
     assert!(!scans.lock().is_empty() && scans.lock().iter().all(|&suspended| suspended));
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
 
-    session.suspended.store(false, Ordering::Release);
+    session.suspended.continued();
     tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
     assert_eq!(scans.lock().last(), Some(&false));
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
@@ -1818,7 +1818,7 @@ async fn background_scan_keeps_a_known_pid_and_stops_with_the_session() {
     let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
     let session = h.manager.session(id).unwrap();
-    session.suspended.store(false, Ordering::Release);
+    session.suspended.continued();
     session.jvm_pid.store(7, Ordering::Release);
     let watch = |find| {
         jvm_memory::watch_for_attached_jvm(&session, 5005, find, Duration::from_millis(5), Duration::from_secs(5))
