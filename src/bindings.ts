@@ -42,6 +42,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	/**  This window kept its project open (unsaved-changes prompt cancelled); stops a batch close. */
 	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
+	/**
+	 *  This window closes next (its prompts passed): a fullscreen group's host first hands its Space
+	 *  to the tab that takes over.
+	 */
+	windowGroupBeforeClose: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_before_close")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
@@ -5983,6 +5988,8 @@ export type PluginEvent =
 { type: "copyToClipboard"; pluginId: string; text: string } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
 { type: "openUrl"; pluginId: string; url: string } | 
+/**  A window command/event requests the normal File > Open flow. */
+{ type: "openProject"; pluginId: string; path: string; newWindow: boolean } | 
 /**
  *  A command waits for the user's answer: show `prompt`, then report it with
  *  `plugin_answer_prompt(prompt_id, …)`.
@@ -6388,7 +6395,7 @@ export type ProjectStructureSettings = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string };
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null };
 
 export type ProxyKind = "http" | "socks";
 

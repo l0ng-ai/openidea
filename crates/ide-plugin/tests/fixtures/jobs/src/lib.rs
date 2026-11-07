@@ -61,6 +61,11 @@ impl Plugin for Jobs {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)
             }
+            "pick-directory" => Ok(Some(host::pick_directory("Clone target", arg)?.unwrap_or_else(|| "none".into()))),
+            "open-project" | "open-project-new" => {
+                host::open_project(arg.unwrap_or_default(), id == "open-project-new")?;
+                Ok(None)
+            }
             "pick" | "pick-many" => {
                 let long_key = "k".repeat(300);
                 let items = [
