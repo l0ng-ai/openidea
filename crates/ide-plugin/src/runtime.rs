@@ -453,8 +453,10 @@ pub struct StoreData {
     pub(crate) granted: Vec<Capability>,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
-    /// The running call is a command or an event, so it may ask the user.
+    /// The running call is a command or an event.
     pub(crate) interactive: bool,
+    /// Editor window for pick, pick-many, input and confirm during action resolution.
+    pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
@@ -643,6 +645,7 @@ impl Runtime {
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
+            action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
         };
@@ -944,6 +947,7 @@ impl Runtime {
         &mut self,
         doc: &ProviderDocument,
         action: &CodeAction,
+        invocation: Invocation,
         timeout: Duration,
     ) -> Result<CodeAction, CallError> {
         if action.file_action {
@@ -953,13 +957,20 @@ impl Runtime {
             let d = file_action_doc(doc);
             let a = file_action_to_wit(action);
             let resolved = self.call(Invocation::default(), timeout, |e, store| {
+                store.data_mut().action_prompt_client = invocation.client;
                 e.file_actions.as_ref().expect("checked").call_resolve(store, &d, &a)
             })?;
             return resolved.map(file_action_from_wit).map_err(|e| CallError::Guest(e.into()));
         }
         let d = doc_to_wit(doc);
         let a = code_action_to_wit(action);
-        let resolved = self.provider_call(timeout, |p, s| p.call_resolve_code_action(s, &d, &a))?;
+        if self.exports.providers.is_none() {
+            return Err(CallError::missing_export("providers"));
+        }
+        let resolved = self.call(Invocation::default(), timeout, |e, store| {
+            store.data_mut().action_prompt_client = invocation.client;
+            e.providers.as_ref().expect("checked").call_resolve_code_action(store, &d, &a)
+        })?;
         resolved.map(code_action_from_wit).map_err(|e| CallError::Guest(e.into()))
     }
 
@@ -1281,6 +1292,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
+        data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
             data.host.task_end(id);

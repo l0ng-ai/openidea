@@ -9,6 +9,7 @@ struct FakeAgent {
     /// Every connection's agent side, kept open.
     servers: Mutex<Vec<Peer>>,
     calls: Mutex<Vec<String>>,
+    permission_replies: Mutex<Vec<Value>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
@@ -191,9 +192,37 @@ impl Handler for FakeAgent {
                             None,
                         ))
                         .unwrap();
+                    self.permission_replies.lock().push(answer.clone());
                     let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
                     self.say(&session, &format!("answered {chosen}"));
-                    return Ok(json!({"stopReason": "end_turn"}));
+                    return Ok(json!({ "stopReason": "end_turn" }));
+                }
+                if text == "qwen ask" {
+                    // Qwen Code's ACP dialect: the questions as `qwenQuestions`, Submit and
+                    // Cancel as the options, the answers keyed by question index.
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session,
+                                "toolCall": {"toolCallId": "q2", "title": "Ask user 2 questions", "kind": "think",
+                                    "_meta": {"toolName": "ask_user_question", "qwenInteractionKind": "user_question",
+                                        "qwenQuestions": [
+                                            {"question": "Which database?", "header": "Database", "options": [
+                                                {"label": "Postgres", "description": "Relational"},
+                                                {"label": "Redis", "description": "Key-value"}]},
+                                            {"question": "Which caches?", "header": "Caches", "multiSelect": true,
+                                             "options": [{"label": "Disk"}, {"label": "Memory"}]}]}},
+                                "options": [{"optionId": "proceed_once", "name": "Submit", "kind": "allow_once"},
+                                            {"optionId": "cancel", "name": "Cancel", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let outcome = answer.pointer("/outcome/outcome").and_then(Value::as_str).unwrap_or("none");
+                    let option = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    let answers = answer.get("answers").cloned().unwrap_or(Value::Null);
+                    self.say(&session, &format!("answered {outcome} {option} {answers}"));
+                    return Ok(json!({ "stopReason": "end_turn" }));
                 }
                 if text == "wait" {
                     // Works until cancelled.
@@ -692,9 +721,10 @@ fn prompts_become_acp_content_blocks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn answered_questions_close_the_question_with_every_picked_label() {
+async fn claude_questions_keep_the_answer_object_as_the_option_id() {
     let tmp = tempfile::tempdir().unwrap();
-    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -712,19 +742,135 @@ async fn answered_questions_close_the_question_with_every_picked_label() {
         .unwrap()
         .iter()
         .find_map(|e| match e {
-            AgentEntry::Permission { id, .. } => Some(*id),
+            AgentEntry::Permission { id, title, questions, .. } => {
+                assert_eq!(title, "AskUserQuestion");
+                assert_eq!(questions.len(), 2);
+                assert_eq!(questions[0].question, "Which layout?");
+                assert!(!questions[0].multi_select);
+                assert_eq!(questions[1].question, "Which checks?");
+                assert!(questions[1].multi_select);
+                Some(*id)
+            }
             _ => None,
         })
         .unwrap();
     let reply = json!({"Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"]}).to_string();
-    mgr.respond(&task.id, question, Some(reply)).unwrap();
+    mgr.respond(&task.id, question, Some(reply.clone())).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(*agent.permission_replies.lock(), [json!({"outcome": {"outcome": "selected", "optionId": reply}})]);
 
     let entries = mgr.entries(&task.id, None).unwrap();
     assert!(
         entries
             .iter()
             .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "List; Disk, GPU temps")),
+        "{entries:?}"
+    );
+}
+
+/// Qwen Code asks its questions as `_meta.qwenQuestions` with Submit/Cancel options; the
+/// card answers with `answers` keyed by question index beside the Submit option's id.
+#[tokio::test(flavor = "multi_thread")]
+async fn qwen_questions_answer_by_index_beside_the_submit_option() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("qwen ask"),
+            provider: "codex".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let (id, title, questions) = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, title, questions, .. } => Some((*id, title.clone(), questions.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(title, "Which database?", "the first question, not the request's own title");
+    assert_eq!(
+        questions,
+        vec![
+            AgentQuestion {
+                header: "Database".into(),
+                question: "Which database?".into(),
+                multi_select: false,
+                options: vec![
+                    AgentQuestionOption { label: "Postgres".into(), description: "Relational".into(), preview: None },
+                    AgentQuestionOption { label: "Redis".into(), description: "Key-value".into(), preview: None },
+                ],
+            },
+            AgentQuestion {
+                header: "Caches".into(),
+                question: "Which caches?".into(),
+                multi_select: true,
+                options: vec![
+                    AgentQuestionOption { label: "Disk".into(), description: String::new(), preview: None },
+                    AgentQuestionOption { label: "Memory".into(), description: String::new(), preview: None },
+                ],
+            },
+        ]
+    );
+    let reply = json!({"Which database?": ["Postgres"], "Which caches?": ["Disk", "Memory"]}).to_string();
+    mgr.respond(&task.id, id, Some(reply)).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let expected = format!("answered selected proceed_once {}", json!({"0": "Postgres", "1": "Disk, Memory"}));
+    assert!(entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == &expected)), "{entries:?}");
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "Postgres; Disk, Memory")),
+        "{entries:?}"
+    );
+}
+
+/// A skipped Qwen question cancels the request: qwen-code reads the answers it expects
+/// only beside a chosen option, and `reject` is none of the options it offered.
+#[tokio::test(flavor = "multi_thread")]
+async fn skipped_qwen_questions_cancel_the_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("qwen ask"),
+            provider: "codex".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let id = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, questions, .. } if !questions.is_empty() => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    mgr.respond(&task.id, id, Some("reject".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == "answered cancelled none null")),
+        "{entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "Cancelled")),
         "{entries:?}"
     );
 }
@@ -1220,6 +1366,64 @@ async fn cursor_approval_switch_resolves_pending_and_survives_restart() {
     mgr.cancel(&other.id, None).unwrap();
     wait_for(&mgr, &other.id, AgentStatus::Ready).await;
     mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bypass_approvals_keeps_both_question_dialects_pending_but_allows_permissions() {
+    for prompt in ["ask", "qwen ask"] {
+        for bypass_at_start in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+            // Cursor's client-side approval policy applies independently of the question dialect.
+            let task = mgr
+                .create(NewAgentTask {
+                    project_root: None,
+                    prompt: text(prompt),
+                    provider: "cursor".into(),
+                    config: if bypass_at_start {
+                        vec![AgentConfigChoice { id: config::CURSOR_APPROVAL.into(), value: "bypass".into() }]
+                    } else {
+                        vec![]
+                    },
+                    isolation: Isolation::Local,
+                    base: None,
+                })
+                .await
+                .unwrap();
+            wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+            let id = mgr
+                .entries(&task.id, None)
+                .unwrap()
+                .iter()
+                .find_map(|entry| match entry {
+                    AgentEntry::Permission { id, questions, chosen: None, .. } if questions.len() == 2 => Some(*id),
+                    _ => None,
+                })
+                .unwrap();
+            mgr.set_config(&task.id, config::CURSOR_APPROVAL, "bypass".into()).await.unwrap();
+            assert!(mgr.task(&task.id).unwrap().permissions.lock().contains_key(&id), "{prompt}, {bypass_at_start}");
+            assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::NeedsInput);
+            let reply = if prompt == "ask" {
+                json!({"Which layout?": ["Grid"], "Which checks?": ["Disk"]})
+            } else {
+                json!({"Which database?": ["Postgres"], "Which caches?": ["Memory"]})
+            };
+            mgr.respond(&task.id, id, Some(reply.to_string())).unwrap();
+            wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+            mgr.prompt(&task.id, text("Fix"), false).await.unwrap();
+            wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+            let entries = mgr.entries(&task.id, None).unwrap();
+            assert!(
+                entries.iter().any(|entry| matches!(entry,
+                    AgentEntry::Permission { questions, chosen: Some(name), .. }
+                    if questions.is_empty() && name == "Allow")),
+                "{entries:?}"
+            );
+            assert!(entries.iter().any(|entry| matches!(entry, AgentEntry::Agent { text } if text == "chose yes")));
+            mgr.shutdown();
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

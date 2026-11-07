@@ -153,7 +153,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3) | without `web` |
 | `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                   | without `web` |
 | `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                      | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                                                | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                           | no            |
 | `commitChecks`  | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                       | yes           |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
@@ -211,6 +211,38 @@ Plugins can set their own keys, `plugin.<id>.<key>`, with `host::set_context`:
 a key set from a command or event applies to that window, one set outside any
 applies to every window, and a window's value wins over the global one. Keys are
 kept across a window reload and idle reclaim, and dropped when the plugin stops.
+
+### File template names and variables (API 1.3)
+
+With `engines.openidea = "^1.3"`, `fileName` creates an exact single filename
+(including dotfiles) without a name prompt. `extension` may be omitted for these
+files; it is never appended to `fileName`. Without `fileName`, naming behaves as before.
+Declared variables are required text fields shown together in the new-file dialog;
+cancelling creates nothing. Names must be unique ASCII identifiers and cannot
+replace built-in variables (`NAME`, `PACKAGE`, `END`, etc.). Prompts can be translated
+through the plugin's text catalog. Values are inserted literally with `$ENTITY$`
+or `${ENTITY}` syntax.
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.fileTemplates]]
+id = "ignore"
+name = "Docker ignore"
+fileName = ".dockerignore"
+path = "templates/dockerignore.txt"
+variables = [{ name = "OUTPUT", prompt = "Output folder" }]
+```
+
+Plugin templates infer `$PACKAGE$` with the built-in rules for their extension:
+Java/Kotlin use source roots, Go uses sibling packages or the directory, and PHP
+uses Composer PSR-4 mappings. No `packageStyle` manifest field is needed.
+
+These declarations do not grant the plugin filesystem access: files are created
+only when the user invokes a template, through the IDE's normal New File flow.
+See `crates/ide-plugin/tests/fixtures/file-templates` for a minimal buildable
+plugin covering dotfiles, multiple variables, and Java/Kotlin packages. Build
+its component with `plugins/build.sh crates/ide-plugin/tests/fixtures/file-templates`.
 
 ### Background associations
 
@@ -400,9 +432,9 @@ then run `openidea-plugin check`.
 | `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
 | `host::copy_to_clipboard(text)`                                          | `ui.copy-to-clipboard`           | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                            |
 | `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
-| `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Asks the user to pick from `PickItem`s and waits: the chosen key(s), or `None` when dismissed. Only from a command or event of a window (else `invalid`); the wait isn't charged to the time limit.                  |
+| `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                  |
 | `host::input(prompt, value)`                                             | `ui.input`                       | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                            |
-| `host::input_multiline(prompt, value)`                                   | `ui.input-multiline`             | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Same rules as `input`.                                                                                                |
+| `host::input_multiline(prompt, value)`                                   | `ui.input-multiline`             | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Only from a command or event of a window.                                                                             |
 | `host::confirm(title, body)`                                             | `ui.confirm`                     | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                     |
 | `host::locale()`                                                         | `ui.locale`                      | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                      |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
@@ -522,7 +554,12 @@ can be a `snippet` (`$1`, `${1:name}`, `$0`), match on `filter_text` instead
 of its label, and bring `additional_edits` elsewhere in the document (an
 import). A code action can leave `edits` empty and set `data`: its edits are
 then computed by `resolve_code_action` when the user picks it, under the
-command budget instead of the 50 ms. A quick fix that creates, renames or
+command budget instead of the 50 ms. During resolution, `pick`, `pick_many`,
+`input` and `confirm` ask in the editor's window; waiting for an answer does
+not consume that budget. Dismissal returns `None` (or `false` for `confirm`):
+return `Error::Cancelled` or no edits to abandon the fix. Lazy plugin actions
+resolve only when invoked, never for the intention preview or Actions on Save. Commands/events-only
+APIs remain unavailable during resolution. A quick fix that creates, renames or
 deletes files implements `file_actions::FileActions` too
 (`register_plugin!(T, providers, file_actions)`; the `code-actions` kind
 covers both): a `FileAction` carries `operations` (`FileOperation::Create {
@@ -531,7 +568,7 @@ workspace edit, so a failure changes nothing and one undo reverses it. A path
 outside the project root disables the action; `open` shows a file once the
 action is applied. Like a code action, it can leave `operations` and `edits`
 empty and set `data`: `resolve_file_action` computes them when the user picks
-it. File actions are new in API 1.3. Problems (`publish_diagnostics`) can name
+it, with the same prompts and editor window as `resolve_code_action`. File actions are new in API 1.3. Problems (`publish_diagnostics`) can name
 the tool that found them (`source`) and be `unnecessary` (faded) or
 `deprecated` (struck through).
 Editor providers run under the edit-path budget: 50 ms, after which the
