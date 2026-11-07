@@ -457,6 +457,43 @@ impl PluginHost {
     /// Instantiates no Wasm: code runs on its activation events.
     pub fn load_all(&self) {
         let _guard = self.lifecycle.lock();
+        for pending in install::pending_uninstalls(&self.plugins_dir) {
+            if self.plugins.read().contains_key(&pending.id) {
+                continue;
+            }
+            let dir = self.plugins_dir.join(pending.dir);
+            let mut manifest = placeholder_manifest(&dir);
+            manifest.id = pending.id.clone();
+            manifest.name = pending.name;
+            manifest.version = pending.version;
+            manifest.contributes.insert(
+                providers::SECRETS_POINT.into(),
+                toml::Value::Array(
+                    pending
+                        .secrets
+                        .into_iter()
+                        .map(|name| {
+                            toml::Value::Table(toml::Table::from_iter([("name".into(), toml::Value::String(name))]))
+                        })
+                        .collect(),
+                ),
+            );
+            let mut meta = Meta::new();
+            meta.status = PluginStatus::Failed;
+            self.plugins.write().insert(
+                pending.id,
+                Arc::new(LoadedPlugin {
+                    pkg: Package::new(manifest, dir),
+                    icon: None,
+                    invalid: false,
+                    source: PluginSource::Installed,
+                    dev_root: None,
+                    meta: Mutex::new(meta),
+                    batches: Arc::default(),
+                    runtime: Mutex::new(None),
+                }),
+            );
+        }
         let dirs = package_dirs(&self.plugins_dir);
         self.migrate_grants(&dirs);
         for dir in dirs {
@@ -1028,6 +1065,20 @@ impl PluginHost {
             .flatten()
             .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
             .collect();
+        install::remember_uninstall(
+            &self.plugins_dir,
+            &install::PendingUninstall {
+                id: id.to_owned(),
+                name: plugin.manifest().name.clone(),
+                version: plugin.manifest().version.clone(),
+                dir: plugin
+                    .dir()
+                    .strip_prefix(&self.plugins_dir)
+                    .map_err(|e| IdeError::internal(e.to_string()))?
+                    .to_path_buf(),
+                secrets: secrets.clone(),
+            },
+        )?;
         // Retain registration for retry, but prevent concurrent on-demand activation.
         {
             let _runtime = plugin.runtime.lock();
@@ -1051,14 +1102,17 @@ impl PluginHost {
             }
             // Every version (`<id>/<version>`), or the flat directory of an older install.
             let root = self.plugins_dir.join(id);
-            std::fs::remove_dir_all(if root.is_dir() { root } else { plugin.dir().to_path_buf() })
+            let target = if root.is_dir() { root.clone() } else { plugin.dir().to_path_buf() };
+            match std::fs::remove_dir_all(&target) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !root.exists() && !target.exists() => Ok(()),
+                result => result,
+            }
         };
         if let Err(e) = cleanup() {
             self.set_failed(&plugin, e.to_string());
             self.changed();
             return Err(e.into());
         }
-        self.unload(id);
         self.updates.lock().remove(id);
         {
             let mut ledger = self.ledger.lock();
@@ -1073,6 +1127,12 @@ impl PluginHost {
             }
         }
         self.save_state();
+        if let Err(e) = install::forget_uninstall(&self.plugins_dir, id) {
+            self.set_failed(&plugin, e.to_string());
+            self.changed();
+            return Err(e.into());
+        }
+        self.unload(id);
         self.changed();
         Ok(())
     }

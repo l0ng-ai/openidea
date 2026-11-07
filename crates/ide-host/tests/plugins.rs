@@ -863,6 +863,42 @@ fn private_uninstall_cleanup_failure_is_retryable() {
 }
 
 #[test]
+fn private_uninstall_recovers_after_package_metadata_is_removed() {
+    for remove_entire_package in [false, true] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.install(&sample("private-dir"));
+        f.run(id, "roundtrip", None).unwrap();
+        let package = f.installed(id);
+        let root = f.plugins_dir.join(id);
+        let backup = root.with_extension("blocked-backup");
+        std::fs::rename(&root, &backup).unwrap();
+        std::fs::write(&root, "controlled package cleanup failure").unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        std::fs::remove_file(&root).unwrap();
+        std::fs::rename(&backup, &root).unwrap();
+        // Reproduce the metadata loss a partial recursive deletion can leave behind.
+        if remove_entire_package {
+            std::fs::remove_dir_all(&root).unwrap();
+        } else {
+            std::fs::remove_file(root.join("active")).unwrap();
+            std::fs::remove_file(package.join("plugin.toml")).unwrap();
+        }
+        f.host.shutdown();
+        let host =
+            PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _: PluginEvent| {}), Limits::default())
+                .unwrap();
+        host.load_all();
+        assert!(host.info_of(id).is_ok(), "partial package cleanup must retain a restartable uninstall target");
+        assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+        host.uninstall(id).unwrap();
+        assert!(host.info_of(id).is_err());
+        assert!(!root.exists());
+        assert!(!f.plugins_dir.join(".uninstall").join(format!("{id}.json")).exists());
+    }
+}
+
+#[test]
 fn private_uninstall_blocks_inactive_reactivation_during_cleanup() {
     struct BlockingSecrets {
         entered: std::sync::Barrier,
