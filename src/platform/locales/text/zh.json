@@ -6781,5 +6781,11 @@
   "Declined": "已拒绝",
   "Always declined": "已设为始终拒绝",
   "Build failed; '{name}' was not started.": "构建失败；'{name}' 未启动。",
-  "Build has compile errors; '{name}' was not started.": "构建存在编译错误；'{name}' 未启动。"
+  "Build has compile errors; '{name}' was not started.": "构建存在编译错误；'{name}' 未启动。",
+  "Automatic (incremental)": "自动（增量）",
+  "Build (Make)": "构建（Make）",
+  "Rebuild": "重新构建",
+  "No build": "不构建",
+  "Build, no error check": "构建，不检查错误",
+  "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式"
 }

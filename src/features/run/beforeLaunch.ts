@@ -2,6 +2,8 @@
  * Before launch tasks (IDEA's "Before launch" list): run in order before a
  * configuration starts; the first failure aborts the launch.
  */
+import { recordProjectBuild } from "@/platform/buildReceipt";
+import { useProject } from "@/platform/project";
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { dotnetBuildConfig } from "./dotnetTypes";
 import { executeAction, getAction } from "@/platform/actions";
@@ -75,7 +77,9 @@ async function runTask(
       if (target) return buildCMake(target, show === true);
       if (!getAction(BUILD_ACTION)) return "Building is not available";
       if (!(await executeAction(BUILD_ACTION, { activate: false }))) return "A build is already running";
-      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
+      if (getContext()[BUILD_STATUS] !== "success") return "Build failed";
+      recordProjectBuild(useProject.getState().project?.root ?? "");
+      return null;
     }
     case "run": {
       if (chain.includes(target)) return "The before launch tasks run in a cycle";
