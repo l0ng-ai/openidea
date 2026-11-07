@@ -5,7 +5,7 @@ import { useProject } from "@/platform/project";
 import { EditorShownProvider } from "@/workbench/contributions";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
-import { SessionEditor } from "./SessionEditor";
+import { SessionEditor, conversationRows } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
@@ -78,6 +78,17 @@ const subagent: SubagentEntry = {
 };
 const input = (id: string) => ({ kind: SESSION_KIND, key: sessionKey(id), data: { task: id } });
 const stream = () => document.querySelector<HTMLDivElement>(`.${styles.stream}`)!;
+const tool = (id: string, overrides: Partial<Extract<AgentEntry, { type: "tool" }>> = {}): AgentEntry => ({
+  type: "tool",
+  id,
+  title: id,
+  kind: "read",
+  status: "completed",
+  locations: [],
+  output: null,
+  diffs: [],
+  ...overrides,
+});
 
 const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
 afterEach(() => {
@@ -101,6 +112,82 @@ beforeEach(() => {
     homeOpen: false,
     tasks: new Map([task("A"), task("B")].map((t) => [t.id, t])),
     entries: new Map(backend.entries),
+  });
+});
+
+describe("conversation rows", () => {
+  it("builds only the requested tail, with absolute indexes", () => {
+    const entries = Array.from({ length: 45 }, (_, i) => ({ type: "agent", text: `reply ${i}` }) as AgentEntry);
+    const rows = conversationRows(entries, 40);
+    expect(rows).toHaveLength(5);
+    expect(rows.map((row) => row.index)).toEqual([40, 41, 42, 43, 44]);
+  });
+});
+
+describe("process folding", () => {
+  it("folds reasoning and tool calls into one block", async () => {
+    backend.entries.set("A", [
+      { type: "thought", text: "think one" },
+      tool("one"),
+      { type: "thought", text: "think two" },
+      tool("two"),
+      { type: "agent", text: "Answer A" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = await screen.findByText("Reasoning · 2 tool calls");
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(screen.getByText("think one")).toBeInTheDocument();
+  });
+});
+
+describe("message tags", () => {
+  it("shows file references and skills as distinct tags", async () => {
+    backend.entries.set("A", [
+      {
+        type: "user",
+        text: "fix @src/a.ts and run /triage",
+        attachments: ["a.ts"],
+        images: [],
+        sentMs: 1,
+        doneMs: 2,
+        steered: false,
+      },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("@src/a.ts")).toHaveClass(styles.fileTag!);
+    expect(screen.getByText("/triage")).toHaveClass(styles.skillTag!);
+  });
+});
+
+describe("scrolling", () => {
+  it("offers one click back to the latest message after scrolling up", async () => {
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    const jump = await screen.findByRole("button", { name: "Jump to Latest" });
+    Object.defineProperty(el, "scrollTo", { configurable: true, value: vi.fn() });
+    fireEvent.click(jump);
+    expect(el.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+});
+
+describe("tool calls", () => {
+  it("folds consecutive finished tool calls into one collapsed row", async () => {
+    const edit = (id: string) => tool(id, { kind: "edit", diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }] });
+    backend.entries.set("A", [edit("one"), edit("two"), { type: "agent", text: "Answer A" }]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = await screen.findByText("2 tool calls");
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(screen.getByText("+4")).toBeInTheDocument();
+    expect(screen.getByText("−2")).toBeInTheDocument();
   });
 });
 

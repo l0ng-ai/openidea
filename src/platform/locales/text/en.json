@@ -332,5 +332,10 @@
   "\n[Process finished with exit code {exitCode}]": "\n[Process finished with exit code {exitCode}]",
   "\nError: {error}": "\nError: {error}",
   "\n[Log stream stopped]": "\n[Log stream stopped]",
-  "Toggle Log Option": "Toggle Log Option"
+  "Toggle Log Option": "Toggle Log Option",
+  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory",
+  "You": "You",
+  "Jump to Latest": "Jump to Latest",
+  "Retract Message": "Retract Message",
+  "Retract": "Retract"
 }

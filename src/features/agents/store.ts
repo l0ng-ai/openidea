@@ -597,26 +597,50 @@ export async function forkTask(task: string, turns: number | null): Promise<void
   openTask(copy.id);
 }
 
+/** Puts a message back in the task's composer, above anything typed meanwhile. */
+function restoreComposer(task: string, text: string, images: AgentImage[]) {
+  const current = composerDraft(task);
+  updateComposer(task, {
+    text: current.text ? `${text}\n${current.text}` : text,
+    images: [...images, ...current.images],
+  });
+  focusComposer(task);
+}
+
+/** Waits until a running turn has stopped, so it can be dropped. */
+async function stopForEdit(task: string) {
+  const busy = () => isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready");
+  if (!busy()) return;
+  await cancelTask(task);
+  await settled(task);
+  if (busy()) throw new Error("The agent is still stopping. Try again once it has stopped.");
+}
+
 /**
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
  * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
+ * Whatever fails, the message is kept in the composer so it can be sent again.
  */
 export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
-  if (isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready")) {
-    await cancelTask(task);
-    await settled(task);
-  }
-  await call(commands.agentRollback(task, turn));
   try {
+    await stopForEdit(task);
+    await call(commands.agentRollback(task, turn));
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
-    // Rollback removes the original turn; recover its prompt in the session composer.
-    const current = composerDraft(task);
-    updateComposer(task, {
-      text: current.text ? `${text}\n${current.text}` : text,
-      images: [...images, ...current.images],
-    });
-    focusComposer(task);
+    restoreComposer(task, text, images);
+    throw e;
+  }
+}
+
+/** Drops `turn` and the later turns, and puts the message back in the composer to edit. */
+export async function retractFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
+  try {
+    await stopForEdit(task);
+    const prompt = await call(commands.agentRollback(task, turn));
+    // The agent only hands back the text; the images come from the message itself.
+    restoreComposer(task, prompt?.text ?? text, images);
+  } catch (e) {
+    restoreComposer(task, text, images);
     throw e;
   }
 }

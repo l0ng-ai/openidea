@@ -27,6 +27,28 @@ export interface ComposerDraft {
 
 export const emptyDraft = (): ComposerDraft => ({ text: "", files: [], images: [] });
 
+export type MessageToken = { kind: "text" | "file" | "command"; value: string };
+
+/**
+ * A message's text split into plain runs, `@file` references and `/command` skills. A
+ * command is a `/word` at the start or after whitespace; a reference likewise after `@`.
+ */
+export function messageTokens(text: string): MessageToken[] {
+  const out: MessageToken[] = [];
+  let last = 0;
+  for (const match of text.matchAll(/(^|\s)([@/][^\s@]+)/g)) {
+    const token = match[2]!;
+    const start = match.index! + match[1]!.length;
+    const command = /^\/[A-Za-z][\w:.-]*$/.test(token);
+    if (token.startsWith("/") && !command) continue;
+    if (start > last) out.push({ kind: "text", value: text.slice(last, start) });
+    out.push({ kind: command ? "command" : "file", value: token });
+    last = start + token.length;
+  }
+  if (last < text.length) out.push({ kind: "text", value: text.slice(last) });
+  return out;
+}
+
 export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
   | { kind: "command"; query: string; from: number; to: number };
