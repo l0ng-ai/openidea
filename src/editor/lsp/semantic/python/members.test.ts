@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classMembers, enclosingClass, memberStubs } from "./pythonMembers";
+import { classMembers, enclosingClass, memberStubs } from "./members";
 
 const src = `from abc import ABC, abstractmethod
 

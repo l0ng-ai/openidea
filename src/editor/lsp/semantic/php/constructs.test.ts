@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { languages } from "@codemirror/language-data";
-import { phpConstructAt, phpConstructDocumentation } from "./phpConstructs";
-import { lspDoc } from "./lsp";
-import { quickDefinition, requestHover } from "./hover";
-import { gotoTargets } from "./navigation";
-import { closePopup, useLspPopup } from "./popupStore";
+import { phpConstructAt, phpConstructDocumentation } from "./constructs";
+import { lspDoc } from "../../lsp";
+import { quickDefinition, requestHover } from "../../hover";
+import { gotoTargets } from "../../navigation";
+import { closePopup, useLspPopup } from "../../popupStore";
 
 const php = await languages.find((l) => l.name === "PHP")!.load();
 const views: EditorView[] = [];

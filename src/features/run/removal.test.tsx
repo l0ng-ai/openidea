@@ -19,7 +19,15 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { ConfigChooserOverlay } from "./ConfigChooser";
-import { adoptTemporary, canDeleteConfig, deleteConfig, loadConfigs, resetRuns, useRun } from "./store";
+import {
+  adoptTemporary,
+  canDeleteConfig,
+  deleteConfig,
+  dropStaleContextConfigs,
+  loadConfigs,
+  resetRuns,
+  useRun,
+} from "./store";
 import { registerBuiltinTypes } from "./types";
 
 const config = (kind = "npm"): RunConfig => ({
@@ -110,6 +118,27 @@ it("temporary deletion does not persist suppression", async () => {
   await deleteConfig("npm:app");
   expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
   expect(useRun.getState().configs).toEqual([]);
+});
+
+it("a moved file drops its stale temporary context configuration", async () => {
+  const old: RunConfig = { ...config("cc"), id: "context:file:src/main.cxx", name: "main.cxx", detected: false };
+  adoptTemporary(old);
+  expect(useRun.getState().configs.map((c) => c.id)).toContain("context:file:src/main.cxx");
+  dropStaleContextConfigs(["/test-removal/src/main.cxx"]);
+  expect(useRun.getState().configs.map((c) => c.id)).not.toContain("context:file:src/main.cxx");
+  expect(useRun.getState().temporary).toEqual([]);
+  expect(ipc.runSaveConfigs).not.toHaveBeenCalled();
+});
+
+it("keeps other temporary and non-temporary configurations on removal", async () => {
+  const moved: RunConfig = { ...config("cc"), id: "context:file:src/main.cxx", name: "main.cxx", detected: false };
+  const other: RunConfig = { ...config("go"), id: "context:file:app/main.go", name: "main.go", detected: false };
+  adoptTemporary(moved);
+  adoptTemporary(other);
+  dropStaleContextConfigs(["/test-removal/src/main.cxx"]);
+  expect(useRun.getState().temporary).toEqual([other.id]);
+  // The saved/detected npm config and an unrelated file stay.
+  expect(useRun.getState().configs.map((c) => c.id)).toEqual(expect.arrayContaining(["npm:app", other.id]));
 });
 
 it("chooser popup Delete removes the selected detection", async () => {

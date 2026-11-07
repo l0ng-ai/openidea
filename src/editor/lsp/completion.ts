@@ -56,7 +56,7 @@ import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
-import { phpConstructDocumentation } from "./phpConstructs";
+import { languageSemantics } from "./semantic";
 
 interface RequestContext {
   doc: number;
@@ -369,7 +369,7 @@ async function fallback(ctx: CompletionContext): Promise<CompletionResult | null
 
 export function makeCompletion(item: CompletionItem, req: RequestContext): LspCompletion {
   if (item.kind === "keyword" && isEmptyMarkup(item.documentation)) {
-    const value = phpConstructDocumentation(req.language, item.label);
+    const value = languageSemantics(req.language)?.constructDocumentation?.(item.label);
     if (value) item = { ...item, documentation: { kind: "markdown", value } };
   }
   // The lookup handles commit characters itself (focused lookups only, see `lookupKeys`).
