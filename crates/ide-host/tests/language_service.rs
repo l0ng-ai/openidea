@@ -219,3 +219,64 @@ async fn the_native_engine_keeps_the_php_language_servers_stopped() {
     }
     host.close_project("main");
 }
+
+/// One format request: the range, tab size, spaces or not, and line length.
+type FormatRequest = (Option<Range>, u32, bool, u32);
+
+/// Formats by inserting a marker, and records what it was asked.
+#[derive(Default)]
+struct Formatter {
+    asked: Mutex<Vec<FormatRequest>>,
+}
+
+impl LanguageService for Formatter {
+    fn format(
+        &self,
+        _doc: DocId,
+        range: Option<Range>,
+        options: &FormatOptions,
+        line_width: u32,
+    ) -> Answer<Vec<ide_core::TextEdit>> {
+        self.asked.lock().push((range, options.tab_size, options.insert_spaces, line_width));
+        Some(Ok(vec![ide_core::TextEdit { range: range.unwrap_or(range_at(0)), new_text: "formatted".into() }]))
+    }
+}
+
+fn range_at(line: u32) -> Range {
+    Range { start: Pos { line, col: 0 }, end: Pos { line, col: 0 } }
+}
+
+/// Reformat Code goes to the document's service when no external formatter
+/// takes the file, with the indentation from the request and the line length
+/// from Code Style › Hard wrap at (the language's own value first).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_registered_service_formats_with_the_code_style_line_length() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("notes");
+    write(&root.join("todo.txt"), "first line\nsecond line\n");
+    let host = host(&base.join("app"));
+    let project = host.open_project("main", &root).unwrap();
+    let doc = ops::doc::open(&host, "main", root.join("todo.txt")).await.unwrap();
+    let language = project.documents.language(doc.id).unwrap();
+    let service = Arc::new(Formatter::default());
+    project.services.register(language.clone(), service.clone());
+
+    let spaces = FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None };
+    let edits = ops::lsp::lsp_format(&host, "main", doc.id, None, spaces.clone()).await.unwrap();
+    assert_eq!(edits.iter().map(|e| e.new_text.as_str()).collect::<Vec<_>>(), ["formatted"]);
+    ops::project::set_settings(&host, "main", SettingsScope::Project, "editor.codeStyle.hardWrapAt", "100").unwrap();
+    let tabs = FormatOptions { tab_size: 8, insert_spaces: false, on_save: false, tool: None };
+    ops::lsp::lsp_format(&host, "main", doc.id, Some(range(1)), tabs).await.unwrap();
+    let languages = format!(r#"{{"{}":{{"hardWrapAt":72}}}}"#, language.as_str());
+    ops::project::set_settings(&host, "main", SettingsScope::Project, "editor.codeStyle.languages", &languages)
+        .unwrap();
+    ops::lsp::lsp_format(&host, "main", doc.id, None, spaces.clone()).await.unwrap();
+    assert_eq!(*service.asked.lock(), [(None, 2, true, 120), (Some(range(1)), 8, false, 100), (None, 2, true, 72)]);
+
+    // Format on save stays off unless Editor › Format on save is on.
+    let on_save = FormatOptions { on_save: true, ..spaces };
+    assert!(ops::lsp::lsp_format(&host, "main", doc.id, None, on_save).await.unwrap().is_empty());
+    assert_eq!(service.asked.lock().len(), 3);
+    host.close_project("main");
+}

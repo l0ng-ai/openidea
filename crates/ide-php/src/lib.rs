@@ -41,6 +41,8 @@
 //!   ([`complete::Completions`]): members, variables, keywords, names with
 //!   auto-import, named arguments, expected values, enum cases and array
 //!   keys.
+//! - [`format`]: Reformat Code for documents and ranges through
+//!   `mago-formatter` (PSR-12, with the editor's indentation and line length).
 //! - [`imports`]: the auto-import quick-fix for unresolved names, Optimize
 //!   Imports, and inserting `use` statements in the file's own style.
 //! - [`inspect`]: the inspection framework ([`inspect::Inspection`]):
@@ -63,6 +65,7 @@
 
 pub mod complete;
 pub mod engine;
+pub mod format;
 pub mod imports;
 pub mod index;
 pub mod inspect;

@@ -4501,7 +4501,9 @@ dependencies = [
  "insta",
  "mago-allocator",
  "mago-database",
+ "mago-formatter",
  "mago-names",
+ "mago-php-version",
  "mago-phpdoc-syntax",
  "mago-span",
  "mago-syntax",
@@ -5470,6 +5472,23 @@ dependencies = [
  "rayon",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "mago-formatter"
+version = "1.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3304e1d8bda1d7d096f5a20e0210f1ea7a8281688dbc5fcbc5fbdeaef74e608"
+dependencies = [
+ "foldhash",
+ "mago-allocator",
+ "mago-database",
+ "mago-php-version",
+ "mago-span",
+ "mago-syntax",
+ "memchr",
+ "schemars 1.2.3",
+ "unicode-width",
 ]
 
 [[package]]

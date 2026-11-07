@@ -1,6 +1,10 @@
-//! Select the document's formatting provider before executing it on this host.
+//! Select the document's formatting provider before executing it on this host:
+//! an external formatter (Prettier, oxfmt), else the language service
+//! registered for the document's language (the native PHP engine), else its
+//! language servers.
 
 use crate::Host;
+use crate::language_service::ask;
 use ide_core::event::NotifyLevel;
 use ide_core::settings::{ExternalFormatter, LanguagesSettings};
 use ide_core::{DocId, IdeError, IdeEvent, IdeResult, Range, TextEdit};
@@ -69,7 +73,17 @@ pub async fn format(
         if options.on_save && !settings.editor.format_on_save {
             return Ok(Vec::new());
         }
-        return project.lsp.format(doc, range, options).await;
+        let style = &settings.editor.code_style;
+        let line_width =
+            style.languages.get(snap.language.as_str()).and_then(|l| l.hard_wrap_at).unwrap_or(style.hard_wrap_at);
+        let native = {
+            let options = options.clone();
+            ask(&project, doc, move |s| s.format(doc, range, &options, line_width)).await
+        };
+        return match native {
+            Some(edits) => edits,
+            None => project.lsp.format(doc, range, options).await,
+        };
     };
     let tool_settings = settings.languages.formatter(selected);
     if options.on_save && !tool_settings.run_on_save {

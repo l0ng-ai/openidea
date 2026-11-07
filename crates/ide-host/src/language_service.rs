@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ide_core::{CancellationToken, DocId, IdeResult, LanguageId, Location, OutlineItem, Pos, Range, WorkspaceEdit};
+use ide_core::{
+    CancellationToken, DocId, IdeResult, LanguageId, Location, OutlineItem, Pos, Range, TextEdit, WorkspaceEdit,
+};
 use ide_lsp::types::*;
 use parking_lot::RwLock;
 
@@ -110,6 +112,19 @@ pub trait LanguageService: Send + Sync {
     }
 
     fn rename(&self, doc: DocId, pos: Pos, new_name: &str, cancel: &CancellationToken) -> Answer<Renamed> {
+        None
+    }
+
+    /// Reformat Code for the document, or for the code around `range`.
+    /// `line_width` is Code Style › Hard wrap at for the document's language.
+    /// Asked only when no external formatter (Prettier, oxfmt) takes the file.
+    fn format(
+        &self,
+        doc: DocId,
+        range: Option<Range>,
+        options: &FormatOptions,
+        line_width: u32,
+    ) -> Answer<Vec<TextEdit>> {
         None
     }
 

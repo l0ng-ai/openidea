@@ -373,7 +373,7 @@ The design:
 
 ## Plan 5: Formatting and refactorings
 
-- [ ] Phase 5.1: Formatting
+- [x] Phase 5.1: Formatting
       Document and range formatting through `mago-formatter`, with PSR-12 defaults. The options map from the editor settings (indent and line length). Tests: unit tests and the Native `language_smoke` format check.
 
 - [ ] Phase 5.2: Extract variable and constant

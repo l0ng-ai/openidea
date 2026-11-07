@@ -1074,7 +1074,7 @@ async fn php() {
 /// `new`, an `extends` and a `use` import), of members and of variables, hover, completion
 /// (members, and a class name with auto-import), the auto-import quick fix, Optimize Imports,
 /// the baseline's undefined-method diagnostic and syntax-error diagnostics, parameter info, inlay
-/// hints and rename. Not ignored: it
+/// hints, formatting and rename. Not ignored: it
 /// needs nothing installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn php_native() {
@@ -1232,6 +1232,9 @@ async fn php_native() {
     let labels: Vec<&str> = hints.iter().map(|h| h.label.as_str()).collect();
     assert!(labels.contains(&"available:"), "a parameter name hint on withAvailability(false): {labels:?}");
     assert!(labels.contains(&": Book"), "a type hint on $lent: {labels:?}");
+    // Reformat Code: the baseline's check, through mago-formatter with the editor's indentation.
+    let (line, formatted) = PHP.format;
+    smoke.format(line, PHP.indent, formatted).await;
     // Rename (last: it edits the fixture): a function from a usage in another file, and a class
     // whose file is renamed with it.
     smoke

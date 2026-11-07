@@ -15,12 +15,13 @@ use std::sync::Arc;
 
 use ide_core::settings::{PhpEngineKind, Settings};
 use ide_core::{
-    CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink, WorkspaceEdit,
+    CancellationToken, DocId, EventSink, IdeEvent, Location, OutlineItem, Pos, Range, SharedSink, TextEdit,
+    WorkspaceEdit,
 };
 use ide_lsp::types::{
-    CallHierarchy, CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, GotoKind,
-    HierarchyDirection, HierarchyItem, Hover, InlayHint, InlayKind, Markup, References, Renamed, SemanticTokens,
-    Signature, SignatureHelp, WorkspaceSymbol,
+    CallHierarchy, CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, FormatOptions,
+    GotoKind, HierarchyDirection, HierarchyItem, Hover, InlayHint, InlayKind, Markup, References, Renamed,
+    SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -196,9 +197,9 @@ impl DocumentObserver for PhpObserver {
 /// hints (parameter names and types; Editor › Inlay Hints decides which
 /// kinds the editor shows), semantic tokens, find usages, goto
 /// implementation (also for the gutter markers), the type and call
-/// hierarchies, rename, the reference updates of file moves, and the
+/// hierarchies, rename, the reference updates of file moves, the
 /// code actions (inspection quick-fixes, auto-import fixes, Optimize
-/// Imports). Diagnostics don't go through it: the engine inspects open
+/// Imports) and Reformat Code. Diagnostics don't go through it: the engine inspects open
 /// documents in the background and publishes them itself.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
@@ -287,6 +288,21 @@ impl crate::language_service::LanguageService for PhpService {
             active_parameter: help.active_parameter,
         });
         Some(Ok(help))
+    }
+
+    /// Reformat Code through `mago-formatter` (PSR-12 with the editor's
+    /// indentation and line length). Files with syntax errors get no edits.
+    fn format(
+        &self,
+        doc: DocId,
+        range: Option<Range>,
+        options: &FormatOptions,
+        line_width: u32,
+    ) -> Answer<Vec<TextEdit>> {
+        let engine = self.0.engine()?;
+        let options =
+            ide_php::format::FormatOptions { indent: options.tab_size, use_tabs: !options.insert_spaces, line_width };
+        Some(Ok(engine.format(doc, range, &options)?))
     }
 
     fn inlay_hints(&self, doc: DocId, range: Range) -> Answer<Vec<InlayHint>> {
