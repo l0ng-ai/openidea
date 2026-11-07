@@ -81,11 +81,11 @@ impl Views for Tables {
 
     fn handle(&mut self, view: &str, event: ViewEvent, _ctx: &Invocation) -> Result<(), Error> {
         if view == "fields" {
-            if let ViewEvent::Field(key, value) = event {
-                if key == "editable" {
-                    self.note = Some(value);
-                    host::refresh_view("fields");
-                }
+            if let ViewEvent::Field(key, value) = event
+                && key == "editable"
+            {
+                self.note = Some(value);
+                host::refresh_view("fields");
             }
             return Ok(());
         }
