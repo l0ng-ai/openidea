@@ -1411,7 +1411,7 @@ fn spelling_regions_cover_declared_names_only() {
 }
 
 // ---------------------------------------------------------------------------
-// Script regions of Vue SFCs and HTML documents (docs/vue-ts-semantic-index.md)
+// Script regions of Vue SFCs and HTML documents
 
 #[test]
 fn script_regions_skip_typed_blocks() {
@@ -1437,4 +1437,111 @@ fn script_regions_pick_the_lang_attribute() {
 fn script_regions_empty_for_other_languages() {
     assert!(syntax().script_regions(&lang("rust"), "fn main() {}").is_empty());
     assert!(syntax().script_regions(&lang("vue"), "<template><div/></template>").is_empty());
+}
+
+#[test]
+fn script_regions_classify_attributes() {
+    for language in ["vue", "html"] {
+        for (attributes, expected) in [
+            ("", Some("javascript")),
+            ("setup lang=ts", Some("typescript")),
+            ("lang='typescript'", Some("typescript")),
+            ("lang=tsx", Some("tsx")),
+            ("lang=js", Some("javascript")),
+            ("lang=jsx", Some("javascript")),
+            ("LANG=TS", Some("typescript")),
+            ("type=module", Some("javascript")),
+            ("TYPE=' text/JAVASCRIPT '", Some("javascript")),
+            ("type=application/javascript", Some("javascript")),
+            ("type=application/json", None),
+            ("type='application/ld+json'", None),
+            ("type=text/template", None),
+            ("type=importmap", None),
+            ("type=speculationrules", None),
+            ("lang=coffee", None),
+            ("lang=ts type=application/json", None),
+            ("src='./external.ts' lang=ts", None),
+            ("SRC=external.js", None),
+            ("src", None),
+        ] {
+            let src = format!("<script {attributes}>const value = 1;</script>");
+            let regions = syntax().script_regions(&lang(language), &src);
+            assert_eq!(regions.len(), usize::from(expected.is_some()), "{language}: {attributes}");
+            if let Some(expected) = expected {
+                assert_eq!(regions[0].language.as_str(), expected, "{attributes}");
+                assert_eq!(regions[0].text, "const value = 1;");
+                assert_eq!(&src[regions[0].base..regions[0].base + regions[0].text.len()], regions[0].text);
+            }
+        }
+    }
+}
+
+#[test]
+fn script_regions_preserve_document_offsets_and_line_endings() {
+    use super::lines::LineIndex;
+
+    let src = "<template>中文😀</template>\r\n<script lang=ts>const 名 = '😀';\r\n</script>\r\n<script setup lang=jsx>const View = () => <div/>;</script>";
+    let regions = syntax().script_regions(&lang("vue"), src);
+    assert_eq!(regions.len(), 2);
+    let idx = LineIndex::new(src);
+    let doc = ide_text::Document::new(src);
+    for (region, (body, pos)) in
+        regions.iter().zip([("const 名 = '😀';\r\n", Pos::new(1, 16)), ("const View = () => <div/>;", Pos::new(3, 23))])
+    {
+        assert_eq!(region.base, src.find(body).unwrap());
+        assert_eq!(region.text, body);
+        assert_eq!(idx.pos(region.base), pos);
+        assert_eq!(idx.pos(region.base), doc.byte_to_pos(src[..region.base].replace("\r\n", "\n").len()));
+        assert_eq!(
+            idx.pos(region.base + body.len()),
+            doc.byte_to_pos(src[..region.base + body.len()].replace("\r\n", "\n").len())
+        );
+        if let Some(name) = body.find('名') {
+            assert_eq!(
+                idx.range(region.base + name, region.base + name + '名'.len_utf8()),
+                Range::new(Pos::new(1, 22), Pos::new(1, 23))
+            );
+        }
+    }
+    let same_line = "<template>中文😀</template><script>let x = 1;</script>";
+    let region = &syntax().script_regions(&lang("html"), same_line)[0];
+    assert_eq!(LineIndex::new(same_line).pos(region.base), Pos::new(0, 33));
+}
+
+#[test]
+fn script_regions_tolerate_incomplete_markup() {
+    for src in [
+        "<script",
+        "<script lang=",
+        "<script lang='ts",
+        "<script>const unfinished =",
+        "<template><div><script lang=ts>const x = 1;</script>",
+        "<script></script>",
+        "<script src='missing.js'>ignored</script><script>const x = 1;",
+    ] {
+        for region in syntax().script_regions(&lang("vue"), src) {
+            assert_eq!(src.get(region.base..region.base + region.text.len()), Some(region.text.as_str()));
+        }
+    }
+}
+
+#[test]
+fn script_regions_large_vue_document() {
+    for count in [2_000, 4_000, 8_000] {
+        let src =
+            "<template><div>中文😀</div></template>\r\n<script setup lang=ts>const x = 1;</script>\r\n".repeat(count);
+        let start = std::time::Instant::now();
+        let regions = syntax().script_regions(&lang("vue"), &src);
+        eprintln!("script regions: {} bytes, {count} blocks: {:?}", src.len(), start.elapsed());
+        assert_eq!(regions.len(), count);
+        assert!(regions.windows(2).all(|pair| pair[0].base < pair[1].base));
+    }
+}
+
+#[test]
+fn script_regions_tolerate_deep_markup() {
+    let src = "<div>".repeat(1_000) + "<script>const x = 1;</script>";
+    let regions = syntax().script_regions(&lang("html"), &src);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0].base, src.find("const").unwrap());
 }

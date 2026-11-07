@@ -93,6 +93,16 @@ pub struct IndentConfig {
     pub insert_spaces: bool,
 }
 
+/// Additions to the tsserver project of a tree without `tsconfig.json` / `jsconfig.json`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TsserverProjectExtras {
+    /// File extensions a tsserver plugin handles, registered with the sources (`vue`).
+    pub extensions: Vec<String>,
+    /// `compilerOptions.paths` with absolute targets: the bundler's module aliases
+    /// (`@/*` → `<root>/src/*` in a Vue CLI project).
+    pub paths: BTreeMap<String, Vec<String>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct LanguageServerConfig {
@@ -155,6 +165,9 @@ pub struct LanguageServerConfig {
     /// Register source files with tsserver when no project configuration exists.
     #[serde(default)]
     pub tsserver_project: bool,
+    /// Set by the settings hook: what that registered project adds to its defaults.
+    #[serde(skip)]
+    pub tsserver_project_extras: TsserverProjectExtras,
     /// Re-sends the open documents (unchanged) once `workspace/configuration` is answered:
     /// the server (Intelephense) applies some settings, such as the PHP version, only when
     /// it parses a document.
@@ -301,11 +314,11 @@ pub struct SymbolTag {
     pub range: Range,
 }
 
-/// One `<script>` block of a Vue SFC / HTML document: what the project
-/// index's module-facts extraction parses per block (a later PR).
+/// One inline TS/JS `<script>` block of a Vue SFC / HTML document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptRegion {
-    /// Byte offset of `text` within the document.
+    /// Document-absolute UTF-8 byte offset of `text`, for tree-sitter parsing.
+    /// Convert to UTF-16 positions before exposing ranges through IPC.
     pub base: usize,
     /// The language the block's `lang` attribute picks.
     pub language: LanguageId,

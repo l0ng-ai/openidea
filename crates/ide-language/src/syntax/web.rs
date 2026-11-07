@@ -82,12 +82,19 @@ fn css_regions<'t>(grammar: &str, tree: &Tree, text: &'t str) -> Vec<(usize, &'t
 
 /// Pre-order walk; `f` returns whether to descend.
 pub(crate) fn walk<'t>(n: Node<'t>, f: &mut dyn FnMut(Node<'t>) -> bool) {
-    if !f(n) {
-        return;
-    }
-    let mut c = n.walk();
-    for child in n.children(&mut c) {
-        walk(child, f);
+    let mut cursor = n.walk();
+    loop {
+        if f(cursor.node()) && cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
     }
 }
 

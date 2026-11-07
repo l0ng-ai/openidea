@@ -1,7 +1,5 @@
-//! `<script>` regions of Vue SFCs and HTML documents (see
-//! `docs/vue-ts-semantic-index.md`): located with the HTML grammar's
-//! `script_element` nodes, then parsed with the TS/JS grammar the block's
-//! `lang` attribute picks. Mirrors `web.rs`'s `css_regions` for `<style>`.
+//! Inline TS/JS `<script>` regions located with the HTML grammar's
+//! `script_element` nodes. The block's `lang` attribute selects the grammar.
 //!
 //! Blocks whose `type` attribute names anything but JavaScript are skipped
 //! (`application/json`, `text/template`, `importmap`, …), as are unknown
@@ -17,7 +15,7 @@ fn lang_grammar(value: &str) -> Option<&'static str> {
     match value {
         "ts" | "typescript" => Some("typescript"),
         "tsx" => Some("tsx"),
-        "" | "js" | "javascript" => Some("javascript"),
+        "" | "js" | "jsx" | "javascript" => Some("javascript"),
         _ => None,
     }
 }
@@ -49,12 +47,13 @@ pub(crate) fn script_regions(tree: &Tree, text: &str) -> Vec<ScriptRegion> {
                             continue;
                         }
                         let (name, value) = attribute(attr, text);
-                        match name {
-                            "lang" => match lang_grammar(&value) {
+                        match name.to_ascii_lowercase().as_str() {
+                            "lang" => match lang_grammar(&value.to_ascii_lowercase()) {
                                 Some(g) => lang = g,
                                 None => skip = true,
                             },
-                            "type" if !is_js_type(&value) => skip = true,
+                            "type" if !is_js_type(&value.trim().to_ascii_lowercase()) => skip = true,
+                            "src" => skip = true,
                             _ => {}
                         }
                     }
@@ -75,18 +74,17 @@ pub(crate) fn script_regions(tree: &Tree, text: &str) -> Vec<ScriptRegion> {
 }
 
 /// An attribute's `(name, value)`; a bare attribute (`setup`) has an empty value.
-fn attribute<'t>(attr: Node<'t>, text: &'t str) -> (&'t str, String) {
+fn attribute<'t>(attr: Node<'t>, text: &'t str) -> (&'t str, &'t str) {
     let mut c = attr.walk();
     let mut name = "";
-    let mut value = String::new();
+    let mut value = "";
     for ch in attr.children(&mut c) {
         match ch.kind() {
             "attribute_name" => name = ch.utf8_text(text.as_bytes()).unwrap_or(""),
-            // The quoted value includes the quotes; strip them.
             "quoted_attribute_value" => {
-                let v = ch.utf8_text(text.as_bytes()).unwrap_or("");
-                value = v.trim_matches(|q| q == '"' || q == '\'').to_string();
+                value = ch.named_child(0).and_then(|v| v.utf8_text(text.as_bytes()).ok()).unwrap_or("");
             }
+            "attribute_value" => value = ch.utf8_text(text.as_bytes()).unwrap_or(""),
             _ => {}
         }
     }

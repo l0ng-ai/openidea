@@ -249,9 +249,8 @@ impl Syntax {
         self.with_web_tree(lang, text, |_, _, tree| web::anchors(tree, text, name)).unwrap_or_default()
     }
 
-    /// The `<script>` regions of a Vue SFC / HTML document (empty for other
-    /// languages): what the project index's module-facts extraction parses
-    /// per block (see `docs/vue-ts-semantic-index.md`).
+    /// Inline TS/JS `<script>` regions of a Vue SFC / HTML document, in
+    /// document order. Empty for other languages or non-JavaScript blocks.
     pub fn script_regions(&self, lang: &LanguageId, text: &str) -> Vec<ScriptRegion> {
         self.with_web_tree(lang, text, |_g, _css, tree| sfc::script_regions(tree, text)).unwrap_or_default()
     }
