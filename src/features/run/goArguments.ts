@@ -42,13 +42,21 @@ export function goTestParts(args: readonly string[]) {
 
 export function withoutGoSelection(flags: readonly string[]): string[] {
   const out: string[] = [];
+  let program = false;
   for (let i = 0; i < flags.length; i++) {
-    if (["-run", "-skip", "-bench", "-fuzz"].includes(flags[i]!)) {
-      i++;
+    const arg = flags[i]!;
+    if (arg === "--") {
+      out.push(...flags.slice(i));
+      break;
+    }
+    if (arg === "-args") program = true;
+    const selector = program ? /^-test\.(run|skip|bench|fuzz)(=|$)/ : /^-(?:test\.)?(run|skip|bench|fuzz)(=|$)/;
+    const match = selector.exec(arg);
+    if (match) {
+      if (match[2] !== "=") i++;
       continue;
     }
-    if (/^-(run|skip|bench|fuzz)=/.test(flags[i]!)) continue;
-    out.push(flags[i]!);
+    out.push(arg);
   }
   return out;
 }
