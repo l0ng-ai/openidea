@@ -1,7 +1,7 @@
 package openidea:plugin@1.3.0;
 
 interface workspace {
-    use types.{error};
+    use types.{error, location};
 
     /// Requests File > Open in this command/event's window (or a new window),
     /// including the usual project trust prompt. Needs no capability.
@@ -29,6 +29,26 @@ interface workspace {
         /// not track it.
         modified: option<u64>,
     }
+
+    /// A symbol in the host's current in-memory project index (new in 1.3).
+    record symbol-info {
+        name: string,
+        /// Host symbol kind, in camelCase (`class`, `method`, `enumMember`, …).
+        kind: string,
+        container: option<string>,
+        location: location,
+    }
+
+    /// Fuzzy symbol search (CamelHump and container-qualified queries) over the
+    /// current index only; never starts or waits for a language server. Results
+    /// may be incomplete while indexing and ranges reflect the indexed text,
+    /// not necessarily unsaved edits. Empty queries return no symbols. Queries
+    /// over 256 UTF-8 bytes are invalid; limit is capped at 1000 (zero is empty).
+    /// Only paths readable under this project's root are returned; external
+    /// content roots are excluded. Cancellation returns cancelled; exceeding the
+    /// current call's deadline fails. A closed project is not-found.
+    /// Requires `project.read`. New in 1.3.
+    symbols: func(project: borrow<project>, query: string, limit: u32) -> result<list<symbol-info>, error>;
 
     /// A project open in the IDE.
     resource project {

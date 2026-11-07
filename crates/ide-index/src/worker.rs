@@ -174,7 +174,10 @@ impl Shared {
             Ok(records) => {
                 let entries: Vec<FileEntry> = records
                     .into_par_iter()
-                    .filter(|(rel, _)| !filter.is_excluded(&root.join(rel), false))
+                    .filter(|(rel, _)| {
+                        let path = root.join(rel);
+                        !filter.is_excluded(&path, false) && dunce::canonicalize(&path).is_ok_and(|real| real == path)
+                    })
                     .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
                     .collect();
                 let mut d = self.data.write();
@@ -420,7 +423,10 @@ impl Shared {
         let mut seen = HashSet::new();
         let mut by_dir: HashMap<PathBuf, HashSet<PathBuf>> = HashMap::new();
         for path in changed {
-            if !seen.insert(path.clone()) {
+            // A watcher path may have a symlink ancestor even when its spelling
+            // is inside the root. Resolve it on the worker before reading it.
+            let Ok(path) = dunce::canonicalize(&path) else { continue };
+            if !filter.contains(&path) || !seen.insert(path.clone()) {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };

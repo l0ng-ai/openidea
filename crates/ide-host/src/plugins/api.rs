@@ -8,11 +8,13 @@ use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
     CommitChange, CommitDraft, EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel,
-    ProcessOutput, Prompt, RepositoryStatus, StatusItem,
+    ProcessChunk, ProcessCommand, ProcessOutput, Prompt, RepositoryStatus, StatusItem,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command as StdCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -48,6 +50,17 @@ pub trait PluginWorkspace: Send + Sync {
     /// `matches`; `None` when no index covers `root` yet (the caller walks the disk instead).
     fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
         None
+    }
+    /// Current index of the project rooted at `root`; never reads disk or calls LSP.
+    fn symbols(
+        &self,
+        _root: &Path,
+        _query: &str,
+        _limit: usize,
+        _cancel: &CancellationToken,
+        _deadline: Instant,
+    ) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
+        Err(HostError::NotFound("no project index is available".into()))
     }
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
@@ -124,6 +137,10 @@ impl SecretStore for FileSecretStore {
 const MAX_RESPONSE: usize = 8 << 20;
 /// Largest stdout / stderr kept from a process.
 const MAX_OUTPUT: usize = 4 << 20;
+/// Most processes one plugin keeps running at once.
+const MAX_PROCESSES: usize = 8;
+/// Most output one stream of a handle holds until the plugin reads it.
+const MAX_PENDING: usize = 1 << 20;
 /// Most files `find-files` walks before giving up.
 const MAX_WALK: usize = 200_000;
 
@@ -176,6 +193,218 @@ enum Waiter {
     Commit(std::sync::mpsc::SyncSender<CommitAnswer>),
 }
 
+/// A process a plugin started and has not released (API 1.3 `process.start`).
+/// Two reader threads copy its output into bounded buffers; the handle lives
+/// as long as the plugin instance that started it.
+struct Proc {
+    client: Option<String>,
+    state: Mutex<ProcState>,
+}
+
+struct ProcState {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    /// What it printed and the plugin hasn't read yet.
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    /// Its exit status once it ended (a code, or -1 when a signal ended it).
+    status: Option<i32>,
+    /// Reader threads still copying its pipes into the buffers above.
+    readers: usize,
+}
+
+/// Which pipe a reader thread drains.
+#[derive(Clone, Copy)]
+enum Stream {
+    Out,
+    Err,
+}
+
+impl Proc {
+    /// Copies `pipe` into the matching buffer until it closes, keeping the last
+    /// [`MAX_PENDING`] bytes, then notes that the reader finished.
+    fn read(self: &Arc<Self>, mut pipe: impl Read + Send + 'static, stream: Stream) {
+        self.state.lock().readers += 1;
+        let this = Arc::clone(self);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8 << 10];
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let mut state = this.state.lock();
+                        let out = match stream {
+                            Stream::Out => &mut state.stdout,
+                            Stream::Err => &mut state.stderr,
+                        };
+                        out.extend_from_slice(&buf[..n]);
+                        let over = out.len().saturating_sub(MAX_PENDING);
+                        if over > 0 {
+                            out.drain(..over);
+                            let continuation = out.iter().take_while(|b| (**b & 0xC0) == 0x80).count();
+                            out.drain(..continuation);
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            this.state.lock().readers -= 1;
+        });
+    }
+
+    /// Notes its exit status if it ended (dropping its stdin then).
+    fn reap(&self) -> Result<(), HostError> {
+        let mut state = self.state.lock();
+        if state.status.is_none() {
+            match try_wait_process(&mut state.child) {
+                Ok(Some(status)) => {
+                    state.status = Some(status.code().unwrap_or(-1));
+                    state.stdin = None;
+                }
+                Ok(None) => {}
+                Err(e) => return Err(failed(e)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Ends it and reaps it, so its status is known right away; killing twice
+    /// does nothing.
+    fn kill(&self) {
+        let mut state = self.state.lock();
+        state.stdin = None;
+        if state.status.is_none() {
+            ide_core::process::kill_tree(&mut state.child);
+            if let Ok(status) = state.child.wait() {
+                state.status = Some(status.code().unwrap_or(-1));
+            }
+        }
+    }
+
+    /// What it printed since the last call, each stream at most `max` bytes.
+    fn chunk(&self, max: usize) -> ProcessChunk {
+        let mut state = self.state.lock();
+        let eof = state.readers == 0;
+        ProcessChunk {
+            stdout: take_text(&mut state.stdout, max, eof),
+            stderr: take_text(&mut state.stderr, max, eof),
+            status: state.status,
+        }
+    }
+}
+
+/// Decodes complete characters within the byte budget, retaining partial UTF-8
+/// until the reader gets the rest (or EOF). Even a tiny budget makes progress.
+fn take_text(buf: &mut Vec<u8>, max: usize, eof: bool) -> String {
+    let limit = max.clamp(1, MAX_PENDING);
+    let mut out = String::new();
+    let mut consumed = 0;
+    while consumed < buf.len() && out.len() < limit {
+        let bytes = &buf[consumed..];
+        let (valid, invalid) = match std::str::from_utf8(bytes) {
+            Ok(text) => (text.len(), None),
+            Err(e) => (e.valid_up_to(), Some(e.error_len())),
+        };
+        let text = std::str::from_utf8(&bytes[..valid]).expect("valid prefix");
+        let mut end = text.len().min(limit - out.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 && out.is_empty() && !text.is_empty() {
+            end = text.chars().next().unwrap().len_utf8();
+        }
+        out.push_str(&text[..end]);
+        consumed += end;
+        if end < valid {
+            break;
+        }
+        match invalid {
+            Some(len) if len.is_some() || eof => {
+                if !out.is_empty() && out.len() + '\u{fffd}'.len_utf8() > limit {
+                    break;
+                }
+                out.push('\u{fffd}');
+                consumed += len.unwrap_or(bytes.len() - valid);
+            }
+            _ => break,
+        }
+    }
+    buf.drain(..consumed);
+    out
+}
+
+/// Ends descendants before reaping an exited leader, while its process id is
+/// still reserved. Otherwise inherited pipes can keep a completed call waiting.
+fn try_wait_process(child: &mut Child) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[cfg(unix)]
+    {
+        use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+        let status = waitid(
+            WaitId::Pid(Pid::from_child(child)),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        )?;
+        if status.is_none() {
+            return Ok(None);
+        }
+        ide_core::process::kill_tree(child);
+        child.try_wait()
+    }
+    #[cfg(not(unix))]
+    {
+        let status = child.try_wait()?;
+        if status.is_some() {
+            ide_core::process::kill_tree(child);
+        }
+        Ok(status)
+    }
+}
+
+fn env_name_eq(a: &std::ffi::OsStr, b: &std::ffi::OsStr) -> bool {
+    #[cfg(windows)]
+    {
+        // Use the platform's Command key comparison, including non-ASCII names.
+        let mut probe = StdCommand::new("unused");
+        probe.env(a, "").env(b, "");
+        probe.get_envs().count() == 1
+    }
+    #[cfg(not(windows))]
+    {
+        a == b
+    }
+}
+
+/// Validates against the environment after `prepare`, then freezes that snapshot
+/// so only new keys are added, including when the host environment changes later.
+fn append_process_env(command: &mut StdCommand, env: &[(String, String)]) -> Result<(), HostError> {
+    if env.len() > 64 {
+        return Err(HostError::Invalid("at most 64 environment variables".into()));
+    }
+    let mut inherited: Vec<_> = std::env::vars_os().collect();
+    for (key, value) in command.get_envs() {
+        inherited.retain(|(k, _)| !env_name_eq(k, key));
+        if let Some(value) = value {
+            inherited.push((key.to_owned(), value.to_owned()));
+        }
+    }
+    for (key, value) in env {
+        if key.is_empty() || key.len() > 256 || key.contains(['=', '\0']) {
+            return Err(HostError::Invalid(format!("{key:?} is not an environment variable name")));
+        }
+        if value.len() > 4096 || value.contains('\0') {
+            return Err(HostError::Invalid(format!("the value of {key:?} is too long or holds a NUL")));
+        }
+        if inherited.iter().any(|(k, _)| env_name_eq(k, std::ffi::OsStr::new(key))) {
+            return Err(HostError::Invalid(format!(
+                "environment variable {key:?} already exists; only new variables may be added"
+            )));
+        }
+        inherited.push((key.into(), value.into()));
+    }
+    command.env_clear().envs(inherited);
+    Ok(())
+}
+
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
@@ -184,6 +413,10 @@ pub(super) struct Shared {
     pub data_dir: PathBuf,
     tasks: Mutex<HashMap<u64, TaskEntry>>,
     next_task: AtomicU64,
+    /// (plugin, handle id) → the processes it started and has not released.
+    processes: Mutex<HashMap<(String, u64), Arc<Proc>>>,
+    next_process: AtomicU64,
+    process_shutdowns: Mutex<Vec<std::thread::JoinHandle<()>>>,
     prompts: Mutex<HashMap<u64, PromptEntry>>,
     /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
     prompts_blocked: Mutex<BTreeSet<String>>,
@@ -223,6 +456,9 @@ impl Shared {
             data_dir,
             tasks: Mutex::default(),
             next_task: AtomicU64::new(1),
+            processes: Mutex::default(),
+            next_process: AtomicU64::new(1),
+            process_shutdowns: Mutex::default(),
             prompts: Mutex::default(),
             prompts_blocked: Mutex::default(),
             next_prompt: AtomicU64::new(1),
@@ -295,6 +531,33 @@ impl Shared {
         self.prompts.lock().retain(|_, entry| entry.client != client);
         drop(closed);
         self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
+        let mine: Vec<_> = {
+            let mut processes = self.processes.lock();
+            let keys: Vec<_> = processes
+                .iter()
+                .filter(|(_, p)| p.client.as_deref() == Some(client))
+                .map(|(key, _)| key.clone())
+                .collect();
+            keys.iter().filter_map(|key| processes.remove(key)).collect()
+        };
+        if !mine.is_empty() {
+            // Window destruction runs on the UI thread; tree shutdown may wait.
+            let worker = std::thread::spawn(move || {
+                for proc in mine {
+                    proc.kill();
+                }
+            });
+            let mut workers = self.process_shutdowns.lock();
+            workers.retain(|worker| !worker.is_finished());
+            workers.push(worker);
+        }
+    }
+
+    pub fn finish_process_shutdowns(&self) {
+        let workers = std::mem::take(&mut *self.process_shutdowns.lock());
+        for worker in workers {
+            let _ = worker.join();
+        }
     }
 
     /// A window labelled `client` is being created (labels are reused after a close).
@@ -305,6 +568,7 @@ impl Shared {
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
+        self.kill_processes(plugin);
         let removed: Vec<String> = {
             let mut status = self.status.lock();
             let ids: Vec<String> = status.keys().filter(|(p, _)| p == plugin).map(|(_, id)| id.clone()).collect();
@@ -342,6 +606,19 @@ impl Shared {
         }
         if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+    }
+
+    /// Ends every process `plugin` started: its handles go with its instance
+    /// (it stopped, was disabled, or was reclaimed while idle).
+    pub fn kill_processes(&self, plugin: &str) {
+        let mine: Vec<Arc<Proc>> = {
+            let mut processes = self.processes.lock();
+            let keys: Vec<(String, u64)> = processes.keys().filter(|(p, _)| p == plugin).cloned().collect();
+            keys.iter().filter_map(|k| processes.remove(k)).collect()
+        };
+        for proc in mine {
+            proc.kill();
         }
     }
 
@@ -684,6 +961,23 @@ impl PluginApi {
             }
         }
     }
+    /// Where `cmd` runs: the project root it names, else the plugin's data
+    /// directory (created as needed).
+    fn spawn_dir(&self, cwd: Option<&Path>) -> PathBuf {
+        let dir = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    /// The process handle `id`, if this plugin started it and it is still open.
+    fn process(&self, id: u64) -> Result<Arc<Proc>, HostError> {
+        self.shared
+            .processes
+            .lock()
+            .get(&(self.id().to_owned(), id))
+            .cloned()
+            .ok_or_else(|| HostError::NotFound(format!("no process {id}: it was closed, or belongs to another plugin")))
+    }
 }
 
 /// The changes `selection` commits, diffed repository by repository.
@@ -1014,6 +1308,26 @@ impl HostApi for PluginApi {
         }
     }
 
+    fn symbols(
+        &self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
+        if query.len() > 256 {
+            return Err(HostError::Invalid("symbol query exceeds 256 UTF-8 bytes".into()));
+        }
+        self.shared.workspace().ok_or_else(|| HostError::NotFound("no project index is available".into()))?.symbols(
+            root,
+            query,
+            limit.min(1000),
+            cancel,
+            deadline,
+        )
+    }
+
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError> {
         let matcher = globset::GlobBuilder::new(glob)
             .literal_separator(true)
@@ -1124,24 +1438,24 @@ impl HostApi for PluginApi {
 
     fn run_process(
         &self,
-        program: &str,
-        args: Vec<String>,
+        cmd: ProcessCommand,
         cwd: Option<&Path>,
         stdin: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError> {
-        let binary = self.approved_program(program)?;
-        let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
-        let _ = std::fs::create_dir_all(&cwd);
-        let mut cmd = std::process::Command::new(&binary);
-        ide_core::process::prepare(&mut cmd);
-        let mut child = cmd
-            .args(&args)
+        let binary = self.approved_program(&cmd.program)?;
+        let cwd = self.spawn_dir(cwd);
+        let mut command = StdCommand::new(&binary);
+        ide_core::process::prepare(&mut command);
+        append_process_env(&mut command, &cmd.env)?;
+        ide_core::process::own_group(&mut command);
+        let mut child = command
+            .args(&cmd.args)
             .current_dir(&cwd)
-            .stdin(if stdin.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| HostError::Failed(format!("{}: {e}", binary.display())))?;
         if let (Some(input), Some(mut pipe)) = (stdin, child.stdin.take()) {
@@ -1150,30 +1464,36 @@ impl HostApi for PluginApi {
                 let _ = pipe.write_all(input.as_bytes());
             });
         }
-        let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        let read = |pipe: Option<Box<dyn Read + Send>>| {
             std::thread::spawn(move || {
-                use std::io::Read;
                 let mut out = Vec::new();
                 if let Some(p) = pipe {
-                    let _ = p.take(MAX_OUTPUT as u64).read_to_end(&mut out);
+                    let mut p = p;
+                    let _ = p.by_ref().take(MAX_OUTPUT as u64).read_to_end(&mut out);
+                    let _ = std::io::copy(&mut p, &mut std::io::sink());
                 }
-                String::from_utf8_lossy(&out).into_owned()
+                let mut text = String::from_utf8_lossy(&out).into_owned();
+                let mut end = text.len().min(MAX_OUTPUT);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                text.truncate(end);
+                text
             })
         };
-        let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
-        let stderr = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+        let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+        let stderr = read(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
         let deadline = Instant::now() + timeout;
         let status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| HostError::Failed(e.to_string()))? {
+            if let Some(status) = try_wait_process(&mut child).map_err(|e| HostError::Failed(e.to_string()))? {
                 break status;
             }
             if cancel.is_cancelled() || Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
+                ide_core::process::kill_tree(&mut child);
                 return Err(if cancel.is_cancelled() {
                     HostError::Cancelled
                 } else {
-                    HostError::Failed(format!("{program} timed out after {timeout:?}"))
+                    HostError::Failed(format!("{} timed out after {timeout:?}", cmd.program))
                 });
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -1203,6 +1523,169 @@ impl HostApi for PluginApi {
         if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
+    }
+    fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError> {
+        let binary = self.approved_program(&cmd.program)?;
+        let cwd = self.spawn_dir(cwd);
+        if client.is_some_and(|c| self.shared.closed_clients.lock().contains(c)) {
+            return Err(HostError::Cancelled);
+        }
+        {
+            let processes = self.shared.processes.lock();
+            let running = processes.keys().filter(|(plugin, _)| plugin == self.id()).count();
+            if running >= MAX_PROCESSES {
+                return Err(HostError::Invalid(format!(
+                    "at most {MAX_PROCESSES} processes may run at once: release one first"
+                )));
+            }
+        }
+        let mut command = StdCommand::new(&binary);
+        ide_core::process::prepare(&mut command);
+        append_process_env(&mut command, &cmd.env)?;
+        ide_core::process::own_group(&mut command);
+        let mut child = command
+            .args(&cmd.args)
+            .current_dir(&cwd)
+            // Always piped: `write` may come later, and a plugin that never
+            // writes closes it (or loses it when it releases the handle).
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| HostError::Failed(format!("{}: {e}", binary.display())))?;
+        let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+        let proc = Arc::new(Proc {
+            client: client.map(str::to_owned),
+            state: Mutex::new(ProcState {
+                stdin: child.stdin.take(),
+                child,
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                status: None,
+                readers: 0,
+            }),
+        });
+        if let Some(pipe) = stdout {
+            proc.read(pipe, Stream::Out);
+        }
+        if let Some(pipe) = stderr {
+            proc.read(pipe, Stream::Err);
+        }
+        let closed = self.shared.closed_clients.lock();
+        if client.is_some_and(|c| closed.contains(c)) {
+            drop(closed);
+            proc.kill();
+            return Err(HostError::Cancelled);
+        }
+        let id = self.shared.next_process.fetch_add(1, Ordering::Relaxed);
+        self.shared.processes.lock().insert((self.id().to_owned(), id), proc);
+        drop(closed);
+        Ok(id)
+    }
+
+    fn poll_process(&self, id: u64, max: usize) -> Result<ProcessChunk, HostError> {
+        let proc = self.process(id)?;
+        proc.reap()?;
+        Ok(proc.chunk(max))
+    }
+
+    fn write_process(
+        &self,
+        id: u64,
+        text: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let proc = self.process(id)?;
+        proc.reap()?;
+        let mut pipe = {
+            let mut state = proc.state.lock();
+            if state.status.is_some() {
+                return Err(HostError::Failed("the process already ended".into()));
+            }
+            state.stdin.take().ok_or_else(|| HostError::Failed("its stdin is closed".into()))?
+        };
+        let input = text.to_owned();
+        let writer = proc.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let result = pipe.write_all(input.as_bytes()).and_then(|()| pipe.flush());
+            let mut state = writer.state.lock();
+            if state.status.is_none() {
+                state.stdin = Some(pipe);
+            }
+            let _ = tx.send(result);
+        });
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancel.is_cancelled() || Instant::now() >= deadline {
+                proc.kill();
+                return Err(if cancel.is_cancelled() {
+                    HostError::Cancelled
+                } else {
+                    HostError::Failed("stdin write timed out".into())
+                });
+            }
+            match rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(result) => return result.map_err(|e| HostError::Failed(format!("stdin: {e}"))),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => return Err(HostError::Failed("stdin writer stopped".into())),
+            }
+        }
+    }
+
+    fn close_process_stdin(&self, id: u64) -> Result<(), HostError> {
+        let proc = self.process(id)?;
+        proc.reap()?;
+        let mut state = proc.state.lock();
+        if state.status.is_some() {
+            return Err(HostError::Failed("the process already ended".into()));
+        }
+        state.stdin = None;
+        Ok(())
+    }
+
+    fn release_process(&self, id: u64) {
+        let proc = self.shared.processes.lock().remove(&(self.id().to_owned(), id));
+        if let Some(proc) = proc {
+            proc.kill();
+        }
+    }
+
+    fn kill_process(&self, id: u64) -> Result<(), HostError> {
+        self.process(id)?.kill();
+        Ok(())
+    }
+
+    fn wait_process(
+        &self,
+        id: u64,
+        max: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<ProcessChunk, HostError> {
+        let proc = self.process(id)?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            proc.reap()?;
+            let (ended, readers) = {
+                let state = proc.state.lock();
+                (state.status.is_some(), state.readers)
+            };
+            // Its output is only complete once its pipes reached the end too.
+            if ended && readers == 0 {
+                break;
+            }
+            if cancel.is_cancelled() {
+                return Err(HostError::Cancelled);
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(proc.chunk(max))
     }
 
     fn task_begin(&self, client: Option<&str>, title: String, cancellable: bool, cancel: CancellationToken) -> u64 {
@@ -1418,6 +1901,57 @@ impl PluginWorkspace for HostWorkspace {
         // The index of the project rooted at `root` (a workspace member's files are in its own).
         let project = HostWorkspace::projects(self).into_iter().find(|p| p.root == root)?;
         project.index.files_matching(root, matches, limit)
+    }
+
+    fn symbols(
+        &self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
+        let project = HostWorkspace::projects(self)
+            .into_iter()
+            .find(|p| p.root == root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        let stopped = || cancel.is_cancelled() || Instant::now() >= deadline;
+        let interrupted = || {
+            if cancel.is_cancelled() {
+                HostError::Cancelled
+            } else {
+                HostError::Failed("symbol search timed out".into())
+            }
+        };
+        let symbols = project
+            .index
+            .find_symbols_until(
+                query,
+                ide_index::SymbolFilter::All,
+                limit.min(1000),
+                &|path| path.starts_with(root),
+                &stopped,
+            )
+            .ok_or_else(interrupted)?;
+        let mut out = Vec::new();
+        for s in symbols {
+            if stopped() {
+                return Err(interrupted());
+            }
+            out.push(ide_plugin::SymbolInfo {
+                name: s.name,
+                kind: serde_json::to_value(s.kind)
+                    .ok()
+                    .and_then(|k| k.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".into()),
+                container: s.container,
+                location: ide_plugin::Location { path: s.path.0, range: s.range },
+            });
+        }
+        if stopped() {
+            return Err(interrupted());
+        }
+        Ok(out)
     }
 
     fn document(&self, path: &Path) -> Option<(u64, String)> {
@@ -1643,6 +2177,182 @@ mod tests {
             api.find_files(&other, ".config/tool/*.xml", 10).unwrap(),
             [to_ipc(&other.join(".config/tool/index.xml"))]
         );
+    }
+
+    #[test]
+    fn process_environment_only_adds_variables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = ide_core::process::find_executable(
+            "git",
+            &ide_core::process::user_path().or_else(|| std::env::var_os("PATH")).unwrap(),
+        )
+        .expect("git on PATH");
+        let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
+        pins.write().insert(("acme.lint".into(), "process:git".into()), ProgramPin::approve(&binary).unwrap());
+        let api = api(tmp.path(), pins);
+        let inherited = std::env::vars_os()
+            .find(|(key, _)| key != "PATH" && key.to_str().is_some_and(|key| !key.is_empty() && !key.contains('=')))
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap();
+        for key in ["PATH".to_owned(), inherited] {
+            let cmd = ProcessCommand {
+                program: "git".into(),
+                env: vec![(key.clone(), "replacement".into())],
+                ..Default::default()
+            };
+            let err = api
+                .run_process(cmd.clone(), None, None, &CancellationToken::new(), Duration::from_secs(5))
+                .unwrap_err();
+            assert!(matches!(err, HostError::Invalid(ref message) if message.contains(&key)), "{err}");
+            let err = api.start_process(cmd, None, None).unwrap_err();
+            assert!(matches!(err, HostError::Invalid(ref message) if message.contains(&key)), "{err}");
+        }
+    }
+
+    #[test]
+    fn process_environment_uses_prepared_values_and_windows_key_rules() {
+        let mut cmd = StdCommand::new("unused");
+        ide_core::process::prepare(&mut cmd);
+        cmd.env("OPENIDEA_PREPARED_ENV", "login-shell");
+        let err = append_process_env(&mut cmd, &[("OPENIDEA_PREPARED_ENV".into(), "override".into())]).unwrap_err();
+        assert!(err.to_string().contains("OPENIDEA_PREPARED_ENV"));
+        for name in ["", "BAD=KEY", "BAD\0KEY"] {
+            assert!(append_process_env(&mut cmd, &[(name.into(), "value".into())]).is_err());
+        }
+        for value in ["bad\0value".to_owned(), "x".repeat(4097)] {
+            assert!(append_process_env(&mut cmd, &[("OPENIDEA_NEW_ENV".into(), value)]).is_err());
+        }
+        assert!(
+            append_process_env(
+                &mut cmd,
+                &[("OPENIDEA_NEW_ENV".into(), "a".into()), ("OPENIDEA_NEW_ENV".into(), "b".into())]
+            )
+            .is_err()
+        );
+        assert_eq!(env_name_eq("PATH".as_ref(), "Path".as_ref()), cfg!(windows));
+        #[cfg(windows)]
+        {
+            assert!(append_process_env(&mut cmd, &[("pAtH".into(), "override".into())]).is_err());
+            assert!(env_name_eq("Ä_KEY".as_ref(), "ä_key".as_ref()));
+        }
+        cmd.env_remove("OPENIDEA_REMOVED_ENV");
+        append_process_env(&mut cmd, &[("OPENIDEA_REMOVED_ENV".into(), "added".into())]).unwrap();
+        assert_eq!(cmd.get_envs().find(|(k, _)| *k == "OPENIDEA_REMOVED_ENV").unwrap().1, Some("added".as_ref()));
+    }
+
+    #[test]
+    fn process_output_preserves_partial_utf8_and_bounds_replacement_text() {
+        let mut bytes = vec![0xe4, 0xb8];
+        assert_eq!(take_text(&mut bytes, 1, false), "");
+        bytes.extend_from_slice(&[0xad, b'x']);
+        assert_eq!(take_text(&mut bytes, 1, false), "中");
+        assert_eq!(take_text(&mut bytes, 0, false), "x");
+        let mut bytes = vec![0xff; MAX_PENDING];
+        let text = take_text(&mut bytes, MAX_PENDING, true);
+        assert!(text.len() <= MAX_PENDING);
+        assert!(!bytes.is_empty());
+        assert_eq!(take_text(&mut vec![0xe4, 0xb8], 8, true), "�");
+    }
+
+    #[cfg(unix)]
+    fn shell_api(dir: &Path) -> PluginApi {
+        let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
+        pins.write()
+            .insert(("acme.lint".into(), "process:sh".into()), ProgramPin::approve(Path::new("/bin/sh")).unwrap());
+        api(dir, pins)
+    }
+
+    #[cfg(unix)]
+    fn shell(script: &str) -> ProcessCommand {
+        ProcessCommand { program: "sh".into(), args: vec!["-c".into(), script.into()], env: Vec::new() }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_handles_are_bounded_scoped_and_released() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = shell_api(tmp.path());
+        let mut ids = Vec::new();
+        for _ in 0..MAX_PROCESSES {
+            ids.push(api.start_process(shell("exec cat"), None, Some("main")).unwrap());
+        }
+        assert!(matches!(api.start_process(shell("exec cat"), None, None), Err(HostError::Invalid(_))));
+        let proc = api.process(ids[0]).unwrap();
+        api.release_process(ids[0]);
+        assert!(proc.state.lock().child.try_wait().unwrap().is_some());
+        assert!(api.process(ids[0]).is_err());
+        let other = api.start_process(shell("exec cat"), None, Some("other")).unwrap();
+        api.shared.forget_client("main");
+        assert!(api.process(ids[1]).is_err());
+        assert!(api.process(other).is_ok());
+        assert!(matches!(api.start_process(shell("exec cat"), None, Some("main")), Err(HostError::Cancelled)));
+        api.shared.kill_processes(api.id());
+        assert!(api.shared.processes.lock().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_stdin_timeout_and_stop_do_not_deadlock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = Arc::new(shell_api(tmp.path()));
+        for stop in [false, true] {
+            let id = api.start_process(shell("exec sleep 60"), None, Some("main")).unwrap();
+            let proc = api.process(id).unwrap();
+            let writer = api.clone();
+            let thread = std::thread::spawn(move || {
+                writer.write_process(id, &"x".repeat(1 << 20), &CancellationToken::new(), Duration::from_millis(150))
+            });
+            if stop {
+                std::thread::sleep(Duration::from_millis(30));
+                api.shared.kill_processes(api.id());
+            }
+            assert!(thread.join().unwrap().is_err());
+            assert!(proc.state.lock().child.try_wait().unwrap().is_some());
+            api.release_process(id);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_parent_exit_closes_descendant_pipes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = shell_api(tmp.path());
+        let token = CancellationToken::new();
+        let before = Instant::now();
+        let out =
+            api.run_process(shell("sleep 60 & echo done"), None, None, &token, Duration::from_millis(300)).unwrap();
+        assert_eq!(out.status, Some(0));
+        assert_eq!(out.stdout.trim(), "done");
+        assert!(before.elapsed() < Duration::from_secs(5));
+        let id = api.start_process(shell("sleep 60 & echo done"), None, None).unwrap();
+        let out = api.wait_process(id, MAX_PENDING, Duration::from_millis(300), &token).unwrap();
+        assert_eq!(out.status, Some(0));
+        assert_eq!(out.stdout.trim(), "done");
+        assert_eq!(api.process(id).unwrap().state.lock().readers, 0);
+        api.release_process(id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_output_is_drained_and_retention_is_bounded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = shell_api(tmp.path());
+        let token = CancellationToken::new();
+        let cmd = shell("head -c 5242880 /dev/zero; head -c 5242880 /dev/zero >&2");
+        let out = api.run_process(cmd.clone(), None, None, &token, Duration::from_secs(5)).unwrap();
+        assert_eq!(out.status, Some(0));
+        assert_eq!((out.stdout.len(), out.stderr.len()), (MAX_OUTPUT, MAX_OUTPUT));
+        let id = api.start_process(cmd, None, None).unwrap();
+        let out = api.wait_process(id, MAX_PENDING, Duration::from_secs(5), &token).unwrap();
+        assert_eq!(out.status, Some(0));
+        assert_eq!((out.stdout.len(), out.stderr.len()), (MAX_PENDING, MAX_PENDING));
+        let state = api.process(id).unwrap();
+        let state = state.state.lock();
+        assert!(state.stdout.is_empty() && state.stderr.is_empty());
+        drop(state);
+        api.release_process(id);
     }
 
     #[test]

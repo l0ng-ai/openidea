@@ -114,6 +114,72 @@ async fn kmp_lsp_java_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires jdtls on PATH and a compatible JDK"]
+async fn lombok_generated_members_appear_in_document_symbols() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let source = include_str!("fixtures/LombokSymbols.java");
+    let path = root.join("src/demo/LombokSymbols.java");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let agent = dunce::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../java/lombok/lombok-1.18.48-openidea.3.jar"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".project"),
+        "<projectDescription><name>lombok-symbols</name><buildSpec><buildCommand>\
+         <name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures>\
+         <nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>",
+    )
+    .unwrap();
+    let library = agent.to_string_lossy().replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
+    std::fs::write(
+        root.join(".classpath"),
+        format!(
+            "<classpath><classpathentry kind=\"src\" path=\"src\"/>\
+             <classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/>\
+             <classpathentry kind=\"lib\" path=\"{library}\"/>\
+             <classpathentry kind=\"output\" path=\"bin\"/></classpath>"
+        ),
+    )
+    .unwrap();
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_JDTLS") {
+        server.command = bin;
+    }
+    server.args.extend([
+        "-data".into(),
+        root.join("workspace").to_string_lossy().into_owned(),
+        format!("--jvm-arg=-javaagent:{}", agent.display()),
+    ]);
+    let (mgr, _) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
+    let expected: &[(&str, &[&str])] = &[
+        ("User", &["getName()", "setName(String)", "getAge()", "setAge(int)", "User(String, int)", "builder()"]),
+        ("UserBuilder", &["name(String)", "age(int)", "build()"]),
+        ("Profile", &["Profile(String)", "getId()", "getName()", "setName(String)"]),
+        ("Logged", &["log", "write()"]),
+        ("PlainUser", &["PlainUser(String)", "getName()", "setName(String)"]),
+    ];
+    fn has_members(items: &[ide_core::OutlineItem], owner: &str, names: &[&str]) -> bool {
+        items.iter().any(|item| {
+            (item.name == owner && names.iter().all(|n| item.children.iter().any(|c| c.name == *n)))
+                || has_members(&item.children, owner, names)
+        })
+    }
+    retry("Lombok document symbols", Duration::from_secs(120), || async {
+        let items = mgr.document_symbols(doc).await.ok().flatten()?;
+        expected.iter().all(|(owner, names)| has_members(&items, owner, names)).then_some(())
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires jdtls on PATH and a compatible JDK"]
 async fn intellij_java_formatter_preserves_manual_breaks_and_wraps_long_lines() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();

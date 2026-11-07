@@ -551,6 +551,103 @@ fn fs_write_reaches_only_the_granted_paths() {
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
+/// A program kept running behind a handle: the plugin writes its stdin, closes
+/// it, and waits for the exit status and what the program printed. A one-off run
+/// passes the environment it names.
+#[test]
+fn a_plugin_keeps_a_process_running_behind_a_handle() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    f.host.set_capability("misbehave", "process:git", false).unwrap();
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap_err().contains("process:git"));
+    for command in ["envrun", "envstart", "child"] {
+        let err = f.run("misbehave", command, None).unwrap_err();
+        assert!(err.contains("process:git"), "{command}: {err}");
+    }
+    // The fixture declares `process:git` as optional: it needs a program that
+    // reads stdin and reports its environment. Machines running these tests have
+    // git; without one, there is nothing to run and nothing to check.
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+
+    let out = f.run("misbehave", "child", None).expect("the handle works").expect("a result");
+    let (hash, status) = out.split_once(' ').unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(hash.len(), 40, "a sha1 of what was written: {out}");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{out}");
+    assert_eq!(status, "Some(0)", "it ended by itself: {out}");
+
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap().unwrap().starts_with("git version"));
+    let ident = f.run("misbehave", "envrun", None).expect("a run with extra environment").expect("a result");
+    assert_eq!(ident.trim(), "added by the plugin");
+    assert_eq!(f.run("misbehave", "envstart", None).unwrap().unwrap().trim(), "added by the plugin");
+    for command in ["envdeny-run", "envdeny-start"] {
+        let inherited = std::env::vars().find(|(key, _)| key != "PATH" && !key.contains('=')).unwrap().0;
+        for key in ["PATH", inherited.as_str(), "", "BAD=KEY", "BAD\0KEY"] {
+            let err = f.run("misbehave", command, Some(key)).unwrap_err();
+            assert!(err.contains("environment variable"), "{command} {key:?}: {err}");
+        }
+    }
+    // Dropping a resource returns the slot; the limit is simultaneous handles.
+    for _ in 0..10 {
+        f.run("misbehave", "childkeep", None).unwrap();
+        assert_eq!(f.run("misbehave", "childpoll", None).unwrap().as_deref(), Some("None"));
+        f.run("misbehave", "childdrop", None).unwrap();
+    }
+    for _ in 0..8 {
+        f.run("misbehave", "childkeep", None).unwrap();
+    }
+    assert!(f.run("misbehave", "childkeep", None).unwrap_err().contains("at most 8"));
+    f.run("misbehave", "childdrop", None).unwrap();
+    f.run("misbehave", "childkeep", None).unwrap();
+    f.host.forget_client("main");
+    assert!(f.run("misbehave", "childpoll", None).unwrap_err().contains("no process"));
+    assert!(f.run("misbehave", "childkeep", None).is_err(), "late starts are cancelled");
+    f.host.reopen_client("main");
+    f.run("misbehave", "childdrop", None).unwrap();
+
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_processes_end_with_their_owner() {
+    for mode in ["disable", "unload", "shutdown", "reclaim", "trap", "window"] {
+        let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+        f.install(&misbehave_pkg());
+        f.host.set_capability("misbehave", "process:git", true).unwrap();
+        let marker = format!("--path={}/process-{mode}", f.project.display());
+        let alive = || {
+            let ps = std::process::Command::new("ps").args(["-axo", "command="]).output().unwrap();
+            assert!(ps.status.success());
+            String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
+        };
+        f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        assert!(alive(), "{mode}: the process started");
+        match mode {
+            "disable" => f.host.set_enabled("misbehave", false).unwrap(),
+            "unload" => f.host.uninstall("misbehave").unwrap(),
+            "shutdown" => f.host.shutdown(),
+            "reclaim" => {
+                std::thread::sleep(Duration::from_millis(75));
+                f.host.tick();
+                assert_eq!(f.host.instances(), 0);
+            }
+            "trap" => {
+                assert!(f.run("misbehave", "panic", None).is_err());
+            }
+            "window" => f.host.forget_client("main"),
+            _ => unreachable!(),
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!alive(), "{mode}: the process must end with its owner");
+    }
+}
+
 /// A missing capability is an error the plugin can handle, not a trap.
 #[test]
 fn ungranted_capabilities_are_denied_not_trapped() {
@@ -827,7 +924,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 14, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 23, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -4335,4 +4432,113 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
     let err =
         f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
     assert!(err.message.contains("limited to"), "{}", err.message);
+}
+
+#[test]
+fn marker_icons_ship_sanitized_light_and_dark_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    let manifest = |engine: &str, icon: &str, dark: &str| {
+        format!(
+            r#"
+id = "marker-icons"
+name = "Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "resource"
+icon = "{icon}"
+iconDark = "{dark}"
+"#
+        )
+    };
+    let clean = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+    std::fs::write(pkg.join("icons/resource.svg"), clean).unwrap();
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    for (engine, icon, dark) in [
+        ("^1.0", "icons/resource.svg", "icons/resource_dark.svg"),
+        ("^1.3", "../outside.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/missing.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/resource.svg", "icons/missing.svg"),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, icon, dark)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.3", "icons/resource.svg", "icons/resource_dark.svg")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.svg");
+        std::fs::write(&outside, clean).unwrap();
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+        std::os::unix::fs::symlink(outside, pkg.join("icons/resource_dark.svg")).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+    }
+    let mut unsafe_svgs = vec![
+        "<svg><script>alert(1)</script></svg>".to_owned(),
+        "<svg onload=\"alert(1)\"/>".to_owned(),
+        "<svg><foreignObject/></svg>".to_owned(),
+        "<svg><rect style=\"fill:url(https://evil/x)\"/></svg>".to_owned(),
+        "<svg><rect style=\"background-image:image-set('https://evil/x' 1x)\"/></svg>".to_owned(),
+        format!("<svg>{}</svg>", " ".repeat(64 << 10)),
+    ];
+    for attr in ["href", "xlink:href"] {
+        for scheme in ["http://evil/x", "data:image/svg+xml,x", "javascript:alert(1)"] {
+            unsafe_svgs.push(format!("<svg><use {attr}=\"{scheme}\"/></svg>"));
+        }
+    }
+    for path in ["icons/resource.svg", "icons/resource_dark.svg"] {
+        for svg in &unsafe_svgs {
+            std::fs::write(pkg.join(path), svg).unwrap();
+            assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {path}: {svg}");
+        }
+        std::fs::write(pkg.join(path), clean).unwrap();
+    }
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert_eq!(assets.len(), 2);
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("<rect")));
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/dark") && svg.contains("<circle")));
+    let revision = f.host.ui_items("markerIcons")[0].decl["revision"].clone();
+    std::fs::write(pkg.join("icons/resource.svg"), clean.replace("width=\"16\"", "width=\"14\"")).unwrap();
+    let updated = f.install(&pkg);
+    assert!(updated.error.is_none(), "{:?}", updated.error);
+    assert_ne!(f.host.ui_items("markerIcons")[0].decl["revision"], revision);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("width=\"14\"")));
+    std::fs::remove_dir_all(pkg).unwrap();
+    assert_eq!(f.host.assets("marker-icons", "markerIcon/resource/").unwrap(), assets);
+    f.host.set_enabled("marker-icons", false).unwrap();
+    assert!(f.host.assets("marker-icons", "markerIcon/resource/").is_err());
+}
+
+#[test]
+fn marker_providers_preserve_names_and_package_paths() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"line-markers\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("markers.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "marker-icons\nordinary\ncustom\nlegacy".into(),
+    };
+    assert!(eventually(|| f.host.provide_line_markers(&doc).len() == 4));
+    let markers = f.host.provide_line_markers(&doc);
+    assert_eq!(
+        markers.iter().map(|(_, m)| m.icon.as_deref().unwrap()).collect::<Vec<_>>(),
+        ["run", "database", "icons/very-long-resource-marker-icon.svg", "overriding"]
+    );
 }

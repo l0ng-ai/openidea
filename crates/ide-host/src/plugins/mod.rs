@@ -382,7 +382,8 @@ impl PluginHost {
         let ui = UiStore::new();
         let index = Arc::new(ContributionIndex::new(
             plugins_dir.join(".cache").join("contributions"),
-            env!("CARGO_PKG_VERSION"),
+            // Revalidate SVGs accepted before URL-valued CSS functions were rejected.
+            concat!(env!("CARGO_PKG_VERSION"), ":svg-2"),
         ));
         ui.set_index(Some(index.clone()));
         let languages = PluginLanguages::new();
@@ -1768,6 +1769,7 @@ impl PluginHost {
         for a in actors {
             a.stop(true);
         }
+        self.shared.finish_process_shutdowns();
     }
 
     /// Periodic upkeep (every few seconds): reports crashes nobody waited
@@ -2164,6 +2166,8 @@ impl PluginHost {
             *runtime = None;
         }
         actor.stop(false);
+        // Its handles go with its instance; an idle reclaim is one.
+        self.shared.kill_processes(plugin.id());
         let mut meta = plugin.meta.lock();
         if meta.status == PluginStatus::Active {
             meta.status = PluginStatus::Inactive;

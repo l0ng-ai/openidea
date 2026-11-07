@@ -47,6 +47,7 @@ import {
 } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 import { pluginIconName } from "./pluginIcon";
+import { projectMarkerIcon, type MarkerIconDecl } from "./markerIcons";
 import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
@@ -568,6 +569,10 @@ export function defineViewUiPoints(): () => void {
           openWith.delete(`${pluginId}/${decl.id}`);
         };
       },
+    }),
+    defineUiPoint<MarkerIconDecl>("markerIcons", {
+      title: "Marker Icons",
+      project: ({ pluginId, decl }) => projectMarkerIcon(pluginId, decl),
     }),
     defineUiPoint<FileIconDecl>("fileIcons", {
       title: "File Icons",
