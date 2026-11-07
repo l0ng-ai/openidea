@@ -800,6 +800,7 @@ async fn qwen_questions_answer_by_index_beside_the_submit_option() {
         questions,
         vec![
             AgentQuestion {
+                answer_key: None,
                 header: "Database".into(),
                 question: "Which database?".into(),
                 multi_select: false,
@@ -809,6 +810,7 @@ async fn qwen_questions_answer_by_index_beside_the_submit_option() {
                 ],
             },
             AgentQuestion {
+                answer_key: None,
                 header: "Caches".into(),
                 question: "Which caches?".into(),
                 multi_select: true,
@@ -993,6 +995,44 @@ async fn real_claude_task_in_a_worktree() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn renamed_titles_survive_updates_forks_and_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    assert!(mgr.rename(&task.id, "  ").is_err());
+    let initial = handle.state.lock().task.title.clone();
+    for title in [initial, "My task".to_owned(), "名".repeat(205)] {
+        mgr.rename(&task.id, &title).unwrap();
+        handle.on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Agent title"}));
+        assert_eq!(handle.state.lock().task.title, title.chars().take(200).collect::<String>());
+    }
+    mgr.rename(&task.id, "  My task  ").unwrap();
+    let copy = mgr.fork(&task.id, None).await.unwrap();
+    let copied = mgr.task(&copy.id).unwrap();
+    copied.on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Copied agent title"}));
+    assert_eq!(copied.state.lock().task.title, "My task");
+    mgr.shutdown();
+    let restored = manager(tmp.path(), agent);
+    let handle = restored.task(&task.id).unwrap();
+    handle.on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Resumed title"}));
+    assert_eq!(handle.state.lock().task.title, "My task");
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn forks_rollbacks_and_steering() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
@@ -1040,6 +1080,33 @@ async fn forks_rollbacks_and_steering() {
     assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
     mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    // Dropping every turn starts a fresh session instead of rewinding the agent's history.
+    let handle = mgr.task(&task.id).unwrap();
+    for (parent, child) in [(None, "child"), (Some("child"), "grandchild")] {
+        handle.on_update(
+            parent,
+            &json!({"sessionUpdate": "subagent_update", "sessionId": child,
+            "state": {"state": "idle", "stopReason": "end_turn"}}),
+        );
+    }
+    handle.state.lock().conversation.main.entries.insert(0, AgentEntry::Agent { text: "Welcome".into() });
+    let rewinds = agent.calls.lock().iter().filter(|c| c.starts_with("_openidea/rollback")).count();
+    let first = mgr.rollback(&task.id, 0).await.unwrap().unwrap();
+    assert_eq!(first.text, "again");
+    assert!(mgr.entries(&task.id, None).unwrap().is_empty());
+    assert!(mgr.task(&task.id).unwrap().state.lock().session_id.is_none());
+    assert!(handle.state.lock().conversation.saved_subagents().is_empty());
+    assert!(handle.state.lock().task.usage.is_none());
+    assert_eq!(agent.calls.lock().iter().filter(|c| c.starts_with("_openidea/rollback")).count(), rewinds);
+    mgr.shutdown();
+    let restored = manager(tmp.path(), agent.clone());
+    assert!(restored.entries(&task.id, None).unwrap().is_empty());
+    restored.prompt(&task.id, first, false).await.unwrap();
+    wait_for(&restored, &task.id, AgentStatus::Ready).await;
+    assert_eq!(turn_starts(&restored.entries(&task.id, None).unwrap()).len(), 1);
+    assert_eq!(agent.calls.lock().last().unwrap(), "session/prompt");
+    restored.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]
