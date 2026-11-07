@@ -430,12 +430,9 @@ impl Http {
     }
 
     /// Downloads `url` to `dest`, reporting progress against `size` when known.
-    /// `-C -` resumes from the bytes `dest` already holds: a `--retry` inside
-    /// curl — and a fresh `download` call after a timed-out attempt — keeps the
-    /// part it has instead of starting over. A `dest` already the remote's size
-    /// is reported "fully downloaded" and left alone. When the server answers
-    /// no byte ranges (curl exit 33) the partial is dropped and the download
-    /// starts over, the pre-resume behavior.
+    /// A `.url` sidecar ties partial bytes to their source. Matching partials
+    /// resume with `-C -`; untracked files or a changed URL start from zero.
+    /// Rejected ranges (curl exit 33 or HTTP 416) also restart from zero.
     pub fn download(
         &self,
         url: &str,
@@ -444,32 +441,52 @@ impl Http {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let mut url_path = dest.as_os_str().to_owned();
+        url_path.push(".url");
+        let url_path = std::path::PathBuf::from(url_path);
+        if !std::fs::read_to_string(&url_path).is_ok_and(|previous| previous == url) {
+            match std::fs::remove_file(dest) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        std::fs::write(&url_path, url)?;
         let had_partial = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0) > 0;
         let mut resume = true;
         loop {
-            let (status, stderr, token) = self.fetch(url, dest, size, cancel, emit, resume)?;
-            if status.success() {
-                break;
+            let attempt = self.fetch(url, dest, size, cancel, emit, resume);
+            if cancel.is_cancelled() {
+                let _ = std::fs::remove_file(&url_path);
             }
-            if resume && had_partial && status.code() == Some(33) {
+            let (status, http_code, stderr, token) = attempt?;
+            // Some curl versions return success for 416 even for oversized partials.
+            if resume && had_partial && (status.code() == Some(33) || http_code == 416) {
                 resume = false;
-                let _ = std::fs::remove_file(dest);
+                std::fs::remove_file(dest)?;
                 continue;
+            }
+            if status.success() && http_code != 416 {
+                break;
             }
             return Err(IdeError::new(
                 ErrorKind::Io,
                 format!("download of {url} failed: {}", redact_auth(stderr.trim(), token.as_deref())),
             ));
         }
+        std::fs::remove_file(url_path)?;
         let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
         emit(progress_event(bytes, size.or(Some(bytes))));
         Ok(())
     }
 
     /// One curl download attempt: with `resume` it continues `dest`'s bytes,
-    /// without it starts over. Returns curl's exit status, its stderr, and the
-    /// auth token for redacting the failure message; spawn and cancellation
-    /// failures are errors.
+    /// without it starts over. Returns curl's exit status, HTTP code, stderr,
+    /// and auth token for redacting failures; spawn and cancellation failures
+    /// are errors.
     fn fetch(
         &self,
         url: &str,
@@ -478,12 +495,13 @@ impl Http {
         cancel: &CancellationToken,
         emit: Emit,
         resume: bool,
-    ) -> IdeResult<(std::process::ExitStatus, String, Option<String>)> {
+    ) -> IdeResult<(std::process::ExitStatus, u16, String, Option<String>)> {
         let (mut cmd, token) = self.base(url, cancel)?;
         if resume {
             cmd.args(["-C", "-"]);
         }
-        cmd.arg("-o").arg(dest).arg(url).stdout(Stdio::null()).stderr(Stdio::piped());
+        cmd.args(["--write-out", "%{http_code}"]).arg("-o").arg(dest).arg(url);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
         send_auth(&mut child, token.as_deref())?;
         let mut stderr = child.stderr.take().expect("piped");
@@ -513,7 +531,9 @@ impl Http {
                 }
             }
         };
-        Ok((status, err_t.join().unwrap_or_default(), token))
+        let mut http_code = String::new();
+        child.stdout.take().expect("piped").read_to_string(&mut http_code)?;
+        Ok((status, http_code.trim().parse().unwrap_or(0), err_t.join().unwrap_or_default(), token))
     }
 }
 
@@ -610,6 +630,9 @@ pub(crate) fn run_input(
     written.unwrap()?;
     String::from_utf8(output).map_err(|e| IdeError::invalid(e.to_string()))
 }
+
+#[cfg(test)]
+mod download_tests;
 
 #[cfg(test)]
 mod tests {
@@ -937,6 +960,8 @@ mod github_auth_tests {
         fn download_resumes_the_partial_file() {
             let f = Fixture::new();
             let dest = f.path("download");
+            fs::write(&dest, "partial").unwrap();
+            fs::write(f.path("download.url"), "https://example.test/file").unwrap();
             f.curl(&format!("printf done > {}", quote(&dest)));
             f.http.download("https://example.test/file", &dest, None, &CancellationToken::new(), &|_| {}).unwrap();
             assert!(
@@ -951,6 +976,7 @@ mod github_auth_tests {
             let dest = f.path("download");
             let count = f.path("attempts");
             fs::write(&dest, "partial").unwrap();
+            fs::write(f.path("download.url"), "https://example.test/file").unwrap();
             // First attempt: curl reports it cannot resume (exit 33). Second:
             // a plain download from zero, which succeeds.
             f.curl(&format!(
