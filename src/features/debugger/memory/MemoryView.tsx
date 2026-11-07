@@ -75,7 +75,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
   const entry = useMemory((s) => s.bySession[id]);
   const query = entry?.query ?? DEFAULT_QUERY;
   const result = entry?.result ?? null;
-  const snapshot = result?.status === "ready" ? result.snapshot : null;
+  const snapshot = entry?.snapshot ?? null;
 
   // Only the first visit loads: later stops mark the table outdated instead of re-running a heap walk.
   useEffect(() => {
@@ -122,7 +122,11 @@ export function MemoryView({ session }: { session: DebugSession }) {
           <T>Taken before the last stop. Refresh to update.</T>
         </div>
       )}
-      {result?.status === "unavailable" && <div className={styles.note}>{unavailableText(result.reason)}</div>}
+      {result?.status === "unavailable" && (
+        <div className={snapshot ? styles.banner : styles.note} role={snapshot ? "status" : undefined}>
+          {unavailableText(result.reason)}
+        </div>
+      )}
       {snapshot && (
         <div className={styles.table}>
           <div className={styles.head} role="row">

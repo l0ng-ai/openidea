@@ -1,13 +1,16 @@
 import { create } from "zustand";
-import { call, commands, type DebugSessionId, type JvmMemoryResult } from "@/platform/ipc";
+import { call, commands, type DebugSessionId, type JvmMemoryResult, type JvmMemorySnapshot } from "@/platform/ipc";
 import { useDebug } from "../state";
 import type { RowQuery } from "./rows";
 
 export interface MemoryEntry {
+  /** The latest answer, which may say why no snapshot could be taken. */
   result: JvmMemoryResult | null;
+  /** The last snapshot taken: it stays on screen when a later refresh is refused or fails. */
+  snapshot: JvmMemorySnapshot | null;
   loading: boolean;
   error: string | null;
-  /** The session's `stops` when the request started; compare with the current value to tell the table is stale. */
+  /** The session's `stops` when `snapshot` was requested; compare with the current value to tell the table is stale. */
   takenAtStop: number;
   query: RowQuery;
 }
@@ -16,6 +19,7 @@ export const DEFAULT_QUERY: RowQuery = { filter: "", sort: "bytes", desc: true, 
 
 const emptyEntry = (): MemoryEntry => ({
   result: null,
+  snapshot: null,
   loading: false,
   error: null,
   takenAtStop: 0,
@@ -43,7 +47,9 @@ export async function refreshMemory(id: DebugSessionId): Promise<void> {
   try {
     const result = await call(commands.debugJvmMemoryClasses(id));
     if (inflight.get(id) !== token) return;
-    patchEntry(id, () => ({ result, takenAtStop: stop }));
+    patchEntry(id, () =>
+      result.status === "ready" ? { result, snapshot: result.snapshot, takenAtStop: stop } : { result },
+    );
   } catch (e) {
     if (inflight.get(id) !== token) return;
     patchEntry(id, () => ({ error: e instanceof Error ? e.message : String(e) }));

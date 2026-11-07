@@ -228,6 +228,24 @@ describe("MemoryView", () => {
     expect(header("Class").getAttribute("aria-sort")).toBe("descending");
   });
 
+  it("keeps the old snapshot under the reason when a refresh is refused", async () => {
+    ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(HEAP));
+    render(<MemoryView session={session} />);
+    await screen.findByText("Heap$Live");
+    ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(unavailable({ kind: "unsafeWhileSuspended", javaMajor: 11 })));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Memory View" }));
+    const reason = "JDK 11 cannot report memory while suspended. Resume the program, then refresh.";
+    expect((await screen.findByText(reason)).getAttribute("role")).toBe("status");
+    expect(screen.getByText("Heap$Live")).toBeTruthy();
+  });
+
+  it("shows the reason alone when there is no earlier snapshot", async () => {
+    ipc.debugJvmMemoryClasses.mockReturnValue(ok(unavailable({ kind: "timedOut" })));
+    render(<MemoryView session={session} />);
+    expect((await screen.findByText("The JVM did not answer within 10 seconds.")).getAttribute("role")).toBeNull();
+    expect(screen.queryByRole("columnheader")).toBeNull();
+  });
+
   it("keeps the old snapshot and shows the error when a refresh fails", async () => {
     ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(HEAP));
     render(<MemoryView session={session} />);

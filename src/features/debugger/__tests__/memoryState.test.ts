@@ -59,6 +59,21 @@ describe("refreshMemory", () => {
     expect(e.loading).toBe(false);
   });
 
+  it("keeps the last snapshot and its stop when a refresh is refused", async () => {
+    setStops(1);
+    ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(ready(10)));
+    await refreshMemory(ID);
+    setStops(2);
+    const refused: JvmMemoryResult = { status: "unavailable", reason: { kind: "timedOut" } };
+    ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(refused));
+    await refreshMemory(ID);
+    const e = useMemory.getState().bySession[ID]!;
+    expect(e.result).toEqual(refused);
+    expect(e.snapshot).toEqual((ready(10) as Extract<JvmMemoryResult, { status: "ready" }>).snapshot);
+    // The table still shows the snapshot from stop 1, so it reads as outdated.
+    expect(isOutdated(e, 2)).toBe(true);
+  });
+
   it("ignores a second refresh while one is loading", async () => {
     let release!: (r: unknown) => void;
     ipc.debugJvmMemoryClasses.mockReturnValueOnce(new Promise((r) => (release = r)));
