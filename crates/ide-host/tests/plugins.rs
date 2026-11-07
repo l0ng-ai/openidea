@@ -2910,6 +2910,81 @@ path = "templates/new.draw"
     assert!(f.host.web_page("web-demo", "draw").is_err());
 }
 
+#[test]
+fn file_templates_fixture_installs_without_write_capabilities() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("file-templates"));
+    assert!(info.capabilities.is_empty());
+    let templates = f.host.ui_items("fileTemplates");
+    assert_eq!(templates.len(), 4);
+    let template = |id: &str| templates.iter().find(|t| t.decl["id"] == id).unwrap();
+    assert_eq!(template("dockerignore").decl["fileName"], ".dockerignore");
+    assert_eq!(template("attributes").decl["variables"].as_array().unwrap().len(), 2);
+    assert!(template("repository").decl["body"].as_str().unwrap().contains("$PACKAGE$"));
+    assert!(f.installed("file-templates").join("templates/repository.txt").is_file());
+    assert_eq!(f.run("file-templates", "ping", None).unwrap().as_deref(), Some("File templates ready"));
+    f.host.set_enabled("file-templates", false).unwrap();
+    assert!(f.host.ui_items("fileTemplates").is_empty());
+}
+
+#[test]
+fn file_templates_api_13_names_and_variables() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("template-demo");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("body.txt"), "$ENTITY$ $PACKAGE$\n").unwrap();
+    let install = |api: &str, fields: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "template-demo"
+name = "Templates"
+version = "1.0.0"
+engines.openidea = "{api}"
+[[contributes.fileTemplates]]
+id = "template"
+name = "Template"
+path = "body.txt"
+{fields}
+"#
+            ),
+        )
+        .unwrap();
+        f.host.install_from_dir(&pkg, &Consent::all())
+    };
+    for fields in [r#"fileName = ".dockerignore""#, "extension = \"java\"\nvariables = []"] {
+        let err = install("^1.2", fields).unwrap_err().message;
+        assert!(err.contains("1.3"), "{err}");
+    }
+    for name in ["", ".", "..", "../escape", "a/b", r"a\b", "/absolute", "C:evil", "a?", " a", "a.", "NUL.txt", "COM1"]
+    {
+        let fields = format!("fileName = {}", serde_json::to_string(name).unwrap());
+        assert!(install("^1.3", &fields).is_err(), "accepted {name:?}");
+    }
+    for vars in [
+        r#"[{ name = "", prompt = "Entity" }]"#,
+        r#"[{ name = "1bad", prompt = "Entity" }]"#,
+        r#"[{ name = "bad-name", prompt = "Entity" }]"#,
+        r#"[{ name = "PACKAGE", prompt = "Entity" }]"#,
+        r#"[{ name = "ENTITY", prompt = "" }]"#,
+        r#"[{ name = "ENTITY", prompt = "Entity" }, { name = "ENTITY", prompt = "Again" }]"#,
+    ] {
+        assert!(install("^1.3", &format!("extension = \"java\"\nvariables = {vars}")).is_err(), "accepted {vars}");
+    }
+    install(
+        "^1.3",
+        r#"fileName = ".dockerignore"
+variables = [{ name = "ENTITY", prompt = "Entity class" }]"#,
+    )
+    .unwrap();
+    let items = f.host.ui_items("fileTemplates");
+    assert_eq!(items[0].decl["fileName"], ".dockerignore");
+    assert_eq!(items[0].decl["extension"], "");
+    assert_eq!(items[0].decl["variables"][0]["prompt"], "Entity class");
+    assert_eq!(items[0].decl["body"], "$ENTITY$ $PACKAGE$\n");
+}
+
 /// A view needs a page or code to render it; a page's directory can't be the package itself.
 #[test]
 fn web_view_declarations_are_checked() {

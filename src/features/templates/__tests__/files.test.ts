@@ -235,3 +235,36 @@ describe("reformat according to style", () => {
     expect(caretAfterReformat("a b|".replace("|", ""), 3, "a")).toBe(1);
   });
 });
+
+describe("plugin template names and values", () => {
+  it.each([".dockerignore", ".gitattributes", "Dockerfile", "Order.java"])("keeps exact filename %s", (fileName) => {
+    expect(planFile({ ...tpl("java"), fileName }, "/p", "ignored")?.path).toBe(`/p/${fileName}`);
+  });
+  it.each([
+    "",
+    ".",
+    "..",
+    "../escape",
+    "a/b",
+    "a\\b",
+    "/absolute",
+    "C:evil",
+    "a?",
+    " a",
+    "a.",
+    "NUL.txt",
+    "com1",
+    "a\n",
+  ])("rejects unsafe filename %j", (fileName) => {
+    expect(planFile({ ...tpl("file"), fileName }, "/p", "")).toBeNull();
+  });
+  it("inserts variables literally and preserves UTF-16 caret offsets", () => {
+    expect(
+      renderFileTemplate("$ENTITY$ ${ENTITY} $NAME$ $END$x", {
+        name: "Repo",
+        fileName: "Repo.java",
+        variables: { ENTITY: "😀$NAME$", NAME: "bad" },
+      }),
+    ).toEqual({ text: "😀$NAME$ 😀$NAME$ Repo x", caret: "😀$NAME$ 😀$NAME$ Repo ".length });
+  });
+});
