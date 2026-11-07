@@ -67,7 +67,12 @@ impl Plugin for Jobs {
                             .argument(format!("notification-action={}\nvalue", i + 1))
                     })
                     .collect::<Vec<_>>();
-                host::notify_with_actions(NotificationLevel::Info, "Choose an action", "A plugin notification", &actions)?;
+                host::notify_with_actions(
+                    NotificationLevel::Info,
+                    "Choose an action",
+                    "A plugin notification",
+                    &actions,
+                )?;
                 Ok(None)
             }
             "copy" => {

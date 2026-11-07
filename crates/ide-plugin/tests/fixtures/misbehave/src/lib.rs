@@ -83,6 +83,15 @@ impl commands::Guest for Misbehave {
                     .collect();
                 Ok(Some(lines.join("\n")))
             }
+            // The `fs.write` grant: replaces the file at `arg`.
+            "fswrite" => {
+                openidea::plugin::fs::write_file(&arg.unwrap_or_default(), "written by the plugin\n").map(|()| None)
+            }
+            // The `project.write` grant: writes `arg` inside the project.
+            "projwrite" => {
+                let project = ctx.project().ok_or_else(|| failed("no project is open"))?;
+                project.write_file(&arg.unwrap_or_default(), "written inside the project\n").map(|()| None)
+            }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {
                 let editor = ctx.editor().ok_or_else(|| failed("no editor"))?;

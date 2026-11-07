@@ -202,6 +202,12 @@ impl StoreData {
         sandbox::resolve_granted(&self.granted, path).map_err(Into::into)
     }
 
+    /// The same for `fs.write:…`: a file that does not exist yet is resolved
+    /// through the directory it would be created in.
+    fn writable_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
+        sandbox::resolve_writable(&self.granted, path).map_err(Into::into)
+    }
+
     fn client(&self) -> Option<&str> {
         self.invocation.client.as_deref()
     }
@@ -551,6 +557,27 @@ impl workspace::HostProject for StoreData {
         }
         let root = self.table.get(&this)?.root.clone();
         Ok(self.host.find_files(&root, &glob, limit.min(MAX_FIND) as usize).map_err(to_wit))
+    }
+
+    fn write_file(&mut self, this: Resource<ProjectRes>, path: String, text: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectWrite) {
+            return Ok(Err(e));
+        }
+        if text.len() > sandbox::MAX_WRITE_BYTES {
+            return Ok(Err(too_much_to_write(&path)));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_new_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+        };
+        // The directories it goes in are created, like a new file in the project view.
+        if let Some(parent) = real.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return Ok(Err(wit::Error::Failed(format!("{path}: {e}"))));
+        }
+        Ok(self.host.write_text_file(&real, &text).map_err(to_wit))
     }
 
     fn drop(&mut self, rep: Resource<ProjectRes>) -> wasmtime::Result<()> {
@@ -1004,7 +1031,7 @@ fn file_stat(real: &Path, shown: &str) -> Result<workspace::FileStat, wit::Error
     Ok(workspace::FileStat { kind: file_kind(meta.file_type()), size: meta.len(), modified })
 }
 
-/// A refused `fs.read` as the plugin sees it: `denied` carries the capability
+/// A refused `fs` call as the plugin sees it: `denied` carries the capability
 /// string, so the plugin can say exactly what its manifest lacks.
 impl From<sandbox::Refusal> for wit::Error {
     fn from(refusal: sandbox::Refusal) -> Self {
@@ -1015,7 +1042,8 @@ impl From<sandbox::Refusal> for wit::Error {
     }
 }
 
-/// Files outside the open projects, gated by `fs.read:<path>` grants.
+/// Files outside the open projects, gated by `fs.read:<path>` and
+/// `fs.write:<path>` grants.
 impl fs::Host for StoreData {
     fn read_file(&mut self, path: String) -> Fallible<String> {
         let real = match self.granted_file(&path) {
@@ -1078,6 +1106,24 @@ impl fs::Host for StoreData {
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(Ok(entries))
     }
+
+    fn write_file(&mut self, path: String, text: String) -> Fallible<()> {
+        if text.len() > sandbox::MAX_WRITE_BYTES {
+            return Ok(Err(too_much_to_write(&path)));
+        }
+        Ok(self.writable_file(&path).and_then(|real| self.host.write_text_file(&real, &text).map_err(to_wit)))
+    }
+
+    fn write_bytes(&mut self, path: String, bytes: Vec<u8>) -> Fallible<()> {
+        if bytes.len() > sandbox::MAX_WRITE_BYTES {
+            return Ok(Err(too_much_to_write(&path)));
+        }
+        Ok(self.writable_file(&path).and_then(|real| self.host.write_bytes_file(&real, &bytes).map_err(to_wit)))
+    }
+}
+
+fn too_much_to_write(path: &str) -> wit::Error {
+    wit::Error::Invalid(format!("{path}: more than {} MiB to write", sandbox::MAX_WRITE_BYTES >> 20))
 }
 
 /// Largest message between a plugin and its view's frame.

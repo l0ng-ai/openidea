@@ -194,6 +194,10 @@ mod imp {
         p.read_file(path).map_err(error)
     }
 
+    pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
+        p.write_file(path, text).map_err(error)
+    }
+
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
         i.project()
     }
@@ -347,6 +351,14 @@ mod imp {
     pub fn fs_read_dir(path: &str) -> Result<Vec<super::fs::DirEntry>, Error> {
         let entries = wit::fs::read_dir(path).map_err(error)?;
         Ok(entries.into_iter().map(|e| super::fs::DirEntry { name: e.name, kind: file_kind(e.kind) }).collect())
+    }
+
+    pub fn fs_write_file(path: &str, text: &str) -> Result<(), Error> {
+        wit::fs::write_file(path, text).map_err(error)
+    }
+
+    pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        wit::fs::write_bytes(path, bytes).map_err(error)
     }
 
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
@@ -512,6 +524,15 @@ impl Project {
     /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Replaces the text of a file inside the project (absolute or
+    /// root-relative), or creates it with the directories it needs, at most
+    /// 16 MiB: in one step, keeping the file's encoding and BOM (a new file is
+    /// UTF-8). An editor holding unsaved changes for the file makes it
+    /// [`Error::Invalid`]. Needs `project.write`.
+    pub fn write_file(&self, path: &str, text: &str) -> Result<(), Error> {
+        imp::project_write(&self.inner, path, text)
     }
 
     /// Whether `path` names an existing file or directory inside the project
@@ -841,13 +862,12 @@ pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
 }
 
-/// The plugin's persistent key-value store (≤ 64 MiB of UTF-8 keys and values).
-/// Needs `storage`; rejected writes preserve the stored data.
 /// Files outside the open projects, for a program the plugin integrates with
-/// or a tool installed elsewhere. Every path needs an `fs.read:<path>` grant
-/// covering it; without one a call returns [`Error::Denied`] naming the
-/// capability the manifest has to declare. Paths are absolute, or start with
-/// `~/` for the user's home. A file inside a project is [`Project::read_file`].
+/// or a tool installed elsewhere. Every path needs an `fs.read:<path>`
+/// (reading) or `fs.write:<path>` (writing) grant covering it; without one a
+/// call returns [`Error::Denied`] naming the capability the manifest has to
+/// declare. Paths are absolute, or start with `~/` for the user's home. A file
+/// inside a project is [`Project::read_file`] / [`Project::write_file`].
 pub mod fs {
     use super::imp;
     use crate::types::{Error, FileKind, FileStat};
@@ -881,8 +901,27 @@ pub mod fs {
     pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, Error> {
         imp::fs_read_dir(path)
     }
+
+    /// Replaces the text of a file, or creates it, at most 16 MiB: in one step,
+    /// keeping the file's encoding and BOM (a new file is UTF-8). Needs an
+    /// `fs.write:<path>` grant, which doesn't imply reading.
+    ///
+    /// [`Error::Invalid`] when the text can't be written in the file's
+    /// encoding, the directory is missing, the path is a directory, or an
+    /// editor holds unsaved changes for the file (save them first).
+    pub fn write_file(path: &str, text: &str) -> Result<(), Error> {
+        imp::fs_write_file(path, text)
+    }
+
+    /// Replaces the bytes of a file, or creates it, at most 16 MiB, in one
+    /// step; fails like [`write_file`].
+    pub fn write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        imp::fs_write_bytes(path, bytes)
+    }
 }
 
+/// The plugin's persistent key-value store (≤ 64 MiB of UTF-8 keys and values).
+/// Needs `storage`; rejected writes preserve the stored data.
 pub mod storage {
     use super::imp;
     use crate::types::Error;
