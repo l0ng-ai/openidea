@@ -24,8 +24,27 @@ interface ExternalChange {
   apply(): Promise<unknown>;
 }
 
+export type ProjectStructureSection = "project" | "modules" | "libraries" | "facets" | "artifacts" | "sdks";
+
+const PROJECT_STRUCTURE_SECTIONS: readonly ProjectStructureSection[] = [
+  "project",
+  "modules",
+  "libraries",
+  "facets",
+  "artifacts",
+  "sdks",
+];
+
+function parseProjectStructureSection(raw?: string): ProjectStructureSection {
+  if (!raw) return "project";
+  const clean = raw.replace(/^projectStructure\./, "").trim() as ProjectStructureSection;
+  return PROJECT_STRUCTURE_SECTIONS.includes(clean) ? clean : "project";
+}
+
 export interface SettingsDialogState {
   open: boolean;
+  projectStructureOpen: boolean;
+  projectStructureSection: ProjectStructureSection;
   pageId: string;
   /** What the page should select when opened as `page#focus` (an inspection id). */
   focus: string | null;
@@ -54,6 +73,8 @@ export const SSH_SETTINGS_PAGE = "tools.sshConfigurations";
 
 export const useSettingsDialog = create<SettingsDialogState>(() => ({
   open: false,
+  projectStructureOpen: false,
+  projectStructureSection: "project",
   pageId: DEFAULT_PAGE,
   focus: null,
   query: "",
@@ -84,6 +105,7 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
   const target = pageId ? splitPageTarget(pageId) : { pageId: s.pageId, focus: null };
   useSettingsDialog.setState({
     open: true,
+    projectStructureOpen: false,
     pageId: target.pageId,
     focus: target.focus,
     query: "",
@@ -100,12 +122,51 @@ export function openSettings(pageId?: string, opts: { newProjects?: boolean } = 
   void loadGlobalBase();
 }
 
+export function openProjectStructure(section?: string) {
+  if (useSettingsDialog.getState().projectStructureOpen) {
+    if (section) selectProjectStructureSection(parseProjectStructureSection(section));
+    return;
+  }
+  const base = validateSettings(useProject.getState().settings);
+  useSettingsDialog.setState({
+    open: false,
+    projectStructureOpen: true,
+    projectStructureSection: parseProjectStructureSection(section),
+    base,
+    globalBase: base,
+    newProjects: false,
+    staged: {},
+    stagedSecrets: {},
+    stagedExternal: {},
+    externalApplied: {},
+    saving: false,
+    error: null,
+  });
+  void loadGlobalBase();
+}
+
+export function closeProjectStructure() {
+  useSettingsDialog.setState({
+    projectStructureOpen: false,
+    staged: {},
+    stagedSecrets: {},
+    stagedExternal: {},
+    externalApplied: {},
+    error: null,
+    saving: false,
+  });
+}
+
+export function selectProjectStructureSection(section: ProjectStructureSection) {
+  useSettingsDialog.setState({ projectStructureSection: section });
+}
+
 /** With a project open the effective settings include its values; the Global scope shows the global layer. */
 async function loadGlobalBase() {
   if (!isTauri() || !useProject.getState().project) return;
   try {
     const globalBase = validateSettings(await commands.settingsGetGlobal());
-    useSettingsDialog.setState((s) => (s.open ? { globalBase } : {}));
+    useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { globalBase } : {}));
   } catch (e) {
     console.warn("cannot load global settings", e);
   }
@@ -113,7 +174,7 @@ async function loadGlobalBase() {
 
 export function rebaseSettings() {
   const base = validateSettings(useProject.getState().settings);
-  useSettingsDialog.setState((s) => (s.open ? { base, globalBase: base } : {}));
+  useSettingsDialog.setState((s) => (s.open || s.projectStructureOpen ? { base, globalBase: base } : {}));
   void loadGlobalBase();
 }
 
