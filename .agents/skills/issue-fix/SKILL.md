@@ -9,6 +9,14 @@ The reported case is one sample of a defect class. A fix that only makes the
 screenshot go away is not done: the next question is always "does this break for other
 languages / platforms / entry points too?". Answer that before anyone asks.
 
+Scale the workflow to the risk. For an obvious, low-risk CSS or copy fix, inspect
+the cause and nearby shared styles, make the focused edit, check formatting and
+verify the affected UI. Run existing targeted tests only when they cover a plausible
+regression; do not add implementation-mirroring tests or default to full-suite tests,
+E2E, builds, typechecking or dependency analysis. Reuse completed checks while the
+diff is unchanged. A brief finding and verification note is enough; skip the formal
+sibling table. Follow `AGENTS.md` for broader changes and create a PR when requested.
+
 ## 1. Read and reproduce
 
 - `gh issue view <n> --comments` (repo `l0ng-ai/openidea`). Read attached logs/screenshots

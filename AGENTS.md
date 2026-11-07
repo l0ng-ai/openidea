@@ -84,7 +84,13 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 
 ## Before opening a PR
 
-Run what CI runs for the parts you touched:
+Scale local verification to the change. For low-risk CSS-only or copy-only changes,
+check the diff and formatting of touched files; use existing targeted tests when they
+cover a plausible regression, and verify visible changes in the running app. Reuse
+completed checks when the diff has not changed. Do not default to full tests, E2E,
+builds, typechecking or dependency analysis for these changes; CI runs the full suite.
+
+For behaviour, shared infrastructure or broader changes, run the applicable CI checks:
 
 - Rust: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo nextest run --workspace`. After changing IPC types, run `pnpm gen:bindings` and
