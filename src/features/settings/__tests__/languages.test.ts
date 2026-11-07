@@ -41,6 +41,7 @@ describe("languages settings", () => {
     expect(v.java.maven).toEqual({
       home: "/opt/maven",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       jdk: "",
       unlinkedProjects: [],

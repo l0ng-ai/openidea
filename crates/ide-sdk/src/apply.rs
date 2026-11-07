@@ -397,6 +397,9 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     if let Some(file) = setting_path(root, &m.user_settings) {
         out.extend(["-s".to_owned(), file.to_string_lossy().into_owned()]);
     }
+    if let Some(file) = setting_path(root, &m.toolchains) {
+        out.extend(["-t".to_owned(), file.to_string_lossy().into_owned()]);
+    }
     if let Some(dir) = setting_path(root, &m.local_repository) {
         out.push(format!("-Dmaven.repo.local={}", dir.to_string_lossy()));
     }
@@ -410,7 +413,7 @@ fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
     let mut prefixes = vec![0];
     let mut i = 0;
     while let Some(arg) = args.get(i) {
-        if (arg == "-s" || arg == "-T") && args.get(i + 1).is_some() {
+        if (arg == "-s" || arg == "-t" || arg == "-T") && args.get(i + 1).is_some() {
             i += 2;
         } else if arg.starts_with("-Dmaven.repo.local=") {
             i += 1;

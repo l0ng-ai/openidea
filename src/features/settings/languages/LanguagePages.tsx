@@ -528,6 +528,14 @@ export function MavenPage() {
           hint="Passed as -s (mirrors, servers, proxies)."
         />
         <PathInput
+          k="languages.java.maven.toolchains"
+          label="Toolchains file"
+          placeholder="~/.m2/toolchains.xml"
+          title="Select Maven toolchains.xml"
+          file
+          hint="Passed as -t; selects the JDKs Maven compiles with."
+        />
+        <PathInput
           k="languages.java.maven.localRepository"
           label="Local repository"
           placeholder="From settings.xml, else ~/.m2/repository"
