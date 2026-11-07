@@ -299,9 +299,11 @@ fn appimage_fixes() -> Vec<(OsString, Option<OsString>)> {
 const APPIMAGE_LAUNCH_VARS: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
 /// What to change in `vars` (an environment) so a child sees the host's environment rather
-/// than the AppImage's: every `:`-separated entry inside `$APPDIR` is dropped (a saved
-/// `<NAME>_ORIG` wins when present), variables left empty are removed, and so are the
-/// runtime's own launch variables. Nothing changes when `APPDIR` is not set.
+/// than the AppImage's: every `:`-separated entry inside `$APPDIR` — or inside *any*
+/// AppImage mount, since an in-app update restart inherits the previous mount's entries
+/// alongside the new one — is dropped (a saved `<NAME>_ORIG` wins when present),
+/// variables left empty are removed, and so are the runtime's own launch variables.
+/// Nothing changes when `APPDIR` is not set.
 fn appimage_env_fixes(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<OsString>)> {
     let get = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v);
     let Some(appdir) =
@@ -309,7 +311,12 @@ fn appimage_env_fixes(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<Os
     else {
         return Vec::new();
     };
-    let inside = |entry: &str| entry.strip_prefix(appdir).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+    let inside = |entry: &str| {
+        let own = entry.strip_prefix(appdir).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        // AppImages extract to `/tmp/.mount_<name>`; an entry under another mount is
+        // another image's (e.g. the pre-update one a restart inherited), never the host's.
+        own || entry.starts_with("/tmp/.mount_")
+    };
     let mut fixes = Vec::new();
     for (key, value) in vars {
         let (Some(name), Some(value)) = (key.to_str(), value.to_str()) else { continue };
@@ -715,7 +722,7 @@ mod tests {
             ("PATH", "/tmp/.mount_OpenIDabc/usr/bin/:/tmp/.mount_OpenIDabc/usr/sbin/:/usr/local/bin:/usr/bin"),
             ("XDG_DATA_DIRS", "/tmp/.mount_OpenIDabc/usr/share:/usr/share:/usr/local/share:/usr/share"),
             ("HOME", "/home/me"),
-            ("JAVA_HOME", "/tmp/.mount_OpenIDabcdef/jdk"),
+            ("JAVA_HOME", "/opt/jdk"),
         ]);
         assert_eq!(
             got,
@@ -724,6 +731,27 @@ mod tests {
                 fix("LD_LIBRARY_PATH", Some("/opt/cuda/lib64:/usr/local/lib")),
                 fix("PATH", Some("/usr/local/bin:/usr/bin")),
                 fix("XDG_DATA_DIRS", Some("/usr/share:/usr/local/share:/usr/share")),
+            ]
+        );
+    }
+
+    #[test]
+    fn entries_of_a_previous_updates_mount_are_dropped() {
+        // An in-app update restart inherits the old mount's entries: a child's curl
+        // must not load the old image's libraries (they can still be mounted).
+        let got = fixes(&[
+            ("APPDIR", "/tmp/.mount_OpenIDjIlFFA"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_OpenIDjIlFFA/usr/lib/:/tmp/.mount_OpenIDdaNGfM/usr/lib/:/usr/local/lib"),
+            ("PATH", "/tmp/.mount_OpenIDjIlFFA/usr/bin/:/tmp/.mount_OpenIDdaNGfM/usr/bin/:/usr/bin"),
+            ("GIO_MODULE_DIR", "/tmp/.mount_OpenIDdaNGfM/usr/lib/gio/modules"),
+        ]);
+        assert_eq!(
+            got,
+            [
+                fix("APPDIR", None),
+                fix("LD_LIBRARY_PATH", Some("/usr/local/lib")),
+                fix("PATH", Some("/usr/bin")),
+                fix("GIO_MODULE_DIR", None),
             ]
         );
     }

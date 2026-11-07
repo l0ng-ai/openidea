@@ -25,7 +25,9 @@ OpenIDEA brings the IntelliJ IDEA way of working — its keymap, its tool window
 its search-everything habits — to a native app with a Rust core.
 
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
-for 60+ languages. Builds for macOS, Windows and Linux.
+for 60+ languages. Builds for macOS, Windows and Linux. On Windows, if you'd
+rather skip the installer, each release also ships a portable zip — unpack it
+and run `openidea.exe`.
 
 ## Benchmark
 
@@ -76,5 +78,6 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 
 Database tool window notes, including Oracle Instant Client setup, are in
 [`docs/databases.md`](docs/databases.md).
+Java language server choices and their capabilities are in [`docs/java.md`](docs/java.md).
 
 <sub>Not affiliated with JetBrains. IntelliJ IDEA is a trademark of JetBrains s.r.o.</sub>

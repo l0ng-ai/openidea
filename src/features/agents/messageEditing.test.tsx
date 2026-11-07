@@ -25,7 +25,8 @@ vi.mock("@tauri-apps/api/webview", () => ({
 }));
 
 import { SessionEditor } from "./SessionEditor";
-import { updateComposer, useAgents } from "./store";
+import { composerDraft, sendMessage, updateComposer, useAgents } from "./store";
+import { replyActions } from "./replyActions";
 
 const task: AgentTask = {
   id: "editing",
@@ -63,6 +64,46 @@ async function edit() {
   fireEvent.change(box, { target: { value: "Edited message" } });
   return { user, box, send: screen.getAllByRole("button", { name: "Send" })[0]! };
 }
+
+it.each([false, true])("recovers images after failed regeneration (new draft: %s)", async (draft) => {
+  const image = { mimeType: "image/png", data: "AAA", name: "shot.png" };
+  const added = { mimeType: "image/png", data: "BBB", name: "added.png" };
+  useAgents.setState({
+    entries: new Map([
+      [
+        task.id,
+        [
+          { type: "user", text: "Original message", attachments: [image.name], images: [image], steered: false },
+          entries[1]!,
+        ],
+      ],
+    ]),
+  });
+  ipc.rollback.mockImplementation(async () => {
+    useAgents.setState({ entries: new Map([[task.id, []]]) });
+    return { status: "ok", data: null };
+  });
+  let finish!: (value: unknown) => void;
+  ipc.prompt.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+  const running = replyActions
+    .find((a) => a.id === "agents.regenerateReply")!
+    .run({ ctx: {}, arg: { task: task.id, turn: 0 } });
+  await waitFor(() => expect(ipc.prompt).toHaveBeenCalledTimes(1));
+  const files = draft ? [{ path: "/project/a.ts", rel: "a.ts" }] : [];
+  if (draft) updateComposer(task.id, { text: "Another draft @a.ts", files, images: [added] });
+  finish({ status: "error", error: { kind: "internal", message: "Send failed" } });
+  await running;
+  const expected = {
+    text: draft ? "Original message\nAnother draft @a.ts" : "Original message",
+    files,
+    images: draft ? [image, added] : [image],
+  };
+  expect(composerDraft(task.id)).toEqual(expected);
+  expect(useAgents.getState().focus?.key).toBe(task.id);
+  await sendMessage(task.id, false);
+  expect(ipc.prompt).toHaveBeenLastCalledWith(task.id, { ...expected, files: files.map((f) => f.path) }, false);
+  expect(ipc.rollback).toHaveBeenCalledTimes(1);
+});
 
 describe("a sent message with images", () => {
   afterEach(() => {

@@ -583,12 +583,15 @@ pub async fn vcs_create_branch(
     name: String,
     start: Option<String>,
     checkout: bool,
+    overwrite: Option<bool>,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let recorded = checkout.then_some("Git checkout");
     blocking(move || {
-        project.with_repo_recorded(repo.as_deref(), recorded, |r| r.create_branch(&name, start.as_deref(), checkout))
+        project.with_repo_recorded(repo.as_deref(), recorded, |r| {
+            r.create_branch_with_overwrite(&name, start.as_deref(), checkout, overwrite.unwrap_or(false))
+        })
     })
     .await
 }
@@ -1335,7 +1338,16 @@ pub(crate) fn register(d: &mut Dispatcher) {
         vcs_checkout(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?, c.arg("create")?, c.arg("options")?).await
     });
     d.add("vcs_create_branch", |c| async move {
-        vcs_create_branch(&c.host, &c.window, c.arg("repo")?, c.arg("name")?, c.arg("start")?, c.arg("checkout")?).await
+        vcs_create_branch(
+            &c.host,
+            &c.window,
+            c.arg("repo")?,
+            c.arg("name")?,
+            c.arg("start")?,
+            c.arg("checkout")?,
+            c.arg("overwrite")?,
+        )
+        .await
     });
     d.add(
         "vcs_undo_commit",

@@ -177,6 +177,7 @@ export const intellijWindows: Record<string, string[]> = {
   // File / editor tabs
   "file.save": ["Ctrl+S"],
   "file.settings": ["Ctrl+Alt+S"],
+  "file.projectStructure": ["Ctrl+Alt+Shift+S"],
   "file.openProject": [],
   "file.newScratchFile": ["Ctrl+Alt+Shift+Insert"],
   "editor.closeTab": ["Ctrl+F4"],

@@ -5,18 +5,108 @@ use std::path::{Path, PathBuf};
 /// Largest file `read-file` returns.
 pub const MAX_READ_BYTES: u64 = 16 << 20;
 
-/// Resolves `path` (absolute, or relative to `root`) and checks that the real
-/// path — after following `..` and symlinks — stays inside `root`.
-pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+/// The canonical `root` and the absolute form of `path` (absolute, or
+/// relative to `root`) — before any symlink or existence check.
+fn joined_path(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), String> {
     if path.is_empty() {
         return Err("empty path".into());
     }
     let root = root.canonicalize().map_err(|e| format!("project root unavailable: {e}"))?;
     let requested = Path::new(path);
     let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+    Ok((root, joined))
+}
+
+/// `joined` after `..`/symlink resolution as far as the file system allows:
+/// the canonical path when it exists, else the canonicalized deepest existing
+/// ancestor with the still-missing tail resolved textually — so the location
+/// of a missing path is still judged where it would really land.
+fn resolve_real(joined: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut candidate = joined.to_path_buf();
+    let mut real = loop {
+        match candidate.canonicalize() {
+            Ok(real) => break real,
+            Err(_) => {
+                let Some(last) = candidate.components().next_back() else {
+                    return joined.to_path_buf();
+                };
+                tail.push(last.as_os_str().to_owned());
+                if !candidate.pop() {
+                    return joined.to_path_buf();
+                }
+            }
+        }
+    };
+    for part in tail.iter().rev() {
+        if part == ".." {
+            real.pop();
+        } else if part != "." {
+            real.push(part);
+        }
+    }
+    real
+}
+
+/// Resolves `path` (absolute, or relative to `root`) and checks that the real
+/// path — after following `..` and symlinks — stays inside `root`.
+pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let (root, joined) = joined_path(root, path)?;
     let real = joined.canonicalize().map_err(|_| format!("{path}: no such file"))?;
     if !real.starts_with(&root) {
         return Err(format!("{path}: access outside the project root is not allowed"));
+    }
+    Ok(real)
+}
+
+/// Whether `path` (absolute, or relative to `root`) lands inside `root`,
+/// without requiring it to exist: `Ok(true)` also for a missing path, so
+/// callers distinguish "outside" from "absent". Existing symlinks are
+/// followed; a missing tail is judged at its would-be location.
+pub fn inside_root(root: &Path, path: &str) -> Result<bool, String> {
+    let (root, joined) = joined_path(root, path)?;
+    Ok(resolve_real(&joined).starts_with(&root))
+}
+
+/// Like [`resolve_in_root`] for a path that may not exist yet (a file about to
+/// be created) or that names a symlink itself (to delete or rename it): the
+/// directory part is resolved through symlinks, the final name is kept as is,
+/// and the result must stay inside `root`.
+pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let outside = || format!("{path}: access outside the project root is not allowed");
+    if path.is_empty() {
+        return Err("empty path".into());
+    }
+    let root = root.canonicalize().map_err(|e| format!("project root unavailable: {e}"))?;
+    let requested = Path::new(path);
+    let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+    let mut lexical = PathBuf::new();
+    for part in joined.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                lexical.pop();
+            }
+            std::path::Component::CurDir => {}
+            part => lexical.push(part),
+        }
+    }
+    let (Some(name), Some(parent)) = (lexical.file_name(), lexical.parent()) else {
+        return Err(outside());
+    };
+    let mut missing = Vec::new();
+    let mut existing = parent;
+    while !existing.exists() {
+        let (Some(dir), Some(above)) = (existing.file_name(), existing.parent()) else {
+            return Err(outside());
+        };
+        missing.push(dir);
+        existing = above;
+    }
+    let mut real = existing.canonicalize().map_err(|e| format!("{path}: {e}"))?;
+    real.extend(missing.into_iter().rev());
+    real.push(name);
+    if !real.starts_with(&root) {
+        return Err(outside());
     }
     Ok(real)
 }
@@ -62,6 +152,57 @@ mod tests {
         assert!(read_text(&resolve_in_root(&root, "src").unwrap()).unwrap_err().contains("not a file"));
     }
 
+    #[test]
+    fn inside_root_covers_missing_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.txt"), "hi").unwrap();
+        std::fs::write(tmp.path().join("secret.txt"), "s").unwrap();
+
+        assert!(inside_root(&root, "src/a.txt").unwrap());
+        assert!(inside_root(&root, "src").unwrap());
+        assert!(inside_root(&root, "missing.txt").unwrap());
+        assert!(inside_root(&root, "missing/deep/nested.txt").unwrap());
+        assert!(inside_root(&root, "missing/../src/a.txt").unwrap());
+        assert!(!inside_root(&root, "../secret.txt").unwrap());
+        assert!(!inside_root(&root, "missing/../../secret.txt").unwrap());
+        assert!(!inside_root(&root, "missing/sub/../../../secret.txt").unwrap());
+        let abs_out = tmp.path().join("secret.txt");
+        assert!(!inside_root(&root, abs_out.to_str().unwrap()).unwrap());
+        assert!(inside_root(&root, "").is_err());
+    }
+
+    #[test]
+    fn new_paths_are_confined_to_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let root_real = root.canonicalize().unwrap();
+
+        assert_eq!(resolve_new_in_root(&root, "src/new/a.txt").unwrap(), root_real.join("src/new/a.txt"));
+        assert_eq!(resolve_new_in_root(&root, "src/../b.txt").unwrap(), root_real.join("b.txt"));
+        assert!(resolve_new_in_root(&root, "../x.txt").unwrap_err().contains("outside"));
+        assert!(resolve_new_in_root(&root, "src/../../x.txt").unwrap_err().contains("outside"));
+        assert!(resolve_new_in_root(&root, "/etc/new.txt").is_err());
+        assert!(resolve_new_in_root(&root, "").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_named_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("target.txt"), "t").unwrap();
+        std::os::unix::fs::symlink(root.join("target.txt"), root.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), root.join("out")).unwrap();
+        let root_real = root.canonicalize().unwrap();
+
+        assert_eq!(resolve_new_in_root(&root, "link.txt").unwrap(), root_real.join("link.txt"));
+        assert!(resolve_new_in_root(&root, "out/x.txt").unwrap_err().contains("outside"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinks_cannot_escape() {
@@ -71,6 +212,11 @@ mod tests {
         std::fs::write(tmp.path().join("secret.txt"), "s").unwrap();
         std::os::unix::fs::symlink(tmp.path().join("secret.txt"), root.join("link")).unwrap();
         assert!(resolve_in_root(&root, "link").unwrap_err().contains("outside"));
+        assert!(!inside_root(&root, "link").unwrap());
+        assert!(!inside_root(&root, "link/../x").unwrap());
+        std::os::unix::fs::symlink(tmp.path(), root.join("dirlink")).unwrap();
+        assert!(!inside_root(&root, "dirlink/secret.txt").unwrap());
+        assert!(!inside_root(&root, "dirlink/missing.txt").unwrap());
     }
 
     #[test]

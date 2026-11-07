@@ -105,10 +105,12 @@ beforeAll(() => {
 });
 afterAll(() => deactivate?.());
 
-afterEach(() => {
+afterEach(async () => {
   resetRuns();
   disconnect?.();
-  server?.close();
+  // `close` kills the server and what it started (debug adapters, language servers)
+  // and waits until they're gone, so the removal below can't race their writes.
+  await server?.close();
   if (base) rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 });
 

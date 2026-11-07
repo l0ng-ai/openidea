@@ -204,6 +204,9 @@ fn stop_kills_whole_process_group() {
     let grandchild: i32 = out.trim().parse().expect("pid");
     assert!(alive(grandchild));
 
+    // The first Stop only asks the group to exit (and waits); the second one kills it.
+    h.pm.stop(id).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
     h.pm.stop(id).unwrap();
     wait_exit(&h, id, Duration::from_secs(10));
     let deadline = Instant::now() + Duration::from_secs(8);

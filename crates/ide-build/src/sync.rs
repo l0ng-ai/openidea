@@ -95,6 +95,24 @@ fn maven_sync_goals(effective: &Path, offline: bool) -> Vec<String> {
         "-Dverbose".into(),
     ]
 }
+
+/// The settings' Maven options for the sync runs: the thread count (`-T`, also
+/// `--threads`) is left out, because the sync pins its own `-T1` — its console
+/// output is parsed as one stream, which a parallel build interleaves.
+fn sync_maven_options(options: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(options.len());
+    let mut args = options.iter();
+    while let Some(arg) = args.next() {
+        if arg == "-T" || arg == "--threads" {
+            args.next(); // the count itself
+        } else if (arg.starts_with("-T") && arg.len() > 2) || arg.starts_with("--threads=") {
+            // `--threads=4` / `-T4`: the count is part of the argument.
+        } else {
+            out.push(arg.clone());
+        }
+    }
+    out
+}
 const GRADLE_CACHE: &str = "gradle.json";
 const MAVEN_PROFILES: &str = "maven-profiles.json";
 
@@ -324,7 +342,7 @@ pub fn sync_maven(
         // `dependency:tree` output of concurrent modules, which the sync parses
         // as one stream. mvn is serial anyway, so this only pins the daemon.
         let mut args: Vec<String> = vec!["-B".into(), "-fae".into(), "-Dstyle.color=never".into(), "-T1".into()];
-        args.extend(options.maven_options.iter().cloned());
+        args.extend(sync_maven_options(&options.maven_options));
         if options.offline {
             args.push("-o".into());
         }
@@ -829,6 +847,19 @@ mod tests {
         let text = "[INFO] x\n[ERROR] Failed to execute goal\n[ERROR] \n[ERROR] Re-run Maven using -X\n";
         assert_eq!(error_summary(text), "Failed to execute goal");
         assert_eq!(error_summary("one\nlast line\n\n"), "last line");
+    }
+
+    #[test]
+    fn maven_sync_leaves_out_the_settings_thread_count() {
+        // The sync pins its own `-T1`; the user's `-T` (Settings › Maven) would win
+        // over it on the mvnd command line and interleave the parsed output.
+        let options = ["-s".to_owned(), "settings.xml".to_owned(), "-T".to_owned(), "4".to_owned()];
+        assert_eq!(sync_maven_options(&options), ["-s", "settings.xml"]);
+        let options = ["--threads".to_owned(), "2C".to_owned(), "-Dmaven.repo.local=/m2".to_owned()];
+        assert_eq!(sync_maven_options(&options), ["-Dmaven.repo.local=/m2"]);
+        assert_eq!(sync_maven_options(&["-T4".to_owned()]), Vec::<String>::new());
+        assert_eq!(sync_maven_options(&["--threads=4".to_owned()]), Vec::<String>::new());
+        assert!(sync_maven_options(&[]).is_empty());
     }
 
     #[cfg(unix)]

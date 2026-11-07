@@ -18,6 +18,7 @@ html {
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --agent-conversation-width: 900px;
   --splash-logo-size: 56px;
   --splash-bar-width: 120px;
   --splash-bar-height: 2px;
@@ -252,7 +253,7 @@ html {
   --h-titlebar: 40px;
   --titlebar-tool-button: 30px;
   /* tool window stripe button, icons only */
-  --stripe-icon-button: 28px;
+  --stripe-icon-button: 30px;
   --stripe-outer-padding: 4px;
   --h-header: 40px;
   --h-tabbar: 38px;

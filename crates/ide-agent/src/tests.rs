@@ -94,7 +94,7 @@ impl Handler for FakeAgent {
                     self.calls.lock().push("subagents".into());
                 }
                 Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !self.no_load,
-                    "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true}}}}))
+                    "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true, "backgroundTasks": true}}}}))
             }
             "session/new" => {
                 let mut options = vec![json!({"id": "model", "category": "model", "type": "select",
@@ -106,6 +106,10 @@ impl Handler for FakeAgent {
                 "configOptions": options}))
             }
             "session/fork" => Ok(json!({"sessionId": "s2"})),
+            "_openidea/stop_task" => {
+                self.calls.lock().push(format!("{method} {}", params["taskId"]));
+                Ok(json!({}))
+            }
             "_openidea/rollback" | "_openidea/steer" => {
                 let detail = params.get("turns").cloned().unwrap_or_else(|| params["prompt"][0]["text"].clone());
                 self.calls.lock().push(format!("{method} {detail}"));
@@ -125,6 +129,16 @@ impl Handler for FakeAgent {
                     self.say(&session, "second turn");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "background" {
+                    // A command that outlives the turn, as the agent reports it.
+                    self.update(
+                        &session,
+                        json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE,
+                        "tasks": [{"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"}]}),
+                    );
+                    self.say(&session, "running it in the background");
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "delegate" {
                     self.delegate(&session);
                     return Ok(json!({"stopReason": "end_turn"}));
@@ -140,6 +154,24 @@ impl Handler for FakeAgent {
                              "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]}]}),
                     );
                     self.say(&session, "ok");
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "ask" {
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session,
+                                "toolCall": {"toolCallId": "q1", "title": "AskUserQuestion", "_meta": {"questions": [
+                                    {"question": "Which layout?", "options": [{"label": "List"}, {"label": "Grid"}]},
+                                    {"question": "Which checks?", "multiSelect": true,
+                                     "options": [{"label": "Disk"}, {"label": "GPU temps"}]}]}},
+                                "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    self.say(&session, &format!("answered {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "wait" {
@@ -593,6 +625,44 @@ fn prompts_become_acp_content_blocks() {
     assert!(old["entries"][1].get("attachments").is_none());
     assert_eq!(title_of(&AgentPrompt { files: p.files.clone(), ..AgentPrompt::default() }), "my file.rs");
     assert!(clean(text(" ")).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn answered_questions_close_the_question_with_every_picked_label() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("ask"),
+            provider: "codex".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let question = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let reply = json!({"Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"]}).to_string();
+    mgr.respond(&task.id, question, Some(reply)).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "List; Disk, GPU temps")),
+        "{entries:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1143,6 +1213,114 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(live(&mgr, &task.id));
+    mgr.shutdown();
+}
+
+/// A turn's background tasks outlive it: an idle agent stops only once its last one is
+/// done, and the usual delay runs from that report.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_agent_waits_for_its_background_tasks_before_it_stops() {
+    let live =
+        |mgr: &AgentManager, id: &str| mgr.task(id).unwrap().live.lock().as_ref().is_some_and(|l| !l.peer.is_closed());
+    let new = || NewAgentTask {
+        project_root: None,
+        prompt: text("background"),
+        provider: "claude".into(),
+        config: Vec::new(),
+        isolation: Isolation::Local,
+        base: None,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // The task runs long past the idle delay: the agent stays up for it.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(live(&mgr, &task.id));
+    // It is done: the delay starts over from this report, then the agent stops.
+    agent.update("s1", json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": []}));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(live(&mgr, &task.id), "the delay runs from when the last task is done");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id));
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready, "not an error");
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_task_shows_what_runs_in_the_background() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("background"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let shown = || mgr.task(&task.id).unwrap().state.lock().task.background.clone();
+    let first = shown();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        (first[0].id.as_str(), first[0].kind.as_str(), first[0].description.as_str()),
+        ("bsh1", "local_bash", "sleep 900")
+    );
+
+    agent.update(
+        "s1",
+        json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": [
+            {"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"},
+            {"task_id": "mon1", "task_type": "monitor", "description": "Watch the deploy"},
+        ]}),
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while shown().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(shown()[0].started_ms, first[0].started_ms, "a task keeps when it was first seen");
+
+    agent.update("s1", json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": []}));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !shown().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_task_is_stopped_on_its_own() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.stop_background(&task.id, "b1").await.unwrap();
+    assert!(agent.calls.lock().contains(&"_openidea/stop_task \"b1\"".to_owned()));
     mgr.shutdown();
 }
 
