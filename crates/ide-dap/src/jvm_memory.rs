@@ -116,30 +116,75 @@ pub(crate) fn local_jdwp_port(arguments: &Value) -> Option<u16> {
 /// attach socket does not hold the attach up.
 pub(crate) fn find_attached_jvm(session: &Arc<Session>, port: u16) {
     let _ = session.jdwp_port.set(port);
+    let find = move || ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY);
+    drop(watch_for_attached_jvm(session, find, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW));
+}
+
+/// Retries `find` for the session's `jvm_pid`, holding the session weakly so an ended session
+/// is not kept alive.
+pub(crate) fn watch_for_attached_jvm<F>(
+    session: &Arc<Session>,
+    find: F,
+    interval: Duration,
+    window: Duration,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn() -> Option<u32> + Clone + Send + 'static,
+{
     let weak = Arc::downgrade(session);
     tokio::spawn(async move {
-        let live = || weak.upgrade().is_some_and(|s| !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed());
-        let find = move || ide_jvm_attach::find_jvm_by_jdwp_port(port, ATTACH_SCAN_TRY, ATTACH_SCAN_TRY);
-        let Some(pid) = retry_find(find, live, ATTACH_SCAN_INTERVAL, ATTACH_SCAN_WINDOW).await else {
-            tracing::debug!(port, "no local JVM found for the JDWP port yet");
+        let gate = || match weak.upgrade() {
+            Some(s) if !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed() => {
+                if s.jvm_pid.load(Ordering::Acquire) > 0 {
+                    ScanGate::Ended
+                } else if s.suspended.load(Ordering::Acquire) {
+                    // The scan queries this JVM too, and a suspended JDK below 17 hangs on it.
+                    ScanGate::Wait
+                } else {
+                    ScanGate::Scan
+                }
+            }
+            _ => ScanGate::Ended,
+        };
+        let Some(pid) = retry_find(find, gate, interval, window).await else {
+            tracing::debug!("no local JVM found for the JDWP attach yet");
             return;
         };
         if let Some(s) = weak.upgrade() {
             let _ = s.jvm_pid.compare_exchange(0, i64::from(pid), Ordering::AcqRel, Ordering::Acquire);
         }
-    });
+    })
 }
 
-/// Calls `find` on a blocking thread until it returns a pid, `live` turns false or `window`
-/// has passed.
-pub(crate) async fn retry_find<F>(find: F, live: impl Fn() -> bool, interval: Duration, window: Duration) -> Option<u32>
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ScanGate {
+    Scan,
+    /// Skip this try but keep the window open.
+    Wait,
+    Ended,
+}
+
+/// Calls `find` on a blocking thread, on each try `gate` allows, until it returns a pid, `gate`
+/// reports the end or `window` has passed.
+pub(crate) async fn retry_find<F>(
+    find: F,
+    gate: impl Fn() -> ScanGate,
+    interval: Duration,
+    window: Duration,
+) -> Option<u32>
 where
     F: Fn() -> Option<u32> + Clone + Send + 'static,
 {
     let deadline = tokio::time::Instant::now() + window;
-    while live() {
-        if let Ok(Some(pid)) = tokio::task::spawn_blocking(find.clone()).await {
-            return Some(pid);
+    loop {
+        match gate() {
+            ScanGate::Ended => break,
+            ScanGate::Wait => {}
+            ScanGate::Scan => {
+                if let Ok(Some(pid)) = tokio::task::spawn_blocking(find.clone()).await {
+                    return Some(pid);
+                }
+            }
         }
         if tokio::time::Instant::now() + interval >= deadline {
             break;
@@ -368,19 +413,22 @@ pub(crate) async fn snapshot(
     target: JvmTarget<'_>,
 ) -> IdeResult<JvmMemoryResult> {
     let mut state = state.lock().await;
+    let suspended = suspended.load(Ordering::Acquire);
+    let unavailable = |reason| Ok(JvmMemoryResult::Unavailable { reason });
     let lookup = match target {
         JvmTarget::Launched(pid) => Lookup::Tree(pid),
         JvmTarget::Attached { pid, jdwp_port } => match i32::try_from(pid.load(Ordering::Acquire)) {
             Ok(p) if p > 0 => Lookup::Known(p),
             _ => match jdwp_port {
-                Some(port) => Lookup::Scan(port),
-                None => {
-                    return Ok(JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound });
+                // The scan queries the session's own JVM before its version is known.
+                Some(_) if suspended => {
+                    return unavailable(JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 0 });
                 }
+                Some(port) => Lookup::Scan(port),
+                None => return unavailable(JvmMemoryUnavailable::AttachedJvmNotFound),
             },
         },
     };
-    let suspended = suspended.load(Ordering::Acquire);
     let probe = probe(suspended);
     let previous = state.previous.clone();
     let (found, outcome) = tokio::task::spawn_blocking(move || {
@@ -686,9 +734,50 @@ mod tests {
         let tries = Arc::new(AtomicUsize::new(0));
         let counted = tries.clone();
         let find = move || (counted.fetch_add(1, Ordering::SeqCst) >= 2).then_some(4242);
-        let found = retry_find(find, || true, Duration::from_millis(1), Duration::from_secs(5)).await;
+        let found = retry_find(find, || ScanGate::Scan, Duration::from_millis(1), Duration::from_secs(5)).await;
         assert_eq!(found, Some(4242));
         assert_eq!(tries.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_find_never_scans_while_suspended() {
+        let tries = Arc::new(AtomicUsize::new(0));
+        let counted = tries.clone();
+        let find = move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Some(4242)
+        };
+        let checks = AtomicUsize::new(0);
+        // Suspended for the first five checks, then resumed.
+        let gate = || if checks.fetch_add(1, Ordering::SeqCst) < 5 { ScanGate::Wait } else { ScanGate::Scan };
+        let found = retry_find(find.clone(), gate, Duration::from_millis(1), Duration::from_secs(5)).await;
+        assert_eq!(found, Some(4242));
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+        assert_eq!(checks.load(Ordering::SeqCst), 6);
+
+        tries.store(0, Ordering::SeqCst);
+        let found = retry_find(find, || ScanGate::Wait, Duration::from_millis(5), Duration::from_millis(50)).await;
+        assert_eq!(found, None);
+        assert_eq!(tries.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_never_scans_a_suspended_attach_session() {
+        let state = tokio::sync::Mutex::new(JvmMemoryState::default());
+        let suspended = AtomicBool::new(true);
+        let jvm_pid = AtomicI64::new(0);
+        let mut fake = FakeProbe::new(4242, Vec::new());
+        fake.jdwp = Some((5005, 4242));
+        let fake = Arc::new(fake);
+        let probe: Arc<dyn AttachProbe> = fake.clone();
+        let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
+        assert_eq!(
+            snapshot(&state, &suspended, |_| probe, target).await.unwrap(),
+            JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 0 } }
+        );
+        assert_eq!(fake.scans.load(Ordering::SeqCst), 0);
+        assert!(fake.asked.lock().is_empty());
+        assert_eq!(jvm_pid.load(Ordering::Acquire), 0);
     }
 
     #[tokio::test]
@@ -700,7 +789,7 @@ mod tests {
             None
         };
         let started = std::time::Instant::now();
-        let found = retry_find(find, || true, Duration::from_millis(10), Duration::from_millis(100)).await;
+        let found = retry_find(find, || ScanGate::Scan, Duration::from_millis(10), Duration::from_millis(100)).await;
         assert_eq!(found, None);
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(tries.load(Ordering::SeqCst) >= 2);
@@ -715,8 +804,8 @@ mod tests {
             None
         };
         let live = AtomicBool::new(true);
-        let live_check = || live.swap(false, Ordering::SeqCst);
-        let found = retry_find(find, live_check, Duration::from_millis(1), Duration::from_secs(5)).await;
+        let gate = || if live.swap(false, Ordering::SeqCst) { ScanGate::Scan } else { ScanGate::Ended };
+        let found = retry_find(find, gate, Duration::from_millis(1), Duration::from_secs(5)).await;
         assert_eq!(found, None);
         assert_eq!(tries.load(Ordering::SeqCst), 1);
     }
