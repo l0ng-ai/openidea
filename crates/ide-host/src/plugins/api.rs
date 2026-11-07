@@ -565,6 +565,10 @@ impl Shared {
         self.closed_clients.lock().remove(client);
     }
 
+    pub fn client_closed(&self, client: &str) -> bool {
+        self.closed_clients.lock().contains(client)
+    }
+
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
@@ -1790,6 +1794,16 @@ impl HostApi for PluginApi {
         serde_json::to_string(&value).ok()
     }
 
+    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
+        ide_extension::validate_plugin_id(self.id()).map_err(HostError::Invalid)?;
+        std::fs::create_dir_all(&self.shared.data_dir).map_err(failed)?;
+        let data = self.shared.data_dir.join(self.id());
+        ide_vfs::create_private_dir(&data).map_err(failed)?;
+        let files = data.join("files");
+        ide_vfs::create_private_dir(&files).map_err(failed)?;
+        files.canonicalize().map_err(failed)
+    }
+
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
         // Unsaved editor contents win, as they do for project files.
         if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
@@ -1821,12 +1835,21 @@ impl HostApi for PluginApi {
             Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => ("utf-8".to_string(), false),
             Err(e) => return Err(not_writable(real, e)),
         };
-        ide_vfs::save_text(real, text, &encoding, has_bom).map(drop).map_err(|e| not_writable(real, e))
+        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+            let bytes = ide_vfs::encode(text, &encoding, has_bom).map_err(|e| not_writable(real, e))?;
+            ide_vfs::write_atomic_private(real, &bytes).map(drop).map_err(|e| not_writable(real, e))
+        } else {
+            ide_vfs::save_text(real, text, &encoding, has_bom).map(drop).map_err(|e| not_writable(real, e))
+        }
     }
 
     fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError> {
         check_unsaved(self.shared.workspace(), real)?;
-        ide_vfs::write_atomic(real, bytes).map(drop).map_err(|e| not_writable(real, e))
+        if self.plugin_dir().is_ok_and(|dir| real.starts_with(dir)) {
+            ide_vfs::write_atomic_private(real, bytes).map(drop).map_err(|e| not_writable(real, e))
+        } else {
+            ide_vfs::write_atomic(real, bytes).map(drop).map_err(|e| not_writable(real, e))
+        }
     }
 }
 
@@ -2182,23 +2205,24 @@ mod tests {
     #[test]
     fn process_environment_only_adds_variables() {
         let tmp = tempfile::tempdir().unwrap();
-        let binary = ide_core::process::find_executable(
-            "git",
-            &ide_core::process::user_path().or_else(|| std::env::var_os("PATH")).unwrap(),
-        )
-        .expect("git on PATH");
+        // Environment overrides must be rejected before spawn, so no executable is needed.
+        let binary = tmp.path().join("lint.exe");
+        std::fs::write(&binary, "not an executable").unwrap();
         let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
-        pins.write().insert(("acme.lint".into(), "process:git".into()), ProgramPin::approve(&binary).unwrap());
+        pins.write().insert(("acme.lint".into(), "process:lint".into()), ProgramPin::approve(&binary).unwrap());
         let api = api(tmp.path(), pins);
         let inherited = std::env::vars_os()
-            .find(|(key, _)| key != "PATH" && key.to_str().is_some_and(|key| !key.is_empty() && !key.contains('=')))
+            .find(|(key, _)| {
+                !env_name_eq(key, "PATH".as_ref())
+                    && key.to_str().is_some_and(|key| !key.is_empty() && !key.contains('='))
+            })
             .unwrap()
             .0
             .into_string()
             .unwrap();
         for key in ["PATH".to_owned(), inherited] {
             let cmd = ProcessCommand {
-                program: "git".into(),
+                program: "lint".into(),
                 env: vec![(key.clone(), "replacement".into())],
                 ..Default::default()
             };

@@ -110,6 +110,7 @@ struct State {
     answers: VecDeque<Option<Vec<String>>>,
     revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
+    provider_diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
@@ -362,6 +363,31 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Runs a diagnostics provider against the current mock editor snapshot.
+    /// This explicit call replaces the real host's debounce; it needs no capability.
+    pub fn refresh_diagnostics(&self, provider: &mut impl crate::diagnostics::DiagnosticsProvider) {
+        let document = self.state.borrow().editor.as_ref().map(|e| crate::diagnostics::Document {
+            path: e.path.clone(),
+            language: e.language.clone(),
+            version: e.version,
+            text: e.text.clone(),
+        });
+        if let Some(document) = document {
+            let items = provider.diagnostics(&document);
+            let mut state = self.state.borrow_mut();
+            if items.is_empty() {
+                state.provider_diagnostics.remove(&document.path);
+            } else {
+                state.provider_diagnostics.insert(document.path, items);
+            }
+        }
+    }
+
+    /// Diagnostics returned by the provider, separate from manual publishing.
+    pub fn provider_diagnostics(&self) -> BTreeMap<String, Vec<Diagnostic>> {
+        self.state.borrow().provider_diagnostics.clone()
+    }
+
     /// Views the plugin asked to refresh, in order.
     pub fn refreshed_views(&self) -> Vec<String> {
         self.state.borrow().refreshed.clone()
@@ -492,7 +518,14 @@ pub mod current {
 
     /// `fs.read:<base>` (or `fs.write:<base>`) covers `<base>` itself and what is
     /// under it: `/a` covers `/a/b` but not `/ab`.
+    const PLUGIN_DIR: &str = "/openidea/plugin-data/mock/files";
+
     fn require_fs(s: &State, kind: &str, path: &str) -> Result<(), Error> {
+        if (path == PLUGIN_DIR || path.starts_with(&format!("{PLUGIN_DIR}/")))
+            && !path.split(['/', '\\']).any(|part| part == "..")
+        {
+            return Ok(());
+        }
         let prefix = format!("{kind}:");
         let covered = s.capabilities.iter().any(|c| match c.strip_prefix(&prefix) {
             Some(base) => {
@@ -555,7 +588,7 @@ pub mod current {
                 .filter_map(|c| c.strip_prefix(kind))
                 .any(|base| base.trim_end_matches(['/', '\\']) == dir)
         });
-        granted || has_children(s, dir)
+        dir == PLUGIN_DIR || granted || has_children(s, dir)
     }
 
     /// What a write has to get past: an `fs.write` grant, a path that is not a
@@ -873,6 +906,10 @@ pub mod current {
         })
     }
 
+    pub fn fs_plugin_dir() -> Result<String, Error> {
+        Ok(PLUGIN_DIR.to_owned())
+    }
+
     pub fn fs_read_file(path: &str) -> Result<String, Error> {
         with(|s| {
             check_external(s, "fs.read", path)?;
@@ -912,7 +949,7 @@ pub mod current {
                 return Ok(FileStat { kind: FileKind::File, size: bytes.len() as u64, modified: None });
             }
             // A directory is a prefix of the files the mock holds.
-            if has_children(s, path) {
+            if path == PLUGIN_DIR || has_children(s, path) {
                 Ok(FileStat { kind: FileKind::Directory, size: 0, modified: None })
             } else {
                 Err(Error::NotFound(path.into()))
@@ -962,7 +999,7 @@ pub mod current {
                     _ => {}
                 }
             }
-            if entries.is_empty() {
+            if entries.is_empty() && path != PLUGIN_DIR {
                 return Err(Error::NotFound(path.into()));
             }
             Ok(entries.into_iter().map(|(name, kind)| crate::host::fs::DirEntry { name, kind }).collect())
@@ -1228,7 +1265,9 @@ pub mod current {
 
     pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
         with(|s| {
-            require(s, "project.read")?;
+            if require_fs(s, "fs.read", path).is_err() || !path.starts_with(PLUGIN_DIR) {
+                require(s, "project.read")?;
+            }
             s.locations.push((path.into(), line, column));
             Ok(())
         })
@@ -1723,6 +1762,24 @@ mod tests {
         host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
             .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
+    }
+
+    #[test]
+    fn private_directory_needs_no_filesystem_grants() {
+        let _mock = MockHost::install().with_capabilities(&[]);
+        let dir = host::fs::plugin_dir().unwrap();
+        assert_eq!(host::fs::stat(&dir).unwrap().kind, FileKind::Directory);
+        assert!(host::fs::read_dir(&dir).unwrap().is_empty());
+        let file = format!("{dir}/fake.txt");
+        host::fs::write_file(&file, "fake text").unwrap();
+        assert_eq!(host::fs::read_file(&file).unwrap(), "fake text");
+        host::fs::write_bytes(&file, b"fake bytes").unwrap();
+        assert_eq!(host::fs::read_bytes(&file).unwrap(), b"fake bytes");
+        assert_eq!(host::fs::read_dir(&dir).unwrap()[0].name, "fake.txt");
+        for path in [format!("{dir}-other/file"), format!("{dir}/../other/file")] {
+            assert!(matches!(host::fs::read_file(&path), Err(Error::Denied(_))));
+            assert!(matches!(host::fs::write_file(&path, "x"), Err(Error::Denied(_))));
+        }
     }
 
     #[test]

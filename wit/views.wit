@@ -139,6 +139,8 @@ interface views {
     /// Opens `path` (project-relative or absolute, inside the project) in an
     /// editor of the window the call came from, the caret at `line` and
     /// `column` (0-based; UTF-16 column): a view's links to code.
+    /// An absolute path inside the plugin's own fs.plugin-dir also works,
+    /// without project.read or an open project, from a command or event.
     open-location: func(path: string, line: u32, column: u32) -> result<_, error>;
 }
 

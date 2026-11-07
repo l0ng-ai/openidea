@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn write_capabilities_need_api_1_3() {
-        for cap in ["project.write", "fs.write:/opt/tool"] {
+        for cap in ["project.write", "fs.write:~/tool"] {
             let caps = format!("[capabilities]\noptional = [\"{cap}\"]\n");
             assert!(err(&format!("{BASE}{caps}")).contains("new in plugin API 1.3"), "{cap}");
             let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.3"))).unwrap();

@@ -143,3 +143,68 @@ test("Go reruns keep each package's exact failures and the original configuratio
     ["test", "-json", "./..."],
   ]);
 });
+
+test("CMake builds the selected target in Build before starting only the application in Run", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const build = {
+      id: "cmake:release:hello:build",
+      name: "Build hello",
+      kind: "cmake",
+      command: "cmake",
+      args: ["--build", "release", "--target", "hello", "--config", "Release"],
+      cwd: null,
+      env: {},
+      detected: true,
+      isTest: false,
+      debugAdapter: null,
+    };
+    const app = {
+      ...build,
+      id: "cmake:release:hello",
+      name: "hello [Release, release]",
+      kind: "cmake-application",
+      command: "/dev/acme-api/release/hello",
+      args: [],
+      debugAdapter: "lldb-dap",
+      beforeLaunch: [{ kind: "build", target: build.id }],
+    };
+    const h = window.__ipc.handlers;
+    h.run_configs = () => [build, app];
+    h.run_apply_settings = (args) => args.configs;
+    h.build_run = (args) => {
+      window.__ipc.send(args.onEvent, { kind: "started", system: "cmake", title: "Build hello" });
+      window.__ipc.send(args.onEvent, { kind: "output", text: "COMPILER_OUTPUT\n", stderr: false });
+      return {
+        system: "cmake",
+        title: "Build hello",
+        success: true,
+        errors: 0,
+        warnings: 0,
+        durationMs: 1,
+        messages: [],
+      };
+    };
+    h.run_start = () => {
+      setTimeout(() => window.__ipc.emit({ type: "runExited", run: 7, code: 0 }), 100);
+      return { id: 7, configId: app.id, name: app.name, pid: 4242, running: true, pty: false };
+    };
+    const runModule = "/src/features/run/store.ts";
+    const { loadConfigs, selectConfig } = await import(/* @vite-ignore */ runModule);
+    await loadConfigs();
+    selectConfig(app.id);
+  });
+  await page.getByRole("button", { name: "Build Project", exact: true }).click();
+  const build = page.getByRole("region", { name: "Build", exact: true });
+  await expect(build.getByText("COMPILER_OUTPUT", { exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "run_start")).toHaveLength(0);
+  expect(await ipcCalls(page, "build_run")).toEqual([expect.objectContaining({ cmake: "cmake:release:hello:build" })]);
+  await page.keyboard.press("Control+r");
+  await expect.poll(async () => (await ipcCalls(page, "run_start")).length).toBe(1);
+  expect(await ipcCalls(page, "build_run")).toHaveLength(2);
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  await expect(run.getByRole("tab", { name: "hello [Release, release]" })).toBeVisible();
+  await expect(run.getByText("COMPILER_OUTPUT", { exact: true })).toHaveCount(0);
+});

@@ -223,13 +223,21 @@ impl StoreData {
     /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
     /// should be told instead (`denied` naming the capability to declare).
     fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        sandbox::resolve_granted(&self.granted, path).map_err(Into::into)
+        let mut granted = self.granted.clone();
+        if let Ok(dir) = self.host.plugin_dir() {
+            granted.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        sandbox::resolve_granted(&granted, path).map_err(Into::into)
     }
 
     /// The same for `fs.write:…`: a file that does not exist yet is resolved
     /// through the directory it would be created in.
     fn writable_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        sandbox::resolve_writable(&self.granted, path).map_err(Into::into)
+        let mut granted = self.granted.clone();
+        if let Ok(dir) = self.host.plugin_dir() {
+            granted.push(Capability::FsWrite(to_ipc(&dir)));
+        }
+        sandbox::resolve_writable(&granted, path).map_err(Into::into)
     }
 
     fn client(&self) -> Option<&str> {
@@ -868,11 +876,7 @@ impl tasks::Host for StoreData {
         let id = self.host.task_begin(self.client(), clip(title, crate::runtime::MAX_TITLE), cancellable, token);
         self.open_tasks.push(id);
         // The call may now run for the background budget.
-        let extended = self.call_started + self.limits.background;
-        if extended > self.deadline {
-            self.deadline = extended;
-            self.timeout = self.limits.background;
-        }
+        self.renew_background(self.call_started);
         self.push(TaskRes { id })
     }
 }
@@ -887,6 +891,10 @@ impl tasks::HostTask for StoreData {
     ) -> wasmtime::Result<()> {
         let id = self.table.get(&this)?.id;
         let now = Instant::now();
+        // A task that is still reporting is still working: the call gets another
+        // background budget, so long work isn't cut off at the first deadline
+        // while a task that goes quiet still is.
+        self.renew_background(now);
         // At most ~10 updates per second reach the UI.
         if self.last_report.is_none_or(|t| now.duration_since(t).as_millis() >= 100) || total.is_some_and(|t| done >= t)
         {
@@ -898,6 +906,8 @@ impl tasks::HostTask for StoreData {
 
     fn is_cancelled(&mut self, this: Resource<TaskRes>) -> wasmtime::Result<bool> {
         let id = self.table.get(&this)?.id;
+        // Asking whether to stop is the same sign of life as reporting is.
+        self.renew_background(Instant::now());
         Ok(self.cancel.token().is_cancelled() || self.host.task_cancelled(id))
     }
 
@@ -910,6 +920,17 @@ impl tasks::HostTask for StoreData {
 }
 
 impl StoreData {
+    /// Lets the running call reach `from` plus the background budget (the
+    /// longer of it and what was left), so a task that keeps saying it is alive
+    /// isn't cut off at the first deadline.
+    fn renew_background(&mut self, from: Instant) {
+        let extended = from + self.limits.background;
+        if extended > self.deadline {
+            self.deadline = extended;
+            self.timeout = self.limits.background;
+        }
+    }
+
     /// What is left of the running call's wall-clock budget (host operations
     /// can't be interrupted by the epoch callback, so they get this as timeout).
     fn remaining(&self) -> Duration {
@@ -922,26 +943,7 @@ impl diagnostics::Host for StoreData {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
         }
-        let source = self.plugin_id.clone();
-        let items = items
-            .into_iter()
-            .take(MAX_DIAGNOSTICS)
-            .map(|d| ide_core::Diagnostic {
-                range: ide_core::Range::new(pos(d.range.start), pos(d.range.end)),
-                severity: match d.severity {
-                    diagnostics::Severity::Error => ide_core::Severity::Error,
-                    diagnostics::Severity::Warning => ide_core::Severity::Warning,
-                    diagnostics::Severity::Info => ide_core::Severity::Info,
-                    diagnostics::Severity::Hint => ide_core::Severity::Hint,
-                },
-                message: clip(d.message, 4096),
-                source: Some(d.source.map_or_else(|| source.clone(), |s| clip(s, 128))),
-                code: d.code.map(|c| clip(c, 128)),
-                unnecessary: d.tags.iter().any(|t| t == "unnecessary"),
-                deprecated: d.tags.iter().any(|t| t == "deprecated"),
-                server: Some(source.clone()),
-            })
-            .collect();
+        let items = diagnostics_from_wit(items, &self.plugin_id);
         Ok(self.host.publish_diagnostics(Path::new(&path), items).map_err(to_wit))
     }
 }
@@ -1150,6 +1152,14 @@ impl views::Host for StoreData {
     }
 
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
+        if let Ok(dir) = self.host.plugin_dir()
+            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], &path)
+        {
+            if let Err(e) = self.require_interactive() {
+                return Ok(Err(e));
+            }
+            return Ok(self.host.open_location(self.client(), &real, line, column).map_err(to_wit));
+        }
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
         }
@@ -1210,6 +1220,10 @@ impl From<sandbox::Refusal> for wit::Error {
 /// Files outside the open projects, gated by `fs.read:<path>` and
 /// `fs.write:<path>` grants.
 impl fs::Host for StoreData {
+    fn plugin_dir(&mut self) -> Fallible<String> {
+        Ok(self.host.plugin_dir().map(|dir| to_ipc(&dir)).map_err(to_wit))
+    }
+
     fn read_file(&mut self, path: String) -> Fallible<String> {
         let real = match self.granted_file(&path) {
             Ok(real) => real,
@@ -1396,4 +1410,36 @@ mod project_ui_tests {
         }
         assert!(validate_ui_path(&format!("/{}", "x".repeat(8192))).is_err());
     }
+}
+
+pub(crate) mod diagnostics_bindings {
+    wasmtime::component::bindgen!({
+        world: "editor-diagnostics", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+        },
+    });
+}
+
+pub(crate) fn diagnostics_from_wit(items: Vec<diagnostics::Diagnostic>, source: &str) -> Vec<ide_core::Diagnostic> {
+    items
+        .into_iter()
+        .take(MAX_DIAGNOSTICS)
+        .map(|d| ide_core::Diagnostic {
+            range: ide_core::Range::new(pos(d.range.start), pos(d.range.end)),
+            severity: match d.severity {
+                diagnostics::Severity::Error => ide_core::Severity::Error,
+                diagnostics::Severity::Warning => ide_core::Severity::Warning,
+                diagnostics::Severity::Info => ide_core::Severity::Info,
+                diagnostics::Severity::Hint => ide_core::Severity::Hint,
+            },
+            message: clip(d.message, 4096),
+            source: Some(d.source.map_or_else(|| source.to_owned(), |s| clip(s, 128))),
+            code: d.code.map(|c| clip(c, 128)),
+            unnecessary: d.tags.iter().any(|t| t == "unnecessary"),
+            deprecated: d.tags.iter().any(|t| t == "deprecated"),
+            server: Some(source.to_owned()),
+        })
+        .collect()
 }

@@ -48,6 +48,7 @@ import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
+import { buildCMake, isCMakeBuild } from "./cmake";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
@@ -710,6 +711,10 @@ export async function startRun(
     chain?: readonly string[];
   } = {},
 ): Promise<RunSession | null> {
+  if (!options.launch && isCMakeBuild(config)) {
+    await buildCMake(config.id, options.show !== false);
+    return null;
+  }
   if (config.kind === "compound") {
     await startCompound(config, options.chain, options.show);
     return null;

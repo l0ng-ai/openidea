@@ -24,7 +24,7 @@ use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -253,6 +253,10 @@ pub trait HostApi: Send + Sync {
     /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
     /// `max` bounds the bytes read.
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
+    /// The plugin's private directory, independent of the current invocation.
+    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
+        Err(HostError::Failed("private plugin storage is unavailable".into()))
+    }
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.
@@ -632,6 +636,7 @@ struct Exports {
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
     details: Option<wit_detail::Guest>,
+    diagnostics: Option<crate::wit_host::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider::Guest>,
     hover: Option<wit_hover::Guest>,
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
@@ -719,6 +724,8 @@ impl Runtime {
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
         let detail_indices = wit_detail::GuestIndices::new(&pre).ok();
+        use crate::wit_host::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider as wit_diag;
+        let diagnostics_indices = wit_diag::GuestIndices::new(&pre).ok();
         let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
@@ -753,6 +760,10 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let diagnostics = match diagnostics_indices {
+            Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         let hover = match hover_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
@@ -779,6 +790,7 @@ impl Runtime {
                 indexer,
                 semantic,
                 details,
+                diagnostics,
                 hover,
                 commit_checks,
                 inlay,
@@ -1073,6 +1085,27 @@ impl Runtime {
                 modifiers: t.modifiers.into_iter().take(MAX_TOKEN_MODIFIERS).map(|m| clip(m, 32)).collect(),
             })
             .collect())
+    }
+
+    pub fn provide_diagnostics(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<ide_core::Diagnostic>, CallError> {
+        use crate::wit_host::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider as w;
+        if self.exports.diagnostics.is_none() {
+            return Err(CallError::missing_export("diagnostics-provider"));
+        }
+        let d = w::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let items = self.call(Invocation::default(), timeout, |e, store| {
+            e.diagnostics.as_ref().expect("checked").call_diagnostics(store, &d)
+        })?;
+        Ok(crate::wit_host::diagnostics_from_wit(items, &self.store.data().plugin_id))
     }
 
     pub fn provide_hover(

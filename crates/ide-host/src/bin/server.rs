@@ -15,8 +15,22 @@ fn main() {
         println!("openidea-server {} (protocol {})", env!("CARGO_PKG_VERSION"), rpc::PROTOCOL_VERSION);
         return;
     }
+    if args.first().is_some_and(|a| a == "--connect") {
+        // One forwarded connection (see `ide_host::relay`): stdout carries its bytes.
+        let code = match ide_host::relay::parse_args(&args[1..]).and_then(|(host, port)| {
+            ide_host::relay::relay(&host, port, std::io::stdin(), std::io::stdout().lock())
+                .map_err(|e| format!("cannot connect to {host}:{port}: {e}"))
+        }) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
     if !args.iter().any(|a| a == "--stdio") {
-        eprintln!("usage: openidea-server --stdio | --version");
+        eprintln!("usage: openidea-server --stdio | --connect <host> <port> | --version");
         std::process::exit(2);
     }
     // stdout carries the protocol: logs go to stderr.

@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <plugin>
   <extension point="org.eclipse.jdt.ls.core.delegateCommandHandler">
+    <delegateCommandHandler class="ai.openidea.usages.CoveredFilesCommand">
+      <command id="openidea.workspace.coveredFiles"/>
+    </delegateCommandHandler>
     <delegateCommandHandler class="ai.openidea.usages.UsagesCommand">
       <command id="openidea.java.usages"/>
     </delegateCommandHandler>

@@ -369,6 +369,10 @@ mod imp {
         Ok(entries.into_iter().map(|e| super::fs::DirEntry { name: e.name, kind: file_kind(e.kind) }).collect())
     }
 
+    pub fn fs_plugin_dir() -> Result<String, Error> {
+        wit::fs::plugin_dir().map_err(error)
+    }
+
     pub fn fs_write_file(path: &str, text: &str) -> Result<(), Error> {
         wit::fs::write_file(path, text).map_err(error)
     }
@@ -377,39 +381,40 @@ mod imp {
         wit::fs::write_bytes(path, bytes).map_err(error)
     }
 
-    pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
+    pub fn diagnostic_to(d: &Diagnostic) -> wit::diagnostics::Diagnostic {
         use wit::diagnostics::{Diagnostic as D, RelatedInformation as R, Severity as S};
-        let items: Vec<D> = items
-            .iter()
-            .map(|d| D {
-                range: range_out(d.range),
-                severity: match d.severity {
-                    Severity::Error => S::Error,
-                    Severity::Warning => S::Warning,
-                    Severity::Info => S::Info,
-                    Severity::Hint => S::Hint,
-                },
-                message: d.message.clone(),
-                code: d.code.clone(),
-                source: d.source.clone(),
-                tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
-                    .into_iter()
-                    .filter(|(on, _)| *on)
-                    .map(|(_, tag)| tag.to_owned())
-                    .collect(),
-                related: d
-                    .related
-                    .iter()
-                    .map(|r| R {
-                        location: wit::types::Location {
-                            path: r.location.path.clone(),
-                            range: range_out(r.location.range),
-                        },
-                        message: r.message.clone(),
-                    })
-                    .collect(),
-            })
-            .collect();
+        D {
+            range: range_out(d.range),
+            severity: match d.severity {
+                Severity::Error => S::Error,
+                Severity::Warning => S::Warning,
+                Severity::Info => S::Info,
+                Severity::Hint => S::Hint,
+            },
+            message: d.message.clone(),
+            code: d.code.clone(),
+            source: d.source.clone(),
+            tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
+                .into_iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, tag)| tag.to_owned())
+                .collect(),
+            related: d
+                .related
+                .iter()
+                .map(|r| R {
+                    location: wit::types::Location {
+                        path: r.location.path.clone(),
+                        range: range_out(r.location.range),
+                    },
+                    message: r.message.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
+        let items: Vec<_> = items.iter().map(diagnostic_to).collect();
         wit::diagnostics::publish(path, &items).map_err(error)
     }
 
@@ -1031,14 +1036,23 @@ pub fn unsubscribe(kind: EventKind) {
 }
 
 /// Files outside the open projects, for a program the plugin integrates with
-/// or a tool installed elsewhere. Every path needs an `fs.read:<path>`
-/// (reading) or `fs.write:<path>` (writing) grant covering it; without one a
+/// or a tool installed elsewhere. Outside [`fs::plugin_dir`], paths need an
+/// `fs.read:<path>` (reading) or `fs.write:<path>` (writing) grant covering it;
+/// without one a
 /// call returns [`Error::Denied`] naming the capability the manifest has to
 /// declare. Paths are absolute, or start with `~/` for the user's home. A file
 /// inside a project is [`Project::read_file`] / [`Project::write_file`].
 pub mod fs {
     use super::imp;
     use crate::types::{Error, FileKind, FileStat};
+
+    /// The plugin's private persistent directory (0700, owner-only ACL on
+    /// Windows), removed on uninstall. Files created here are owner-only and
+    /// need no `fs.*` grants. Suitable for editor content and large caches;
+    /// retained across idle reclaim, reload, and application restarts.
+    pub fn plugin_dir() -> Result<String, Error> {
+        imp::fs_plugin_dir()
+    }
 
     /// An entry of a directory ([`read_dir`]).
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1140,4 +1154,10 @@ pub fn notify_with_actions(
     actions: &[NotificationAction],
 ) -> Result<(), Error> {
     imp::notify_with_actions(level, title, body, actions)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn __diagnostic_to(d: &Diagnostic) -> crate::bindings::openidea::plugin::diagnostics::Diagnostic {
+    imp::diagnostic_to(d)
 }
