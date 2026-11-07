@@ -46,7 +46,8 @@ import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
-import { remoteDebugBlocked } from "./remote";
+import { containerDebuggable, remoteDebugBlocked } from "./remote";
+import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
@@ -116,6 +117,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain))) return;
   recordRun(config.id);
+  // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
+  if (containerDebuggable(config) && getAction("debug.attach")) {
+    await debugInContainer(config);
+    return;
+  }
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
     await executeAction("debug.startConfig", config);

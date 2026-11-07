@@ -181,6 +181,56 @@ describe("remote debugging", () => {
     );
   });
 
+  describe("in containers", () => {
+    const container: RunTargetValid = { ...DEFAULT_RUN_TARGET, kind: "docker", id: "py", name: "Python", image: "x" };
+    const attach = vi.fn();
+    let unregisterAttach: () => void;
+    beforeEach(() => {
+      useProject.setState({ settings: { runTargets: [box, container], ssh: { configs: [] } } as never });
+      unregisterAttach = registerActions([{ id: "debug.attach", title: "Attach", run: ({ arg }) => attach(arg) }]);
+      attach.mockClear();
+    });
+    afterEach(() => unregisterAttach());
+
+    it("runs Python under debugpy and attaches once it listens", async () => {
+      const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+      useRun.setState({ configs: [py], loaded: true });
+      ipc.runStart.mockResolvedValueOnce(ok);
+      await executeAction("run.debugConfig", py.id);
+      expect(startConfig).not.toHaveBeenCalled();
+      expect(ipc.runStart).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "app", params: { containerDebug: "true" } }),
+        expect.anything(),
+      );
+      const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (m: unknown) => void };
+      channel.onmessage({
+        kind: "stderr",
+        text: "debugpy is waiting for the debugger on port 41234, project folder /app\n",
+      });
+      await vi.waitFor(() => expect(attach).toHaveBeenCalled());
+      expect(attach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          adapter: "debugpy",
+          hostName: "127.0.0.1",
+          port: 41234,
+          remoteRoot: "/app",
+          process: 3,
+        }),
+      );
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("refuses other debuggers", async () => {
+      const go = cfg("app", { target: "py", debugAdapter: "delve" });
+      useRun.setState({ configs: [go], loaded: true });
+      await executeAction("run.debugConfig", go.id);
+      expect(ipc.runStart).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Only Python can be debugged in containers", level: "warning" }),
+      );
+    });
+  });
+
   it("still debugs local configurations", async () => {
     const local = cfg("app", { debugAdapter: "debugpy" });
     useRun.setState({ configs: [local], loaded: true });
