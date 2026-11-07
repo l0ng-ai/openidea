@@ -1836,10 +1836,11 @@ async fn java_implementations_come_from_sources_first() {
             .collect::<Value>()
     };
     *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
-        // Line 0 is declared in the sources; line 2 in a dependency, which implements it on line 3.
+        // Lines 0 and 1 are declared in the sources; 2 and 3 in a dependency, which implements 2 on line 3.
         "workspace/executeCommand" => Some(match params["arguments"][1].as_u64() {
             Some(0) => json!({ "locations": at(&[1]), "complete": true }),
             Some(2) => json!({ "locations": at(&[1]), "complete": false }),
+            Some(3) => json!({ "locations": [], "complete": false }),
             _ => json!({ "locations": [], "complete": true }),
         }),
         "textDocument/implementation" => Some(at(&[3, 1])),
@@ -1870,7 +1871,14 @@ async fn java_implementations_come_from_sources_first() {
     assert_eq!(lines(&found), vec![3, 1]);
     assert_eq!(s.requested("textDocument/implementation").len(), 2);
 
-    // None in the sources: the standard request, with the dependencies.
+    // Declared in the sources and implemented nowhere there: no search through the dependencies.
+    let found = h.mgr.goto(doc, Pos::new(1, 6), GotoKind::Implementation).await.unwrap();
+    assert!(found.is_empty());
+    let markers = h.mgr.implementations(doc, &[Pos::new(1, 6)], Default::default()).await.unwrap();
+    assert!(markers[0].is_empty());
+    assert_eq!(s.requested("textDocument/implementation").len(), 2);
+
+    // None in the sources of a dependency's type: the standard request, with the dependencies.
     let partial = Mutex::new(Vec::new());
     let found = h
         .mgr
@@ -3100,9 +3108,17 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
     let scopes: Vec<_> =
         s.requested("workspace/executeCommand")[3..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
     assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources"))]);
-    // Scoped probes (code lenses) search everything at once.
+    // Scoped probes with the libraries search everything at once.
     let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
     assert_eq!(scoped.locations.len(), 2);
+    // Usage counts and Safe Delete (no libraries): the sources alone, not widened.
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, false, Default::default(), None).await.unwrap();
+    assert_eq!(scoped.locations.len(), 1);
+    assert!(scoped.locations.iter().all(|l| l.uri.is_none()));
+    let scopes: Vec<_> =
+        s.requested("workspace/executeCommand")[5..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
+    assert_eq!(scopes, [None, Some(json!("sources"))]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
