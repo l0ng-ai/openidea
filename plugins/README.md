@@ -34,7 +34,7 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
 The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.3.0`, world
@@ -449,7 +449,7 @@ declaration matches the file's language are called (and loaded):
 
 ```toml
 [[contributes.providers]]
-kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover"
+kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
@@ -523,6 +523,27 @@ The host asks the language server and the plugins together, under the
 edit-path budget, and shows the server's hover first, then each plugin's
 below a rule. `range`, when given, is the text the hover describes (used when
 the server names none). At most 64 KiB of Markdown per plugin.
+
+#### Inlay hints
+
+The `inlay-hints` kind (API 1.3) shows short labels inside the code of
+documents of the declared languages, such as a type after a call. Register
+with `register_plugin!(MyPlugin, inlay_hints)` and implement
+`openidea_plugin::inlay_hints::InlayHints`:
+
+```rust
+impl InlayHints for MyPlugin {
+    fn inlay_hints(&mut self, doc: &Document, range: Range) -> Vec<InlayHint> {
+        vec![InlayHint::new(range.start, ": string").kind(InlayKind::Type).tooltip("returns string")]
+    }
+}
+```
+
+`range` is the visible part of the document; hints outside it are dropped. A
+hint's kind (`type`, `parameter` or `other`) decides which Inlay Hints setting
+shows it. The host asks the language server and the plugins together, under
+the edit-path budget, and shows both; the editor asks again after edits and
+scrolling. Labels are cut at 256 bytes and tooltips at 1 KiB.
 
 ### Network and secrets
 

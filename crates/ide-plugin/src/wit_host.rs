@@ -975,3 +975,10 @@ pub(crate) mod hover_bindings {
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }
+
+pub(crate) mod inlay_bindings {
+    wasmtime::component::bindgen!({
+        world: "inlay-hints", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
