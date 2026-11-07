@@ -310,6 +310,22 @@ mod imp {
         t.is_cancelled()
     }
 
+    pub fn project_symbols(p: &ProjectRes, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        wit::workspace::symbols(p, query, limit)
+            .map(|symbols| {
+                symbols
+                    .into_iter()
+                    .map(|s| SymbolInfo {
+                        name: s.name,
+                        kind: s.kind,
+                        container: s.container,
+                        location: Location { path: s.location.path, range: range_from(s.location.range) },
+                    })
+                    .collect()
+            })
+            .map_err(error)
+    }
+
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         p.find_files(glob, limit).map_err(error)
     }
@@ -449,6 +465,48 @@ mod imp {
             .map_err(error)
     }
 
+    pub type ChildRes = wit::process::Child;
+
+    pub fn run_command(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+    ) -> Result<ProcessOutput, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        wit::process::run_command(&c, cwd, stdin)
+            .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
+            .map_err(error)
+    }
+
+    pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        wit::process::start(&c, cwd).map_err(error)
+    }
+
+    pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
+        child.poll(max).map(chunk_in).map_err(error)
+    }
+
+    pub fn child_write(child: &ChildRes, text: &str) -> Result<(), Error> {
+        child.write(text).map_err(error)
+    }
+
+    pub fn child_close_stdin(child: &ChildRes) -> Result<(), Error> {
+        child.close_stdin().map_err(error)
+    }
+
+    pub fn child_kill(child: &ChildRes) -> Result<(), Error> {
+        child.kill().map_err(error)
+    }
+
+    pub fn child_wait(child: &ChildRes, timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
+        child.wait(timeout_ms).map(chunk_in).map_err(error)
+    }
+
+    fn chunk_in(c: wit::process::Chunk) -> crate::host::Chunk {
+        crate::host::Chunk { stdout: c.stdout, stderr: c.stderr, status: c.status }
+    }
+
     pub fn range_from(r: wit::types::Range) -> Range {
         range_in(r)
     }
@@ -569,6 +627,17 @@ impl Project {
         imp::project_find(&self.inner, glob, limit)
     }
 
+    /// Fuzzy search of this project's current in-memory index. Needs `project.read`.
+    /// Never waits for LSP or reads file contents. Only paths inside this project's
+    /// root are returned, including when the index has external content roots.
+    /// Search honours the current call's cancellation and deadline. Empty queries return no symbols;
+    /// queries over 256 UTF-8 bytes are invalid and limits are capped at 1000.
+    /// Results may be incomplete during indexing or lag unsaved edits. A closed
+    /// project returns `Error::NotFound`. Locations use UTF-16 columns.
+    pub fn symbols(&self, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        imp::project_symbols(&self.inner, query, limit)
+    }
+
     /// Runs the approved `process:<program>` in this project's root.
     pub fn run_process(&self, program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
         imp::run_process(program, args, Some(&self.inner), stdin)
@@ -662,6 +731,104 @@ pub fn setting_number(key: &str) -> Option<f64> {
 /// (see [`Project::run_process`] to run it in a project).
 pub fn run_process(program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
     imp::run_process(program, args, None, stdin)
+}
+
+/// A program with its arguments and the environment added to the inherited one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Command {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Variables added to the inherited environment: at most 64, names at most
+    /// 256 bytes, values at most 4 KiB, no NUL or '=' in names, no NUL in values.
+    /// Existing names in the prepared child environment (including login-shell
+    /// PATH) fail with an error naming the key. Windows names compare without
+    /// case. Variables are never replaced or removed.
+    pub env: Vec<(String, String)>,
+}
+
+impl Command {
+    /// Selects the program approved by a `process:<program>` grant.
+    pub fn new(program: &str) -> Self {
+        Self { program: program.to_owned(), args: Vec::new(), env: Vec::new() }
+    }
+
+    /// Appends one argument.
+    pub fn arg(mut self, arg: &str) -> Self {
+        self.args.push(arg.to_owned());
+        self
+    }
+
+    /// Appends arguments in order.
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.args.extend(args.into_iter().map(|a| a.as_ref().to_owned()));
+        self
+    }
+
+    /// Adds a variable; an inherited or duplicate name is an error at spawn.
+    pub fn env(mut self, name: &str, value: &str) -> Self {
+        self.env.push((name.to_owned(), value.to_owned()));
+        self
+    }
+}
+
+/// What a kept-running program printed since the last read, and its exit status
+/// once it ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Chunk {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: Option<i32>,
+}
+
+/// A program kept running behind a handle ([`start`]). Dropping it ends the
+/// program, as the host does when the plugin instance goes away.
+pub struct Child {
+    inner: imp::ChildRes,
+}
+
+impl Child {
+    /// What it printed since the last read, up to 1 MiB per stream, or one
+    /// whole character when `max_bytes` is smaller;
+    /// `status` is `Some` once it ended.
+    pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
+        imp::child_poll(&self.inner, max_bytes)
+    }
+
+    /// Writes `text` to its stdin.
+    pub fn write(&self, text: &str) -> Result<(), Error> {
+        imp::child_write(&self.inner, text)
+    }
+
+    /// Closes its stdin, so a program reading it sees the end.
+    pub fn close_stdin(&self) -> Result<(), Error> {
+        imp::child_close_stdin(&self.inner)
+    }
+
+    /// Ends it; `status` becomes known right away (-1 when a signal ended it).
+    pub fn kill(&self) -> Result<(), Error> {
+        imp::child_kill(&self.inner)
+    }
+
+    /// Waits up to `timeout_ms` for it to end (0 only checks), then reads it.
+    pub fn wait(&self, timeout_ms: u32) -> Result<Chunk, Error> {
+        imp::child_wait(&self.inner, timeout_ms)
+    }
+}
+
+/// Runs a [`Command`] to its end (API 1.3). Its environment only adds new
+/// variables; an existing key fails with an error naming it.
+pub fn run_command(cmd: &Command, project: Option<&Project>, stdin: Option<&str>) -> Result<ProcessOutput, Error> {
+    imp::run_command(cmd, project.map(|p| &p.inner), stdin)
+}
+
+/// Starts a [`Command`] and keeps it running behind a [`Child`] (at most 8 per
+/// plugin instance, API 1.3). Closing the invoking window ends its processes.
+pub fn start(cmd: &Command, project: Option<&Project>) -> Result<Child, Error> {
+    imp::start(cmd, project.map(|p| &p.inner)).map(|inner| Child { inner })
 }
 
 /// Projects open in any window. Needs `project.read`.

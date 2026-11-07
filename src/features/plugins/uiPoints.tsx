@@ -47,6 +47,7 @@ import {
 } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 import { pluginIconName } from "./pluginIcon";
+import { projectMarkerIcon, type MarkerIconDecl } from "./markerIcons";
 import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
@@ -364,6 +365,7 @@ interface ViewDecl {
   title: string;
   icon?: string | null;
   location: ToolWindowAnchor | "services";
+  detail?: boolean;
   web?: string;
   group?: string | null;
   when?: string | null;
@@ -474,7 +476,7 @@ function projectView(pluginId: string, decl: ViewDecl, index: number): () => voi
         decl.web ? (
           <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
         ) : (
-          <PluginView pluginId={pluginId} view={decl.id} label={decl.title} itemMenu={itemMenu} />
+          <PluginView pluginId={pluginId} view={decl.id} detail={decl.detail} label={decl.title} itemMenu={itemMenu} />
         ),
       index,
     );
@@ -567,6 +569,10 @@ export function defineViewUiPoints(): () => void {
           openWith.delete(`${pluginId}/${decl.id}`);
         };
       },
+    }),
+    defineUiPoint<MarkerIconDecl>("markerIcons", {
+      title: "Marker Icons",
+      project: ({ pluginId, decl }) => projectMarkerIcon(pluginId, decl),
     }),
     defineUiPoint<FileIconDecl>("fileIcons", {
       title: "File Icons",

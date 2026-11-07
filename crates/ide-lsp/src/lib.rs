@@ -2314,6 +2314,9 @@ impl LspManager {
 
     /// Tells running servers that files or folders moved (`moves`: from → to, after the move).
     pub fn did_rename_files(&self, moves: &[(PathBuf, PathBuf)]) {
+        if !moves.is_empty() {
+            self.configuration_cache.lock().invalidate_paths();
+        }
         let moves: Vec<(PathBuf, PathBuf, bool)> =
             moves.iter().map(|(f, t)| (f.clone(), t.clone(), t.is_dir())).collect();
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
@@ -2349,6 +2352,9 @@ impl LspManager {
         excluded_dirs: &[PathBuf],
     ) {
         use file_watch::Change;
+        if !created.is_empty() || !removed.is_empty() || !excluded_dirs.is_empty() {
+            self.configuration_cache.lock().invalidate_paths();
+        }
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         let open: HashMap<(ide_core::ServerId, u64), HashSet<PathBuf>> = {
             let docs = self.docs.lock();
