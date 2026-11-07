@@ -86,6 +86,12 @@ world plugin-commit-checks {
     export commit-checker;
 }
 
+/// A plugin with file-changing code actions (`file-actions`, next to `[[contributes.providers]]`).
+world plugin-file-actions {
+    include plugin;
+    export file-actions;
+}
+
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
 /// (the component tools merge both into one component).
 world syntax {
@@ -128,4 +134,9 @@ world details {
 /// Only the `commit-checker` export, generated next to `plugin` like `syntax`.
 world commit-checks {
     export commit-checker;
+}
+
+/// Only the `file-actions` export, generated next to `plugin` like `syntax`.
+world file-actions-provider {
+    export file-actions;
 }

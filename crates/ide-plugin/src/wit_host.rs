@@ -986,3 +986,11 @@ pub(crate) mod inlay_bindings {
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }
+
+/// The optional `file-actions` export.
+pub(crate) mod file_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "file-actions-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
