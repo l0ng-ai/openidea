@@ -451,7 +451,7 @@ The design:
 
   Tests: snippets with stubs, and summaries recording the new data.
 
-- [ ] Phase 7.1.c: Completion and hover for Laravel's magic members
+- [x] Phase 7.1.c: Completion and hover for Laravel's magic members
       Phase 7.1.b types model attributes (casts, migrated columns), relation properties and the bindings service providers register, but only as types. Make them visible in the editor:
   - completion after `Facade::` lists the service's methods (as static), after `Model::` and on a builder or relation the builder's and query builder's methods, the model's local scopes (`active()` for `scopeActive()`) and nothing for dynamic `where*`
   - completion after `$model->` lists the relation properties, accessors, casts and migrated columns

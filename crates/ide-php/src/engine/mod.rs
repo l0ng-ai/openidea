@@ -661,7 +661,7 @@ impl Declarations for PhpEngine {
             }
         }
         summaries.sort_by(|a, b| a.0.cmp(&b.0));
-        LaravelFacts::merge(summaries.iter().map(|(_, summary)| &summary.laravel))
+        LaravelFacts::merge_located(summaries.iter().map(|(path, summary)| (Some(path.as_path()), &summary.laravel)))
     }
 }
 

@@ -6,9 +6,11 @@
 //! is installed); the index lists the files that have some, and the
 //! provider only reads them when it is active.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
-use super::DocType;
+use super::{DocType, Loc};
 use crate::types::LazyType;
 
 /// See the module documentation.
@@ -30,23 +32,32 @@ impl LaravelFacts {
 
     /// The facts of several files, in order.
     pub fn merge<'a>(facts: impl IntoIterator<Item = &'a LaravelFacts>) -> Self {
+        Self::merge_located(facts.into_iter().map(|facts| (None, facts)))
+    }
+
+    /// The facts of several files, in order, the tables and casts
+    /// remembering the file they come from (for goto).
+    pub fn merge_located<'a>(facts: impl IntoIterator<Item = (Option<&'a Path>, &'a LaravelFacts)>) -> Self {
         let mut out = Self::default();
-        for facts in facts {
+        for (file, facts) in facts {
+            let file = file.map(Path::to_path_buf);
             out.bindings.extend(facts.bindings.iter().cloned());
-            out.tables.extend(facts.tables.iter().cloned());
-            out.casts.extend(facts.casts.iter().cloned());
+            out.tables.extend(facts.tables.iter().map(|table| Table { file: file.clone(), ..table.clone() }));
+            out.casts.extend(facts.casts.iter().map(|casts| ModelCasts { file: file.clone(), ..casts.clone() }));
         }
         out
     }
 
-    /// The columns migrations give `table`, later ones overriding earlier
-    /// ones of the same name.
-    pub fn columns(&self, table: &str) -> Vec<&Column> {
-        let mut out: Vec<&Column> = Vec::new();
-        for column in self.tables.iter().filter(|t| t.name.eq_ignore_ascii_case(table)).flat_map(|t| &t.columns) {
-            match out.iter_mut().find(|known| known.name == column.name) {
-                Some(known) => *known = column,
-                None => out.push(column),
+    /// The columns migrations give `table` (with the migration call adding
+    /// each), later ones overriding earlier ones of the same name.
+    pub fn columns(&self, table: &str) -> Vec<(&Table, &Column)> {
+        let mut out: Vec<(&Table, &Column)> = Vec::new();
+        for table in self.tables.iter().filter(|t| t.name.eq_ignore_ascii_case(table)) {
+            for column in &table.columns {
+                match out.iter_mut().find(|(_, known)| known.name == column.name) {
+                    Some(known) => *known = (table, column),
+                    None => out.push((table, column)),
+                }
             }
         }
         out
@@ -67,6 +78,10 @@ pub struct Binding {
 pub struct Table {
     pub name: String,
     pub columns: Vec<Column>,
+    /// The file of the migration, when the facts were merged with their
+    /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +92,9 @@ pub struct Column {
     /// `->nullable()`, or a column Laravel creates nullable
     /// (`timestamps()`).
     pub nullable: bool,
+    /// The column's name in the migration (the method's when the name is
+    /// implied: `timestamps()`).
+    pub loc: Loc,
 }
 
 /// The casts a class declares.
@@ -85,6 +103,10 @@ pub struct ModelCasts {
     /// The class (FQN).
     pub class: String,
     pub casts: Vec<Cast>,
+    /// The file declaring the class, when the facts were merged with their
+    /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,4 +116,6 @@ pub struct Cast {
     /// a cast class, fully qualified with a leading `\` (its `:arguments`
     /// dropped).
     pub cast: String,
+    /// The attribute's key in the casts array.
+    pub loc: Loc,
 }

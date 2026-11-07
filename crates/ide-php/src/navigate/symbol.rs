@@ -6,7 +6,10 @@
 //!
 //! Members are looked up on the class models of the receiver's type (every
 //! class of a union), so inherited, trait, magic and enum members are found
-//! where they are declared. A variable's declaration is the parameter, the
+//! where they are declared. A member no class declares may be one the type
+//! providers know through `__call`, `__callStatic` or `__get` (a facade's
+//! service method, a model's scope or attribute: [`Decl::Magic`]). A
+//! variable's declaration is the parameter, the
 //! closure `use` capture, or else the first write of the variable in its
 //! function-like (the file's top level outside of one), as the flow records
 //! writes: assignments, destructuring, `foreach`, `catch`, `global`,
@@ -31,6 +34,7 @@ use crate::names::{FileNames, NameKind, RelativeClass, Resolution, ResolvedName}
 use crate::summary::{FileSummary, Loc};
 use crate::syntax::ParsedFile;
 use crate::types::model::MemberInfo;
+use crate::types::provider::{AttributeOrigin, MagicMember, MagicTarget};
 use crate::types::{ClassModel, Context, ExprTypes, Frame, Resolver, Type};
 
 /// The kinds of class members.
@@ -54,6 +58,41 @@ pub(crate) enum Decl {
         owner: Box<Decl>,
         name: String,
     },
+    /// A member a type provider knows of ([`MagicMember`]).
+    Magic(Magic),
+}
+
+/// A member reached through magic methods.
+#[derive(Clone, Debug)]
+pub(crate) struct Magic {
+    pub member: MagicMember,
+    /// The member's type where it is used.
+    pub ty: Type,
+}
+
+impl Magic {
+    /// The method a forwarded call ends up in, or the method a relation
+    /// property or an accessor stands for, as a member of its class.
+    pub fn method(&self, resolver: &Resolver<'_>) -> Option<Member> {
+        let (class, method) = match &self.member.target {
+            MagicTarget::Method { class, method } => (class, method),
+            MagicTarget::Attribute {
+                class,
+                origin: AttributeOrigin::Relation { method } | AttributeOrigin::Accessor { method },
+                ..
+            } => (class, method),
+            MagicTarget::Attribute { .. } => return None,
+        };
+        let model = resolver.class_model(class)?;
+        model.method(method)?;
+        let receiver = Type::named(model.fqn());
+        let context = Context::in_class(model.fqn());
+        let ty = match &self.member.target {
+            MagicTarget::Method { .. } => self.ty.clone(),
+            MagicTarget::Attribute { .. } => resolver.method_return(&receiver, method, &context),
+        };
+        Some(Member { kind: MemberKind::Method, model, name: method.clone(), receiver, context, ty })
+    }
 }
 
 /// A member of a class model, as reached from a receiver.
@@ -181,6 +220,22 @@ impl PhpEngine {
                     .collect()
             }
             Decl::Parameter { owner, name } => self.parameter_target(owner, name, here, summary).into_iter().collect(),
+            Decl::Magic(magic) => {
+                if let MagicTarget::Attribute {
+                    origin:
+                        AttributeOrigin::Cast { source: Some(source), .. }
+                        | AttributeOrigin::Column { source: Some(source), .. },
+                    ..
+                } = &magic.member.target
+                {
+                    return vec![Target { path: source.file.clone(), range: source.loc.range }];
+                }
+                let resolver = self.resolver();
+                match magic.method(&resolver) {
+                    Some(member) => self.decl_targets(&Decl::Member(member), here, summary),
+                    None => Vec::new(),
+                }
+            }
         }
     }
 
@@ -404,7 +459,8 @@ impl<'a> Lookup<'a, '_> {
             MemberKind::Property => self.resolver.property_type(receiver, name, context),
             MemberKind::Constant => self.resolver.class_constant_type(receiver, name, context),
         });
-        self.resolver
+        let decls: Vec<Decl> = self
+            .resolver
             .class_models(receiver, context)
             .into_iter()
             .filter(|model| match kind {
@@ -422,6 +478,17 @@ impl<'a> Lookup<'a, '_> {
                     ty: ty.clone(),
                 })
             })
+            .collect();
+        if !decls.is_empty() || kind == MemberKind::Constant {
+            return decls;
+        }
+        // A member only the magic methods have.
+        let method = kind == MemberKind::Method;
+        self.resolver
+            .providers()
+            .magic_member(receiver, name, method, self.resolver, context)
+            .map(|member| Decl::Magic(Magic { member, ty }))
+            .into_iter()
             .collect()
     }
 

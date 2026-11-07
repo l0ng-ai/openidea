@@ -15,6 +15,12 @@
 //! `{@inheritDoc}` / `@inheritDoc`, shows the docblock of the member it
 //! overrides or implements; an inline `{@inheritDoc}` is replaced by that
 //! member's description.
+//!
+//! A member only magic methods have ([`Decl::Magic`]) shows the method a
+//! call is forwarded to (a facade's service method, a query builder method,
+//! a model's scope) as that method's hover, with the type at the caret; a
+//! model attribute shows its type and where it comes from (the relation or
+//! accessor method, the cast, the migration column).
 
 use std::path::Path;
 
@@ -24,8 +30,9 @@ use crate::summary::{ClassKind, ClassLike, FileSummary, Param, Visibility};
 use crate::types::model::ModelMethod;
 use crate::types::{Resolver, SignatureParam, Type};
 
-use super::symbol::{Decl, Member, MemberKind, Subject, file_text};
+use super::symbol::{Decl, Magic, Member, MemberKind, Subject, file_text};
 use super::{namespace_of, short_name};
+use crate::types::provider::{AttributeOrigin, MagicTarget};
 
 /// How many overridden members are followed for an inherited docblock.
 const MAX_INHERITED: usize = 8;
@@ -415,7 +422,44 @@ impl PhpEngine {
                 let docs = doc.and_then(|doc| doc.param(name));
                 Some(render(Some(&container), &param, docs))
             }
+            Decl::Magic(magic) => self.describe_magic(magic, resolver, here, summary),
         }
+    }
+
+    fn describe_magic(
+        &self,
+        magic: &Magic,
+        resolver: &Resolver<'_>,
+        here: &Path,
+        summary: &FileSummary,
+    ) -> Option<String> {
+        let method = magic.method(resolver);
+        let (class, ty, origin) = match &magic.member.target {
+            MagicTarget::Method { .. } => return self.describe(&Decl::Member(method?), resolver, here, summary),
+            MagicTarget::Attribute { class, ty, origin } => (class, ty, origin),
+        };
+        // The type at the caret, else the attribute's own.
+        let ty = if magic.ty == Type::Mixed { ty } else { &magic.ty };
+        let code = format!("public {ty} ${}", magic.member.name);
+        let mut docs = match origin {
+            AttributeOrigin::Relation { method } => format!("Eloquent relation, defined by `{method}()`"),
+            AttributeOrigin::Accessor { method } => format!("Eloquent accessor `{method}()`"),
+            AttributeOrigin::Cast { cast, .. } => {
+                format!("Eloquent attribute, cast to `{}` by the model's casts", cast.trim_start_matches('\\'))
+            }
+            AttributeOrigin::Column { table, ty, nullable, .. } => {
+                let nullable = if *nullable { ", nullable" } else { "" };
+                format!("Column `{}` of table `{table}` (`{ty}`{nullable}), from a migration", magic.member.name)
+            }
+        };
+        if let Some(doc) = method.and_then(|member| self.member_doc(&member, resolver, here, summary)) {
+            let doc = doc.markdown();
+            if !doc.is_empty() {
+                docs.push_str("\n\n");
+                docs.push_str(&doc);
+            }
+        }
+        Some(render(Some(class), &code, Some(docs)))
     }
 
     fn member_signature(&self, member: &Member, resolver: &Resolver<'_>) -> Option<String> {
@@ -602,6 +646,10 @@ impl PhpEngine {
                 Some(Decl::Parameter { owner, name }) => {
                     self.parameter_type(owner, name, &resolver, &path, &here).unwrap_or(Type::Mixed)
                 }
+                Some(Decl::Magic(magic)) => match &magic.member.target {
+                    MagicTarget::Attribute { ty, .. } if magic.ty == Type::Mixed => ty.clone(),
+                    _ => magic.ty.clone(),
+                },
             },
         };
         let mut out: Vec<super::Target> = Vec::new();

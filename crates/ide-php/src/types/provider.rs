@@ -28,8 +28,11 @@
 //!
 //! Providers also type properties a class doesn't declare
 //! ([`TypeProvider::magic_property`], asked by the resolver), such as
-//! Eloquent relation properties.
+//! Eloquent relation properties, and list the members a class only has
+//! through `__call`, `__callStatic` or `__get`
+//! ([`TypeProvider::magic_members`]) for completion, hover and goto.
 
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use mago_syntax::cst::{Access, Argument, ArgumentList, ClassLikeConstantSelector, Expression};
@@ -39,6 +42,7 @@ use super::ops::literal_type;
 use super::{Context, LazyType, Resolver, Type};
 use crate::meta::MetaProvider;
 use crate::names::{NameKind, NameScope, Resolution, fqn_eq};
+use crate::summary::Loc;
 
 /// Builds the lazy payload of provider `key`: `payload` and `args` are
 /// handed back to its resolve step (the args resolved), `fallback` is used
@@ -181,6 +185,53 @@ pub struct PropertySite<'s> {
     pub assigned: &'s [Assigned],
 }
 
+/// A member a class only has through magic methods
+/// ([`TypeProvider::magic_members`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MagicMember {
+    /// As written in code (without `$`).
+    pub name: String,
+    /// Called or read statically (`Facade::method()`, `Model::where()`).
+    pub is_static: bool,
+    pub target: MagicTarget,
+}
+
+impl MagicMember {
+    pub fn is_method(&self) -> bool {
+        matches!(self.target, MagicTarget::Method { .. })
+    }
+}
+
+/// What a [`MagicMember`] stands for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MagicTarget {
+    /// A call forwarded to the method `method` of class `class` (FQN): a
+    /// facade's service, a query builder, a model's local scope.
+    Method { class: String, method: String },
+    /// A property of model `class` (FQN), of type `ty`.
+    Attribute { class: String, ty: Type, origin: AttributeOrigin },
+}
+
+/// Where a magic property comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttributeOrigin {
+    /// The relation method of that name (`posts()`).
+    Relation { method: String },
+    /// An accessor (`getFullNameAttribute()`, `fullName(): Attribute`).
+    Accessor { method: String },
+    /// A cast (`'boolean'`, `\App\Casts\Money`), in the casts of the class.
+    Cast { cast: String, source: Option<Source> },
+    /// A column a migration gives the model's table.
+    Column { table: String, ty: String, nullable: bool, source: Option<Source> },
+}
+
+/// A place in another file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Source {
+    pub file: PathBuf,
+    pub loc: Loc,
+}
+
 /// A source of types; see the module documentation.
 pub trait TypeProvider: Send + Sync {
     /// Identifies the provider's payloads ([`LazyType::Provided`]'s `key`).
@@ -209,6 +260,14 @@ pub trait TypeProvider: Send + Sync {
     /// answer mean `class`.
     fn magic_property(&self, _class: &str, _name: &str, _resolver: &Resolver<'_>) -> Option<Type> {
         None
+    }
+
+    /// The members the classes of `receiver` only have through magic
+    /// methods, for completion, hover and goto (not their types: those
+    /// come from the call and property steps). Members the classes declare
+    /// or document may be listed too; callers prefer those.
+    fn magic_members(&self, _receiver: &Type, _resolver: &Resolver<'_>, _context: &Context) -> Vec<MagicMember> {
+        Vec::new()
     }
 }
 
@@ -295,6 +354,43 @@ impl TypeProviders {
     pub fn magic_property(&self, class: &str, name: &str, resolver: &Resolver<'_>) -> Option<Type> {
         self.providers.iter().find_map(|(_, provider)| provider.magic_property(class, name, resolver))
     }
+
+    /// The magic members of `receiver` from every provider, the first one
+    /// of a name (and kind) winning.
+    pub fn magic_members(&self, receiver: &Type, resolver: &Resolver<'_>, context: &Context) -> Vec<MagicMember> {
+        let mut out: Vec<MagicMember> = Vec::new();
+        for (_, provider) in &self.providers {
+            for member in provider.magic_members(receiver, resolver, context) {
+                let known = out.iter().any(|known| {
+                    known.is_method() == member.is_method()
+                        && same_magic_name(&known.name, &member.name, member.is_method())
+                });
+                if !known {
+                    out.push(member);
+                }
+            }
+        }
+        out
+    }
+
+    /// The magic member `name` of `receiver` (a method when `method`).
+    pub fn magic_member(
+        &self,
+        receiver: &Type,
+        name: &str,
+        method: bool,
+        resolver: &Resolver<'_>,
+        context: &Context,
+    ) -> Option<MagicMember> {
+        self.magic_members(receiver, resolver, context)
+            .into_iter()
+            .find(|member| member.is_method() == method && same_magic_name(&member.name, name, method))
+    }
+}
+
+/// Method names ignore case, property names don't.
+fn same_magic_name(a: &str, b: &str, method: bool) -> bool {
+    if method { a.eq_ignore_ascii_case(b) } else { a == b }
 }
 
 /// What the resolver does on its own: the declared, documented or inferred
@@ -425,7 +521,7 @@ impl TypeProvider for PhpUnitProvider {
     }
 }
 
-mod laravel;
+pub(crate) mod laravel;
 
 #[cfg(test)]
 mod tests;

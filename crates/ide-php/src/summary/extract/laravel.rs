@@ -17,6 +17,7 @@
 //! (Laravel's public documentation on migrations and casts): integers are
 //! `int`, decimals and dates `string`, the timestamps `Carbon`.
 
+use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
     Access, Argument, ArgumentList, ArrayElement, BinaryOperator, Call, ClassLikeConstantSelector, ClassLikeMember,
     ClassLikeMemberSelector, Expression, Literal, MethodBody, Property, PropertyItem, Sequence, Statement, Variable,
@@ -24,7 +25,7 @@ use mago_syntax::cst::{
 
 use super::Extractor;
 use crate::names::{NameKind, Resolution};
-use crate::summary::{Binding, Cast, Column, DocType, ModelCasts, Table};
+use crate::summary::{Binding, Cast, Column, DocType, Loc, ModelCasts, Table};
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
 
@@ -253,10 +254,10 @@ impl Extractor<'_> {
         };
         let mut columns = Vec::new();
         for expr in expressions {
-            column_statement(expr, &table, &mut columns);
+            column_statement(expr, &table, &mut columns, |span| self.loc(span));
         }
         if !columns.is_empty() {
-            self.summary.laravel.tables.push(Table { name, columns });
+            self.summary.laravel.tables.push(Table { name, columns, file: None });
         }
     }
 
@@ -291,7 +292,7 @@ impl Extractor<'_> {
             }
         }
         if !casts.is_empty() {
-            self.summary.laravel.casts.push(ModelCasts { class: class.to_owned(), casts });
+            self.summary.laravel.casts.push(ModelCasts { class: class.to_owned(), casts, file: None });
         }
     }
 
@@ -312,9 +313,13 @@ impl Extractor<'_> {
             let ArrayElement::KeyValue(element) = element else { continue };
             let Some(attribute) = string(element.key) else { continue };
             let Some(cast) = self.cast_value(element.value) else { continue };
+            let loc = self.loc(element.key.span());
             match out.iter_mut().find(|known| known.attribute == attribute) {
-                Some(known) => known.cast = cast,
-                None => out.push(Cast { attribute, cast }),
+                Some(known) => {
+                    known.cast = cast;
+                    known.loc = loc;
+                }
+                None => out.push(Cast { attribute, cast, loc }),
             }
         }
     }
@@ -402,16 +407,17 @@ fn column_type(method: &str) -> Option<&'static str> {
     }
 }
 
-/// The columns one `$table->…;` statement makes.
-fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>) {
+/// The columns one `$table->…;` statement makes; `loc` maps a span of the
+/// file.
+fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, loc: impl Fn(Span) -> Loc) {
     // Unwind `$table->string('a')->nullable()->default('')`.
     let mut modifiers: Vec<(String, Vec<&Expression<'_>>)> = Vec::new();
     let mut expr = expr;
-    let (method, args) = loop {
+    let (method, args, method_span) = loop {
         let Expression::Call(Call::Method(call)) = expr else { return };
         let Some(name) = method_name(&call.method) else { return };
         if variable(call.object).as_deref() == Some(table) {
-            break (name, args(&call.argument_list));
+            break (name, args(&call.argument_list), call.method.span());
         }
         modifiers.push((name, args(&call.argument_list)));
         expr = call.object;
@@ -420,9 +426,14 @@ fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>) {
         name.eq_ignore_ascii_case("nullable") && !matches!(args.first(), Some(Expression::Literal(Literal::False(_))))
     });
     let named = args.first().and_then(|arg| string(arg));
+    // The column's name, else the method implying it.
+    let at = loc(match args.first() {
+        Some(arg) if named.is_some() => arg.span(),
+        _ => method_span,
+    });
     let mut push = |name: String, ty: &str, nullable: bool| {
         out.retain(|column: &Column| column.name != name);
-        out.push(Column { name, ty: DocType(ty.to_owned()), nullable });
+        out.push(Column { name, ty: DocType(ty.to_owned()), nullable, loc: at });
     };
     let lower = method.to_ascii_lowercase();
     match lower.as_str() {

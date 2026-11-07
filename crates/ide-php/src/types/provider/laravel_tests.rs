@@ -7,7 +7,7 @@ const CARET: &str = "/*|*/";
 
 /// Just enough of laravel/framework (the signatures as Laravel declares
 /// them, the bodies empty).
-const FRAMEWORK: &str = r#"<?php
+pub(crate) const FRAMEWORK: &str = r#"<?php
 namespace Illuminate\Contracts\Container {
     interface Container {
         /** @return mixed */
@@ -92,14 +92,14 @@ namespace {
 "#;
 
 /// The class that says laravel/framework is installed.
-const APPLICATION: &str = r#"<?php
+pub(crate) const APPLICATION: &str = r#"<?php
 namespace Illuminate\Foundation;
 class Application extends \Illuminate\Container\Container {
     public function version(): string { return ''; }
 }
 "#;
 
-const APP: &str = r#"<?php
+pub(crate) const APP: &str = r#"<?php
 namespace App\Services {
     class PaymentGateway {
         public function charge(int $cents): bool { return true; }
@@ -336,7 +336,7 @@ fn facade_accessor_value_is_summarised() {
 }
 
 /// Service providers, migrations and models with casts.
-const PROJECT: &str = r#"<?php
+pub(crate) const PROJECT: &str = r#"<?php
 namespace App\Support {
     class Clock {
         public function now(): int { return 0; }

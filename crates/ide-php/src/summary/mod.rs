@@ -54,8 +54,9 @@ use crate::types::LazyType;
 /// computes something differently (7: inferred returns track local
 /// variables; 8: hash-notation types and assertion tags; 9: Laravel
 /// provider payloads and `getFacadeAccessor()` values; 10: Laravel
-/// bindings, migrations and casts), so stored summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 10;
+/// bindings, migrations and casts; 11: locations of casts and
+/// columns), so stored summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

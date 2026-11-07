@@ -326,7 +326,7 @@ pub(super) fn sought_decl(decl: &Decl) -> Option<Sought> {
                 private: info.visibility == Visibility::Private,
             }
         }
-        Decl::Parameter { .. } => return None,
+        Decl::Parameter { .. } | Decl::Magic(_) => return None,
     })
 }
 

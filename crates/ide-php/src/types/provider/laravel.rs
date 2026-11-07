@@ -41,12 +41,21 @@
 //!   (`$this->app->singleton('id', …)`; see
 //!   [`LaravelFacts`](crate::summary::LaravelFacts)).
 //!
+//! - **Members** ([`TypeProvider::magic_members`]): after `Facade::` the
+//!   service's public methods (as static); after `Model::` the model's
+//!   local scopes and the Eloquent and query builders' public methods; on a
+//!   builder or relation the related model's scopes and the query
+//!   builder's methods (a relation's also the Eloquent builder's); after
+//!   `$model->` the relation properties, accessors, cast attributes and
+//!   migrated columns, each with where it comes from. Dynamic `where*` calls
+//!   aren't listed.
+//!
 //! The behaviour follows Laravel's public documentation and its MIT source
 //! (`Facade::__callStatic`, `Model::__call`, `Builder::__call`,
 //! `Application::registerCoreContainerAliases`).
 
-use super::{CallKind, CallSite, TypeProvider, provided};
-use crate::summary::ClassKind;
+use super::{AttributeOrigin, CallKind, CallSite, MagicMember, MagicTarget, Source, TypeProvider, provided};
+use crate::summary::{ClassKind, LaravelFacts, ModelCasts, Visibility};
 use crate::types::{ClassModel, Context, LazyType, Resolver, Type};
 
 const APPLICATION: &str = "Illuminate\\Foundation\\Application";
@@ -411,17 +420,151 @@ impl LaravelProvider {
         Self::attribute(resolver, &model, name)
     }
 
-    /// A model attribute: its cast, else its migrated column.
-    fn attribute(resolver: &Resolver<'_>, model: &ClassModel, name: &str) -> Option<Type> {
+    /// The public methods of `class` other than magic ones, forwarded to.
+    fn forwarded_methods(resolver: &Resolver<'_>, class: &str, is_static: bool, out: &mut Vec<MagicMember>) {
+        let Some(model) = resolver.class_model(class) else { return };
+        for method in model.methods.iter() {
+            if method.visibility != Visibility::Public || method.name.starts_with("__") {
+                continue;
+            }
+            out.push(MagicMember {
+                name: method.name.clone(),
+                is_static,
+                target: MagicTarget::Method { class: model.fqn().to_owned(), method: method.name.clone() },
+            });
+        }
+    }
+
+    /// The local scopes of `model` (`scopeActive()` called as `active()`).
+    fn scopes(resolver: &Resolver<'_>, model: &str, is_static: bool, out: &mut Vec<MagicMember>) {
+        let Some(model) = resolver.class_model(model) else { return };
+        for method in model.methods.iter() {
+            let Some(rest) = scope_name(&method.name) else { continue };
+            out.push(MagicMember {
+                name: camel(rest),
+                is_static,
+                target: MagicTarget::Method { class: model.fqn().to_owned(), method: method.name.clone() },
+            });
+        }
+    }
+
+    /// The magic properties of a model: relations, accessors, casts and
+    /// migrated columns (in that order, the first of a name winning).
+    fn attributes(resolver: &Resolver<'_>, model: &ClassModel, out: &mut Vec<MagicMember>) {
+        let class = model.fqn().to_owned();
+        let mut found: Vec<MagicMember> = Vec::new();
+        let push = |found: &mut Vec<MagicMember>, name: String, origin: AttributeOrigin| {
+            if model.property(&name).is_some() || found.iter().any(|known| known.name == name) {
+                return;
+            }
+            let Some(ty) = Self::model_property(resolver, &class, &name) else { return };
+            let target = MagicTarget::Attribute { class: class.clone(), ty, origin };
+            found.push(MagicMember { name, is_static: false, target });
+        };
+        let this = Type::named(&class);
+        let context = Context::default();
+        for method in model.methods.iter() {
+            // The application's methods, not the framework's own.
+            let framework = method.declaring.fqn.starts_with("Illuminate\\");
+            if method.is_static || framework || method.name.starts_with("__") || scope_name(&method.name).is_some() {
+                continue;
+            }
+            if let Some(attribute) = accessor_name(&method.name) {
+                let origin = AttributeOrigin::Accessor { method: method.name.clone() };
+                push(&mut found, snake(attribute), origin);
+                continue;
+            }
+            let returned = resolver.method_return(&this, &method.name, &context);
+            for member in returned.members() {
+                let Type::Named { fqn, .. } = member else { continue };
+                let Some(returned) = resolver.class_model(fqn) else { continue };
+                if returned.is_subclass_of(RELATION) {
+                    let origin = AttributeOrigin::Relation { method: method.name.clone() };
+                    push(&mut found, method.name.clone(), origin);
+                    break;
+                }
+                if returned.is_subclass_of(ATTRIBUTE) {
+                    let origin = AttributeOrigin::Accessor { method: method.name.clone() };
+                    push(&mut found, snake(&method.name), origin);
+                    break;
+                }
+            }
+        }
         let facts = resolver.laravel();
+        if let Some(casts) = Self::casts_of(&facts, model) {
+            for cast in &casts.casts {
+                let source = casts.file.clone().map(|file| Source { file, loc: cast.loc });
+                push(&mut found, cast.attribute.clone(), AttributeOrigin::Cast { cast: cast.cast.clone(), source });
+            }
+        }
         let table = Self::table(model);
-        let column = facts.columns(&table).into_iter().find(|column| column.name == name).cloned();
-        // The model's own casts, else a parent's.
-        let cast = facts
+        for (migration, column) in facts.columns(&table) {
+            let source = migration.file.clone().map(|file| Source { file, loc: column.loc });
+            let origin = AttributeOrigin::Column {
+                table: table.clone(),
+                ty: column.ty.0.trim_start_matches('\\').to_owned(),
+                nullable: column.nullable,
+                source,
+            };
+            push(&mut found, column.name.clone(), origin);
+        }
+        out.extend(found);
+    }
+
+    /// The casts a model uses: its own, else a parent's.
+    fn casts_of<'f>(facts: &'f LaravelFacts, model: &ClassModel) -> Option<&'f ModelCasts> {
+        facts
             .casts
             .iter()
             .filter(|casts| model.is_subclass_of(&casts.class))
             .min_by_key(|casts| !casts.class.eq_ignore_ascii_case(model.fqn()))
+    }
+
+    /// See [`TypeProvider::magic_members`].
+    fn members_of(resolver: &Resolver<'_>, receiver: &Type, context: &Context) -> Vec<MagicMember> {
+        let mut out = Vec::new();
+        for model in resolver.class_models(receiver, context) {
+            if model.is_subclass_of(FACADE) {
+                let Some(service) = Self::facade_service(resolver, &Type::named(model.fqn()), context) else {
+                    continue;
+                };
+                for service in resolver.class_models(&service, context) {
+                    Self::forwarded_methods(resolver, service.fqn(), true, &mut out);
+                }
+            } else if model.is_subclass_of(MODEL) {
+                Self::scopes(resolver, model.fqn(), true, &mut out);
+                Self::forwarded_methods(resolver, ELOQUENT_BUILDER, true, &mut out);
+                Self::forwarded_methods(resolver, QUERY_BUILDER, true, &mut out);
+                Self::attributes(resolver, &model, &mut out);
+            }
+        }
+        // A builder or relation: the related model's scopes, then what it
+        // forwards to.
+        for member in receiver.members() {
+            let Type::Named { fqn, args } = member else { continue };
+            let Some(model) = resolver.class_model(fqn) else { continue };
+            let relation = model.is_subclass_of(RELATION);
+            if !relation && !model.is_subclass_of(ELOQUENT_BUILDER) {
+                continue;
+            }
+            if let Some(Type::Named { fqn: related, .. }) = args.first() {
+                Self::scopes(resolver, related, false, &mut out);
+            }
+            if relation {
+                Self::forwarded_methods(resolver, ELOQUENT_BUILDER, false, &mut out);
+            }
+            Self::forwarded_methods(resolver, QUERY_BUILDER, false, &mut out);
+        }
+        out
+    }
+
+    /// A model attribute: its cast, else its migrated column.
+    fn attribute(resolver: &Resolver<'_>, model: &ClassModel, name: &str) -> Option<Type> {
+        let facts = resolver.laravel();
+        let table = Self::table(model);
+        let column = facts.columns(&table).into_iter().find(|(_, column)| column.name == name).map(|(_, c)| c.clone());
+        // The model's own casts, else a parent's.
+        let cast = Self::casts_of(&facts, model)
             .and_then(|casts| casts.casts.iter().find(|cast| cast.attribute == name))
             .and_then(|cast| cast_type(resolver, &cast.cast));
         let ty = match (cast, &column) {
@@ -488,6 +631,22 @@ fn cast_type(resolver: &Resolver<'_>, cast: &str) -> Option<Type> {
         },
         _ => return None,
     })
+}
+
+/// `scopeActive` → `Active`.
+fn scope_name(method: &str) -> Option<&str> {
+    let rest = method.get(5..).filter(|rest| !rest.is_empty())?;
+    method[..5].eq_ignore_ascii_case("scope").then_some(rest)
+}
+
+/// `getFullNameAttribute` → `FullName`.
+fn accessor_name(method: &str) -> Option<&str> {
+    let lower = method.to_ascii_lowercase();
+    if method.len() > 12 && lower.starts_with("get") && lower.ends_with("attribute") {
+        method.get(3..method.len() - 9)
+    } else {
+        None
+    }
 }
 
 /// `BlogPost` → `blog_post`.
@@ -616,8 +775,15 @@ impl TypeProvider for LaravelProvider {
         }
         Self::model_property(resolver, class, name)
     }
+
+    fn magic_members(&self, receiver: &Type, resolver: &Resolver<'_>, context: &Context) -> Vec<MagicMember> {
+        if !Self::installed(resolver) {
+            return Vec::new();
+        }
+        Self::members_of(resolver, receiver, context)
+    }
 }
 
 #[cfg(test)]
 #[path = "laravel_tests.rs"]
-mod tests;
+pub(crate) mod tests;

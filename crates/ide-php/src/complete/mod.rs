@@ -14,6 +14,9 @@
 //!   after `::`: constants, enum cases, static methods and properties, and
 //!   `class` (`parent::`/`self::`/`static::` also instance methods). Members
 //!   the caller's class may not see (private, protected) are left out.
+//!   Then the members the type providers know through magic methods
+//!   (a facade's service methods, Eloquent's forwarded builder methods and
+//!   scopes, model attributes), after the declared ones.
 //! - after `$`: the variables the flow has at the caret (with their types),
 //!   `$this` in instance code, and the superglobals.
 //! - names: keywords for the place (statement start, expression, class
@@ -48,11 +51,12 @@ use crate::engine::PhpEngine;
 use crate::index::DeclKind;
 use crate::meta::{CallTarget, MetaValue};
 use crate::names::{FileNames, NameKind, fqn_eq};
-use crate::navigate::symbol::{Decl, Member, MemberKind};
+use crate::navigate::symbol::{Decl, Magic, Member, MemberKind};
 use crate::navigate::{enclosing_class, rank, short_name};
 use crate::signature::Callee;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::ParsedFile;
+use crate::types::provider::MagicTarget;
 use crate::types::{ClassModel, Context, ExprTypes, Frame, PROBE_VARIABLE, Resolver, SignatureParam, Type};
 
 /// The name put in place of the word being completed.
@@ -123,12 +127,32 @@ pub struct Completions {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "php", rename_all = "camelCase")]
 pub enum CompletionData {
-    ClassLike { fqn: String },
-    Function { fqn: String },
-    Constant { fqn: String },
-    Method { class: String, name: String },
-    Property { class: String, name: String },
-    ClassConstant { class: String, name: String },
+    ClassLike {
+        fqn: String,
+    },
+    Function {
+        fqn: String,
+    },
+    Constant {
+        fqn: String,
+    },
+    Method {
+        class: String,
+        name: String,
+    },
+    Property {
+        class: String,
+        name: String,
+    },
+    ClassConstant {
+        class: String,
+        name: String,
+    },
+    /// A property of `class` only magic methods have (a model attribute).
+    MagicProperty {
+        class: String,
+        name: String,
+    },
 }
 
 // ----------------------------------------------------------------- engine
@@ -196,6 +220,13 @@ impl PhpEngine {
             CompletionData::Method { class, name } => member(MemberKind::Method, class, name)?,
             CompletionData::Property { class, name } => member(MemberKind::Property, class, name)?,
             CompletionData::ClassConstant { class, name } => member(MemberKind::Constant, class, name)?,
+            CompletionData::MagicProperty { class, name } => {
+                let receiver = Type::named(class);
+                let context = Context::in_class(class);
+                let member = resolver.providers().magic_member(&receiver, name, false, &resolver, &context)?;
+                let ty = resolver.property_type(&receiver, name, &context);
+                Decl::Magic(Magic { member, ty })
+            }
         };
         self.describe(&decl, &resolver, &path, &here)
     }
@@ -718,8 +749,53 @@ impl<'e, 'r> Collector<'e, 'r> {
                 }
             }
         }
+        self.magic_members(&receiver, &context, is_static, dollar, call_follows);
         if is_static && !dollar {
             self.push(Self::item("class", CompletionKind::Keyword), 3);
+        }
+    }
+
+    /// The members of `receiver` the type providers know through magic
+    /// methods, after `->` (instance ones) or `::` (static ones).
+    fn magic_members(&mut self, receiver: &Type, context: &Context, is_static: bool, dollar: bool, call_follows: bool) {
+        if dollar {
+            return;
+        }
+        for member in self.resolver.providers().magic_members(receiver, self.resolver, context) {
+            if self.cancel.is_cancelled() {
+                return;
+            }
+            if member.is_static != is_static {
+                continue;
+            }
+            let item = match &member.target {
+                MagicTarget::Method { class, method } => {
+                    let target = Type::named(class);
+                    let mut params = self.resolver.method_params_on(&target, method, context).unwrap_or_default();
+                    // A scope's query parameter is passed by Eloquent.
+                    if !method.eq_ignore_ascii_case(&member.name) && !params.is_empty() {
+                        params.remove(0);
+                    }
+                    let returns = self.resolver.method_return(&target, method, context);
+                    let mut item = Self::item(&member.name, CompletionKind::Method);
+                    item.label_detail = Some(params_text(&params));
+                    item.detail = Some(returns.widen().to_string());
+                    if !call_follows {
+                        let body = if params.is_empty() { "()" } else { "($0)" };
+                        item.insert_text = format!("{}{body}", snippet_escape(&member.name));
+                        item.is_snippet = true;
+                    }
+                    item.data = Some(CompletionData::Method { class: class.clone(), name: method.clone() });
+                    item
+                }
+                MagicTarget::Attribute { class, ty, .. } => {
+                    let mut item = Self::item(&member.name, CompletionKind::Property);
+                    item.detail = Some(ty.widen().to_string());
+                    item.data = Some(CompletionData::MagicProperty { class: class.clone(), name: member.name.clone() });
+                    item
+                }
+            };
+            self.push(item, 2);
         }
     }
 
