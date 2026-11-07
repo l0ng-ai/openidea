@@ -91,6 +91,8 @@ const CASES: Record<string, Case> = {
     file: "src/main/kotlin/com/example/library/App.kt",
     variable: "library",
     evaluate: ["library", /Library/],
+    // Gradle forks the JVM and the debugger attaches to it: the attach-session path.
+    memory: { className: "com.example.library.Book", instances: 3 },
   },
 };
 
