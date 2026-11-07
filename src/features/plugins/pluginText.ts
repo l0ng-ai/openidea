@@ -92,6 +92,7 @@ function localizeDecl(decl: unknown, keys: readonly string[], t: PluginTranslate
   for (const key of keys) if (typeof out[key] === "string") out[key] = t(out[key]);
   if (Array.isArray(out.properties))
     out.properties = out.properties.map((p) => localizeDecl(p, ["title", "description"], t));
+  if (Array.isArray(out.variables)) out.variables = out.variables.map((v) => localizeDecl(v, ["prompt"], t));
   return out;
 }
 

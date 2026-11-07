@@ -2,8 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import type { PluginInfo, ViewEvent } from "@/bindings";
 import { addFileIconProvider, fileIconName, registerExternalIcons } from "@/ui";
-import { addContributedFileTemplate, fileTemplates, isBuiltinFileTemplate } from "@/features/templates/files/store";
+import {
+  addContributedFileTemplate,
+  fileTemplates,
+  isBuiltinFileTemplate,
+  mergeFileTemplates,
+} from "@/features/templates/files/store";
 import { createMemoryPluginsBackend, setPluginsBackend, webSchemeUrl } from "../backend";
+import { defineViewUiPoints } from "../uiPoints";
+import { clearUiContributions, syncUiContributions } from "../projection";
 import { usePlugins } from "../store";
 import { FRAME_TAG, frameDocument } from "../views/frame";
 import {
@@ -259,6 +266,74 @@ describe("contributed file icons and templates", () => {
       unregister();
     }
     expect(fileIconName("a.excalidraw")).toBe(builtin);
+  });
+
+  it("projects filename and variable declarations through contributions and withdraws them", () => {
+    const undefine = defineViewUiPoints();
+    try {
+      syncUiContributions(
+        [
+          {
+            pluginId: "fixture",
+            point: "fileTemplates",
+            key: "ignore",
+            decl: {
+              id: "ignore",
+              name: "Ignore",
+              extension: "",
+              fileName: ".dockerignore",
+              body: "$OUTPUT$",
+              variables: [{ name: "OUTPUT", prompt: "Output folder" }],
+            },
+          },
+        ],
+        [{ id: "fixture" } as PluginInfo],
+      );
+      expect(fileTemplates().find((t) => t.id === "plugin.fixture.ignore")).toMatchObject({
+        fileName: ".dockerignore",
+        extension: "",
+        inferPackage: true,
+        variables: [{ name: "OUTPUT", prompt: "Output folder" }],
+        kinds: [{ body: "$OUTPUT$" }],
+      });
+      clearUiContributions();
+      expect(fileTemplates().some((t) => t.id === "plugin.fixture.ignore")).toBe(false);
+    } finally {
+      clearUiContributions();
+      undefine();
+    }
+  });
+
+  it("inherits new declaration fields without losing a legacy template customization", () => {
+    const legacy = {
+      id: "plugin.fixture.repository",
+      name: "Custom Repository",
+      icon: "file-text",
+      extension: "java",
+      nameStyle: "asis" as const,
+      kinds: [{ id: "file", label: "File", body: "// custom $ENTITY$ $PACKAGE$" }],
+    };
+    const remove = addContributedFileTemplate({
+      ...legacy,
+      name: "Repository",
+      fileName: "Repository.java",
+      inferPackage: true,
+      variables: [{ name: "ENTITY", prompt: "Entity class" }],
+      kinds: [{ id: "file", label: "File", body: "$END$" }],
+    });
+    try {
+      expect(
+        mergeFileTemplates({ templates: { [legacy.id]: legacy }, deleted: [] }).find((t) => t.id === legacy.id),
+      ).toMatchObject({
+        name: "Custom Repository",
+        fileName: "Repository.java",
+        inferPackage: true,
+        variables: [{ name: "ENTITY", prompt: "Entity class" }],
+        kinds: legacy.kinds,
+      });
+    } finally {
+      remove();
+    }
   });
 
   it("adds a plugin's template to the New menu like a built-in", () => {
