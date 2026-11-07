@@ -7,6 +7,7 @@
 pub mod editor_settings;
 pub mod error;
 pub mod event;
+pub mod go;
 pub mod ids;
 pub mod ignored;
 pub mod inspection_settings;
@@ -16,6 +17,7 @@ pub mod jsonc;
 pub mod output_encoding;
 pub mod process;
 pub mod project_dir;
+pub mod project_roots;
 pub mod proxy_settings;
 pub mod remote_settings;
 pub mod settings;

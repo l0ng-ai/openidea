@@ -1,5 +1,8 @@
 import { Channel } from "@tauri-apps/api/core";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { ProjectInfo, Settings } from "./ipc";
+import { useProject } from "./project";
+import { disableRemote, enableRemote, useRemote } from "./remote";
 import { encodeArgs, remoteRouting } from "./remote";
 
 describe("remote invoke", () => {
@@ -40,5 +43,50 @@ describe("remote invoke", () => {
 
   it("encodes no arguments as an empty object", () => {
     expect(encodeArgs(undefined).json).toBe("{}");
+  });
+});
+
+describe("remote session lifetime", () => {
+  const session = {
+    target: { kind: "wsl" as const, distro: "Ubuntu" },
+    root: "/home/me/app",
+    host: "Ubuntu",
+    os: "linux",
+    commands: ["vcs_roots"],
+  };
+  const project = {
+    name: "app",
+    root: "/home/me/app",
+    trusted: true,
+    isGit: true,
+    settings: {},
+  } as unknown as ProjectInfo;
+
+  afterEach(() => {
+    disableRemote();
+    useProject.setState({ project: null, settings: null, opening: false, openingPath: null, lightEdit: false });
+  });
+
+  it("keeps routing when a window with no project of its own updates the settings only", () => {
+    // The comparison window: it rides its parent's session and keeps just the settings
+    // (restoring the project would overwrite the main window's editor session).
+    enableRemote(session);
+    useProject.setState({ settings: { editor: { fontSize: 12 } } as unknown as Settings });
+    expect(useRemote.getState().session).not.toBeNull();
+  });
+
+  it("ends routing when the window's project leaves the session's root", () => {
+    enableRemote(session);
+    useProject.setState({ project });
+    // Close Project (or a local project opened over the remote one) — the session goes.
+    useProject.setState({ project: null });
+    expect(useRemote.getState().session).toBeNull();
+  });
+
+  it("keeps routing while the project still sits at the session's root", () => {
+    enableRemote(session);
+    useProject.setState({ project });
+    useProject.setState({ settings: { editor: { fontSize: 14 } } as unknown as Settings });
+    expect(useRemote.getState().session).not.toBeNull();
   });
 });

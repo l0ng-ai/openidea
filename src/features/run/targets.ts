@@ -6,6 +6,7 @@
  * Line-based regex detection (cheap, no parser), plus the run configuration for
  * one target derived from the project's detected test configurations.
  */
+import { goTargets } from "./goTargets";
 import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
 import { applicationConfig, jvmTestConfig } from "./application";
@@ -14,7 +15,7 @@ import { contextConfig, relToCwd, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
-import { phpunitArgs, phpunitFilter } from "./testing/phpunit";
+import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -36,6 +37,7 @@ export interface RunTarget {
   unittest?: boolean;
   /** Ruby: a `module` suite, which runs the tests of every class declared inside it. */
   rubyModule?: boolean;
+  pest?: boolean;
 }
 
 /** Above this size we skip detection (generated / minified files). */
@@ -177,6 +179,30 @@ function phpTargets(lines: string[]): RunTarget[] {
   return out;
 }
 
+const PEST_RE = /^(\s*)(describe|test|it)\s*\(\s*(['"])((?:\\.|(?!\3).)*)\3/;
+
+function pestTargets(lines: string[]): RunTarget[] {
+  const out: RunTarget[] = [];
+  const stack: Array<{ indent: number; name: string }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = PEST_RE.exec(lines[i]!);
+    if (!m) continue;
+    const indent = indentOf(m[1]!);
+    while (stack.length && stack[stack.length - 1]!.indent >= indent) stack.pop();
+    const text = m[4]!.replace(m[3] === "'" ? /\\(['\\])/g : /\\(["\\$])/g, "$1");
+    const describes = stack.map((s) => s.name);
+    if (m[2] === "describe") {
+      const path = [...describes, text];
+      out.push({ line: i, kind: "suite", name: path.join(" → "), path, pest: true });
+      stack.push({ indent, name: text });
+    } else {
+      const path = [...describes, m[2] === "it" ? `it ${text}` : text];
+      out.push({ line: i, kind: "test", name: path.join(" → "), path, pest: true });
+    }
+  }
+  return out;
+}
+
 function pythonTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
   const classes: Array<{ indent: number; name: string; test: boolean; unittest: boolean }> = [];
@@ -261,77 +287,6 @@ function rubyTargets(lines: string[]): RunTarget[] {
   return out.filter((t) => t.kind !== "suite" || t.frame?.hasTests).map(({ frame: _frame, ...t }) => t);
 }
 
-/** `go test` reports subtest names with spaces as `_` (`t.Run("zero case")` → `TestX/zero_case`). */
-export const goSubtestName = (name: string) => name.replace(/\s/g, "_");
-
-function goTargets(lines: string[]): RunTarget[] {
-  const out: RunTarget[] = [];
-  const isMain = lines.some((l) => /^package\s+main\b/.test(l));
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (/^\/\/go:generate[ \t]+\S/.test(line)) {
-      out.push({
-        line: i,
-        kind: "generate",
-        name: line.replace(/^\/\/go:generate[ \t]+/, "").trim(),
-        path: [String(i)],
-      });
-      continue;
-    }
-    const t = /^func\s+(Test\w*|Benchmark\w*|Example\w*|Fuzz\w*)\s*\(\s*(?:\w+\s+\*testing\.[TFB])?\s*\)?/.exec(line);
-    if (t && (/^Example/.test(t[1]!) || /\*testing\.[TFB]/.test(line))) {
-      out.push({ line: i, kind: "test", name: t[1]!, path: [t[1]!] });
-      if (/\*testing\.[TB]\b/.test(line)) out.push(...goSubtests(lines, i, t[1]!));
-      continue;
-    }
-    if (isMain && /^func\s+main\s*\(\s*\)/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
-  }
-  return out;
-}
-
-/**
- * Subtests of the test function at `start` (GoLand's gutter on subtests and
- * table-driven tests): `t.Run("name", …)`, and table entries run with
- * `t.Run(tt.name, …)` (`{name: "…", …}`) or keyed by name
- * (`for name, tc := range cases { t.Run(name, …) }` over `"…": {…}`).
- */
-function goSubtests(lines: string[], start: number, test: string): RunTarget[] {
-  if (/\}\s*(?:\/\/.*)?$/.test(lines[start]!)) return [];
-  let end = start;
-  while (end + 1 < lines.length && !/^}/.test(lines[end]!)) end++;
-  const body = lines.slice(start + 1, end);
-  const out: RunTarget[] = [];
-  const add = (offset: number, name: string) => {
-    const sub = goSubtestName(name.replace(/\\(.)/g, "$1"));
-    if (!out.some((t) => t.path[1] === sub))
-      out.push({ line: start + 1 + offset, kind: "test", name: `${test}/${sub}`, path: [test, sub] });
-  };
-  const fields = new Set<string>();
-  const keys = new Set<string>();
-  body.forEach((l, i) => {
-    const lit = /\b\w+\.Run\(\s*"((?:[^"\\]|\\.)*)"\s*,/.exec(l);
-    if (lit) add(i, lit[1]!);
-    const field = /\b\w+\.Run\(\s*\w+\.(\w+)\s*,/.exec(l);
-    if (field) fields.add(field[1]!);
-    const key = /\b\w+\.Run\(\s*(\w+)\s*,/.exec(l);
-    if (key && body.slice(0, i).some((b) => new RegExp(`\\bfor\\s+${key[1]}\\s*,\\s*\\w+\\s*:=\\s*range\\b`).test(b)))
-      keys.add(key[1]!);
-  });
-  if (fields.size || keys.size) {
-    body.forEach((l, i) => {
-      for (const f of fields) {
-        const m = new RegExp(`\\b${f}\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(l);
-        if (m) add(i, m[1]!);
-      }
-      if (keys.size) {
-        const m = /^\s*"((?:[^"\\]|\\.)*)"\s*:\s*\{/.exec(l);
-        if (m) add(i, m[1]!);
-      }
-    });
-  }
-  return out.sort((a, b) => a.line - b.line);
-}
-
 /** Java / Kotlin: classes and methods with binary class names (see `jvmTargets.ts`). */
 function javaKotlinTargets(text: string, relPath: string): RunTarget[] {
   return scanJvmTargets(text, relPath, /\.kts?$/.test(relPath)).map((t): RunTarget => {
@@ -412,9 +367,11 @@ export function detectRunTargets(text: string, relPath: string, django = false):
           (django && /(^|\/)tests\.py$/.test(relPath)),
       );
     case "php":
-      return /Test\.php$|(^|\/)tests?\//.test(relPath) ? phpTargets(lines) : [];
+      return /Test\.php$|(^|\/)tests?\//.test(relPath)
+        ? [...phpTargets(lines), ...pestTargets(lines)].sort((a, b) => a.line - b.line)
+        : [];
     case "go":
-      return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
+      return goTargets(text).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
       return /\.(java|kts?)$/.test(relPath) ? javaKotlinTargets(text, relPath) : jvmTargets(lines, relPath);
     case "ruby":
@@ -479,7 +436,11 @@ export function targetConfig(
       return named(withLast(file.args, (f) => `${f}::${target.path.join("::")}`));
     case "phpunit": {
       const [cls, method] = [target.path[0]!, target.path[1]];
-      const filter = phpunitFilter([method ? [cls, method] : [cls]]);
+      const filter = !target.pest
+        ? phpunitFilter([method ? [cls, method] : [cls]])
+        : target.kind === "suite"
+          ? pestFilter(target.path)
+          : pestFilter(target.path.slice(0, -1), target.path[target.path.length - 1]);
       return named(phpunitArgs(file.args, { target: relToCwd(relPath, file), filter }));
     }
     case "django-test": {
@@ -499,13 +460,14 @@ export function targetConfig(
         ...withoutGoSelection(parts.flags),
         ...parts.targets,
         ...selection,
-        ...parts.program,
+        ...withoutGoSelection(parts.program),
       ]);
       if (file.params?.goKind)
         result.params = {
           ...file.params,
           pattern: benchmark ? "^$" : pattern,
           toolArgs: formatArgs([...withoutGoSelection(parts.flags), ...(benchmark ? ["-bench", pattern] : [])]),
+          programArgs: formatArgs(withoutGoSelection(parts.program).slice(1)),
         };
       return result;
     }

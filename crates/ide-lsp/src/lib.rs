@@ -13,6 +13,7 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod go_scope;
 mod handler;
 mod inspect;
 pub mod jdtls;
@@ -53,7 +54,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use server::{Conn, Running, Server};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -328,6 +329,9 @@ struct SourceImplementations {
 /// Receives the implementations found so far, before a slower search for the rest.
 type Partial<'a> = Option<&'a (dyn Fn(Vec<Location>) + Send + Sync)>;
 
+/// Receives the references found so far, before a slower search for the rest.
+pub type PartialReferences<'a> = Option<&'a (dyn Fn(References) + Send + Sync)>;
+
 /// `first`, then those of `more` not in it (same file and start).
 fn merge_locations(first: Vec<Location>, more: Vec<Location>) -> Vec<Location> {
     let mut seen: HashSet<(PathBuf, Pos)> = first.iter().map(|l| (l.path.to_path_buf(), l.range.start)).collect();
@@ -503,8 +507,20 @@ impl LspManager {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
+        // `begin_start` only claims Idle servers, so a claimed server is never a
+        // live one. Its root is the process's working directory: starting with
+        // one deleted from disk fails (`os error 267` on Windows). Such a
+        // server can never serve again, so drop it instead of leaving a
+        // permanently "Crashed" entry behind (e.g. the root vanishing during
+        // the crash-restart backoff, or an open-file request arriving later).
         let Some(generation) = server.begin_start() else { return };
         let Some(me) = self.me.upgrade() else { return };
+        if !server.root.is_dir() {
+            tracing::info!("{}: workspace root {} is gone, dropping", server.name, server.root.display());
+            server.announce_down();
+            self.forget(std::slice::from_ref(server));
+            return;
+        }
         let server = server.clone();
         self.runtime.spawn(async move { me.run_instance(server, generation).await });
     }
@@ -701,6 +717,14 @@ impl LspManager {
             server.announce_down();
             return;
         }
+        // The workspace root gone means this server can never serve again:
+        // restarting would respawn with a dead working directory, so the entry
+        // is dropped instead of staying "Crashed" forever.
+        if !server.root.is_dir() {
+            server.announce_down();
+            self.forget(std::slice::from_ref(&server));
+            return;
+        }
         let tail = server.stderr_tail(5);
         let cfg = server.effective_config();
         let mut message = match (code, &cfg.connect) {
@@ -793,6 +817,9 @@ impl LspManager {
         });
         if server.name == "gopls" {
             params["capabilities"]["experimental"]["interactiveResolve"] = json!({ "inputTypes": ["string"] });
+        }
+        if server.name == "csharp-ls" {
+            params["capabilities"]["experimental"]["csharp"]["metadataUris"] = json!(true);
         }
         if !init_options.is_null() {
             params["initializationOptions"] = init_options;
@@ -1089,7 +1116,15 @@ impl LspManager {
         cancel: Option<&CancellationToken>,
         timeout: Duration,
     ) -> IdeResult<R> {
-        let fut = t.run.peer.request::<P, R>(method, params, cancel.cloned());
+        let fut = async {
+            if t.server.name == "csharp-ls" {
+                let mut value = t.run.peer.request::<P, Value>(method, params, cancel.cloned()).await?;
+                virtual_doc::normalize_csharp_uris(&mut value);
+                serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
+            } else {
+                t.run.peer.request::<P, R>(method, params, cancel.cloned()).await
+            }
+        };
         match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),
             Err(_) => Err(rpc_err(&t.server.name, method, RpcError::Timeout)),
@@ -1406,20 +1441,56 @@ impl LspManager {
         project_wide: bool,
         cancel: CancellationToken,
     ) -> IdeResult<References> {
+        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
+    }
+
+    /// [`Self::references`]. Java, `project_wide`: without `libraries`, only the
+    /// workspace's sources are searched (`libraries_skipped`); with it, those found
+    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn references_streaming(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        include_declaration: bool,
+        project_wide: bool,
+        libraries: bool,
+        cancel: CancellationToken,
+        partial: PartialReferences<'_>,
+    ) -> IdeResult<References> {
         let snap = self.snapshot(doc)?;
-        // Scoped probes back code lenses and bulk analysis. Keep their native cost;
-        // configuration indexing is reserved for explicit, project-wide usages.
-        let configuration = if project_wide || snap.language.as_str() != "java" {
-            self.configuration_navigation(&snap, pos, true, include_declaration, &cancel).await?
-        } else {
-            None
-        };
         if snap.language.as_str() != "java"
-            && let Some(result) = configuration
+            && let Some(result) = self.configuration_navigation(&snap, pos, true, include_declaration, &cancel).await?
         {
             return Ok(result);
         }
-        let mut result = self.native_references(doc, pos, include_declaration, project_wide, cancel).await?;
+        // Scoped probes back code lenses and bulk analysis. Keep their native cost;
+        // configuration indexing is reserved for explicit, project-wide usages.
+        let configuration = async {
+            if project_wide && snap.language.as_str() == "java" {
+                self.configuration_navigation(&snap, pos, true, include_declaration, &cancel).await
+            } else {
+                Ok(None)
+            }
+        };
+        let native =
+            self.native_references(doc, pos, include_declaration, project_wide, libraries, cancel.clone(), partial);
+        futures::pin_mut!(configuration, native);
+        let (configuration, result) = match futures::future::select(configuration, native).await {
+            futures::future::Either::Left((configuration, native)) => (configuration, native.await),
+            futures::future::Either::Right((result, configuration)) => {
+                // The configuration index is rebuilt after Java changes, which takes seconds in a
+                // project with many dependencies: the usages found meanwhile are shown first.
+                if let (Some(partial), Ok(found)) = (partial, &result)
+                    && !found.locations.is_empty()
+                {
+                    partial(found.clone());
+                }
+                (configuration.await, result)
+            }
+        };
+        let configuration = configuration?;
+        let mut result = result?;
         if let Some(configuration) = configuration {
             result.locations.extend(configuration.locations);
             result.incomplete = result.incomplete.or(configuration.incomplete);
@@ -1428,13 +1499,16 @@ impl LspManager {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn native_references(
         &self,
         doc: DocId,
         pos: Pos,
         include_declaration: bool,
         project_wide: bool,
+        libraries: bool,
         cancel: CancellationToken,
+        partial: PartialReferences<'_>,
     ) -> IdeResult<References> {
         let (snap, targets) = self.doc_targets(doc, "find references", |c| c.has("referencesProvider")).await?;
         // The extension preserves method identity before JDT collapses references to locations.
@@ -1446,28 +1520,37 @@ impl LspManager {
             let classified = async {
                 let t = &targets[0];
                 let extension_error = Mutex::new(None);
-                let query = || async {
+                let (snap, cancel, extension_error) = (&snap, &cancel, &extension_error);
+                // `sources`: the workspace's source folders only, without dependency jars and the JDK.
+                let query = |sources: bool| async move {
                     if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
                         return Err(IdeError::cancelled());
                     }
                     let params = snap.pos_params(t, pos);
+                    let mut arguments = json!([
+                        params["textDocument"]["uri"],
+                        params["position"]["line"],
+                        params["position"]["character"],
+                        include_declaration
+                    ]);
+                    if sources {
+                        arguments.as_array_mut().expect("arguments").push(json!("sources"));
+                    }
                     #[derive(serde::Deserialize)]
                     struct JavaReference {
                         #[serde(default)]
                         access: Option<ReferenceAccess>,
                         location: lsp::Location,
                         kind: ReferenceKind,
+                        #[serde(default)]
+                        text: Option<String>,
                     }
                     let result: IdeResult<Vec<JavaReference>> = self
                         .call(
                             t,
                             "workspace/executeCommand",
-                            json!({
-                                "command": "openidea.java.usages",
-                                "arguments": [params["textDocument"]["uri"], params["position"]["line"],
-                                    params["position"]["character"], include_declaration]
-                            }),
-                            Some(&cancel),
+                            json!({ "command": "openidea.java.usages", "arguments": arguments }),
+                            Some(cancel),
                             LONG_TIMEOUT,
                         )
                         .await;
@@ -1486,6 +1569,7 @@ impl LspManager {
                                 location,
                                 kind: r.kind,
                                 access: r.access,
+                                text: r.text,
                             })
                         })
                         .collect::<Vec<_>>())
@@ -1493,10 +1577,42 @@ impl LspManager {
                 let files = |v: &Vec<ClassifiedReference>| {
                     v.iter().filter(|r| r.location.uri.is_none()).map(|r| r.location.path.to_path_buf()).collect()
                 };
+                let mut libraries_skipped = false;
                 let widened = if project_wide {
-                    self.widened(&snap, t, pos, &cancel, query, files).await?
+                    // A library method has thousands of usages in the dependencies and the JDK,
+                    // which take seconds to search: those in the sources (where scope widening
+                    // searches again) are shown first, then the rest are searched once.
+                    let sources = self.widened(snap, t, pos, cancel, || query(true), files).await?;
+                    if let Some(e) = extension_error.lock().take() {
+                        return Err(e);
+                    }
+                    let mut seen = std::collections::HashSet::new();
+                    let found: Vec<_> = sources
+                        .second
+                        .into_iter()
+                        .flatten()
+                        .chain(sources.first)
+                        .filter(|r| seen.insert(r.location.clone()))
+                        .collect();
+                    let all = if !libraries {
+                        libraries_skipped = true;
+                        Vec::new()
+                    } else {
+                        if let Some(partial) = partial
+                            && !found.is_empty()
+                        {
+                            partial(References {
+                                locations: found.iter().map(|r| r.location.clone()).collect(),
+                                classified: found.clone(),
+                                incomplete: sources.incomplete,
+                                libraries_skipped: false,
+                            });
+                        }
+                        query(false).await?
+                    };
+                    scope::Widened { first: all, second: Some(found), incomplete: sources.incomplete }
                 } else {
-                    let first = query().await?;
+                    let first = query(false).await?;
                     let empty = first.is_empty();
                     scope::Widened::only(first, empty, &t.server)
                 };
@@ -1505,7 +1621,7 @@ impl LspManager {
                     return Err(IdeError::cancelled());
                 }
                 // Scope widening can retain the first answer after a failed second query.
-                if let Some(e) = extension_error.into_inner() {
+                if let Some(e) = extension_error.lock().take() {
                     return Err(e);
                 }
                 let mut seen = std::collections::HashSet::new();
@@ -1519,7 +1635,7 @@ impl LspManager {
                     .collect();
                 let locations: Vec<Location> = classified.iter().map(|r| r.location.clone()).collect();
                 self.note_virtual(&t.server, locations.iter().map(|l| l.uri.as_deref()));
-                Ok(References { locations, classified, incomplete: widened.incomplete })
+                Ok(References { locations, classified, incomplete: widened.incomplete, libraries_skipped })
             }
             .await;
             match classified {
@@ -1597,6 +1713,19 @@ impl LspManager {
         }
         let mut v = out.finish(References::default())?;
         convert::dedup_locations(&mut v.locations);
+        if project_wide && let Some(t) = targets.first().filter(|_| snap.language.as_str() == "go") {
+            // Usages in other modules take a view per module: those in reach come first.
+            if let Some(partial) = partial
+                && !v.locations.is_empty()
+            {
+                partial(v.clone());
+            }
+            v.locations.extend(self.go_mentions_beyond_search(&snap, t, pos, &cancel, false).await.locations);
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            convert::dedup_locations(&mut v.locations);
+        }
         Ok(v)
     }
 
@@ -2029,7 +2158,20 @@ impl LspManager {
         };
         let w = self.widened(snap, t, pos, cancel, query, files).await?;
         // The second edit covers the first: its files stay analysed.
-        Ok(Renamed { edit: w.second.unwrap_or(w.first), incomplete: w.incomplete })
+        let mut edit = w.second.unwrap_or(w.first);
+        let mut more: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
+        for l in self.go_mentions_beyond_search(snap, t, pos, cancel, false).await.locations {
+            more.entry(l.path.to_path_buf())
+                .or_default()
+                .push(TextEdit { range: l.range, new_text: new_name.to_owned() });
+        }
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let files =
+            more.into_iter().map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None });
+        convert::merge_workspace_edit(&mut edit, WorkspaceEdit { files: files.collect(), ..Default::default() });
+        Ok(Renamed { edit, incomplete: w.incomplete })
     }
 
     // ---- file operations (`workspace/willRenameFiles`, `workspace/didRenameFiles`) ----
@@ -2098,6 +2240,10 @@ impl LspManager {
                 },
             );
         for file in candidate {
+            // A move may have already removed the sampled entry on disk.
+            if !file.is_file() {
+                continue;
+            }
             let language = self.languages.detect(&file, None);
             if !languages.contains(&language) {
                 continue;
@@ -2188,6 +2334,13 @@ impl LspManager {
     /// into `.venv` or a `go.mod` rewritten by `go get` is picked up without a restart. Other
     /// servers hear of their languages' files under their root; without it jdtls's incremental
     /// build never sees them, so a launch runs stale classes.
+    ///
+    /// Creates and changes for documents synced on a server's current instance are left out.
+    /// Their text reaches the server through `didOpen`/`didChange`, including clean-buffer
+    /// reloads. A server that re-reads the file on the watched change (csharp-ls) would apply
+    /// the reload and then the `didChange` computed against the pre-reload copy, so it would
+    /// keep analysing content that diverges from both the disk and the editor (#1780).
+    /// Deletions still reach it: document sync does not describe workspace membership.
     pub fn watched_files_changed(
         &self,
         created: &[PathBuf],
@@ -2197,19 +2350,43 @@ impl LspManager {
     ) {
         use file_watch::Change;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        let open: HashMap<(ide_core::ServerId, u64), HashSet<PathBuf>> = {
+            let docs = self.docs.lock();
+            let mut open: HashMap<_, HashSet<_>> = HashMap::new();
+            for d in docs.values() {
+                for a in &d.servers {
+                    if let Some(generation) = a.opened_gen {
+                        open.entry((a.server.id, generation))
+                            .or_default()
+                            .extend([d.path.clone(), d.canonical.clone()]);
+                    }
+                }
+            }
+            open
+        };
+        let canonical: HashMap<_, _> =
+            created.iter().chain(modified).filter_map(|p| dunce::canonicalize(p).ok().map(|c| (p, c))).collect();
         for s in servers {
             let Some(run) = s.running() else { continue };
+            let open = open.get(&(s.id, run.generation)).filter(|_| run.caps.read().sync != SyncKind::None);
+            let send = |p: &PathBuf, change: Change| {
+                change == Change::Deleted
+                    || !open
+                        .is_some_and(|paths| paths.contains(p) || canonical.get(p).is_some_and(|c| paths.contains(c)))
+            };
             let all = [(created, Change::Created), (modified, Change::Changed), (removed, Change::Deleted)]
                 .into_iter()
                 .flat_map(|(paths, change)| paths.iter().map(move |p| (p, change)));
             let watchers = run.watchers.read();
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
                 let languages = s.languages();
-                all.filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
-                    .collect()
+                all.filter(|(p, change)| {
+                    p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)) && send(p, *change)
+                })
+                .collect()
             } else {
                 all.chain(excluded_dirs.iter().map(|p| (p, Change::Created)))
-                    .filter(|(p, change)| watchers.wants(&s.root, p, *change))
+                    .filter(|(p, change)| watchers.wants(&s.root, p, *change) && send(p, *change))
                     .collect()
             };
             drop(watchers);
@@ -2474,6 +2651,15 @@ impl LspManager {
             }
             HierarchyDirection::Outgoing => (query().await?, None),
         };
+        let mut out = out;
+        if direction == HierarchyDirection::Incoming {
+            for caller in self.go_mentions_beyond_search(&snap, t, pos, cancel, true).await.callers {
+                match out.iter_mut().find(|i| i.path == caller.path && i.range == caller.range) {
+                    Some(item) => item.from_ranges.extend(caller.from_ranges),
+                    None => out.push(caller),
+                }
+            }
+        }
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -2559,7 +2745,14 @@ impl LspManager {
             };
             if let Some((entry, text)) = found {
                 let title = entry.rsplit('/').next().unwrap_or(&entry).to_owned();
-                return Ok(self.store_virtual(uri, text, Some(title), &[], self.origin_server(uri).map(|s| s.id)));
+                return Ok(self.store_virtual(
+                    uri,
+                    text,
+                    Some(title),
+                    None,
+                    &[],
+                    self.origin_server(uri).map(|s| s.id),
+                ));
             }
         }
         let class_file = scheme == "jdt" || (scheme == "file" && uri.ends_with(".class"));
@@ -2570,6 +2763,7 @@ impl LspManager {
         let mut error = None;
         for t in &targets {
             let languages = t.server.languages();
+            let mut description = None;
             let serves_scheme = t.caps().content_schemes().contains(&scheme);
             let result: IdeResult<Option<String>> = if serves_scheme && !class_file {
                 self.call::<_, Option<Value>>(
@@ -2584,6 +2778,21 @@ impl LspManager {
             } else if class_file && languages.iter().any(|l| l.as_str() == "java") {
                 self.call::<_, Option<String>>(t, "java/classFileContents", json!({ "uri": uri }), None, LONG_TIMEOUT)
                     .await
+            } else if scheme == "csharp" && t.server.name == "csharp-ls" {
+                self.call::<_, Option<virtual_doc::CSharpMetadata>>(
+                    t,
+                    "csharp/metadata",
+                    json!({ "textDocument": { "uri": uri } }),
+                    None,
+                    LONG_TIMEOUT,
+                )
+                .await
+                .map(|metadata| {
+                    metadata.map(|m| {
+                        description = m.assembly_name.filter(|name| !name.is_empty());
+                        m.source
+                    })
+                })
             } else if jar_class && t.caps().commands().iter().any(|c| c == "decompile") {
                 // The official Kotlin LSP: `decompile` answers `{ code, language }`.
                 self.call::<_, Option<Value>>(
@@ -2614,7 +2823,7 @@ impl LspManager {
                     continue;
                 }
             };
-            return Ok(self.store_virtual(uri, text, None, &languages, Some(t.server.id)));
+            return Ok(self.store_virtual(uri, text, None, description, &languages, Some(t.server.id)));
         }
         if jar_class && error.is_none() {
             return Err(IdeError::not_found(format!(
@@ -2631,10 +2840,15 @@ impl LspManager {
         uri: &str,
         text: String,
         title: Option<String>,
+        description: Option<String>,
         languages: &[LanguageId],
         server: Option<ide_core::ServerId>,
     ) -> VirtualDocument {
-        let decompiled = virtual_doc::is_decompiled(&text);
+        let decompiled = if virtual_doc::scheme(uri) == "csharp" {
+            virtual_doc::is_csharp_decompiled(uri)
+        } else {
+            virtual_doc::is_decompiled(&text)
+        };
         let title = title.unwrap_or_else(|| virtual_doc::title(uri, decompiled));
         let detected = self.languages.detect(Path::new(&title), None);
         let language_id = if detected == LanguageId::plain_text() {
@@ -2647,7 +2861,7 @@ impl LspManager {
             text,
             language_id,
             title,
-            description: virtual_doc::description(uri),
+            description: description.or_else(|| virtual_doc::description(uri)),
             decompiled,
         };
         if let Some(server) = server {
@@ -2917,6 +3131,13 @@ impl LspManager {
             .find(|s| s.id == server)
             .cloned()
             .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
+        if !s.root.is_dir() {
+            return Err(IdeError::unavailable(format!(
+                "the workspace root of {} is gone: {}",
+                s.name,
+                s.root.display()
+            )));
+        }
         self.stop_instance(&s, false).await;
         s.reset_for_restart();
         self.ensure_started(&s);

@@ -28,6 +28,8 @@ import {
   menuGroupItems,
   springEditorExtension,
 } from "./spring/editor";
+import { endpointEditorExtension, OPEN_ENDPOINT, openEndpoint } from "./endpoints";
+import type { EndpointEntry } from "@/workbench/contributions";
 import { registerSpringEndpointProvider } from "./spring/routeIndex";
 
 const SPRING_WHEN = "editorLangId == java || editorLangId == kotlin";
@@ -119,6 +121,7 @@ export function activate(): () => void {
     }),
     registerLanguageMode(httpLanguageDescription),
     registerEditorContribution({ id: "http.requests", order: 56, extensions: httpEditorExtension }),
+    registerEditorContribution({ id: "http.endpoints", order: 58, extensions: endpointEditorExtension }),
     registerEditorContribution({ id: "http.spring", order: 57, extensions: springEditorExtension }),
     registerMenuGroup({ id: "http.spring", menus: ["editor"], order: 40, items: (_menu, ctx) => menuGroupItems(ctx) }),
     registerServiceView({
@@ -138,6 +141,15 @@ export function activate(): () => void {
         directory ? [{ kind: "action", action: "http.newRequest", arg: { directory }, label: "HTTP Request" }] : [],
     }),
     registerActions([
+      {
+        id: OPEN_ENDPOINT,
+        title: "Open in HTTP Client",
+        category: "Tools",
+        icon: "file-http",
+        run: async ({ arg }) => {
+          if (arg) await openEndpoint(arg as EndpointEntry);
+        },
+      },
       {
         id: "http.runRequest",
         title: "Run HTTP Request at Caret",

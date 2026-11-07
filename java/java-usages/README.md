@@ -12,6 +12,14 @@ The Rust bridge logs the failure once per project session. Cancelled requests an
 changed source documents remain cancelled and do not start a fallback search.
 No global `includeAccessors` preference is changed.
 
+An optional fifth argument `"sources"` restricts the search to the workspace's
+source folders (no dependency jars, no JDK). A library method can have thousands of
+usages in those, which take seconds to search. Find Usages searches the sources alone
+(Project Files) unless asked for Project and Libraries; then it shows the sources' usages
+first and runs the full search after it. Rows in library classes (`jdt:` URIs) carry their
+line as `text`, from the contents the client would request for the class, so the client
+need not fetch thousands of class files to show them.
+
 ## Search plan and access semantics
 
 For source fields on the verified JDT LS implementation, a single plan merges
@@ -20,10 +28,14 @@ Targets are deduplicated by JDT element identity before search, retaining native
 search scope and ranges. Builder results remain unknown. The optimized native
 plan is guarded by SHA-256 of ReferencesHandler.class:
 `31ff5a10c7d69d58c6a9b619ef17e3ec41b11b545751ba428618a76cc1341064`
-(JDT LS 1.63.0.202610191322). Different implementations, non-field selections and
-library/decompiled selections retain native discovery plus deduplicated category
-searches. This conservative fallback preserves coverage when the server changes;
-it does not promise the same speedup on unverified versions.
+(JDT LS 1.63.0.202610191322). On that version, non-field and library/decompiled
+selections resolve their target as `ReferencesHandler.findReferences` does, and every
+search replicates `ReferencesHandler.search` with one difference: a class file whose
+decompiled source fails to parse loses only its own matches (logged), where the server
+throws and fails the whole search after searching most dependencies. Different
+implementations retain native discovery plus deduplicated category searches. This
+conservative fallback preserves coverage when the server changes; it does not promise
+the same speedup or fault isolation on unverified versions.
 
 SearchEngine resolves exact targets. A query-local syntax AST per referenced source
 file supplies expression context without another reference search: simple field
@@ -57,7 +69,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.5.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.8.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -83,6 +95,18 @@ Version 1.5.0 answers `{locations, complete}`: `complete` when the type is decla
 dependencies' implementations after the first ones. The search also covers the project's Kotlin
 classes attached by the Kotlin bridge; its reproducible SHA-256 is
 `7588748c2797f9da2beb209714a75c29b4e31b155f095329bfb7e399d807c20a`.
+Version 1.6.0 adds `openidea.java.configuration.warmup`, which builds configuration indexes in a
+low-priority background job after import, and builds them under cancellable per-project locks
+instead of one global lock; its reproducible SHA-256 is
+`33cfa1bb8489247ffeb6fc8249966c8a2955b7b2858c8169a70486eb70ade696`.
+Version 1.7.0 adds the `"sources"` scope to `openidea.java.usages`, searches each class
+file's decompiled source on its own and returns the line (`text`) of each usage in a library
+class; its reproducible SHA-256 is
+`56d35619d5be937b028ac143ba748365a66a74c803bc112e4788a7dce98b44fc`.
+Version 1.8.0 keeps each dependency JAR's configuration metadata across rebuilds of the
+configuration index (until the JAR or the project's classpath changes), so a source change no
+longer resolves every Spring Boot property again; its reproducible SHA-256 is
+`728ab33b5e01fa5e496818f25ddbc487458a92339026899b0e22abda5adfd67b`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

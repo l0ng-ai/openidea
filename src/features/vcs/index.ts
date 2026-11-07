@@ -25,7 +25,7 @@ import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, useBranchesPopup } from "./BranchWidget";
-import { showConflictsDialog } from "./conflictsUi";
+import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
 import { VcsDialogHost } from "./dialogs";
@@ -39,6 +39,7 @@ import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
 import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
+import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
 import { activate as activateConflictMarkers } from "./conflictMarkers";
 import { MergeRebaseWidget } from "./MergeRebaseWidget";
@@ -186,8 +187,13 @@ export function activate(): () => void {
 
   onConflictsCleared(() => {
     notifications().expire?.("vcs.conflicts");
-    // As IDEA does once the last conflict is resolved: offer to continue the stopped operation.
     const op = inProgress();
+    // Resolved from the Conflicts dialog: the stopped rebase / cherry-pick goes on by itself.
+    if (op && takeContinueWhenResolved() === op) {
+      void controlOperation("continue", op);
+      return;
+    }
+    // Otherwise, as IDEA does once the last conflict is resolved: offer to continue it.
     if (op)
       notifications().notify({
         group: "vcs",
@@ -210,6 +216,8 @@ export function activate(): () => void {
     installGitLog(),
     installDiagnosticsTracking(),
     installPreparedMessage(),
+    installDraftRevision(),
+    provideCommit(),
     installIncomingCheck(),
     installFileConfirmations(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.

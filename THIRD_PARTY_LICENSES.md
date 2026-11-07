@@ -2,8 +2,9 @@
 
 ## Project Lombok
 
-`java/lombok/lombok-1.18.48-openidea.2.jar` contains Project Lombok v1.18.48 with the Equinox
-classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059)
+`java/lombok/lombok-1.18.48-openidea.3.jar` contains Project Lombok v1.18.48 with the Equinox
+classloader fix from [projectlombok/lombok#4059](https://github.com/projectlombok/lombok/pull/4059),
+the [compact record constructor builder fix](java/lombok/patches/builder-compact-constructor.patch)
 and the ECJ constructor-call fix from [projectlombok/lombok#4089](https://github.com/projectlombok/lombok/pull/4089).
 Copyright (C) 2009-2021 The Project Lombok Authors. MIT license and bundled component
 notices are retained in [java/lombok/LICENSE](java/lombok/LICENSE) and inside the jar.

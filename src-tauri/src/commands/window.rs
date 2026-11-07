@@ -127,6 +127,21 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
+/// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
+/// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
+/// Linux sets the urgency hint). A focused window is never flashed: the user is already
+/// looking at it, and re-flashing it would steal attention for nothing.
+#[tauri::command]
+#[specta::specta]
+pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
+    if flash && window.is_focused().unwrap_or(false) {
+        return Ok(());
+    }
+    window
+        .request_user_attention(flash.then_some(tauri::UserAttentionType::Critical))
+        .map_err(|e| IdeError::internal(e.to_string()))
+}
+
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
 #[tauri::command]
 #[specta::specta]
@@ -178,6 +193,20 @@ pub fn window_open_projects(
         .collect())
 }
 
+/// Whether this window fills the screen: in native full screen, or (macOS) shown in its window
+/// group's full-screen Space.
+#[tauri::command]
+#[specta::specta]
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        crate::window_groups::in_fullscreen(window.app_handle(), &window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.is_fullscreen().unwrap_or(false)
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseContext {
@@ -214,7 +243,9 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text (on locale or keymap change) and rebuilds it.
+/// Sets the menu's labels / shortcut text and updates the menu when the visible
+/// items changed. Shortcuts for actions that are not on the menu must not call
+/// `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
@@ -223,11 +254,13 @@ pub fn menu_configure(
     state: State<'_, AppState>,
     config: MenuConfig,
 ) {
-    *menu_state.config.lock() = config;
-    menu::install(&app, &menu_state, &state.recent.list());
+    if menu::store_config(&menu_state, config) {
+        menu::install(&app, &menu_state, &state.recent.list());
+    }
 }
 
-/// Rebuilds the menu (e.g. after the recent-projects list changed).
+/// Updates the menu after the recent-projects list changed. Only the Open Recent
+/// submenu is rewritten when the rest of the menu is unchanged.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_refresh(app: AppHandle, menu_state: State<'_, MenuState>, state: State<'_, AppState>) {
@@ -330,36 +363,74 @@ fn update_endpoint_env() -> Option<String> {
 /// tauri.conf.json, or the `OPENIDEA_UPDATE_ENDPOINT` environment variable. Empty by
 /// default, and "Check for Updates…" is hidden then.
 pub fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    let in_config = app
-        .config()
+    !config_endpoints(app).is_empty() || update_endpoint_env().is_some()
+}
+
+/// Where updates are downloaded from (System Settings › Updates).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateSource {
+    /// The GitHub releases named in tauri.conf.json.
+    #[default]
+    Github,
+    /// The CNB mirror of the same releases, for networks where GitHub is slow.
+    Cnb,
+}
+
+const CNB_ENDPOINT: &str = "https://cnb.cool/l0ng-ai/openidea/-/releases/latest/download/latest.json";
+
+fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    app.config()
         .plugins
         .0
         .get("updater")
         .and_then(|u| u.get("endpoints"))
         .and_then(|e| e.as_array())
-        .is_some_and(|e| !e.is_empty());
-    in_config || update_endpoint_env().is_some()
+        .map(|e| e.iter().filter_map(|u| u.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
-fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+/// The endpoints tried in order: `source` first, the other source when it fails or has
+/// no manifest. Bundles are signed, so either source's manifest and downloads verify.
+/// No official endpoint (a build without updates) means no mirror either.
+fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> {
+    if official.is_empty() {
+        return official;
+    }
+    let mirror = vec![CNB_ENDPOINT.to_string()];
+    match source {
+        UpdateSource::Github => [official, mirror].concat(),
+        UpdateSource::Cnb => [mirror, official].concat(),
+    }
+}
+
+fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
         return Ok(None);
     }
-    let env = update_endpoint_env();
+    let endpoints = match update_endpoint_env() {
+        Some(url) => vec![url],
+        None => source_endpoints(config_endpoints(app), source),
+    };
+    let endpoints = endpoints
+        .iter()
+        .map(|u| u.parse().map_err(|e| IdeError::invalid(format!("update endpoint {u}: {e}"))))
+        .collect::<IdeResult<Vec<_>>>()?;
     let proxy = ide_core::proxy_settings::proxy();
-    let mut builder = app.updater_builder().configure_client(move |b| ide_http::client::with_proxy(b, &proxy));
-    if let Some(url) = env {
-        let url = url.parse().map_err(|e| IdeError::invalid(format!("OPENIDEA_UPDATE_ENDPOINT: {e}")))?;
-        builder = builder.endpoints(vec![url]).map_err(|e| IdeError::invalid(e.to_string()))?;
-    }
-    builder.build().map(Some).map_err(|e| IdeError::unavailable(e.to_string()))
+    app.updater_builder()
+        .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
+        .endpoints(endpoints)
+        .map_err(|e| IdeError::invalid(e.to_string()))?
+        .build()
+        .map(Some)
+        .map_err(|e| IdeError::unavailable(e.to_string()))
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn app_check_update(app: AppHandle) -> IdeResult<UpdateCheck> {
-    let Some(updater) = updater(&app)? else {
+pub async fn app_check_update(app: AppHandle, source: UpdateSource) -> IdeResult<UpdateCheck> {
+    let Some(updater) = updater(&app, source)? else {
         return Ok(UpdateCheck { enabled: false, update: None });
     };
     let update = updater.check().await.map_err(|e| IdeError::unavailable(e.to_string()))?;
@@ -379,12 +450,12 @@ pub async fn app_check_update(app: AppHandle) -> IdeResult<UpdateCheck> {
 /// not reported: the user didn't ask for this check.
 #[tauri::command]
 #[specta::specta]
-pub async fn app_startup_update_check(app: AppHandle) -> Option<UpdateInfo> {
+pub async fn app_startup_update_check(app: AppHandle, source: UpdateSource) -> Option<UpdateInfo> {
     static DONE: AtomicBool = AtomicBool::new(false);
     if cfg!(debug_assertions) || DONE.swap(true, Ordering::SeqCst) {
         return None;
     }
-    match app_check_update(app).await {
+    match app_check_update(app, source).await {
         Ok(check) => check.update,
         Err(e) => {
             tracing::warn!("startup update check failed: {e}");
@@ -452,6 +523,7 @@ impl Drop for InstallingGuard {
 pub async fn app_install_update(
     app: AppHandle,
     state: State<'_, AppState>,
+    source: UpdateSource,
     request: RequestId,
     on_progress: Channel<UpdateProgress>,
 ) -> IdeResult<()> {
@@ -459,7 +531,7 @@ pub async fn app_install_update(
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let updater = updater(&app)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+        let updater = updater(&app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
         let update = tokio::select! {
             r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
             _ = token.cancelled() => return Err(IdeError::cancelled()),
@@ -520,6 +592,15 @@ mod tests {
         assert_eq!(downloading(t.chunk(256 * 1024, None)), Some(((256 * 1024 + 1034) as f64, None)));
         // A zero length is treated as unknown, not divided by.
         assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
+    }
+
+    #[test]
+    fn chosen_source_is_tried_first_and_the_other_after_it() {
+        let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Github), [github.clone(), CNB_ENDPOINT.into()]);
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
+        // A build without an update endpoint stays without one.
+        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
     }
 
     #[test]

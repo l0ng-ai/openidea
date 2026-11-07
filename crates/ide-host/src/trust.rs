@@ -16,7 +16,13 @@ pub struct TrustDecisions {
 pub struct TrustStore {
     file: PathBuf,
     state: Mutex<IdeResult<TrustDecisions>>,
+    /// Folders trusted for this process only, by the client that started it ([`TRUSTED_ROOT_ENV`]).
+    inherited: Mutex<Vec<PathBuf>>,
 }
+
+/// Set by the desktop when it starts the server in a dev container of a folder the user trusts
+/// there: the project folder in the container, trusted without asking again. Never persisted.
+pub const TRUSTED_ROOT_ENV: &str = "OPENIDEA_TRUSTED_ROOT";
 
 impl TrustStore {
     pub fn load(config: &Path, data: &Path) -> Self {
@@ -34,7 +40,7 @@ impl TrustStore {
             }
             Err(e) => Err(e.into()),
         };
-        Self { file, state: Mutex::new(state) }
+        Self { file, state: Mutex::new(state), inherited: Mutex::default() }
     }
 
     pub fn decisions(&self) -> IdeResult<TrustDecisions> {
@@ -45,7 +51,19 @@ impl TrustStore {
         let root = dunce::canonicalize(path)?;
         let decisions = self.decisions()?;
         Ok(!decisions.restricted.contains(&root)
-            && (decisions.projects.contains(&root) || decisions.locations.iter().any(|p| root.starts_with(p))))
+            && (decisions.projects.contains(&root)
+                || decisions.locations.iter().any(|p| root.starts_with(p))
+                || self.inherited.lock().contains(&root)))
+    }
+
+    /// Trusts `path` for this process without recording a decision (see [`TRUSTED_ROOT_ENV`]).
+    pub fn inherit(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        let mut inherited = self.inherited.lock();
+        if !inherited.contains(&root) {
+            inherited.push(root);
+        }
+        Ok(())
     }
 
     pub fn decide(&self, path: &Path, trusted: bool, folder: bool) -> IdeResult<()> {
@@ -71,6 +89,21 @@ impl TrustStore {
         }
         persist(&self.file, &next)?;
         *state = Ok(next);
+        Ok(())
+    }
+
+    pub fn add_location(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        if !root.is_dir() {
+            return Err(IdeError::invalid("trusted location must be an existing directory"));
+        }
+        let mut state = self.state.lock();
+        let mut next = state.clone()?;
+        if !next.locations.contains(&root) {
+            next.locations.push(root);
+            persist(&self.file, &next)?;
+            *state = Ok(next);
+        }
         Ok(())
     }
 
@@ -121,6 +154,7 @@ impl crate::Host {
                     self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
                 }
                 project.lsp.set_execution_allowed(true);
+                project.lsp.prewarm_java_configuration();
             } else {
                 self.environment.project_closed();
                 project.agents.shutdown();
@@ -268,6 +302,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_commands"
             | "agent_unqueue"
             | "agent_cancel"
+            | "agent_stop_background"
             | "agent_archive"
             | "agent_unarchive"
             | "agent_registry_list"
@@ -283,6 +318,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_set_theme_frame"
             | "plugin_catalog"
             | "plugin_assets"
+            | "plugin_set_ui_locale"
             | "plugin_market"
             | "plugin_market_url"
             | "plugin_set_market_url"
@@ -340,6 +376,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_diff_revisions"
             | "vcs_diff_numstat"
             | "vcs_merge_base"
+            | "vcs_has_hook"
             | "vcs_shelves"
             | "vcs_shelf_patch"
             | "vcs_changelists_load"

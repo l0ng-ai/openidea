@@ -46,17 +46,31 @@ describe("value classification", () => {
   });
 
   it("formats inline values for known locals on a line", () => {
-    const values = { req: "CreateOrderRequest@4127", total: "3", unused: "1" };
-    expect(inlineValuesFor("fun create(req: CreateOrderRequest): OrderDto {", values)).toBe(
-      "req: CreateOrderRequest@4127",
-    );
-    expect(inlineValuesFor("return 1", values)).toBeNull();
+    const values = {
+      req: "CreateOrderRequest@4127",
+      total: "3",
+      unused: "1",
+    };
+    const locals = (v: Record<string, string>) =>
+      Object.fromEntries(
+        Object.entries(v).map(([name, value]) => [
+          name,
+          { name, value, typeName: null, variablesReference: 0, evaluateName: name },
+        ]),
+      );
+    expect(
+      inlineValuesFor("fun create(req: CreateOrderRequest): OrderDto {", locals(values))
+        ?.map((p) => p.text)
+        .join(", "),
+    ).toBe("req: CreateOrderRequest@4127");
+    expect(inlineValuesFor("return 1", locals(values))).toBeNull();
   });
 
   it.each(Object.getOwnPropertyNames(Object.prototype))("only displays an own local named %s", (name) => {
-    expect(inlineValuesFor(name, { count: "40" })).toBeNull();
-    expect(inlineValuesFor(name, Object.fromEntries([[name, "known"]]))).toBe(`${name}: known`);
-    expect(inlineValuesFor(name, Object.create({ [name]: "inherited" }))).toBeNull();
+    const variable = (value: string) => ({ name, value, typeName: null, variablesReference: 0, evaluateName: name });
+    expect(inlineValuesFor(name, Object.fromEntries([["count", variable("40")]]))).toBeNull();
+    expect(inlineValuesFor(name, Object.fromEntries([[name, variable("known")]]))?.[0]?.text).toBe(`${name}: known`);
+    expect(inlineValuesFor(name, Object.create(Object.fromEntries([[name, variable("inherited")]])))).toBeNull();
   });
 });
 

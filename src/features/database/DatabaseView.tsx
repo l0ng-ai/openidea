@@ -7,7 +7,6 @@
  */
 import { useEffect, useMemo, useRef, type CSSProperties } from "react";
 import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
-import { setContext } from "@/platform/context";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -16,13 +15,23 @@ import {
   Icon,
   IconButton,
   Menu,
+  SearchField,
   Tree,
   showContextMenu,
   tooltipAttrs,
   type TreeHandle,
   T,
 } from "@/ui";
-import { colorVar, databaseKey, passesObjectFilter, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
+import {
+  colorVar,
+  databaseKey,
+  passesObjectFilter,
+  passesTreeFilter,
+  shownNames,
+  sourceIcon,
+  splitTarget,
+  targetOf,
+} from "./model";
 import { nodeTarget, schemaObjectOf, tableFolder, type DbNode as Node, type Folder, type Group } from "./nodes";
 import {
   connect,
@@ -112,10 +121,25 @@ export function DatabaseView() {
     [st.sources],
   );
 
-  /** Schemas tab › Object filter of the data source of target `id`. */
+  // While a quick filter is on, the schemas of expanded sources load their objects, so
+  // tables / routines matching the filter show up without expanding every schema node.
+  useEffect(() => {
+    if (!st.treeFilter.trim()) return;
+    const s = useDatabase.getState();
+    for (const [target, list] of Object.entries(s.schemas)) {
+      if (list.status !== "ok") continue;
+      const { id, database } = splitTarget(target);
+      if (!s.treeExpanded.has(database ? databaseKey(id, database) : id)) continue;
+      for (const schema of list.value) {
+        if (!s.tables[tablesKey(target, schema)]) void loadTables(target, schema);
+      }
+    }
+  }, [st.treeFilter, st.treeExpanded, st.schemas]);
+
+  /** Schemas tab › Object filter, plus the toolbar's quick filter, of the data source of target `id`. */
   const shown = (id: string) => {
     const filter = sourceOf(id)?.introspection?.objectFilter;
-    return (o: { name: string }) => passesObjectFilter(o.name, filter);
+    return (o: { name: string }) => passesObjectFilter(o.name, filter) && passesTreeFilter(o.name, st.treeFilter);
   };
   const tablesOf = (id: string, schema: string) => {
     const t = st.tables[tablesKey(id, schema)];
@@ -147,9 +171,18 @@ export function DatabaseView() {
     return shownNames(v.names, i?.allDatabases, i?.databases, v.current);
   };
 
+  /** Under a quick filter a schema shows when its name matches, or its loaded objects do. */
+  const schemaVisible = (id: string, schema: string) =>
+    passesTreeFilter(schema, st.treeFilter) ||
+    !!tablesOf(id, schema)?.length ||
+    routinesOf(id, schema).length > 0 ||
+    sequencesOf(id, schema).length > 0;
+
   const schemasOf = (key: string, id: string) =>
     status(key, st.schemas[id], (v) =>
-      shownSchemas(id, v).map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
+      shownSchemas(id, v)
+        .filter((schema) => schemaVisible(id, schema))
+        .map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
     );
 
   const children = (n: Node): readonly Node[] | undefined => {
@@ -378,13 +411,10 @@ export function DatabaseView() {
   return (
     <div className={styles.dbView}>
       <DatabaseToolbar />
-      <div
-        className={styles.treeHost}
-        onFocus={(e) => setContext(DB_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")}
-        onBlur={() => setContext(DB_VIEW_FOCUS, false)}
-      >
+      <div className={styles.treeHost}>
         <Tree<Node>
           aria-label="Data sources"
+          focusContext={DB_VIEW_FOCUS}
           roots={roots}
           handleRef={tree}
           expanded={st.treeExpanded}
@@ -488,6 +518,7 @@ function DatabaseToolbar() {
   const node = useDatabase((s) => s.selectedNode);
   const connected = useDatabase((s) => s.connected);
   const sources = useDatabase((s) => s.sources);
+  const treeFilter = useDatabase((s) => s.treeFilter);
   const plus = useRef<HTMLButtonElement>(null);
   const newOpen = useDatabase((s) => s.newMenuOpen);
   const setNewOpen = (v: boolean) => useDatabase.setState({ newMenuOpen: v });
@@ -533,6 +564,13 @@ function DatabaseToolbar() {
       >
         <T>DDL</T>
       </button>
+      <SearchField
+        className={styles.treeFilter}
+        value={treeFilter}
+        onChange={(treeFilter) => useDatabase.setState({ treeFilter })}
+        placeholder={tx("Filter objects")}
+        aria-label={tx("Filter objects")}
+      />
     </div>
   );
 }

@@ -2,6 +2,7 @@
 import type {
   DbCellValue,
   DbColor,
+  DbDriver,
   DbProperty,
   DbRowEdit,
   DbSortKey,
@@ -20,6 +21,17 @@ export function toTsv(header: readonly string[] | null, rows: ReadonlyArray<read
   const lines = rows.map((r) => r.map(clean).join("\t"));
   if (header) lines.unshift(header.map(clean).join("\t"));
   return lines.join("\n");
+}
+
+/**
+ * Every value on a single `, `-separated line (IDEA's One-Row extractor, for
+ * `IN (…)` lists): NULL for nulls, numbers unquoted, everything else
+ * single-quoted with `'` doubled. `numeric(c)` decides quoting per column.
+ */
+export function toOneRow(rows: ReadonlyArray<readonly Cell[]>, numeric: (col: number) => boolean): string {
+  const literal = (v: Cell, c: number) =>
+    v === null ? "NULL" : numeric(c) && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
+  return rows.flatMap((r) => r.map(literal)).join(", ");
 }
 
 /** RFC 4180 CSV; NULL is an empty field. */
@@ -190,6 +202,28 @@ export function parseOrderBy(text: string, columns: readonly string[]): DbSortKe
 export function passesObjectFilter(name: string, filter: string | null | undefined): boolean {
   const patterns = (filter ?? "").split(/[\s,]+/).filter(Boolean);
   return !patterns.length || patterns.some((p) => matchesPattern(name.toLowerCase(), p.toLowerCase()));
+}
+
+/**
+ * The tree's quick filter (the toolbar's field): `name` contains it,
+ * case-insensitively (`*` / `?` still work through `matchesPattern` callers).
+ */
+export function passesTreeFilter(name: string, filter: string | null | undefined): boolean {
+  const q = (filter ?? "").trim().toLowerCase();
+  return !q || name.toLowerCase().includes(q);
+}
+
+/**
+ * Whether a console of `driver` gets the active-schema dropdown (a server with
+ * several schemas / databases to switch between; SQLite has one database only).
+ */
+export function schemaSwitchable(driver: DbDriver | null | undefined): boolean {
+  return driver === "postgres" || driver === "mysql" || driver === "sqlServer" || driver === "oracle";
+}
+
+/** The schema a console's statements run in: its pick, else the connection's default. */
+export function activeSchema(picked: string | null | undefined, defaultSchema: string | null | undefined): string {
+  return picked || defaultSchema || "";
 }
 
 /**

@@ -52,18 +52,47 @@ modules, skips nested independent modules and build output, and honors ignore
 files for disk discovery. It does not guess a global association from matching
 text in unrelated projects.
 
-Indexing is lazy. The first explicit navigation/search builds a compact snapshot;
+Trusted projects with a Maven/Gradle/Eclipse build file at the root start Java a
+moment after opening, even without a Java editor open. Once JDT reports
+ServiceReady and compiler defaults are applied, the app asks the extension to warm
+the configuration index (`openidea.java.configuration.warmup`). A low-priority
+system job waits for workspace builds, then builds the same snapshot navigation
+uses, one Java project at a time: modules with open YAML/properties files first,
+then modules with open Java editors. At most 64 modules are queued, each attempt
+has a cooperative 30-second budget, repeated readiness does not repeat finished
+work, and warming only fills free room within the retention limits below (it never
+evicts an index a lookup built). A snapshot outdated while it was being built is
+dropped. Untrusted projects do not start Java; anything warming skips keeps
+on-demand indexing.
+
+Otherwise indexing is lazy. The first explicit navigation/search builds a compact snapshot;
 ordinary typing, code-lens probes, bulk scoped reference analysis, and Java Go to Definition / Ctrl+hover outside a `@Value` or property-lookup argument (checked with the bundled tree-sitter grammar) do not start indexing. At most eight project snapshots are
 retained, with a shared 100,000-association retention cap. Records contain property names, element handles and source locations;
 ASTs and bindings are discarded after indexing. A lexical prefilter avoids AST
 construction for ordinary Java units, but every accepted association is resolved
-semantically. Warm requests reuse the snapshot. Java model changes (sources on
+semantically. Builds hold a per-project lock that a waiting lookup can cancel, so a
+background build of one project never delays another, and a lookup in the same
+project reuses the result. Warm requests reuse the snapshot. Java model changes (sources on
 disk, classpath, archives) invalidate it conservatively, including dependent-type
 changes; a fingerprint of working copies with unsaved changes covers edits before
 they are saved. Opening or closing an editor, reconciling, building, and non-Java
 resource changes (configuration files are parsed by the client; metadata files are
 checked by timestamp) keep it. This is **snapshot invalidation**, not a fully
-incremental Java semantic index.
+incremental Java semantic index. A rebuild reuses each dependency JAR's metadata
+associations (up to 100,000 in all) while the JAR's timestamp and size and the project's
+classpath are unchanged: resolving a Spring Boot JAR's thousands of properties to library
+members takes seconds, and a source change cannot affect them.
+
+Find Usages shows the Java usages as soon as they are found, then adds the configuration
+ones when a rebuild of the snapshot takes longer.
+
+In YAML/properties, ⌘/Ctrl-hover underlines the whole key, hyphens and dots
+included, and doesn't open the documentation popup. Hover and Go to Definition share
+one request per key: a click after the hover reuses its answer. The editor keeps up
+to 128 answers / 4,096 locations, drops them on edits, file and project changes,
+workspace edits and language-server restarts, and expires them after 30 seconds as a
+backstop. Empty answers and errors are not kept, since the import may still be in
+progress.
 
 Metadata/JAR timestamps are checked before reuse. The client caches parsed disk
 configuration files by modification time and size (at most 100,000 cached keys), overlays open buffers, and
@@ -74,7 +103,7 @@ Bounds: 20,000 Java units, 100,000 associations per snapshot, 2 MiB per candidat
 metadata/configuration file (Java source: 2M UTF-16 units), 1,024-character property names, 2,000 configuration files/results, 50,000 filesystem
 entries per root, and depth limits on recursive bindings/YAML. Java requests and
 references are cancellable. File/association scan limits and unreadable files carry the
-existing incomplete-result indicator; unsupported syntax keys are omitted. First navigation can take seconds on a
+existing incomplete-result indicator; unsupported syntax keys are omitted. Navigation before warming finishes can take seconds on a
 cold project; classpath import and source download remain owned by JDT LS.
 
 ## Deliberate limits
@@ -105,7 +134,8 @@ cargo test -p ide-language -p ide-lsp
 The isolated real-server harness covers custom bindings, inheritance, nesting,
 collections/maps, records, constructor aliases, factory methods, consumers,
 constant keys, negative identity matches, dependency metadata/source locations,
-reverse queries, and unsaved-change/close invalidation. Optional stress fixtures
+reverse queries, warming (queued once, reused by the first lookup, cancellable), and
+unsaved-change/close invalidation. Optional stress fixtures
 add 3,000 ordinary units and 100 binding classes; output includes cold/warm/edit
 latencies for the JDT command only, excluding server import, UI and configuration-file discovery. The optional actual Spring Boot JAR checks `server.port`,
 `spring.datasource.url` and `spring.jackson.date-format` through dependency

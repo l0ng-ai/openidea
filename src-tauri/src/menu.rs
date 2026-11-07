@@ -223,12 +223,15 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("file.renameProject", "Rename Project…"),
         SEP,
         act("remote.connect", "Remote Development…"),
+        act("remote.reopenInContainer", "Reopen in Container"),
         act("remote.disconnect", "Disconnect from Remote Host"),
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,
         act("file.save", "Save All"),
         act("file.reloadAllFromDisk", "Reload All from Disk"),
         sub("fileProperties", "File Properties", vec![act("file.toggleReadOnly", "Make File Read-only / Writable")]),
+        SEP,
+        act("file.projectStructure", "Project Structure…"),
         SEP,
         act("file.invalidateCaches", "Invalidate Caches…"),
         SEP,
@@ -895,7 +898,7 @@ pub fn action_ids(spec: &[Entry]) -> Vec<&'static str> {
 }
 
 /// Localised labels and displayed shortcuts, pushed by the frontend.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MenuConfig {
     pub locale: String,
@@ -959,6 +962,20 @@ pub struct MenuState {
     pub config: Mutex<MenuConfig>,
     /// Action ids the focused window reports as disabled (no context / not registered).
     pub disabled: Mutex<HashSet<String>>,
+    /// Visible menu last installed. Shortcuts for actions that are not on the menu
+    /// are not part of this, so they must not redraw the macOS menu bar.
+    rendered: Mutex<Option<Vec<RenderedMenu>>>,
+}
+
+/// Stores `next` when it differs from the config last used to build the menu.
+/// Callers must not replace the menu on `false`: `set_menu` redraws the macOS menu bar.
+pub fn store_config(state: &MenuState, next: MenuConfig) -> bool {
+    let mut current = state.config.lock();
+    if *current == next {
+        return false;
+    }
+    *current = next;
+    true
 }
 
 /// The action an item id stands for, if it is an IDE action item.
@@ -971,7 +988,7 @@ fn item_action(id: &str) -> Option<&str> {
 
 /// Whether the item `id` is enabled given the disabled action ids.
 pub fn item_enabled(id: &str, disabled: &HashSet<String>) -> bool {
-    item_action(id).is_none_or(|a| !disabled.contains(a))
+    id != "recent.none" && item_action(id).is_none_or(|a| !disabled.contains(a))
 }
 
 /// Updates the enabled state of the installed menu's items in place (no rebuild).
@@ -1020,6 +1037,124 @@ pub fn recent_items(recent: &[ide_workspace::RecentProject], home: Option<&Path>
         .collect()
 }
 
+/// One top-level menu, as it will actually be drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedMenu {
+    id: &'static str,
+    title: String,
+    items: Vec<RenderedItem>,
+}
+
+/// A visible menu row. Unused keymap shortcuts are intentionally absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RenderedItem {
+    Submenu {
+        id: &'static str,
+        title: String,
+        items: Vec<RenderedItem>,
+    },
+    /// `accel` is set only for items that own a native accelerator; their shortcut
+    /// is then not copied from [`MenuConfig::shortcuts`].
+    Action {
+        id: String,
+        text: String,
+        accel: Option<&'static str>,
+    },
+    /// Always disabled (`No Recent Projects`).
+    Placeholder {
+        id: String,
+        text: String,
+    },
+    Native {
+        kind: Native,
+        text: String,
+    },
+    Separator,
+}
+
+fn prepared_spec<R: Runtime>(app: &AppHandle<R>, os: Os) -> Vec<Entry> {
+    let mut entries = spec(os);
+    if !crate::commands::window::updates_configured(app) {
+        entries = without_action(entries, "app.checkForUpdates");
+    }
+    entries
+}
+
+/// Visible items for `entries`. Shortcuts that no item displays do not affect the result.
+fn render_bar(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -> Vec<RenderedMenu> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Submenu { id, label, children } => {
+                Some(RenderedMenu { id, title: config.label(id, label), items: render_items(children, config, recent) })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -> Vec<RenderedItem> {
+    let mut out = Vec::new();
+    for entry in entries {
+        match entry {
+            Entry::Submenu { id, label, children } => out.push(RenderedItem::Submenu {
+                id,
+                title: config.label(id, label),
+                items: render_items(children, config, recent),
+            }),
+            Entry::Action { id, label, accel, hint } => {
+                let text = match accel {
+                    Some(_) => config.label(id, label),
+                    None => config.item_text(id, label, *hint),
+                };
+                out.push(RenderedItem::Action { id: (*id).into(), text, accel: *accel });
+            }
+            Entry::Dynamic(slot) => {
+                for item in config.dynamic_items(slot) {
+                    out.push(RenderedItem::Action { id: item.item_id(), text: config.dynamic_text(item), accel: None });
+                }
+            }
+            Entry::Native(kind) => {
+                out.push(RenderedItem::Native { kind: *kind, text: config.label(kind.key(), kind.default_label()) })
+            }
+            Entry::Separator => out.push(RenderedItem::Separator),
+            Entry::RecentProjects if recent.is_empty() => out.push(RenderedItem::Placeholder {
+                id: "recent.none".into(),
+                text: config.label("recent.none", "No Recent Projects"),
+            }),
+            Entry::RecentProjects => {
+                for item in recent {
+                    out.push(RenderedItem::Action {
+                        id: format!("{RECENT_PREFIX}{}", item.path),
+                        text: item.label.clone(),
+                        accel: None,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn structure_key(item: &RenderedItem) -> (u8, &str, Option<&str>) {
+    match item {
+        RenderedItem::Submenu { id, .. } => (0, *id, None),
+        RenderedItem::Action { id, accel, .. } => (1, id.as_str(), *accel),
+        RenderedItem::Placeholder { id, .. } => (2, id.as_str(), None),
+        RenderedItem::Native { kind, .. } => (3, kind.key(), None),
+        RenderedItem::Separator => (4, "", None),
+    }
+}
+
+fn same_structure(previous: &[RenderedItem], next: &[RenderedItem]) -> bool {
+    previous.len() == next.len()
+        && previous.iter().zip(next).all(|(left, right)| structure_key(left) == structure_key(right))
+}
+
+fn same_toplevel(previous: &[RenderedMenu], next: &[RenderedMenu]) -> bool {
+    previous.len() == next.len() && previous.iter().zip(next).all(|(left, right)| left.id == right.id)
+}
+
 /// Renders the spec into a Tauri menu.
 pub fn build<R: Runtime>(
     app: &AppHandle<R>,
@@ -1028,77 +1163,58 @@ pub fn build<R: Runtime>(
     recent: &[RecentItem],
     disabled: &HashSet<String>,
 ) -> tauri::Result<Menu<R>> {
+    build_rendered(app, &render_bar(&prepared_spec(app, os), config, recent), disabled)
+}
+
+fn build_rendered<R: Runtime>(
+    app: &AppHandle<R>,
+    menus: &[RenderedMenu],
+    disabled: &HashSet<String>,
+) -> tauri::Result<Menu<R>> {
     let menu = Menu::new(app)?;
-    let mut spec = spec(os);
-    if !crate::commands::window::updates_configured(app) {
-        spec = without_action(spec, "app.checkForUpdates");
-    }
-    for entry in spec {
-        if let Entry::Submenu { id, label, children } = entry {
-            let submenu = build_submenu(app, config, recent, disabled, id, label, &children)?;
-            #[cfg(target_os = "macos")]
-            match id {
-                "window" => submenu.set_as_windows_menu_for_nsapp()?,
-                "help" => submenu.set_as_help_menu_for_nsapp()?,
-                _ => {}
-            }
-            menu.append(&submenu)?;
+    for rendered in menus {
+        let submenu = Submenu::with_id(app, format!("submenu:{}", rendered.id), &rendered.title, true)?;
+        append_rendered(app, &submenu, &rendered.items, disabled)?;
+        #[cfg(target_os = "macos")]
+        match rendered.id {
+            "window" => submenu.set_as_windows_menu_for_nsapp()?,
+            "help" => submenu.set_as_help_menu_for_nsapp()?,
+            _ => {}
         }
+        menu.append(&submenu)?;
     }
     Ok(menu)
 }
 
-fn build_submenu<R: Runtime>(
+fn append_rendered<R: Runtime>(
     app: &AppHandle<R>,
-    config: &MenuConfig,
-    recent: &[RecentItem],
+    parent: &Submenu<R>,
+    items: &[RenderedItem],
     disabled: &HashSet<String>,
-    id: &str,
-    label: &str,
-    children: &[Entry],
-) -> tauri::Result<Submenu<R>> {
-    let submenu = Submenu::with_id(app, format!("submenu:{id}"), config.label(id, label), true)?;
-    for child in children {
-        match child {
-            Entry::Submenu { id, label, children } => {
-                submenu.append(&build_submenu(app, config, recent, disabled, id, label, children)?)?
+) -> tauri::Result<()> {
+    for item in items {
+        match item {
+            RenderedItem::Submenu { id, title, items } => {
+                let child = Submenu::with_id(app, format!("submenu:{id}"), title, true)?;
+                append_rendered(app, &child, items, disabled)?;
+                parent.append(&child)?;
             }
-            Entry::Action { id, label, accel, hint } => {
+            RenderedItem::Action { id, text, accel } => {
                 let enabled = item_enabled(id, disabled);
-                let item = match accel {
-                    Some(a) => MenuItem::with_id(app, *id, config.label(id, label), enabled, Some(*a))?,
-                    None => MenuItem::with_id(app, *id, config.item_text(id, label, *hint), enabled, None::<&str>)?,
-                };
-                submenu.append(&item)?;
+                parent.append(&MenuItem::with_id(app, id, text, enabled, *accel)?)?;
             }
-            Entry::Dynamic(slot) => {
-                for d in config.dynamic_items(slot) {
-                    let id = d.item_id();
-                    let enabled = item_enabled(&id, disabled);
-                    submenu.append(&MenuItem::with_id(app, id, config.dynamic_text(d), enabled, None::<&str>)?)?;
-                }
+            RenderedItem::Placeholder { id, text } => {
+                parent.append(&MenuItem::with_id(app, id, text, false, None::<&str>)?)?;
             }
-            Entry::Native(n) => submenu.append(native(app, config, *n)?.as_ref())?,
-            Entry::Separator => submenu.append(&PredefinedMenuItem::separator(app)?)?,
-            Entry::RecentProjects => {
-                if recent.is_empty() {
-                    let none = config.label("recent.none", "No Recent Projects");
-                    submenu.append(&MenuItem::with_id(app, "recent.none", none, false, None::<&str>)?)?;
-                }
-                for r in recent {
-                    let item =
-                        MenuItem::with_id(app, format!("{RECENT_PREFIX}{}", r.path), &r.label, true, None::<&str>)?;
-                    submenu.append(&item)?;
-                }
-            }
+            RenderedItem::Native { kind, text } => parent.append(native_text(app, *kind, text)?.as_ref())?,
+            RenderedItem::Separator => parent.append(&PredefinedMenuItem::separator(app)?)?,
         }
     }
-    Ok(submenu)
+    Ok(())
 }
 
-fn native<R: Runtime>(app: &AppHandle<R>, config: &MenuConfig, n: Native) -> tauri::Result<Box<dyn IsMenuItem<R>>> {
-    let text = config.label(n.key(), n.default_label());
-    let t = Some(text.as_str());
+fn native_text<R: Runtime>(app: &AppHandle<R>, n: Native, text: &str) -> tauri::Result<Box<dyn IsMenuItem<R>>> {
+    let t = Some(text);
     let item = match n {
         Native::Undo => PredefinedMenuItem::undo(app, t)?,
         Native::Redo => PredefinedMenuItem::redo(app, t)?,
@@ -1115,6 +1231,125 @@ fn native<R: Runtime>(app: &AppHandle<R>, config: &MenuConfig, n: Native) -> tau
         Native::BringAllToFront => PredefinedMenuItem::bring_all_to_front(app, t)?,
     };
     Ok(Box::new(item))
+}
+
+fn clear_submenu<R: Runtime>(submenu: &Submenu<R>) -> tauri::Result<()> {
+    let len = submenu.items()?.len();
+    for index in (0..len).rev() {
+        submenu.remove_at(index)?;
+    }
+    Ok(())
+}
+
+fn existing_matches<R: Runtime>(existing: &MenuItemKind<R>, desired: &RenderedItem) -> bool {
+    match (existing, desired) {
+        (MenuItemKind::Submenu(submenu), RenderedItem::Submenu { id, .. }) => {
+            submenu.id().as_ref() == format!("submenu:{id}").as_str()
+        }
+        (MenuItemKind::MenuItem(item), RenderedItem::Action { id, .. } | RenderedItem::Placeholder { id, .. }) => {
+            item.id().as_ref() == id.as_str()
+        }
+        (MenuItemKind::Predefined(_), RenderedItem::Native { .. } | RenderedItem::Separator) => true,
+        _ => false,
+    }
+}
+
+/// Updates `submenu` to `next` without replacing the menu bar.
+///
+/// `allow_rebuild` is false for the macOS Window menu: AppKit appends the open-window
+/// list to it, and clearing that menu drops the list. A structural change there falls
+/// back to installing a new menu bar.
+fn sync_children<R: Runtime>(
+    app: &AppHandle<R>,
+    submenu: &Submenu<R>,
+    previous: &[RenderedItem],
+    next: &[RenderedItem],
+    disabled: &HashSet<String>,
+    allow_rebuild: bool,
+) -> bool {
+    if !same_structure(previous, next) {
+        return allow_rebuild
+            && clear_submenu(submenu).is_ok()
+            && append_rendered(app, submenu, next, disabled).is_ok();
+    }
+    let Ok(existing) = submenu.items() else { return false };
+    let extras = !allow_rebuild && existing.len() > next.len();
+    if existing.len() != next.len() && !extras {
+        return allow_rebuild
+            && clear_submenu(submenu).is_ok()
+            && append_rendered(app, submenu, next, disabled).is_ok();
+    }
+    if existing.len() < next.len() {
+        return false;
+    }
+    for (index, item) in next.iter().enumerate() {
+        if &previous[index] == item {
+            continue;
+        }
+        if !existing_matches(&existing[index], item)
+            || !sync_item(app, &existing[index], &previous[index], item, disabled)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn sync_item<R: Runtime>(
+    app: &AppHandle<R>,
+    existing: &MenuItemKind<R>,
+    previous: &RenderedItem,
+    next: &RenderedItem,
+    disabled: &HashSet<String>,
+) -> bool {
+    match (existing, previous, next) {
+        (
+            MenuItemKind::Submenu(submenu),
+            RenderedItem::Submenu { title: previous_title, items: previous_items, .. },
+            RenderedItem::Submenu { title, items, .. },
+        ) => {
+            if previous_title != title && submenu.set_text(title).is_err() {
+                return false;
+            }
+            sync_children(app, submenu, previous_items, items, disabled, true)
+        }
+        (
+            MenuItemKind::MenuItem(item),
+            _,
+            RenderedItem::Action { text, .. } | RenderedItem::Placeholder { text, .. },
+        ) => item.set_text(text).is_ok(),
+        (MenuItemKind::Predefined(item), _, RenderedItem::Native { text, .. }) => item.set_text(text).is_ok(),
+        _ => false,
+    }
+}
+
+fn patch_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    menu: &Menu<R>,
+    previous: &[RenderedMenu],
+    next: &[RenderedMenu],
+    disabled: &HashSet<String>,
+) -> bool {
+    let Ok(items) = menu.items() else { return false };
+    if items.len() != next.len() {
+        return false;
+    }
+    for (index, rendered) in next.iter().enumerate() {
+        if &previous[index] == rendered {
+            continue;
+        }
+        let Some(submenu) = items[index].as_submenu() else { return false };
+        if submenu.id().as_ref() != format!("submenu:{}", rendered.id).as_str() {
+            return false;
+        }
+        if previous[index].title != rendered.title && submenu.set_text(&rendered.title).is_err() {
+            return false;
+        }
+        if !sync_children(app, submenu, &previous[index].items, &rendered.items, disabled, rendered.id != "window") {
+            return false;
+        }
+    }
+    true
 }
 
 /// A menu entry for a menu bar drawn by the frontend (Windows title bar).
@@ -1186,7 +1421,12 @@ pub fn native_menu_bar() -> bool {
     cfg!(target_os = "macos")
 }
 
-/// Rebuilds and installs the app menu from the current config and recent list.
+/// Installs the app menu from the current config and recent list.
+///
+/// The first install, and a change of the top-level menu ids, calls `set_menu`.
+/// On macOS that removes the menu bar and draws it again. Later updates compare the
+/// visible items and edit only the submenus that changed, so switching project tabs
+/// does not flash the menu bar.
 pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &[ide_workspace::RecentProject]) {
     if !native_menu_bar() {
         return;
@@ -1195,8 +1435,23 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
     let items = recent_items(recent, home.as_deref());
     let config = menu_state.config.lock().clone();
     let disabled = menu_state.disabled.lock().clone();
-    match build(app, Os::current(), &config, &items, &disabled).and_then(|m| app.set_menu(m)) {
-        Ok(_) => {}
+    let rendered = render_bar(&prepared_spec(app, Os::current()), &config, &items);
+    let mut slot = menu_state.rendered.lock();
+    if slot.as_ref() == Some(&rendered) {
+        return;
+    }
+    let patched = match slot.as_ref() {
+        Some(previous) if same_toplevel(previous, &rendered) => {
+            app.menu().is_some_and(|menu| patch_menu(app, &menu, previous, &rendered, &disabled))
+        }
+        _ => false,
+    };
+    if patched {
+        *slot = Some(rendered);
+        return;
+    }
+    match build(app, Os::current(), &config, &items, &disabled).and_then(|menu| app.set_menu(menu)) {
+        Ok(_) => *slot = Some(rendered),
         Err(e) => tracing::warn!("failed to build the app menu: {e}"),
     }
 }
@@ -1268,6 +1523,73 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_menu_config_is_not_rebuilt() {
+        let state = MenuState::default();
+        let mut config = MenuConfig { locale: "en".into(), ..MenuConfig::default() };
+        assert!(store_config(&state, config.clone()));
+        assert!(!store_config(&state, config.clone()));
+        config.labels.insert("menu.file".into(), "File".into());
+        assert!(store_config(&state, config));
+    }
+
+    fn changed_menus(left: &[RenderedMenu], right: &[RenderedMenu]) -> Vec<&'static str> {
+        assert_eq!(
+            left.iter().map(|menu| menu.id).collect::<Vec<_>>(),
+            right.iter().map(|menu| menu.id).collect::<Vec<_>>()
+        );
+        left.iter().zip(right).filter(|(a, b)| a != b).map(|(menu, _)| menu.id).collect()
+    }
+
+    #[test]
+    fn unused_shortcuts_do_not_change_the_rendered_menu() {
+        let entries = spec(Os::Mac);
+        let base = MenuConfig::default();
+        let mut extra = base.clone();
+        // Registered by a large project's language actions, but not a menu item.
+        extra.shortcuts.insert("java.compile".into(), "⌘K".into());
+        // Shown by the native accelerator, not by the keymap text.
+        extra.shortcuts.insert("window.next".into(), "⌘`".into());
+        assert_eq!(render_bar(&entries, &base, &[]), render_bar(&entries, &extra, &[]));
+    }
+
+    #[test]
+    fn tool_windows_change_only_the_view_menu() {
+        let entries = spec(Os::Mac);
+        let base = MenuConfig::default();
+        let mut with_maven = base.clone();
+        with_maven.shortcuts.insert("toolwindow.maven".into(), "⌘9".into());
+        assert_eq!(render_bar(&entries, &base, &[]), render_bar(&entries, &with_maven, &[]));
+        with_maven.dynamic.insert(DYNAMIC_TOOL_WINDOWS.into(), vec![dynamic_item("toolwindow.maven", None, "Maven")]);
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &render_bar(&entries, &with_maven, &[])), ["view"]);
+    }
+
+    #[test]
+    fn recent_projects_change_only_the_file_menu() {
+        let entries = spec(Os::Mac);
+        let config = MenuConfig::default();
+        let recent = [RecentItem { path: "/p/a".into(), label: "a  —  ~/a".into() }];
+        assert_eq!(
+            changed_menus(&render_bar(&entries, &config, &[]), &render_bar(&entries, &config, &recent)),
+            ["file"]
+        );
+    }
+
+    #[test]
+    fn visible_label_or_shortcut_changes_only_its_menu() {
+        let entries = spec(Os::Mac);
+        let base = MenuConfig::default();
+        let mut shortcuts = base.clone();
+        shortcuts.shortcuts.insert("file.save".into(), "⌘S".into());
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &render_bar(&entries, &shortcuts, &[])), ["file"]);
+
+        let mut labels = base.clone();
+        labels.labels.insert("menu.view".into(), "视图".into());
+        let rendered = render_bar(&entries, &labels, &[]);
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &rendered), ["view"]);
+        assert_eq!(rendered.iter().find(|menu| menu.id == "view").unwrap().title, "视图");
+    }
+
+    #[test]
     fn recent_items_route_to_open_recent_with_path() {
         let spec = spec(Os::Mac);
         assert_eq!(
@@ -1313,6 +1635,7 @@ mod tests {
                 "file.openInNewWindow",
                 "file.closeProject",
                 "file.save",
+                "file.projectStructure",
                 "file.settings",
                 "file.newProjectsSettings",
                 "window.new",
@@ -1535,6 +1858,8 @@ mod tests {
         assert!(item_enabled("dyn:toolwindow.git", &disabled));
         assert!(item_enabled("recent:/p/refactor.rename", &disabled));
         assert!(item_enabled("submenu:refactor", &disabled));
+        assert!(!item_enabled("recent.none", &disabled));
+        assert!(!item_enabled("recent.none", &HashSet::new()));
     }
 
     #[test]

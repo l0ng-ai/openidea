@@ -361,14 +361,48 @@ pub(crate) fn run_cancellable(root: &Path, args: &[&str], cancel: &CancellationT
 
 /// Cancellable capture preserving exit codes for commands with documented non-error states.
 pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
+    run_cancellable_raw_stdin(root, args, None, cancel)
+}
+
+/// Like `run_cancellable`, feeding `stdin` to git. Revisions and paths passed through
+/// `--stdin` are not bound by the command-line length limit (Windows: ~32K characters).
+pub(crate) fn run_cancellable_stdin(
+    root: &Path,
+    args: &[&str],
+    stdin: &[u8],
+    cancel: &CancellationToken,
+) -> IdeResult<Output> {
+    let out = run_cancellable_raw_stdin(root, args, Some(stdin), cancel)?;
+    if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+
+fn run_cancellable_raw_stdin(
+    root: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    cancel: &CancellationToken,
+) -> IdeResult<Output> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
     let mut cmd = command(root)?;
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args)
+        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     own_group(&mut cmd);
     let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
+    let writer = match (stdin, child.stdin.take()) {
+        (Some(data), Some(mut pipe)) => {
+            let data = data.to_vec();
+            Some(std::thread::spawn(move || {
+                // A broken pipe just means git stopped reading early; its exit status tells the story.
+                let _ = pipe.write_all(&data);
+            }))
+        }
+        _ => None,
+    };
     let capture = |mut pipe: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
             let mut bytes = Vec::new();
@@ -382,6 +416,9 @@ pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &Cancellat
             terminate_tree(&mut child, KILL_GRACE);
             let _ = stdout.join();
             let _ = stderr.join();
+            if let Some(w) = writer {
+                let _ = w.join();
+            }
             return Err(IdeError::cancelled());
         }
         if let Some(status) = child.try_wait()? {
@@ -389,6 +426,9 @@ pub(crate) fn run_cancellable_raw(root: &Path, args: &[&str], cancel: &Cancellat
         }
         std::thread::sleep(Duration::from_millis(20));
     };
+    if let Some(w) = writer {
+        let _ = w.join();
+    }
     let join = |thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
         thread.join().map_err(|_| IdeError::internal("git output reader panicked"))?.map_err(IdeError::from)
     };

@@ -55,16 +55,49 @@ pub(crate) fn query_in(
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    if !env.iter().any(|(k, _)| *k == "PATH") {
+    cmd.args(args).envs(env.iter().copied());
+    query_command(cmd, timeout)
+}
+
+/// [`query`] of a command built by the caller; `PATH` is the search path unless it sets one.
+pub(crate) fn query_command(mut cmd: Command, timeout: Duration) -> Option<String> {
+    query_command_cancellable(&mut cmd, timeout, None)
+}
+
+pub(crate) fn query_in_cancellable(
+    program: &Path,
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> Option<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(cwd).envs(env.iter().copied());
+    query_command_cancellable(&mut cmd, timeout, Some(cancel))
+}
+
+fn query_command_cancellable(
+    cmd: &mut Command,
+    timeout: Duration,
+    cancel: Option<&CancellationToken>,
+) -> Option<String> {
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        return None;
+    }
+    if !cmd.get_envs().any(|(k, _)| k == "PATH") {
         cmd.env("PATH", search_path());
     }
-    let mut child = ide_core::process::prepare(&mut cmd)
-        .args(args)
-        .envs(env.iter().copied())
+    let mut child = ide_core::process::prepare(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
+        .inspect_err(|error| {
+            if cancel.is_some() {
+                tracing::warn!(?cmd, %error, "cannot query external libraries");
+            }
+        })
         .ok()?;
     // Chunks as they come, `None` at the end of a pipe. A reader stops once the query
     // has returned, closing the pipe on whatever still writes to it.
@@ -92,34 +125,53 @@ pub(crate) fn query_in(
     drop(tx);
     let deadline = Instant::now() + timeout;
     let status = loop {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
+                if cancel.is_some() {
+                    tracing::warn!(?cmd, "external libraries query timed out or could not be polled");
+                }
                 return None;
             }
         }
     };
-    if !status.success() {
+    if !status.success() && cancel.is_none() {
         return None;
     }
     // Up to the deadline, or briefly past it for a program that exited just before:
     // a process it left running (a wrapper's background job) can hold the pipes
     // open, or keep writing to them, after it exits.
-    let until = deadline.max(Instant::now() + Duration::from_millis(100));
+    let drain_deadline = Instant::now() + Duration::from_millis(100);
+    let until = if status.success() { deadline.max(drain_deadline) } else { drain_deadline };
     let (mut out, mut err, mut open) = (Vec::new(), Vec::new(), 2);
     while open > 0 {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return None;
+        }
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
             break;
         }
-        match rx.recv_timeout(left) {
+        match rx.recv_timeout(left.min(Duration::from_millis(20))) {
             Ok((is_out, Some(chunk))) => if is_out { &mut out } else { &mut err }.extend(chunk),
             Ok((_, None)) => open -= 1,
-            Err(_) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+    }
+    if !status.success() {
+        if cancel.is_some() {
+            tracing::warn!(?cmd, %status, stderr = %decode_tool_output(&err), "external libraries query failed");
+        }
+        return None;
     }
     let text = if out.trim_ascii().is_empty() { err } else { out };
     Some(decode_tool_output(&text).trim().to_owned())

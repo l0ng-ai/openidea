@@ -121,7 +121,12 @@ pub async fn plugin_navigation_index(
             plugins.index_navigation(
                 &project.root,
                 crate::plugins::navigation::Snapshot { path: &path, version, text: &text, symbols: &symbols, scope },
-                Invocation { client: Some(client.clone()), workspace_root: Some(project.root.clone()), editor: None },
+                Invocation {
+                    client: Some(client.clone()),
+                    workspace_root: Some(project.root.clone()),
+                    editor: None,
+                    selected_paths: Vec::new(),
+                },
             )?;
             // A document edit while WASM was executing must not publish stale ranges.
             if cancel.is_cancelled() || document.is_some_and(|id| project.documents.version(id).ok() != version) {
@@ -133,6 +138,17 @@ pub async fn plugin_navigation_index(
     .await;
     host.end_request(request);
     result
+}
+
+/// The HTTP routes `plugin_id` reports for this window's project.
+pub async fn plugin_endpoints(
+    host: &crate::Host,
+    plugins: Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+) -> IdeResult<Vec<crate::plugins::endpoints::PluginEndpoint>> {
+    let project = host.project(window)?;
+    blocking(move || Ok(plugins.endpoints(&plugin_id, &project.root)?.as_ref().clone())).await
 }
 
 pub async fn plugin_navigation_goto(

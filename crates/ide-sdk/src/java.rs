@@ -384,6 +384,12 @@ pub fn configure_jdtls(
             // A different source model needs a clean import, including new folders.
             key.push_str(&format!("-sources-{}", text_key(&paths.to_string())));
         }
+        if let Some(output) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/outputPath")) {
+            key.push_str(&format!("-out-{}", text_key(&output.to_string())));
+        }
+        if let Some(libs) = cfg.settings.as_ref().and_then(|s| s.pointer("/java/project/referencedLibraries")) {
+            key.push_str(&format!("-libs-{}", text_key(&libs.to_string())));
+        }
         let dir = data_dir.join("lsp").join("jdtls").join(key);
         cfg.args.extend(["-data".to_owned(), dir.to_string_lossy().into_owned()]);
     }
@@ -540,10 +546,12 @@ pub fn project_java_version(module_dir: &Path) -> Option<u32> {
     }
     for name in ["build.gradle.kts", "build.gradle"] {
         let Some(text) = read(name) else { continue };
-        if let Some(i) = text.find("JavaLanguageVersion.of(") {
-            let rest = &text[i + "JavaLanguageVersion.of(".len()..];
-            if let Some(v) = parse_java_version(rest.split(')').next().unwrap_or_default()) {
-                return Some(v);
+        for key in ["JavaLanguageVersion.of(", "jvmToolchain("] {
+            if let Some(i) = text.find(key) {
+                let rest = &text[i + key.len()..];
+                if let Some(v) = parse_java_version(rest.split(')').next().unwrap_or_default()) {
+                    return Some(v);
+                }
             }
         }
         for key in ["sourceCompatibility", "targetCompatibility"] {
@@ -880,7 +888,7 @@ mod tests {
         configure_jdtls(&mut plain, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], None);
         let data = |c: &LanguageServerConfig| c.args[c.args.iter().position(|a| a == "-data").unwrap() + 1].clone();
         assert_ne!(data(&cfg), data(&plain), "a separate workspace, so everything is rebuilt with the agent");
-        let patched = Path::new("/managed/lombok-1.18.48-openidea.2.jar");
+        let patched = Path::new("/managed/lombok-1.18.48-openidea.3.jar");
         let mut fixed = jdtls();
         configure_jdtls(
             &mut fixed,
@@ -894,6 +902,23 @@ mod tests {
             Some(patched),
         );
         assert_ne!(data(&cfg), data(&fixed), "the patch must rebuild classes compiled with the official agent");
+        let mut previous = jdtls();
+        configure_jdtls(
+            &mut previous,
+            Path::new("/p"),
+            Path::new("/data"),
+            &[],
+            None,
+            None,
+            JDTLS_MIN_JAVA,
+            &[],
+            Some(Path::new("/managed/lombok-1.18.48-openidea.2.jar")),
+        );
+        assert_ne!(
+            data(&previous),
+            data(&fixed),
+            "the new patch must rebuild classes compiled with the previous bundle"
+        );
         let before = cfg.clone();
         configure_jdtls(&mut cfg, Path::new("/p"), Path::new("/data"), &[], None, None, JDTLS_MIN_JAVA, &[], Some(jar));
         assert_eq!(cfg, before, "idempotent");
@@ -1121,6 +1146,14 @@ mod tests {
         assert_eq!(project_java_version(dir), Some(11));
         std::fs::write(dir.join("build.gradle.kts"), "sourceCompatibility = '1.8'").unwrap();
         assert_eq!(project_java_version(dir), Some(8));
+        for (script, version) in [
+            ("kotlin { jvmToolchain(21) }", Some(21)),
+            ("kotlin { jvmToolchain(17) }", Some(17)),
+            ("kotlin { jvmToolchain(projectVersion) }", None),
+        ] {
+            std::fs::write(dir.join("build.gradle.kts"), script).unwrap();
+            assert_eq!(project_java_version(dir), version);
+        }
     }
 }
 
@@ -1169,7 +1202,7 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.5.0.jar");
+    let extension = data_dir.join("java-usages-1.8.0.jar");
     let bytes = include_bytes!("../../../java/java-usages/openidea-java-usages.jar");
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
         clean_usages_bundles(data_dir, &extension);

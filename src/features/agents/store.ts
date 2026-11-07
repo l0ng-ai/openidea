@@ -5,6 +5,7 @@ import { create } from "zustand";
 import type {
   AgentChange,
   AgentCommand,
+  AgentConfigOption,
   AgentEntry,
   AgentEvent,
   AgentImage,
@@ -37,6 +38,8 @@ export interface Draft {
   provider: string;
   /** Settings chosen for the next task, by option id (reset when the agent changes). */
   config: Record<string, string>;
+  /** Thinking-level choices by model value for this provider. */
+  thoughtLevels?: Record<string, Record<string, string>>;
   isolation: Isolation;
   /** The user picked `isolation`: otherwise a task runs in the local checkout. */
   isolationChosen?: boolean;
@@ -134,9 +137,50 @@ export const useAgents = create<AgentsState>(() => ({
 }));
 
 export function updateDraft(patch: Partial<Draft>) {
-  const draft = { ...useAgents.getState().draft, ...patch };
+  const current = useAgents.getState().draft;
+  const draft = {
+    ...current,
+    ...(patch.provider && patch.provider !== current.provider ? { thoughtLevels: {} } : {}),
+    ...patch,
+  };
   useAgents.setState({ draft });
   save(DRAFT_KEY, draft);
+}
+
+/** Config for the selected model, with only supported draft choices applied. */
+export function draftConfig(provider: AgentProvider | undefined, draft: Draft): AgentConfigOption[] {
+  const config = (provider?.config ?? [])
+    .filter((o) => o.category !== "thought_level")
+    .map((o) => {
+      const choice = draft.config[o.id];
+      return { ...o, current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current };
+    });
+  const model = config.find((o) => o.category === "model")?.current;
+  if (model) {
+    config.push(
+      ...(provider?.thoughtLevels?.[model] ?? []).map((o) => {
+        const choice = draft.thoughtLevels?.[model]?.[o.id];
+        return { ...o, current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current };
+      }),
+    );
+  }
+  return config;
+}
+
+export function setDraftOption(id: string, value: string) {
+  const { draft, providers } = useAgents.getState();
+  const config = draftConfig(
+    providers.find((p) => p.id === draft.provider),
+    draft,
+  );
+  const model = config.find((o) => o.category === "model")?.current;
+  if (model && config.find((o) => o.id === id)?.category === "thought_level") {
+    updateDraft({
+      thoughtLevels: { ...draft.thoughtLevels, [model]: { ...draft.thoughtLevels?.[model], [id]: value } },
+    });
+  } else {
+    updateDraft({ config: { ...draft.config, [id]: value } });
+  }
 }
 
 export const composerDraft = (key: string) => useAgents.getState().composers.get(key) ?? emptyDraft();
@@ -485,13 +529,24 @@ export async function startTask(
   const { draft, providers } = useAgents.getState();
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
-  const config = { ...bypassDefaults(providers.find((p) => p.id === draft.provider)?.config ?? []), ...draft.config };
+  const options = draftConfig(
+    providers.find((p) => p.id === draft.provider),
+    draft,
+  );
+  const defaults = bypassDefaults(options);
+  const config = options.flatMap((o) => {
+    const value =
+      o.category === "model" || o.category === "thought_level"
+        ? o.current
+        : (draft.config[o.id] ?? defaults[o.id] ?? null);
+    return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
+  });
   const task = await call(
     commands.agentCreate({
       projectRoot,
       prompt: toPrompt(composer),
       provider: draft.provider,
-      config: Object.entries(config).map(([id, value]) => ({ id, value })),
+      config,
       isolation,
       base: isolation === "worktree" ? draft.base : null,
     }),
@@ -555,9 +610,12 @@ export async function rerunFrom(task: string, turn: number, text: string, images
   try {
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
-    // Rollback removes the inline editor; recover its text in the session composer.
+    // Rollback removes the original turn; recover its prompt in the session composer.
     const current = composerDraft(task);
-    updateComposer(task, { text: current.text ? `${text}\n${current.text}` : text });
+    updateComposer(task, {
+      text: current.text ? `${text}\n${current.text}` : text,
+      images: [...images, ...current.images],
+    });
     focusComposer(task);
     throw e;
   }
@@ -625,6 +683,8 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
 
 /** Stops the task's turn, or with `subagent` only that subagent's work. */
 export const cancelTask = (task: string, subagent: string | null = null) => call(commands.agentCancel(task, subagent));
+export const stopBackgroundTask = (task: string, background: string) =>
+  call(commands.agentStopBackground(task, background));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
 export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));

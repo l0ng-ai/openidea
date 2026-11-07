@@ -260,6 +260,22 @@ fn snapshot(file: &Path) -> IdeResult<Option<Snapshot>> {
     }
 }
 
+/// `sync_all` failures that mean "this filesystem cannot fsync at all", not that
+/// the data was lost: ENOTTY (`os error 25`, virtio-fs on macOS VMs answering
+/// F_FULLFSYNC/fsync with "Inappropriate ioctl for device") and EINVAL (some
+/// network filesystems). Mirrors `sync_error_is_tolerable` in ide-vfs atomic
+/// writes; other errors keep failing the update.
+fn sync_error_is_tolerable(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::InvalidInput {
+        return true;
+    }
+    // EINVAL is already covered by InvalidInput; ENOTTY has no ErrorKind of its own.
+    #[cfg(unix)]
+    return e.raw_os_error() == Some(25);
+    #[cfg(not(unix))]
+    false
+}
+
 fn append(file: &Path, rules: &[IgnoreRule]) -> IdeResult<()> {
     no_symlinks(file.parent().unwrap())?;
     fs::create_dir_all(file.parent().unwrap())?;
@@ -316,7 +332,16 @@ fn append(file: &Path, rules: &[IgnoreRule]) -> IdeResult<()> {
     };
     temp.as_file().set_permissions(permissions)?;
     temp.write_all(&updated)?;
-    temp.as_file().sync_all()?;
+    if let Err(e) = temp.as_file().sync_all() {
+        // Filesystems without fsync (virtio-fs on macOS VMs, some network mounts):
+        // the write itself already went through, so keep the updated ignore file
+        // instead of failing the whole update.
+        if sync_error_is_tolerable(&e) {
+            tracing::debug!("fsync unsupported for {}: {e}; continuing", file.display());
+        } else {
+            return Err(e.into());
+        }
+    }
     replace_if_unchanged(file, before, temp)
 }
 
@@ -355,5 +380,20 @@ mod tests {
         fs::write(&file, "external writer\n").unwrap();
         assert!(replace_if_unchanged(&file, before, temp).unwrap_err().message.contains("changed"));
         assert_eq!(fs::read_to_string(file).unwrap(), "external writer\n");
+    }
+
+    #[test]
+    fn sync_errors_without_fsync_support_are_tolerable() {
+        // Some network filesystems report EINVAL for fsync.
+        assert!(sync_error_is_tolerable(&std::io::Error::new(std::io::ErrorKind::InvalidInput, "EINVAL")));
+        #[cfg(unix)]
+        {
+            // virtio-fs on macOS VMs answers fsync with "Inappropriate ioctl for device".
+            assert!(sync_error_is_tolerable(&std::io::Error::from_raw_os_error(25)));
+            assert!(sync_error_is_tolerable(&std::io::Error::from_raw_os_error(22)));
+        }
+        // Real write failures still fail the update.
+        assert!(!sync_error_is_tolerable(&std::io::Error::from_raw_os_error(28)));
+        assert!(!sync_error_is_tolerable(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied")));
     }
 }

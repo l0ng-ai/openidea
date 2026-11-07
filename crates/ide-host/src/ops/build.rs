@@ -5,23 +5,16 @@ use crate::rpc::Dispatcher;
 use crate::{Host, Project, apply_workspace_edit};
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
+use ide_build::maven::PomGoto;
 use ide_build::pom_edit::{ArtifactKey, Exclusion};
 use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
-use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Range, RequestId, WorkspaceEdit};
+use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 fn join_err(e: tokio::task::JoinError) -> IdeError {
     IdeError::internal(e.to_string())
-}
-
-/// `JAVA_HOME`: the project JDK, else the installed JDK matching `release` (none
-/// when the project names no version).
-fn java_env(project_jdk: Option<&ide_sdk::java::Jdk>, release: Option<u32>) -> BTreeMap<String, String> {
-    let jdks = ide_sdk::java::installed_jdks();
-    let jdk = project_jdk.or_else(|| release.and_then(|r| ide_sdk::java::pick_jdk(&jdks, Some(r))));
-    jdk.map(|j| BTreeMap::from([("JAVA_HOME".to_owned(), j.home.to_string_lossy().into_owned())])).unwrap_or_default()
 }
 
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
@@ -39,7 +32,7 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);
         for p in &mut m.projects {
-            p.env = java_env(jdk.as_ref(), p.java_version);
+            p.env = ide_sdk::apply::maven_build_env(root, settings, p.java_version);
             if let Some(mvn) = &mvn {
                 p.command = mvn.to_string_lossy().into_owned();
             }
@@ -47,8 +40,8 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         }
     }
     for g in &mut model.gradle {
-        g.env = ide_sdk::apply::gradle_env(root, settings, java_env(jdk.as_ref(), g.java_version));
         g.command = ide_sdk::apply::gradle_command(root, &root.join(&g.dir), settings).to_string_lossy().into_owned();
+        g.env = ide_sdk::apply::gradle_build_env(root, &root.join(&g.dir), &g.command, settings, g.java_version);
     }
     // A failed sync of a project no installed JDK can build says so first (with a Download JDK action).
     let missing = |release: Option<u32>| match jdk {
@@ -63,7 +56,11 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     if let Some(m) = &mut model.maven
         && m.sync_error.is_some()
     {
-        let hint = m.projects.iter().find_map(|p| missing(p.java_version));
+        let hint = if settings.languages.java.maven.runner_jre.trim().is_empty() {
+            m.projects.iter().find_map(|p| missing(p.java_version))
+        } else {
+            None
+        };
         explain(&mut m.sync_error, hint);
     }
     for g in &mut model.gradle {
@@ -74,6 +71,42 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         }
     }
     model
+}
+
+/// Build and Run use the same selected toolchain and module-local runtime discovery.
+fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) -> compile::BuildPlan {
+    let kind = match plan.system {
+        compile::BuildSystem::Cargo => "cargo",
+        compile::BuildSystem::Go => "go",
+        compile::BuildSystem::TypeScript => "npm",
+        _ => return plan,
+    };
+    for step in &mut plan.steps {
+        let mut config = ide_run::RunConfig {
+            id: String::new(),
+            name: String::new(),
+            kind: kind.into(),
+            command: step.program.clone(),
+            args: step.args.clone(),
+            cwd: Some(step.cwd.clone().into()),
+            env: step.env.clone(),
+            detected: true,
+            is_test: false,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: Default::default(),
+        };
+        config.extras.module = Some(ide_core::ipc_path::to_ipc(&step.cwd));
+        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, settings);
+        if kind == "go" {
+            config.extras.params.insert("useTags".into(), "true".into());
+            ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
+        }
+        step.program = config.command;
+        step.args = config.args;
+        step.env = config.env;
+    }
+    plan
 }
 
 /// `model` building with the Maven profiles of the last sync (`-P`), as Maven runs from
@@ -404,6 +437,27 @@ pub async fn maven_dependency_declaration(
     .map_err(join_err)?
 }
 
+/// The go-to-declaration target at `pos` of the Maven POM `pom` (project-relative, or
+/// absolute for a parent POM opened from the local repository): the definition of the
+/// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
+/// entry providing the dependency's / plugin's version, along the parent chain (into
+/// the local repository when a parent is not in the project). `None` when nothing
+/// resolvable is under the caret.
+pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
+    let project = host.project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let given = Path::new(&pom);
+        let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
+        let text = project.text_of(&path)?;
+        let settings = project.settings.effective();
+        let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+            .or_else(ide_build::maven::default_local_repo);
+        Ok(ide_build::maven::goto_declaration(&text, &path, pos, repo))
+    })
+    .await
+    .map_err(join_err)?
+}
+
 /// Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency
 /// `dependency` of the Maven module `pom`, through the open document when there is one
 /// (saved). Returns the declaration; nothing changes when it already excludes it.
@@ -467,7 +521,11 @@ pub async fn build_run(
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
                 let member_cache = cache.join(crate::project::project_key(member));
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
-                let plan = compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?;
+                let plan = prepare_plan(
+                    compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
+                    member,
+                    &settings,
+                );
                 match &mut combined {
                     Some(combined) => combined.steps.extend(plan.steps),
                     None => combined = Some(plan),
@@ -477,13 +535,17 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            compile::plan(
+            prepare_plan(
+                compile::plan(
+                    &root,
+                    &with_profiles(load(&root, &cache, &settings), &cache),
+                    kind,
+                    file.as_deref(),
+                    settings.cmake.profiles.as_deref(),
+                )?,
                 &root,
-                &with_profiles(load(&root, &cache, &settings), &cache),
-                kind,
-                file.as_deref(),
-                settings.cmake.profiles.as_deref(),
-            )?
+                &settings,
+            )
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
@@ -538,6 +600,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("maven_dependency_declaration", |c| async move {
         maven_dependency_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?).await
     });
+    d.add("maven_goto_declaration", |c| async move {
+        maven_goto_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("pos")?).await
+    });
     d.add("maven_exclude_dependency", |c| async move {
         maven_exclude_dependency(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?, c.arg("exclusion")?).await
     });
@@ -556,8 +621,48 @@ pub(crate) fn register(d: &mut Dispatcher) {
 }
 
 #[cfg(test)]
-mod gradle_settings_tests {
+mod build_tool_settings_tests {
     use super::*;
+
+    #[test]
+    fn builds_apply_the_same_explicit_toolchains_as_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let tool = |name: &str| format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        for name in ["cargo", "go"] {
+            let path = root.join("sdk").join("bin").join(tool(name));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "sdk".into();
+        settings.languages.go.goroot = "sdk".into();
+        settings.languages.go.build_tags.custom = "integration".into();
+        settings.languages.node.package_manager = "yarn".into();
+        for (marker, source, program) in [
+            (
+                "Cargo.toml",
+                "[package]\nname='demo'\nversion='0.1.0'",
+                root.join("sdk").join("bin").join(tool("cargo")).to_string_lossy().into_owned(),
+            ),
+            ("go.mod", "module demo", root.join("sdk").join("bin").join(tool("go")).to_string_lossy().into_owned()),
+            ("package.json", r#"{"scripts":{"build":"echo built"},"packageManager":"pnpm@10"}"#, "yarn".into()),
+        ] {
+            let dir = root.join(marker.replace('.', "-"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(marker), source).unwrap();
+            let plan = prepare_plan(
+                compile::plan(&dir, &Default::default(), BuildKind::Artifacts, None, None).unwrap(),
+                root,
+                &settings,
+            );
+            assert_eq!(plan.steps[0].program, program);
+            assert_eq!(plan.steps[0].cwd, dir);
+            if marker == "go.mod" {
+                assert!(plan.steps[0].args.contains(&"-tags=integration".into()));
+            }
+        }
+    }
 
     #[test]
     fn linking_retains_the_implicit_build_and_unlinking_all_stays_empty() {
@@ -598,6 +703,34 @@ mod gradle_settings_tests {
         assert_eq!(model.gradle.len(), 2);
         for g in model.gradle {
             assert_eq!(g.command, root.join(&g.dir).join(executable).to_string_lossy());
+        }
+    }
+
+    #[test]
+    fn model_for_maven_sync_goals_and_compile_uses_runner_jre() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#
+        ).unwrap();
+        for name in ["project-jdk", "runner-jdk"] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), "JAVA_VERSION=\"21\"\n").unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.java.jdk = "project-jdk".into();
+        for runner in ["", "runner-jdk"] {
+            settings.languages.java.maven.runner_jre = runner.into();
+            let expected = root.join(if runner.is_empty() { "project-jdk" } else { runner });
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
         }
     }
 

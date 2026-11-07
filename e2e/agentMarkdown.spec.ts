@@ -19,6 +19,7 @@ const TASK = {
   commands: [],
   usage: null,
   queue: [],
+  capabilities: { fork: true, rollback: true, steer: true, images: true },
 };
 
 const PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
@@ -47,11 +48,16 @@ const REPLY = [
   "```",
 ].join("\n");
 
-async function openReply(page: Page, text: string) {
+async function openReply(page: Page, text: string, imageData?: string) {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
   await page.evaluate(
-    async ({ task, text }) => {
+    async ({ task, text, imageData }) => {
+      if (imageData) {
+        const routePath = "/src/platform/tauriCore.ts";
+        const { setInvokeRoute } = await import(routePath);
+        setInvokeRoute((cmd: string) => (cmd === "fs_read_image" ? Promise.resolve(imageData) : null));
+      }
       // Paths go through variables: knip can't resolve these browser-absolute URLs.
       const storePath = "/src/features/agents/store.ts";
       const store = await import(storePath);
@@ -60,13 +66,21 @@ async function openReply(page: Page, text: string) {
         error: null,
         providers: [],
         tasks: new Map([[task.id, task]]),
-        entries: new Map([[task.id, [{ type: "agent", text }]]]),
+        entries: new Map([
+          [
+            task.id,
+            [
+              { type: "user", text: "Show Markdown", attachments: [], sentMs: 0, doneMs: 1, steered: false },
+              { type: "agent", text },
+            ],
+          ],
+        ]),
         unread: new Set(),
         docked: null,
       });
       store.dockTask(task.id);
     },
-    { task: TASK, text },
+    { task: TASK, text, imageData },
   );
   const reply = page.locator("[class*='_markdown_']").first();
   await reply.locator("h1, p").first().waitFor();
@@ -127,4 +141,199 @@ test("styles quotes, rules, images and task lists", async ({ page }) => {
   expect(await css(reply, "img", "max-width")).toBe("100%");
   // A checkbox stands in for the bullet.
   expect(await css(reply, "li:has(> input)", "list-style-type")).toBe("none");
+});
+
+test("loads local and web reply images", async ({ page }) => {
+  await page.route("https://images.example.com/code.gif", (route) =>
+    route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") }),
+  );
+  const reply = await openReply(
+    page,
+    "![Local QR](/tmp/code.png)\n\n![Web QR](https://images.example.com/code.gif)",
+    PIXEL,
+  );
+  for (const name of ["Local QR", "Web QR"]) {
+    await expect
+      .poll(() => reply.getByRole("img", { name }).evaluate((img: HTMLImageElement) => img.naturalWidth))
+      .toBe(1);
+  }
+});
+
+test("copies reply Markdown with the keyboard and keeps code copying separate", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const reply = await openReply(page, REPLY);
+  const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
+  const actions = copy.locator("..");
+  await page.mouse.move(0, 0);
+  await expect(actions).toHaveCSS("opacity", "0");
+  await copy.focus();
+  await expect(actions).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(REPLY);
+  await reply.getByRole("button", { name: "Copy Code", exact: true }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("const a = 1;");
+});
+
+test("reveals message actions on hover without shifting content and quotes into the draft", async ({ page }) => {
+  const reply = await openReply(page, REPLY);
+  const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
+  const actions = copy.locator("..");
+  await page.mouse.move(0, 0);
+  await expect(actions).toHaveCSS("opacity", "0");
+  const before = await reply.boundingBox();
+  await reply.hover();
+  await expect(actions).toHaveCSS("opacity", "1");
+  expect(await reply.boundingBox()).toEqual(before);
+  await expect(actions.getByRole("button")).toHaveCount(4);
+  await page.mouse.move(0, 0);
+  await expect(actions).toHaveCSS("opacity", "0");
+  const userCopy = page.getByRole("button", { name: "Copy", exact: true });
+  await expect(userCopy.locator("..")).toHaveCSS("opacity", "0");
+  await page.getByText("Show Markdown", { exact: true }).hover();
+  await expect(userCopy.locator("..")).toHaveCSS("opacity", "1");
+  await reply.hover();
+  await page.getByRole("button", { name: "Quote Reply", exact: true }).click();
+  const draft = page.getByRole("textbox", { name: "Message", exact: true });
+  await expect(draft).toBeFocused();
+  await expect(draft).toHaveValue(
+    REPLY.trimEnd()
+      .split("\n")
+      .map((line) => (line ? `> ${line}` : ">"))
+      .join("\n") + "\n\n",
+  );
+});
+
+test("keeps chat history readable and selections free of timestamps and status labels", async ({ page, context }) => {
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await openReply(page, "Hi! What would you like to work on?");
+  await page.evaluate(async (task) => {
+    const path = "/src/features/agents/store.ts";
+    const store = await import(path);
+    const user = (text: string) => ({ type: "user", text, attachments: [], sentMs: 1, doneMs: 5001, steered: false });
+    store.useAgents.setState({
+      entries: new Map([
+        [
+          task.id,
+          [
+            user("hi"),
+            { type: "agent", text: "Hi! What would you like to work on?" },
+            user("im bob"),
+            { type: "agent", text: "Hi Bob! What are we working on today?" },
+            user("yes"),
+            { type: "thought", text: "**Requesting task context**" },
+            { type: "agent", text: "What would you like me to proceed with?" },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+  const stream = page.locator("[class*='_stream_']:visible");
+  const replies = stream.locator("[class*='_reply_']");
+  await expect(replies).toHaveCount(3);
+  const geometry = await stream.evaluate((root) => {
+    const reply = root.querySelector<HTMLElement>("[class*='_reply_']")!;
+    const bubble = root.querySelector<HTMLElement>("[class*='_user_']")!;
+    const composer = root
+      .closest("[class*='_conversation_']")!
+      .querySelector<HTMLElement>("[class*='_composerArea_']")!;
+    const rr = reply.getBoundingClientRect();
+    const br = bubble.getBoundingClientRect();
+    const cr = composer.getBoundingClientRect();
+    return {
+      reply: rr.width,
+      root: root.clientWidth,
+      bubbleLeft: br.left,
+      replyLeft: rr.left,
+      bubbleRight: br.right,
+      replyRight: rr.right,
+      columnCenter: (rr.left + rr.right) / 2,
+      composerCenter: (cr.left + cr.right) / 2,
+    };
+  });
+  expect(geometry.reply).toBe(900);
+  expect(geometry.reply).toBeLessThan(geometry.root);
+  expect(Math.abs(geometry.bubbleRight - geometry.replyRight)).toBeLessThan(1);
+  expect(Math.abs(geometry.bubbleLeft - geometry.replyLeft)).toBeLessThan(1);
+  expect(Math.abs(geometry.columnCenter - geometry.composerCenter)).toBeLessThan(1);
+  await stream.getByText("hi", { exact: true }).hover();
+  await expect(stream.locator("[class*='_messageMeta_']").first()).toHaveCSS("opacity", "1");
+  const selected = await stream.evaluate((root) => {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return selection.toString();
+  });
+  expect(selected).toContain("hi");
+  expect(selected).toContain("Hi Bob!");
+  expect(selected).toContain("What would you like me to proceed with?");
+  expect(selected).not.toMatch(/AM|PM|5s|Reasoning|Requesting task context/);
+  await page.keyboard.press("ControlOrMeta+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  await stream.locator("[class*='_thought_'] > summary").click();
+  await expect(stream.getByText("Requesting task context", { exact: true })).toBeVisible();
+  await expect(stream.locator("[class*='_thoughtBody_'] strong")).toHaveText("Requesting task context");
+  await page.evaluate(async (id) => {
+    const path = "/src/features/agents/store.ts";
+    const store = await import(path);
+    store.dockTask(id);
+  }, TASK.id);
+  await expect(stream).toBeVisible();
+  const narrow = await stream.evaluate((root) => ({
+    width: root.clientWidth,
+    content: root.scrollWidth,
+    reply: root.querySelector<HTMLElement>("[class*='_reply_']")!.getBoundingClientRect().width,
+    padding:
+      Number.parseFloat(getComputedStyle(root).paddingLeft) + Number.parseFloat(getComputedStyle(root).paddingRight),
+  }));
+  expect(narrow.width).toBeGreaterThan(0);
+  expect(narrow.content).toBeLessThanOrEqual(narrow.width);
+  expect(Math.abs(narrow.reply - (narrow.width - narrow.padding))).toBeLessThan(1);
+});
+
+test("keeps hover actions reachable when the pointer leaves the message body", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const reply = await openReply(page, "A short answer.");
+  const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
+  await reply.hover();
+  const box = await copy.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, { steps: 20 });
+  await expect(copy.locator("..")).toHaveCSS("opacity", "1");
+  await copy.click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("A short answer.");
+});
+
+test("selects through code blocks and tables while keeping copy controls outside the code", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const tree = "rust/\n├── Cargo.toml\n└── src/\n    └── main.rs";
+  const flow = "内置文本 SAMPLE\n    ↓ parser::parse\nVec<Item>\n    ↓ Inventory::add\n终端输出";
+  const text = `项目结构：\n\n\`\`\`text\n${tree}\n\`\`\`\n\n| 模块 | 职责 |\n| --- | --- |\n| main.rs | 程序入口 |\n\n数据流是：\n\n\`\`\`text\n${flow}\n\`\`\``;
+  const reply = await openReply(page, text);
+  await expect(reply.getByRole("button", { name: "Copy Code", exact: true })).toHaveCount(2);
+  const selected = await reply.evaluate((root) => {
+    const codes = [...root.querySelectorAll("pre > code")];
+    if (codes.some((code) => code.parentElement!.querySelector("button"))) throw new Error("Control in code selection");
+    const start = root.querySelector("p")!.firstChild!;
+    const end = codes.at(-1)!.lastChild!;
+    window.getSelection()!.setBaseAndExtent(start, 0, end, end.textContent!.length);
+    return window.getSelection()!.toString();
+  });
+  expect(selected).toContain(tree);
+  expect(selected).toContain("程序入口");
+  expect(selected).toContain(flow);
+  await page.keyboard.press("ControlOrMeta+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(selected);
+  await page.evaluate(() => window.getSelection()!.removeAllRanges());
+  const copies = reply.getByRole("button", { name: "Copy Code", exact: true });
+  await copies.first().click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(tree);
+  await copies.last().click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(flow);
 });

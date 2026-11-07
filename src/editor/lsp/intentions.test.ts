@@ -23,13 +23,20 @@ const resolved: CodeAction = {
   data: null,
   server: 1,
 };
+const lspCodeActions = vi.fn();
+const lspApplyCodeAction = vi.fn();
 const lspResolveCodeAction = vi.fn(async () => ({ status: "ok" as const, data: resolved }));
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
-  return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspResolveCodeAction } };
+  return {
+    ...actual,
+    isTauri: () => true,
+    commands: { ...actual.commands, lspResolveCodeAction, lspCodeActions, lspApplyCodeAction },
+  };
 });
 
 const {
+  applyKindSilently,
   bulbLine,
   changedLines,
   indentUnderBrace,
@@ -115,7 +122,49 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
   );
 });
 
+describe("silent code actions", () => {
+  it("does not run lazy plugin actions that could prompt during Actions on Save", async () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "f(1);",
+        extensions: [lspDoc.of({ doc: 1, path: "/p/a.ts", language: "typescript", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    lspCodeActions.mockResolvedValueOnce({
+      status: "ok",
+      data: [{ ...resolved, kind: "source.fixAll", server: 0, edit: null }],
+    });
+    expect(await applyKindSilently(view, "source.fixAll")).toBe(false);
+    expect(lspApplyCodeAction).not.toHaveBeenCalled();
+    expect(lspResolveCodeAction).not.toHaveBeenCalled();
+  });
+});
+
 describe("intention preview", () => {
+  it("does not resolve lazy plugin actions while previewing", async () => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "f(1);",
+        extensions: [lspDoc.of({ doc: 1, path: "/p/a.ts", language: "typescript", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    const cache = new Map<CodeAction, Promise<CodeAction>>();
+    const preview = await intentionPreview(
+      view,
+      { ...resolved, server: 0, edit: null },
+      cache,
+      new AbortController().signal,
+    );
+    expect(preview).toEqual({ kind: "text", text: "Preview isn't available for this action" });
+    expect(lspResolveCodeAction).not.toHaveBeenCalled();
+    expect(cache.size).toBe(0);
+    expect(await intentionPreview(view, { ...resolved, server: 0 }, cache, new AbortController().signal)).toMatchObject(
+      { kind: "diff" },
+    );
+  });
+
   it("resolves the action once and shows its diff for this file", async () => {
     const view = new EditorView({
       state: EditorState.create({
