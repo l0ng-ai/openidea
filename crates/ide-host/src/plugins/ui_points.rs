@@ -5,9 +5,10 @@
 //!
 //! ```toml
 //! [[contributes.menus]]
-//! menu = "editor.context"          # projectView.context, editorTab.context, tools
+//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context
 //! command = "check"
 //! when = "editorLang == java"
+//! # view = "<view id>"             # required for (only allowed on) viewItem.context
 //!
 //! [[contributes.keymaps]]
 //! command = "check"
@@ -66,7 +67,8 @@ pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 
-const MENU_IDS: [&str; 4] = ["editor.context", "projectView.context", "editorTab.context", "tools"];
+const VIEW_ITEM_MENU: &str = "viewItem.context";
+const MENU_IDS: [&str; 5] = ["editor.context", "projectView.context", "editorTab.context", "tools", VIEW_ITEM_MENU];
 const MAX_TITLE: usize = 256;
 const MAX_SETTINGS: usize = 200;
 const MAX_PATTERNS: usize = 16;
@@ -78,6 +80,10 @@ fn commands(pkg: &Package) -> BTreeSet<String> {
         .iter()
         .filter_map(|d| d.get("id").and_then(|v| v.as_str()).map(str::to_owned))
         .collect()
+}
+
+fn declared_view(pkg: &Package, id: &str) -> Option<toml::Value> {
+    pkg.manifest.declarations(VIEWS).into_iter().find(|d| d.get("id").and_then(|v| v.as_str()) == Some(id))
 }
 
 fn declared_command(pkg: &Package, point: &str, command: &str) -> Result<(), String> {
@@ -106,6 +112,8 @@ struct MenuDecl {
     command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     when: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    view: Option<String>,
 }
 
 pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
@@ -117,7 +125,24 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     if let Some(w) = &d.when {
         validate_when(w).map_err(|e| format!("contributes.menus: {e}"))?;
     }
-    Ok(UiDecl::new(format!("{}/{}", d.menu, d.command), d.command.clone(), json(&d)?))
+    let key = match (d.menu == VIEW_ITEM_MENU, &d.view) {
+        (true, None) => return Err(format!("contributes.menus: {VIEW_ITEM_MENU} needs `view`")),
+        (true, Some(v)) => {
+            pkg.manifest.needs_api(&format!("contributes.menus: {VIEW_ITEM_MENU}"), 2)?;
+            let Some(view) = declared_view(pkg, v) else {
+                return Err(format!("contributes.menus: view {v:?} is not declared under [[contributes.views]]"));
+            };
+            if view.get("web").is_some() {
+                return Err(format!(
+                    "contributes.menus: view {v:?} is a web view (viewItem.context needs a tree or list the plugin renders)"
+                ));
+            }
+            format!("{VIEW_ITEM_MENU}/{v}/{}", d.command)
+        }
+        (false, Some(_)) => return Err(format!("contributes.menus: `view` is only for {VIEW_ITEM_MENU}")),
+        (false, None) => format!("{}/{}", d.menu, d.command),
+    };
+    Ok(UiDecl::new(key, d.command.clone(), json(&d)?))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -386,7 +411,7 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     out.files = files;
     if let Some(icon) = d.icon.as_deref().filter(|i| i.ends_with(".svg")) {
         let path = std::path::PathBuf::from(icon);
-        let svg = super::icons::read_icon(pkg, &path)?;
+        let svg = super::icons::read_icon(pkg, &path, super::icons::MAX_SVG)?;
         out.assets.push((view_icon_asset(&d.id), svg));
         out.files.push(path);
     }
@@ -479,7 +504,7 @@ pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Stri
     let mut assets = Vec::new();
     for (path, dark) in [(Some(&d.icon), false), (d.icon_dark.as_ref(), true)] {
         let Some(path) = path else { continue };
-        let svg = super::icons::read_icon(pkg, path)?;
+        let svg = super::icons::read_icon(pkg, path, super::icons::MAX_SVG)?;
         assets.push((file_icon_asset(&d.id, dark), svg));
         files.push(path.clone());
     }

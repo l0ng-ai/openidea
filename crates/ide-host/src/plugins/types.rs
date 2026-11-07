@@ -1,8 +1,11 @@
 //! UI-facing plugin types and the event stream.
 
 use super::theme::ThemeDef;
+use ide_extension::package::PluginIcon;
 use ide_extension::{CapabilityInfo, ContributionInfo, UiContribution};
-pub use ide_plugin::{ActionPerformed, ActionSource, EventKind, NotificationLevel, StatusItem, WorkbenchEvent};
+pub use ide_plugin::{
+    ActionPerformed, ActionSource, EventKind, NotificationLevel, PickItem, Prompt, StatusItem, WorkbenchEvent,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -58,6 +61,7 @@ pub struct PluginInfo {
     pub authors: Vec<String>,
     pub homepage: Option<String>,
     pub change_notes: Option<String>,
+    pub icon: Option<PluginIcon>,
     pub source: PluginSource,
     /// Package directory.
     pub path: ide_core::IpcPath,
@@ -121,6 +125,7 @@ pub struct CatalogPlugin {
     pub authors: Vec<String>,
     pub homepage: Option<String>,
     pub change_notes: Option<String>,
+    pub icon: Option<PluginIcon>,
     /// Package directory; install with `install_from_dir(path)`.
     pub path: ide_core::IpcPath,
     pub has_code: bool,
@@ -171,6 +176,10 @@ pub enum PluginEvent {
     /// A plugin's status bar item was set (`item`) or removed.
     #[serde(rename_all = "camelCase")]
     StatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },
+    /// A plugin's context key was set (`value`: JSON text) or removed, in the
+    /// emitted window (every window when the client is `None`).
+    #[serde(rename_all = "camelCase")]
+    ContextChanged { plugin_id: String, key: String, value: Option<String> },
     /// A plugin began a task: show it with the background tasks.
     #[serde(rename_all = "camelCase")]
     TaskStarted { plugin_id: String, task_id: String, title: String, cancellable: bool },
@@ -213,6 +222,16 @@ pub enum PluginEvent {
     /// Open `url` (`http(s)://`) in the system browser.
     #[serde(rename_all = "camelCase")]
     OpenUrl { plugin_id: String, url: String },
+    /// A command waits for the user's answer: show `prompt`, then report it with
+    /// `plugin_answer_prompt(prompt_id, …)`.
+    #[serde(rename_all = "camelCase")]
+    PromptRequested { plugin_id: String, prompt_id: String, prompt: Prompt },
+    /// The call that asked gave up (cancelled, or its plugin stopped): close the prompt.
+    #[serde(rename_all = "camelCase")]
+    PromptClosed { prompt_id: String },
+    /// Bring the tool window of the plugin's view `view` to the front.
+    #[serde(rename_all = "camelCase")]
+    RevealView { plugin_id: String, view: String },
 }
 
 /// Delivers events to the UI. `client` is the window that invoked the plugin
@@ -257,6 +276,15 @@ pub struct PluginStatusItem {
     pub plugin_id: String,
     pub id: String,
     pub item: StatusItem,
+}
+
+/// A plugin's context key for `when` clauses (`value` is JSON text).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginContextKey {
+    pub plugin_id: String,
+    pub key: String,
+    pub value: String,
 }
 
 /// A gutter marker from a plugin's `line-markers` provider.

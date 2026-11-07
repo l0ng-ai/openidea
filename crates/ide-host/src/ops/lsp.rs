@@ -3,6 +3,7 @@ use crate::Host;
 use crate::apply_workspace_edit as apply_edit;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use crate::rpc::Dispatcher;
+use ide_core::error::ErrorKind;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
@@ -307,7 +308,11 @@ pub async fn lsp_resolve_class_file(host: &Host, window: &str, path: std::path::
 
 /// References of the symbol at `pos`. `project_wide` also searches project files
 /// outside the language server's analysis scope; bulk scans over many symbols
-/// leave it off. Cancel with `cancel_request(request)`.
+/// leave it off. Java, `project_wide`: without `libraries`, the dependencies and the JDK
+/// are not searched; with it, those found in the sources arrive on `on_partial` before
+/// the slower search for the rest, and the result has them all. Cancel with
+/// `cancel_request(request)`.
+#[allow(clippy::too_many_arguments)]
 pub async fn lsp_references(
     host: &Host,
     window: &str,
@@ -316,10 +321,24 @@ pub async fn lsp_references(
     pos: Pos,
     include_declaration: bool,
     project_wide: bool,
+    libraries: bool,
+    on_partial: super::Channel<References>,
 ) -> IdeResult<References> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.references(doc, pos, include_declaration, project_wide, cancel).await;
+    let result = lsp
+        .references_streaming(
+            doc,
+            pos,
+            include_declaration,
+            project_wide,
+            libraries,
+            cancel,
+            Some(&|refs| {
+                let _ = on_partial.send(refs);
+            }),
+        )
+        .await;
     host.end_request(request);
     result
 }
@@ -596,7 +615,22 @@ pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range
 }
 
 pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<SemanticTokens>> {
-    host.project(window)?.lsp.semantic_tokens(doc).await
+    let lsp = host.project(window)?.lsp.clone();
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::SemanticTokens) else {
+        return lsp.semantic_tokens(doc).await;
+    };
+    let (result, tokens) =
+        tokio::join!(lsp.semantic_tokens(doc), plugin_call(move || plugins.provide_semantic_tokens(&d)));
+    let tokens = tokens.unwrap_or_default();
+    if tokens.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => None,
+        Err(e) => return Err(e),
+    };
+    Ok(Some(crate::plugins::merge_semantic_tokens(server, tokens)))
 }
 
 pub async fn lsp_code_lens(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<CodeLens>> {
@@ -789,6 +823,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("lsp_virtual_document", |c| async move { lsp_virtual_document(&c.host, &c.window, c.arg("uri")?).await });
     d.add("lsp_references", |c| async move {
+        let on_partial = c.sender("onPartial")?;
         lsp_references(
             &c.host,
             &c.window,
@@ -797,6 +832,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("pos")?,
             c.arg("includeDeclaration")?,
             c.arg("projectWide")?,
+            c.arg("libraries")?,
+            on_partial,
         )
         .await
     });

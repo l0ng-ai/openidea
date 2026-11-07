@@ -25,7 +25,12 @@ pub fn view_invocation(
             Some(EditorContext { path: info.path.0, language: info.language.0, selections: Vec::new() })
         }
     };
-    Ok(Invocation { client: Some(window.to_owned()), workspace_root: project.as_ref().map(|p| p.root.clone()), editor })
+    Ok(Invocation {
+        client: Some(window.to_owned()),
+        workspace_root: project.as_ref().map(|p| p.root.clone()),
+        editor,
+        ..Invocation::default()
+    })
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {

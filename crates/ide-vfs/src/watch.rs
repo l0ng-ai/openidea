@@ -13,7 +13,7 @@ use crate::FsBatch;
 use crate::rules::{ExcludeMatcher, GitignoreStack};
 use ide_core::{IdeError, IdeEvent, IdeResult, SharedSink};
 use notify::event::{ModifyKind, RenameMode};
-use notify::{Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
+use notify::{ErrorKind, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -27,6 +27,9 @@ const DEBOUNCE: Duration = Duration::from_millis(100);
 const MAX_DELAY: Duration = Duration::from_millis(1000);
 /// How often the polling fallback rescans the watched directories.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Directories watched synchronously in [`Watcher::start`] before handing the
+/// remainder of a large tree to the watcher thread.
+const SYNC_WATCH_BUDGET: usize = 256;
 
 /// How directories are registered with the OS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,13 +179,14 @@ impl Watcher {
             },
             config,
         )
-        .map_err(|e| io_error(format!("cannot start file watcher: {e}")))?;
+        .map_err(|e| watcher_error("cannot start file watcher", e))?;
         *state.watcher.lock() = Some(Box::new(watcher));
-        if mode == WatchMode::PerDirectory {
-            state.watch_tree(root, false, &mut Vec::new());
+        let deferred = if mode == WatchMode::PerDirectory {
+            state.watch_tree_bounded(root, SYNC_WATCH_BUDGET)
         } else {
             state.add_watch(root);
-        }
+            Vec::new()
+        };
         if state.watched.lock().is_empty() {
             return Err(io_error(format!("cannot watch {}", root.display())));
         }
@@ -190,7 +194,7 @@ impl Watcher {
             let state = state.clone();
             std::thread::Builder::new()
                 .name("openidea-fs-watch".into())
-                .spawn(move || state.run(&*emit))
+                .spawn(move || state.run(deferred, &*emit))
                 .map_err(|e| io_error(format!("cannot start file watcher: {e}")))?
         };
         Ok(Inner { state, thread: Some(thread) })
@@ -223,6 +227,29 @@ fn is_dir_touch(event: &notify::Event) -> bool {
     matches!(event.kind, EventKind::Modify(_)) && event.paths.iter().all(|p| p.is_dir())
 }
 
+const MAX_WATCHES_HINT: &str = "the inotify watch limit is exhausted (fs.inotify.max_user_watches); raise it, e.g. \
+                                `sudo sysctl -w fs.inotify.max_user_watches=524288`";
+
+/// `io_error` with a fix hint when Linux's inotify limits are exhausted: one
+/// instance per watcher (`EMFILE`, os error 24) or one watch per directory
+/// (`ENOSPC`, mapped by notify to [`ErrorKind::MaxFilesWatch`]). A bare OS
+/// error sends users off to search engines otherwise (issue #788).
+fn watcher_error(what: &str, error: notify::Error) -> IdeError {
+    let hint = match error.kind {
+        ErrorKind::MaxFilesWatch => Some(MAX_WATCHES_HINT),
+        ErrorKind::Io(ref e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(24) => Some(
+            "the inotify instance limit is exhausted (fs.inotify.max_user_instances); raise it, e.g. \
+                  `sudo sysctl -w fs.inotify.max_user_instances=1024`",
+        ),
+        ErrorKind::Io(ref e) if cfg!(target_os = "linux") && e.raw_os_error() == Some(28) => Some(MAX_WATCHES_HINT),
+        _ => None,
+    };
+    match hint {
+        Some(hint) => io_error(format!("{what}: {error}; {hint}")),
+        None => io_error(format!("{what}: {error}")),
+    }
+}
+
 /// Shared with the notify callback (weakly) and the debounce thread.
 struct DirState {
     filter: EventFilter,
@@ -239,8 +266,12 @@ impl DirState {
         self.stop.load(Ordering::SeqCst)
     }
 
-    /// Debounce loop: waits for a quiet period, then processes the batch.
-    fn run(&self, emit: impl Fn(&FsBatch)) {
+    /// Debounce loop: finishes any deferred startup watches, then waits for a
+    /// quiet period and processes each batch.
+    fn run(&self, deferred: Vec<(PathBuf, bool)>, emit: impl Fn(&FsBatch)) {
+        if !deferred.is_empty() {
+            self.watch_stack(deferred, false, &mut Vec::new(), None);
+        }
         loop {
             let events = {
                 let mut q = self.queue.lock();
@@ -298,6 +329,7 @@ impl DirState {
         // during this batch would otherwise never be seen.
         for path in &batch.vcs {
             if !self.watched.lock().contains(path) && path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                self.filter.gitignore.invalidate_tree(path);
                 self.watch_tree(path, false, &mut discovered);
             }
         }
@@ -349,11 +381,33 @@ impl DirState {
     /// files and directories found inside (created before the watch was in
     /// place) are appended to `found`.
     fn watch_tree(&self, dir: &Path, report: bool, found: &mut Vec<PathBuf>) {
-        let mut stack = vec![dir.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            if self.stopped() || !self.filter.should_watch_dir(&dir) || !self.add_watch(&dir) {
+        self.watch_stack(vec![(dir.to_path_buf(), false)], report, found, None);
+    }
+
+    /// Watches up to `budget` directories synchronously and returns any
+    /// remaining `(dir, parent_verified)` entries for background registration.
+    fn watch_tree_bounded(&self, dir: &Path, budget: usize) -> Vec<(PathBuf, bool)> {
+        self.watch_stack(vec![(dir.to_path_buf(), false)], false, &mut Vec::new(), Some(budget))
+    }
+
+    fn watch_stack(
+        &self,
+        mut stack: Vec<(PathBuf, bool)>,
+        report: bool,
+        found: &mut Vec<PathBuf>,
+        budget: Option<usize>,
+    ) -> Vec<(PathBuf, bool)> {
+        let mut watched_now = 0;
+        while let Some((dir, parent_ok)) = stack.pop() {
+            if self.stopped() {
+                break;
+            }
+            let should_watch =
+                if parent_ok { self.filter.should_watch_child_dir(&dir) } else { self.filter.should_watch_dir(&dir) };
+            if !should_watch || !self.add_watch(&dir) {
                 continue;
             }
+            watched_now += 1;
             let Ok(entries) = std::fs::read_dir(&dir) else { continue };
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -362,10 +416,14 @@ impl DirState {
                     found.push(path.clone());
                 }
                 if is_dir {
-                    stack.push(path);
+                    stack.push((path, true));
                 }
             }
+            if budget.is_some_and(|max| watched_now >= max) {
+                break;
+            }
         }
+        stack
     }
 
     fn unwatch_tree(&self, dir: &Path) {
@@ -469,6 +527,15 @@ impl EventFilter {
     /// and `worktrees/` (HEAD, index, refs and worktree metadata are what VCS
     /// refresh needs).
     pub fn should_watch_dir(&self, dir: &Path) -> bool {
+        self.should_watch_dir_inner(dir, false)
+    }
+
+    /// Fast path when `dir`'s parent directory is already known to be watchable.
+    fn should_watch_child_dir(&self, dir: &Path) -> bool {
+        self.should_watch_dir_inner(dir, true)
+    }
+
+    fn should_watch_dir_inner(&self, dir: &Path, parent_ok: bool) -> bool {
         let Ok(rel) = dir.strip_prefix(&self.root) else { return false };
         if rel.as_os_str().is_empty() {
             return true;
@@ -484,7 +551,11 @@ impl EventFilter {
                 _ => false,
             };
         }
-        !self.excludes.read().is_excluded(rel) && !self.gitignore.is_ignored(dir, true)
+        if parent_ok {
+            !self.excludes.read().is_match(rel) && !self.gitignore.is_ignored_self(dir, true)
+        } else {
+            !self.excludes.read().is_excluded(rel) && !self.gitignore.is_ignored(dir, true)
+        }
     }
 
     /// Whether a path found by scanning a new directory would be reported.
@@ -1076,6 +1147,42 @@ mod tests {
     }
 
     #[test]
+    fn per_directory_mode_watches_the_rest_of_a_large_tree_after_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let dirs = SYNC_WATCH_BUDGET + 40;
+        for i in 0..dirs {
+            std::fs::create_dir_all(root.join(format!("d{i:03}"))).unwrap();
+        }
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        let sink: SharedSink = Arc::new(|_e: IdeEvent| {});
+        let watcher = {
+            let batches = batches.clone();
+            Watcher::start_with(
+                &root,
+                vec!["**/node_modules".into()],
+                sink,
+                Box::new(move |b| batches.lock().push(b.clone())),
+                WatchMode::PerDirectory,
+            )
+            .unwrap()
+        };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while watcher.watch_count() < dirs + 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // root and every d*, but not node_modules
+        assert_eq!(watcher.watch_count(), dirs + 1);
+        std::thread::sleep(Duration::from_millis(200));
+        for i in [0, dirs - 1] {
+            let file = root.join(format!("d{i:03}/f.rs"));
+            std::fs::write(&file, "x").unwrap();
+            assert!(wait_for(&batches, |b| all_paths(b).contains(&file)), "{file:?}");
+        }
+    }
+
+    #[test]
     fn per_directory_mode_follows_worktree_registrations() {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
@@ -1188,5 +1295,29 @@ mod tests {
         // Later writes inside a new folder are seen through its own poll.
         std::fs::write(root.join("src/new/inner/h.rs"), "x").unwrap();
         assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("src/new/inner/h.rs"))));
+    }
+
+    #[test]
+    fn ordinary_watcher_errors_keep_the_bare_message() {
+        let other = notify::Error::io(std::io::Error::other("no space left"));
+        assert_eq!(
+            watcher_error("cannot start file watcher", other).message,
+            "cannot start file watcher: no space left"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inotify_limits_get_a_sysctl_hint() {
+        let emfile = notify::Error::io(std::io::Error::from_raw_os_error(24));
+        let msg = watcher_error("cannot start file watcher", emfile).message;
+        assert!(msg.contains("os error 24"), "{msg}");
+        assert!(msg.contains("max_user_instances"), "{msg}");
+        let enospc = notify::Error::io(std::io::Error::from_raw_os_error(28));
+        assert!(watcher_error("cannot watch /proj", enospc).message.contains("max_user_watches"));
+        let max_files = notify::Error::new(ErrorKind::MaxFilesWatch);
+        assert!(watcher_error("cannot watch /proj", max_files).message.contains("max_user_watches"));
+        let other = notify::Error::io(std::io::Error::from_raw_os_error(13));
+        assert!(!watcher_error("cannot start file watcher", other).message.contains("inotify"));
     }
 }

@@ -301,11 +301,41 @@
   opacity: 0;
 }
 .markdown :global(pre:hover) .codeCopy,
+.markdown :global([data-mermaid]:hover) .codeCopy,
 .codeCopy:focus-visible {
   opacity: 1;
 }
 .codeCopy:hover {
   background: var(--bg-hover);
+}
+/* Mermaid diagrams: the source stays until the diagram is drawn (and next to an
+   error), and the Copy button lives on the block — the drawn diagram hides the
+   code block that would otherwise carry it. */
+.markdown :global([data-mermaid]) {
+  position: relative;
+  margin: 0 0 8px;
+}
+.markdown :global([data-mermaid] > pre) {
+  margin: 0;
+}
+.markdown :global([data-mermaid-state="ok"] > pre) {
+  display: none;
+}
+.markdown :global(.mermaid-output) {
+  overflow: hidden;
+  text-align: center;
+}
+.markdown :global([data-mermaid-state="error"] > .mermaid-output) {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  text-align: left;
+  white-space: pre-wrap;
 }
 .fileLink {
   color: var(--link);
@@ -534,6 +564,31 @@
   flex-direction: column;
   gap: 6px;
   padding: 6px 12px 12px;
+}
+
+.background {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backgroundTask {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-row);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.backgroundText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .queue {
@@ -939,4 +994,154 @@
 .changesToggle:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* An open AskUserQuestion: every question with its options, answered at once above the composer. */
+.questionCard {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 0 12px 8px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  container: question-card / inline-size;
+}
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.questionText {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.questionTag {
+  margin: 0 8px 0 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.questionLabel .questionTag {
+  margin: 0 0 0 8px;
+}
+.question .questionOption {
+  display: flex;
+  align-items: flex-start;
+  padding: 4px 6px;
+  border-radius: var(--radius-row);
+}
+.question .questionOption:hover {
+  background: var(--bg-hover);
+}
+.questionOption > :first-child {
+  margin-top: 1px;
+}
+.questionOption > :last-child {
+  flex: 1;
+}
+.questionChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.questionOptionText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.questionLabel {
+  flex: 1;
+  color: var(--fg);
+}
+.questionDescription {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.questionKey {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.questionOther {
+  margin: 2px 0 0 30px;
+}
+.questionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+@container question-card (min-width: 640px) {
+  .questionBodyWithPreview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+  .questionBodyWithPreview .questionPreview {
+    margin: 0;
+  }
+}
+.questionPreview {
+  display: grid;
+  min-width: 0;
+  margin: 0 0 0 30px;
+}
+.questionPreviewItem {
+  display: flex;
+  flex-direction: column;
+  grid-area: 1 / 1;
+  gap: 4px;
+  min-width: 0;
+  visibility: hidden;
+}
+.questionPreviewActive {
+  visibility: visible;
+}
+.questionPreviewCaption {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.questionPreviewBody {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.questionPreviewEmpty {
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.questionActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

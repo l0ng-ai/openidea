@@ -13,16 +13,28 @@ import {
 } from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentChange, AgentEntry, AgentImage, AgentLimit, AgentRetry, AgentTask, AgentUsage } from "@/bindings";
+import type {
+  AgentChange,
+  AgentEntry,
+  AgentImage,
+  AgentLimit,
+  AgentQuestion,
+  AgentRetry,
+  AgentTask,
+  AgentUsage,
+} from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, relativeDir, useProject } from "@/platform/project";
 import { editorService, notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import {
   Button,
+  Checkbox,
   EmptyState,
   Icon,
   IconButton,
+  Input,
+  Radio,
   SearchField,
   Spinner,
   T,
@@ -33,6 +45,7 @@ import {
   selectableText,
   useSelectionBoundary,
   showContextMenu,
+  type IconName,
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
@@ -59,6 +72,7 @@ import {
 } from "./model";
 import {
   cancelTask,
+  stopBackgroundTask,
   loadEntries,
   markVisible,
   refreshChanges,
@@ -170,7 +184,10 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <T>Subagents take their instructions from the agent that started them.</T>
           </div>
         ) : (
-          <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
+          <>
+            <QuestionCard task={task} entries={entries ?? null} />
+            <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
+          </>
         )}
       </div>
       {changesOpen && (
@@ -447,6 +464,11 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
+  /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
+  const onDiagramDrawn = useCallback(() => {
+    const el = ref.current;
+    if (el && position.current.stick) el.scrollTop = el.scrollHeight;
+  }, []);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
@@ -508,6 +530,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
                 turn={turns?.get(start + i) ?? null}
                 turnCount={turns?.size ?? 0}
                 onOpenSubagent={onOpenSubagent}
+                onDiagramDrawn={onDiagramDrawn}
               />
             ))
         )}
@@ -739,6 +762,7 @@ const Entry = memo(function Entry({
   turn,
   turnCount,
   onOpenSubagent,
+  onDiagramDrawn,
 }: {
   task: AgentTask;
   entry: AgentEntry;
@@ -746,12 +770,13 @@ const Entry = memo(function Entry({
   turn: number | null;
   turnCount: number;
   onOpenSubagent: (id: string) => void;
+  onDiagramDrawn: () => void;
 }) {
   switch (entry.type) {
     case "user":
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
     case "agent":
-      return <Markdown text={entry.text} cwd={task.cwd} />;
+      return <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />;
     case "thought":
       return (
         <div>
@@ -783,7 +808,14 @@ const Entry = memo(function Entry({
         </div>
       );
     case "subagent":
-      return <SubagentCard task={task} entry={entry} onOpen={() => onOpenSubagent(entry.id)} />;
+      return (
+        <SubagentCard
+          task={task}
+          entry={entry}
+          onOpen={() => onOpenSubagent(entry.id)}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      );
     case "message":
       return entry.incoming ? (
         <div className={styles.message}>
@@ -797,7 +829,7 @@ const Entry = memo(function Entry({
           <div className={styles.messageFrom}>
             <T>Report to the parent agent</T>
           </div>
-          <Markdown text={entry.text} cwd={task.cwd} />
+          <Markdown text={entry.text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
         </div>
       );
     case "permission":
@@ -1083,7 +1115,17 @@ function SubagentStatusIcon({ status }: { status: SubagentEntry["status"] }) {
 }
 
 /** A subagent in its parent's conversation: what it does, its latest step, what it was asked and answered. */
-function SubagentCard({ task, entry, onOpen }: { task: AgentTask; entry: SubagentEntry; onOpen: () => void }) {
+function SubagentCard({
+  task,
+  entry,
+  onOpen,
+  onDiagramDrawn,
+}: {
+  task: AgentTask;
+  entry: SubagentEntry;
+  onOpen: () => void;
+  onDiagramDrawn: () => void;
+}) {
   const tx = useTx();
   const working = subagentWorking(entry.status);
   const now = useNow(working ? 1000 : 60_000);
@@ -1148,7 +1190,7 @@ function SubagentCard({ task, entry, onOpen }: { task: AgentTask; entry: Subagen
             <T>Result</T>
           </summary>
           <div className={styles.subagentReply}>
-            <Markdown text={entry.reply} cwd={task.cwd} />
+            <Markdown text={entry.reply} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
           </div>
         </details>
       )}
@@ -1229,7 +1271,9 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEnt
           {shortTitle(task, entry.title)}
         </span>
         <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
-        {!entry.chosen && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
+        {!entry.chosen && !entry.questions?.length && (
+          <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
+        )}
       </div>
     </div>
   );
@@ -1238,13 +1282,248 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEnt
 /** The open permission request, as an editor notification banner above the conversation. */
 function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen);
-  if (!entry) return null;
+  if (!entry || entry.questions?.length) return null;
   return (
     <div className={styles.banner} role="alert" aria-label={entry.title}>
       <Icon name="warning" size={16} />
       <span className={styles.bannerText}>{shortTitle(task, entry.title)}</span>
       <PermissionAnswers task={task} entry={entry} className={styles.bannerActions} />
     </div>
+  );
+}
+
+interface QuestionAnswer {
+  question: AgentQuestion;
+  picked: string[];
+  /** The typed answer; `null` while "Other" isn't chosen. */
+  other: string | null;
+}
+
+const answerItems = ({ picked, other }: QuestionAnswer) => [...picked, ...(other?.trim() ? [other.trim()] : [])];
+
+const isAnswered = (answer: QuestionAnswer) => answerItems(answer).length > 0 && answer.other?.trim() !== "";
+
+const RECOMMENDED_SUFFIX = " (Recommended)";
+
+const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
+
+const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
+
+/** An open `AskUserQuestion` request, as a card above the composer that answers all its questions at once. */
+function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
+  const entry = entries?.find(
+    (candidate): candidate is PermissionEntry =>
+      candidate.type === "permission" && !candidate.chosen && !!candidate.questions?.length,
+  );
+  return entry?.questions ? (
+    <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} />
+  ) : null;
+}
+
+function QuestionForm({
+  task,
+  entry,
+  questions,
+}: {
+  task: AgentTask;
+  entry: PermissionEntry;
+  questions: AgentQuestion[];
+}) {
+  const [answers, setAnswers] = useState<QuestionAnswer[]>(() =>
+    questions.map((question) => ({ question, picked: [], other: null })),
+  );
+  const [focusedPosition, setFocusedPosition] = useState(0);
+  const [hovered, setHovered] = useState<{ position: number; label: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const complete = answers.every(isAnswered);
+  const send = (option: string) => {
+    setBusy(true);
+    void respond(task.id, entry.id, option).finally(() => setBusy(false));
+  };
+  const submit = () =>
+    send(JSON.stringify(Object.fromEntries(answers.map((answer) => [answer.question.question, answerItems(answer)]))));
+  const update = (previous: QuestionAnswer, next: QuestionAnswer) =>
+    setAnswers(answers.map((answer) => (answer === previous ? next : answer)));
+  const choose = (answer: QuestionAnswer, label: string, checked: boolean) =>
+    update(
+      answer,
+      answer.question.multiSelect
+        ? {
+            ...answer,
+            picked: checked ? [...answer.picked, label] : answer.picked.filter((picked) => picked !== label),
+          }
+        : { ...answer, picked: [label], other: null },
+    );
+  const chooseOther = (answer: QuestionAnswer, checked: boolean) =>
+    update(
+      answer,
+      answer.question.multiSelect ? { ...answer, other: checked ? "" : null } : { ...answer, picked: [], other: "" },
+    );
+  const chooseByNumber = (number: number) => {
+    const answer = answers[focusedPosition];
+    if (!answer) return;
+    const option = answer.question.options[number - 1];
+    if (option) choose(answer, option.label, !answer.picked.includes(option.label));
+    else if (number === answer.question.options.length + 1) chooseOther(answer, answer.other === null);
+  };
+  return (
+    <form
+      className={styles.questionCard}
+      aria-label={entry.title}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (complete) submit();
+      }}
+      onKeyDown={(event) => {
+        const typing = event.target instanceof HTMLInputElement && event.target.type === "text";
+        if (event.key === "Escape") send("reject");
+        else if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && /^[1-9]$/.test(event.key)) {
+          event.preventDefault();
+          chooseByNumber(Number(event.key));
+        }
+      }}
+    >
+      {answers.map((answer, position) => {
+        const { question } = answer;
+        const group = `question-${entry.id}-${position}`;
+        const hasPreviews = question.options.some((option) => option.preview);
+        const targetLabel =
+          (hovered?.position === position ? hovered.label : undefined) ??
+          answer.picked[0] ??
+          (answer.other !== null ? group : undefined);
+        const previewed =
+          targetLabel === undefined
+            ? question.options.find((option) => option.preview)
+            : question.options.find((option) => option.label === targetLabel);
+        const choices = [
+          ...question.options.map((option) => ({
+            key: option.label,
+            checked: answer.picked.includes(option.label),
+            onChange: (checked: boolean) => choose(answer, option.label, checked),
+            label: (
+              <span className={styles.questionOptionText}>
+                <span className={styles.questionLabel}>
+                  {plainLabel(option.label)}
+                  {isRecommended(option.label) && (
+                    <span className={styles.questionTag}>
+                      <T>Recommended</T>
+                    </span>
+                  )}
+                </span>
+                {option.description && <span className={styles.questionDescription}>{option.description}</span>}
+              </span>
+            ),
+          })),
+          {
+            key: group,
+            checked: answer.other !== null,
+            onChange: (checked: boolean) => chooseOther(answer, checked),
+            label: (
+              <span className={styles.questionLabel}>
+                <T>Other</T>
+              </span>
+            ),
+          },
+        ];
+        return (
+          <fieldset
+            key={group}
+            className={styles.question}
+            disabled={busy}
+            onFocus={() => setFocusedPosition(position)}
+          >
+            <legend className={styles.questionText}>
+              {question.header && <span className={styles.questionTag}>{question.header}</span>}
+              {question.question}
+            </legend>
+            <div className={clsx(styles.questionBody, hasPreviews && styles.questionBodyWithPreview)}>
+              <div className={styles.questionChoices}>
+                {choices.map((choice, index) => {
+                  const label = (
+                    <span className={styles.questionChoice}>
+                      {choice.label}
+                      <span className={styles.questionKey}>{index + 1}</span>
+                    </span>
+                  );
+                  return (
+                    <div
+                      key={choice.key}
+                      onMouseEnter={() => setHovered({ position, label: choice.key })}
+                      onMouseLeave={() => setHovered(null)}
+                    >
+                      {question.multiSelect ? (
+                        <Checkbox
+                          className={styles.questionOption}
+                          checked={choice.checked}
+                          label={label}
+                          onChange={choice.onChange}
+                        />
+                      ) : (
+                        <Radio
+                          className={styles.questionOption}
+                          name={group}
+                          checked={choice.checked}
+                          label={label}
+                          onChange={() => choice.onChange(true)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+                {answer.other !== null && (
+                  <Input
+                    autoFocus
+                    className={styles.questionOther}
+                    value={answer.other}
+                    placeholder="Type your answer"
+                    onChange={(event) => update(answer, { ...answer, other: event.target.value })}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape" && answer.other) {
+                        event.stopPropagation();
+                        update(answer, { ...answer, other: "" });
+                      }
+                    }}
+                  />
+                )}
+              </div>
+              {hasPreviews && (
+                <div className={styles.questionPreview}>
+                  {[...question.options, null].map((option) => {
+                    const active = option === (previewed ?? null);
+                    return (
+                      <div
+                        key={option?.label ?? group}
+                        className={clsx(styles.questionPreviewItem, active && styles.questionPreviewActive)}
+                        aria-hidden={!active}
+                      >
+                        <span className={styles.questionPreviewCaption}>
+                          {option ? plainLabel(option.label) : <T>Other</T>}
+                        </span>
+                        {option?.preview ? (
+                          <pre className={styles.questionPreviewBody}>{option.preview}</pre>
+                        ) : (
+                          <span className={styles.questionPreviewEmpty}>
+                            <T>No preview</T>
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </fieldset>
+        );
+      })}
+      <div className={styles.questionActions}>
+        <Button variant="ghost" disabled={busy} onClick={() => send("reject")}>
+          Skip
+        </Button>
+        <Button type="submit" variant="primary" disabled={busy || !complete}>
+          Submit
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -1293,6 +1572,7 @@ function SessionComposer({
         </div>
       )}
       <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
+      <BackgroundTasks task={task} />
       {task.queue.length > 0 && <Queue task={task} />}
       <Composer
         id={task.id}
@@ -1324,6 +1604,38 @@ function SessionComposer({
 }
 
 /** Messages waiting for the turn to end: send now, edit, or drop. */
+const BACKGROUND_ICON: Record<string, IconName> = { local_bash: "terminal", monitor: "eye" };
+
+/** What the agent runs in the background; its subagents show as chips of their own. */
+function BackgroundTasks({ task }: { task: AgentTask }) {
+  const tx = useTx();
+  const running = (task.background ?? []).filter((background) => background.kind !== "local_agent");
+  if (!running.length) return null;
+  const fail = (e: unknown) =>
+    notifications().notify({ level: "error", title: "Couldn't stop the background task", body: String(e) });
+  return (
+    <div className={styles.background} aria-label={tx("Running in the background")}>
+      {running.map((background) => (
+        <div key={background.id} className={styles.backgroundTask}>
+          <Icon name={BACKGROUND_ICON[background.kind] ?? "clock"} size={12} className={styles.muted} />
+          <span className={styles.backgroundText} title={background.description}>
+            {background.description || background.kind}
+          </span>
+          {background.startedMs != null && <Elapsed since={background.startedMs} />}
+          {task.capabilities?.backgroundTasks && (
+            <IconButton
+              icon="stop"
+              title="Stop"
+              size="small"
+              onClick={() => void stopBackgroundTask(task.id, background.id).catch(fail)}
+            />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Queue({ task }: { task: AgentTask }) {
   const fail = (e: unknown) =>
     notifications().notify({ level: "error", title: "Couldn't update the queue", body: String(e) });

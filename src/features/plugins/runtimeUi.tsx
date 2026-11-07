@@ -5,18 +5,21 @@
  * batches.
  */
 import { create } from "zustand";
-import type { EventKind, PluginEvent, StatusItem, WorkbenchEvent } from "@/bindings";
+import type { EventKind, PluginContextKey, PluginEvent, Prompt, StatusItem, WorkbenchEvent } from "@/bindings";
 import { onEditorEvent } from "@/editor/api";
 import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
+import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
-import { maybeEditorService, registerStatusItem } from "@/workbench/contributions";
+import { maybeEditorService, registerStatusItem, toolWindowService } from "@/workbench/contributions";
+import { pickItems, promptInput } from "@/workbench/inputDialogs";
+import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
-import { bumpView, deliverViewMessage } from "./views/viewStore";
+import { bumpView, deliverViewMessage, pluginToolWindowId } from "./views/viewStore";
 import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
@@ -122,6 +125,7 @@ function projectStatusItems(): () => void {
     useDeclaredStatusItems.subscribe((s, prev) => s.items !== prev.items && sync()),
   ];
   refreshStatusItems();
+  refreshContextKeys();
   return () => {
     unsubscribe.forEach((u) => u());
     for (const r of registered.values()) r.dispose();
@@ -139,6 +143,60 @@ function refreshStatusItems() {
     .statusItems()
     .then((items) => items.forEach((i) => setStatusItem(i.pluginId, i.id, i.item)))
     .catch(() => {});
+}
+
+function applyPluginContext(pluginId: string, key: string, value: string | null) {
+  const name = `plugin.${pluginId}.${key}`;
+  let parsed: ContextValue;
+  try {
+    parsed = value === null ? undefined : JSON.parse(value);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined) clearContext(name);
+  else setContext(name, parsed);
+}
+
+const appliedContextKeys = new Map<string, Set<string>>();
+let contextFetching = false;
+let contextDirty = false;
+
+function applyContextKeys(keys: PluginContextKey[]) {
+  const fresh = new Map<string, Set<string>>();
+  for (const k of keys) {
+    applyPluginContext(k.pluginId, k.key, k.value);
+    if (!fresh.has(k.pluginId)) fresh.set(k.pluginId, new Set());
+    fresh.get(k.pluginId)!.add(k.key);
+  }
+  for (const [id, applied] of appliedContextKeys) {
+    for (const key of applied) {
+      if (!fresh.get(id)?.has(key)) applyPluginContext(id, key, null);
+    }
+  }
+  appliedContextKeys.clear();
+  for (const [id, set] of fresh) appliedContextKeys.set(id, set);
+}
+
+/**
+ * Re-reads the effective context keys of every plugin from the backend (the event does
+ * not say whether a change was window- or global-scoped) and drops keys it no longer
+ * reports. One fetch at a time: changes that arrive meanwhile cost a single follow-up.
+ */
+function refreshContextKeys() {
+  if (contextFetching) {
+    contextDirty = true;
+    return;
+  }
+  contextFetching = true;
+  contextDirty = false;
+  pluginsBackend()
+    .contextKeys()
+    .then(applyContextKeys)
+    .catch(() => {})
+    .finally(() => {
+      contextFetching = false;
+      if (contextDirty) refreshContextKeys();
+    });
 }
 
 // --- tasks --------------------------------------------------------------------
@@ -236,9 +294,45 @@ function trackWorkbenchEvents(): () => void {
   };
 }
 
+const openPrompts = new Map<string, AbortController>();
+
+/** The user's answer in the shape `plugin_answer_prompt` takes: `null` when dismissed. */
+async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
+  switch (prompt.kind) {
+    case "quickPick":
+      return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal });
+    case "input": {
+      const text = await promptInput({
+        title: prompt.prompt,
+        initial: prompt.value ?? "",
+        validate: () => null,
+        keepWhitespace: true,
+        signal,
+      });
+      return text === null ? null : [text];
+    }
+    case "confirm":
+      return (await confirm({ title: prompt.title, message: prompt.message, ok: "OK", signal })) ? [] : null;
+  }
+}
+
+async function answerPrompt(promptId: string, prompt: Prompt) {
+  const controller = new AbortController();
+  openPrompts.set(promptId, controller);
+  const answer = await askUser(prompt, controller.signal);
+  openPrompts.delete(promptId);
+  if (controller.signal.aborted) return;
+  await pluginsBackend()
+    .answerPrompt(promptId, answer)
+    .catch(() => {});
+}
+
 /** Handles the runtime UI events; returns whether `e` was one. */
 export function handleRuntimeEvent(e: PluginEvent): boolean {
   switch (e.type) {
+    case "contextChanged":
+      refreshContextKeys();
+      return true;
     case "statusItemChanged":
       setStatusItem(e.pluginId, e.id, e.item);
       return true;
@@ -269,6 +363,16 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "openUrl":
       void openExternalUrl(e.url);
       return true;
+    case "promptRequested":
+      void answerPrompt(e.promptId, e.prompt);
+      return true;
+    case "promptClosed":
+      openPrompts.get(e.promptId)?.abort();
+      openPrompts.delete(e.promptId);
+      return true;
+    case "revealView":
+      toolWindowService().show(pluginToolWindowId(e.pluginId, e.view), true);
+      return true;
     default:
       return false;
   }
@@ -277,13 +381,15 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
 /**
  * The backend refuses the event kinds and status items until this window's
  * project is open and trusted (`authorize_command`), but startup asks before
- * that: ask again when it changes.
+ * that: ask again when it changes. Any new project object counts, even with the same
+ * root and trust: connecting another backend publishes one and changes where calls go.
  */
 function refreshOnProjectChange(): () => void {
   return useProject.subscribe((s, prev) => {
-    if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
+    if (s.project === prev.project) return;
     refreshEventKinds();
     refreshStatusItems();
+    refreshContextKeys();
   });
 }
 

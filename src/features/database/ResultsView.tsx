@@ -10,7 +10,7 @@ import type { DbPlanNode } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { EmptyState, Icon, IconButton, Select, Spinner, Tabs, Tree, showContextMenu, T } from "@/ui";
 import { ChartView } from "./ChartView";
-import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
 import { pageWindow } from "./resultView";
 import { analyze } from "./sql/analyze";
@@ -215,6 +215,7 @@ function Result({ tab }: { tab: ResultTab }) {
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            copyFormat={copyFormatOf(extractor)}
             searchOpen={searchOpen}
             onSearchOpenChange={setSearchOpen}
             firstRowNumber={(tab.page ?? 0) * (tab.pageSize ?? 0) + 1}
