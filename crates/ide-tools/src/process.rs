@@ -430,6 +430,10 @@ impl Http {
     }
 
     /// Downloads `url` to `dest`, reporting progress against `size` when known.
+    /// `-C -` resumes from the bytes `dest` already holds: a `--retry` inside
+    /// curl — and a fresh `download` call after a timed-out attempt — keeps the
+    /// part it has instead of starting over. A `dest` already the remote's size
+    /// is reported "fully downloaded" and left alone.
     pub fn download(
         &self,
         url: &str,
@@ -439,7 +443,7 @@ impl Http {
         emit: Emit,
     ) -> IdeResult<()> {
         let (mut cmd, token) = self.base(url, cancel)?;
-        cmd.arg("-o").arg(dest).arg(url).stdout(Stdio::null()).stderr(Stdio::piped());
+        cmd.args(["-C", "-", "-o"]).arg(dest).arg(url).stdout(Stdio::null()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
         send_auth(&mut child, token.as_deref())?;
         let mut stderr = child.stderr.take().expect("piped");
@@ -898,6 +902,18 @@ mod github_auth_tests {
             assert!(!error.contains("gho_fake_first"));
             let error = f.http.download(API, &dest, None, &CancellationToken::new(), &|_| {}).unwrap_err().to_string();
             assert!(!error.contains("gho_fake_first"));
+        }
+
+        #[test]
+        fn download_resumes_the_partial_file() {
+            let f = Fixture::new();
+            let dest = f.path("download");
+            f.curl(&format!("printf done > {}", quote(&dest)));
+            f.http.download("https://example.test/file", &dest, None, &CancellationToken::new(), &|_| {}).unwrap();
+            assert!(
+                fs::read_to_string(f.path("curl-args")).unwrap().contains("-C\n-\n"),
+                "curl resumes the partial file with `-C -`"
+            );
         }
 
         #[test]
