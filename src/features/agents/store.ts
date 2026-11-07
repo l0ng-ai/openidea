@@ -18,6 +18,7 @@ import { useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { tx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
 import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
@@ -615,7 +616,7 @@ async function stopForEdit(task: string) {
   if (!busy()) return;
   await cancelTask(task);
   await settled(task);
-  if (busy()) throw new Error("The agent is still stopping. Try again once it has stopped.");
+  if (busy()) throw new Error(tx("The agent is still stopping. Try again once it has stopped."));
 }
 
 /**

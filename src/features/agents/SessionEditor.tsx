@@ -35,6 +35,7 @@ import {
   Icon,
   IconButton,
   Input,
+  InlineTag,
   Radio,
   SearchField,
   Spinner,
@@ -49,7 +50,6 @@ import {
   type IconName,
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
-import { confirm } from "@/workbench/messages";
 import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
@@ -99,7 +99,6 @@ import {
   removeQueued,
   resendMessage,
   respond,
-  retractFrom,
   sendMessage,
   sendQueuedNow,
   setTaskConfig,
@@ -474,18 +473,22 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const positions = useAgents.getState().scrollPositions;
   const position = useRef(positions.get(key) ?? { top: 0, stick: true });
   const restored = useRef(false);
+  const previousLength = useRef(entries?.length ?? 0);
   /** Scrolled away from the end: offer one click back to the latest message. */
   const [away, setAway] = useState(() => positions.get(key)?.stick === false);
   // Opened at the end, the last entries come first and the earlier ones follow in batches:
   // reopening a long conversation paints at once. A kept offset needs them all.
   const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
-  const start = finding || !entries ? 0 : Math.max(0, entries.length - shown);
+  let start = finding || !entries ? 0 : Math.max(0, entries.length - shown);
+  // Keep a process run intact so prepending never replaces the anchored row.
+  while (entries && start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
+  const dragging = useRef(false);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
   const loadEarlier = useCallback(() => {
     const el = ref.current;
-    if (!el || start <= 0) return;
+    if (!el || start <= 0 || dragging.current || anchor.current) return;
     const first = el.firstElementChild;
     if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
     startTransition(() => setShown((n) => n + ENTRY_BATCH));
@@ -499,17 +502,35 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
       loadEarlier();
     }, 120);
   }, [loadEarlier]);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const down = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) return;
+      dragging.current = true;
       if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
-    },
-    [],
-  );
+    };
+    const up = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      if (ref.current && (position.current.stick || ref.current.scrollTop < 120)) loadWhenStill();
+    };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", up);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", up);
+      if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+    };
+  }, [loadWhenStill]);
   useEffect(() => {
     // Following the end, paint the rest in the background. A user who scrolled away
     // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
     // is not resized mid-drag.
-    if (start > 0 && position.current.stick) startTransition(() => setShown((n) => n + ENTRY_BATCH));
+    if (start > 0 && position.current.stick && !dragging.current)
+      startTransition(() => setShown((n) => n + ENTRY_BATCH));
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
@@ -518,6 +539,17 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
     const el = ref.current;
     if (el && position.current.stick) el.scrollTop = el.scrollHeight;
   }, []);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || entries === null || !visible) return;
+    const truncated = entries.length < previousLength.current;
+    previousLength.current = entries.length;
+    if ((truncated || entries.length === 0) && el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+      position.current = { top: el.scrollTop, stick: true };
+      positions.set(key, position.current);
+      setAway(false);
+    }
+  }, [entries, visible, key, positions]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
@@ -555,6 +587,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
     if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     else el.scrollTop = el.scrollHeight;
     setAway(false);
+    el.focus({ preventScroll: true });
   }, []);
   const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
@@ -598,7 +631,8 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           setAway(!position.current.stick);
           // Reached the top of what is painted: fetch the earlier entries, but only
           // once the drag has settled.
-          if (!position.current.stick && el.scrollTop < 120) loadWhenStill();
+          if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+          if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
         }}
         // Copy, plus Quote for a selection: replies to it in the composer.
         onContextMenu={(e) => {
@@ -649,7 +683,7 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           </div>
         )}
       </div>
-      {away && entries !== null && <JumpToLatest onJump={jumpToLatest} />}
+      {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
     </div>
   );
 }
@@ -664,10 +698,9 @@ function MessageText({ text }: { text: string }) {
         token.kind === "text" ? (
           <Fragment key={i}>{token.value}</Fragment>
         ) : (
-          <span key={i} className={clsx(styles.tag, token.kind === "command" ? styles.skillTag : styles.fileTag)}>
-            <Icon name={token.kind === "command" ? "run" : "file"} size={11} />
+          <InlineTag key={i} accent={token.kind === "command"}>
             {token.value}
-          </span>
+          </InlineTag>
         ),
       )}
     </>
@@ -697,21 +730,17 @@ function MessageTime({
 
 /** One click back to the stream's end. */
 function JumpToLatest({ onJump }: { onJump: () => void }) {
-  const tx = useTx();
   return (
-    <button
-      type="button"
+    <IconButton
       className={styles.jumpToLatest}
-      onClick={onJump}
-      title={tx("Jump to Latest")}
-      aria-label={tx("Jump to Latest")}
-    >
-      <Icon name="arrow-down" size={16} />
-    </button>
+      title="Jump to Latest"
+      icon="arrow-down"
+      action="agents.jumpToLatest"
+      actionArg={{ onJump }}
+    />
   );
 }
 
-/** Time since `since`, ticking every second. */
 /** The agent lost its API connection (or was refused) and retries on its own. */
 function Retrying({ retry }: { retry: AgentRetry }) {
   const tx = useTx();
@@ -1051,7 +1080,6 @@ function UserMessage({
   turn: number | null;
   turnCount: number;
 }) {
-  const tx = useTx();
   const [editing, setEditing] = useState(false);
   const failed = (title: string) => (e: unknown) => notifications().notify({ level: "error", title, body: String(e) });
   const fail = failed("Couldn't send the message");
@@ -1091,7 +1119,7 @@ function UserMessage({
         {files.length > 0 && (
           <div className={styles.attachments}>
             {files.map((a, i) => (
-              <span key={i} className={clsx(styles.attachment, styles.fileTag)}>
+              <span key={i} className={styles.attachment}>
                 <Icon name={fileIconName(a)} size={12} />
                 {a}
               </span>
@@ -1107,23 +1135,8 @@ function UserMessage({
             <IconButton
               icon="diff-revert"
               title="Retract Message"
-              onClick={() =>
-                void (async () => {
-                  if (turn === null) return;
-                  if (turn < turnCount - 1) {
-                    const ok = await confirm({
-                      title: "Retract Message",
-                      message: tx(
-                        "The messages after this one are replaced. Files the agent changed stay as they are.",
-                      ),
-                      ok: "Retract",
-                      icon: "warning",
-                    });
-                    if (!ok) return;
-                  }
-                  await retractFrom(task.id, turn, entry.text, images);
-                })().catch(fail)
-              }
+              action="agents.retractMessage"
+              actionArg={{ task: task.id, turn }}
             />
           )}
           {!archived && entry.text && entry.attachments.length === 0 && (
@@ -1400,7 +1413,7 @@ const ToolEntry = memo(function ToolEntry({
     );
   return (
     <div className={styles.process}>
-      <details className={styles.toolDetails}>
+      <details className={styles.toolDetails} open={liveTool(entry) || undefined}>
         <summary className={styles.tool}>{head}</summary>
         <pre className={styles.output}>{entry.output}</pre>
       </details>

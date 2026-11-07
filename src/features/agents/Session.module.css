@@ -149,6 +149,7 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   padding: calc(var(--space-3) * 2) var(--space-4);
   display: flex;
   flex-direction: column;
@@ -217,6 +218,8 @@
   margin-bottom: 3px;
 }
 .messageTime {
+  -webkit-user-select: none;
+  user-select: none;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   white-space: nowrap;
@@ -247,6 +250,8 @@
   align-items: center;
   gap: 8px;
   min-height: 24px;
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 /* The footer's icons stay visible: the time follows them, at the message's side. */
 .messageFooter .messageActions {
@@ -277,6 +282,8 @@
 .agentCard {
   box-sizing: border-box;
   width: fit-content;
+  min-width: 0;
+  overflow-wrap: anywhere;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-popup);
@@ -672,6 +679,9 @@
 .processRun[open] .processChevron {
   transform: rotate(90deg);
 }
+.processRun:not([open]) > .processBody {
+  display: none;
+}
 .processBody {
   display: flex;
   flex-direction: column;
@@ -933,34 +943,6 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-}
-
-/* File references and skills in a message, distinct from the prose around them. */
-.tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  margin: 0 2px;
-  padding: 0 5px;
-  border-radius: var(--radius-small);
-  font-family: var(--font-mono);
-  font-size: 0.92em;
-  line-height: 1.55;
-  vertical-align: baseline;
-  white-space: nowrap;
-}
-.fileTag {
-  color: var(--fg);
-  background: color-mix(in srgb, var(--fg) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
-}
-.skillTag {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
-}
-.tag > svg {
-  flex: none;
 }
 
 .changes {

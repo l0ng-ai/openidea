@@ -9,7 +9,9 @@ import { SessionEditor, conversationRows } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
+import { replyActions } from "./replyActions";
 import styles from "./Session.module.css";
+import tagStyles from "@/ui/InlineTag.module.css";
 
 const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
@@ -90,14 +92,17 @@ const tool = (id: string, overrides: Partial<Extract<AgentEntry, { type: "tool" 
   ...overrides,
 });
 
+let disposeActions: () => void;
 const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
 afterEach(() => {
+  disposeActions();
   vi.restoreAllMocks();
   if (scrollTopDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDescriptor);
   else Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
 });
 
 beforeEach(() => {
+  disposeActions = registerActions(replyActions);
   disconnect();
   localStorage.clear();
   backend.changes = [];
@@ -156,12 +161,67 @@ describe("message tags", () => {
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    expect(await screen.findByText("@src/a.ts")).toHaveClass(styles.fileTag!);
-    expect(screen.getByText("/triage")).toHaveClass(styles.skillTag!);
+    expect(await screen.findByText("@src/a.ts")).toHaveClass(tagStyles.tag!);
+    expect(screen.getByText("/triage")).toHaveClass(tagStyles.accent!);
   });
 });
 
 describe("scrolling", () => {
+  it("hides Jump to Latest and follows new replies after retracting the conversation", async () => {
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+    height = 400;
+    act(() => useAgents.setState({ entries: new Map([["A", []]]) }));
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+    height = 1400;
+    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "New reply" }]]]) }));
+    expect(el.scrollTop).toBe(1400);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+
+  it("defers prepending during a pointer drag and preserves the first row's viewport position", async () => {
+    const entries = Array.from({ length: 90 }, (_, i): AgentEntry => ({ type: "agent", text: `History ${i}` }));
+    useAgents.setState({ entries: new Map([["A", entries]]) });
+    // Mount hidden so the initial batch hasn't yet restored the bottom offset.
+    const view = render(
+      <EditorShownProvider value={false}>
+        <SessionEditor input={input("A")} />
+      </EditorShownProvider>,
+    );
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 3000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    // Give the conversation a new tail while the scrollbar is held.
+    fireEvent.pointerDown(el);
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [...entries, ...entries.map((e, i) => ({ ...e, text: `New ${i}` }))]]]),
+      }),
+    );
+    el.scrollTop = 20;
+    fireEvent.scroll(el);
+    const count = el.children.length;
+    const first = el.firstElementChild!;
+    const top = vi.spyOn(first, "getBoundingClientRect");
+    top.mockReturnValue({ top: 100 } as DOMRect);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    });
+    expect(el.children.length).toBe(count);
+    // Its old top is measured at release, then shifts down when rows are inserted.
+    top.mockReturnValueOnce({ top: 100 } as DOMRect).mockReturnValue({ top: 500 } as DOMRect);
+    fireEvent.pointerUp(window);
+    await waitFor(() => expect(el.children.length).toBeGreaterThan(count));
+    expect(el.scrollTop).toBe(420);
+    view.unmount();
+  });
+
   it("offers one click back to the latest message after scrolling up", async () => {
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Answer A")).toBeInTheDocument();
@@ -179,6 +239,23 @@ describe("scrolling", () => {
 });
 
 describe("tool calls", () => {
+  it.each(["pending", "running"] as const)(
+    "keeps %s tools outside folds with their output expanded",
+    async (status) => {
+      backend.entries.set("A", [
+        tool("done one"),
+        tool("done two"),
+        tool("live", { status, output: "Reading files…" }),
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      const output = await screen.findByText("Reading files…");
+      expect(output.closest("details")!.open).toBe(true);
+      expect(output.closest(`.${styles.processRun}`)).toBeNull();
+      expect(screen.getByText("2 tool calls").closest("details")!.open).toBe(false);
+    },
+  );
+
   it("folds consecutive finished tool calls into one collapsed row", async () => {
     const edit = (id: string) => tool(id, { kind: "edit", diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }] });
     backend.entries.set("A", [edit("one"), edit("two"), { type: "agent", text: "Answer A" }]);
