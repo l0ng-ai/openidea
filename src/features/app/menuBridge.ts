@@ -148,7 +148,8 @@ export function installMenuBridge(): () => void {
     pushEnablement(true);
   };
   // The menu bar is shared. A focused window re-pushes labels that can differ per window.
-  // An identical config does not replace the menu, so switching project tabs does not redraw it.
+  // The backend edits only submenus whose visible items changed, so switching project
+  // tabs does not redraw the macOS menu bar.
   window.addEventListener("focus", onFocus);
   const unsubs = [
     useI18n.subscribe((s, prev) => {
