@@ -461,7 +461,7 @@ impl PluginHost {
             if self.plugins.read().contains_key(&pending.id) {
                 continue;
             }
-            let dir = self.plugins_dir.join(pending.dir);
+            let dir = pending.package_dir(&self.plugins_dir);
             let mut manifest = placeholder_manifest(&dir);
             manifest.id = pending.id.clone();
             manifest.name = pending.name;
@@ -759,6 +759,9 @@ impl PluginHost {
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        if enabled {
+            self.check_uninstall_pending(id)?;
+        }
         {
             let mut state = self.state.lock();
             if enabled {
@@ -782,6 +785,7 @@ impl PluginHost {
     pub fn reload(&self, id: &str) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_uninstall_pending(id)?;
         let (dir, source, root) = (plugin.dir().to_path_buf(), plugin.source, plugin.dev_root.clone());
         self.unload(id);
         let new_id = self.load_dir(&dir, source, root);
@@ -843,6 +847,7 @@ impl PluginHost {
         let _guard = self.lifecycle.lock();
         let (pkg, set) = self.validate_package(src)?;
         let id = pkg.id().to_owned();
+        self.check_uninstall_pending(&id)?;
         if let Some(existing) = self.plugins.read().get(&id)
             && existing.source != PluginSource::Installed
         {
@@ -1047,6 +1052,13 @@ impl PluginHost {
             .map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))
     }
 
+    fn check_uninstall_pending(&self, id: &str) -> IdeResult<()> {
+        if install::uninstall_pending(&self.plugins_dir, id)? {
+            return Err(IdeError::unavailable(std::io::Error::from(std::io::ErrorKind::ResourceBusy).to_string()));
+        }
+        Ok(())
+    }
+
     pub fn uninstall(&self, id: &str) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
@@ -1065,20 +1077,20 @@ impl PluginHost {
             .flatten()
             .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
             .collect();
-        install::remember_uninstall(
-            &self.plugins_dir,
-            &install::PendingUninstall {
-                id: id.to_owned(),
-                name: plugin.manifest().name.clone(),
-                version: plugin.manifest().version.clone(),
-                dir: plugin
-                    .dir()
-                    .strip_prefix(&self.plugins_dir)
-                    .map_err(|e| IdeError::internal(e.to_string()))?
-                    .to_path_buf(),
-                secrets: secrets.clone(),
-            },
-        )?;
+        // A broken manifest has no trusted identity to journal; keep its existing removal path.
+        if !plugin.invalid {
+            install::remember_uninstall(
+                &self.plugins_dir,
+                &install::PendingUninstall {
+                    id: id.to_owned(),
+                    name: plugin.manifest().name.clone(),
+                    version: plugin.manifest().version.clone(),
+                    flat: plugin.dir() == self.plugins_dir.join(id),
+                    secrets: secrets.clone(),
+                },
+                plugin.dir(),
+            )?;
+        }
         // Retain registration for retry, but prevent concurrent on-demand activation.
         {
             let _runtime = plugin.runtime.lock();
@@ -2022,6 +2034,11 @@ impl PluginHost {
     /// Validates, checks grants and commits the contributions; activates code
     /// whose activation event already fired.
     fn start(&self, plugin: &Arc<LoadedPlugin>) {
+        if plugin.source == PluginSource::Installed
+            && let Err(e) = self.check_uninstall_pending(plugin.id())
+        {
+            return self.set_failed(plugin, e.message);
+        }
         self.registry.dispose_plugin(plugin.id());
         self.clear_provider_diagnostics(plugin.id());
         if plugin.source == PluginSource::Installed

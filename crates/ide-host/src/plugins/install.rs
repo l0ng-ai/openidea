@@ -29,28 +29,26 @@ pub(super) struct PendingUninstall {
     pub id: String,
     pub name: String,
     pub version: String,
-    pub dir: PathBuf,
+    pub flat: bool,
     pub secrets: Vec<String>,
 }
 
 impl PendingUninstall {
-    fn validate(&self, root: &Path) -> io::Result<()> {
-        use std::path::Component;
-        let normal = |path: &Path| {
-            path.components()
-                .all(|part| matches!(part, Component::Normal(name) if !name.to_string_lossy().starts_with('.')))
-        };
+    fn validate(&self) -> io::Result<()> {
         if self.id.is_empty()
+            || self.id.starts_with('.')
             || Path::new(&self.id).components().count() != 1
-            || !normal(Path::new(&self.id))
-            || !(1..=2).contains(&self.dir.components().count())
-            || !normal(&self.dir)
-            || (self.dir.components().next().unwrap().as_os_str() != self.id.as_str()
-                && super::placeholder_manifest(&root.join(&self.dir)).id != self.id)
+            || !matches!(Path::new(&self.id).components().next(), Some(std::path::Component::Normal(_)))
         {
-            return Err(io::Error::other("invalid pending plugin uninstall"));
+            return Err(io::ErrorKind::InvalidData.into());
         }
+        version_dir(&self.version)?;
         Ok(())
+    }
+
+    pub(super) fn package_dir(&self, root: &Path) -> PathBuf {
+        let dir = root.join(&self.id);
+        if self.flat { dir } else { dir.join(&self.version) }
     }
 }
 
@@ -58,9 +56,12 @@ fn uninstall_file(root: &Path, id: &str) -> PathBuf {
     root.join(".uninstall").join(format!("{id}.json"))
 }
 
-pub(super) fn remember_uninstall(root: &Path, pending: &PendingUninstall) -> io::Result<()> {
+pub(super) fn remember_uninstall(root: &Path, pending: &PendingUninstall, dir: &Path) -> io::Result<()> {
     use std::io::Write;
-    pending.validate(root)?;
+    pending.validate()?;
+    if pending.package_dir(root) != dir {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
     let file = uninstall_file(root, &pending.id);
     std::fs::create_dir_all(file.parent().unwrap())?;
     let tmp = file.with_extension("tmp");
@@ -82,9 +83,9 @@ pub(super) fn pending_uninstalls(root: &Path) -> Vec<PendingUninstall> {
             }
             let read = || -> io::Result<PendingUninstall> {
                 let pending: PendingUninstall = serde_json::from_slice(&std::fs::read(&path)?)?;
-                pending.validate(root)?;
+                pending.validate()?;
                 if path != uninstall_file(root, &pending.id) {
-                    return Err(io::Error::other("pending uninstall id does not match its file"));
+                    return Err(io::Error::from(io::ErrorKind::InvalidData));
                 }
                 Ok(pending)
             };
@@ -97,6 +98,10 @@ pub(super) fn pending_uninstalls(root: &Path) -> Vec<PendingUninstall> {
             }
         })
         .collect()
+}
+
+pub(super) fn uninstall_pending(root: &Path, id: &str) -> io::Result<bool> {
+    uninstall_file(root, id).try_exists()
 }
 
 pub(super) fn forget_uninstall(root: &Path, id: &str) -> io::Result<()> {
@@ -308,15 +313,23 @@ mod tests {
             id: "p".into(),
             name: "Plugin".into(),
             version: "1.0.0".into(),
-            dir: PathBuf::from("p/1.0.0"),
+            flat: false,
             secrets: vec!["key".into()],
         };
-        remember_uninstall(tmp.path(), &pending).unwrap();
+        remember_uninstall(tmp.path(), &pending, &tmp.path().join("p/1.0.0")).unwrap();
         assert_eq!(pending_uninstalls(tmp.path())[0].secrets, ["key"]);
-        for path in ["../outside", "/outside", ".data/p", "other/1.0.0", "p/1.0.0/nested"] {
-            pending.dir = path.into();
+        for (id, version) in [
+            ("../outside", "1"),
+            ("/outside", "1"),
+            (".data", "p"),
+            ("other", "1"),
+            ("p", "../outside"),
+            ("p", "1/nested"),
+        ] {
+            pending.id = id.into();
+            pending.version = version.into();
             std::fs::write(uninstall_file(tmp.path(), "p"), serde_json::to_vec(&pending).unwrap()).unwrap();
-            assert!(pending_uninstalls(tmp.path()).is_empty(), "{path}");
+            assert!(pending_uninstalls(tmp.path()).is_empty(), "{id}/{version}");
         }
         forget_uninstall(tmp.path(), "p").unwrap();
         assert!(pending_uninstalls(tmp.path()).is_empty());
