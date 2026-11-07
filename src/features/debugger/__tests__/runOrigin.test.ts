@@ -75,6 +75,35 @@ it("stops shared-process debugger roots without stopping their process until req
   expect(ipc.runStop).toHaveBeenCalledWith(7);
 });
 
+it("stops associated processes through Run before disconnecting the debugger", async () => {
+  const order: string[] = [];
+  const stop = vi.fn((_process: unknown) => {
+    order.push("run");
+  });
+  const dispose = registerActions([
+    {
+      id: "run.stopProcess",
+      title: "Stop",
+      run: ({ arg }) => {
+        stop(arg);
+      },
+    },
+  ]);
+  ipc.debugStop.mockImplementationOnce(async () => {
+    order.push("debug");
+    return { status: "ok", data: null };
+  });
+  try {
+    adoptSession(1, { runConfig: config, process: 7 });
+    await stopSession(1);
+    expect(stop).toHaveBeenCalledWith(7);
+    expect(ipc.runStop).not.toHaveBeenCalled();
+    expect(order).toEqual(["run", "debug"]);
+  } finally {
+    dispose();
+  }
+});
+
 it("pins Show in Debug to the configured session and clears summaries with the project", () => {
   adoptSession(1, { runConfig: config });
   adoptSession(2, { runConfig: { ...config, id: "other" } });
@@ -139,6 +168,20 @@ it("keeps the RunConfig through debug.startConfig and reruns through its debug p
     await rerunSession(42);
     expect(ipc.debugStop).toHaveBeenCalledWith(42);
     expect(restart).toHaveBeenCalledWith(config);
+  } finally {
+    dispose();
+    unregister();
+  }
+});
+
+it("reruns a debug service in place without showing the Debug tool window", async () => {
+  const dispose = registerDebugActions();
+  const restart = vi.fn();
+  const unregister = registerActions([{ id: "run.debugConfig", title: "Debug", run: ({ arg }) => restart(arg) }]);
+  try {
+    await executeAction("debug.startConfig", config);
+    await rerunSession(42, { show: false });
+    expect(restart).toHaveBeenCalledWith({ config, show: false });
   } finally {
     dispose();
     unregister();

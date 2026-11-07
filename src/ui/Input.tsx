@@ -14,7 +14,7 @@ import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
 import styles from "./Input.module.css";
 import { setContext } from "@/platform/context";
-import { useTx } from "@/platform/i18n";
+import { useGivenTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 
 export interface InputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "size"> {
@@ -38,7 +38,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   },
   ref,
 ) {
-  const tx = useTx();
+  const tx = useGivenTx();
   return (
     <input
       ref={ref}
@@ -125,7 +125,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
   },
   ref,
 ) {
-  const tx = useTx();
+  const tx = useGivenTx();
   const inner = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const setRef = (el: HTMLInputElement | HTMLTextAreaElement | null) => {
     inner.current = el;

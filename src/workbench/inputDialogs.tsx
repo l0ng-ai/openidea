@@ -9,8 +9,8 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import { t } from "@/platform/i18n";
-import { Checkbox, Dialog, Input, List, T } from "@/ui";
+import { t, tx, VerbatimTextContext } from "@/platform/i18n";
+import { Checkbox, Dialog, Given, Input, List, T } from "@/ui";
 import styles from "./inputDialogs.module.css";
 
 export interface PromptInputOptions {
@@ -33,6 +33,8 @@ export interface PromptInputOptions {
   keepWhitespace?: boolean;
   /** A multi-line field: Enter adds a line, Cmd/Ctrl+Enter confirms. */
   multiline?: boolean;
+  /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
+  verbatim?: boolean;
 }
 
 export interface ChooseItemOptions {
@@ -48,6 +50,8 @@ export interface PickItemsOptions {
   multiple: boolean;
   /** Closes the dialog as cancelled when aborted. */
   signal?: AbortSignal;
+  /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
+  verbatim?: boolean;
 }
 
 type Request =
@@ -97,11 +101,15 @@ export function InputDialogsHost() {
     <>
       {stack.map((r) =>
         r.kind === "prompt" ? (
-          <PromptDialog key={r.id} options={r.options} done={r.resolve} />
+          <VerbatimTextContext.Provider key={r.id} value={!!r.options.verbatim}>
+            <PromptDialog options={r.options} done={r.resolve} />
+          </VerbatimTextContext.Provider>
         ) : r.kind === "choose" ? (
           <ChooseDialog key={r.id} options={r.options} done={r.resolve} />
         ) : (
-          <PickDialog key={r.id} options={r.options} done={r.resolve} />
+          <VerbatimTextContext.Provider key={r.id} value={!!r.options.verbatim}>
+            <PickDialog options={r.options} done={r.resolve} />
+          </VerbatimTextContext.Provider>
         ),
       )}
     </>
@@ -153,7 +161,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
       width={420}
       buttons={[
         {
-          label: options.okLabel ?? "OK",
+          label: options.okLabel ?? tx("OK"),
           role: "default",
           disabled: !!localError || pending,
           onClick: () => void submit(),
@@ -170,7 +178,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
       >
         {options.label && (
           <label className={styles.label}>
-            <T>{options.label}</T>
+            <Given>{options.label}</Given>
           </label>
         )}
         {options.multiline ? (
@@ -280,7 +288,7 @@ function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: st
       width={420}
       buttons={[
         {
-          label: "OK",
+          label: tx("OK"),
           role: "default",
           disabled: options.multiple ? false : activeKey === undefined,
           onClick: confirm,

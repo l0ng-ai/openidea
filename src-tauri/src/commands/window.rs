@@ -193,6 +193,20 @@ pub fn window_open_projects(
         .collect())
 }
 
+/// Whether this window fills the screen: in native full screen, or (macOS) shown in its window
+/// group's full-screen Space.
+#[tauri::command]
+#[specta::specta]
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        crate::window_groups::in_fullscreen(window.app_handle(), &window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.is_fullscreen().unwrap_or(false)
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseContext {
@@ -229,9 +243,9 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text and rebuilds it when they changed.
-/// Focusing another project window re-pushes the same shared menu; an identical
-/// config must not call `set_menu`, which redraws the macOS menu bar.
+/// Sets the menu's labels / shortcut text and updates the menu when the visible
+/// items changed. Shortcuts for actions that are not on the menu must not call
+/// `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
@@ -245,7 +259,8 @@ pub fn menu_configure(
     }
 }
 
-/// Rebuilds the menu (e.g. after the recent-projects list changed).
+/// Updates the menu after the recent-projects list changed. Only the Open Recent
+/// submenu is rewritten when the rest of the menu is unchanged.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_refresh(app: AppHandle, menu_state: State<'_, MenuState>, state: State<'_, AppState>) {
