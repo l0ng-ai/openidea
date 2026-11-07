@@ -1038,11 +1038,13 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        self.execute_from(id, statement, 0, max_rows, cancel).await
+        self.execute_from(id, statement, 0, max_rows, cancel, None).await
     }
 
     /// [`execute`](Self::execute), reading past the first `skip` rows without keeping
     /// them: a later page of a result, where only that page is decoded and returned.
+    /// `schema` is a query console's active context: the connection that runs the
+    /// statement is put in it first, so unqualified names resolve there.
     pub async fn execute_from(
         &self,
         id: &str,
@@ -1050,8 +1052,9 @@ impl DbManager {
         skip: usize,
         max_rows: usize,
         cancel: &CancellationToken,
+        schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
-        let r = self.run(id, statement, skip, max_rows, cancel).await;
+        let r = self.run(id, statement, skip, max_rows, cancel, schema).await;
         let ran = match &r {
             Ok(_) => true,
             Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
@@ -1083,8 +1086,15 @@ impl DbManager {
             .map_err(|e| IdeError::internal(e.to_string()))?
     }
 
-    /// The execution plan of `statement` (explained, not run).
-    pub async fn explain(&self, id: &str, statement: &str, cancel: &CancellationToken) -> IdeResult<Vec<PlanNode>> {
+    /// The execution plan of `statement` (explained, not run), in the console's
+    /// active `schema` when it has one.
+    pub async fn explain(
+        &self,
+        id: &str,
+        statement: &str,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+    ) -> IdeResult<Vec<PlanNode>> {
         let driver = self.pool(id).await?.driver();
         if driver == DbDriver::Oracle {
             // EXPLAIN PLAN writes PLAN_TABLE; the plan is read (and cleaned up) separately.
@@ -1102,15 +1112,28 @@ impl DbManager {
                 0,
                 MAX_META_ROWS,
                 cancel,
+                schema,
             )
             .await?;
-            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel).await?;
+            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel, None).await?;
             let nodes = plan::parse(driver, &result);
-            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel).await;
+            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel, None).await;
             return nodes;
         }
-        let result = self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel).await?;
+        let result =
+            self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel, schema).await?;
         plan::parse(driver, &result)
+    }
+
+    /// Puts `conn` in `schema` (the console's active context) before its
+    /// statement runs on it. Auto-commit statements may land on any pool
+    /// connection, so the switch runs on the one acquired for this statement;
+    /// a manual-commit console re-asserts its schema on its session connection.
+    async fn apply_schema(pool: &Pool, conn: &mut Held, schema: Option<&str>) -> IdeResult<()> {
+        match schema.filter(|s| !s.is_empty()).and_then(|s| sql::use_schema(pool.driver(), s)) {
+            Some(sql) => conn.command(&sql).await,
+            None => Ok(()),
+        }
     }
 
     async fn run(
@@ -1120,11 +1143,25 @@ impl DbManager {
         skip: usize,
         max_rows: usize,
         cancel: &CancellationToken,
+        schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else {
-            return pool.execute_from(statement, skip, max_rows, cancel).await;
+            if schema.is_none() {
+                return pool.execute_from(statement, skip, max_rows, cancel).await;
+            }
+            // Like `Pool::execute_from`, with the schema applied to the connection first.
+            let mut conn = Held::acquire(&pool).await?;
+            let r = match Self::apply_schema(&pool, &mut conn, schema).await {
+                Ok(()) => conn.execute_from(&pool, statement, skip, max_rows, cancel).await,
+                Err(e) => Err(e),
+            };
+            if cancel.is_cancelled() {
+                conn.discard().await;
+                return Err(IdeError::cancelled());
+            }
+            return r;
         };
         if pool.driver() == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
@@ -1136,6 +1173,7 @@ impl DbManager {
             *held = Some(conn);
         }
         let conn = held.as_mut().expect("opened above");
+        Self::apply_schema(&pool, conn, schema).await?;
         let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             // The server rolls the transaction back with the connection.
