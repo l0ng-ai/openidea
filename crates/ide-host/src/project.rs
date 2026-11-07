@@ -308,6 +308,9 @@ impl Host {
         // Shared handle: `unwatched_reason` is a live query on the watcher,
         // filled after `start` returns so the on-change callback can reach it.
         let watcher_weak = Arc::new(std::sync::OnceLock::<std::sync::Weak<Watcher>>::new());
+        // One-shot latch for the post-start watch-limit warning (#1915): the
+        // synchronous startup walk and a later batch can both observe it.
+        let notify_watch_exhausted = Arc::new(AtomicBool::new(false));
         let watcher = {
             let kotlin_bridge = kotlin_bridge.clone();
             let phpstan = phpstan.clone();
@@ -325,8 +328,7 @@ impl Host {
             let lsp = lsp.clone();
             let trusted = trusted.clone();
             let build_cache = build_cache.clone();
-            // One-shot latch for the post-start watch-limit warning (#1915).
-            let notify_watch_exhausted = Arc::new(AtomicBool::new(false));
+            let notify_watch_exhausted = notify_watch_exhausted.clone();
             let watcher_weak = watcher_weak.clone();
             Watcher::start(
                 &root.clone(),
@@ -450,6 +452,7 @@ impl Host {
                 title: "External file changes sync may be slow".into(),
                 body: Some(reason),
             });
+            notify_watch_exhausted.store(true, Ordering::Relaxed);
         }
 
         // Scratch files live outside the project; watch them too so the
