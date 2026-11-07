@@ -922,26 +922,7 @@ impl diagnostics::Host for StoreData {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
         }
-        let source = self.plugin_id.clone();
-        let items = items
-            .into_iter()
-            .take(MAX_DIAGNOSTICS)
-            .map(|d| ide_core::Diagnostic {
-                range: ide_core::Range::new(pos(d.range.start), pos(d.range.end)),
-                severity: match d.severity {
-                    diagnostics::Severity::Error => ide_core::Severity::Error,
-                    diagnostics::Severity::Warning => ide_core::Severity::Warning,
-                    diagnostics::Severity::Info => ide_core::Severity::Info,
-                    diagnostics::Severity::Hint => ide_core::Severity::Hint,
-                },
-                message: clip(d.message, 4096),
-                source: Some(d.source.map_or_else(|| source.clone(), |s| clip(s, 128))),
-                code: d.code.map(|c| clip(c, 128)),
-                unnecessary: d.tags.iter().any(|t| t == "unnecessary"),
-                deprecated: d.tags.iter().any(|t| t == "deprecated"),
-                server: Some(source.clone()),
-            })
-            .collect();
+        let items = diagnostics_from_wit(items, &self.plugin_id);
         Ok(self.host.publish_diagnostics(Path::new(&path), items).map_err(to_wit))
     }
 }
@@ -1396,4 +1377,36 @@ mod project_ui_tests {
         }
         assert!(validate_ui_path(&format!("/{}", "x".repeat(8192))).is_err());
     }
+}
+
+pub(crate) mod diagnostics_bindings {
+    wasmtime::component::bindgen!({
+        world: "editor-diagnostics", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+        },
+    });
+}
+
+pub(crate) fn diagnostics_from_wit(items: Vec<diagnostics::Diagnostic>, source: &str) -> Vec<ide_core::Diagnostic> {
+    items
+        .into_iter()
+        .take(MAX_DIAGNOSTICS)
+        .map(|d| ide_core::Diagnostic {
+            range: ide_core::Range::new(pos(d.range.start), pos(d.range.end)),
+            severity: match d.severity {
+                diagnostics::Severity::Error => ide_core::Severity::Error,
+                diagnostics::Severity::Warning => ide_core::Severity::Warning,
+                diagnostics::Severity::Info => ide_core::Severity::Info,
+                diagnostics::Severity::Hint => ide_core::Severity::Hint,
+            },
+            message: clip(d.message, 4096),
+            source: Some(d.source.map_or_else(|| source.to_owned(), |s| clip(s, 128))),
+            code: d.code.map(|c| clip(c, 128)),
+            unnecessary: d.tags.iter().any(|t| t == "unnecessary"),
+            deprecated: d.tags.iter().any(|t| t == "deprecated"),
+            server: Some(source.to_owned()),
+        })
+        .collect()
 }
