@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Tab **Memory** trong Debug tool window hiện bảng class của JVM đang debug (số instance, shallow bytes, chênh lệch so với lần lấy trước, lọc, sắp xếp) cho phiên Java (java-debug) và Kotlin do app khởi động.
+**Goal:** Tab **Memory** trong Debug tool window hiện bảng class của JVM đang debug (số instance, shallow bytes, chênh lệch so với lần lấy trước, lọc, sắp xếp) cho phiên Java (java-debug) và Kotlin, cả launch lẫn attach JDWP vào JVM trên máy này (Gradle, Maven, Tomcat, script).
 
 **Architecture:** Crate mới `ide-jvm-attach` nói chuyện với HotSpot Attach Listener qua socket UNIX `.java_pid<pid>` (giao thức v1, lệnh `jcmd GC.class_histogram -all`) và đọc phiên bản JDK từ file `release`. `ide-dap` giữ trạng thái theo phiên (pid JVM, đang dừng hay chạy, snapshot trước để tính chênh lệch) và quyết định có được gọi attach không. App tự thêm `-XX:+StartAttachListener` khi launch nên không bao giờ cần `SIGQUIT`. Frontend thêm tab Memory trong feature `debugger`.
 
@@ -18,7 +18,8 @@
 - Khi VM đang dừng: chỉ gọi attach nếu JDK major ≥ 17 (đo: 8 và 11 treo; 12–16 chưa đo nên coi như 11).
 - Timeout histogram 10 s; output tối đa 64 MiB; một yêu cầu histogram mỗi phiên tại một thời điểm.
 - Thêm `-XX:+StartAttachListener` **trước** tham số JVM của người dùng, và không thêm nếu tham số đã chứa `StartAttachListener` hoặc `DisableAttachMechanism`.
-- Chỉ phiên `request == "launch"` của adapter `java-debug` và `kotlin-debug-adapter` (`ide_dap::kotlin::ADAPTER`); chỉ unix (macOS, Linux). Windows và phiên attach: tab nêu lý do.
+- Adapter `java-debug` và `kotlin-debug-adapter` (`ide_dap::kotlin::ADAPTER`); dữ liệu chỉ trên unix (macOS, Linux). Phiên launch: pid từ app. Phiên attach (Task 10–13): pid tìm bằng cổng JDWP qua `agentProperties`, chỉ khi host là loopback. Tab hiện ở mọi phiên JVM; Windows, JVM ở máy khác, JVM không có listener: tab nêu lý do.
+- Mọi chỗ app chèn agent JDWP (`jdwpLaunch`, init script Gradle, Tomcat) chèn thêm `-XX:+StartAttachListener` cùng kênh, trừ khi giá trị hiện có của kênh đó hoặc VM options của người dùng đã chứa `StartAttachListener` hoặc `DisableAttachMechanism`.
 - IPC: `IdeResult<T>`, camelCase, đăng ký ở cả `crates/ide-host/src/ops/debug.rs::register` và `src-tauri/src/commands/{debug.rs,mod.rs}`; chạy `pnpm gen:bindings`, commit `src/bindings.ts`.
 - Mọi chuỗi hiển thị vào `src/platform/locales/text/en.json` và `zh.json` (bản dịch ở Task 7). CSS Modules + tokens, không hex. Không import feature khác.
 - Commit: kiểu `feat(debugger): …`, stage từng đường dẫn, không thêm trailer `Co-Authored-By`.
@@ -51,6 +52,22 @@ VM.version: 'OpenJDK 64-Bit Server VM version 17.0.21+9' / 'JDK 17.0.21';  JDK 8
 
 Kết luận: listener bật lúc khởi động là đủ, không cần `SIGQUIT`; cổng chặn theo JDK ≥ 17 khi đang dừng là bắt buộc.
 
+**S8 (bổ sung sau khi xác minh trong app, cho Task 10–13).** Giả định rủi ro nhất: "JVM do Gradle sinh ra khi debug có socket attach, và tìm được pid của nó". Probe: `scratchpad/m1-spike/gradle_spike.py` (init script `gradleRun.gradle` thêm `-XX:+StartAttachListener` cạnh agent JDWP, chạy `openideaRun` của `fixtures/kotlin-gradle`) và `agentprops_versions.py`. Output:
+
+```
+VM.system_properties  → "jdwp_lines": []                       (không có cổng: giả thuyết đầu bị bác)
+agentProperties       → "sun.jdwp.listenerAddress=dt_socket\\:64390"  (cổng in ra: 64390)
+"cli_children": [], "matched_ppid_comm": "87421 …/21.0.4-tem/bin/java", "matched_under_cli": false   (cha là Gradle daemon)
+"scan_ms": 51, "histogram_code": 0
+JDK 8:  16 ms ['0', 'sun.jdwp.listenerAddress=dt_socket\\:64468', …]
+11 {"printed": "64449", "code": 0, "prop": ["sun.jdwp.listenerAddress=dt_socket\\:64449"], "ms": 84}
+17 {"printed": "64451", "code": 0, "prop": ["sun.jdwp.listenerAddress=dt_socket\\:64451"], "ms": 98}
+21 {"printed": "64452", "code": 0, "prop": ["sun.jdwp.listenerAddress=dt_socket\\:64452"], "ms": 47}
+25 {"printed": "64453", "code": 0, "prop": ["sun.jdwp.listenerAddress=dt_socket\\:64453"], "ms": 92}
+```
+
+Kết luận: tìm theo cây tiến trình không được (daemon); quét socket của user và khớp `sun.jdwp.listenerAddress` với cổng thì được trên mọi JDK, khi JVM còn chờ debugger.
+
 ## Review Focus
 
 1. **VM dừng giữa chừng một yêu cầu trên JDK 8/11** (bấm Refresh lúc đang chạy rồi breakpoint trúng): yêu cầu phải kết thúc bằng lý do `timedOut` sau ≤ 10 s, phiên debug vẫn chạy, khoá yêu cầu được nhả, lần Refresh sau khi resume chạy được. Test ở Task 2 (`jcmd_times_out_when_listener_never_answers`) và Task 5 (`histogram_lock_released_after_timeout`).
@@ -58,6 +75,10 @@ Kết luận: listener bật lúc khởi động là đủ, không cần `SIGQUI
 3. **Socket không thuộc user hoặc có quyền group/other**: từ chối, không đọc dữ liệu. Test ở Task 2 (`rejects_socket_with_group_or_other_permissions`).
 4. **Chương trình chạy qua shell/terminal** (`runInTerminal`, `debuggee_pid` là shell): chọn đúng tiến trình con có listener. Test ở Task 5 (`picks_first_descendant_with_listener`).
 5. **Resume/step không kèm sự kiện `continued`** (java-debug thường không gửi): cờ "đang dừng" phải được xoá khi request resume/step thành công, nếu không người dùng JDK 11 thấy sai thông báo "resume trước". Test ở Task 4 (`resume_clears_suspended_without_continued_event`).
+6. **Một JVM khác của user đang dừng ở breakpoint trên JDK 11** (socket có nhưng không trả lời) khi quét tìm pid: attach không bị chậm quá ngân sách 2 s và vẫn tìm đúng JVM. Test ở Task 10 (`scan_skips_silent_listener_within_budget`).
+7. **Người dùng tắt attach** bằng `-XX:+DisableAttachMechanism` hay `-XX:-StartAttachListener` trong `JAVA_TOOL_OPTIONS`, `MAVEN_OPTS`, VM options của Tomcat hay jvmArgs Gradle: app không thêm cờ. Test ở Task 12 (`keeps_user_attach_opt_out`).
+8. **Attach vào JVM ở máy khác** (host không phải loopback): không quét, tab nêu lý do. Test ở Task 11 (`remote_host_is_not_scanned`).
+9. **Một lần chạy sinh hai JVM có JDWP** (Gradle `test` + `run`, `JAVA_TOOL_OPTIONS` cho script): mỗi phiên attach lấy đúng pid theo cổng của nó. Test ở Task 10 (`scan_matches_port_not_first_listener`).
 
 ---
 
@@ -477,3 +498,147 @@ it("filters and toggles changed only", ...)
 - [ ] **Step 3: Kiểm tra như CI** (từng lệnh một): `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo nextest run --workspace`; `pnpm typecheck`; `pnpm lint`; `pnpm format:check`; `pnpm knip`; `pnpm test`; `pnpm build`. Mọi lệnh → 0 lỗi.
 - [ ] **Step 4: Xác minh trong app** bằng skill `verify` (Tauri MCP): mở `fixtures/java-app`, đặt breakpoint ở dòng "Set a breakpoint here", Debug, mở tab Memory → thấy `com.example.orders.OrderBook` = 1; Resume rồi dừng lại → banner "Taken before the last stop"; Refresh → cột Diff có giá trị. Chụp ảnh tab Memory ở theme sáng và tối. Lặp với `fixtures/kotlin-gradle` (`com.example.library.Book` = 3).
 - [ ] **Step 5: Commit và PR**: `git add smoke/debug.test.ts && git commit -m "feat(debugger): smoke-test the JVM Memory view"`; mở PR theo `.github/pull_request_template.md`, mô tả ngắn, `Closes #N`, mục **How it was verified** gồm các lệnh ở Step 2–3 và ảnh chụp ở Step 4.
+
+> Ghi chú khi thực thi: Step 1–3 đã xong (commit `a1bea50f`; smoke kotlin chưa có bước memory vì fixture đi qua Gradle attach). Step 4–5 chuyển sang Task 14, sau khi Task 10–13 mở rộng sang phiên attach.
+
+---
+
+### Task 10: Tìm JVM theo cổng JDWP trong `ide-jvm-attach`
+
+**Files:**
+
+- Modify: `crates/ide-jvm-attach/src/socket.rs` (tách phần gửi thao tác: `jcmd` gửi thao tác `jcmd`, hàm mới gửi `agentProperties`), `crates/ide-jvm-attach/src/lib.rs`
+- Create: `crates/ide-jvm-attach/src/properties.rs`, `crates/ide-jvm-attach/src/discover.rs`
+- Test: các file trên + `crates/ide-jvm-attach/tests/real_jvm.rs`
+
+**Interfaces:**
+
+- Consumes: Task 2 (`temp_dir`, `has_listener`, kiểm tra quyền/peer uid, deadline).
+- Produces:
+
+```rust
+pub fn agent_properties(pid: u32, timeout: Duration) -> Result<HashMap<String, String>, AttachError> // thao tác attach v1 "agentProperties", không tham số
+pub fn parse_properties(text: &str) -> HashMap<String, String>   // định dạng java.util.Properties.store: '#' chú thích, key=value, \: \= \\ \t \n \r \f \uXXXX
+pub fn jdwp_port(props: &HashMap<String, String>) -> Option<u16> // "sun.jdwp.listenerAddress": số sau dấu ':' cuối ("dt_socket:64390", "127.0.0.1:5005")
+pub fn find_jvm_by_jdwp_port(port: u16, per_socket: Duration, budget: Duration) -> Option<u32> // unix; ngoài unix → None
+```
+
+Quét `temp_dir()` lấy tên `.java_pid<số>`, chỉ hỏi socket qua được các kiểm tra của `has_listener` (owner, quyền, không phải symlink, peer uid). Hỏi song song (mỗi socket một thread), trả pid đầu tiên có `jdwp_port == Some(port)`, không chờ quá `budget` kể cả khi có socket không trả lời. Để test được, tách bản nhận thư mục: `pub(crate) fn find_in(dir: &Path, port, per_socket, budget)`.
+
+- [ ] **Step 1: Viết test thất bại:**
+
+```rust
+#[test] fn parses_store_format_with_escapes()       // "#c\nsun.jdwp.listenerAddress=dt_socket\\:64390\nk\\=x=a\\\\b\nu=\\u0041" → listenerAddress "dt_socket:64390", "k=x" → "a\\b", "u" → "A"
+#[test] fn jdwp_port_forms()                         // dt_socket:64390 → 64390; 127.0.0.1:5005 → 5005; thiếu → None; "dt_socket:abc" → None; ":0" → None
+#[test] fn scan_matches_port_not_first_listener()    // hai server UNIX giả trong thư mục tạm: pid 111 trả cổng 5005, pid 222 trả cổng 6006; find_in(dir, 6006) → Some(222)
+#[test] fn scan_skips_silent_listener_within_budget() // pid 111 nhận kết nối nhưng không trả lời, pid 222 trả cổng 6006; find_in(dir, 6006, 1 s, 2 s) → Some(222) và mất < 2.5 s
+#[test] fn scan_ignores_non_matching_names()         // ".java_pidabc", ".java_pid" , "java_pid12" bị bỏ qua
+// real_jvm.rs (ignored, cần OPENIDEA_TEST_JAVA): java -XX:+StartAttachListener -agentlib:jdwp=…,suspend=y,address=127.0.0.1:0 -version; đọc cổng từ dòng "Listening for transport dt_socket at address: N"; find_jvm_by_jdwp_port(N, 1 s, 2 s) == Some(child.id())
+```
+
+- [ ] **Step 2: Chạy, xác nhận thất bại**: `cargo +1.96 test -p ide-jvm-attach` → FAIL.
+- [ ] **Step 3: Cài đặt** như Interfaces. Thread hỏi socket chạy độc lập; luồng chính nhận kết quả qua channel với `recv_timeout` theo deadline của `budget`, thread chậm tự kết thúc theo deadline của chính nó.
+- [ ] **Step 4: Chạy lại**: `cargo +1.96 test -p ide-jvm-attach`, và `OPENIDEA_TEST_JAVA=<jdk 21>/bin/java cargo +1.96 test -p ide-jvm-attach --test real_jvm -- --ignored` → PASS.
+- [ ] **Step 5: Commit**: `feat(debugger): find a local JVM by its JDWP port`
+
+---
+
+### Task 11: Phiên attach trong `ide-dap`
+
+**Files:**
+
+- Modify: `crates/ide-dap/src/lib.rs` (đường khởi động phiên trước khi gửi `attach`, ~dòng 886; `capabilities()`), `crates/ide-dap/src/jvm_memory.rs`, `crates/ide-dap/src/tests.rs`
+
+**Interfaces:**
+
+- Consumes: Task 10 (`find_jvm_by_jdwp_port`), Task 4–5 (`jvm_pid`, `take_snapshot`, `AttachProbe`).
+- Produces:
+
+```rust
+pub(crate) fn local_jdwp_port(arguments: &Value) -> Option<u16> // "hostName" là 127.0.0.1 / localhost / ::1 / [::1] (hoặc thiếu) và "port" là số hay chuỗi số khác 0
+JvmMemoryUnavailable::AttachedJvmNotFound   // thay NotLaunchedByIde; TS kind "attachedJvmNotFound"
+DebugCapabilities.jvm_memory = JVM_MEMORY_ADAPTERS.contains(adapter)   // mọi nền tảng, mọi request: tab luôn hiện, lý do nằm trong kết quả
+```
+
+- [ ] **Step 1: Viết test thất bại:**
+
+```rust
+#[test] fn local_jdwp_port_accepts_loopback_only()   // 127.0.0.1/localhost/::1 + 5005 → Some(5005); port "5005" → Some(5005); host "10.0.0.5" → None; port 0 → None
+#[tokio::test] async fn remote_host_is_not_scanned()  // harness attach java-debug hostName "10.0.0.5": jvm_pid vẫn 0; jvm_memory_classes → Unavailable(AttachedJvmNotFound)
+#[tokio::test] async fn attach_session_reports_capability() // capabilities().jvm_memory == true cho java-debug attach và kotlin attach; false cho adapter khác
+#[test] fn attach_with_pid_takes_snapshot()          // take_snapshot với probe giả, cây [pid] của phiên attach → Ready
+```
+
+- [ ] **Step 2: Chạy, xác nhận thất bại**: `cargo +1.96 test -p ide-dap jvm_memory` → FAIL.
+- [ ] **Step 3: Cài đặt.**
+  1. Trong đường khởi động, ngay trước khi gửi request `attach` (và **trước** khi Kotlin `StartupRelay` đổi `hostName`/`port`): nếu adapter thuộc `JVM_MEMORY_ADAPTERS`, `s.request == "attach"`, `cfg!(unix)` và `local_jdwp_port(&arguments)` có giá trị → `spawn_blocking(find_jvm_by_jdwp_port(port, 1 s, 2 s))`, lưu vào `jvm_pid` nếu tìm thấy. Lỗi hay không thấy: chỉ `tracing::debug!`, phiên vẫn chạy.
+  2. `jvm_memory_classes`: không phải unix → `UnsupportedPlatform`; phiên attach có `jvm_pid == 0` → `AttachedJvmNotFound`; phiên attach có pid → cây là `[jvm_pid]` (không đi qua `debuggee_pid`); phiên launch giữ nguyên Task 5.
+  3. Đổi tên biến thể enum, sửa test cũ dùng `NotLaunchedByIde`.
+- [ ] **Step 4: Chạy lại**: `cargo +1.96 test -p ide-dap` → PASS; `pnpm gen:bindings`.
+- [ ] **Step 5: Commit** (`crates/ide-dap`, `src/bindings.ts`): `feat(debugger): find the JVM of a local JDWP attach session`
+
+---
+
+### Task 12: Thêm listener vào mọi JVM debug qua JDWP agent
+
+**Files:**
+
+- Modify: `src/platform/javaLaunch.ts` (cạnh `JDWP_AGENT`), `src/features/run/javaDebug.ts` (`jdwpLaunch`, `debugWithAgent`), `src/features/run/gradleRun.gradle`, `crates/ide-run/src/tomcat.rs` (~dòng 513–518)
+- Test: `src/features/run/java.test.ts`, `src/features/run/gradleRun.test.ts` (hoặc file test đang kiểm `jdwpLaunch` cho từng kênh), test trong `tomcat.rs`
+
+**Interfaces:**
+
+- Produces: `export const ATTACH_LISTENER = "-XX:+StartAttachListener"` và `export function optsOutOfAttach(text: string): boolean` (`/StartAttachListener|DisableAttachMechanism/`) trong `src/platform/javaLaunch.ts`.
+
+Mỗi kênh `jdwpLaunch` đang dùng nhận `ATTACH_LISTENER` đặt **ngay trước** `JDWP_AGENT` trong cùng kênh, trừ khi `optsOutOfAttach` đúng với giá trị hiện có của kênh đó hoặc với VM options của cấu hình:
+
+| Kênh                                  | Hiện tại                                        | Thêm                                                                                                          |
+| ------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `java-file` có args                   | `[JDWP_AGENT, …args]`                           | `[ATTACH_LISTENER, JDWP_AGENT, …args]`                                                                        |
+| `java-file` không args                | `JDK_JAVA_OPTIONS`                              | `ATTACH_LISTENER JDWP_AGENT`                                                                                  |
+| Maven `spring-boot:run`               | `-Dspring-boot.run.jvmArguments`                | như trên                                                                                                      |
+| Maven test                            | `maven.surefire.debug` / `maven.failsafe.debug` | như trên                                                                                                      |
+| Maven trong JVM của Maven             | `MAVEN_OPTS`                                    | như trên                                                                                                      |
+| Gradle ủy quyền (`openidea.run.main`) | init script `gradleRun.gradle`                  | script thêm `-XX:+StartAttachListener` trước agent, trừ khi danh sách `openidea.run.jvmArgs` có cờ tắt        |
+| Gradle `--debug-jvm`                  | `--debug-jvm`                                   | `debugWithAgent` gọi `commands.runGradleJvmArgsScript([ATTACH_LISTENER])` và thêm `--init-script <đường dẫn>` |
+| Script khác                           | `JAVA_TOOL_OPTIONS`                             | như trên                                                                                                      |
+| Tomcat (`tomcat.rs`)                  | `CATALINA_OPTS` khi debug                       | thêm cờ trước agent, trừ khi `vmOptions` hoặc `CATALINA_OPTS` có cờ tắt                                       |
+
+- [ ] **Step 1: Viết test thất bại:** mỗi dòng trong bảng một test kiểm giá trị chính xác sau `jdwpLaunch` (cờ đứng trước agent); `keeps_user_attach_opt_out` (TS: `JAVA_TOOL_OPTIONS="-XX:+DisableAttachMechanism"`, `MAVEN_OPTS="-XX:-StartAttachListener"` → không thêm cờ, agent vẫn thêm); Rust Tomcat: debug → `CATALINA_OPTS` chứa `-XX:+StartAttachListener -agentlib:jdwp`; `vmOptions` có `-XX:+DisableAttachMechanism` → không chứa `StartAttachListener`; test init script Gradle trong `gradleRun.test.ts` nếu file đó kiểm nội dung script.
+- [ ] **Step 2: Chạy, xác nhận thất bại**: `pnpm vitest run src/features/run`, `cargo +1.96 test -p ide-run tomcat` → FAIL.
+- [ ] **Step 3: Cài đặt** như bảng.
+- [ ] **Step 4: Chạy lại** hai lệnh trên → PASS; `pnpm typecheck`.
+- [ ] **Step 5: Commit**: `feat(debugger): start the attach listener in JVMs debugged through a JDWP agent`
+
+---
+
+### Task 13: Tab Memory cho mọi phiên JVM và các chỉnh nhỏ
+
+**Files:**
+
+- Modify: `src/features/debugger/memory/MemoryView.tsx`, `src/features/debugger/memory/rows.ts`, `src/platform/locales/text/en.json`, `zh.json`
+- Test: `src/features/debugger/__tests__/memoryView.test.tsx`, `memoryRows.test.ts`, `toolWindow.test.tsx`
+
+**Interfaces:**
+
+- Consumes: Task 11 (`attachedJvmNotFound`, capability mới).
+
+- [ ] **Step 1: Viết test thất bại:**
+  - `attachedJvmNotFound` → "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically." (bỏ chuỗi "Memory view works for programs the IDE launches." khỏi hai catalog).
+  - Phiên attach java-debug có `jvmMemory: true` → tab Memory hiện.
+  - `formatDelta(4312) === "+4,312"`, `formatDelta(-1500) === "−1,500"` (cùng cách nhóm số với cột Count).
+  - Ở locale zh, tooltip nút Refresh, placeholder và `aria-label` ô lọc, nhãn "Changed only" đều là bản dịch (hiện truyền chuỗi literal không qua `tx`).
+- [ ] **Step 2: Chạy, xác nhận thất bại**: `pnpm vitest run src/features/debugger src/platform/locales` → FAIL.
+- [ ] **Step 3: Cài đặt.** Bản zh: "Memory 视图需要本机上以 -XX:+StartAttachListener 启动的 JVM。由 IDE 调试的程序会自动添加该选项。"
+- [ ] **Step 4: Chạy lại** lệnh trên, `pnpm typecheck`, `pnpm lint`, `pnpm knip` → PASS.
+- [ ] **Step 5: Commit**: `feat(debugger): show the Memory tab for every JVM debug session`
+
+---
+
+### Task 14: Smoke, kiểm tra toàn bộ, xác minh trong app và PR
+
+Như Task 9 Step 2–5, với các thay đổi:
+
+- Smoke kotlin bật lại bước memory (`com.example.library.Book` = 3); fixture này đi qua Gradle attach nên là kiểm thử đầu-cuối của Task 10–12.
+- Xác minh trong app (bridge `tauri-plugin-mcp-bridge` qua WebSocket, `scratchpad/m1-verify/bridge.mjs`): Java như Task 9; `fixtures/kotlin-gradle` có tab Memory, `Book` = 3, Diff sau Resume; phiên `fixtures/rust-app` không có tab; ảnh zh của tab.
+- Issue, push và PR chỉ khi chủ repo đồng ý.

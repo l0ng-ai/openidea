@@ -59,6 +59,7 @@ Sáu thí nghiệm của tôi và bảy bài nghiên cứu (agent Opus). Thư m�
 | F    | Adapter Kotlin                                                                  | fwcd bỏ hoang; kotlin-lsp có DAP                                                                       |
 
 | S7 | Attach lúc dừng ở breakpoint, listener bật bằng `-XX:+StartAttachListener`, không `SIGQUIT` | **[XM]** socket có ngay khi khởi động trên 8/11/17/21/25. Histogram `-all` khi dừng: 17 → 32 ms, 21 → 34 ms, 25 → 32 ms; **8 và 11 treo** (timeout 15 s, kể cả `VM.version`). Khi VM dừng lúc khởi động (`suspend=y`, chưa ai nối) `VM.version` trả lời trên mọi bản (5–16 ms). JDK 8 nhận `-all`. Mã: `scratchpad/m1-spike` |
+| S8 | JVM do Gradle/Maven sinh ra (debug qua JDWP attach): có socket không, và tìm pid bằng cách nào | **[XM]** Đặt `-XX:+StartAttachListener` cạnh agent JDWP trong init script Gradle: JVM của task có `.java_pid` ngay khi chờ debugger. JVM đó là con của **Gradle daemon**, không nằm dưới tiến trình `gradle` mà app chạy, nên không tìm được theo cây tiến trình. Lệnh attach `agentProperties` (không phải `VM.system_properties`) trả `sun.jdwp.listenerAddress=dt_socket\:<port>`, đúng cổng JDWP in ra, trên 8/11/17/21/25 (16–98 ms, VM đang `suspend=y` lúc khởi động). Quét mọi socket `.java_pid*` của user: 51 ms. Mã: `scratchpad/m1-spike/gradle_spike.py`, `agentprops_versions.py` |
 
 **Chưa kiểm chứng [SL]** (mỗi mục có thí nghiệm ở mục 15): kotlin-lsp DAP qua relay có chịu gói chèn; Windows; JDK 12–16 khi attach lúc dừng (coi như 11); heap thật 4–8 GB; ECJ trên JRE-only.
 
@@ -114,13 +115,18 @@ Theo `CLAUDE.md`, mỗi crate một domain; `src-tauri` chỉ có wrapper mỏng
 
 **Điểm sống còn: Attach Listener phải chạy trước khi VM dừng.** Khi JDWP đã suspend, thread `Signal Dispatcher` cũng bị suspend nên khởi tạo listener thất bại trên 11, 21, 25 **[XM]**. Cách xử lý:
 
-- JVM do app chạy (Kotlin `start_kotlin_debuggee`, Java qua `vmArgs` của java-debug): thêm `-XX:+StartAttachListener`.
-- JVM không do app chạy (attach, Gradle/Maven): gửi `VM.version` ngay khi phiên bắt đầu, lúc VM còn chạy.
+- JVM do app chạy, trực tiếp (Kotlin `start_kotlin_debuggee`, Java qua `vmArgs` của java-debug) hay qua build tool (Gradle, Maven, Tomcat, script qua `jdwpLaunch`): thêm `-XX:+StartAttachListener`.
+- JVM không do app chạy (người dùng tự attach): chỉ có dữ liệu nếu JVM đã chạy với cờ đó; nếu không, tab nêu cách bật.
 - Không bao giờ gửi `SIGQUIT` khi VM đang dừng.
 
 **Theo JDK khi VM đang dừng (listener đã sẵn):** 17, 21 và 25 chạy được **[XM, S7]**; 8 và 11 treo (listener tự chờ khi bị suspend) → chỉ lấy khi VM đang chạy, hoặc dự phòng JDWP (M2); 12–16 chưa kiểm **[SL]** → coi như 11. Phiên bản JDK đọc từ file `release` cạnh file thực thi của tiến trình (`/proc/<pid>/exe`, macOS `proc_pidpath`), không cần gửi lệnh attach.
 
-**Phạm vi M1 (quyết định khi lập plan):** chỉ phiên _launch_ do app khởi động (java-debug launch, Kotlin `start_kotlin_debuggee`), vì chỉ ở đó app biết pid và tự thêm `-XX:+StartAttachListener` (đặt trước tham số của người dùng để `-XX:-StartAttachListener` hay `-XX:+DisableAttachMechanism` của họ thắng). M1 **không bao giờ gửi `SIGQUIT`**: chỉ dùng socket đã có, và chỉ khi socket thuộc user hiện tại với quyền `0600` (như `VirtualMachineImpl` của JDK). Phiên attach, Gradle/Maven, Windows và dự phòng JDWP chuyển sang M2, cùng lúc có bundle và `JdwpLink`. Trước đó tab Memory nêu lý do không có dữ liệu.
+**Phạm vi M1 (quyết định khi lập plan, mở rộng sau khi xác minh trong app):** M1 **không bao giờ gửi `SIGQUIT`**: chỉ dùng socket đã có, và chỉ khi socket thuộc user hiện tại với quyền `0600` (như `VirtualMachineImpl` của JDK). Hai loại phiên có dữ liệu:
+
+- Phiên _launch_ do app khởi động (java-debug launch, Kotlin `start_kotlin_debuggee`): app biết pid và tự thêm `-XX:+StartAttachListener`, đặt trước tham số của người dùng để `-XX:-StartAttachListener` hay `-XX:+DisableAttachMechanism` của họ thắng.
+- Phiên _attach_ JDWP vào JVM trên máy này. Đây là đường debug của mọi cấu hình Gradle, Maven, Tomcat và script (`jdwpLaunch`), tức phần lớn dự án thật; người dùng tự attach cũng đi đường này. Ở mọi chỗ app chèn agent JDWP, nó chèn `-XX:+StartAttachListener` cùng kênh, trừ khi người dùng đã tự đặt hai cờ trên. Pid tìm theo S8: trước khi gửi `attach`, nếu host là loopback, `ide-dap` quét các socket `.java_pid*` của user và hỏi `agentProperties`, chọn JVM có `sun.jdwp.listenerAddress` trùng cổng (timeout mỗi socket 1 s, tổng ≤ 2 s, không làm hỏng phiên nếu thất bại). Lúc đó JVM còn chờ debugger hoặc đang chạy, nên mọi JDK đều trả lời.
+
+Tab Memory hiện ở mọi phiên của adapter JVM. Khi không có dữ liệu (Windows, JVM ở máy khác, JVM chạy ngoài app không có cờ), tab nêu lý do. Windows và dự phòng JDWP chuyển sang M2, cùng lúc có bundle và `JdwpLink`.
 
 **Chế độ live** (`GC.class_histogram` không `-all`) luôn chạy Full GC và xoá `WeakReference` của chương trình **[XM]**; chỉ bật khi người dùng yêu cầu, kèm cảnh báo. `-all` có lẫn `jdk.internal.vm.FillerElement` của G1, phải lọc. Đối chiếu tên với `AllClasses` để xử lý nhiều classloader (đánh dấu mơ hồ).
 
@@ -296,18 +302,18 @@ Trước mỗi PR chạy đúng bộ lệnh trong `CLAUDE.md`. Xác minh runtime
 
 ## 15. Lộ trình, PR và thí nghiệm còn lại
 
-| Mốc        | Nội dung                                                                                                                     | Phụ thuộc                                      |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| **M1**     | `ide-jvm-attach` + bảng class + tab Memory (phiên launch do app khởi động, HotSpot, macOS/Linux; JDK 8–16 chỉ khi đang chạy) | độc lập                                        |
-| **M2**     | Instance list và referrer: bundle `jvm-inspect` (Java) + `JdwpLink` (Kotlin), trait `JvmInspector`                           | M1 cho UI                                      |
-| **K0**     | Spike kotlin-lsp DAP (relay, launch, EULA)                                                                                   | độc lập                                        |
-| **M3**     | Coroutine view (đọc field, agentless; agent tuỳ chọn)                                                                        | M2 (link/inspector), K0 cho quyết định adapter |
-| **M3b**    | Async stack, smart step-over                                                                                                 | M3                                             |
-| **S1**     | `ide-streams` + fixture + property test                                                                                      | độc lập                                        |
-| **S2**     | UI + engine A + an toàn phiên                                                                                                | S1, M2 (đọc list)                              |
-| **S3, S4** | Trace lần chạy thật; engine JDK ≥ 23                                                                                         | S2, số đo                                      |
-| **M4**     | `ide-heap`                                                                                                                   | M1                                             |
-| **M5**     | Allocation                                                                                                                   | M4                                             |
+| Mốc        | Nội dung                                                                                                                                                                 | Phụ thuộc                                      |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| **M1**     | `ide-jvm-attach` + bảng class + tab Memory (phiên launch và attach JDWP vào JVM trên máy này, gồm Gradle/Maven/Tomcat; HotSpot, macOS/Linux; JDK 8–16 chỉ khi đang chạy) | độc lập                                        |
+| **M2**     | Instance list và referrer: bundle `jvm-inspect` (Java) + `JdwpLink` (Kotlin), trait `JvmInspector`                                                                       | M1 cho UI                                      |
+| **K0**     | Spike kotlin-lsp DAP (relay, launch, EULA)                                                                                                                               | độc lập                                        |
+| **M3**     | Coroutine view (đọc field, agentless; agent tuỳ chọn)                                                                                                                    | M2 (link/inspector), K0 cho quyết định adapter |
+| **M3b**    | Async stack, smart step-over                                                                                                                                             | M3                                             |
+| **S1**     | `ide-streams` + fixture + property test                                                                                                                                  | độc lập                                        |
+| **S2**     | UI + engine A + an toàn phiên                                                                                                                                            | S1, M2 (đọc list)                              |
+| **S3, S4** | Trace lần chạy thật; engine JDK ≥ 23                                                                                                                                     | S2, số đo                                      |
+| **M4**     | `ide-heap`                                                                                                                                                               | M1                                             |
+| **M5**     | Allocation                                                                                                                                                               | M4                                             |
 
 Hai nhánh làm song song trong worktree riêng. Theo quy tắc repo: một vấn đề mỗi PR, `Closes #n`, mở issue trước.
 
