@@ -22,6 +22,7 @@ mod page_swipe;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
+mod remote_container;
 mod remote_dev;
 mod remote_wsl;
 
