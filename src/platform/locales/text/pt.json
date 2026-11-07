@@ -219,6 +219,7 @@
   "Allow placing breakpoints in any file": "Permitir colocar pontos de interrupção em qualquer arquivo",
   "Also expand in comments and strings": "Também expandir em comentários e strings",
   "Always": "Sempre",
+  "Always Select Opened File": "Sempre selecionar o arquivo aberto",
   "Always show full path in window header": "Sempre mostrar o caminho completo no cabeçalho da janela",
   "Amend": "Amend",
   "Analysing…": "Analisando…",
