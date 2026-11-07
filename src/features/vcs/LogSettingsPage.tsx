@@ -18,6 +18,7 @@ const COLUMNS: { key: Flag; label: string }[] = [
   { key: "showAuthor", label: "Author" },
   { key: "showHash", label: "Hash" },
   { key: "showDate", label: "Date" },
+  { key: "showGitHubChecks", label: "GitHub Commit Checks" },
 ];
 
 export function LogSettingsPage() {

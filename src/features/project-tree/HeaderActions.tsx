@@ -29,8 +29,8 @@ export const OPTION_LABELS: Array<[ToggleOption, string]> = [
   ["showMembers", "Show Members"],
   ["compact", "Compact Middle Packages"],
   ["foldersFirst", "Sort Folders First"],
+  ["autoscrollFromSource", "Always Select Opened File"],
   ["autoscrollToSource", "Autoscroll to Source"],
-  ["autoscrollFromSource", "Autoscroll from Source"],
   ["singleClickOpen", "Open Files with Single Click"],
   ["singleClickExpand", "Expand Directories with Single Click"],
   ["previewTab", "Enable Preview Tab"],
@@ -38,15 +38,19 @@ export const OPTION_LABELS: Array<[ToggleOption, string]> = [
 
 /** Header controls of the Project tool window (IDEA: Locate, Expand/Collapse All). */
 export function ProjectHeaderActions() {
+  // IDEA hides Select Opened File while Always Select Opened File keeps the tree in sync.
+  const alwaysSelect = useProjectTree((s) => s.options.autoscrollFromSource);
   return (
     <>
-      <IconButton
-        icon="locate"
-        action="navigate.selectInProjectView"
-        title="Select Opened File"
-        shortcut={shortcutLabel("navigate.selectInProjectView")}
-        size="small"
-      />
+      {!alwaysSelect && (
+        <IconButton
+          icon="locate"
+          action="navigate.selectInProjectView"
+          title="Select Opened File"
+          shortcut={shortcutLabel("navigate.selectInProjectView")}
+          size="small"
+        />
+      )}
       <IconButton icon="expand-all" action="project.expandAll" title="Expand All" size="small" />
       <IconButton icon="collapse-all" action="project.collapseAll" title="Collapse All" size="small" />
     </>

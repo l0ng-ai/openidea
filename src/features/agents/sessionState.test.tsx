@@ -138,6 +138,108 @@ describe("a pending question", () => {
   });
 });
 
+describe("a pending AskUserQuestion", () => {
+  it("shows every question with its descriptions in a card and sends all answers at once", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 9,
+        title: "Which layout?",
+        options: [{ id: "reject", name: "Skip", kind: "reject_once" }],
+        questions: [
+          {
+            header: "Layout",
+            question: "Which layout?",
+            multiSelect: false,
+            options: [
+              { label: "Table (Recommended)", description: "One row per check", preview: null },
+              { label: "List", description: "Grouped under headings", preview: null },
+            ],
+          },
+          {
+            header: "Checks",
+            question: "Which checks?",
+            multiSelect: true,
+            options: [
+              { label: "Disk", description: "", preview: null },
+              { label: "Updates", description: "", preview: null },
+            ],
+          },
+        ],
+        chosen: null,
+      },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Which layout?" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(within(card).getByText("One row per check")).toBeTruthy();
+    expect(within(card).getByText("Recommended")).toBeTruthy();
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    fireEvent.click(within(card).getByRole("radio", { name: /^List/ }));
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Disk/ }));
+    const others = within(card).getAllByRole("checkbox", { name: /^Other/ });
+    fireEvent.click(others[0]!);
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "GPU temps" } });
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 9, JSON.stringify({ "Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"] })],
+      ]),
+    );
+  });
+
+  it("picks options with number keys, previews the picked or hovered one, and skips with Escape", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 10,
+        title: "Which layout?",
+        options: [{ id: "reject", name: "Skip", kind: "reject_once" }],
+        questions: [
+          {
+            header: "",
+            question: "Which layout?",
+            multiSelect: false,
+            options: [
+              { label: "Table", description: "", preview: "| a | b |" },
+              { label: "List", description: "", preview: null },
+            ],
+          },
+        ],
+        chosen: null,
+      },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Which layout?" });
+    const table = within(card).getByRole("radio", { name: /^Table/ });
+    const list = within(card).getByRole("radio", { name: /^List/ });
+    fireEvent.focus(table);
+    fireEvent.keyDown(table, { key: "2" });
+    expect(list).toHaveProperty("checked", true);
+    const shown = () => card.querySelector<HTMLElement>(`.${styles.questionPreviewActive}`)!;
+    const caption = () => shown().querySelector(`.${styles.questionPreviewCaption}`)?.textContent;
+    expect(card.querySelectorAll(`.${styles.questionPreviewActive}`)).toHaveLength(1);
+    expect(caption()).toBe("List");
+    expect(within(shown()).getByText("No preview")).toBeTruthy();
+    expect(within(shown()).queryByText("| a | b |")).toBeNull();
+    fireEvent.mouseEnter(table.closest("label")!.parentElement!);
+    expect(caption()).toBe("Table");
+    expect(within(shown()).getByText("| a | b |")).toBeTruthy();
+    fireEvent.mouseLeave(table.closest("label")!.parentElement!);
+    fireEvent.keyDown(table, { key: "3" });
+    expect(caption()).toBe("Other");
+    expect(within(shown()).queryByText("| a | b |")).toBeNull();
+    fireEvent.keyDown(table, { key: "Escape" });
+    await waitFor(() => expect(backend.answers).toEqual([["A", 10, "reject"]]));
+  });
+});
+
 describe("a pending permission request in the conversation", () => {
   it("is answered from its line too, and one without options can be cancelled", async () => {
     backend.entries.set("A", [

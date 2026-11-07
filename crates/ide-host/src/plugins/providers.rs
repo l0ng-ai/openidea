@@ -37,6 +37,9 @@ pub enum ProviderKind {
     CodeActions,
     Definition,
     LineMarkers,
+    SemanticTokens,
+    Hover,
+    InlayHints,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +115,15 @@ impl ExtensionPoint for ProvidersPoint {
         if d.kinds.is_empty() || d.languages.is_empty() || d.languages.len() > 64 {
             return Err("contributes.providers: give `kinds` and 1–64 `languages`".into());
         }
+        if d.kinds.contains(&ProviderKind::SemanticTokens) {
+            pkg.manifest.needs_api("contributes.providers: semantic-tokens", 3)?;
+        }
+        if d.kinds.contains(&ProviderKind::Hover) {
+            pkg.manifest.needs_api("contributes.providers: hover", 3)?;
+        }
+        if d.kinds.contains(&ProviderKind::InlayHints) {
+            pkg.manifest.needs_api("contributes.providers: inlay-hints", 3)?;
+        }
         for l in &d.languages {
             if l != "*"
                 && (l.is_empty()
@@ -157,11 +169,11 @@ pub(super) fn secret(_pkg: &Package, decl: toml::Value) -> Result<UiDecl, String
 
 // ---- dispatch ---------------------------------------------------------------
 
-use super::{LoadedPlugin, PluginHost, PluginStatus};
+use super::{LoadedPlugin, PluginEvent, PluginHost, PluginStatus};
 use ide_core::CancellationToken;
 use ide_plugin::{
-    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending,
-    ProviderDocument, Runtime,
+    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending, PluginHover,
+    PluginInlayHint, ProviderDocument, Runtime, SemanticToken,
 };
 use std::sync::Weak;
 use std::time::{Duration, Instant};
@@ -311,6 +323,12 @@ impl PluginHost {
         })
     }
 
+    /// Shows `path` in window `client` after a code action of `plugin_id` was applied.
+    pub fn open_file(&self, plugin_id: &str, client: &str, path: ide_core::IpcPath) {
+        let event = PluginEvent::OpenLocation { plugin_id: plugin_id.to_owned(), path, line: 0, column: 0 };
+        self.emit(Some(client), event);
+    }
+
     pub fn provide_definition(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<Location> {
         let d = Arc::new(doc.clone());
         self.edit_calls(ProviderKind::Definition, &doc.language, move |rt, timeout| {
@@ -328,6 +346,34 @@ impl PluginHost {
         })
         .into_iter()
         .flat_map(|(p, markers)| markers.into_iter().map(move |m| (p.id().to_owned(), m)))
+        .collect()
+    }
+
+    pub fn provide_semantic_tokens(&self, doc: &ProviderDocument) -> Vec<SemanticToken> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::SemanticTokens, &doc.language, move |rt, timeout| {
+            rt.provide_semantic_tokens(&d, timeout)
+        })
+        .into_iter()
+        .flat_map(|(_, tokens)| tokens)
+        .collect()
+    }
+
+    pub fn provide_hover(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<PluginHover> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::Hover, &doc.language, move |rt, timeout| rt.provide_hover(&d, at, timeout))
+            .into_iter()
+            .filter_map(|(_, hover)| hover)
+            .collect()
+    }
+
+    pub fn provide_inlay_hints(&self, doc: &ProviderDocument, range: ide_core::Range) -> Vec<PluginInlayHint> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::InlayHints, &doc.language, move |rt, timeout| {
+            rt.provide_inlay_hints(&d, range, timeout)
+        })
+        .into_iter()
+        .flat_map(|(_, hints)| hints)
         .collect()
     }
 

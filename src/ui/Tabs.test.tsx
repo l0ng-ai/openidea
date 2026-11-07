@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import {
   dropIndex,
   revealHorizontally,
@@ -195,6 +195,74 @@ describe("Tabs interactions", () => {
     const actions = screen.getByRole("button", { name: "Actions" });
     expect(actions.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Show Hidden Tabs" })).toBeNull();
+  });
+});
+
+describe("Tabs close button in a narrow strip (#1740)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const items = [
+    { id: "a", label: "A" },
+    { id: "b", label: "B" },
+    { id: "c", label: "C" },
+  ];
+  // "C" sits scrolled out of a 300px strip: its close button is past the right edge.
+  const clippedTabs = [
+    { left: 0, right: 140 },
+    { left: 140, right: 280 },
+    { left: 280, right: 460 },
+  ];
+
+  /** Rects of the scroller (role=tablist) and each tab slot, shifted by its scrollLeft like a real layout; everything else 1000x600. */
+  const mockRects = (scroller: { left: number; right: number }, tabs: Array<{ left: number; right: number }>) =>
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute("role") === "tablist")
+        return new DOMRect(scroller.left, 0, scroller.right - scroller.left, 28);
+      if (this.parentElement?.getAttribute("role") === "tablist") {
+        const r = tabs[[...this.parentElement.children].indexOf(this)]!;
+        const shift = -this.parentElement.scrollLeft;
+        return new DOMRect(r.left + shift, 0, r.right - r.left, 24);
+      }
+      return new DOMRect(0, 0, 1000, 600);
+    });
+
+  it("clicking the active tab brings its clipped close button back into view", () => {
+    mockRects({ left: 0, right: 300 }, clippedTabs);
+    const onSelect = vi.fn();
+    render(<Tabs items={items} activeId="c" onSelect={onSelect} onClose={() => {}} />);
+    const scroller = screen.getByRole("tablist");
+    // After the strip narrows, scrollLeft sits at 0 and the X of the active "C" stays clipped:
+    // clicking the tab doesn't change activeId, so it must reveal the tab on its own.
+    scroller.scrollLeft = 0;
+    fireEvent.click(screen.getByRole("tab", { name: "C" }));
+    expect(onSelect).toHaveBeenCalledWith("c");
+    expect(scroller.scrollLeft).toBe(160); // min(460 - 300, 280 - 0)
+  });
+
+  it("keeps the active tab revealed when the strip is resized narrower", () => {
+    class RO {
+      static latest: { callback: ResizeObserverCallback } | null = null;
+      callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        RO.latest = this;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", RO);
+    mockRects({ left: 0, right: 400 }, clippedTabs);
+    render(<Tabs items={items} activeId="c" onSelect={() => {}} onClose={() => {}} />);
+    const scroller = screen.getByRole("tablist");
+    expect(scroller.scrollLeft).toBe(60); // mounted wide: min(460 - 400, 280)
+    // The editor area narrows and the strip's resize observer fires with the new box.
+    mockRects({ left: 0, right: 300 }, clippedTabs);
+    act(() => RO.latest!.callback([], RO.latest as unknown as ResizeObserver));
+    expect(scroller.scrollLeft).toBe(160); // min(460 - 300, 280)
   });
 });
 

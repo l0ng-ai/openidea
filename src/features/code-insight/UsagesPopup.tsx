@@ -11,15 +11,17 @@ import { Decoration, EditorView } from "@codemirror/view";
 import { codePreviewExtensions } from "@/editor/api";
 import { basename } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
-import { Icon, IconButton, List, Popup, fileIconName, listNavigate } from "@/ui";
+import { Icon, IconButton, List, Popup, Select, Spinner, fileIconName, listNavigate } from "@/ui";
 import { openLocation, readFileLines } from "./ipc";
 import {
   dismissUsagesPopup,
+  setUsagesPopupScope,
   showUsageResults,
   usageCount,
   useUsagesPopup,
   type Usage,
   type UsageGroup,
+  type UsageScope,
 } from "./usages";
 import { UsagePreview } from "./UsagesView";
 import styles from "./UsagesPopup.module.css";
@@ -79,7 +81,7 @@ export function UsagesPopup() {
 const ROW = 24;
 
 function UsagesPopupInner() {
-  const { anchor, symbol, groups, note } = useUsagesPopup();
+  const { anchor, symbol, groups, note, loading, scope } = useUsagesPopup();
   const preview = useUsagesPopupPreview((s) => s.preview);
   const all = useMemo<Usage[]>(() => groups.flatMap((g) => g.usages), [groups]);
   const [filter, setFilter] = useState("");
@@ -152,6 +154,24 @@ function UsagesPopupInner() {
               {filter || items.length !== total ? tx`${items.length} of ${total} found` : tx`${total} found`}
             </span>
           </span>
+          {scope && (
+            <Select<UsageScope>
+              variant="ghost"
+              aria-label={tx("Scope")}
+              className={styles.scope}
+              value={scope}
+              options={[
+                { value: "project", label: tx("Project Files") },
+                { value: "libraries", label: tx("Project and Libraries") },
+              ]}
+              onChange={setUsagesPopupScope}
+            />
+          )}
+          {loading && (
+            <span className={styles.searching} role="status" aria-label={tx("Searching for more usages")}>
+              <Spinner size={12} />
+            </span>
+          )}
           {filter && (
             <span className={clsx(styles.filter, !items.length && styles.noMatch)} role="status">
               {filter}

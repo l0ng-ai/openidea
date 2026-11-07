@@ -1,5 +1,5 @@
 /** Git log tool window state: filters, paged commits, graph, selection. */
-import { branchesByRepo, commitKey, commitRepo, graphCommit, mergeRepoLogs, type RepoCommit } from "./multiRoot";
+import { branchesByRepo, commitKey, commitRepo, mergeRepoLogs, type RepoCommit } from "./multiRoot";
 import { create } from "zustand";
 import { useContext } from "react";
 import { LogIdContext } from "./logContext";
@@ -8,7 +8,6 @@ import { maybeEditorService } from "@/workbench/contributions";
 import type { Branch, BranchInfo, Commit, LogQuery } from "@/bindings";
 import { call, commands, nextRequestId, type RequestId } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { computeGraph, emptyGraphState, type GraphRow, type GraphState } from "./graph";
 import { logOptions, parseLogOptions, setLogOptions, useLogOptions, type LogOptions } from "./logOptions";
 import { clearConsole, errorMessage } from "./ops";
 import { currentRepo, currentRepoRoot, repoName, repoOf, useVcs } from "./store";
@@ -48,8 +47,6 @@ export interface LogFilters {
 interface LogState {
   filters: LogFilters;
   commits: RepoCommit[];
-  rows: GraphRow[];
-  graph: GraphState;
   loading: boolean;
   done: boolean;
   error: string | null;
@@ -179,8 +176,6 @@ const initialLog = (): Omit<LogState, "generation" | "viewsVersion"> => ({
   filters: emptyFilters(),
   seek: null,
   commits: [],
-  rows: [],
-  graph: emptyGraphState(),
   loading: false,
   done: false,
   error: null,
@@ -293,8 +288,6 @@ type LogView = Pick<
   | "filters"
   | "seek"
   | "commits"
-  | "rows"
-  | "graph"
   | "loading"
   | "done"
   | "error"
@@ -306,13 +299,11 @@ type LogView = Pick<
 > & { options: LogOptions };
 
 function freshView(filters: LogFilters): LogView {
-  const { commits, rows, graph, loading, done, error, selected, selection, revealTick, fragments } = initialLog();
+  const { commits, loading, done, error, selected, selection, revealTick, fragments } = initialLog();
   return {
     filters,
     seek: null,
     commits,
-    rows,
-    graph,
     loading,
     done,
     error,
@@ -329,26 +320,11 @@ function freshView(filters: LogFilters): LogView {
 const parked = new Map<string, LogView>();
 
 function currentView(): LogView {
-  const {
-    filters,
-    commits,
-    rows,
-    graph,
-    done,
-    error,
-    selected,
-    selection,
-    revealTick,
-    fragments,
-    loading,
-    generation,
-    seek,
-  } = useGitLog.getState();
+  const { filters, commits, done, error, selected, selection, revealTick, fragments, loading, generation, seek } =
+    useGitLog.getState();
   return {
     filters,
     commits,
-    rows,
-    graph,
     loading,
     seek,
     generation,
@@ -764,7 +740,7 @@ export function reloadLog(
   cancelLogRequests(id);
   const next = nextGeneration();
   setViewState(id, () => ({
-    ...(preserve ? {} : { commits: [], rows: [], graph: emptyGraphState(), done: false }),
+    ...(preserve ? {} : { commits: [], done: false }),
     loading: true,
     error: null,
     generation: next,
@@ -973,13 +949,23 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
               } else page = await fetchPage(null);
             } else page = await fetchPage(null);
           }
+          const repoBranches = repo ? (refs[repo] ?? []) : [];
+          const remoteNames = repo ? repoBranches.filter((b) => b.remote).map((b) => b.name) : undefined;
+          const branchesByTip = new Map<string, Branch[]>();
+          for (const branch of repoBranches) {
+            if (!branch.commit) continue;
+            const atTip = branchesByTip.get(branch.commit);
+            if (atTip) atTip.push(branch);
+            else branchesByTip.set(branch.commit, [branch]);
+          }
           return page.map((c) => ({
             ...c,
             repo,
             user,
             userName,
             readOnly: tab?.readOnly === true,
-            remoteNames: repo ? refs[repo]?.filter((b) => b.remote).map((b) => b.name) : undefined,
+            remoteNames,
+            refBranches: branchesByTip.get(c.id)?.filter((branch) => c.refs.includes(branch.name)),
           }));
         }),
       );
@@ -1017,11 +1003,8 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
               ]),
               Number.MAX_SAFE_INTEGER,
             );
-      const { rows, state } = computeGraph(commits.map(graphCommit));
       setViewState(id, {
         commits,
-        rows,
-        graph: state,
         done: before
           ? cur.done
           : commits.length >= cap

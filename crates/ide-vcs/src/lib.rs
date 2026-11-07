@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 pub use text_encoding::TextEncoding;
+pub use write::PendingChange;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -910,7 +911,7 @@ impl Repo {
         let id = commit_id.to_string();
         let contains = format!("--contains={id}");
         let branches =
-            cli::run_cancellable(self.root(), &["branch", "-a", &contains, "--format=%(refname:short)"], cancel)?;
+            cli::run_cancellable(self.root(), &["branch", "-a", &contains, refs::DIRECT_BRANCH_FORMAT], cancel)?;
         let cache_key = format!("{allowed}:{id}");
         let cached = self.log_signatures.lock().unwrap_or_else(|p| p.into_inner()).get(&cache_key).cloned();
         let mut details = if let Some(details) = cached {
@@ -952,7 +953,7 @@ impl Repo {
             details
         };
         details.containing_branches =
-            branches.stdout_str().lines().filter(|s| !s.ends_with("/HEAD")).map(str::to_string).collect();
+            branches.stdout_str().lines().filter(|s| !s.is_empty()).map(str::to_string).collect();
         Ok(details)
     }
 
@@ -1069,6 +1070,17 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::commit(self, message, options, &|path| encoding(path).map(Into::into))
     }
+    /// What [`Repo::commit_with`] would commit with `options`, file by file, without
+    /// committing or touching the index: patches against HEAD, `max_bytes` in all.
+    pub fn pending_changes<E: Into<TextEncoding>>(
+        &self,
+        options: &CommitOptions,
+        max_bytes: usize,
+        encoding: &dyn Fn(&Path) -> IdeResult<E>,
+    ) -> IdeResult<Vec<PendingChange>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::pending_changes(self, options, max_bytes, &|path| encoding(path).map(Into::into))
+    }
     /// Switches to `branch`. With `create`, creates it at HEAD. Without, a remote branch
     /// (`origin/x`) gets a local tracking branch and any other revision is checked out
     /// detached.
@@ -1087,8 +1099,19 @@ impl Repo {
     /// Creates branch `name` at `start` (default HEAD), optionally switching to it. A
     /// remote-tracking start point (`origin/x`) becomes the new branch's upstream.
     pub fn create_branch(&self, name: &str, start: Option<&str>, checkout: bool) -> IdeResult<()> {
+        self.create_branch_with_overwrite(name, start, checkout, false)
+    }
+
+    /// Creates a branch or moves its tip when overwrite is explicitly enabled.
+    pub fn create_branch_with_overwrite(
+        &self,
+        name: &str,
+        start: Option<&str>,
+        checkout: bool,
+        overwrite: bool,
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::create_branch(self, name, start, checkout)
+        write::create_branch(self, name, start, checkout, overwrite)
     }
     /// Undo Commit: resets the current branch to the parent of `commit` (which must be
     /// HEAD and not a merge) keeping its changes staged; undoing the initial commit

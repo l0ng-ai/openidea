@@ -6,9 +6,10 @@
 //! Release builds pin the official publisher to the keys they were built
 //! with, so no index can sign `openidea.*` plugins with another key.
 
+use super::icons::{MAX_PLUGIN_ICON, sanitize_svg};
 use super::{PackageFile, PluginEvent, PluginHost, PluginSource, PluginStatus, PluginUpdate, install};
 use ide_core::{IdeError, IdeResult};
-use ide_extension::package::{self, Index, IndexEntry, PackageSignature, SIGNATURE_FILE};
+use ide_extension::package::{self, Index, IndexEntry, PackageSignature, PluginIcon, SIGNATURE_FILE};
 use ide_extension::{MANIFEST_FILE, Manifest};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,14 @@ pub(super) fn built_in_official_keys() -> Vec<String> {
 fn pinned(mut index: Index, official_keys: &[String]) -> Index {
     index.pin_publisher(OFFICIAL_PUBLISHER, "OpenIDEA", official_keys);
     index
+}
+
+/// An index's icon as the UI may show it: sanitised again, as any index may
+/// have written it; without a light variant that passes, none.
+fn safe_icon(icon: PluginIcon) -> Option<PluginIcon> {
+    // Before sanitising too: an index may hold megabytes of it.
+    let clean = |svg: String| (svg.len() <= MAX_PLUGIN_ICON).then(|| sanitize_svg(&svg).ok()).flatten();
+    Some(PluginIcon { light: clean(icon.light)?, dark: icon.dark.and_then(clean) })
 }
 
 /// Reads `url`: `http(s)://…`, `file://…` or a local path.
@@ -242,7 +251,9 @@ impl PluginHost {
                     .get(&entry.id)
                     .filter(|p| p.source == PluginSource::Installed)
                     .map(|p| p.manifest().version.clone());
-                MarketPlugin { entry: entry.clone(), installed, compatible }
+                let mut entry = entry.clone();
+                entry.icon = entry.icon.and_then(safe_icon);
+                MarketPlugin { entry, installed, compatible }
             })
             .collect()
     }
@@ -350,7 +361,7 @@ impl PluginHost {
     pub(super) fn package_files_in(&self, dir: &Path) -> IdeResult<Vec<PathBuf>> {
         let manifest = Manifest::load(dir).map_err(IdeError::invalid)?;
         let pkg = ide_extension::Package::new(manifest, dir.to_path_buf());
-        let set = self.registry.prepare(&pkg).map_err(IdeError::invalid)?;
+        let set = self.prepare(&pkg).map_err(IdeError::invalid)?;
         Ok(set.files.into_iter().chain(pkg.manifest.wasm.clone()).collect())
     }
 
@@ -418,6 +429,7 @@ impl PluginHost {
                                 level: ide_plugin::NotificationLevel::Warning,
                                 title: format!("{} was disabled", plugin.manifest().name),
                                 body: format!("The marketplace revoked this plugin: {reason}"),
+                                actions: Vec::new(),
                             },
                         );
                     }

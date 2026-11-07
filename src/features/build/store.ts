@@ -78,6 +78,8 @@ export interface BuildState {
   files: string[];
   /** Key of the selected tree node (a message node shows its detail beside the tree). */
   selected: string | null;
+  /** Directory of the running step (console lines after it resolve paths against it). */
+  stepCwd: string | null;
 }
 
 const INITIAL: BuildState = {
@@ -93,6 +95,7 @@ const INITIAL: BuildState = {
   lines: [],
   files: [],
   selected: null,
+  stepCwd: null,
 };
 
 export const useBuildRun = create<BuildState>(() => INITIAL);
@@ -103,11 +106,11 @@ const TITLES: Record<BuildKind, string> = { build: "Build", rebuild: "Rebuild", 
 export function applyBuildEvent(s: BuildState, e: BuildEvent): Partial<BuildState> {
   switch (e.kind) {
     case "started":
-      return { title: e.title, system: e.system };
+      return { title: e.title, system: e.system, stepCwd: null };
     case "step":
-      return { lines: appendOutput(s.lines, `${e.command}\n`, "system") };
+      return { stepCwd: e.cwd, lines: appendOutput(s.lines, `${e.command}\n`, "system", e.cwd) };
     case "output":
-      return { lines: appendOutput(s.lines, e.text, e.stderr ? "err" : "out") };
+      return { lines: appendOutput(s.lines, e.text, e.stderr ? "err" : "out", s.stepCwd ?? undefined) };
     case "message":
       return { messages: [...s.messages, e.message] };
     case "progress":

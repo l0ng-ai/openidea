@@ -166,7 +166,8 @@ export function registerProjectActions(): () => void {
     id: `project.option.${key}`,
     title: tx`Project View: ${label}`,
     category: "View",
-    keywords: ["project", "tree", "toggle"],
+    // IDEA's former name of Always Select Opened File.
+    keywords: ["project", "tree", "toggle", ...(key === "autoscrollFromSource" ? ["autoscroll from source"] : [])],
     toggled: () => useProjectTree.getState().options[key],
     run: () => setViewOption(key, !useProjectTree.getState().options[key]),
   }));

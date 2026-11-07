@@ -8,7 +8,7 @@ import { getContext, setContext } from "@/platform/context";
 import { onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
-import { showContextMenu, lazyComponent, type MenuItem } from "@/ui";
+import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
   useDebugRunSessions,
@@ -35,7 +35,6 @@ import { runWithExecutor } from "./executors";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
-import { EditConfigsOverlay } from "./EditConfigsDialog";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
 import { registerGoActions } from "./goActions";
@@ -75,9 +74,11 @@ import {
   selectConfig,
   selectedConfig,
   startRun,
+  startSampleOutput,
   stopSession,
   trackRecentConfigurations,
   useRun,
+  isLive,
 } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
@@ -247,7 +248,22 @@ function stopAction(arg?: unknown) {
     })),
     ...menuGroupItems("stopProcess", { paths: [] }),
   ].filter((i): i is MenuItem & { run: () => void } => "run" in i && !!i.run);
-  if (items.length === 0) return;
+  // A Debug launch has no Run process: with nothing else to stop, the title-bar Stop reaches
+  // the debug session itself (the Debug window need not be focused).
+  if (items.length === 0) {
+    if (debug.length === 0) return;
+    if (debug.length === 1) {
+      debug[0]!.stop();
+      return;
+    }
+    const anchor = document.querySelector("[data-run-chooser]")?.getBoundingClientRect();
+    const at = anchor ? { x: anchor.left, y: anchor.bottom + 4 } : { x: window.innerWidth / 2 - 120, y: 44 };
+    showContextMenu(at, [
+      { kind: "header", label: "Stop Process" },
+      ...debug.map((s): MenuItem => ({ label: s.name, verbatim: true, icon: "debug", run: () => s.stop() })),
+    ]);
+    return;
+  }
   if (items.length === 1) {
     items[0]!.run();
     return;
@@ -270,7 +286,7 @@ function rerunActive() {
 }
 
 function useRunningCount(): number | null {
-  return useRun((s) => s.sessions.filter((x) => x.status === "running" || x.status === "starting").length || null);
+  return useRun((s) => s.sessions.filter(isLive).length || null);
 }
 
 const CONFIG_FILES =
@@ -282,8 +298,25 @@ function scheduleReload() {
   reloadTimer = setTimeout(() => void loadConfigs(), 300);
 }
 
+const useEditConfigsOpen = () => useRun((s) => s.editorOpen);
+
 export function activate(): () => void {
   const disposers: Array<() => void> = [
+    // The performance harness (`perf/`): a console streaming generated output.
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "run.sampleOutput",
+            title: "Stream Sample Output",
+            category: "Run",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { lines = 20_000, perFrame = 200 } = (arg ?? {}) as { lines?: number; perFrame?: number };
+              await startSampleOutput(lines, perFrame);
+            },
+          },
+        ])
+      : () => {},
     registerToolWindow({
       id: "run",
       title: "Run",
@@ -301,7 +334,10 @@ export function activate(): () => void {
     registerGoActions(),
     registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
-    registerOverlay({ id: "run.editConfigs", component: EditConfigsOverlay }),
+    registerOverlay({
+      id: "run.editConfigs",
+      component: lazyWhen(useEditConfigsOpen, () => import("./EditConfigsDialog").then((m) => m.EditConfigsOverlay)),
+    }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
     registerServiceProvider(runServiceProvider),
     registerRunningProcessesProvider({
@@ -310,6 +346,20 @@ export function activate(): () => void {
         serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions)
           .filter(liveServiceSession)
           .map((s) => ({ name: s.config.name })),
+      // A closing window asks first, then shows the progress while these shut down; `kill`
+      // is the second Stop that SIGKILLs instead of waiting.
+      stop: (kill) => {
+        // The first call asks to stop; with `kill` the second one reaches the backend while
+        // the session is already stopping, which turns it into SIGKILL.
+        for (const s of useRun.getState().sessions.filter(isLive)) {
+          void stopSession(s.id);
+          if (kill) void stopSession(s.id);
+        }
+        for (const d of useDebugRunSessions.getState().sessions) {
+          d.stop();
+          if (kill) d.stop();
+        }
+      },
     }),
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
