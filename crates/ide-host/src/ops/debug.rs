@@ -31,6 +31,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
                 ide_sdk::go::configure_environment(&root, &settings, &mut config.env);
                 ide_sdk::go::apply_to_debug(
                     &mut config.env,
+                    &mut config.program,
+                    &mut config.args,
                     &mut config.extra_json,
                     &settings.languages.go.build_tags,
                 )?;
