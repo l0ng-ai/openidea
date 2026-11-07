@@ -250,6 +250,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | Capability          | Risk   | Unlocks today                                                                                                                |
 | ------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics`                                          |
+| `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory            |
 | `editor.read`       | low    | `TextEditor::document`, `selections`                                                                                         |
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                    |
 | `vcs.read`          | low    | `Project::vcs_status` (branch, upstream, ahead/behind, changes), `vcs_remotes`, `host::pending_commit`, before-commit checks |
@@ -269,8 +270,16 @@ working. On grant the program is resolved to an absolute path and its content
 hash is recorded; it is checked again right before every start, and a replaced
 file is refused until the user approves it again. In a remote project the
 server resolves and pins the program on its own machine (see _Remote
-projects_). `fs.read:<path>` can be declared and granted; it unlocks nothing
-yet.
+projects_).
+
+`fs.read:<path>` grants reading outside the open projects: a directory (its
+files, at any depth) or one file. The path is resolved to its real location
+before it is compared, so a symlink pointing out of the granted directory is
+refused, and a sibling whose name merely starts with the granted one (`/opt/see`
+vs `/opt/seeyon`) is not covered. Granting a whole file system (`/`, `C:\`) is
+refused when the manifest is read: declare the directories you need. Reads are
+capped — text over the limit fails rather than truncating, and files that are
+not text have to be read as bytes.
 
 Logging, notifications, status bar items, tasks and run-time contributions
 are always available. Calling a gated function without its capability returns

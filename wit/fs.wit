@@ -1,0 +1,37 @@
+package openidea:plugin@1.3.0;
+
+/// Files outside the open projects: the configuration of the program a
+/// plugin integrates with, a tool installed elsewhere, a licence file.
+///
+/// A plugin's own WASI has no preopened directory, so every path here is
+/// checked against its `fs.read:<path>` grants; without one covering the path
+/// a call returns `denied` naming the `fs.read:<path>` the manifest has to
+/// declare. A file inside a project is `workspace.project.read-file`. `path`
+/// is absolute, or starts with `~/` for the user's home.
+interface fs {
+    use types.{error};
+    use workspace.{file-kind, file-stat};
+
+    /// A text file, decoded as the editor decodes it (BOM and encoding
+    /// detection), at most 16 MiB. Unsaved editor contents win, as they do
+    /// for `project.read-file`.
+    read-file: func(path: string) -> result<string, error>;
+
+    /// The bytes of a file (images, class files, archives), at most 16 MiB.
+    read-bytes: func(path: string) -> result<list<u8>, error>;
+
+    /// Metadata of an existing path, as `project.stat` reports it; a missing
+    /// path is `not-found`.
+    stat: func(path: string) -> result<file-stat, error>;
+
+    /// An entry of a directory.
+    record dir-entry {
+        /// The entry's name, without its directory.
+        name: string,
+        kind: file-kind,
+    }
+
+    /// The entries directly under a directory, sorted by name, at most 4096
+    /// (like `find-files`); a file is `invalid`.
+    read-dir: func(path: string) -> result<list<dir-entry>, error>;
+}

@@ -62,6 +62,9 @@ struct State {
     root: Option<String>,
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
+
+    /// Files outside every project, for `fs.read` (absolute paths).
+    external: BTreeMap<String, String>,
     dirs: BTreeSet<String>,
     editor: Option<Editor>,
     selected_paths: Vec<String>,
@@ -175,6 +178,13 @@ impl MockHost {
     /// Sets the paths invocations report as selected.
     pub fn select_paths(&self, paths: &[&str]) {
         self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
+    /// A file outside every project, for [`crate::host::fs::read_file`]: it is
+    /// readable once an `fs.read:<a directory above it>` capability is granted.
+    /// Directories are inferred from the paths it holds.
+    pub fn add_external_file(&self, path: &str, text: &str) {
+        self.state.borrow_mut().external.insert(path.to_owned(), text.to_owned());
     }
 
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
@@ -446,6 +456,43 @@ pub mod current {
         if s.capabilities.iter().any(|c| c == cap) { Ok(()) } else { Err(Error::Denied(cap.to_owned())) }
     }
 
+    /// `fs.read:<base>` covers `<base>` itself and what is under it: `/a` covers
+    /// `/a/b` but not `/ab`.
+    fn require_fs(s: &State, path: &str) -> Result<(), Error> {
+        let covered = s.capabilities.iter().any(|c| match c.strip_prefix("fs.read:") {
+            Some(base) => {
+                let base = base.trim_end_matches(['/', '\\']);
+                !base.is_empty()
+                    && (path == base
+                        || matches!(path.strip_prefix(base), Some(rest) if rest.starts_with('/') || rest.starts_with('\\')))
+            }
+            None => false,
+        });
+        if covered { Ok(()) } else { Err(Error::Denied(format!("fs.read:{path}"))) }
+    }
+
+    /// The paths `fs` takes are absolute; `~/…` is the user's home on the real
+    /// host, and the mock resolves nothing, so add it to the mock as it is.
+    fn check_absolute(path: &str) -> Result<(), Error> {
+        let bytes = path.as_bytes();
+        let drive = bytes.len() > 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'/' || bytes[2] == b'\\');
+        if path.starts_with('/') || drive {
+            Ok(())
+        } else {
+            Err(Error::Invalid(format!("{path}: use an absolute path (or ~/…)")))
+        }
+    }
+
+    /// `fs` checks what the real host checks, minus canonicalisation: absolute
+    /// path, then a grant covering it.
+    fn check_external(s: &State, path: &str) -> Result<(), Error> {
+        check_absolute(path)?;
+        require_fs(s, path)
+    }
+
     pub fn log(level: LogLevel, message: &str) {
         with(|s| s.logs.push((level, message.to_owned())))
     }
@@ -703,6 +750,74 @@ pub mod current {
             let kind = if file.is_some() || open.is_some() { FileKind::File } else { FileKind::Directory };
             let size = file.or_else(|| open.map(|e| &e.text)).map_or(0, |t| t.len() as u64);
             Ok(FileStat { kind, size, modified: None })
+        })
+    }
+
+    pub fn fs_read_file(path: &str) -> Result<String, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            // Unsaved editor contents win, as on the real host.
+            if let Some(e) = s.editor.as_ref().filter(|e| e.path == path) {
+                return Ok(e.text.clone());
+            }
+            s.external.get(path).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })
+    }
+
+    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            let text = s.external.get(path).ok_or_else(|| Error::NotFound(path.into()))?;
+            Ok(text.clone().into_bytes())
+        })
+    }
+
+    pub fn fs_stat(path: &str) -> Result<FileStat, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            if let Some(text) = s.external.get(path) {
+                return Ok(FileStat { kind: FileKind::File, size: text.len() as u64, modified: None });
+            }
+            // A directory is a prefix of the files the mock holds.
+            let holds_files = s.external.keys().any(
+                |file| matches!(file.strip_prefix(path), Some(rest) if rest.starts_with('/') || rest.starts_with('\\')),
+            );
+            if holds_files {
+                Ok(FileStat { kind: FileKind::Directory, size: 0, modified: None })
+            } else {
+                Err(Error::NotFound(path.into()))
+            }
+        })
+    }
+
+    pub fn fs_read_dir(path: &str) -> Result<Vec<crate::host::fs::DirEntry>, Error> {
+        with(|s| {
+            check_external(s, path)?;
+            if s.external.contains_key(path) {
+                return Err(Error::Invalid(format!("{path}: not a directory")));
+            }
+            let mut entries: BTreeMap<String, FileKind> = BTreeMap::new();
+            for file in s.external.keys() {
+                let rest = match file.strip_prefix(path) {
+                    Some(rest) if rest.starts_with('/') || rest.starts_with('\\') => &rest[1..],
+                    _ => continue,
+                };
+                match rest.split(['/', '\\']).next() {
+                    Some(name) if !name.is_empty() => {
+                        let kind = if rest.contains('/') || rest.contains('\\') {
+                            FileKind::Directory
+                        } else {
+                            FileKind::File
+                        };
+                        entries.insert(name.to_owned(), kind);
+                    }
+                    _ => {}
+                }
+            }
+            if entries.is_empty() {
+                return Err(Error::NotFound(path.into()));
+            }
+            Ok(entries.into_iter().map(|(name, kind)| crate::host::fs::DirEntry { name, kind }).collect())
         })
     }
 
@@ -1179,6 +1294,21 @@ mod tests {
         let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
         assert!(host::notify_with_actions(NotificationLevel::Info, "Done", "", &too_many).is_err());
         assert_eq!(mock.notifications().len(), 1);
+    }
+
+    #[test]
+    fn files_outside_the_project_need_an_fs_read_grant() {
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/tool"]);
+        mock.add_external_file("/opt/tool/conf/app.yaml", "port: 8080");
+        mock.add_external_file("/opt/tool/README", "hi");
+        mock.add_external_file("/opt/other/secret", "no");
+        assert_eq!(host::fs::read_file("/opt/tool/conf/app.yaml").unwrap(), "port: 8080");
+        assert_eq!(host::fs::read_bytes("/opt/tool/README").unwrap(), b"hi");
+        assert_eq!(host::fs::stat("/opt/tool/conf").unwrap().kind, FileKind::Directory);
+        let names: Vec<_> = host::fs::read_dir("/opt/tool").unwrap().into_iter().map(|e| (e.name, e.kind)).collect();
+        assert_eq!(names, [("README".into(), FileKind::File), ("conf".into(), FileKind::Directory)]);
+        assert!(matches!(host::fs::read_file("/opt/other/secret"), Err(Error::Denied(_))));
+        assert!(matches!(host::fs::read_file("relative"), Err(Error::Invalid(_))));
     }
 
     #[test]

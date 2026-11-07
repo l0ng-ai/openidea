@@ -206,6 +206,10 @@ pub trait HostApi: Send + Sync {
     fn locale(&self) -> String;
     /// A setting of the plugin as JSON (project over global over the schema default).
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String>;
+    /// Reads and decodes a text file outside the project, whose real path an
+    /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
+    /// `max` bounds the bytes read.
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
 }
 
 /// Shared compilation engine plus an epoch ticker thread for wall-clock limits.

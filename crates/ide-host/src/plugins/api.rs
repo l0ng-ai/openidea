@@ -1287,6 +1287,38 @@ impl HostApi for PluginApi {
         let value = user.get(key).filter(|v| setting.accepts(v)).cloned().unwrap_or(setting.default);
         serde_json::to_string(&value).ok()
     }
+
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
+        // Unsaved editor contents win, as they do for project files.
+        if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
+            return Ok(text);
+        }
+        let meta = std::fs::metadata(real).map_err(|e| not_a_file(real, e))?;
+        if !meta.is_file() {
+            return Err(HostError::Invalid(format!("{}: not a file", real.display())));
+        }
+        if meta.len() > max as u64 {
+            return Err(too_large(real, max));
+        }
+        let loaded = ide_vfs::load_text(real).map_err(failed)?;
+        if loaded.binary {
+            return Err(HostError::Invalid(format!("{}: not text; read it as bytes", real.display())));
+        }
+        Ok(loaded.text)
+    }
+}
+
+/// A file that is not there, or cannot be read, as the plugin sees it.
+fn not_a_file(path: &Path, e: std::io::Error) -> HostError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => HostError::NotFound(format!("{}: no such file", path.display())),
+        std::io::ErrorKind::PermissionDenied => HostError::Denied(format!("{}: {}", path.display(), "not readable")),
+        _ => failed(e),
+    }
+}
+
+fn too_large(path: &Path, max: usize) -> HostError {
+    HostError::Invalid(format!("{}: file is larger than {} MiB", path.display(), max >> 20))
 }
 
 /// [`PluginWorkspace`] over the desktop host's open projects.
