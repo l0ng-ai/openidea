@@ -79,5 +79,6 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 Database tool window notes, including Oracle Instant Client setup, are in
 [`docs/databases.md`](docs/databases.md).
 Java language server choices and their capabilities are in [`docs/java.md`](docs/java.md).
+Command-line launcher setup for macOS, Windows and Linux is in [`docs/command-line.md`](docs/command-line.md).
 
 <sub>Not affiliated with JetBrains. IntelliJ IDEA is a trademark of JetBrains s.r.o.</sub>

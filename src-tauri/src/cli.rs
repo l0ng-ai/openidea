@@ -22,6 +22,8 @@ pub fn run(identifier: &str) -> Option<i32> {
         return None;
     }
     let args: Vec<String> = args.collect();
+    #[cfg(windows)]
+    ide_cli::attach_console();
     Some(match client(identifier, &args) {
         Ok(()) => 0,
         Err(message) => {
@@ -33,7 +35,9 @@ pub fn run(identifier: &str) -> Option<i32> {
 
 fn client(identifier: &str, args: &[String]) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?;
-    let targets = match args::parse(args, &cwd)? {
+    let command = args::parse(args, &cwd)?;
+    let diff = matches!(command, Command::Diff(_));
+    let targets = match command {
         Command::Help => {
             print!("{}", args::USAGE);
             return Ok(());
@@ -42,10 +46,10 @@ fn client(identifier: &str, args: &[String]) -> Result<(), String> {
             println!("OpenIDEA {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        Command::Open(targets) => targets,
+        Command::Open(targets) | Command::Diff(targets) => targets,
     };
     let socket = socket::socket_path(identifier).ok_or("no cache directory for the OpenIDEA socket")?;
-    let request = Request::open(targets);
+    let request = Request { diff, ..Request::open(targets) };
     let response = match socket::send(&socket, &request) {
         Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
             start_app()?;
@@ -63,6 +67,8 @@ fn client(identifier: &str, args: &[String]) -> Result<(), String> {
 /// bundle, else (a development build) this executable without [`CLI_FLAG`].
 fn start_app() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let image = if cfg!(target_os = "linux") { std::env::var_os("APPIMAGE").map(PathBuf::from) } else { None };
+    let exe = ide_cli::install::stable_executable(&exe, image.as_deref()).map_err(|e| e.to_string())?;
     let mut command = match app_bundle(&exe) {
         Some(bundle) => {
             let mut open = std::process::Command::new("/usr/bin/open");
@@ -72,8 +78,11 @@ fn start_app() -> Result<(), String> {
         None => std::process::Command::new(&exe),
     };
     command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    ide_core::process::host_env(&mut command);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0000_0008 | 0x0000_0200);
     command.spawn().map(drop).map_err(|e| format!("cannot start OpenIDEA: {e}"))
 }
 
@@ -100,14 +109,23 @@ fn app_bundle(exe: &Path) -> Option<PathBuf> {
 
 /// Answers the `openidea` command for this app: its targets open like paths from Finder.
 pub fn serve(app: &AppHandle, identifier: &str) {
-    if !cfg!(unix) {
-        return;
-    }
     let Some(socket) = socket::socket_path(identifier) else { return };
     let app = app.clone();
     let served = socket::serve(&socket, move |request| {
         let handle = app.clone();
-        match app.run_on_main_thread(move || crate::windows::open_targets(&handle, request.targets)) {
+        match app.run_on_main_thread(move || {
+            if request.diff {
+                let mut targets = request.targets.into_iter();
+                if let (Some(left), Some(right)) = (targets.next(), targets.next()) {
+                    crate::windows::open_diff_files(
+                        &handle,
+                        crate::windows::DiffFilesLaunch { left: left.path.into(), right: right.path.into() },
+                    );
+                }
+            } else {
+                crate::windows::open_targets(&handle, request.targets);
+            }
+        }) {
             Ok(()) => Response::Ok,
             Err(e) => Response::Error { message: format!("OpenIDEA cannot open windows: {e}") },
         }
@@ -117,35 +135,23 @@ pub fn serve(app: &AppHandle, identifier: &str) {
     }
 }
 
-/// The launcher script of this app's bundle; it must be in a stable location.
-fn launcher() -> IdeResult<PathBuf> {
-    let exe = std::env::current_exe().map_err(|e| IdeError::internal(e.to_string()))?;
-    let launcher = ide_cli::install::bundled_launcher(&exe)
-        .ok_or_else(|| IdeError::unavailable("only the packaged macOS app can install the openidea command"))?;
-    if ide_cli::install::translocated(&launcher) {
-        return Err(IdeError::unavailable("move OpenIDEA to the Applications folder first"));
-    }
-    Ok(launcher)
-}
-
 fn install_error(e: std::io::Error) -> IdeError {
     if e.kind() == ErrorKind::Interrupted { IdeError::cancelled() } else { IdeError::internal(e.to_string()) }
 }
 
 /// Links the `openidea` command onto `PATH`; returns the link. Blocks while the
 /// administrator password prompt is up.
-pub fn install() -> IdeResult<IpcPath> {
-    let launcher = launcher()?;
-    let dir = ide_cli::install::link_dir(std::env::var_os("PATH").as_deref(), dirs::home_dir().as_deref());
-    let link = ide_cli::install::install(&launcher, &dir).map_err(install_error)?;
-    tracing::info!("installed the openidea command at {}", link.display());
-    Ok(link.into())
+pub fn install() -> IdeResult<crate::commands::window::CliInstallation> {
+    let result = ide_cli::install::install_current().map_err(install_error)?;
+    Ok(crate::commands::window::CliInstallation {
+        path: result.path.into(),
+        path_directory: result.path_directory.map(Into::into),
+    })
 }
 
 /// Removes every installed `openidea` command link; returns them.
 pub fn uninstall() -> IdeResult<Vec<IpcPath>> {
-    let links = ide_cli::install::installed(&ide_cli::install::link_dirs(dirs::home_dir().as_deref()));
-    ide_cli::install::uninstall(&links).map_err(install_error)?;
+    let links = ide_cli::install::uninstall_current().map_err(install_error)?;
     Ok(links.into_iter().map(Into::into).collect())
 }
 

@@ -11,5 +11,10 @@ serde_json.workspace = true
 dirs.workspace = true
 tracing.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["net"] }
+winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 tempfile.workspace = true

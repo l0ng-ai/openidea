@@ -1163,7 +1163,7 @@ pub fn open_targets(app: &AppHandle, targets: Vec<ide_cli::Target>) {
 
 /// `openidea diff a.txt b.txt` while the app is running: hands the pair to the window the user is
 /// looking at (a project window, never an auxiliary one), else opens a new window for it.
-fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
+pub(crate) fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
     let launch = Launch { diff: Some(Box::new(diff)), ..Default::default() };
     let target = target_window(app)
         .filter(|window| auxiliary_parent(window.label()).is_none())

@@ -183,5 +183,14 @@
   "Per-module language levels and compiler output overrides are not supported yet. Configure them in Maven or Gradle.": "Per-module language levels and compiler output overrides are not supported yet. Configure them in Maven or Gradle.",
   "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.": "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.",
   "Remove Module Overrides": "Remove Module Overrides",
-  "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}"
+  "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}",
+  "Install 'openidea' Command": "Install 'openidea' Command",
+  "Uninstall 'openidea' Command": "Uninstall 'openidea' Command",
+  "The openidea command is installed": "The openidea command is installed",
+  "The openidea command is uninstalled": "The openidea command is uninstalled",
+  "The openidea command is not installed": "The openidea command is not installed",
+  "Cannot install the openidea command": "Cannot install the openidea command",
+  "Cannot uninstall the openidea command": "Cannot uninstall the openidea command",
+  "Open a new terminal to use the openidea command.": "Open a new terminal to use the openidea command.",
+  "Add {path} to the beginning of PATH, then open a new terminal.": "Add {path} to the beginning of PATH, then open a new terminal."
 }

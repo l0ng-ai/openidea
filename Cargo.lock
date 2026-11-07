@@ -4170,13 +4170,16 @@ dependencies = [
 
 [[package]]
 name = "ide-cli"
-version = "0.1.36"
+version = "0.1.38"
 dependencies = [
  "dirs 6.0.0",
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "tracing",
+ "windows-sys 0.61.2",
+ "winreg 0.56.0",
 ]
 
 [[package]]

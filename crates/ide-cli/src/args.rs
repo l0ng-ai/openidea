@@ -5,6 +5,7 @@ use std::path::Path;
 
 pub const USAGE: &str = "\
 Usage: openidea [options] [[--line <n>] [--column <n>] path[:line[:column]] ...]
+       openidea diff <left> <right>
 
 Opens folders as projects and files in the editor of the running OpenIDEA,
 starting it if needed. Without paths, brings OpenIDEA to the front.
@@ -22,6 +23,7 @@ pub enum Command {
     Help,
     Version,
     Open(Vec<Target>),
+    Diff(Vec<Target>),
 }
 
 /// Parses `args` (without the program name); relative paths resolve against `cwd`.
@@ -30,6 +32,17 @@ pub fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
 }
 
 fn parse_with(args: &[String], cwd: &Path, exists: &dyn Fn(&Path) -> bool) -> Result<Command, String> {
+    if args.first().is_some_and(|arg| arg == "diff") {
+        return match parse_paths(&args[1..], cwd, exists)? {
+            Command::Open(targets) if targets.len() == 2 => Ok(Command::Diff(targets)),
+            Command::Help => Ok(Command::Help),
+            _ => Err("diff needs two files".into()),
+        };
+    }
+    parse_paths(args, cwd, exists)
+}
+
+fn parse_paths(args: &[String], cwd: &Path, exists: &dyn Fn(&Path) -> bool) -> Result<Command, String> {
     let mut targets = Vec::new();
     let mut options = true;
     let (mut line, mut column) = (None, None);
@@ -51,8 +64,8 @@ fn parse_with(args: &[String], cwd: &Path, exists: &dyn Fn(&Path) -> bool) -> Re
             a if options && a.starts_with('-') && a != "-" => return Err(format!("unknown option: {a}")),
             _ => {
                 let mut target = target(arg, cwd, exists)?;
-                if let Some(line) = line.take() {
-                    target.line = Some(line);
+                if line.is_some() || column.is_some() {
+                    target.line = line.take().or(target.line).or(Some(1));
                     target.column = column.take();
                 }
                 targets.push(target);
@@ -150,6 +163,25 @@ mod tests {
         assert!(split_position(r"C:\a.rs").is_empty());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_absolute_and_unc_targets_keep_spaces_and_unicode() {
+        let local = PathBuf::from(r"C:\项目\my file.rs");
+        let network = PathBuf::from(r"\\server\share\folder name");
+        let command = parse_with(
+            &args(&[r"C:\项目\my file.rs:12:5", r"\\server\share\folder name"]),
+            Path::new(r"D:\work"),
+            &|path| path == local || path == network,
+        );
+        assert_eq!(
+            command,
+            Ok(Command::Open(vec![
+                Target { path: local, line: Some(12), column: Some(5) },
+                Target { path: network, line: None, column: None },
+            ]))
+        );
+    }
+
     #[test]
     fn line_and_column_flags_apply_to_the_next_path() {
         let files = ["/work/a.rs", "/work/b.rs"];
@@ -172,5 +204,24 @@ mod tests {
         assert_eq!(parse_in(&["--version"], &[]), Ok(Command::Version));
         assert!(parse_in(&["--nope"], &[]).is_err());
         assert_eq!(parse_in(&["--", "-h"], &["/work/-h"]), Ok(Command::Open(vec![at("/work/-h", None, None)])));
+    }
+
+    #[test]
+    fn existing_diff_command_is_supported() {
+        let files = ["/work/a.rs", "/work/b.rs"];
+        assert_eq!(
+            parse_in(&["diff", "a.rs", "b.rs"], &files),
+            Ok(Command::Diff(vec![at("/work/a.rs", None, None), at("/work/b.rs", None, None),]))
+        );
+        assert!(parse_in(&["diff", "a.rs"], &files).is_err());
+        assert_eq!(
+            parse_in(&["diff", "diff", "b.rs"], &["/work/diff", "/work/b.rs"]),
+            Ok(Command::Diff(vec![at("/work/diff", None, None), at("/work/b.rs", None, None),]))
+        );
+        assert_eq!(parse_in(&["--", "diff"], &["/work/diff"]), Ok(Command::Open(vec![at("/work/diff", None, None)])));
+        assert_eq!(
+            parse_in(&["--column=4", "a.rs", "b.rs"], &files),
+            Ok(Command::Open(vec![at("/work/a.rs", Some(1), Some(4)), at("/work/b.rs", None, None),]))
+        );
     }
 }

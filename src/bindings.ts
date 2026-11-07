@@ -952,8 +952,8 @@ export const commands = {
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
 	appLogLocation: () => typedError<LogLocation, IdeError>(__TAURI_INVOKE("app_log_location")),
-	/**  Links the `openidea` command onto `PATH` (macOS app bundle only); returns the link. */
-	appCliInstall: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("app_cli_install")),
+	/**  Installs the `openidea` command for this user. */
+	appCliInstall: () => typedError<CliInstallation, IdeError>(__TAURI_INVOKE("app_cli_install")),
 	/**  Removes the installed `openidea` command; returns the links removed. */
 	appCliUninstall: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("app_cli_uninstall")),
 	appBuildInfo: () => __TAURI_INVOKE<BuildInfo>("app_build_info"),
@@ -2245,6 +2245,11 @@ export type ClearCachesResult = {
 	syntaxTrees: number,
 	rssBeforeBytes: number | null,
 	rssAfterBytes: number | null,
+};
+
+export type CliInstallation = {
+	path: IpcPath,
+	pathDirectory: IpcPath | null,
 };
 
 export type CloseContext = {

@@ -30,11 +30,13 @@ pub struct Target {
 pub struct Request {
     pub version: u32,
     pub targets: Vec<Target>,
+    #[serde(default)]
+    pub diff: bool,
 }
 
 impl Request {
     pub fn open(targets: Vec<Target>) -> Self {
-        Self { version: PROTOCOL_VERSION, targets }
+        Self { version: PROTOCOL_VERSION, targets, diff: false }
     }
 }
 
@@ -43,4 +45,28 @@ impl Request {
 pub enum Response {
     Ok,
     Error { message: String },
+}
+
+/// A GUI subsystem executable inherits redirected handles, but needs its parent's
+/// console for interactive help and errors. Batch launchers wait for this process.
+#[cfg(windows)]
+pub fn attach_console() {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType};
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        SetStdHandle,
+    };
+    // SAFETY: attaches only this CLI process, without allocating a new console.
+    unsafe {
+        let redirected = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE].map(|kind| {
+            let handle = GetStdHandle(kind);
+            (kind, handle, matches!(GetFileType(handle), FILE_TYPE_DISK | FILE_TYPE_PIPE))
+        });
+        AttachConsole(ATTACH_PARENT_PROCESS);
+        for (kind, handle, keep) in redirected {
+            if keep {
+                SetStdHandle(kind, handle);
+            }
+        }
+    }
 }

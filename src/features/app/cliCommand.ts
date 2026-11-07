@@ -1,6 +1,6 @@
-/** Install / Uninstall the `openidea` shell command (macOS app bundle only). */
+/** Install / Uninstall the `openidea` shell command. */
 import type { Action } from "@/platform/actions";
-import { t } from "@/platform/i18n";
+import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 
@@ -12,11 +12,24 @@ function errorText(e: unknown) {
 
 async function installCli(): Promise<void> {
   try {
-    const link = await call(commands.appCliInstall());
-    notifications().notify({ level: "info", title: t("app.cli.installed"), body: link, key: KEY });
+    const result = await call(commands.appCliInstall());
+    const hint = result.pathDirectory
+      ? tx`Add ${result.pathDirectory} to the beginning of PATH, then open a new terminal.`
+      : tx("Open a new terminal to use the openidea command.");
+    notifications().notify({
+      level: "info",
+      title: tx("The openidea command is installed"),
+      body: `${result.path}\n${hint}`,
+      key: KEY,
+    });
   } catch (e) {
     if (!isCancelled(e))
-      notifications().notify({ level: "error", title: t("app.cli.installFailed"), body: errorText(e), key: KEY });
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot install the openidea command"),
+        body: errorText(e),
+        key: KEY,
+      });
   }
 }
 
@@ -25,13 +38,18 @@ async function uninstallCli(): Promise<void> {
     const links = await call(commands.appCliUninstall());
     notifications().notify({
       level: "info",
-      title: t(links.length ? "app.cli.uninstalled" : "app.cli.notInstalled"),
+      title: tx(links.length ? "The openidea command is uninstalled" : "The openidea command is not installed"),
       body: links.join("\n") || undefined,
       key: KEY,
     });
   } catch (e) {
     if (!isCancelled(e))
-      notifications().notify({ level: "error", title: t("app.cli.uninstallFailed"), body: errorText(e), key: KEY });
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot uninstall the openidea command"),
+        body: errorText(e),
+        key: KEY,
+      });
   }
 }
 
@@ -39,15 +57,15 @@ export function cliActions(): Action[] {
   return [
     {
       id: "app.installCli",
-      title: t("app.action.installCli"),
-      category: t("app.category.tools"),
+      title: tx("Install 'openidea' Command"),
+      category: tx("Tools"),
       keywords: ["cli", "shell", "terminal", "path", "command line", "launcher"],
       run: installCli,
     },
     {
       id: "app.uninstallCli",
-      title: t("app.action.uninstallCli"),
-      category: t("app.category.tools"),
+      title: tx("Uninstall 'openidea' Command"),
+      category: tx("Tools"),
       keywords: ["cli", "shell", "terminal", "path", "command line", "launcher"],
       run: uninstallCli,
     },
