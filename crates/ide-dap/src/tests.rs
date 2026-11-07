@@ -1681,6 +1681,41 @@ async fn attach_session_reports_capability() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn ended_attach_session_without_pid_reports_program_exited() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(remote_attach("java-debug", project.path())).await.unwrap();
+    h.manager.session(id).unwrap().terminated.store(true, Ordering::Release);
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::ProgramExited }
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn listen_mode_attach_is_not_scanned() {
+    let h = harness(Script::default());
+    let scans = Arc::new(Mutex::new(Vec::new()));
+    let counted = scans.clone();
+    h.manager.set_jvm_finder(Arc::new(move |port, _| {
+        counted.lock().push(port);
+        None
+    }));
+    let (_jvm, relay) = jdwp::tests::connected_jvm().await;
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": relay}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(
+        h.manager.jvm_memory_classes(id).await.unwrap(),
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::ListenModeNotSupported }
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(scans.lock().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn remote_host_is_not_scanned() {
     let h = harness(Script::default());
     let project = tempfile::tempdir().unwrap();

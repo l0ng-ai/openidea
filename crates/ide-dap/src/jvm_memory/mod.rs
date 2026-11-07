@@ -56,6 +56,9 @@ pub struct JvmMemorySnapshot {
 pub enum JvmMemoryUnavailable {
     /// An attach session whose JVM is remote, or local but not found by its JDWP port.
     AttachedJvmNotFound,
+    /// An attach through the IDE's listen-mode relay: the JVM connected to the IDE, so it has
+    /// no JDWP listener to be found by.
+    ListenModeNotSupported,
     UnsupportedPlatform,
     NoJvmProcess,
     ListenerNotRunning,
@@ -103,6 +106,14 @@ pub(crate) async fn session_classes(session: Arc<Session>) -> IdeResult<JvmMemor
         };
         Some(pid)
     } else {
+        if session.jvm_pid.load(Ordering::Acquire) <= 0 {
+            if session.terminated.load(Ordering::Acquire) {
+                return unavailable(JvmMemoryUnavailable::ProgramExited);
+            }
+            if session.listen_relay.load(Ordering::Acquire) {
+                return unavailable(JvmMemoryUnavailable::ListenModeNotSupported);
+            }
+        }
         None
     };
     // Detached, so a caller that gives up cannot release the lock while the JVM is still

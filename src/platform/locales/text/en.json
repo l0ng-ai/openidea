@@ -81,6 +81,7 @@
   "Loaded by more than one class loader": "Loaded by more than one class loader",
   "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.": "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.",
   "Memory view is not available on this platform yet.": "Memory view is not available on this platform yet.",
+  "Memory view is not available when the IDE listens for the JVM to connect.": "Memory view is not available when the IDE listens for the JVM to connect.",
   "Could not find the program's JVM process.": "Could not find the program's JVM process.",
   "The JVM does not accept attach requests. Restart the debug session without -XX:+DisableAttachMechanism.": "The JVM does not accept attach requests. Restart the debug session without -XX:+DisableAttachMechanism.",
   "JDK {v} cannot report memory while suspended. Resume the program, then refresh.": "JDK {v} cannot report memory while suspended. Resume the program, then refresh.",

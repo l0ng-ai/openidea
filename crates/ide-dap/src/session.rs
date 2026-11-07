@@ -59,6 +59,8 @@ pub(crate) struct Session {
     pub jvm_pid: AtomicI64,
     /// JDWP port of an attach to a local JVM, to look the JVM up again; unset for a remote one.
     pub jdwp_port: std::sync::OnceLock<u16>,
+    /// The attach goes through the listen-mode relay of [`crate::jdwp::listen_for_jvm`].
+    pub listen_relay: AtomicBool,
     /// True from a `stopped` event until `continued` or a successful resume/step request.
     /// Never cleared elsewhere: a stale `true` only makes a later check refuse.
     pub suspended: AtomicBool,
@@ -120,6 +122,7 @@ impl Session {
             debuggee_pid: AtomicI64::new(0),
             jvm_pid: AtomicI64::new(0),
             jdwp_port: std::sync::OnceLock::new(),
+            listen_relay: AtomicBool::new(false),
             suspended: AtomicBool::new(false),
             stop_seq: AtomicU64::new(0),
             stop_pids: parking_lot::Mutex::new(Vec::new()),

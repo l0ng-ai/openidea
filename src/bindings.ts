@@ -4926,7 +4926,12 @@ export type JvmMemorySnapshot = {
 
 export type JvmMemoryUnavailable = 
 /**  An attach session whose JVM is remote, or local but not found by its JDWP port. */
-{ kind: "attachedJvmNotFound" } | { kind: "unsupportedPlatform" } | { kind: "noJvmProcess" } | { kind: "listenerNotRunning" } | 
+{ kind: "attachedJvmNotFound" } | 
+/**
+ *  An attach through the IDE's listen-mode relay: the JVM connected to the IDE, so it has
+ *  no JDWP listener to be found by.
+ */
+{ kind: "listenModeNotSupported" } | { kind: "unsupportedPlatform" } | { kind: "noJvmProcess" } | { kind: "listenerNotRunning" } | 
 /**  `java_major` is 0 when the version is unknown. */
 { kind: "unsafeWhileSuspended"; javaMajor: number } | { kind: "programExited" } | { kind: "timedOut" };
 

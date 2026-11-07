@@ -22,6 +22,8 @@ function unavailableText(reason: JvmMemoryUnavailable): string {
       return tx(
         "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.",
       );
+    case "listenModeNotSupported":
+      return tx("Memory view is not available when the IDE listens for the JVM to connect.");
     case "unsupportedPlatform":
       return tx("Memory view is not available on this platform yet.");
     case "noJvmProcess":

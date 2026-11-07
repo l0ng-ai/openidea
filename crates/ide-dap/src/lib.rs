@@ -904,7 +904,11 @@ impl DebugManager {
             && JVM_MEMORY_ADAPTERS.contains(&s.adapter.as_str())
             && let Some(port) = jvm_memory::local_jdwp_port(&arguments)
         {
-            jvm_memory::find_attached_jvm(s, port, self.jvm_finder.lock().clone());
+            if jdwp::is_listen_relay(port) {
+                s.listen_relay.store(true, Ordering::Release);
+            } else {
+                jvm_memory::find_attached_jvm(s, port, self.jvm_finder.lock().clone());
+            }
         }
         if s.adapter == kotlin::ADAPTER {
             let host = arguments
