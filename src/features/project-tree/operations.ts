@@ -20,7 +20,6 @@ import {
   nameOf,
   packageSegments,
   parentOf,
-  relativeTo,
   uniqueName,
   validateName,
   type PackageKind,
@@ -41,6 +40,9 @@ import {
 import { tx } from "@/platform/i18n";
 import { hostOs, isRemoteWindow, useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
+import { pathToCopy, type PathKind } from "@/platform/copyPath";
+import { projectFolder, useProject } from "@/platform/project";
+export type { PathKind } from "@/platform/copyPath";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
 const mutable = (n: ProjectNode) => !n.root && !n.placeholder && !n.readOnly;
@@ -802,13 +804,12 @@ export async function importExternal(paths: string[], target: string) {
 // ---------------------------------------------------------------------------
 // Paths / external
 
-export type PathKind = "absolute" | "relative" | "name";
-
 export function pathsFor(kind: PathKind, nodes: ProjectNode[] = selectedNodes()): string[] {
   const { root } = get();
-  return nodes.map((n) =>
-    kind === "absolute" ? n.path : kind === "name" ? nameOf(n.path) : relativeTo(root ?? "", n.path) || ".",
-  );
+  const project = useProject.getState().project;
+  return nodes
+    .map((n) => pathToCopy(kind, n.path, project ? (projectFolder(project, n.path)?.root ?? null) : root))
+    .filter((p): p is string => p !== null);
 }
 
 export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedNodes()) {
@@ -816,6 +817,7 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
+    void executeAction("editor.showHint", { text: tx`Copied ${text}` });
   } catch (e) {
     fail(tx("Cannot access the clipboard"), e);
   }

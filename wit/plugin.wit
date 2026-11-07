@@ -152,3 +152,14 @@ world plugin-endpoints {
 world endpoints {
     export endpoints-provider;
 }
+
+/// A plugin with diagnostics under `[[contributes.providers]]`.
+world plugin-diagnostics {
+    include plugin;
+    export diagnostics-provider;
+}
+
+/// `diagnostics` is already the released host interface name.
+world editor-diagnostics {
+    export diagnostics-provider;
+}

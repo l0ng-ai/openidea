@@ -139,6 +139,35 @@ describe("a pending question", () => {
 });
 
 describe("a pending AskUserQuestion", () => {
+  it("keeps separate answers for Codex question ids with identical wording", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 11,
+        title: "Which?",
+        chosen: null,
+        options: [],
+        questions: ["first", "second"].map((answerKey, index) => ({
+          answerKey,
+          header: answerKey,
+          question: "Which?",
+          multiSelect: false,
+          options: [{ label: index === 0 ? "One" : "Two", description: "", preview: null }],
+        })),
+      },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Which?" });
+    fireEvent.click(within(card).getByRole("radio", { name: /^One/ }));
+    fireEvent.click(within(card).getByRole("radio", { name: /^Two/ }));
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    await waitFor(() =>
+      expect(backend.answers).toEqual([["A", 11, JSON.stringify({ first: ["One"], second: ["Two"] })]]),
+    );
+  });
+
   it("shows every question with its descriptions in a card and sends all answers at once", async () => {
     backend.entries.set("A", [
       {

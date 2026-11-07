@@ -17,6 +17,7 @@
 
 mod api;
 pub mod commit;
+pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
 mod hover;
@@ -326,6 +327,8 @@ pub struct PluginHost {
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
     endpoints: Mutex<endpoints::Endpoints>,
+    web_ptys: Mutex<BTreeMap<String, Vec<web::WebPtySession>>>,
+    diagnostic_projects: Mutex<Vec<diagnostics::ProjectState>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -417,6 +420,8 @@ impl PluginHost {
             providers,
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
+            web_ptys: Mutex::default(),
+            diagnostic_projects: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -1370,6 +1375,7 @@ impl PluginHost {
     pub fn forget_client(&self, label: &str) {
         self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
         self.shared.forget_client(label);
+        self.forget_web_ptys(label);
     }
 
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
@@ -1762,6 +1768,7 @@ impl PluginHost {
         let actors: Vec<_> = self.plugins.read().values().filter_map(|p| p.runtime.lock().take()).collect();
         for id in self.plugins.read().keys() {
             self.shared.block_prompts(id);
+            self.stop_web_ptys(id);
         }
         for a in &actors {
             a.stop(false);
@@ -1938,6 +1945,7 @@ impl PluginHost {
     /// whose activation event already fired.
     fn start(&self, plugin: &Arc<LoadedPlugin>) {
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         if plugin.source == PluginSource::Installed
             && let Some(reason) = self.revoked_reason(plugin.id(), &plugin.manifest().version, plugin.dir())
         {
@@ -2120,6 +2128,7 @@ impl PluginHost {
     /// A trap dropped the plugin's instance: restart it on next use after a
     /// backoff, or stop it for the session after too many crashes in a row.
     fn crashed(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
+        self.clear_provider_diagnostics(plugin.id());
         let failures = {
             let mut meta = plugin.meta.lock();
             meta.failures += 1;
@@ -2178,6 +2187,7 @@ impl PluginHost {
     }
 
     fn stop(&self, plugin: &LoadedPlugin) {
+        self.stop_web_ptys(plugin.id());
         self.clear_plugin_navigation(plugin.id());
         self.clear_plugin_endpoints(plugin.id());
         // A call waiting on the user would keep the join below waiting.
@@ -2186,6 +2196,7 @@ impl PluginHost {
             actor.stop(true);
         }
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         self.shared.clear_plugin(plugin.id(), true);
         self.queues.lock().retain(|(id, _), _| id != plugin.id());
     }
@@ -2195,9 +2206,12 @@ impl PluginHost {
         self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Failed;
         meta.error = Some(error);
+        drop(meta);
+        self.stop_web_ptys(plugin.id());
     }
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
@@ -2560,6 +2574,70 @@ impl ide_language::ExternalSyntax for PluginSyntax {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_panics_stop_actor_and_reply_on_every_call_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host =
+            PluginHost::new(tmp.path().join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/diagnostics");
+        host.install_from_dir(&fixture, &Consent::all()).unwrap();
+        let plugin = host.get("test.diagnostics").unwrap();
+        for mode in 0..5 {
+            let (actor, _) = host.ensure_active(&plugin, None).unwrap();
+            let cancel = ide_core::CancellationToken::new();
+            let next_actor = actor.clone();
+            let (queued_tx, queued_rx) = std::sync::mpsc::channel();
+            let panic = move |_: &mut Runtime| -> Result<(), CallError> {
+                let pending = next_actor.submit(None, |_| Ok("must not run")).unwrap();
+                queued_tx.send(pending).unwrap();
+                panic!("host call panic")
+            };
+            let result = match mode {
+                0 => actor.call(None, panic),
+                1 => actor.call_cancellable(&cancel, Duration::ZERO, panic),
+                2 => actor.call_edit_cancellable(&cancel, Duration::ZERO, Duration::from_secs(5), panic),
+                _ => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    if mode == 3 {
+                        actor.post(panic, move |result| {
+                            let _ = tx.send(result);
+                        });
+                    } else {
+                        actor.post(
+                            |_| Ok(()),
+                            move |result| {
+                                let _ = tx.send(result);
+                                panic!("completion callback panic");
+                            },
+                        );
+                    }
+                    rx.recv_timeout(Duration::from_secs(5)).expect("actor must reply")
+                }
+            };
+            if mode < 4 {
+                let queued = queued_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(matches!(queued.wait(), Err(ActorError::Stopped)), "poisoned runtime must not run queued work");
+            }
+            actor.stop(true);
+            if mode < 4 {
+                assert!(
+                    matches!(result, Err(ActorError::Call(CallError::Trap(ref message))) if message.contains("host call panic")),
+                    "{result:?}"
+                );
+            }
+            assert!(!actor.is_alive());
+            assert!(!actor.is_busy());
+            assert!(matches!(actor.call(None, |_| Ok(())), Err(ActorError::Stopped)));
+            let crash = actor.take_crash().expect("supervisor must see the panic");
+            assert!(crash.contains(if mode == 4 { "completion callback panic" } else { "host call panic" }));
+            assert!(actor.take_crash().is_none());
+            cancel.cancel();
+            // Re-enable to reset the supervisor before testing the next call path.
+            host.set_enabled("test.diagnostics", false).unwrap();
+            host.set_enabled("test.diagnostics", true).unwrap();
+        }
+    }
 
     #[test]
     fn globs() {

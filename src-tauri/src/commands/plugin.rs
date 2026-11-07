@@ -23,6 +23,7 @@ use tauri::{AppHandle, Manager, State, Window};
 
 /// How long `plugin_list` waits for the startup load before answering with what it has.
 const INITIAL_LOAD_WAIT: Duration = Duration::from_secs(5);
+
 /// `on-startup-finished` fires this long after the installed plugins are loaded.
 const STARTUP_FINISHED_DELAY: Duration = Duration::from_millis(1500);
 /// How often the marketplace index is read again (revocations).
@@ -529,6 +530,35 @@ pub fn plugin_web_page(
     view: String,
 ) -> IdeResult<ide_host::plugins::web::WebPage> {
     state.plugins.web_page(&plugin_id, &view)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_web_pty_spawn(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    view: String,
+    command: ide_host::plugins::web::WebPtyCommand,
+    on_output: Channel<String>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    let plugins = state.plugins.clone();
+    let host = state.host.clone();
+    let window = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins.spawn_web_pty(
+            &host,
+            &plugin_id,
+            &view,
+            &window,
+            command,
+            Arc::new(move |chunk| {
+                let _ = on_output.send(chunk);
+            }),
+        )
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Largest file a web view saves or opens (`openidea.saveFile` / `openFile`).

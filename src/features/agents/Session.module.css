@@ -1078,7 +1078,10 @@
   gap: 12px;
   max-height: 50vh;
   overflow-y: auto;
-  margin: 0 12px 8px;
+  /* The composer's width, so the card sits exactly over the box it belongs to. */
+  width: 100%;
+  max-width: var(--agent-conversation-width);
+  margin: 0 auto 8px;
   padding: 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
@@ -1115,8 +1118,25 @@
 .question .questionOption {
   display: flex;
   align-items: flex-start;
-  padding: 4px 6px;
+  padding: 8px 10px;
   border-radius: var(--radius-row);
+}
+/* Each option is a card of its own: separate targets, not one list with hairlines. */
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question .questionChoices > * {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-row);
+}
+.question .questionChoices > *:hover {
+  border-color: var(--border-strong);
+}
+.question .questionChoices > *:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--bg-hover);
 }
 .question .questionOption:hover {
   background: var(--bg-hover);
