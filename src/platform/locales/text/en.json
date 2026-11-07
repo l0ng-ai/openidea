@@ -315,5 +315,17 @@
   "devcontainer up exited with {status}": "devcontainer up exited with {status}",
   "Select an item to view details": "Select an item to view details",
   "Nothing to show": "Nothing to show",
-  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory"
+  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory",
+  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory",
+  "Copy Path/Reference…": "Copy Path/Reference…",
+  "Absolute Path": "Absolute Path",
+  "File Name": "File Name",
+  "Path From Content Root": "Path From Content Root",
+  "Path From Source Root": "Path From Source Root",
+  "Copy Path From Source Root": "Copy Path From Source Root",
+  "Path with line number": "Path with line number",
+  "Copy Path with Line Number": "Copy Path with Line Number",
+  "Reference": "Reference",
+  "Resolving reference…": "Resolving reference…",
+  "Copied {text}": "Copied {text}"
 }

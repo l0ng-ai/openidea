@@ -195,7 +195,8 @@ export const intellijMacos: Record<string, string[]> = {
   "window.previous": ["Meta+Alt+Shift+`"],
   "file.reloadFromDisk": ["Meta+Alt+Y"],
   // Before the project view's ⇧⌘C (Copy Absolute Path), which wins there.
-  "editor.copyPath": ["Meta+Shift+C"],
+  "editor.copyPath": [],
+  "editor.copyPathReference": ["Meta+Shift+C"],
 
   // Project view (when: projectViewFocus)
   "project.newFile": ["Meta+N"],
