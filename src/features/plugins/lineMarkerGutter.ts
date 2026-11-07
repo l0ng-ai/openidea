@@ -1,6 +1,5 @@
 /**
- * Gutter icons from plugins' `line-markers` providers (MyBatis' arrows
- * between a mapper interface and its XML). Asked once per document version
+ * Gutter icons from plugins' `line-markers` providers. Asked once per document version
  * (debounced); markers follow their lines in between; a click opens the
  * marker's target. The gutter column exists only while there are markers,
  * so editors without plugin providers keep their usual width.
@@ -8,7 +7,8 @@
 import { Compartment, RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import type { EditorDocContext } from "@/editor/api";
-import { navigateTo } from "@/editor/lsp/navigation";
+import { navigationButton } from "./navigationButton";
+import { pluginsBackend } from "./backend";
 import { commands, type LineMarkerInfo } from "@/platform/ipc";
 import { gutterIconMarkup } from "@/ui";
 import styles from "@/editor/navigation/LineMarkers.module.css";
@@ -58,14 +58,16 @@ class PluginMarker extends GutterMarker {
     return (
       other instanceof PluginMarker &&
       other.marker.tooltip === this.marker.tooltip &&
-      other.marker.icon === this.marker.icon
+      other.marker.icon === this.marker.icon &&
+      JSON.stringify(other.marker.target) === JSON.stringify(this.marker.target)
     );
   }
   override toDOM(): Node {
-    const el = document.createElement("div");
-    el.className = styles.marker!;
+    const el = this.marker.target
+      ? navigationButton([this.marker.target], markerIcon(this.marker.icon))
+      : document.createElement("span");
+    el.className = `${styles.marker} cm-plugin-mapping-button`;
     el.title = this.marker.tooltip;
-    el.setAttribute("role", "button");
     el.setAttribute("aria-label", this.marker.tooltip);
     el.innerHTML = gutterIconMarkup(markerIcon(this.marker.icon)) ?? "";
     return el;
@@ -76,12 +78,20 @@ class MarkersPlugin {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
   private shown = false;
+  private off: () => void;
 
   constructor(
     private view: EditorView,
     private doc: number,
     private column: Compartment,
   ) {
+    this.off = pluginsBackend().onEvent((event) => {
+      if (event.type !== "documentIndexesChanged") return;
+      this.generation++;
+      this.shown = false;
+      this.view.dispatch({ effects: [setMarkers.of([]), this.column.reconfigure([])] });
+      this.schedule();
+    });
     this.schedule();
   }
 
@@ -116,6 +126,7 @@ class MarkersPlugin {
   }
 
   destroy() {
+    this.off();
     if (this.timer) clearTimeout(this.timer);
     this.generation++;
   }
@@ -128,17 +139,6 @@ const markerColumn: Extension = gutter({
       view.state.field(markersField).map((m) => new PluginMarker(m.marker).range(m.pos)),
       true,
     ),
-  domEventHandlers: {
-    mousedown: (view, block, event) => {
-      const e = event as MouseEvent;
-      if (e.button !== 0) return false;
-      const target = view.state.field(markersField).find((m) => m.pos === block.from && m.marker.target)?.marker.target;
-      if (!target) return false;
-      e.preventDefault();
-      void navigateTo(target);
-      return true;
-    },
-  },
 });
 
 export function pluginLineMarkerGutter(ctx: EditorDocContext): Extension {

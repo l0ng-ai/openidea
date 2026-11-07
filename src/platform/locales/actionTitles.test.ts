@@ -40,7 +40,10 @@ function actionTitles(): Map<string, string> {
     for (const title of literals(node)) titles.set(title, `${source.fileName.slice(root.length)}:${line}`);
   };
   for (const source of program.getSourceFiles()) {
-    if (!source.fileName.startsWith(`${root}src/`) || /\.test\.tsx?$|\/__tests__\/|\/test\//.test(source.fileName))
+    if (
+      !source.fileName.startsWith(`${root}src/`) ||
+      /\.test\.tsx?$|\/__tests__\/|\/test\//.test(source.fileName.slice(root.length))
+    )
       continue;
     const visit = (node: ts.Node) => {
       if (

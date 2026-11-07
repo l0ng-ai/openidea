@@ -20,7 +20,12 @@ import { useProject } from "@/platform/project";
 import { dragRequiresAlt, Icon, IconButton, Menu, showContextMenu, tooltipAttrs, type MenuItem, T } from "@/ui";
 import { FOCUSABLE } from "@/ui/popupState";
 import { TabStripRegistry } from "@/ui/Tabs";
-import { useContributions, type ToolWindowAnchor, type ToolWindowContribution } from "../contributions";
+import {
+  ToolWindowShownProvider,
+  useContributions,
+  type ToolWindowAnchor,
+  type ToolWindowContribution,
+} from "../contributions";
 import { useDistractionFree } from "../distractionFree";
 import {
   hideToolWindow,
@@ -648,6 +653,14 @@ function HeaderRow({
     <header
       className={clsx(styles.header, tw.headerContent && styles.headerTabbed)}
       onDoubleClick={(e) => e.target === e.currentTarget && toggleMaximizeToolWindow(tw.id)}
+      onMouseDown={(e) => {
+        // A middle click on the header hides the window (like the Hide button).
+        // Not a press on the header's tabs or buttons, which close and act
+        // themselves: their event would otherwise hide the whole window too.
+        if (e.button !== 1 || (e.target as Element).closest('button, a, [role="tablist"], [role="separator"]')) return;
+        e.preventDefault();
+        hideToolWindow(tw.id);
+      }}
     >
       {!showTitle ? null : titleItems.length > 0 ? (
         <>
@@ -792,7 +805,9 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       )}
       <div className={styles.body} data-toolwindow-body="">
         <ToolWindowFrame.Provider value={frame}>
-          <Content id={tw.id} />
+          <ToolWindowShownProvider value={!hidden}>
+            <Content id={tw.id} />
+          </ToolWindowShownProvider>
         </ToolWindowFrame.Provider>
       </div>
     </section>

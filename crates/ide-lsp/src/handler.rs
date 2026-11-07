@@ -136,6 +136,12 @@ impl ClientHandler {
 
     fn show_message(&self, mgr: &LspManager, params: &Value) {
         let text = params.get("message").and_then(Value::as_str).unwrap_or_default().to_owned();
+        // rust-analyzer built from source reports its own slow main-loop turns as errors, meant for
+        // its developers (`poke_rust_analyzer_developer`); nothing for the user to act on.
+        if text.starts_with("overly long loop turn") {
+            tracing::warn!("[{}] {text}", self.server.name);
+            return;
+        }
         let level = match params.get("type").and_then(Value::as_u64) {
             Some(1) => NotifyLevel::Error,
             Some(2) => NotifyLevel::Warning,
@@ -234,6 +240,11 @@ impl Handler for ClientHandler {
         let Some(mgr) = self.mgr.upgrade() else { return };
         match method {
             "$/progress" => self.progress(&mgr, params),
+            "experimental/serverStatus" => {
+                if let Some(quiescent) = params.get("quiescent").and_then(Value::as_bool) {
+                    self.server.set_loading(mgr.sink(), !quiescent);
+                }
+            }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {

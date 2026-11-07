@@ -204,6 +204,9 @@ fn stop_kills_whole_process_group() {
     let grandchild: i32 = out.trim().parse().expect("pid");
     assert!(alive(grandchild));
 
+    // The first Stop only asks the group to exit (and waits); the second one kills it.
+    h.pm.stop(id).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
     h.pm.stop(id).unwrap();
     wait_exit(&h, id, Duration::from_secs(10));
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -480,6 +483,36 @@ fn python_scripts_import_sibling_packages_and_preserve_env_file_paths() {
 }
 
 #[test]
+fn ruby_test_runs_load_the_reporter_and_other_runs_do_not() {
+    let reporter = std::env::temp_dir().join("ruby reporter");
+    let run = |kind: &str, is_test: bool| {
+        let h = harness();
+        let mut config =
+            cfg("ruby-env", "/bin/sh", &["-c", r#"echo "lib=$RUBYLIB opt=$RUBYOPT report=$OPENIDEA_TEST_REPORT""#]);
+        config.kind = kind.into();
+        config.is_test = is_test;
+        let options = StartOptions { ruby_reporter: Some(reporter.clone()), ..Default::default() };
+        let chunks: Chunks = Arc::default();
+        let sink = chunks.clone();
+        let info =
+            h.pm.start(h.root.path(), &config, &options, h.sink.clone(), Box::new(move |c| sink.lock().push(c)))
+                .unwrap();
+        assert_eq!(wait_exit(&h, info.id, Duration::from_secs(10)), Some(0));
+        text(&chunks, stdout)
+    };
+    for kind in ["ruby", "rake"] {
+        let out = run(kind, true);
+        // The directory has a space: it is on RUBYLIB and only the bare feature name is in RUBYOPT.
+        assert!(out.contains(&format!("lib={}", reporter.display())), "{out}");
+        assert!(out.contains("-ropenidea_test_hook") && !out.contains(&format!("-r{}", reporter.display())), "{out}");
+        assert!(out.contains("report=1"), "{out}");
+    }
+    for (kind, is_test) in [("ruby", false), ("rspec", true), ("pytest", true)] {
+        assert!(run(kind, is_test).contains("report=\n"), "{kind} {is_test}");
+    }
+}
+
+#[test]
 fn revoking_one_project_stops_only_its_runs() {
     let h = harness();
     let other = tempfile::tempdir().unwrap();
@@ -497,6 +530,30 @@ fn revoking_one_project_stops_only_its_runs() {
     wait_exit(&h, mine, Duration::from_secs(5));
     assert!(h.pm.list().iter().any(|run| run.id == theirs.id && run.running));
     h.pm.stop(theirs.id).unwrap();
+}
+
+/// Quitting the app kills what every project's runs started, forked children included (#1691).
+#[test]
+fn kill_all_stops_every_projects_process_trees() {
+    let h = harness();
+    let other = tempfile::tempdir().unwrap();
+    let (mine, chunks) = start(&h, &cfg("mine", "/bin/sh", &["-c", "sleep 30 & echo $!; wait"]));
+    let grandchild: i32 = wait_for(&chunks, "\n").trim().parse().expect("pid");
+    let theirs =
+        h.pm.start(
+            other.path(),
+            &cfg("theirs", "/bin/sh", &["-c", "sleep 30"]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(|_| {}),
+        )
+        .unwrap();
+    h.pm.kill_all();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while alive(grandchild) || h.pm.list().iter().any(|r| (r.id == mine || r.id == theirs.id) && r.running) {
+        assert!(Instant::now() < deadline, "a run survived kill_all");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]

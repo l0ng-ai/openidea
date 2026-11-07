@@ -109,6 +109,30 @@ describe("run configurations in Services", () => {
     expect(attached[0]?.children?.[0]?.detail).toBe(":8080");
   });
 
+  it("shows the app port of a direct debug session like for Run", () => {
+    const c = config("app", "spring-boot");
+    const d: DebugServiceSession = {
+      id: 1,
+      config: c,
+      status: "running",
+      processId: null,
+      startedAt: 2,
+      httpPort: 8080,
+      stop: async () => {},
+      rerun: null,
+      show: () => {},
+    };
+    expect(runServiceItems([c], [], DEFAULT_TYPES, [], {}, [d])[0]?.children?.[0]).toMatchObject({
+      detail: ":8080",
+      icon: "debug",
+      dim: false,
+    });
+    // A paused debugger still wins over the announced port.
+    expect(
+      runServiceItems([c], [], DEFAULT_TYPES, [], {}, [{ ...d, status: "paused" }])[0]?.children?.[0]?.detail,
+    ).toBe("Suspended");
+  });
+
   it("applies display order to detected and saved configurations of every language", () => {
     const configs = [
       config("java-a", "spring-boot"),
@@ -255,6 +279,17 @@ describe("configurations that ran", () => {
     const items = runServiceItems([dev], [running], [], ["dev"]);
     expect(items).toHaveLength(1);
     expect(items[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
+  });
+
+  it("drops a deleted configuration once its run has ended (#1497)", () => {
+    const removed = (id: string) => id === "dev";
+    const ended = runServiceItems([], [session("s1", dev, "finished", 1)], [], ["dev"], {}, [], removed);
+    expect(ended).toEqual([]);
+    const live = runServiceItems([], [session("s1", dev, "running", 1)], [], ["dev"], {}, [], removed);
+    expect(live[0]!.children!.map((c) => [c.label, c.detail])).toEqual([["dev", "Running"]]);
+    // Never a saved configuration (a build task, an external tool): its finished run stays.
+    const adHoc = runServiceItems([], [session("s2", scratch, "finished", 1)], [], [], {}, [], removed);
+    expect(adHoc[0]!.children!.map((c) => c.key)).toEqual(["run:config:context:file"]);
   });
 });
 

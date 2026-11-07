@@ -387,9 +387,9 @@ describe("terminalFont", () => {
 });
 
 describe("terminal tab titles", () => {
-  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, session: "s1", group: "g1" };
+  const tab: TerminalTab = { id: "t1", name: "Local", customName: null, shell: null, session: "s1", group: "g1" };
   const snap = (appTitle: string | null, commandRunning = true): Record<string, SessionSnapshot> => ({
-    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p", follow: true },
+    s1: { status: "running", exitCode: null, title: "zsh", appTitle, commandRunning, cwd: "/p" },
   });
 
   it("shows the default name at the prompt, whatever title the shell sets", () => {

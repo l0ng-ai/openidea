@@ -473,6 +473,8 @@ export function formParams(config: RunConfig, type = typeFor(config.kind)): Reco
   if (config.params && Object.keys(config.params).length && (type.id !== "go" || config.params.goKind))
     return { ...config.params };
   if (type.id === COMPOUND) return {};
+  // No command line to fall back to: the form stays, and an emptied field shows as required.
+  if (type.debugOnly) return { ...config.params };
   const derived = type.paramsFrom?.(config);
   if (!derived) return null;
   // Only when the form reproduces exactly what runs today.

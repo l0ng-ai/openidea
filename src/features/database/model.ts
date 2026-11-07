@@ -22,6 +22,17 @@ export function toTsv(header: readonly string[] | null, rows: ReadonlyArray<read
   return lines.join("\n");
 }
 
+/**
+ * Every value on a single `, `-separated line (IDEA's One-Row extractor, for
+ * `IN (…)` lists): NULL for nulls, numbers unquoted, everything else
+ * single-quoted with `'` doubled. `numeric(c)` decides quoting per column.
+ */
+export function toOneRow(rows: ReadonlyArray<readonly Cell[]>, numeric: (col: number) => boolean): string {
+  const literal = (v: Cell, c: number) =>
+    v === null ? "NULL" : numeric(c) && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
+  return rows.flatMap((r) => r.map(literal)).join(", ");
+}
+
 /** RFC 4180 CSV; NULL is an empty field. */
 export function toCsv(header: readonly string[] | null, rows: ReadonlyArray<readonly Cell[]>): string {
   const field = (v: Cell) => {
@@ -332,9 +343,11 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
     const file = sqlite[1]!.replace(/^\/([A-Za-z]:)/, "$1");
     return { source: { driver: "sqlite", file, name: fileSourceName(file) }, password: null };
   }
+  // JDBC thin URLs: `jdbc:oracle:thin:@//host:port/service`.
+  const thin = /^(?:oracle|oracledb):thin:@(.+)$/i.exec(url);
   const m =
     /^([a-z][a-z0-9]*):\/\/(?:([^:@/]*)(?::([^@/]*))?@)?([^:/?,]+|\[[^\]]+\])(?::(\d+))?(?:,[^/?]*)?(?:\/([^?]*))?(?:\?(.*))?$/i.exec(
-      url,
+      thin ? `oracle://${thin[1]!.replace(/^\/+/, "")}` : url,
     );
   const vendor = m ? vendorOfScheme(m[1]!) : undefined;
   if (!m || !vendor || vendor.driver === "sqlite") return null;

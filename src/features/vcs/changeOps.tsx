@@ -4,7 +4,7 @@ import type { FileStatus, PartialCommitFile, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { commitRepos, groupOf, planCommit, renamedFromPath } from "./changes";
+import { commitRepos, groupOf, planCommit, remainingOverrides, renamedFromPath } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { runCommitChecks } from "./commitChecks";
 import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
@@ -78,13 +78,21 @@ export async function commitChanges(): Promise<string | undefined> {
   const id = await runOp(
     amend ? "Amend commit" : "Commit",
     async () => {
-      if (plan.unstage.length) await call(commands.vcsUnstage(plan.unstage));
+      // The commit is made from a copy of the index, so changes left out keep their
+      // staged state and the other repositories' indexes stay as they are.
       const stage = [...plan.stage, ...partial.whole];
-      if (stage.length) await call(commands.vcsStage(stage));
       let id = "";
       for (const repo of repos) {
-        const files = partial.files.filter((f) => (rootOf(f.path, roots) ?? null) === repo || repos.length === 1);
-        const options = { amend, signOff, author: author.trim() || null, runHooks, partial: files };
+        const inRepo = (path: string) => repos.length === 1 || (rootOf(path, roots) ?? null) === repo;
+        const options = {
+          amend,
+          signOff,
+          author: author.trim() || null,
+          runHooks,
+          partial: partial.files.filter((f) => inRepo(f.path)),
+          stage: stage.filter(inRepo),
+          exclude: plan.exclude.filter(inRepo),
+        };
         id = await call(commands.vcsCommit(repo, message.trim(), options));
       }
       return id;
@@ -116,7 +124,14 @@ export async function commitChanges(): Promise<string | undefined> {
   if (id !== undefined) {
     rememberMessage(message);
     forgetAmendDraft();
-    useCommit.setState({ amend: false, checks: new Map(), excludedHunks: new Map(), checkProblems: [] });
+    // What the user left out of this commit stays left out; only the committed changes start over.
+    const { checks: userChecks, excludedHunks } = useCommit.getState();
+    useCommit.setState({
+      amend: false,
+      checks: remainingOverrides(userChecks, plan.included),
+      excludedHunks: remainingOverrides(excludedHunks, plan.included),
+      checkProblems: [],
+    });
     keepMessageAfterCommit(message, workflowSettings().vcs.commit.clearInitialMessage);
   }
   return id;
@@ -148,7 +163,8 @@ async function partialCommitFiles(paths: readonly string[]): Promise<{ files: Pa
 }
 
 /** Delete… on unversioned files in the Changes view, as in IDEA: they move to the Trash. */
-export async function deleteUnversioned(paths: readonly string[]) {
+/** Delete… in the Changes view: moves the files to the Trash (a tracked file then shows as deleted). */
+export async function deleteFiles(paths: readonly string[]) {
   if (!paths.length) return;
   const question = paths.length === 1 ? tx`Delete '${baseName(paths[0]!)}'?` : tx`Delete ${paths.length} items?`;
   const ok = await confirmDialog({

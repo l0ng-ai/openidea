@@ -110,12 +110,20 @@ pub struct Server {
     pub published_notify: Notify,
     /// Woken when the last `$/progress` task ends.
     idle_notify: Notify,
+    /// `experimental/serverStatus` (rust-analyzer): `None` until the server sends
+    /// one, then whether it is still loading the project.
+    loading: Mutex<Option<bool>>,
+    /// Woken whenever a `$/progress` task ends or the server's loading state changes.
+    phase_notify: Notify,
     transient: Mutex<HashMap<PathBuf, Transient>>,
     pub java_build_lock: Arc<tokio::sync::Mutex<()>>,
     pub java_autobuild_suspended: std::sync::atomic::AtomicBool,
     pub external_project: tokio::sync::Mutex<crate::external_project::State>,
     pub external_diagnostics: std::sync::atomic::AtomicBool,
     pub external_refresh_queued: std::sync::atomic::AtomicBool,
+    /// The instance whose just registered external project is loading, until an open file's
+    /// diagnostics arrive (0: none).
+    pub external_loading: std::sync::atomic::AtomicU64,
 }
 
 impl Server {
@@ -144,12 +152,15 @@ impl Server {
             published: Mutex::new(HashMap::new()),
             published_notify: Notify::new(),
             idle_notify: Notify::new(),
+            loading: Mutex::new(None),
+            phase_notify: Notify::new(),
             transient: Mutex::new(HashMap::new()),
             java_build_lock: Arc::new(tokio::sync::Mutex::new(())),
             java_autobuild_suspended: std::sync::atomic::AtomicBool::new(false),
             external_project: tokio::sync::Mutex::new(Default::default()),
             external_diagnostics: std::sync::atomic::AtomicBool::new(false),
             external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
+            external_loading: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -389,20 +400,47 @@ impl Server {
         if self.running().is_none() {
             return;
         }
-        let busy = !self.progress.lock().is_empty();
+        let busy = self.is_busy();
         self.set_status(sink, if busy { ServerStatus::Busy } else { ServerStatus::Ready }, None);
     }
 
     /// Whether the server reports work in progress (indexing, analysis).
     pub fn is_busy(&self) -> bool {
-        !self.progress.lock().is_empty()
+        !self.progress.lock().is_empty() || *self.loading.lock() == Some(true)
+    }
+
+    /// Whether the server says it is still loading the project, so an empty
+    /// answer may not be final. Only `serverStatus` tells: `$/progress` also
+    /// covers background work (indexing, builds) during which answers are final.
+    pub fn is_loading(&self) -> bool {
+        *self.loading.lock() == Some(true)
+    }
+
+    /// Records `experimental/serverStatus`: `quiescent` false while the project loads (also
+    /// set while vtsls loads an external project, see `external_project`).
+    pub fn set_loading(&self, sink: &SharedSink, loading: bool) {
+        if self.loading.lock().replace(loading) == Some(loading) {
+            return;
+        }
+        self.refresh_busy_status(sink);
+        self.phase_ended();
     }
 
     /// Called after a `$/progress` task ended.
     pub fn progress_ended(&self) {
+        self.phase_ended();
+    }
+
+    fn phase_ended(&self) {
+        self.phase_notify.notify_waiters();
         if !self.is_busy() {
             self.idle_notify.notify_waiters();
         }
+    }
+
+    /// Woken when the next loading phase ends.
+    pub fn phase_notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.phase_notify.notified()
     }
 
     /// Waits until no `$/progress` task is active; false on timeout or cancellation.
@@ -499,6 +537,8 @@ impl Server {
     }
 
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
+        *self.loading.lock() = None;
+        self.external_loading.store(0, std::sync::atomic::Ordering::Release);
         self.progress.lock().drain().map(|(_, p)| (p.task, p.title)).collect()
     }
 

@@ -237,6 +237,10 @@ a:hover {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+/* An outer scroller whose scrollbar the editor's overview lane draws (cm/lanes.ts `overviewLaneIn`). */
+.cm-openidea-overviewScroller::-webkit-scrollbar:vertical {
+  width: 0;
+}
 
 /* Settings › Appearance › Antialiasing (IDE / Editor). */
 :root[data-aa-ide="subpixel"] body {

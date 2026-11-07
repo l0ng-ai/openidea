@@ -62,7 +62,7 @@ import { isColumnMode, toggleColumnMode } from "./cm/columnMode";
 import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
-import { qualifiedReference } from "./copyReference";
+import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
@@ -84,6 +84,8 @@ import {
 import type { DocModel } from "./model/document";
 import { structure } from "@/editor/structure";
 import { tx } from "@/platform/i18n";
+import { lspRequest } from "@/editor/lsp/lsp";
+import { readFileLines, withDocument } from "@/editor/lsp/files";
 
 /** Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. */
 export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen";
@@ -408,25 +410,90 @@ function expandWord(view: EditorView, slot: EditorSlot, direction: "backward" | 
   if (message) void executeAction("editor.showHint", { text: message });
 }
 
-function copyReference(view: EditorView, slot: EditorSlot) {
+async function resolveReference(view: EditorView, slot: EditorSlot): Promise<string> {
   const state = view.state;
-  const head = state.selection.main.head;
-  const line = state.doc.lineAt(head);
+  const selection = state.selection.main;
+  const line = state.doc.lineAt(selection.from);
   const meta = slot.model.getMeta();
-  const outline = useOutline.getState()[slot.model.path] ?? [];
-  // A package is not a member to qualify: jdtls lists the whole `package …;` statement as one.
-  const chain = declarationChain(outline, line.number - 1, head - line.from).filter((i) => i.kind !== "package");
-  const reference = qualifiedReference({
+  const root = useProject.getState().project?.root ?? null;
+  const fallback = qualifiedReference({
     language: meta.language,
     path: slot.model.path,
-    root: useProject.getState().project?.root ?? null,
-    text: state.doc.toString(),
-    chain: chain.map((i) => i.name),
+    root,
+    text: "",
+    chain: [],
     line: line.number - 1,
   });
-  recordClipboard(reference);
-  void navigator.clipboard?.writeText(reference).catch(() => {});
-  void executeAction("editor.showHint", { text: tx`Copied reference: ${reference}` });
+  let reference = fallback;
+  const offset = referenceOffset(state.doc.toString(), selection.from, selection.to);
+  if (offset !== null) {
+    const position = state.doc.lineAt(offset);
+    const localChain = declarationChain(
+      useOutline.getState()[slot.model.path] ?? [],
+      position.number - 1,
+      offset - position.from,
+    ).filter((item) => item.kind !== "package");
+    if (localChain.length) {
+      reference = qualifiedReference({
+        language: meta.language,
+        path: slot.model.path,
+        root,
+        text: state.doc.toString(),
+        chain: localChain.map(declaredName),
+        line: position.number - 1,
+      });
+    } else {
+      try {
+        const targets = await lspRequest(() =>
+          commands.lspGoto(meta.doc, { line: position.number - 1, col: offset - position.from }, "definition"),
+        );
+        if (targets.length === 1) {
+          const target = targets[0]!;
+          const [outline, lines] = await Promise.all([
+            withDocument(target.path, (doc) => call(commands.docOutline(doc))),
+            readFileLines(target.path),
+          ]);
+          const pos = target.range.start;
+          const chain = declarationChain(outline, pos.line, pos.col).filter((item) => item.kind !== "package");
+          const symbol = chain.at(-1);
+          if (symbol && ["function", "method", "constructor"].includes(symbol.kind) && lines) {
+            reference = qualifiedReference({
+              language: meta.language,
+              path: target.path,
+              root,
+              text: lines.join("\n"),
+              chain: chain.map(declaredName),
+              line: pos.line,
+            });
+          }
+        }
+      } catch {
+        // No unambiguous definition is available; copy the current location.
+      }
+    }
+  }
+  return reference;
+}
+
+function copyReference(view: EditorView, slot: EditorSlot) {
+  const reference = resolveReference(view, slot);
+  const failed = (error: unknown) => {
+    notifications().notify({
+      level: "error",
+      title: tx("Cannot copy reference"),
+      body: error instanceof Error ? error.message : String(error),
+    });
+  };
+  const copied = async () => {
+    const text = await reference;
+    recordClipboard(text);
+    void executeAction("editor.showHint", { text: tx`Copied reference: ${text}` });
+  };
+  try {
+    void copyReferenceToClipboard(reference).then(copied).catch(failed);
+  } catch (error) {
+    failed(error);
+  }
 }
 
 /** ⌃G; when nothing more is found, a hint first and the search from the top on the next press (IDEA). */

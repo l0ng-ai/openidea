@@ -69,8 +69,9 @@ test("⌘K commits the checked changes with the typed message", async ({ workben
   await expect(page.getByText(/1 file committed: Return order DTOs from create/)).toBeVisible();
   const [committed] = await ipcCalls(page, "vcs_commit");
   expect(committed).toMatchObject({ repo: ROOT, message: "Return order DTOs from create" });
-  const staged = (await ipcCalls(page, "vcs_stage")).flatMap((a) => a.paths as string[]);
-  expect(staged).toEqual([`${ROOT}/build.gradle.kts`]);
+  // The commit takes the checked file itself; the index isn't staged beforehand.
+  expect((committed!.options as { stage: string[] }).stage).toEqual([`${ROOT}/build.gradle.kts`]);
+  expect(await ipcCalls(page, "vcs_stage")).toHaveLength(0);
   await expect(changes.getByRole("checkbox", { name: "Include build.gradle.kts in commit" })).toBeHidden();
 });
 

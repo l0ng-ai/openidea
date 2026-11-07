@@ -5,6 +5,8 @@ export {
   applyThemeToAll,
   closeAll,
   newTab,
+  syncTerminalProject,
+  unbindTerminals,
   newTabAt,
   requestCloseSession,
   sessionForTerminalId,

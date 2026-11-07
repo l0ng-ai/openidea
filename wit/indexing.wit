@@ -1,0 +1,60 @@
+package openidea:plugin@1.3.0;
+
+/// Cross-file associations a plugin publishes for the files it declares under
+/// `[[contributes.documentIndexers]]`. The host calls `index` in cancellable
+/// background batches (on project open, then for changed files), keeps the
+/// project-wide graph, and answers Go to Declaration and gutter markers from
+/// it without calling the plugin again. Requires `project.read`; trusted
+/// projects only.
+interface document-indexer {
+    use types.{range};
+
+    /// A symbol the host's syntax support found in the document.
+    record symbol {
+        name: string,
+        /// class, interface, method, field, … as in the structure view.
+        kind: string,
+        /// The enclosing symbol's name.
+        container: option<string>,
+        range: range,
+    }
+
+    /// The document to index: the editor's text while it is open, else the file's.
+    record document {
+        /// Absolute path.
+        path: string,
+        text: string,
+        symbols: list<symbol>,
+    }
+
+    /// A range of the document tied to a key the plugin chooses
+    /// (`com.example.UserMapper#findById`, say). Keys are compared as is.
+    record anchor {
+        key: string,
+        range: range,
+    }
+
+    /// Keys starting with `prefix` also resolve as if they started with
+    /// `target`; both end with `#`. A mapper that extends another finds the
+    /// inherited statements this way.
+    record alias {
+        prefix: string,
+        target: string,
+    }
+
+    /// What one document contributes; replaces its previous edges.
+    record edges {
+        /// Where keys are declared.
+        definitions: list<anchor>,
+        /// Ranges that go to the definitions of their key (Go to Declaration,
+        /// Ctrl/⌘-click). Elsewhere the language server answers as usual.
+        references: list<anchor>,
+        aliases: list<alias>,
+        /// Gutter icons on their first line that go to the definitions of their key.
+        markers: list<anchor>,
+    }
+
+    /// At most 4,096 definitions and references and 256 aliases per document;
+    /// a document over the limits is reported as not indexed.
+    index: func(doc: document) -> edges;
+}

@@ -13,7 +13,7 @@ import {
 import { showContextMenu } from "@/ui";
 import { buildTomcatArtifact, syncTomcatOutputs } from "./tomcat";
 import { runUpdateBuild } from "./buildUpdate";
-import { startRun, stopSession, useRun, waitForExit, type RunSession } from "./store";
+import { rerunConfig, startRun, stopSession, useRun, waitForExit, type RunSession } from "./store";
 import { isUpdatable, updateAllowed, type UpdateMode } from "./updatePolicies";
 
 export type UpdateSession = Pick<RunSession, "id" | "config"> & { debug?: DebugServiceSession };
@@ -72,14 +72,15 @@ export async function updateApplication(session: UpdateSession, mode: string): P
     const debugging =
       !!session.debug || useDebugRunSessions.getState().sessions.some((s) => s.configId === session.config.id);
     if (mode === "restart") {
+      const config = rerunConfig(session);
       if (session.debug) {
         await session.debug.stop();
-        await executeAction("run.debugConfig", session.config);
+        await executeAction("run.debugConfig", config);
       } else if (debugging) {
         await stopSession(session.id);
-        await waitForExit([session.id]);
-        await executeAction("run.debugConfig", session.config);
-      } else await startRun(session.config, session.id);
+        await waitForExit([session.id], null);
+        await executeAction("run.debugConfig", config);
+      } else await startRun(config, session.id);
       return;
     }
     await maybeEditorService()?.saveAll();

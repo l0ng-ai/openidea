@@ -30,6 +30,21 @@ pub fn search_path() -> OsString {
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
+/// Ruby code printing where `gem install` puts executables: the Ruby's own `Gem.bindir`, which
+/// Homebrew's Ruby keeps off `PATH`, and the `--user-install` one.
+pub const RUBY_GEM_BIN_SCRIPT: &str = "puts Gem.bindir, File.join(Gem.user_dir, 'bin')";
+
+/// The directories [`RUBY_GEM_BIN_SCRIPT`] printed that exist.
+pub fn gem_bin_dirs(output: &str) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in output.lines().map(str::trim).map(PathBuf::from) {
+        if dir.is_absolute() && dir.is_dir() && !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 /// Resolves a command on the shared path, or an explicit path relative to `root`.
 pub fn find_command(command: &str, search: &OsStr, root: &Path) -> Option<PathBuf> {
     let path = Path::new(command);
@@ -128,7 +143,7 @@ fn nvm_bins(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// `v22.10.1` as `[22, 10, 1]`: v22 is newer than v9, v20.10 newer than v20.9.
-fn version_key(name: &str) -> Vec<u64> {
+pub fn version_key(name: &str) -> Vec<u64> {
     name.trim_start_matches('v').split('.').map(|n| n.parse().unwrap_or(0)).collect()
 }
 

@@ -16,9 +16,9 @@ import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
-import { splitCommandLine } from "@/platform/commandLine";
+import { parseShellCommand } from "@/platform/commandLine";
 import { useProject } from "@/platform/project";
-import { useRemote } from "@/platform/remote";
+import { hostOs, useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -57,8 +57,6 @@ export interface SessionSnapshot {
   commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
-  /** True while the viewport is pinned to the newest output. */
-  follow: boolean;
 }
 
 export interface SessionOptions {
@@ -73,6 +71,11 @@ export interface SessionOptions {
    * `shell`: it is a shell (a predefined session), so shell integration still applies.
    */
   command?: { program: string; args: string[]; shell?: boolean };
+  /**
+   * Restored tabs only: the project root, used when `cwd` no longer exists
+   * (deleted since the last run, see `resolveStartCwd`).
+   */
+  fallbackRoot?: string;
 }
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
@@ -169,6 +172,21 @@ export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>
   notifications().notify({ level: "warning", title: "File not found", body: link.path });
 }
 
+/**
+ * A tab restored from the last session may remember a directory that has since
+ * been deleted. The backend would silently start such a shell in $HOME; when a
+ * `fallbackRoot` (the project root) is given, start there instead.
+ */
+export async function resolveStartCwd(cwd: string, fallbackRoot: string | undefined): Promise<string> {
+  if (!fallbackRoot || cwd === fallbackRoot) return cwd;
+  try {
+    if ((await call(commands.fsEntryKind(cwd))) === "dir") return cwd;
+  } catch {
+    /* deleted or unreachable */
+  }
+  return fallbackRoot;
+}
+
 export class TerminalSession {
   readonly key: string;
   readonly host: HTMLDivElement;
@@ -181,6 +199,10 @@ export class TerminalSession {
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
   private opened = false;
+  /** `focus()` arrived before the textarea existed (the pane is focused while xterm is still closed). */
+  private pendingFocus = false;
+  /** Bounds retries when the pane has no box yet, or xterm cannot measure a cell. */
+  private fitAttempts = 0;
   private disposed = false;
   private disposables: IDisposable[] = [];
   private resizeObserver: ResizeObserver | null = null;
@@ -206,7 +228,6 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       cwd: opts.cwd,
-      follow: true,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -280,11 +301,6 @@ export class TerminalSession {
         if (workflowSettings().terminal.mouseReporting) return false;
         const modes = params.map((p) => (Array.isArray(p) ? p[0] : p) ?? 0);
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
-      }),
-      // Track scroll position: follow when the user scrolls back to the bottom.
-      this.term.onScroll(() => {
-        const atBottom = this.isAtBottom();
-        if (atBottom !== this.snapshot.follow) this.update({ follow: atBottom });
       }),
     );
     this.disposables.push(
@@ -379,28 +395,41 @@ export class TerminalSession {
     }));
   }
 
-  /** Moves the host into `container` and opens / fits / starts as needed. */
+  /** Moves the host into `container` and fits / starts once the pane has a size. */
   attach(container: HTMLElement) {
     if (this.disposed) return;
     if (this.host.parentElement !== container) container.appendChild(this.host);
-    if (!this.opened) {
-      this.opened = true;
-      // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
-      // selected text rendered at a visibly different weight than the rest.
-      this.term.open(this.host);
-      remeasureWhenFontsLoad(
-        this.term,
-        fontFor(workflowSettings().terminal),
-        () => !this.disposed,
-        () => this.scheduleFit(),
-      );
-      this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
-      this.watchImeCommit();
-    }
     this.resizeObserver?.disconnect();
-    this.resizeObserver = new ResizeObserver(() => this.scheduleFit());
+    this.resizeObserver = new ResizeObserver(() => {
+      this.fitAttempts = 0;
+      this.scheduleFit();
+    });
     this.resizeObserver.observe(container);
     this.scheduleFit();
+  }
+
+  /**
+   * Opens xterm only after the host has a box. `open()` measures the cell size
+   * immediately; doing it while the tool window is still 0×0 (the first layout
+   * pass, or a tab under `display: none`) leaves the helper textarea unable to
+   * take keys for the rest of the session.
+   */
+  private openIfReady() {
+    if (this.opened || this.disposed) return;
+    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
+    // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
+    // selected text rendered at a visibly different weight than the rest.
+    this.term.open(this.host);
+    this.opened = true;
+    remeasureWhenFontsLoad(
+      this.term,
+      fontFor(workflowSettings().terminal),
+      () => !this.disposed,
+      () => this.scheduleFit(),
+    );
+    this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
+    this.watchImeCommit();
+    if (this.pendingFocus) this.focus();
   }
 
   detach(container: HTMLElement) {
@@ -463,9 +492,21 @@ export class TerminalSession {
 
   private doFit() {
     if (this.disposed || !this.host.isConnected) return;
-    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
+    // The grid row is still 0 on the first layout pass (the track is set by a
+    // parent layout effect after this one). Keep asking until it has a box;
+    // ResizeObserver also resets the budget when the size actually changes.
+    if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) {
+      if (this.fitAttempts++ < 20) this.scheduleFit();
+      return;
+    }
+    this.openIfReady();
+    if (!this.opened) return;
     const dims = this.fit.proposeDimensions();
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) return;
+    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
+      if (this.fitAttempts++ < 20) this.scheduleFit();
+      return;
+    }
+    this.fitAttempts = 0;
     if (dims.cols !== this.term.cols || dims.rows !== this.term.rows) this.term.resize(dims.cols, dims.rows);
     if (this.snapshot.status === "idle") {
       void this.start();
@@ -501,13 +542,15 @@ export class TerminalSession {
     };
     try {
       const t = workflowSettings().terminal;
-      const [shellPath, ...shellArgs] = splitCommandLine(t.shellPath);
+      const [shellPath, ...shellArgs] = parseShellCommand(t.shellPath, hostOs() === "windows");
       const shell = custom ? custom.program : shellPath;
       const args = custom ? custom.args : shellArgs;
+      const cwd = await resolveStartCwd(this.opts.cwd, this.opts.fallbackRoot);
+      if (cwd !== this.opts.cwd) this.update({ cwd });
       const info = await call(
         commands.termSpawn(
           {
-            cwd: this.opts.cwd,
+            cwd,
             shell: shell ?? null,
             args,
             env: { ...t.env },
@@ -526,6 +569,7 @@ export class TerminalSession {
       this.update({ status: "running", title: info.title || "Local" });
       this.flushPendingInput();
     } catch (e) {
+      this.pendingInput = "";
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
       this.term.writeln(RESTART_HINT);
       this.update({ status: "error" });
@@ -556,6 +600,7 @@ export class TerminalSession {
   exited(code: number | null) {
     if (this.disposed) return;
     this.ptyId = null;
+    this.pendingInput = "";
     this.update({ status: "exited", exitCode: code });
     // Let output still in flight on the channel land first.
     setTimeout(() => {
@@ -627,18 +672,22 @@ export class TerminalSession {
     this.term.clear();
   }
 
-  isAtBottom(): boolean {
-    return this.term.buffer.active.viewportY >= this.term.buffer.active.baseY;
-  }
-
-  /** Sets the follow flag; when turning it on also scrolls to the bottom. */
-  setFollow(follow: boolean) {
-    if (follow) this.term.scrollToBottom();
-    if (follow !== this.snapshot.follow) this.update({ follow });
-  }
-
+  /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */
   focus() {
+    if (this.disposed) return;
+    if (!this.opened || !this.term.textarea) {
+      this.pendingFocus = true;
+      this.scheduleFit();
+      return;
+    }
+    this.pendingFocus = false;
     this.term.focus();
+  }
+
+  /** Fits again after the tool window is shown or its box changes. */
+  refit() {
+    this.fitAttempts = 0;
+    this.scheduleFit();
   }
 
   applyTheme() {

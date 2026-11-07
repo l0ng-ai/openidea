@@ -1,11 +1,12 @@
 /**
  * Run targets (Settings › Run Targets): configurations with a `target` run over
- * SSH. Labels, the debug guard and the connection remedies of `runStart`.
+ * SSH or in a Docker / Compose container. Labels, the debug and executor guards,
+ * and the connection remedies of `runStart`.
  */
 import { executeAction } from "@/platform/actions";
 import { tx, txTemplate } from "@/platform/i18n";
 import { call, commands, IpcError, type RunConfig } from "@/platform/ipc";
-import type { RunTargetValid, SshConfigValid } from "@/platform/remoteSettings";
+import { inContainer, type RunTargetValid, type SshConfigValid } from "@/platform/remoteSettings";
 import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
@@ -51,8 +52,8 @@ export function withTarget(config: RunConfig, target: string): RunConfig {
 }
 
 /**
- * Debugging over SSH isn't supported: tells so (offering Run) and returns true
- * when `config` runs on a target.
+ * Debugging on run targets isn't supported: tells so (offering Run) and returns
+ * true when `config` runs on a target.
  */
 export function remoteDebugBlocked(config: RunConfig): boolean {
   if (!config.target) return false;
@@ -64,6 +65,33 @@ export function remoteDebugBlocked(config: RunConfig): boolean {
     title: "Debugging on run targets is not supported",
     body: txTemplate(
       `'${config.name}' runs on ${target}. Run it, or choose “Local machine” under “Run on” to debug it.`,
+    ),
+    actions: [
+      { label: "Run", run: () => void executeAction("run.runConfig", config.id) },
+      { label: "Edit Configuration…", run: () => void executeAction("run.editConfigs", config.id) },
+    ],
+  });
+  return true;
+}
+
+/**
+ * Coverage and profiling read their results on this machine: tells so (offering
+ * Run) and returns true when `config` runs in a container.
+ */
+export function containerExecutorBlocked(
+  config: RunConfig,
+  targets: readonly RunTargetValid[] = workflowSettings().runTargets,
+): boolean {
+  const target = targetOf(config, targets);
+  if (!target || !inContainer(target)) return false;
+  const where = target.name.trim() || target.id;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    key: "run.containerExecutor",
+    title: "Coverage and profiling are not supported in containers",
+    body: txTemplate(
+      `'${config.name}' runs in a container on ${where}. Run it, or choose “Local machine” under “Run on”.`,
     ),
     actions: [
       { label: "Run", run: () => void executeAction("run.runConfig", config.id) },

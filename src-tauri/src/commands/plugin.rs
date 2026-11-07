@@ -8,8 +8,8 @@ use ide_core::{IdeError, IdeResult};
 use ide_extension::ActivationEvent;
 use ide_host::plugins::intellij::{self, InstalledIntellijTheme, IntellijThemeSource};
 use ide_host::plugins::{
-    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginEditor,
-    PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
+    ActiveTheme, CatalogPlugin, Consent, EventKind, HostWorkspace, InstallPreview, PackageFile, PluginContextKey,
+    PluginEditor, PluginEvent, PluginHost, PluginInfo, PluginStatusItem, PluginsSnapshot, WorkbenchEvent,
 };
 use ide_plugin::{Invocation, Limits};
 use parking_lot::Mutex;
@@ -325,6 +325,7 @@ pub async fn plugin_run_command(
     command_id: String,
     arg: Option<String>,
     editor: Option<PluginEditor>,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -332,6 +333,7 @@ pub async fn plugin_run_command(
         client: Some(window.label().to_owned()),
         workspace_root: project.as_ref().map(|p| p.root.clone()),
         editor: editor.map(PluginEditor::context),
+        selected_paths: paths.unwrap_or_default(),
     };
     blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
 }
@@ -369,11 +371,26 @@ pub fn plugin_status_items(state: State<'_, AppState>) -> Vec<PluginStatusItem> 
         .collect()
 }
 
+/// Plugin context keys in effect for this window (later changes arrive as `contextChanged`).
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_context_keys(window: Window, state: State<'_, AppState>) -> Vec<PluginContextKey> {
+    state.plugins.context_keys(Some(window.label()))
+}
+
 /// Cancels a plugin task (`taskStarted` with `cancellable`).
 #[tauri::command]
 #[specta::specta]
 pub fn plugin_cancel_task(state: State<'_, AppState>, task_id: String) -> bool {
     state.plugins.cancel_task(&task_id)
+}
+
+/// Reports the user's answer to a plugin's `promptRequested`: the chosen keys
+/// (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_answer_prompt(state: State<'_, AppState>, prompt_id: String, answer: Option<Vec<String>>) -> bool {
+    state.plugins.answer_prompt(&prompt_id, answer)
 }
 
 /// Gutter markers of plugin `line-markers` providers for an open document.
@@ -418,6 +435,54 @@ pub async fn plugin_view_event(
 ) -> IdeResult<()> {
     let plugins = state.plugins.clone();
     ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc, editor).await
+}
+
+/// The Services pane of node `key` of a plugin's `location = "services"` view.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_service_detail(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    view: String,
+    key: String,
+) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
+    let plugins = state.plugins.clone();
+    ide_host::plugins::views::service_detail(&state.host, plugins, window.label(), plugin_id, view, key).await
+}
+
+/// Runs the program of the log tab `tab` of node `key`'s Services pane (with
+/// the toggles in `on`), streaming its output until it exits or `request` is
+/// cancelled; returns the exit code.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn plugin_service_log(
+    window: Window,
+    state: State<'_, AppState>,
+    request: ide_core::RequestId,
+    plugin_id: String,
+    view: String,
+    key: String,
+    tab: String,
+    on: Vec<String>,
+    on_line: Channel<ide_host::plugins::PluginOutputLine>,
+) -> IdeResult<Option<i32>> {
+    let plugins = state.plugins.clone();
+    let on_line = super::sender(on_line);
+    ide_host::plugins::views::service_log(
+        &state.host,
+        plugins,
+        window.label(),
+        plugin_id,
+        view,
+        key,
+        tab,
+        on,
+        request,
+        on_line,
+    )
+    .await
 }
 
 /// The page of a plugin's web view or custom editor (`web = …`).
@@ -632,4 +697,68 @@ pub fn plugin_set_theme(
 #[specta::specta]
 pub fn plugin_set_theme_frame(state: State<'_, AppState>, color: Option<String>) -> IdeResult<()> {
     state.plugins.set_theme_frame(color.as_deref())
+}
+
+use ide_host::plugins::index_ops::NavigationFiles;
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_navigation_files(window: Window, state: State<'_, AppState>) -> IdeResult<NavigationFiles> {
+    ide_host::plugins::index_ops::plugin_navigation_files(&state.host, state.plugins.clone(), window.label()).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_navigation_invalidate(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Option<Vec<PathBuf>>,
+) -> IdeResult<()> {
+    ide_host::plugins::index_ops::plugin_navigation_invalidate(
+        &state.host,
+        state.plugins.clone(),
+        window.label(),
+        paths,
+    )
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_navigation_index(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+    request: ide_core::RequestId,
+) -> IdeResult<()> {
+    ide_host::plugins::index_ops::plugin_navigation_index(
+        &state.host,
+        state.plugins.clone(),
+        window.label(),
+        paths,
+        request,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_navigation_goto(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: ide_core::DocId,
+    pos: ide_core::Pos,
+) -> IdeResult<Option<ide_plugin::indexing::NavigationResult>> {
+    ide_host::plugins::index_ops::plugin_navigation_goto(&state.host, state.plugins.clone(), window.label(), doc, pos)
+        .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_navigation_markers(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<PathBuf>,
+) -> IdeResult<Vec<ide_plugin::indexing::FileMarkers>> {
+    ide_host::plugins::index_ops::plugin_navigation_markers(&state.host, state.plugins.clone(), window.label(), paths)
+        .await
 }

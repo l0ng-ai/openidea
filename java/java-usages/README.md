@@ -12,6 +12,14 @@ The Rust bridge logs the failure once per project session. Cancelled requests an
 changed source documents remain cancelled and do not start a fallback search.
 No global `includeAccessors` preference is changed.
 
+An optional fifth argument `"sources"` restricts the search to the workspace's
+source folders (no dependency jars, no JDK). A library method can have thousands of
+usages in those, which take seconds to search. Find Usages searches the sources alone
+(Project Files) unless asked for Project and Libraries; then it shows the sources' usages
+first and runs the full search after it. Rows in library classes (`jdt:` URIs) carry their
+line as `text`, from the contents the client would request for the class, so the client
+need not fetch thousands of class files to show them.
+
 ## Search plan and access semantics
 
 For source fields on the verified JDT LS implementation, a single plan merges
@@ -20,10 +28,14 @@ Targets are deduplicated by JDT element identity before search, retaining native
 search scope and ranges. Builder results remain unknown. The optimized native
 plan is guarded by SHA-256 of ReferencesHandler.class:
 `31ff5a10c7d69d58c6a9b619ef17e3ec41b11b545751ba428618a76cc1341064`
-(JDT LS 1.63.0.202610191322). Different implementations, non-field selections and
-library/decompiled selections retain native discovery plus deduplicated category
-searches. This conservative fallback preserves coverage when the server changes;
-it does not promise the same speedup on unverified versions.
+(JDT LS 1.63.0.202610191322). On that version, non-field and library/decompiled
+selections resolve their target as `ReferencesHandler.findReferences` does, and every
+search replicates `ReferencesHandler.search` with one difference: a class file whose
+decompiled source fails to parse loses only its own matches (logged), where the server
+throws and fails the whole search after searching most dependencies. Different
+implementations retain native discovery plus deduplicated category searches. This
+conservative fallback preserves coverage when the server changes; it does not promise
+the same speedup or fault isolation on unverified versions.
 
 SearchEngine resolves exact targets. A query-local syntax AST per referenced source
 file supplies expression context without another reference search: simple field
@@ -57,7 +69,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.3.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.7.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -75,6 +87,22 @@ unrelated content and non-Java resource changes; its reproducible SHA-256 is
 `cbae3e3a0bcf2818b4cc9d98998bd9b81f92e1ae7803dc757134485f9776a4e1`.
 Version 1.3.0 adds the class-hierarchy refactoring commands; its reproducible SHA-256 is
 `cca4cc385ace286111730d2a6164333b8958d74d69631548eadca8863255c24a`.
+Version 1.4.0 adds `openidea.java.implementations` (Go to Implementation in the workspace's
+source folders, before the standard request that also searches every dependency jar); its
+reproducible SHA-256 is `d7601493eda846811b4bb8bfe7f3d56e3234a45e663648210db3937cebc770a5`.
+Version 1.5.0 answers `{locations, complete}`: `complete` when the type is declared in the sources
+(no dependency implements it), otherwise the app also runs the standard request and adds the
+dependencies' implementations after the first ones. The search also covers the project's Kotlin
+classes attached by the Kotlin bridge; its reproducible SHA-256 is
+`7588748c2797f9da2beb209714a75c29b4e31b155f095329bfb7e399d807c20a`.
+Version 1.6.0 adds `openidea.java.configuration.warmup`, which builds configuration indexes in a
+low-priority background job after import, and builds them under cancellable per-project locks
+instead of one global lock; its reproducible SHA-256 is
+`33cfa1bb8489247ffeb6fc8249966c8a2955b7b2858c8169a70486eb70ade696`.
+Version 1.7.0 adds the `"sources"` scope to `openidea.java.usages`, searches each class
+file's decompiled source on its own and returns the line (`text`) of each usage in a library
+class; its reproducible SHA-256 is
+`56d35619d5be937b028ac143ba748365a66a74c803bc112e4788a7dce98b44fc`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
@@ -104,6 +132,7 @@ python3 java/java-usages/tests/verify.py /path/to/jdtls /path/to/lombok.jar
 python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write.json
 OPENIDEA_USAGES_INDEX_STRESS=1 python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
 python3 java/java-usages/tests/hierarchy.py /path/to/jdtls
+python3 java/java-usages/tests/implementations.py /path/to/jdtls
 ```
 
 The harnesses select the JDT LS configuration for the current platform. The first

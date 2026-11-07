@@ -80,17 +80,176 @@ fn git_select(
             args.push("--first-parent".into());
         }
         args.extend(filter.iter().cloned());
+        // Past this many bytes of paths the command line risks Windows' ~32K limit.
+        let stdin = (paths.iter().map(|p| p.len() + 12).sum::<usize>() > 8 * 1024).then(|| paths_stdin(paths));
+        if stdin.is_some() {
+            args.push("--stdin".into());
+        }
         args.push("--end-of-options".into());
         args.extend(scope.split_whitespace().map(str::to_string));
-        args.push("--".into());
-        args.extend(paths.iter().map(|p| format!(":(literal){p}")));
-        let output =
-            crate::cli::run_cancellable(r.root(), &args.iter().map(String::as_str).collect::<Vec<_>>(), cancel)?;
+        if stdin.is_none() {
+            args.push("--".into());
+            args.extend(paths.iter().map(|p| format!(":(literal){p}")));
+        }
+        let output = run_log(r, args, stdin.as_deref(), cancel)?;
         for line in output.stdout_str().lines() {
             ids.insert(ObjectId::from_hex(line.as_bytes()).map_err(gx)?);
         }
     }
     Ok(ids)
+}
+
+/// Stdin for `git log --stdin` that limits the walk to `paths`, however many there are.
+fn paths_stdin(paths: &[String]) -> String {
+    let mut text = String::from("--\n");
+    for p in paths {
+        text.push_str(&format!(":(literal){p}\n"));
+    }
+    text
+}
+
+fn run_log(
+    r: &Repo,
+    args: Vec<String>,
+    stdin: Option<&str>,
+    cancel: &CancellationToken,
+) -> IdeResult<crate::cli::Output> {
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    match stdin {
+        Some(text) => crate::cli::run_cancellable_stdin(r.root(), &argv, text.as_bytes(), cancel),
+        None => crate::cli::run_cancellable(r.root(), &argv, cancel),
+    }
+}
+
+/// The commits of a file's history and the path it had in each. The commits that changed
+/// the path, merges included (`--full-history --simplify-merges`); where it appears, a
+/// rename from any parent continues the history under the old path from that parent.
+/// Unlike `--follow`, this sees renames done in merges and history merged in from other
+/// branches.
+fn file_history(
+    r: &Repo,
+    scopes: &[String],
+    rel: &str,
+    first_parent: bool,
+    cancel: &CancellationToken,
+) -> IdeResult<(HashSet<ObjectId>, HashMap<ObjectId, String>)> {
+    let mut ids = HashSet::new();
+    let mut paths = HashMap::new();
+    let mut starts: std::collections::VecDeque<(Vec<String>, String)> =
+        scopes.iter().map(|s| (s.split_whitespace().map(str::to_string).collect(), rel.to_string())).collect();
+    let mut started = HashSet::new();
+    while let Some((revs, path)) = starts.pop_front() {
+        if !started.insert((revs.clone(), path.clone())) {
+            continue;
+        }
+        let mut opts: Vec<String> =
+            ["log", "--format=%x00%H", "--name-status", "-z", "--full-history", "--simplify-merges", "--no-follow"]
+                .map(String::from)
+                .into();
+        if first_parent {
+            opts.push("--first-parent".into());
+        }
+        let pathspec = ["--".to_string(), format!(":(literal){path}")];
+        // `excluded` can name a revision per created file, so it goes through stdin.
+        let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+            let mut args = opts.clone();
+            if !excluded.is_empty() {
+                args.push("--stdin".into());
+            }
+            args.push("--end-of-options".into());
+            args.extend(revs.iter().cloned());
+            args.extend(pathspec.iter().cloned());
+            let stdin = (!excluded.is_empty()).then(|| excluded.join("\n") + "\n");
+            Ok(parse_name_status_log(&run_log(r, args, stdin.as_deref(), cancel)?.stdout_str()))
+        };
+        let records = run(&[])?;
+        // Where the file appears its history ends: what is behind that is another file of
+        // the same name (a rename continues the history below). The commits of the history
+        // are those not behind a creation; the statuses come from the full listing (with
+        // its parents excluded a merge shows no changes).
+        let created: Vec<ObjectId> = records.iter().filter(|(_, s)| *s == Some('A')).map(|(id, _)| *id).collect();
+        let kept: Option<HashSet<ObjectId>> = if created.is_empty() {
+            None
+        } else {
+            let excluded: Vec<String> = created.iter().map(|id| format!("^{id}^@")).collect();
+            Some(run(&excluded)?.into_iter().map(|(id, _)| id).collect())
+        };
+        let mut created = Vec::new();
+        for (id, first_status) in records {
+            if kept.as_ref().is_some_and(|k| !k.contains(&id)) || !ids.insert(id) {
+                continue;
+            }
+            paths.insert(id, path.clone());
+            if first_status == Some('A') {
+                created.push(id);
+            }
+        }
+        for commit in created {
+            let line = crate::cli::run_cancellable(
+                r.root(),
+                &["rev-list", "--parents", "-n", "1", "--end-of-options", &commit.to_string()],
+                cancel,
+            )?
+            .stdout_str();
+            let parents: Vec<&str> =
+                line.split_whitespace().skip(1).take(if first_parent { 1 } else { usize::MAX }).collect();
+            for parent in parents {
+                if let Some(old) = renamed_from(r, parent, &commit.to_string(), &path, cancel)? {
+                    starts.push_back((vec![parent.to_string()], old));
+                }
+            }
+        }
+    }
+    Ok((ids, paths))
+}
+
+/// `git log --format=%x00%H --name-status -z`: each commit with the status letter of its
+/// first change (none for a merge listed without changes).
+fn parse_name_status_log(text: &str) -> Vec<(ObjectId, Option<char>)> {
+    let mut out: Vec<(ObjectId, Option<char>)> = Vec::new();
+    let mut tokens = text.split('\0');
+    while let Some(token) = tokens.next() {
+        let token = token.trim_start_matches('\n');
+        if let Ok(id) = ObjectId::from_hex(token.as_bytes()) {
+            out.push((id, None));
+            continue;
+        }
+        let Some(status) = token.chars().next().filter(|c| c.is_ascii_uppercase()) else { continue };
+        if !token[1..].bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let paths = if matches!(status, 'R' | 'C') { 2 } else { 1 };
+        for _ in 0..paths {
+            tokens.next();
+        }
+        if let Some(last) = out.last_mut() {
+            last.1.get_or_insert(status);
+        }
+    }
+    out
+}
+
+/// The path `path` had in `parent` when `commit` renamed it.
+fn renamed_from(
+    r: &Repo,
+    parent: &str,
+    commit: &str,
+    path: &str,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<String>> {
+    let args = ["diff", "-M", "--name-status", "-z", "--diff-filter=R", "--no-ext-diff", parent, commit, "--"];
+    let text = crate::cli::run_cancellable(r.root(), &args, cancel)?.stdout_str();
+    let mut tokens = text.split('\0');
+    while let Some(status) = tokens.next() {
+        if !status.starts_with('R') {
+            continue;
+        }
+        let (Some(old), Some(new)) = (tokens.next(), tokens.next()) else { break };
+        if new == path {
+            return Ok(Some(old.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResult<Vec<Commit>> {
@@ -229,46 +388,11 @@ fn log_indexed(
     let mut history_paths = HashMap::new();
     let path_ids = if paths.is_empty() {
         None
-    } else if q.follow && paths.len() == 1 {
-        let mut ids = HashSet::new();
-        let rel = &paths[0];
-        let mut args = vec![
-            "log".to_string(),
-            "--format=%x00%H".into(),
-            "--name-status".into(),
-            "-z".into(),
-            "--follow".into(),
-            "--topo-order".into(),
-        ];
-        if q.first_parent {
-            args.push("--first-parent".into());
-        }
-        args.push("--end-of-options".into());
-        for scope in &scopes {
-            let mut args = args.clone();
-            args.extend(scope.split_whitespace().map(str::to_string));
-            args.extend(["--".into(), rel.clone()]);
-            let output =
-                crate::cli::run_cancellable(r.root(), &args.iter().map(String::as_str).collect::<Vec<_>>(), cancel)?;
-            let text = output.stdout_str();
-            let mut tokens = text.split('\0').peekable();
-            let mut current_path = rel.clone();
-            while let Some(token) = tokens.next() {
-                let token = token.trim_start_matches('\n');
-                if let Ok(id) = ObjectId::from_hex(token.as_bytes()) {
-                    ids.insert(id);
-                    history_paths.insert(id, current_path.clone());
-                } else if token.starts_with('R') && token[1..].bytes().all(|b| b.is_ascii_digit()) {
-                    if let (Some(old), Some(new)) = (tokens.next(), tokens.next())
-                        && new == current_path
-                    {
-                        current_path = old.to_string();
-                    }
-                } else if ["A", "D", "M", "T", "U"].contains(&token) {
-                    tokens.next();
-                }
-            }
-        }
+    } else if q.follow && paths.len() == 1 && !r.root().join(&paths[0]).is_dir() {
+        // Following renames is for a file: a directory gains files all the time, and each
+        // creation would cut its history short.
+        let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel)?;
+        history_paths = at;
         Some(ids)
     } else {
         Some(git_select(r, &scopes, &[], &paths, q.first_parent, cancel)?)
@@ -860,13 +984,11 @@ pub(crate) fn decorations(repo: &gix::Repository) -> IdeResult<HashMap<ObjectId,
     let platform = repo.references().map_err(gx)?;
     for reference in platform.all().map_err(gx)? {
         let Ok(mut reference) = reference else { continue };
+        if reference.target().try_name().is_some() {
+            continue;
+        }
         let full = reference.name().as_bstr().to_owned();
-        let label = if let Some(n) = full.strip_prefix(b"refs/heads/") {
-            to_string(n.as_bstr())
-        } else if let Some(n) = full.strip_prefix(b"refs/remotes/") {
-            if n.ends_with(b"/HEAD") {
-                continue;
-            }
+        let label = if let Some(n) = full.strip_prefix(b"refs/heads/").or_else(|| full.strip_prefix(b"refs/remotes/")) {
             to_string(n.as_bstr())
         } else if let Some(n) = full.strip_prefix(b"refs/tags/") {
             format!("tag: {}", to_string(n.as_bstr()))

@@ -161,7 +161,7 @@
   /* --stripe-drag: the width under the pointer while the stripe edge is dragged. */
   --stripe-button: var(--stripe-drag, var(--stripe-icon-button));
   /* Outer padding: narrower than the island gap so the side frame stays close to the status bar's height, as in IDEA. */
-  --stripe-pad: 4px;
+  --stripe-pad: var(--stripe-outer-padding);
   width: calc(var(--stripe-button) + var(--stripe-pad) + var(--island-gap));
   container-type: inline-size;
   flex: none;
@@ -182,7 +182,6 @@
 }
 .stripeWithNames {
   --stripe-button: var(--stripe-drag, var(--stripe-button-w, 56px));
-  --stripe-pad: 4px;
   gap: 4px;
 }
 .stripeSideLeft {
@@ -364,7 +363,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 600;
   color: var(--fg-strong);
 }
 .titlePlain {

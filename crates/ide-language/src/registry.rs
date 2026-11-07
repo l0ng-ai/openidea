@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
+    ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -533,6 +534,7 @@ mod tests {
         "Julia",
         "Kotlin",
         "LiveScript",
+        "Log",
         "Lua",
         "mIRC",
         "Mathematica",
@@ -601,6 +603,7 @@ mod tests {
         "Angular Template",
         "ERB",
         "JSP",
+        "Astro",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -636,6 +639,7 @@ mod tests {
         for (lang, servers) in [
             ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
+            ("java", vec!["jdtls", "kmp-lsp"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let got: Vec<(&str, bool)> = cfg
@@ -674,7 +678,7 @@ mod tests {
         let root = tmp.path();
         std::fs::create_dir_all(root.join("apps/web/src")).unwrap();
         std::fs::write(root.join("apps/web/.oxlintrc.json"), "{}").unwrap();
-        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"] {
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte", "astro"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let oxlint = cfg.language_servers.iter().find(|s| s.name == "oxlint").unwrap();
             assert_eq!((oxlint.command.as_str(), oxlint.args.as_slice()), ("oxlint", ["--lsp".to_string()].as_slice()));
@@ -888,6 +892,7 @@ mod tests {
             ("App.svelte", "svelte"),
             ("index.jsp", "jsp"),
             ("WEB-INF/tags/card.tag", "jsp"),
+            ("index.astro", "astro"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),
             ("tsconfig.app.json", "jsonc"),
@@ -947,6 +952,14 @@ mod tests {
         assert!(dbg.args.iter().any(|a| a == "--dap-port"));
         let res = reg.get(&LanguageId::new("godot-resource")).unwrap();
         assert_eq!(res.line_comment.as_deref(), Some(";"));
+    }
+
+    #[test]
+    fn astro_server_reads_the_project_typescript() {
+        let reg = reg();
+        let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];
+        let tsdk = ls.initialization_options.as_ref().and_then(|o| o.get("typescript")?.get("tsdk")?.as_str());
+        assert_eq!(tsdk, Some("node_modules/typescript/lib"));
     }
 
     #[test]

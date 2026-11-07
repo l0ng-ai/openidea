@@ -13,6 +13,8 @@
 /* Room for the native macOS traffic lights (Overlay title bar). */
 .overlay {
   padding-left: max(82px, calc(82px / var(--titlebar-zoom, 1)));
+  /* Keep the gear on the icon-only right stripe's centre line, including compact mode. */
+  padding-right: calc(var(--stripe-outer-padding) + (var(--stripe-icon-button) - var(--titlebar-tool-button)) / 2);
 }
 /* Welcome window: plain title on the frame colour with a hairline, like IntelliJ's welcome frame. */
 .minimal {
@@ -59,7 +61,6 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
 }
 .chevron {
   flex: none;
@@ -92,8 +93,8 @@
   margin-left: 12px;
 }
 .tool {
-  width: 30px;
-  height: 30px;
+  width: var(--titlebar-tool-button);
+  height: var(--titlebar-tool-button);
   border-radius: var(--radius-popup);
   color: var(--fg-secondary);
 }

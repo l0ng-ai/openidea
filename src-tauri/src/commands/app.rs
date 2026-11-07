@@ -85,10 +85,8 @@ pub async fn open_project(window: Window, path: PathBuf) -> IdeResult<ProjectInf
     let info = project_info(&project);
     let _ = window.set_title(&info.name);
     window.state::<AppState>().sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
-    let grouped = window.state::<crate::windows::WindowsState>().groups.lock().group(window.label()).is_some();
-    if grouped {
-        crate::window_groups::persist(window.app_handle()).await?;
-    }
+    // Every project window is part of the session reopened at the next start.
+    crate::window_groups::persist(window.app_handle()).await?;
     Ok(info)
 }
 
@@ -131,7 +129,8 @@ pub fn project_rename(window: Window, state: State<'_, AppState>, name: String) 
     Ok(project_info(&project))
 }
 
-#[tauri::command]
+// Not on the main thread: closing stops the project's language servers, runs and file watcher.
+#[tauri::command(async)]
 #[specta::specta]
 pub fn close_project(window: Window, state: State<'_, AppState>) {
     crate::windows::close_auxiliary_windows(window.app_handle(), window.label());
@@ -313,6 +312,13 @@ pub async fn project_trust_set(
         state.plugins.restrict_project(&dunce::canonicalize(&path).unwrap_or(path));
     }
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn project_trust_add_location(state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {
+    state.trust.add_location(&path)?;
+    state.host.refresh_project_trust().await
 }
 
 #[tauri::command]

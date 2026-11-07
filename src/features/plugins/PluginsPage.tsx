@@ -8,7 +8,14 @@
  */
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
-import type { CapabilityInfo, CatalogPlugin, MarketPlugin, PluginInfo, PluginStatus } from "@/bindings";
+import type {
+  CapabilityInfo,
+  CatalogPlugin,
+  MarketPlugin,
+  PluginIcon as PluginIconData,
+  PluginInfo,
+  PluginStatus,
+} from "@/bindings";
 import {
   Badge,
   Button,
@@ -25,6 +32,7 @@ import {
   T,
 } from "@/ui";
 import { RISK_LABEL, sortByRisk } from "./consent";
+import { pluginIconName } from "./pluginIcon";
 import { itemsOf, uiPoint } from "./projection";
 import {
   compareVersions,
@@ -105,10 +113,10 @@ export function catalogState(
 
 const vendorOf = (authors: readonly string[]) => authors.join(", ");
 
-function PluginIcon({ large }: { large?: boolean }) {
+function PluginIcon({ id, icon, large }: { id: string; icon: PluginIconData | null | undefined; large?: boolean }) {
   return (
     <span className={clsx(styles.icon, large && styles.iconLarge)} aria-hidden>
-      <Icon name="plugin" size={large ? 32 : 20} />
+      <Icon name={pluginIconName(id, icon)} size={large ? 32 : 20} />
     </span>
   );
 }
@@ -133,7 +141,7 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
         onClick={onSelect}
         title={plugin.description || plugin.name}
       >
-        <PluginIcon />
+        <PluginIcon id={plugin.id} icon={plugin.icon} />
         <span className={styles.rowText}>
           <span className={styles.rowName}>{plugin.name}</span>
           <span className={styles.rowMeta}>
@@ -201,7 +209,7 @@ function CatalogRow({ entry, selected, onSelect }: { entry: CatalogPlugin; selec
         onClick={onSelect}
         title={entry.description || entry.name}
       >
-        <PluginIcon />
+        <PluginIcon id={entry.id} icon={entry.icon} />
         <span className={styles.rowText}>
           <span className={styles.rowName}>{entry.name}</span>
           <span className={styles.rowMeta}>
@@ -398,7 +406,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   return (
     <div className={styles.details} aria-label={`${plugin.name} details`}>
       <header className={styles.header}>
-        <PluginIcon large />
+        <PluginIcon id={plugin.id} icon={plugin.icon} large />
         <div className={styles.headerText}>
           <h2 className={styles.title}>{plugin.name}</h2>
           {plugin.authors.length > 0 && <div className={styles.authors}>{vendorOf(plugin.authors)}</div>}
@@ -514,7 +522,7 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
       <header className={styles.header}>
-        <PluginIcon large />
+        <PluginIcon id={entry.id} icon={entry.icon} large />
         <div className={styles.headerText}>
           <h2 className={styles.title}>{entry.name}</h2>
           {entry.authors.length > 0 && <div className={styles.authors}>{vendorOf(entry.authors)}</div>}
@@ -681,7 +689,7 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
         onClick={onSelect}
         title={entry.description || entry.name}
       >
-        <PluginIcon />
+        <PluginIcon id={entry.id} icon={entry.icon} />
         <span className={styles.rowText}>
           <span className={styles.rowName}>{entry.name}</span>
           <span className={styles.rowMeta}>
@@ -711,7 +719,7 @@ function MarketDetails({ entry, onInstalled }: { entry: MarketPlugin; onInstalle
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
       <header className={styles.header}>
-        <PluginIcon large />
+        <PluginIcon id={entry.id} icon={entry.icon} large />
         <div className={styles.headerText}>
           <h2 className={styles.title}>{entry.name}</h2>
           <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : entry.publisher}</div>

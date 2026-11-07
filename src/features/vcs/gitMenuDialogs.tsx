@@ -5,9 +5,10 @@ import type { Branch, MergeOptions, Remote, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, Icon, IconButton, Input, Select, T, type SelectOption } from "@/ui";
+import { Checkbox, Dialog, Icon, IconButton, Input, Select, T, useSanitizedField, type SelectOption } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
+import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, selectRepo, useVcs } from "./store";
@@ -687,6 +688,7 @@ function NewWorktreeDialog({ onClose }: { onClose: (created: boolean) => void })
   const [source, setSource] = useState<string | null>(null);
   const [createBranch, setCreateBranch] = useState(true);
   const [newBranch, setNewBranch] = useState("");
+  const { ref: branchRef, clean: cleanBranch } = useSanitizedField(cleanUpBranchNameOnTyping);
   const [path, setPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const options = useMemo(
@@ -744,11 +746,12 @@ function NewWorktreeDialog({ onClose }: { onClose: (created: boolean) => void })
         <Checkbox label="Create a new branch" checked={createBranch} onChange={setCreateBranch} />
         {createBranch && (
           <Input
+            ref={branchRef}
             aria-label="New branch name"
             mono
             value={newBranch}
             placeholder={suggestedBranch}
-            onChange={(e) => setNewBranch(e.target.value)}
+            onChange={(e) => setNewBranch(cleanBranch(e))}
           />
         )}
         <div className={styles.fieldLabel}>

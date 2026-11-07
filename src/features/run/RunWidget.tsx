@@ -1,13 +1,13 @@
 import { useRef, useState } from "react";
 import clsx from "clsx";
-import { BarButton, Icon, IconButton, Menu, type MenuItem } from "@/ui";
+import { BarButton, Icon, IconButton, Menu, Spinner, type MenuItem } from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { runExecutors, useRunExecutors, useDebugRunSessions } from "@/workbench/contributions";
 import { configIcon } from "./configs";
 import { useRemoteLabel } from "./remote";
-import { CURRENT_FILE, useRun } from "./store";
+import { CURRENT_FILE, useRun, isLive } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { isDebugOnly } from "./types";
 import styles from "./Run.module.css";
@@ -24,13 +24,17 @@ export function RunWidget() {
   const currentFile = selectedId === CURRENT_FILE;
   // Remote JVM Debug and the like: only Debug applies, as in IDEA.
   const debugOnly = !!selected && isDebugOnly(selected);
-  const running = sessions.filter((s) => s.status === "running" || s.status === "starting");
+  const running = sessions.filter((s) => isLive(s));
   const debug = useDebugRunSessions((s) => s.sessions);
   const compoundRunning = compoundTargets(selected, running, debug);
   const target = selectedTarget(selectedId, running, debug);
   const debugging = !!target?.debug;
   const active = !!target || compoundRunning.length > 0;
   const count = running.length + debug.length;
+  const stopping = running.some((s) => s.status === "stopping") || debug.some((s) => s.status === "stopping");
+  const targetStopping =
+    running.some((s) => s.status === "stopping" && s.config.id === selectedId) ||
+    debug.some((s) => s.status === "stopping" && s.configId === selectedId);
   const stopName = compoundRunning.length
     ? selected?.name
     : (target?.name ?? running[0]?.config.name ?? debug[0]?.name);
@@ -100,7 +104,7 @@ export function RunWidget() {
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledRun)}
               title={tx`Rerun '${selected?.name ?? target?.name ?? ""}'`}
               shortcut={shortcutLabel("run.run")}
-              disabled={!!target && !target.rerun}
+              disabled={!!target && (!target.rerun || targetStopping)}
               onClick={() => void executeAction("run.run")}
             />
           </>
@@ -136,17 +140,30 @@ export function RunWidget() {
             />
           </>
         )}
-        {count > 0 && (
-          <IconButton
-            icon="stop-filled"
-            size="large"
-            iconSize={16}
-            className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
-            title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
-            shortcut={shortcutLabel("run.stop")}
-            onClick={() => void executeAction("run.stop", "widget")}
-          />
-        )}
+        {count > 0 &&
+          (stopping ? (
+            // Between Stop and the exit: a spinner says the process is shutting down, and the
+            // button kills it on the next click (IDEA's Stop turns into Kill process).
+            <button
+              type="button"
+              className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop, styles.widgetStopping)}
+              title={tx`Kill process`}
+              aria-label={tx`Kill process`}
+              onClick={() => void executeAction("run.stop", "widget")}
+            >
+              <Spinner size={14} />
+            </button>
+          ) : (
+            <IconButton
+              icon="stop-filled"
+              size="large"
+              iconSize={16}
+              className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
+              title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
+              shortcut={shortcutLabel("run.stop")}
+              onClick={() => void executeAction("run.stop", "widget")}
+            />
+          ))}
         <IconButton
           ref={moreRef}
           icon="more"

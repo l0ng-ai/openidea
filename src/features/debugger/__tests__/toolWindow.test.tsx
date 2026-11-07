@@ -28,6 +28,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 const confirmTerminate = vi.hoisted(() => vi.fn(async () => false));
 vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 
+import type { RunConfig } from "@/platform/ipc";
 import { useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
 
@@ -61,6 +62,33 @@ describe("debug tool window", () => {
     useDebug.setState({ sessions: { 1: { ...session, adapter: "dart", status: "running" } }, active: 1 });
     render(<DebugToolWindow />);
     expect(hot()).toEqual([true, true]);
+  });
+
+  it("says a PHP Remote Debug session listens for Xdebug while nothing is suspended", () => {
+    const runConfig = {
+      id: "php-remote:web",
+      name: "web",
+      kind: "php-remote",
+      command: "",
+      args: [],
+      cwd: null,
+      env: {},
+      detected: false,
+      isTest: false,
+      debugAdapter: "php-debug",
+      params: { port: "9010" },
+    } as RunConfig;
+    const waiting = { ...session, adapter: "php-debug", status: "running" as const, threads: [], frames: [] };
+    useDebug.setState({ sessions: { 1: { ...waiting, runConfig } }, active: 1 });
+    const { unmount } = render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    expect(screen.getByText("Listening for Xdebug on port 9010")).toBeTruthy();
+    expect(screen.queryByText("Running…")).toBeNull();
+    unmount();
+    useDebug.setState({ sessions: { 1: waiting }, active: 1 });
+    render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    expect(screen.getByText("Running…")).toBeTruthy();
   });
 
   it("shows preparation output, preserves a chosen tab and opens variables on pause", () => {

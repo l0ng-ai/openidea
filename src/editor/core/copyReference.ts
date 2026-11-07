@@ -17,6 +17,27 @@ export interface ReferenceInput {
   line: number;
 }
 
+/**
+ * Start the write during the user gesture, while the reference is still being resolved.
+ * Without `ClipboardItem`, the text is written once it is known.
+ */
+export function copyReferenceToClipboard(
+  reference: Promise<string>,
+  clipboard: Clipboard = navigator.clipboard,
+  Item: typeof ClipboardItem | null = globalThis.ClipboardItem ?? null,
+): Promise<void> {
+  if (!Item || typeof clipboard.write !== "function") return reference.then((text) => clipboard.writeText(text));
+  return clipboard.write([
+    new Item({ "text/plain": reference.then((text) => new Blob([text], { type: "text/plain" })) }),
+  ]);
+}
+
+/** Position inside a selected identifier or the identifier under the caret. */
+export function referenceOffset(text: string, from: number, to: number): number | null {
+  if (from !== to) return /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(text.slice(from, to)) ? from : null;
+  return /[\p{L}\p{N}_$]/u.test(text[from] ?? "") ? from : null;
+}
+
 export function relativePath(path: string, root: string | null): string {
   return root && path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
 }
@@ -49,12 +70,28 @@ export function pythonModulePath(path: string, root: string | null): string {
   const parts = relativePath(path, root)
     .replace(/\.pyi?$/, "")
     .split("/");
-  if (parts[0] === "src" && parts.length > 1) parts.shift();
+  const src = parts.lastIndexOf("src");
+  if (src >= 0 && src < parts.length - 1) parts.splice(0, src + 1);
   if (parts[parts.length - 1] === "__init__") parts.pop();
   return parts.join(".");
 }
 
 const declared = (text: string, re: RegExp) => re.exec(text)?.[1] ?? null;
+
+/** `method(int, String)` → `method`: a language server may bake the signature into a callable's name; IDEA's reference is the bare name. */
+export function declaredName(item: { name: string; kind: string }): string {
+  const n = item.name;
+  if (!["function", "method", "constructor"].includes(item.kind)) return n;
+  const paren = n.indexOf("(");
+  return paren > 0 ? n.slice(0, paren).trim() : n;
+}
+
+/** `pkg.Outer.Inner#member` (the last symbol is the member unless the caret is on a type's name), as IDEA's Copy Reference. */
+function jvmReference(pkg: string | null, chain: string[]): string {
+  const [type, ...rest] = chain;
+  const typePath = [pkg, type].filter(Boolean).join(".");
+  return rest.length ? `${[typePath, ...rest.slice(0, -1)].join(".")}#${rest[rest.length - 1]}` : typePath;
+}
 
 export function qualifiedReference(r: ReferenceInput): string {
   const fallback = `${relativePath(r.path, r.root)}:${r.line + 1}`;
@@ -62,18 +99,11 @@ export function qualifiedReference(r: ReferenceInput): string {
   if (!chain.length) return fallback;
   switch (r.language) {
     case "java":
-    case "groovy": {
-      const pkg = declared(r.text, /^\s*package\s+([\w.]+)\s*;?/m);
-      const [type, ...rest] = chain;
-      const typePath = [pkg, type].filter(Boolean).join(".");
-      // `pkg.Outer.Inner#member`: the last symbol is the member unless the caret is on a type's name.
-      return rest.length ? `${[typePath, ...rest.slice(0, -1)].join(".")}#${rest[rest.length - 1]}` : typePath;
-    }
+    case "groovy":
+      return jvmReference(declared(r.text, /^\s*package\s+([\w.]+)\s*;?/m), chain);
     case "kotlin":
-    case "scala": {
-      const pkg = declared(r.text, /^\s*package\s+([\w.]+)/m);
-      return [pkg, ...chain].filter(Boolean).join(".");
-    }
+    case "scala":
+      return jvmReference(declared(r.text, /^\s*package\s+([\w.]+)/m), chain);
     case "csharp":
       return chain.join(".");
     case "rust":

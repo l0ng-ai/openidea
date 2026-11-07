@@ -7,6 +7,9 @@ import { create } from "zustand";
 
 export const viewKey = (pluginId: string, view: string) => `${pluginId}/${view}`;
 
+/** The tool window a plugin's declared view is shown in. */
+export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
+
 export const useViewRevisions = create<{ revisions: Record<string, number> }>(() => ({ revisions: {} }));
 
 /** The plugin's view content changed: rendered views fetch it again. */

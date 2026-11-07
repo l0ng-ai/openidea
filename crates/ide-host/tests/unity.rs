@@ -35,6 +35,8 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     assert!(unity.projects.is_empty() && unity.solutions.is_empty());
     assert!(project.index.wait_idle(Duration::from_secs(20)));
     assert_eq!(project.index.find_files("Player.cs", 100).len(), 1);
+    let listed = project.index.files_matching(&project.root, |rel| rel.ends_with("Player.cs"), 10).unwrap();
+    assert_eq!(listed.len(), 1);
     for name in ["Cached.cs", "Temporary.cs", "Editor.log"] {
         assert!(project.index.find_files(name, 100).is_empty(), "indexed generated file {name}");
     }

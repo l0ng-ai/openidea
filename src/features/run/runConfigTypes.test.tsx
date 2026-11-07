@@ -225,6 +225,24 @@ describe("configuration types", () => {
     });
   });
 
+  it("ticking Bundler swaps the interpreter launcher for its bundle sibling, and back", () => {
+    const abs = "/v/ruby/bin/ruby";
+    const run = cfg("r", { kind: "ruby", command: abs, args: ["-Ilib", "test/a_test.rb"] });
+    expect(withParams(run, { ...formParams(run)!, bundler: "true" })).toMatchObject({
+      command: "/v/ruby/bin/bundle",
+      args: ["exec", "ruby", "-Ilib", "test/a_test.rb"],
+    });
+    const bundled = cfg("r", { kind: "ruby", command: "/v/ruby/bin/bundle", args: ["exec", "ruby", "a.rb"] });
+    expect(withParams(bundled, { ...formParams(bundled)!, bundler: "" })).toMatchObject({
+      command: "/v/ruby/bin/ruby",
+      args: ["a.rb"],
+    });
+    // A launcher of the user's own (binstub, spring) is kept.
+    expect(withParams(run, { ...formParams(run)!, bundler: "true", command: "bin/spring" })).toMatchObject({
+      command: "bin/spring",
+    });
+  });
+
   it("ruby types keep option values with their options and the argument order as written", () => {
     const ruby = (args: string[]) => formParams(cfg("r", { kind: "ruby", command: "ruby", args }));
     expect(ruby(["-I", "lib", "-w", "bin/app", "--port", "3000"])).toEqual({
@@ -658,7 +676,12 @@ describe("debug-only types (Remote JVM Debug)", () => {
     debugOnly: true,
     debugAdapter: "java-debug",
     fields: [
-      { key: "port", label: "Port", validate: (v) => (/^\d+$/.test(v) ? null : "Port must be a number") },
+      {
+        key: "port",
+        label: "Port",
+        required: true,
+        validate: (v) => (/^\d+$/.test(v) ? null : "Port must be a number"),
+      },
       { key: "agent", label: "Agent", control: "output", value: (p) => `address=*:${p.port ?? ""}` },
     ],
     commandLine: () => null,
@@ -685,6 +708,10 @@ describe("debug-only types (Remote JVM Debug)", () => {
     expect(screen.queryByText("Command line")).toBeNull();
     fireEvent.change(screen.getByLabelText("Port"), { target: { value: "x" } });
     expect(screen.getByRole("alert").textContent).toBe("Port must be a number");
+    // Emptying the only field keeps the form: there is no command line to edit instead.
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "" } });
+    expect(screen.getByRole("alert").textContent).toBe("Port is required");
+    expect(screen.queryByLabelText("Command")).toBeNull();
   });
 
   it("are valid without a command, get the type's adapter and are not run", async () => {
