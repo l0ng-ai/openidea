@@ -135,6 +135,8 @@ export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<
  */
 export async function gradleDelegation(config: RunConfig): Promise<RunConfig | null> {
   if (!isTauri() || !isJvmApplication(config)) return null;
+  // No Build asks for the classpath the IDE already resolved; a Gradle JavaExec would build.
+  if (config.buildPolicy === "noBuild") return null;
   const { project, settings } = useProject.getState();
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
   const { model, gradleOffline } = useBuildModel.getState();

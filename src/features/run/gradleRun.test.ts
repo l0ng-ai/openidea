@@ -212,6 +212,13 @@ describe("delegation across independent builds", () => {
     expect(await gradleDelegation(app)).toBeNull();
   });
 
+  it("does not delegate a No Build configuration to Gradle", async () => {
+    useProject.setState({ project: { root: ROOT } as ProjectInfo, settings: null });
+    useBuildModel.setState({ root: ROOT, model: { maven: null, gradle: [gradle] } });
+    const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
+    expect(await gradleDelegation({ ...app, buildPolicy: "noBuild" })).toBeNull();
+  });
+
   it("prefers the directly linked owner over a longer sibling composite root", async () => {
     const composite = {
       ...gradle,
