@@ -406,7 +406,7 @@ pub async fn lsp_references(
             let snapshot = symbol.clone();
             let cancellation = cancel.clone();
             blocking(move || validate_indexed_symbol(&project, &snapshot, Some(&cancellation))).await?;
-            let _ = on_partial.send(merge_indexed_references(References::default(), &symbol));
+            let _ = on_partial.send(merge_indexed_references(References::default(), symbol));
         }
         let result = lsp
             .references_streaming(
