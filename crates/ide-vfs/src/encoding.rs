@@ -230,9 +230,13 @@ pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
 /// Bounded disk snapshots for background consumers that share editor decoding.
 pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
     use std::io::Read;
+    let regular = |meta: &fs::Metadata| meta.is_file() && meta.len() <= max_bytes as u64;
+    if !regular(&fs::metadata(path)?) {
+        return Err(IdeError::invalid("document is too large or is not a regular file"));
+    }
     let file = fs::File::open(path)?;
     let meta = file.metadata()?;
-    if !meta.is_file() || meta.len() > max_bytes as u64 {
+    if !regular(&meta) {
         return Err(IdeError::invalid("document is too large or is not a regular file"));
     }
     let mut bytes = Vec::new();

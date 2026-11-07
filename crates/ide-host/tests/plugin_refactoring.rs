@@ -276,6 +276,10 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         .await
         .unwrap();
         project.documents.close(usage_doc.id);
+        assert!(
+            plugins.indexed_symbol_at(&project.root, &first, Pos::new(0, 5), Some("main")).is_some(),
+            "{encoding} BOM={bom} must publish the open definition"
+        );
         let refs = ops::lsp::lsp_references(
             &host,
             "main",
