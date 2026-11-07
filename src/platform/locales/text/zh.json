@@ -6421,5 +6421,7 @@
   "Recommended": "推荐",
   "No preview": "无预览",
   "Running in the background": "后台运行中",
-  "Couldn't stop the background task": "无法停止后台任务"
+  "Couldn't stop the background task": "无法停止后台任务",
+  "Stage {count} files": "暂存 {count} 个文件",
+  "Unstage {count} files": "取消暂存 {count} 个文件"
 }
