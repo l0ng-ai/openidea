@@ -3,12 +3,12 @@
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
 import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { formatBinding, isMacHost } from "@/platform/keymap";
+import { formatBinding, isMacHost, macStroke, normalizeBinding, strokeOf } from "@/platform/keymap";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 import { tx } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
-import { dirname } from "@/platform/project";
+import { basename, dirname } from "@/platform/project";
 import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
 import {
   Button,
@@ -41,6 +41,7 @@ import {
   checkOf,
   filesOf,
   groupFileNodes,
+  groupOf,
   ignoreTargets,
   isPartiallyStaged,
   planCommit,
@@ -51,9 +52,12 @@ import {
 import { applyStash, commitChanges, deleteFiles, dropStash, showUnstashDialog, stashChanges } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { DEFAULT_LIST_NAME, useChangelists, withListDefaults } from "./changelists";
-import { moveToChangelist } from "./changelistsUi";
+import { commitFiles, moveToChangelist } from "./changelistsUi";
+import { acceptSide } from "./conflictsUi";
+import { copyChangesAsPatch } from "./patches";
 import {
   messageHistory,
+  pendingFixup,
   setAmend,
   setCommitDiffPreview,
   setDiffPreview,
@@ -63,13 +67,16 @@ import {
   type CommitTab,
 } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
+import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
+import { openDiffDialog } from "./diffDialog";
 import { DiffEditor } from "./DiffEditor";
 import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash } from "./model";
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
+import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
@@ -177,12 +184,18 @@ const bottomLeft = (el: HTMLElement) => {
   return { x: r.left, y: r.bottom + 2 };
 };
 
-/** Opens a file's diff; F7 continues through the other files of its group, in tree order. */
-function openNode(n: ChangeNode, roots: readonly ChangeNode[]) {
+/**
+ * Opens a file's diff; F7 continues through the other files of its group, in tree
+ * order. `dialog` opens it in a front dialog: an editor tab would sit behind the
+ * modal Commit dialog, invisible until it closes (#1863).
+ */
+function openNode(n: ChangeNode, roots: readonly ChangeNode[], mode: "commit" | "local" | "dialog") {
   if (n.type !== "file" || !n.path) return;
   const nodes = groupFileNodes(roots, n);
   const items = nodes.map((f) => workingDiffData(f.path!, undefined, stagingSide(f.group, f.files[0]!)));
-  void openDiff(withChain(items, Math.max(0, nodes.indexOf(n))), { preview: true });
+  const data = withChain(items, Math.max(0, nodes.indexOf(n)));
+  if (mode === "dialog") openDiffDialog(data);
+  else void openDiff(data, { preview: true });
 }
 
 /** Context menu of a change list's header: the list's own actions, then the bulk ones on its files. */
@@ -208,13 +221,13 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
       label: "Stage",
       icon: "plus",
       disabled: !files.some((f) => f.unstaged),
-      run: () => void call(commands.vcsStage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Stage ${count} files`, () => call(commands.vcsStage(paths))),
     },
     {
       label: "Unstage",
       icon: "minus",
       disabled: !files.some((f) => f.staged),
-      run: () => void call(commands.vcsUnstage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Unstage ${count} files`, () => call(commands.vcsUnstage(paths))),
     },
     { kind: "separator" },
     ...(count
@@ -234,7 +247,23 @@ export function deletableFiles(nodes: ChangeNode[]): string[] {
   return files.length && files.every(onDisk) ? files.map((f) => f.path) : [];
 }
 
-export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuItem[] {
+/**
+ * Copies the selected files' absolute paths (`absolute`) or just their names
+ * (`name`) to the clipboard, one per line: Ctrl+C / Ctrl+Shift+C of the changes
+ * tree and the context menu's Copy items (#1877).
+ */
+export function copyChangePaths(nodes: ChangeNode[], kind: "absolute" | "name") {
+  const text = filesOf(nodes)
+    .map((f) => (kind === "name" ? basename(f.path) : f.path))
+    .join("\n");
+  if (text) void navigator.clipboard?.writeText(text);
+}
+
+export function nodeMenu(
+  nodes: ChangeNode[],
+  repos: readonly string[],
+  opts?: { mode?: "commit" | "local" | "dialog"; roots?: readonly ChangeNode[] },
+): MenuItem[] {
   const files = filesOf(nodes);
   const deletable = deletableFiles(nodes);
   const paths = files.map((f) => f.path);
@@ -243,7 +272,31 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
   const toIgnore = ignoreTargets(nodes, repos);
   const conflicted = files.filter((f) => f.unstaged === "conflicted");
   const items: MenuItem[] = [
-    { kind: "action", action: "vcs.showDiff", arg: first?.path },
+    ...(conflicted.length
+      ? [
+          {
+            label: "Accept Yours",
+            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "ours"))).then(() => refreshNow()),
+          },
+          {
+            label: "Accept Theirs",
+            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "theirs"))).then(() => refreshNow()),
+          },
+          { kind: "separator" as const },
+        ]
+      : []),
+    {
+      label: "Commit File…",
+      icon: "commit",
+      disabled: !files.some((f) => groupOf(f) === "changes"),
+      run: () => commitFiles(paths),
+    },
+    { kind: "separator" },
+    // In `dialog` mode an editor tab would sit behind the modal Commit dialog (#1863):
+    // open the diff in a front dialog, like double-click does.
+    opts?.mode === "dialog" && opts.roots && first
+      ? { label: "Show Diff", icon: "diff", run: () => openNode(first, opts.roots!, "dialog") }
+      : { kind: "action", action: "vcs.showDiff", arg: first?.path },
     {
       label: "Jump to Source",
       icon: "external-link",
@@ -283,13 +336,13 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
       label: "Stage",
       icon: "plus",
       disabled: !files.some((f) => f.unstaged),
-      run: () => void call(commands.vcsStage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Stage ${paths.length} files`, () => call(commands.vcsStage(paths))),
     },
     {
       label: "Unstage",
       icon: "minus",
       disabled: !files.some((f) => f.staged),
-      run: () => void call(commands.vcsUnstage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Unstage ${paths.length} files`, () => call(commands.vcsUnstage(paths))),
     },
     { kind: "separator" },
     ...(nodes.some((n) => n.changelist)
@@ -297,6 +350,7 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
       : []),
     { kind: "action", action: "vcs.shelve", arg: paths },
     { kind: "action", action: "vcs.createPatch", arg: paths },
+    { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
     { kind: "separator" },
     {
       label: "Show History",
@@ -307,7 +361,8 @@ export function nodeMenu(nodes: ChangeNode[], repos: readonly string[]): MenuIte
     { kind: "action", action: "vcs.localHistory", arg: first?.path },
     { kind: "action", action: "vcs.annotate", arg: first?.path },
     { kind: "separator" },
-    { label: "Copy Path", icon: "copy", run: () => void navigator.clipboard?.writeText(paths.join("\n")) },
+    { label: "Copy Path", icon: "copy", run: () => copyChangePaths(nodes, "absolute") },
+    { label: "Copy File Name", icon: "copy", run: () => copyChangePaths(nodes, "name") },
   );
   return items;
 }
@@ -587,6 +642,15 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               e.preventDefault();
               void editorService().openFile(n.path, { focus: true });
             }
+          } else {
+            // IDEA: Ctrl+C copies the file names, Ctrl+Shift+C the absolute paths (#1877).
+            const stroke = strokeOf(e.nativeEvent);
+            const copy = stroke && normalizeBinding(macStroke(stroke));
+            if (copy === "Meta+C" || copy === "Shift+Meta+C") {
+              e.preventDefault();
+              e.stopPropagation();
+              copyChangePaths(selectedNodes(), copy === "Meta+C" ? "name" : "absolute");
+            }
           }
         }}
       >
@@ -619,7 +683,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
           }}
-          onActivate={(n) => openNode(n, roots)}
+          onActivate={(n) => openNode(n, roots, mode)}
           onContextMenu={(node, sel, e: MouseEvent) => {
             if (!node) return;
             if (node.type === "group" && node.changelist) {
@@ -627,7 +691,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               return;
             }
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
-            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos));
+            showContextMenu(e, nodeMenu(nodes.length ? nodes : [node], repos, { mode, roots }));
           }}
           aria-label="Changes"
           empty={
@@ -762,7 +826,7 @@ export interface CommitRunner {
   clearEmptyError: () => void;
   /** Whether the Commit buttons are enabled. */
   canCommit: boolean;
-  run: (push: boolean) => Promise<void>;
+  run: (push: boolean, rebaseFixup?: boolean) => Promise<void>;
 }
 
 /**
@@ -774,7 +838,7 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
   const merging = useVcs((s) => s.branch?.operation === "merge");
   const [emptyError, setEmptyError] = useState(false);
   const [busy, setBusy] = useState(false);
-  const run = async (push: boolean) => {
+  const run = async (push: boolean, rebaseFixup = false) => {
     if (busy) return;
     // IDEA keeps Commit enabled and reports an empty message at the field.
     if (!useCommit.getState().message.trim() && !useCommit.getState().amend) {
@@ -784,10 +848,12 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
     }
     setBusy(true);
     try {
+      const fixup = rebaseFixup ? pendingFixup(useCommit.getState().message, useCommit.getState().fixupTarget) : null;
       const id = await commitChanges();
       if (id === undefined) return;
       onCommitted?.();
-      if (push) void pushAfterCommit();
+      if (fixup) void rebaseAfterFixup(fixup);
+      else if (push) void pushAfterCommit();
     } finally {
       setBusy(false);
     }
@@ -950,6 +1016,8 @@ function CommitPanel({ included }: { included: number }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const runner = useCommitRunner(included);
   const { canCommit } = runner;
+  // After Fixup… / Squash Into…, the second button commits and autosquashes the target.
+  const fixup = useCommit((s) => pendingFixup(s.message, s.fixupTarget));
 
   return (
     <div className={styles.commit}>
@@ -958,16 +1026,29 @@ function CommitPanel({ included }: { included: number }) {
         <Button variant="primary" disabled={!canCommit} onClick={() => void runner.run(false)} title="⌘↩">
           <T>{commitLabel(amend, checkProblems.length > 0)}</T>
         </Button>
-        <Button
-          className={styles.pushButton}
-          disabled={!canCommit || !!remoteBusy}
-          onClick={() => void runner.run(true)}
-          title="⌥⌘↩"
-        >
-          <span>
-            <T>{commitAndPushLabel(amend)}</T>
-          </span>
-        </Button>
+        {fixup ? (
+          <Button
+            className={styles.pushButton}
+            disabled={!canCommit}
+            onClick={() => void runner.run(false, true)}
+            title="Commit and Rebase"
+          >
+            <span>
+              <T>Commit and Rebase</T>
+            </span>
+          </Button>
+        ) : (
+          <Button
+            className={styles.pushButton}
+            disabled={!canCommit || !!remoteBusy}
+            onClick={() => void runner.run(true)}
+            title="⌥⌘↩"
+          >
+            <span>
+              <T>{commitAndPushLabel(amend)}</T>
+            </span>
+          </Button>
+        )}
         <span className={styles.grow} />
         <IconButton
           ref={optionsRef}

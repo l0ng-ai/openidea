@@ -52,6 +52,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
@@ -62,7 +63,12 @@ import { tx } from "@/platform/i18n";
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
 export const CURRENT_FILE = "current-file";
 
-export type SessionStatus = "starting" | "running" | "finished" | "failed";
+export type SessionStatus = "starting" | "running" | "stopping" | "finished" | "failed";
+
+/** Whether the process is alive: starting, running, or shutting down after Stop. */
+export function isLive(s: { status: SessionStatus }): boolean {
+  return s.status === "starting" || s.status === "running" || s.status === "stopping";
+}
 
 export interface RunSession {
   id: string;
@@ -91,8 +97,13 @@ interface SessionRuntime {
   /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
   queue: OutputChunk[];
-  /** rAF id while the page is visible, timeout id while hidden (rAF pauses in background tabs). */
+  /**
+   * rAF id while the page is visible, timeout id while hidden (rAF pauses in
+   * background tabs) or while waiting out `FLUSH_INTERVAL`.
+   */
   flushHandle: { raf: number } | { timeout: number } | null;
+  /** When output was last shown (`performance.now()`). */
+  flushedAt: number;
   /** Bumped per start so output from a previous run in the same tab is ignored. */
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
@@ -197,7 +208,7 @@ export async function loadConfigs(): Promise<void> {
     return;
   }
   try {
-    const saved = await call(commands.runConfigs());
+    const [saved] = await Promise.all([call(commands.runConfigs()), loadRunTemplates()]);
     if (useProject.getState().project?.root !== root) return;
     // Temporary configs survive reloads (and restarts) until saved or evicted; a saved one wins.
     // They are kept without what settings derived: today's toolchains apply to them, as to the others.
@@ -384,9 +395,7 @@ export function adoptTemporary(config: RunConfig): RunConfig {
     return existing;
   }
   let temporary = [...state.temporary.filter((id) => id !== config.id), config.id];
-  const busy = new Set(
-    state.sessions.filter((x) => x.status === "running" || x.status === "starting").map((x) => x.config.id),
-  );
+  const busy = new Set(state.sessions.filter(isLive).map((x) => x.config.id));
   for (const session of useDebugRunSessions.getState().sessions) if (session.configId) busy.add(session.configId);
   while (temporary.length > MAX_TEMPORARY) {
     const evict = temporary.find((id) => id !== config.id && !busy.has(id)) ?? temporary[0]!;
@@ -495,6 +504,7 @@ function flush(sessionId: string) {
   if (!rt) return;
   cancelFlush(rt);
   if (rt.queue.length === 0) return;
+  rt.flushedAt = performance.now();
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
     const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
@@ -515,11 +525,26 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
     // rAF pauses in background tabs; a timeout keeps consuming output so it doesn't
     // pile up until the console is shown again (issue #319: the console "kept
     // scrolling" the previous run's backlog after switching back to it).
+    const wait = FLUSH_INTERVAL - (performance.now() - rt.flushedAt);
     rt.flushHandle = document.hidden
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
-      : { raf: requestAnimationFrame(() => flush(sessionId)) };
+      : wait > 0
+        ? {
+            timeout: window.setTimeout(
+              () => (rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) }),
+              wait,
+            ),
+          }
+        : { raf: requestAnimationFrame(() => flush(sessionId)) };
   }
 }
+
+/**
+ * Shortest time between console updates. A line after a quiet spell shows on the
+ * next frame; a flood is shown at ~20 Hz instead of every frame, which kept
+ * typing elsewhere from fitting in a frame (35% missed while 12k lines/s stream).
+ */
+const FLUSH_INTERVAL = 50;
 
 function cancelFlush(rt: SessionRuntime) {
   if (rt.flushHandle === null) return;
@@ -591,6 +616,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
     }),
     queue: [],
     flushHandle: null,
+    flushedAt: -Infinity,
     generation: 0,
     lineListeners: [],
     input: "",
@@ -668,7 +694,7 @@ export async function startRun(
   }
   if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain))) return null;
   const state = useRun.getState();
-  const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
+  const busy = (s: RunSession) => isLive(s);
   let session = reuse ? state.sessions.find((s) => s.id === reuse) : undefined;
   // As in IDEA, a configuration that doesn't allow parallel
   // runs asks before stopping its running instances; rerunning a tab restarts it without asking.
@@ -689,8 +715,9 @@ export async function startRun(
     await stopSession(session.id);
     stopping.push(session.id);
   }
-  // The new process starts once the old one is gone (it may still hold a port or a lock).
-  await waitForExit(stopping);
+  // The new process starts once the old one is gone (it may still hold a port or a lock). As in
+  // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
+  await waitForExit(stopping, null);
   session ??= state.sessions.find((s) => s.config.id === config.id && !busy(s));
 
   try {
@@ -915,7 +942,13 @@ const pendingExits = new Map<RunId, number | null>();
 function finishSession(sessionId: string, code: number | null) {
   const rt = runtimes.get(sessionId);
   const session = getSession(sessionId);
-  if (!rt || !session) return;
+  if (!session) return;
+  if (!rt) {
+    // Nothing to flush: the run's output runtime is gone already. The exit is still the
+    // authority on the process being over, so the tab must not stay "stopping" for ever.
+    patchSession(sessionId, { status: "finished", exitCode: code, endedAt: Date.now() });
+    return;
+  }
   // Output still on the channel lands before the exit is applied.
   setTimeout(() => {
     void (async () => {
@@ -1035,11 +1068,14 @@ export async function stopSession(sessionId: string): Promise<void> {
     await commands.cancelRequest(request.id);
     return;
   }
-  if (session.runId === null || session.status !== "running") return;
-  patchSession(sessionId, { stopped: true });
+  if (session.runId === null || !isLive(session)) return;
+  // Stopping keeps the process live (IDEA: the Stop button stays until the process is gone);
+  // a second Stop meanwhile skips the grace period and kills it.
+  patchSession(sessionId, { stopped: true, status: "stopping" });
   try {
     await call(commands.runStop(session.runId));
   } catch (e) {
+    patchSession(sessionId, { status: "running" });
     notifications().notify({
       group: "run",
       level: "error",
@@ -1049,12 +1085,12 @@ export async function stopSession(sessionId: string): Promise<void> {
   }
 }
 
-/** Resolves once the given sessions' processes exited (or after `timeoutMs`). */
-export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+/** Resolves once the given sessions' processes exited (or after `timeoutMs`, unless `null`). */
+export function waitForExit(sessionIds: readonly string[], timeoutMs: number | null = 10_000): Promise<void> {
   const live = () =>
     sessionIds.some((id) => {
       const s = getSession(id);
-      return !!s && s.runId !== null && s.status === "running";
+      return !!s && s.runId !== null && isLive(s);
     });
   if (!live()) return Promise.resolve();
   return new Promise((resolve) => {
@@ -1063,7 +1099,7 @@ export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): 
       unsubscribe();
       resolve();
     };
-    const timer = setTimeout(done, timeoutMs);
+    const timer = timeoutMs === null ? undefined : setTimeout(done, timeoutMs);
     const unsubscribe = useRun.subscribe(() => {
       if (!live()) done();
     });
@@ -1120,7 +1156,7 @@ export function failedTests(sessionId: string): string[][] {
 /** "Rerun Failed Tests": reruns only the failed tests in the same tab. Returns false when unsupported. */
 export function rerunFailed(sessionId: string): boolean {
   const session = getSession(sessionId);
-  if (!session || session.status === "running" || session.status === "starting") return false;
+  if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
   const derived = rerunFailedConfig(base, failedTests(sessionId));
   if (!derived) return false;
@@ -1221,7 +1257,7 @@ export function clearConsole(sessionId: string) {
 export async function closeSessionTab(sessionId: string): Promise<boolean> {
   const session = getSession(sessionId);
   if (!session) return false;
-  const running = session.status === "running" || session.status === "starting";
+  const running = isLive(session);
   if (running && workflowSettings().run.confirmTerminate && !(await confirmTerminate(session.config.name)))
     return false;
   closeSession(sessionId);
@@ -1231,7 +1267,7 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
 export function closeSession(sessionId: string) {
   const session = getSession(sessionId);
   if (!session) return;
-  if (session.status === "running" || session.status === "starting") void stopSession(sessionId);
+  if (isLive(session)) void stopSession(sessionId);
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);
@@ -1247,7 +1283,7 @@ export function closeSession(sessionId: string) {
 }
 
 export function runningSessions(): RunSession[] {
-  return useRun.getState().sessions.filter((s) => s.status === "running" || s.status === "starting");
+  return useRun.getState().sessions.filter(isLive);
 }
 
 /** Stops everything and forgets sessions (project closed). */
@@ -1299,4 +1335,60 @@ export function modifyTemporary(config: RunConfig) {
     editTarget: adopted.id,
     editDirty: adopted.detected === false,
   });
+}
+
+const SAMPLE_LINES = [
+  (i: number) =>
+    `2026-11-05 10:42:${String(i % 60).padStart(2, "0")}.${String(i % 1000).padStart(3, "0")}  INFO 4242 --- [nio-8080-exec-${i % 10}] c.a.orders.service.OrderService  : processed order #${i} in ${i % 97} ms`,
+  (i: number) => `\tat com.acme.orders.service.OrderService.process(OrderService.kt:${(i % 300) + 1})`,
+  (i: number) =>
+    `2026-11-05 10:42:01.${String(i % 1000).padStart(3, "0")} DEBUG 4242 --- [           main] o.s.web.servlet.DispatcherServlet        : GET "/api/orders/${i}", parameters={}`,
+];
+
+/**
+ * Development and the performance harness only: a session whose console gets
+ * `lines` generated log lines (stack frames among them), `perFrame` per
+ * animation frame, as from a chatty process. Resolves once all are shown.
+ */
+export async function startSampleOutput(lines: number, perFrame: number): Promise<void> {
+  const config: RunConfig = {
+    id: `sample-output-${sessionSeq + 1}`,
+    name: "Sample output",
+    kind: "shell",
+    command: "",
+    args: [],
+    cwd: null,
+    env: {},
+    detected: false,
+    isTest: false,
+    debugAdapter: null,
+  };
+  const session: RunSession = {
+    id: `run${++sessionSeq}`,
+    config,
+    runId: null,
+    status: "running",
+    exitCode: null,
+    startedAt: Date.now(),
+    endedAt: null,
+    stdinClosed: true,
+  };
+  runtimes.set(session.id, newRuntime(config));
+  useRun.setState((s) => ({ sessions: [...s.sessions, session], activeSession: session.id }));
+  bump(session.id);
+  try {
+    toolWindowService().show("run");
+  } catch {
+    /* no workbench (tests) */
+  }
+  for (let i = 0; i < lines;) {
+    await new Promise(requestAnimationFrame);
+    for (const end = Math.min(lines, i + perFrame); i < end; i++) {
+      const line = SAMPLE_LINES[i % 20 === 19 ? 1 : i % 7 === 6 ? 2 : 0]!(i);
+      enqueue(session.id, { kind: i % 101 === 100 ? "stderr" : "stdout", text: `${line}\n` });
+    }
+  }
+  await new Promise(requestAnimationFrame);
+  flush(session.id);
+  finishSession(session.id, 0);
 }

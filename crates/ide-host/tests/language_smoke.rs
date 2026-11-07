@@ -303,7 +303,18 @@ impl Smoke {
         let (doc, pos) = self.locate(of).await;
         let want: BTreeSet<String> = files.iter().map(|f| f.to_string()).collect();
         self.retry("find usages", self.warm_up, || async {
-            let found = ops::lsp::lsp_references(&self.host, WINDOW, RequestId(1), doc, pos, true, true).await;
+            let found = ops::lsp::lsp_references(
+                &self.host,
+                WINDOW,
+                RequestId(1),
+                doc,
+                pos,
+                true,
+                true,
+                false,
+                ops::Channel::new(|_| {}),
+            )
+            .await;
             match &found {
                 Ok(r) if want.is_subset(&self.files(r.locations.iter().map(|l| l.path.clone()))) => Ok(()),
                 _ => Err(found.map(|r| self.files(r.locations.into_iter().map(|l| l.path)))),

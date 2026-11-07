@@ -6,7 +6,7 @@ import { emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { invokeLocal } from "@/platform/tauriCore";
 import { OverlayHost } from "@/workbench/OverlayHost";
-import { useContributions } from "@/workbench/contributions";
+import { useContributions, useSettingsPages } from "@/workbench/contributions";
 import { activate } from "./index";
 
 const status = vi.fn();
@@ -15,6 +15,10 @@ vi.mock("@/platform/tauriCore", async (original) => ({
   ...(await original<typeof import("@/platform/tauriCore")>()),
   invokeLocal: vi.fn(),
 }));
+const addLocation = vi.fn();
+const listDecisions = vi.fn();
+const pickFolder = vi.fn();
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: pickFolder }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -23,6 +27,8 @@ vi.mock("@/platform/ipc", async (original) => {
       ...real.commands,
       projectTrustStatus: (path: string) => status(path),
       projectTrustSet: (...args: unknown[]) => decide(...args),
+      projectTrustList: () => listDecisions(),
+      projectTrustAddLocation: (...args: unknown[]) => addLocation(...args),
       projectCurrent: async () => null,
     },
   };
@@ -34,6 +40,9 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation(async (root: string) => ({ status: "ok", data: { root, trusted: false, decided: false } }));
   decide.mockReset().mockResolvedValue({ status: "ok", data: null });
+  addLocation.mockReset().mockResolvedValue({ status: "ok", data: null });
+  listDecisions.mockReset().mockResolvedValue({ status: "ok", data: { projects: [], locations: [], restricted: [] } });
+  pickFolder.mockReset().mockResolvedValue(null);
   useProject.setState({ project: null });
   dispose = activate();
 });
@@ -86,6 +95,26 @@ it("shows and trusts the canonical folder when opening through a symlink", async
   fireEvent.click(screen.getByRole("button", { name: "Trust Project" }));
   await act(async () => opening);
   expect(decide).toHaveBeenCalledWith("/real/projects/new", true, true);
+});
+
+it("adds a picked folder as a trusted location from settings", async () => {
+  const Page = useSettingsPages.getState().pages.get("projectTrust")!.component!;
+  pickFolder.mockResolvedValue("/projects");
+  addLocation.mockImplementation(async () => {
+    listDecisions.mockResolvedValue({
+      status: "ok",
+      data: { projects: [], locations: ["/projects"], restricted: [] },
+    });
+    return { status: "ok", data: null };
+  });
+  render(<Page />);
+  fireEvent.click(await screen.findByRole("button", { name: "Add folder…" }));
+  await screen.findByText("/projects");
+  expect(addLocation).toHaveBeenCalledWith("/projects");
+  pickFolder.mockResolvedValue(null);
+  fireEvent.click(screen.getByRole("button", { name: "Add folder…" }));
+  await act(async () => {});
+  expect(addLocation).toHaveBeenCalledTimes(1);
 });
 
 it.each(["Trust Project", "Preview in Restricted Mode"])(

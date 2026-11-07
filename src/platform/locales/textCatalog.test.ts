@@ -94,7 +94,9 @@ const UNTRANSLATED = new Set<string>([
   "oxfmt",
   "Ruff",
   "IntelliJ IDEA",
+  "GitHub",
   "PHPStan",
+  "Xdebug",
   // Docker run target placeholder values
   "compose.yaml",
   "python:3.12",

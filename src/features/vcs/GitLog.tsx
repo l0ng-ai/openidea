@@ -23,7 +23,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, useGitLogChecks, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -77,11 +77,12 @@ import {
   toggleRepository,
   updateLogOptions,
   useGitLog,
+  PAGE,
 } from "./logStore";
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
-import { currentRepo, loadBranches, repoName, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import { branchMenu, inRepo, tagMenu } from "./branchMenu";
 import {
@@ -1089,6 +1090,7 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
         toggle("Date", o, "showDate"),
         toggle("Hash", o, "showHash"),
         toggle("Signature", o, "showSignature"),
+        toggle("GitHub Commit Checks", o, "showGitHubChecks"),
         { kind: "separator" },
         toggle("Column Headers", o, "showColumnHeaders"),
       ],
@@ -1120,7 +1122,9 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
-  const head = (commitRepo(c) ? useVcs.getState().heads[commitRepo(c)!]?.head : useVcs.getState().branch?.head) ?? null;
+  const repo = commitRepo(c);
+  const vcs = useVcs.getState();
+  const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
   const pushed = (x: Commit) =>
     commitRepo(x) === undefined ? !!outgoing && !outgoing.has(x.id) : isPushed(commitKey(x));
@@ -1147,6 +1151,22 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     ((commitRepo(c) === undefined ? !!outgoing : useGitLog.getState().tracked.has(commitRepo(c) ?? ""))
       ? !!outgoing?.has(commitKey(c))
       : true);
+  const branches = ((c as RepoCommit).refBranches ?? []).filter((branch) => !branch.current);
+  const branchActions: MenuItem[] = branches.map((branch) => {
+    const menu = branchMenu(branch, head);
+    return {
+      label: tx`Branch '${branch.name}'`,
+      submenu: repo ? inRepo(repo, menu) : menu,
+    };
+  });
+  if (!branchActions.length)
+    branchActions.push({
+      kind: "action",
+      action: "vcs.log.rebaseOntoCommit",
+      arg: c,
+      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
+      disabled: !head,
+    });
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: c },
     {
@@ -1172,13 +1192,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "action", action: "vcs.log.interactiveRebase", arg: c, disabled: pushedCommit },
     { kind: "action", action: "vcs.log.pushUpToHere", arg: c, disabled: !canPushHere },
     { kind: "separator" },
-    {
-      kind: "action",
-      action: "vcs.log.rebaseOntoCommit",
-      arg: c,
-      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
-      disabled: !head,
-    },
+    ...(branchActions.length > 2 ? [{ label: "Branches", submenu: branchActions }] : branchActions),
     { kind: "action", action: "vcs.log.newBranch", arg: c },
     { kind: "action", action: "vcs.log.newTag", arg: c },
     { kind: "separator" },
@@ -1214,6 +1228,7 @@ function CommitList() {
     });
   }, [all]);
   const opts = useLogOptions();
+  const ChecksCell = useGitLogChecks((s) => s.cell);
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
   const { expanded: expandedFragments, collapsed: collapsedFragments, merges: expandedMerges } = fragments;
@@ -1241,10 +1256,32 @@ function CommitList() {
       ...(opts.showSignature
         ? [{ id: "signature", title: "Signature", width: 100, render: (c: Commit) => <CommitSignature commit={c} /> }]
         : []),
+      ...(opts.showGitHubChecks && ChecksCell
+        ? [
+            {
+              id: "github-checks",
+              title: "GitHub Commit Checks",
+              width: 44,
+              render: (c: Commit) => {
+                const root = commitRepo(c) ?? currentRepoRoot();
+                return root && !(c as RepoCommit).readOnly ? <ChecksCell root={root} revision={c.id} /> : null;
+              },
+            },
+          ]
+        : []),
     ];
     const order = [...new Set([...opts.columnOrder, ...builtins.map((c) => c.id)])];
     return builtins.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
-  }, [opts.showAuthor, opts.showDate, opts.showHash, opts.showSignature, opts.commitTimestamp, opts.columnOrder]);
+  }, [
+    opts.showAuthor,
+    opts.showDate,
+    opts.showHash,
+    opts.showSignature,
+    opts.showGitHubChecks,
+    opts.commitTimestamp,
+    opts.columnOrder,
+    ChecksCell,
+  ]);
   const user = useGitLog((s) => s.user);
   const headCommit = useVcs((s) => s.branch?.headCommit ?? null);
   const branches = useVcs((s) => s.branches);
@@ -1367,8 +1404,10 @@ function CommitList() {
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
 
+  // The next page is requested while a page of rows is still ahead, so scrolling
+  // quickly doesn't reach the end before `git log` answers.
   useEffect(() => {
-    if (!finished && !loading && last && last.index >= commits.length - 40) void loadMore(scope ?? undefined);
+    if (!finished && !loading && last && last.index >= commits.length - PAGE) void loadMore(scope ?? undefined);
   }, [last, commits.length, finished, loading, active, scope]);
 
   const selectedIndex = selected ? commits.findIndex((c) => commitKey(c) === selected) : -1;
@@ -1388,6 +1427,28 @@ function CommitList() {
     else if (e.metaKey || e.ctrlKey) toggleCommitSelection(id);
     else selectCommit(id);
   }, []);
+  // CommitRow is memoized: rows get handlers that stay the same across renders and
+  // call this render's (assigned before rendering).
+  const rowEvents = useRef<RowEvents | null>(null);
+  const rowHandlers = useMemo<RowEvents>(
+    () => ({
+      onHover: (edge) => rowEvents.current?.onHover(edge),
+      onFragment: (from, target, expand) => rowEvents.current?.onFragment(from, target, expand),
+      onNavigate: (index, key) => rowEvents.current?.onNavigate(index, key),
+    }),
+    [],
+  );
+  // Called while a row renders its graph, so it changes with what it reads.
+  const targetTitle = useCallback(
+    (index: number, key?: string) => {
+      const target = commits[index];
+      return target
+        ? `${target.shortId} ${target.summary} — ${target.author}`
+        : (key && boundaryTitles.get(key)) ||
+            `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
+    },
+    [commits, boundaryTitles],
+  );
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === "Backspace" || e.key === "Escape")) {
@@ -1559,6 +1620,38 @@ function CommitList() {
     }
   };
 
+  rowEvents.current = {
+    onHover: (edge) => {
+      setHoverColor(edge);
+      if (!edge) return;
+      const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
+      const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
+      if (!source || !target || commits.some((c) => commitKey(c) === target) || boundaryRequests.current.has(target))
+        return;
+      const original = all.find((c) => commitKey(c) === source.id);
+      if (!original) return;
+      boundaryRequests.current.add(target);
+      const split = target.lastIndexOf("\0"),
+        id = target.slice(split + 1);
+      void loadLogDetails({ ...original, id })
+        .then((details) =>
+          setBoundaryTitles((current) =>
+            new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
+          ),
+        )
+        .catch(() => undefined);
+    },
+    onFragment: fragment,
+    onNavigate: (index, key) => {
+      const target = commits[index];
+      if (target) selectCommit(commitKey(target), true);
+      else if (key) {
+        const split = key.lastIndexOf("\0");
+        void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
+      }
+    },
+  };
+
   return (
     <div className={styles.listWrap}>
       {earlier && (
@@ -1647,52 +1740,15 @@ function CommitList() {
                 mine={opts.highlightMine && isMine(c, user)}
                 onBranch={!!onBranch?.has(commitKey(c))}
                 opts={opts}
-                remoteNames={new Set((c as RepoCommit).remoteNames ?? remoteNames)}
+                remoteNames={rowRemoteNames((c as RepoCommit).remoteNames, remoteNames)}
                 onPick={pick}
                 hoverColor={hoverColor}
                 highlighted={highlighted}
                 highlightedNodes={highlightedNodes}
-                onHover={(edge) => {
-                  setHoverColor(edge);
-                  if (!edge) return;
-                  const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
-                  const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
-                  if (
-                    !source ||
-                    !target ||
-                    commits.some((c) => commitKey(c) === target) ||
-                    boundaryRequests.current.has(target)
-                  )
-                    return;
-                  const original = all.find((c) => commitKey(c) === source.id);
-                  if (!original) return;
-                  boundaryRequests.current.add(target);
-                  const split = target.lastIndexOf("\0"),
-                    id = target.slice(split + 1);
-                  void loadLogDetails({ ...original, id })
-                    .then((details) =>
-                      setBoundaryTitles((current) =>
-                        new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
-                      ),
-                    )
-                    .catch(() => undefined);
-                }}
-                onFragment={fragment}
-                onNavigate={(index, key) => {
-                  const target = commits[index];
-                  if (target) selectCommit(commitKey(target), true);
-                  else if (key) {
-                    const split = key.lastIndexOf("\0");
-                    void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
-                  }
-                }}
-                targetTitle={(index, key) => {
-                  const target = commits[index];
-                  return target
-                    ? `${target.shortId} ${target.summary} — ${target.author}`
-                    : (key && boundaryTitles.get(key)) ||
-                        `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
-                }}
+                onHover={rowHandlers.onHover}
+                onFragment={rowHandlers.onFragment}
+                onNavigate={rowHandlers.onNavigate}
+                targetTitle={targetTitle}
                 columns={columns}
                 bookmarked={!!bookmarks[commitKey(c)]}
               />
@@ -1802,6 +1858,22 @@ function LogColumnHeader({
       />
     </span>
   );
+}
+
+type RowEvents = {
+  onHover: (edge: string | null) => void;
+  onFragment: (from: string, target: string, expand: boolean) => void;
+  onNavigate: (index: number, key?: string) => void;
+};
+
+const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
+
+/** A commit's own remote names (multi-root logs) as one set per array, else the shared one. */
+function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<string>): ReadonlySet<string> {
+  if (!own) return shared;
+  let set = remoteNameSets.get(own);
+  if (!set) remoteNameSets.set(own, (set = new Set(own)));
+  return set;
 }
 
 const CommitRow = memo(function CommitRow({

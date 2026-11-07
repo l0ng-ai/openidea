@@ -434,7 +434,13 @@ mod tests {
         t.push(AgentEntry::Agent { text: "between".into() });
         assert_eq!(t.apply(&plan("completed")).changed, vec![0]);
         t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "c", "title": "Run", "status": "in_progress"}));
-        t.push(AgentEntry::Permission { id: 1, title: "Run?".into(), options: vec![], chosen: None });
+        t.push(AgentEntry::Permission {
+            id: 1,
+            title: "Run?".into(),
+            options: vec![],
+            questions: vec![],
+            chosen: None,
+        });
         assert_eq!(t.end_turn(None), vec![2, 3]);
         let again = Timeline::from_entries(t.entries.clone());
         assert_eq!(again.plan, Some(0));

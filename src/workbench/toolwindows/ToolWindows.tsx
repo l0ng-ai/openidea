@@ -20,7 +20,12 @@ import { useProject } from "@/platform/project";
 import { dragRequiresAlt, Icon, IconButton, Menu, showContextMenu, tooltipAttrs, type MenuItem, T } from "@/ui";
 import { FOCUSABLE } from "@/ui/popupState";
 import { TabStripRegistry } from "@/ui/Tabs";
-import { useContributions, type ToolWindowAnchor, type ToolWindowContribution } from "../contributions";
+import {
+  ToolWindowShownProvider,
+  useContributions,
+  type ToolWindowAnchor,
+  type ToolWindowContribution,
+} from "../contributions";
 import { useDistractionFree } from "../distractionFree";
 import {
   hideToolWindow,
@@ -800,7 +805,9 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       )}
       <div className={styles.body} data-toolwindow-body="">
         <ToolWindowFrame.Provider value={frame}>
-          <Content id={tw.id} />
+          <ToolWindowShownProvider value={!hidden}>
+            <Content id={tw.id} />
+          </ToolWindowShownProvider>
         </ToolWindowFrame.Provider>
       </div>
     </section>

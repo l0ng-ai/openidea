@@ -12,7 +12,11 @@ const m = vi.hoisted(() => ({
     tmp.id = `d${id}`;
     document.body.append(tmp);
     if (text.includes("bad")) throw new Error("Parse error on line 2:\nbad\n^");
-    return { svg: `<svg id="${id}"><text>${text.split("\n")[0]}</text></svg>` };
+    return {
+      svg:
+        `<svg id="${id}"><defs><marker id="${id}-arrow" orient="auto"><path d="M0,0L8,4"/></marker></defs>` +
+        `<path d="M0,4" marker-end="url(#${id}-arrow)"/><text>${text.split("\n")[0]}</text></svg>`,
+    };
   }),
 }));
 
@@ -107,6 +111,32 @@ describe("mermaid in the markdown preview", () => {
     expect(m.render).toHaveBeenCalledTimes(2);
     ids.add(m.render.mock.calls[1]![0]);
     expect(ids.size).toBe(2);
+  });
+
+  it("applies a cached diagram with fresh SVG ids so copies don't share markers", async () => {
+    const first = preview(SEQ);
+    await renderMermaidIn(first, []).done;
+    // Like the first copy sitting in a hidden host: a closed details, another tab.
+    first.style.display = "none";
+    const second = preview(SEQ);
+    const pass = renderMermaidIn(second, []);
+    expect(pass.async).toBe(false); // drawn from the cache, no new render
+    await pass.done;
+    expect(m.render).toHaveBeenCalledTimes(1);
+    const idsOf = (svg: Element) => [svg, ...svg.querySelectorAll("[id]")].map((el) => el.getAttribute("id"));
+    const a = first.querySelector("svg")!;
+    const b = second.querySelector("svg")!;
+    const idsA = idsOf(a);
+    const idsB = idsOf(b);
+    expect(idsA).toHaveLength(2);
+    expect(idsB).toHaveLength(2);
+    expect(idsA.filter((id) => idsB.includes(id))).toEqual([]);
+    // Every marker reference resolves within its own copy.
+    for (const svg of [a, b]) {
+      const own = new Set(idsOf(svg));
+      const ref = svg.querySelector("[marker-end]")!.getAttribute("marker-end")!;
+      expect(own.has(/url\(#(.+)\)/.exec(ref)![1]!)).toBe(true);
+    }
   });
 
   it("re-renders when switching between built-in palette themes of the same light / dark base", async () => {

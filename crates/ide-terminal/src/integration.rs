@@ -6,7 +6,10 @@
 //!
 //! zsh starts with `ZDOTDIR` pointing at generated startup files that source
 //! the user's own ones first; bash gets an `--init-file` that replays the
-//! login sequence; fish gets an `--init-command`.
+//! login sequence; fish gets an `--init-command`. The generated `.zshrc` hands
+//! `ZDOTDIR` (and, if a startup file resolved it against the generated
+//! directory, `HISTFILE`) back to the user for login shells too, so history
+//! lands in `~/.zsh_history` despite the `zsh -l` start.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,14 +39,20 @@ _openidea_preexec() { printf '\e]133;C\a' }
 # First, so the command counts as finished before other hooks set the prompt's title.
 precmd_functions=(_openidea_osc7 ${precmd_functions:#_openidea_osc7})
 preexec_functions+=(_openidea_preexec)
-if [[ ! -o login ]]; then
-  ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
-  unset OPENIDEA_USER_ZDOTDIR _openidea_dir
+# Startup files that ran before this one (e.g. /etc/zshrc's
+# HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history) resolved HISTFILE against this
+# generated directory, since OpenIDEA starts zsh as a login shell (-l) and the
+# restore below used to be gated on non-login. Hand both back to the user: a
+# HISTFILE they configured themselves is never under $_openidea_dir and is kept.
+if [[ $HISTFILE == "$_openidea_dir"/* ]]; then
+  HISTFILE=${OPENIDEA_USER_ZDOTDIR:-$HOME}/.zsh_history
 fi
+ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}
+unset OPENIDEA_USER_ZDOTDIR _openidea_dir
 "#;
 
 const ZLOGIN: &str = r#"# OpenIDEA shell integration (generated)
-ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
+ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}
 [[ -f $ZDOTDIR/.zlogin ]] && . $ZDOTDIR/.zlogin
 unset OPENIDEA_USER_ZDOTDIR _openidea_dir
 "#;
@@ -182,5 +191,29 @@ mod tests {
         assert!(dir.join(".zshrc").is_file());
         assert_eq!(env["OPENIDEA_USER_ZDOTDIR"], "/home/me/zsh");
         assert_eq!(args, vec!["-l"]);
+    }
+
+    #[test]
+    fn zsh_restores_zdotdir_and_histfile_for_login_shells() {
+        // OpenIDEA starts zsh as a login shell (`zsh -l`), so the restore at the
+        // end of the generated .zshrc must not be gated on non-login shells,
+        // and HISTFILE resolved against the generated directory (e.g. by
+        // /etc/zshrc's `HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history`) must be
+        // re-pointed at the user's directory.
+        assert!(!ZSHRC.contains("[[ ! -o login ]]"));
+        assert!(ZSHRC.contains("HISTFILE=${OPENIDEA_USER_ZDOTDIR:-$HOME}/.zsh_history"));
+        assert!(ZSHRC.contains("ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}"));
+        assert!(ZSHRC.contains("unset OPENIDEA_USER_ZDOTDIR _openidea_dir"));
+        // Login shells that never read .zshrc (non-interactive ones) restore via .zlogin.
+        assert!(ZLOGIN.contains("ZDOTDIR=${OPENIDEA_USER_ZDOTDIR:-$HOME}"));
+        assert!(ZLOGIN.contains("unset OPENIDEA_USER_ZDOTDIR _openidea_dir"));
+        if cfg!(windows) {
+            return; // apply() only integrates on Unix
+        }
+        let mut args = vec!["-l".to_owned()];
+        let mut env = BTreeMap::from([("ZDOTDIR".to_owned(), "/home/me/zsh".to_owned())]);
+        assert!(apply("zsh", &mut args, &mut env));
+        let zshrc = std::fs::read_to_string(PathBuf::from(&env["ZDOTDIR"]).join(".zshrc")).unwrap();
+        assert!(zshrc.contains("HISTFILE=${OPENIDEA_USER_ZDOTDIR:-$HOME}/.zsh_history"));
     }
 }
