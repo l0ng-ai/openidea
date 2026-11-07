@@ -477,7 +477,7 @@ async fn documents_open_on_a_server_are_left_out_of_watched_file_changes() {
 
     // Once the document closes, the file is watched again.
     h.mgr.did_close(doc);
-    h.mgr.watched_files_changed(&[], &[path.clone()], &[], &[]);
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
     eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
     assert_eq!(
         s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
