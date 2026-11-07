@@ -1028,6 +1028,23 @@ impl PluginHost {
             .flatten()
             .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
             .collect();
+        self.stop(&plugin);
+        // Keep the installed package and registration available until cleanup succeeds.
+        let cleanup = || -> std::io::Result<()> {
+            match std::fs::remove_dir_all(self.shared.data_dir.join(id)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+            // Every version (`<id>/<version>`), or the flat directory of an older install.
+            let root = self.plugins_dir.join(id);
+            std::fs::remove_dir_all(if root.is_dir() { root } else { plugin.dir().to_path_buf() })
+        };
+        if let Err(e) = cleanup() {
+            self.set_failed(&plugin, e.to_string());
+            self.changed();
+            return Err(e.into());
+        }
         self.unload(id);
         {
             let store = self.shared.secrets.read().clone();
@@ -1037,16 +1054,7 @@ impl PluginHost {
                 }
             }
         }
-        // Every version (`<id>/<version>`), or the flat directory of an older install.
-        let root = self.plugins_dir.join(id);
-        std::fs::remove_dir_all(if root.is_dir() { root } else { plugin.dir().to_path_buf() })?;
         self.updates.lock().remove(id);
-        // Its storage goes with it.
-        match std::fs::remove_dir_all(self.shared.data_dir.join(id)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
         {
             let mut ledger = self.ledger.lock();
             ledger.remove(&plugin.subject());

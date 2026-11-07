@@ -520,10 +520,16 @@ pub mod current {
     /// under it: `/a` covers `/a/b` but not `/ab`.
     const PLUGIN_DIR: &str = "/openidea/plugin-data/mock/files";
 
-    fn require_fs(s: &State, kind: &str, path: &str) -> Result<(), Error> {
-        if (path == PLUGIN_DIR || path.starts_with(&format!("{PLUGIN_DIR}/")))
+    fn is_private_path(path: &str) -> bool {
+        (path == PLUGIN_DIR || path.starts_with(&format!("{PLUGIN_DIR}/")))
             && !path.split(['/', '\\']).any(|part| part == "..")
-        {
+    }
+
+    fn require_fs(s: &State, kind: &str, path: &str) -> Result<(), Error> {
+        if path.split(['/', '\\']).any(|part| part == "..") {
+            return Err(Error::Denied(format!("{kind}:{path}")));
+        }
+        if is_private_path(path) {
             return Ok(());
         }
         let prefix = format!("{kind}:");
@@ -1265,7 +1271,7 @@ pub mod current {
 
     pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
         with(|s| {
-            if require_fs(s, "fs.read", path).is_err() || !path.starts_with(PLUGIN_DIR) {
+            if !is_private_path(path) {
                 require(s, "project.read")?;
             }
             s.locations.push((path.into(), line, column));
@@ -1780,6 +1786,39 @@ mod tests {
             assert!(matches!(host::fs::read_file(&path), Err(Error::Denied(_))));
             assert!(matches!(host::fs::write_file(&path, "x"), Err(Error::Denied(_))));
         }
+    }
+
+    #[test]
+    fn private_directory_boundary_and_traversal_ignore_explicit_grants() {
+        let dir = host::fs::plugin_dir().unwrap();
+        let adjacent = format!("{dir}-other");
+        let traversal = format!("{dir}/../other");
+        let mock = MockHost::install().with_capabilities(&[
+            &format!("fs.read:{adjacent}"),
+            &format!("fs.write:{adjacent}"),
+            &format!("fs.read:{dir}"),
+            &format!("fs.write:{dir}"),
+        ]);
+        let file = format!("{adjacent}/fake.txt");
+        mock.add_external_file(&file, "adjacent");
+        assert_eq!(host::fs::read_file(&file).unwrap(), "adjacent");
+        host::fs::write_file(&file, "updated").unwrap();
+        assert!(host::fs::stat(&file).is_ok());
+        assert!(host::fs::read_dir(&adjacent).is_ok());
+        assert_eq!(host::open_location(&file, 0, 0), Err(Error::Denied("project.read".into())));
+        for path in [dir.clone(), format!("{dir}/fake.txt")] {
+            host::open_location(&path, 0, 0).unwrap();
+        }
+        let file = format!("{traversal}/fake.txt");
+        mock.add_external_file(&file, "escaped");
+        assert!(host::fs::read_file(&file).is_err());
+        assert!(host::fs::read_bytes(&file).is_err());
+        assert!(host::fs::write_file(&file, "x").is_err());
+        assert!(host::fs::write_bytes(&file, b"x").is_err());
+        assert!(host::fs::stat(&file).is_err());
+        assert!(host::fs::read_dir(&traversal).is_err());
+        assert!(host::open_location(&file, 0, 0).is_err());
+        assert_eq!(mock.opened_locations().len(), 2);
     }
 
     #[test]

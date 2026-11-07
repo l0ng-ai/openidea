@@ -824,6 +824,44 @@ fn private_directory_survives_host_restart_and_inactive_uninstall() {
     assert!(!dir.exists());
 }
 
+#[test]
+fn private_uninstall_cleanup_failure_is_retryable() {
+    for fail_data in [true, false] {
+        let f = fixture(Limits::default());
+        let id = "test.private-dir";
+        f.host.install_from_dir(&sample("private-dir"), &Consent::default()).unwrap();
+        f.run(id, "roundtrip", None).unwrap();
+        let dir = PathBuf::from(f.run(id, "directory", None).unwrap().unwrap());
+        let target = if fail_data { dir.parent().unwrap().to_path_buf() } else { f.plugins_dir.join(id) };
+        let backup = target.with_extension("blocked-backup");
+        // A regular file deterministically makes remove_dir_all fail, even as root.
+        std::fs::rename(&target, &backup).unwrap();
+        std::fs::write(&target, "controlled cleanup failure").unwrap();
+        assert!(f.host.uninstall(id).is_err());
+        assert!(f.host.info_of(id).is_ok(), "failed uninstall must retain its target");
+        assert_eq!(f.status(id), PluginStatus::Failed);
+        assert!(f.command_titles(id).is_empty());
+        std::fs::remove_file(&target).unwrap();
+        std::fs::rename(&backup, &target).unwrap();
+        if fail_data {
+            assert!(f.installed(id).join("plugin.toml").exists());
+            f.host.shutdown();
+            let host = PluginHost::new(
+                f.plugins_dir.clone(),
+                Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+                Limits::default(),
+            )
+            .unwrap();
+            host.load_all();
+            host.uninstall(id).unwrap();
+        } else {
+            f.host.uninstall(id).unwrap();
+        }
+        assert!(!dir.exists());
+        assert!(!f.plugins_dir.join(id).exists());
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn private_paths_work_with_open_location_and_approved_process_arguments() {
