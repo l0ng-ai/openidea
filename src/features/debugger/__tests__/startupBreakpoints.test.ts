@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { addBreakpoint, loadBreakpoints, removeAllBreakpoints, useBreakpoints } from "../breakpoints/store";
-import { startSession, useDebug } from "../state";
+import { handleDebugEvent, startPreparedSession, startSession, useDebug } from "../state";
 import type { LaunchConfig } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import {
   provideNotificationService,
   provideToolWindowService,
@@ -13,6 +14,8 @@ const ipc = vi.hoisted(() => ({
   debugStart: vi.fn(async () => ({ status: "ok", data: 42 })),
   debugCapabilities: vi.fn(async () => ({ status: "ok", data: {} })),
   debugExceptionFilters: vi.fn(async () => ({ status: "ok", data: [] })),
+  debugThreads: vi.fn(async () => ({ status: "ok", data: [] })),
+  debugStackTrace: vi.fn(async () => ({ status: "ok", data: [] })),
 }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
@@ -34,18 +37,45 @@ beforeEach(() => {
   localStorage.clear();
   useBreakpoints.setState({ root: "/p", byFile: {}, muted: false, status: {} });
   useDebug.setState({ sessions: {}, active: null, console: {} });
+  useProject.setState({ settings: null });
   provideNotificationService({ notify: vi.fn() });
   provideToolWindowService({ show: vi.fn() } as unknown as ToolWindowService);
 });
 afterEach(() => vi.useRealTimers());
 
-it.each([true, false])("shows the Debug tool window only for a foreground start (%s)", async (foreground) => {
-  const show = vi.fn();
-  provideToolWindowService({ show } as unknown as ToolWindowService);
-  await startSession(config("launch"), { show: foreground });
-  if (foreground) expect(show).toHaveBeenCalledWith("debug");
-  else expect(show).not.toHaveBeenCalled();
-});
+it.each([undefined, true, false])(
+  "respects showOnStart for direct and prepared starts (show: %s)",
+  async (foreground) => {
+    for (const showOnStart of [true, false]) {
+      useProject.setState({ settings: { run: { showOnStart } } as never });
+      for (const prepared of [false, true]) {
+        const show = vi.fn();
+        provideToolWindowService({ show } as unknown as ToolWindowService);
+        if (prepared) {
+          await startPreparedSession({ id: "java", name: "Java" } as never, async () => config("launch"), {
+            show: foreground,
+          });
+        } else await startSession(config("launch"), { show: foreground });
+        if (showOnStart && foreground !== false) expect(show).toHaveBeenCalledWith("debug");
+        else expect(show).not.toHaveBeenCalled();
+      }
+    }
+  },
+);
+
+it.each(["breakpoint", "function breakpoint", "exception", "pause"])(
+  "reveals an in-place session on suspend (%s)",
+  async (reason) => {
+    const show = vi.fn();
+    provideToolWindowService({ show } as unknown as ToolWindowService);
+    await startSession(config("launch"), { show: false });
+    expect(show).not.toHaveBeenCalled();
+    handleDebugEvent(42, { kind: "stopped", threadId: 1, reason, description: null, allThreadsStopped: true });
+    expect(show).toHaveBeenCalledWith("debug");
+    expect(useDebug.getState().active).toBe(42);
+    expect(useDebug.getState().sessions[42]).toMatchObject({ status: "paused", selectedThread: 1 });
+  },
+);
 
 it.each(["launch", "attach"])("awaits every file before %s can send configurationDone", async (request) => {
   const completed: string[] = [];

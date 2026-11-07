@@ -470,7 +470,7 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
       <SessionPanel
         key={execution.run!.id}
         session={execution.run!}
-        onRerun={rerun}
+        onRerun={d ? rerun : () => run(r)}
         onDebug={d ? rerun : () => debugSession(execution.run!.id, { show: false })}
         onStop={d ? () => void stopServiceSessions([execution]) : undefined}
       />

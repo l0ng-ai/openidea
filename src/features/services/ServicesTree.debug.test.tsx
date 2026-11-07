@@ -8,7 +8,13 @@ import { adoptSession, appendConsole, useDebug } from "@/features/debugger/state
 import { DebugServiceConsole } from "@/features/debugger/ui/DebugConsole";
 import { runServiceProvider } from "@/features/run/services";
 import { onRunExited, runtime, startRun, useRun } from "@/features/run/store";
-import { registerServiceProvider, useDebugRunSessions, type DebugServiceSession } from "@/workbench/contributions";
+import {
+  provideToolWindowService,
+  registerServiceProvider,
+  useDebugRunSessions,
+  type DebugServiceSession,
+  type ToolWindowService,
+} from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
 
@@ -153,6 +159,22 @@ it("starts a debug session in place from a run service's detail toolbar", async 
   } finally {
     disposeAction();
   }
+});
+
+it("reruns a plain run service in place from its detail toolbar", async () => {
+  const c = { ...config, kind: "shell", command: "echo", debugAdapter: null };
+  const s = await startRun(c);
+  expect(s).not.toBeNull();
+  useRun.setState({ configs: [c] });
+  useServicesTree.setState({ expanded: new Set(["run:type:shell"]) });
+  const show = vi.fn();
+  provideToolWindowService({ show } as unknown as ToolWindowService);
+  const previousRuntime = runtime(s!.id);
+  render(<ServicesTreeView />);
+  select();
+  fireEvent.click(within(screen.getByRole("toolbar", { name: "Run actions" })).getByRole("button", { name: "Rerun" }));
+  await vi.waitFor(() => expect(runtime(s!.id)).not.toBe(previousRuntime));
+  expect(show).not.toHaveBeenCalled();
 });
 
 it("reruns an attached debugger in place from a run service's detail toolbar", async () => {

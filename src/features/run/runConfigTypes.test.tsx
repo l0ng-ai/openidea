@@ -79,6 +79,15 @@ beforeEach(() => {
 
 afterEach(() => disposeTypes());
 
+it.each([undefined, false])(
+  "respects the launch origin when a configuration requests focus (%s)",
+  async (showOption) => {
+    await startRun(cfg("focused", { focusToolWindow: true }), undefined, undefined, { show: showOption });
+    if (showOption === false) expect(show).not.toHaveBeenCalled();
+    else expect(show).toHaveBeenCalledWith("run", true);
+  },
+);
+
 describe("configuration types", () => {
   it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
     const type = typeFor("application")!;

@@ -797,7 +797,7 @@ export async function startRun(
   });
   rt.onExit = options.onExit;
   try {
-    if (config.focusToolWindow) toolWindowService().show("run", true);
+    if (options.show !== false && config.focusToolWindow) toolWindowService().show("run", true);
     else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
       toolWindowService().show("run");
   } catch {
