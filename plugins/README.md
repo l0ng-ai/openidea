@@ -419,6 +419,28 @@ a new API: an IDE refuses a kind it doesn't know with `invalid`, and a kind
 newer than the plugin's SDK arrives as `Event::Other { kind, data }` (JSON).
 The SDK's event enums are `#[non_exhaustive]`; match them with a `_` arm.
 
+API 1.3 adds `host::subscribe_paths("file-opened", &["config/*.yaml"])`
+(`events.subscribe-paths`). The host matches project-relative globs before
+queueing an event or waking an idle plugin. `file-saved` works the same way;
+`files-changed` filters can also be registered for the filesystem event producer
+(see #1948). Patterns use `/`, `*` stays within a directory, and `**` crosses
+directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
+parent traversal and malformed patterns fail without replacing the old filter.
+
+Register filters in `activate`, using a startup or command activation to install
+them before observing events. Patterns are ORed; another call replaces the same
+kind's filter, an empty list pauses it, `subscribe(kind)` restores all paths,
+and `unsubscribe(kind)` removes it. Filters survive idle reclaim and disappear
+on disable, uninstall or reload. Each window's events use its current project;
+files outside that project do not match.
+
+Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
+without an invocation project or enumerating every open project. It returns the
+deepest open project containing the absolute path, or `None` outside open roots.
+Symlinks and missing file tails are resolved before checking containment.
+Obtaining a handle grants no read access: `Project::root` and file operations
+still require `project.read`.
+
 ### Commits
 
 A plugin can work on the commit the user is preparing, in the Commit tool
