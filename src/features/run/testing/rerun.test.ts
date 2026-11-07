@@ -218,12 +218,12 @@ describe("Go rerun argument boundaries", () => {
       "-test.short",
     ]);
   });
-  it("retains preparation of file-scoped configurations", () => {
+  it.each(["command-line-arguments", "example.com/app"])("retains file-scoped preparation for %s", (packageName) => {
     const config = {
       ...cfg("go", "go", ["test", "main_test.go"]),
       params: { goKind: "test", scope: "file", target: "main_test.go", module: "app", pattern: "", useTags: "true" },
     };
-    const rerun = rerunFailedConfig(config, [["command-line-arguments", "TestFail"]])!;
+    const rerun = rerunFailedConfig(config, [[packageName, "TestFail"]])!;
     expect(rerun.params).toMatchObject({
       goKind: "test",
       scope: "file",

@@ -86,7 +86,7 @@ function pytestArgs(base: string[], paths: string[][]): string[] | null {
   return [...kept, ...ids];
 }
 
-function goArgs(base: string[], paths: string[][]): string[] | null {
+function goArgs(base: string[], paths: string[][], file?: string): string[] | null {
   const pkgs = unique(paths.map((p) => p[0]!).filter(Boolean));
   if (!pkgs.length) return null;
   const tests = paths.filter((p) => p.length > 1);
@@ -100,8 +100,8 @@ function goArgs(base: string[], paths: string[][]): string[] | null {
           .join("/")
       : `^(${top.map(escapeRegExp).join("|")})$`;
   const run = top.length ? ["-run", pattern] : [];
-  // A file-scoped run is reported under this synthetic import path; keep its file targets.
-  const targets = pkgs.includes("command-line-arguments") ? parts.targets : pkgs;
+  // Older file-scoped runs used a synthetic import path; retain their original targets too.
+  const targets = file ? [file] : pkgs.includes("command-line-arguments") ? parts.targets : pkgs;
   return ["test", ...withoutGoSelection(parts.flags), ...run, ...targets, ...parts.program];
 }
 
@@ -169,7 +169,7 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
       args = phpunitArgs(config.args, { filter: phpunitFilter(paths) });
       break;
     case "go":
-      args = goArgs(config.args, paths);
+      args = goArgs(config.args, paths, config.params?.scope === "file" ? config.params.target : undefined);
       break;
     case "jvm":
       args = jvmArgs(config, paths);

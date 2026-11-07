@@ -4598,6 +4598,7 @@ dependencies = [
  "encoding_rs",
  "ide-build",
  "ide-core",
+ "ide-language",
  "libc",
  "parking_lot",
  "portable-pty",
