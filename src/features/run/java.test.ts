@@ -9,6 +9,7 @@ import {
   parseJavaArgs,
   resolveJavaCommand,
 } from "@/platform/javaLaunch";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { applicationConfig, jvmModuleDir, jvmTestConfig } from "./application";
 import { buildRows } from "./ConfigChooser";
@@ -400,6 +401,29 @@ describe("debugging build tool configurations", () => {
     expect(compiled).toMatchObject({ command: line, args: [] });
     expect(compiled.env.JDK_JAVA_OPTIONS).toMatch(/^-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(compiled.env.JAVA_TOOL_OPTIONS).toBeUndefined();
+  });
+
+  it("adds the agent without the attach listener when the JVM runs on Windows", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "windows" });
+    try {
+      const script = cfg({ id: "s", kind: "shell", command: "run.cmd", debugAdapter: "java-debug" });
+      expect(jdwpLaunch(script)!.env.JAVA_TOOL_OPTIONS).toBe(JDWP_AGENT);
+      const boot = jdwpLaunch(cfg({ id: "b", kind: "maven", args: ["spring-boot:run"] }))!;
+      expect(boot.args[1]).toBe(`-Dspring-boot.run.jvmArguments=${JDWP_AGENT}`);
+      const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["verify"] }))!;
+      expect(test.args).toEqual([
+        "verify",
+        `-Dmaven.surefire.debug=${JDWP_AGENT}`,
+        `-Dmaven.failsafe.debug=${JDWP_AGENT}`,
+      ]);
+      const maven = jdwpLaunch(cfg({ id: "m", kind: "maven", args: ["jetty:run"] }))!;
+      expect(maven.env.MAVEN_OPTS).toBe(JDWP_AGENT);
+      const file = jdwpLaunch(cfg({ id: "f", kind: "java-file", command: "java", args: ["Hi.java"] }))!;
+      expect(file.args).toEqual([JDWP_AGENT, "Hi.java"]);
+    } finally {
+      usePlatform.setState({ os });
+    }
   });
 
   it("keeps the user's attach opt-out: the agent is still added, the listener is not", () => {

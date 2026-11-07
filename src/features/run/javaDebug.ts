@@ -18,7 +18,8 @@ import {
   optsOutOfAttach,
 } from "@/platform/javaLaunch";
 import { startRun, useRun } from "./store";
-import { DELEGATED_DEBUG, DELEGATED_MAIN } from "./gradleRun";
+import { DELEGATED_ATTACH_LISTENER, DELEGATED_DEBUG, DELEGATED_MAIN } from "./gradleRun";
+import { isWindows } from "./jvmTypes";
 
 const isMavenTestGoal = (a: string) =>
   /^(test|verify|integration-test|surefire:test|failsafe:integration-test)$/.test(a);
@@ -34,11 +35,12 @@ function withOption(env: Record<string, string>, key: string, value: string): Re
 
 /**
  * The agent, preceded by the attach listener unless a VM option of the configuration or the
- * channel's current value (`existing`) already decides about the attach mechanism.
+ * channel's current value (`existing`) already decides about the attach mechanism. Not on
+ * Windows, where the memory view that needs the listener is not available.
  */
 function agentOptions(config: RunConfig, ...existing: (string | undefined)[]): string[] {
   const options = [config.params?.vmOptions, ...existing].filter(Boolean).join(" ");
-  return optsOutOfAttach(options) ? [JDWP_AGENT] : [ATTACH_LISTENER, JDWP_AGENT];
+  return isWindows() || optsOutOfAttach(options) ? [JDWP_AGENT] : [ATTACH_LISTENER, JDWP_AGENT];
 }
 
 const agentText = (config: RunConfig, ...existing: (string | undefined)[]) =>
@@ -88,8 +90,11 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
   }
   if (config.kind === "gradle" || /(^|\/)gradlew?(\.bat)?$/.test(config.command)) {
     // A delegated Application: its init script adds the agent (port 0) to the JavaExec JVM.
-    if (args.some((a) => a.startsWith(DELEGATED_MAIN)))
-      return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
+    if (args.some((a) => a.startsWith(DELEGATED_MAIN))) {
+      const flags = isWindows() ? [DELEGATED_DEBUG] : [DELEGATED_ATTACH_LISTENER, DELEGATED_DEBUG];
+      const missing = flags.filter((f) => !args.includes(f));
+      return missing.length ? { ...config, args: [...args, ...missing] } : config;
+    }
     if (!args.some(isGradleJvmTask)) return null;
     return args.includes("--debug-jvm") ? config : { ...config, args: [...args, "--debug-jvm"] };
   }
@@ -107,7 +112,7 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
  * JVMs through an init script (the one VM options use). A failure only costs the memory view.
  */
 async function withGradleAttachListener(launch: RunConfig): Promise<RunConfig> {
-  if (!launch.args.includes("--debug-jvm") || launch.target) return launch;
+  if (isWindows() || !launch.args.includes("--debug-jvm") || launch.target) return launch;
   if (optsOutOfAttach([launch.params?.vmOptions, ...launch.args].join(" "))) return launch;
   try {
     const script = await call(commands.runGradleJvmArgsScript([ATTACH_LISTENER]));

@@ -460,6 +460,12 @@ pub fn script_command(home: &Path, windows: bool, verb: &str) -> (String, Vec<St
     }
 }
 
+/// The memory view finds the debuggee through its attach socket, and has no Windows support;
+/// a user's own choice about the attach mechanism wins.
+fn wants_attach_listener(opts: &str, windows: bool) -> bool {
+    !windows && !opts.contains("StartAttachListener") && !opts.contains("DisableAttachMechanism")
+}
+
 pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<()> {
     // Batch scripts and their environment variables require ordinary Windows paths.
     let home = dunce::canonicalize(root.join(
@@ -513,8 +519,7 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     let mut opts = config.env.get("CATALINA_OPTS").cloned().unwrap_or_default();
     opts.push_str(&format!(" {vm} -Dcom.sun.management.jmxremote.port={jmx} -Dcom.sun.management.jmxremote.rmi.port={jmx} -Dcom.sun.management.jmxremote.host=127.0.0.1 -Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"));
     if debug {
-        // The memory view finds the debuggee through its attach socket; a user's own choice about it wins.
-        if !opts.contains("StartAttachListener") && !opts.contains("DisableAttachMechanism") {
+        if wants_attach_listener(&opts, cfg!(windows)) {
             opts.push_str(" -XX:+StartAttachListener");
         }
         opts.push_str(" -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0");
@@ -870,8 +875,18 @@ mod tests {
     #[test]
     fn starts_the_attach_listener_right_before_the_debug_agent() {
         let opts = prepared_opts(true, "-Xmx256m", None);
-        assert!(opts.contains(" -XX:+StartAttachListener -agentlib:jdwp=transport=dt_socket"), "{opts}");
+        assert_eq!(
+            opts.contains(" -XX:+StartAttachListener -agentlib:jdwp=transport=dt_socket"),
+            !cfg!(windows),
+            "{opts}"
+        );
         assert!(!prepared_opts(false, "-Xmx256m", None).contains("StartAttachListener"));
+    }
+    #[test]
+    fn no_attach_listener_for_windows() {
+        assert!(wants_attach_listener(" -Xmx256m", false));
+        assert!(!wants_attach_listener(" -Xmx256m", true));
+        assert!(!wants_attach_listener(" -XX:+DisableAttachMechanism", false));
     }
     #[test]
     fn keeps_user_attach_opt_out() {
@@ -930,7 +945,7 @@ mod tests {
         assert_eq!(c.env["CATALINA_HOME"], dunce::canonicalize(&home).unwrap().to_string_lossy());
         assert_eq!(base, dunce::canonicalize(base_dir(&cache, &c.id)).unwrap());
         assert!(c.env["CATALINA_OPTS"].contains("suspend=n,address=127.0.0.1:0"));
-        assert!(c.env["CATALINA_OPTS"].contains(" -XX:+StartAttachListener -agentlib:jdwp="));
+        assert_eq!(c.env["CATALINA_OPTS"].contains(" -XX:+StartAttachListener -agentlib:jdwp="), !cfg!(windows));
         assert!(c.env["CATALINA_OPTS"].contains("-Xmx256m"));
         assert!(!c.env.get("JAVA_OPTS").is_some_and(|s| s.contains("jdwp")));
         assert_eq!(c.env["JRE_HOME"], "/jdk with spaces");

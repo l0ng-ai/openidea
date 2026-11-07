@@ -780,8 +780,9 @@ fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream
 
 /// The attach listener must be on the command line before the user's arguments, which may
 /// override it; the memory view needs it because the JVM is started by the IDE, not attached to.
-fn kotlin_jvm_args(user: Vec<String>) -> Vec<String> {
-    if !ide_jvm_attach::wants_listener_flag(&user.join(" ")) {
+/// Not on Windows (`windows`), which the memory view does not support.
+fn kotlin_jvm_args(user: Vec<String>, windows: bool) -> Vec<String> {
+    if windows || !ide_jvm_attach::wants_listener_flag(&user.join(" ")) {
         return user;
     }
     let mut args = Vec::with_capacity(user.len() + 1);
@@ -805,7 +806,7 @@ pub(crate) async fn start_kotlin_debuggee(s: &Arc<Session>, args: &mut Value) ->
         std::env::join_paths(strings("classPaths")).map_err(|e| ide_core::IdeError::invalid(e.to_string()))?;
     let mut cmd = tokio::process::Command::new(java);
     ide_core::process::prepare(cmd.as_std_mut());
-    cmd.args(kotlin_jvm_args(strings("vmArguments")))
+    cmd.args(kotlin_jvm_args(strings("vmArguments"), cfg!(windows)))
         .arg(format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}"))
         .arg("-cp")
         .arg(classpath);
@@ -926,12 +927,17 @@ mod tests {
     #[test]
     fn kotlin_launch_starts_attach_listener_first() {
         assert_eq!(
-            kotlin_jvm_args(vec!["-Xmx1g".into()]),
+            kotlin_jvm_args(vec!["-Xmx1g".into()], false),
             vec!["-XX:+StartAttachListener".to_string(), "-Xmx1g".into()]
         );
         assert_eq!(
-            kotlin_jvm_args(vec!["-XX:+DisableAttachMechanism".into()]),
+            kotlin_jvm_args(vec!["-XX:+DisableAttachMechanism".into()], false),
             vec!["-XX:+DisableAttachMechanism".to_string()]
         );
+    }
+
+    #[test]
+    fn kotlin_launch_on_windows_gets_no_attach_listener() {
+        assert_eq!(kotlin_jvm_args(vec!["-Xmx1g".into()], true), vec!["-Xmx1g".to_string()]);
     }
 }

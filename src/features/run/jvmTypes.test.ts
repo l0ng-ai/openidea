@@ -281,6 +281,19 @@ describe("Maven / Gradle: VM options of the forked JVM", () => {
       expect((await debugLaunch(remote)).args).toEqual(["bootRun", "--debug-jvm"]);
       expect(scripts).toEqual([]);
     });
+
+    it("adds no attach listener when Gradle runs on Windows", async () => {
+      scripts.length = 0;
+      const os = usePlatform.getState().os;
+      usePlatform.setState({ os: "windows" });
+      try {
+        const c = withParams(cfg({ kind: "gradle" }), { tasks: "bootRun" });
+        expect((await debugLaunch(c)).args).toEqual(["bootRun", "--debug-jvm"]);
+        expect(scripts).toEqual([]);
+      } finally {
+        usePlatform.setState({ os });
+      }
+    });
   });
 
   it("leaves Gradle configurations without VM options alone", async () => {

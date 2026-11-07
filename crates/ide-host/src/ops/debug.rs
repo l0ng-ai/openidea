@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
-    let mut config = match_java_debug_encoding(start_java_attach_listener(config), cfg!(windows));
+    let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
         && let Ok(project) = host.project(window)
@@ -85,8 +85,9 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
 
 /// The JVM memory tab reads the class table over the attach socket, which only exists once the
 /// JVM has started its attach listener. The flag goes first so the user's arguments still win.
-fn start_java_attach_listener(mut config: LaunchConfig) -> LaunchConfig {
-    if config.adapter != "java-debug" || config.request != "launch" {
+/// Not on Windows (`windows`: the JVM runs there), which the memory view does not support.
+fn start_java_attach_listener(mut config: LaunchConfig, windows: bool) -> LaunchConfig {
+    if windows || config.adapter != "java-debug" || config.request != "launch" {
         return config;
     }
     let Some(serde_json::Value::Object(mut extra)) =
@@ -571,39 +572,43 @@ mod tests {
         }
     }
 
+    /// The flag as added for a JVM on macOS or Linux.
+    fn on_unix(config: LaunchConfig) -> LaunchConfig {
+        start_java_attach_listener(config, false)
+    }
+
     #[test]
     fn java_debug_launches_start_the_attach_listener() {
-        let fixed = start_java_attach_listener(launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})));
+        let fixed = on_unix(launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})));
         assert_eq!(vm_args(&fixed), "-XX:+StartAttachListener -Xmx1g");
         assert_eq!(
-            vm_args(&start_java_attach_listener(launch("java-debug", "launch", serde_json::json!({})))),
+            vm_args(&on_unix(launch("java-debug", "launch", serde_json::json!({})))),
             "-XX:+StartAttachListener"
         );
         for extra in [
             serde_json::json!({"vmArgs": "-XX:-StartAttachListener"}),
             serde_json::json!({"vmArgs": "-XX:+DisableAttachMechanism"}),
         ] {
-            assert_eq!(
-                vm_args(&start_java_attach_listener(launch("java-debug", "launch", extra.clone()))),
-                extra["vmArgs"]
-            );
+            assert_eq!(vm_args(&on_unix(launch("java-debug", "launch", extra.clone()))), extra["vmArgs"]);
         }
         assert_eq!(
-            vm_args(&start_java_attach_listener(launch(
-                "java-debug",
-                "attach",
-                serde_json::json!({"vmArgs": "-Xmx1g"})
-            ))),
+            vm_args(&on_unix(launch("java-debug", "attach", serde_json::json!({"vmArgs": "-Xmx1g"})))),
             "-Xmx1g"
         );
     }
 
     #[test]
+    fn java_debug_launches_on_windows_get_no_attach_listener() {
+        let config = launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"}));
+        assert_eq!(vm_args(&start_java_attach_listener(config, true)), "-Xmx1g");
+    }
+
+    #[test]
     fn java_debug_array_vm_args_are_left_alone() {
         let config = launch("java-debug", "launch", serde_json::json!({"vmArgs": ["-Xmx1g", "-Dk=v"]}));
-        assert_eq!(start_java_attach_listener(config.clone()).extra_json, config.extra_json);
+        assert_eq!(on_unix(config.clone()).extra_json, config.extra_json);
         assert_eq!(
-            vm_args(&start_java_attach_listener(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})))),
+            vm_args(&on_unix(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})))),
             "-XX:+StartAttachListener"
         );
     }

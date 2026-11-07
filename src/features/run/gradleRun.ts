@@ -15,6 +15,8 @@ import { useProject } from "@/platform/project";
 /** System property that marks a delegated run (read by `jdwpLaunch` to add the debug flag). */
 export const DELEGATED_MAIN = "-Dopenidea.run.main=";
 export const DELEGATED_DEBUG = "-Dopenidea.run.debug=true";
+/** Lets the init script start the debugged JVM's attach listener (the memory view needs it; not on Windows). */
+export const DELEGATED_ATTACH_LISTENER = "-Dopenidea.run.attachListener=true";
 const TASK = "openideaRun";
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
