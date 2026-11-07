@@ -5,7 +5,7 @@
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
-import { onIdeEvent, type RunConfig } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
@@ -443,6 +443,18 @@ export function activate(): () => void {
         icon: "stop",
         when: "projectOpen",
         run: ({ arg }) => stopAction(arg),
+      },
+      {
+        id: "run.stopProcess",
+        title: "Stop",
+        category: "Run",
+        hidden: true,
+        run: async ({ arg }) => {
+          if (typeof arg !== "number") return;
+          const session = useRun.getState().sessions.find((s) => s.runId === arg);
+          if (session) await stopSession(session.id);
+          else await call(commands.runStop(arg));
+        },
       },
       {
         id: "run.rerun",

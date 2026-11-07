@@ -6568,5 +6568,8 @@
   "Remove Module Overrides": "移除模块覆盖设置",
   "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}",
   "Cannot choose a directory": "无法选择目录",
-  "Open in HTTP Client": "在 HTTP 客户端中打开"
+  "Open in HTTP Client": "在 HTTP 客户端中打开",
+  "Cannot start container debugging": "无法启动容器调试",
+  "The container exited before debugpy was ready. Check the Run console for errors.": "容器在 debugpy 就绪前已退出。请检查运行控制台中的错误。",
+  "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.": "debugpy 未在 120 秒内就绪。请检查运行控制台和容器的 Python 解释器。"
 }

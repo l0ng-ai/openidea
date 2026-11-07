@@ -150,7 +150,7 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
     match (command.shell_line, &run.debug) {
         (Some(_), Some(_)) => {
             return Err(IdeError::invalid(format!(
-                "'{}' is a shell command line: only a Python script, module or console script can be debugged in a container",
+                "'{}' is a shell command line: only a Python script, module or console script can be debugged in a container. Set Command to the Python executable and put the script or -m module in Arguments",
                 config.name
             )));
         }
@@ -207,6 +207,11 @@ fn debug_command(
         && args.first().is_some_and(|a| a == "run")
         && args.len() > 1
     {
+        if args[1].starts_with('-') {
+            return Err(IdeError::invalid(
+                "container debugging does not support runner options before the executable: use `uv run python script.py` or `uv run pytest` with options after the script or module",
+            ));
+        }
         if is_python(&args[1]) {
             (vec![program.to_owned(), "run".into(), args[1].clone()], args[2..].to_vec())
         } else {
@@ -479,6 +484,8 @@ mod tests {
         for (command, args, error) in [
             ("python3", &["-u"][..], "nothing to debug"),
             ("python3", &["-m"][..], "`-m` has no argument"),
+            ("uv", &["run", "--no-sync", "python", "main.py"][..], "use `uv run python"),
+            ("uv", &["run", "--project", "sub", "python", "main.py"][..], "use `uv run python"),
             ("python manage.py runserver", &[][..], "shell command line"),
         ] {
             let err = debugged(&target, &config(command, args)).unwrap_err();

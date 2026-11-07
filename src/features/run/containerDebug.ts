@@ -7,7 +7,9 @@
  */
 import { executeAction } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
-import { startRun, useRun } from "./store";
+import { tx } from "@/platform/i18n";
+import { notifications } from "@/workbench/contributions";
+import { isLive, startRun, stopSession, useRun } from "./store";
 
 /** The bootstrap's line (`ide_remote::docker::DEBUG_READY`). */
 const READY = /^debugpy is waiting for the debugger on port (\d+), project folder (.+)$/;
@@ -31,8 +33,21 @@ export function containerDebugLaunch(config: RunConfig): RunConfig {
 /** Runs `config` in its container under debugpy and attaches the debugger. */
 export async function debugInContainer(config: RunConfig): Promise<void> {
   let sessionId: string | null = null;
-  const waiting: Ready[] = [];
+  let ready: Ready | null = null;
+  let done = false;
+  const pending: { timer?: ReturnType<typeof setTimeout>; unsubscribe?: () => void } = {};
+  const finish = () => {
+    done = true;
+    clearTimeout(pending.timer);
+    pending.unsubscribe?.();
+  };
+  const fail = (body: string) => {
+    finish();
+    notifications().notify({ group: "run", level: "error", title: tx("Cannot start container debugging"), body });
+  };
   const attach = ({ port, remoteRoot }: Ready) => {
+    if (done) return;
+    finish();
     const runId = useRun.getState().sessions.find((s) => s.id === sessionId)?.runId ?? null;
     void executeAction("debug.attach", {
       name: config.name,
@@ -47,13 +62,31 @@ export async function debugInContainer(config: RunConfig): Promise<void> {
   const session = await startRun(config, undefined, undefined, {
     launch: containerDebugLaunch(config),
     onLine: (line) => {
-      const ready = debugpyReady(line);
-      if (!ready) return;
+      if (done) return;
+      const parsed = debugpyReady(line);
+      if (!parsed) return;
+      ready = parsed;
       if (sessionId) attach(ready);
-      else waiting.push(ready);
     },
   });
   if (!session) return;
   sessionId = session.id;
-  waiting.splice(0).forEach(attach);
+  const check = () => {
+    const current = useRun.getState().sessions.find((s) => s.id === sessionId);
+    if (!current || current.stopped || current.status === "failed") finish();
+    else if (!isLive(current))
+      fail(tx("The container exited before debugpy was ready. Check the Run console for errors."));
+  };
+  pending.unsubscribe = useRun.subscribe(check);
+  check();
+  if (done) return;
+  pending.timer = setTimeout(() => {
+    fail(
+      tx(
+        "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.",
+      ),
+    );
+    void stopSession(session.id);
+  }, 120_000);
+  if (ready) attach(ready);
 }

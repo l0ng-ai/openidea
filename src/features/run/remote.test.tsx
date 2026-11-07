@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => ({
   runStart: vi.fn(),
+  runStop: vi.fn(() => Promise.resolve({ status: "ok" as const, data: null })),
   runSaveConfigs: vi.fn((_configs: unknown) => Promise.resolve({ status: "ok" as const, data: null })),
   runConfigs: vi.fn(() => Promise.resolve({ status: "ok" as const, data: [] as unknown[] })),
   sshTrustHost: vi.fn((_id: string) => Promise.resolve({ status: "ok" as const, data: null })),
@@ -59,7 +60,7 @@ import {
   withTarget,
   type RemedyDeps,
 } from "./remote";
-import { resetRuns, saveUserConfigs, startRun, useRun } from "./store";
+import { onRunExited, resetRuns, saveUserConfigs, startRun, useRun } from "./store";
 import { newConfigOfType } from "./types";
 import { readRan } from "./services";
 
@@ -192,6 +193,83 @@ describe("remote debugging", () => {
     });
     afterEach(() => unregisterAttach());
 
+    it("stops a container that never announces debugpy", async () => {
+      vi.useFakeTimers();
+      try {
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        useRun.setState({ configs: [py], loaded: true });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await executeAction("run.debugConfig", py.id);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(ipc.runStop).toHaveBeenCalledWith(3);
+        expect(attach).not.toHaveBeenCalled();
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: "Cannot start container debugging",
+            body: expect.stringContaining("120 seconds"),
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports an early container exit and cancels the readiness timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        useRun.setState({ configs: [py], loaded: true });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await executeAction("run.debugConfig", py.id);
+        onRunExited(3, 1);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(attach).not.toHaveBeenCalled();
+        expect(ipc.runStop).not.toHaveBeenCalled();
+        expect(notify).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            title: "Cannot start container debugging",
+            body: expect.stringContaining("exited before debugpy"),
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cleans up the readiness wait when the user stops the run", async () => {
+      vi.useFakeTimers();
+      try {
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        useRun.setState({ configs: [py], loaded: true });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await executeAction("run.debugConfig", py.id);
+        useRun.setState((s) => ({ sessions: s.sessions.map((s) => ({ ...s, stopped: true })) }));
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(attach).not.toHaveBeenCalled();
+        expect(notify).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("records debugger-requested stops before a signalled container exit", async () => {
+      vi.useFakeTimers();
+      try {
+        provideToolWindowService({ show: vi.fn(), isVisible: () => false } as unknown as ToolWindowService);
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await startRun(py);
+        await executeAction("run.stopProcess", 3);
+        expect(useRun.getState().sessions[0]?.stopped).toBe(true);
+        expect(ipc.runStop).toHaveBeenCalledWith(3);
+        onRunExited(3, 143);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(notify).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("runs Python under debugpy and attaches once it listens", async () => {
       const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
       useRun.setState({ configs: [py], loaded: true });
@@ -208,6 +286,11 @@ describe("remote debugging", () => {
         text: "debugpy is waiting for the debugger on port 41234, project folder /app\n",
       });
       await vi.waitFor(() => expect(attach).toHaveBeenCalled());
+      channel.onmessage({
+        kind: "stderr",
+        text: "debugpy is waiting for the debugger on port 41234, project folder /app\n",
+      });
+      expect(attach).toHaveBeenCalledTimes(1);
       expect(attach).toHaveBeenCalledWith(
         expect.objectContaining({
           adapter: "debugpy",

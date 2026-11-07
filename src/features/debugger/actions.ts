@@ -52,6 +52,7 @@ import {
   startSession,
   startPreparedSession,
   stopSession,
+  stopAssociatedProcess,
   useDebug,
   type DebugSession,
 } from "./state";
@@ -405,11 +406,13 @@ export function registerDebugActions(): () => void {
             if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
             else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
             else return;
-            await startSession(launch, {
+            const session = await startSession(launch, {
               process: (arg.process ?? null) as RunId | null,
               runConfig: arg.runConfig,
               rerunnable: false,
             });
+            if (session == null && isPythonAttachTarget(arg) && arg.process != null)
+              await stopAssociatedProcess(arg.process);
           })(),
         ),
     },
