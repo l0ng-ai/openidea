@@ -601,6 +601,7 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "Angular TypeScript",
         "ERB",
         "JSP",
         "Astro",
@@ -716,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn html_of_angular_projects_is_an_angular_template() {
+    fn angular_projects_use_framework_modes() {
         let reg = reg();
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -727,7 +728,12 @@ mod tests {
         assert_eq!(mode("html", "apps/web/src/app/app.html").as_deref(), Some("Angular Template"));
         assert_eq!(mode("html", "apps/admin/src/index.html").as_deref(), Some("Angular Template"));
         assert_eq!(mode("html", "docs/index.html"), None);
-        assert_eq!(mode("typescript", "apps/web/src/app/app.ts"), None);
+        for file in ["apps/web/src/app/app.ts", "apps/admin/src/app.mts", "apps/admin/src/app.cts"] {
+            assert_eq!(mode("typescript", file).as_deref(), Some("Angular TypeScript"), "{file}");
+        }
+        assert_eq!(mode("typescript", "docs/example.ts"), None);
+        assert_eq!(mode("javascript", "apps/web/src/app/app.js"), None);
+        assert_eq!(mode("typescriptreact", "apps/web/src/app/app.tsx"), None);
         assert!(reg.is_framework_marker(&root.join("apps/admin/angular.json")));
         assert!(!reg.is_framework_marker(&root.join("apps/admin/package.json")));
     }
