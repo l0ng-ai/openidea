@@ -433,6 +433,15 @@ pub struct Location {
     pub range: ide_core::Range,
 }
 
+/// A symbol in the current project index. Ranges use UTF-16 columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolInfo {
+    pub name: String,
+    pub kind: String,
+    pub container: Option<String>,
+    pub location: Location,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
