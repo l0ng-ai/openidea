@@ -79,6 +79,22 @@ describe("localizeContributions", () => {
     expect(translatorOf({ a: fr }, "a")("toString")).toBe("toString");
   });
 
+  it("translates variable prompts without translating variable names or filenames", () => {
+    const items = [
+      item("a", "fileTemplates", {
+        id: "repo",
+        name: "Word Tools",
+        fileName: "Refresh",
+        variables: [{ name: "Refresh", prompt: "Cancel" }],
+      }),
+    ];
+    expect(localizeContributions(items, { a: fr })[0]!.decl).toMatchObject({
+      name: "Outils de mots",
+      fileName: "Refresh",
+      variables: [{ name: "Refresh", prompt: "Annuler" }],
+    });
+  });
+
   it("returns the declarations as they are without a catalog", () => {
     const items = [item("a", "commands", { id: "x", title: "Refresh" })];
     expect(localizeContributions(items, {})).toBe(items);
