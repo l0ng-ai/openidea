@@ -234,6 +234,7 @@ function NameStep({
       width={380}
       position="top"
       aria-label={tx`New ${template.name}`}
+      className={variables.length ? styles.variableDialog : undefined}
       buttons={
         variables.length
           ? [
@@ -261,7 +262,7 @@ function NameStep({
         )}
         {variables.map((v, i) => (
           <VerbatimTextContext.Provider key={v.name} value={true}>
-            <label className={styles.form}>
+            <label className={styles.field}>
               {v.prompt}
               <Input
                 data-autofocus={template.fileName !== undefined && i === 0 ? true : undefined}
