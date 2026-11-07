@@ -308,12 +308,13 @@ pub fn by_risk(caps: &[Capability]) -> Vec<(Risk, Vec<Capability>)> {
 
 /// Resolves a `process:` program to an absolute path once, at grant time:
 /// absolute names are taken as is, others are looked up in `path_var`.
-/// The found path is kept, not canonicalized: `cargo`, `rustc` and friends are
-/// often links to a multicall shim (rustup, asdf, mise) that picks the tool by
-/// the name it was invoked under — a resolved link would start the shim itself
-/// with the tool's arguments. The grant still pins the target's content: a hash
-/// read through a link reads the file it points to, so relinking or replacing
-/// either still fails the approved-file check.
+/// The directory is canonicalized but the file name kept as found: `cargo`,
+/// `rustc` and friends are often links to a multicall shim (rustup, asdf,
+/// mise) that picks the tool by the name it was invoked under — resolving the
+/// link itself would start the shim with the tool's arguments. The grant
+/// still pins the target's content: a hash read through a link reads the file
+/// it points to, so relinking or replacing either still fails the
+/// approved-file check.
 pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, String> {
     let candidate = Path::new(name);
     if candidate.is_absolute() {
@@ -331,11 +332,21 @@ pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, 
         for ext in &exts {
             let p = dir.join(format!("{name}{ext}"));
             if is_executable(&p) {
-                return Ok(p);
+                return Ok(canonical_dir(&p));
             }
         }
     }
     Err(format!("{name} was not found on PATH"))
+}
+
+/// `p` with its parent canonicalized but the file name as found: PATH
+/// entries like `/var` → `/private/var` (macOS) or `~` links collapse to
+/// their real directory, while a linked program (`cargo` → rustup) keeps
+/// its link name so the shim still dispatches on argv[0].
+fn canonical_dir(p: &Path) -> PathBuf {
+    let Some(dir) = p.parent() else { return p.to_path_buf() };
+    let Some(name) = p.file_name() else { return p.to_path_buf() };
+    std::fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -497,7 +508,10 @@ mod tests {
 
         let path_var = std::env::join_paths([bin_dir.clone()]).unwrap();
         let resolved = resolve_program("cargo", Some(&path_var)).unwrap();
-        assert_eq!(resolved, bin_dir.join("cargo"));
+        // Directory canonicalized, file name kept — still the link.
+        let want = std::fs::canonicalize(&bin_dir).unwrap().join("cargo");
+        assert_eq!(resolved, want);
+        assert!(resolved.symlink_metadata().unwrap().file_type().is_symlink());
 
         let mut l = Ledger::in_memory();
         let r = req("1.0.0", "h", &["process:cargo"], &[]);
