@@ -534,7 +534,7 @@ export const commands = {
 	/**  "Restore" of the tag-deleted notification. */
 	vcsRestoreTag: (repo: string | null, deleted: DeletedTag) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_tag", { repo, deleted })),
 	/**  New Branch: creates `name` at `start` (HEAD when absent), optionally checking it out. */
-	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout })),
+	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean, overwrite: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout, overwrite })),
 	/**
 	 *  Undo Commit: moves HEAD back to the commit's parent, keeping its changes staged.
 	 *  Returns the undone commit's message.

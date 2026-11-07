@@ -445,7 +445,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "branch",
       when: VCS,
-      run: withCommit((c) => newBranch(c.id)),
+      run: withCommit((c) => newBranch(c.id, commitRepo(c) ?? currentRepo())),
     },
     {
       id: "vcs.log.newTag",
