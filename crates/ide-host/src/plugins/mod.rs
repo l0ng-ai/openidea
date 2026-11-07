@@ -17,6 +17,7 @@
 
 mod api;
 pub mod commit;
+pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
 mod hover;
@@ -327,6 +328,7 @@ pub struct PluginHost {
     navigation: Mutex<navigation::NavigationIndex>,
     endpoints: Mutex<endpoints::Endpoints>,
     web_ptys: Mutex<BTreeMap<String, Vec<web::WebPtySession>>>,
+    diagnostic_projects: Mutex<Vec<diagnostics::ProjectState>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -419,6 +421,7 @@ impl PluginHost {
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
             web_ptys: Mutex::default(),
+            diagnostic_projects: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -1942,6 +1945,7 @@ impl PluginHost {
     /// whose activation event already fired.
     fn start(&self, plugin: &Arc<LoadedPlugin>) {
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         if plugin.source == PluginSource::Installed
             && let Some(reason) = self.revoked_reason(plugin.id(), &plugin.manifest().version, plugin.dir())
         {
@@ -2124,6 +2128,7 @@ impl PluginHost {
     /// A trap dropped the plugin's instance: restart it on next use after a
     /// backoff, or stop it for the session after too many crashes in a row.
     fn crashed(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
+        self.clear_provider_diagnostics(plugin.id());
         let failures = {
             let mut meta = plugin.meta.lock();
             meta.failures += 1;
@@ -2191,6 +2196,7 @@ impl PluginHost {
             actor.stop(true);
         }
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         self.shared.clear_plugin(plugin.id(), true);
         self.queues.lock().retain(|(id, _), _| id != plugin.id());
     }
@@ -2200,6 +2206,7 @@ impl PluginHost {
         self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Failed;
         meta.error = Some(error);

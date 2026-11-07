@@ -566,7 +566,7 @@ declaration matches the file's language are called (and loaded):
 
 ```toml
 [[contributes.providers]]
-kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints"
+kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints", "diagnostics"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
@@ -675,6 +675,54 @@ The host asks the language server and the plugins together, under the
 edit-path budget, and shows the server's hover first, then each plugin's
 below a rule. `range`, when given, is the text the hover describes (used when
 the server names none). At most 64 KiB of Markdown per plugin.
+
+#### Diagnostics while typing
+
+The `diagnostics` kind (API 1.3) checks unsaved documents in its declared
+`languages` (`"*"` matches any language). Implement
+`openidea_plugin::diagnostics::DiagnosticsProvider` and register with
+`register_plugin!(MyPlugin, diagnostics)`:
+
+```rust
+impl DiagnosticsProvider for MyPlugin {
+    fn diagnostics(&mut self, doc: &Document) -> Vec<Diagnostic> {
+        // doc.path is absolute; doc.language is the editor language id.
+        // doc.version identifies this snapshot; doc.text includes unsaved edits.
+        check(&doc.text)
+    }
+}
+```
+
+The optional WIT export is `diagnostics-provider.diagnostics(document) ->
+list<diagnostic>` in worlds `plugin-diagnostics` / `editor-diagnostics`. It uses the
+same diagnostic record as `diagnostics.publish`, including 0-based UTF-16
+ranges. The export-only world uses `editor-diagnostics` because `diagnostics`
+already names the released host interface. The provider declaration supplies the current document without an
+additional capability; host imports keep their usual capability checks
+(`publish` still requires `project.read`). Providers run without an interactive
+invocation, so they cannot open prompts or write to the active editor.
+
+The host requests diagnostics about 300 ms after opening a document or after
+its latest edit, under the editor-provider budget (normally 50 ms soft /
+500 ms hard). It snapshots the buffer in the background, cancels superseded
+requests, and drops older document versions. Documents over 2 MiB and virtual
+library documents are excluded. Return an empty list to remove provider
+problems. At most 5,000 diagnostics are retained per provider and document;
+messages are limited to 4 KiB, source/code to 128 bytes.
+
+Provider problems and manually published problems use separate producers,
+`plugin-provider:<plugin-id>` and `plugin:<plugin-id>`, and both appear alongside
+language-server diagnostics. Each producer replaces only its own results.
+Closing the document/project or disabling, uninstalling, reloading or failing
+the plugin clears provider results. A reclaimed idle instance keeps its results
+until the next request. Requests and results stay with the originating project
+and window, including when two windows edit the same path differently. Project
+plugins receive documents only from the project where they were granted.
+
+Native plugin tests can use `MockHost::refresh_diagnostics(&mut provider)` to
+check the current versioned mock editor and `provider_diagnostics()` to inspect
+its answers separately from `diagnostics()` (manual publishing). The mock call
+is explicit; debounce and cancellation are exercised by the real Wasm host tests.
 
 #### Inlay hints
 

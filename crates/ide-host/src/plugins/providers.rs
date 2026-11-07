@@ -40,6 +40,7 @@ pub enum ProviderKind {
     SemanticTokens,
     Hover,
     InlayHints,
+    Diagnostics,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -82,6 +83,18 @@ impl Providers {
         out
     }
 
+    pub(super) fn generation(&self, plugin: &str, language: &str) -> Option<u64> {
+        self.items
+            .read()
+            .iter()
+            .find(|(_, p, kinds, languages)| {
+                p == plugin
+                    && kinds.contains(&ProviderKind::Diagnostics)
+                    && languages.iter().any(|l| l == "*" || l == language)
+            })
+            .map(|(seq, ..)| *seq)
+    }
+
     /// Whether any plugin provides `kind` (for any language).
     pub fn any(&self, kind: ProviderKind) -> bool {
         self.items.read().iter().any(|(_, _, kinds, _)| kinds.contains(&kind))
@@ -117,6 +130,9 @@ impl ExtensionPoint for ProvidersPoint {
         }
         if d.kinds.contains(&ProviderKind::SemanticTokens) {
             pkg.manifest.needs_api("contributes.providers: semantic-tokens", 3)?;
+        }
+        if d.kinds.contains(&ProviderKind::Diagnostics) {
+            pkg.manifest.needs_api("contributes.providers: diagnostics", 3)?;
         }
         if d.kinds.contains(&ProviderKind::Hover) {
             pkg.manifest.needs_api("contributes.providers: hover", 3)?;
@@ -202,7 +218,7 @@ pub(crate) fn editor_plugin_host() -> Option<Arc<PluginHost>> {
 
 impl PluginHost {
     /// Usable plugins declaring `kind` for `language`.
-    fn provider_plugins(&self, kind: ProviderKind, language: &str) -> Vec<Arc<LoadedPlugin>> {
+    pub(super) fn provider_plugins(&self, kind: ProviderKind, language: &str) -> Vec<Arc<LoadedPlugin>> {
         self.providers
             .plugins_for(kind, language)
             .into_iter()
@@ -358,6 +374,59 @@ impl PluginHost {
         .into_iter()
         .flat_map(|(_, tokens)| tokens)
         .collect()
+    }
+
+    pub fn provide_diagnostics(
+        &self,
+        doc: &ProviderDocument,
+        cancel: &CancellationToken,
+    ) -> Vec<(String, Vec<ide_core::Diagnostic>)> {
+        self.provide_project_diagnostics(None, doc, cancel)
+    }
+
+    pub(super) fn diagnostic_plugins(
+        &self,
+        project: Option<&std::path::Path>,
+        language: &str,
+    ) -> Vec<Arc<LoadedPlugin>> {
+        self.provider_plugins(ProviderKind::Diagnostics, language)
+            .into_iter()
+            .filter(|p| p.dev_root.is_none() || p.dev_root.as_deref() == project)
+            .collect()
+    }
+
+    pub(super) fn provide_project_diagnostics(
+        &self,
+        project: Option<&std::path::Path>,
+        doc: &ProviderDocument,
+        cancel: &CancellationToken,
+    ) -> Vec<(String, Vec<ide_core::Diagnostic>)> {
+        std::thread::scope(|scope| {
+            let calls: Vec<_> = self
+                .diagnostic_plugins(project, &doc.language)
+                .into_iter()
+                .map(|p| {
+                    scope.spawn(move || {
+                        if cancel.is_cancelled() {
+                            return None;
+                        }
+                        let (actor, activated) = self.ensure_active(&p, None).ok()?;
+                        if activated {
+                            self.changed();
+                        }
+                        let (d, timeout) = (doc.clone(), self.limits.edit_hard);
+                        let started = Instant::now();
+                        let result =
+                            actor.call_edit_cancellable(cancel, CANCEL_GRACE, self.limits.edit_soft, move |rt| {
+                                rt.provide_diagnostics(&d, timeout)
+                            });
+                        let items = self.finish_provider_call(&p, &actor, started, result)?;
+                        (!cancel.is_cancelled()).then(|| (p.id().to_owned(), items))
+                    })
+                })
+                .collect();
+            calls.into_iter().filter_map(|call| call.join().ok().flatten()).collect()
+        })
     }
 
     pub fn provide_hover(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<PluginHover> {

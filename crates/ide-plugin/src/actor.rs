@@ -175,20 +175,58 @@ impl Actor {
         grace: Duration,
         f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
     ) -> Result<R, ActorError> {
+        self.call_cancellable_before(cancel, grace, None, f)
+    }
+
+    /// A cancellable editor call: queued work expires after `soft`, and a
+    /// successful answer produced later is dropped. Running work still has
+    /// its runtime hard deadline and can be cancelled by further typing.
+    pub fn call_edit_cancellable<R: Send + 'static>(
+        &self,
+        cancel: &ide_core::CancellationToken,
+        grace: Duration,
+        soft: Duration,
+        f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
+    ) -> Result<R, ActorError> {
+        self.call_cancellable_before(cancel, grace, Some(Instant::now() + soft), f)
+    }
+
+    fn call_cancellable_before<R: Send + 'static>(
+        &self,
+        cancel: &ide_core::CancellationToken,
+        grace: Duration,
+        deadline: Option<Instant>,
+        f: impl FnOnce(&mut Runtime) -> Result<R, CallError> + Send + 'static,
+    ) -> Result<R, ActorError> {
         let (reply, result) = mpsc::sync_channel(1);
         let (crash, alive) = (self.crash.clone(), self.alive.clone());
         let skip = cancel.clone();
+        let running = Arc::new(Mutex::new(false));
+        let in_job = running.clone();
         let job: Job = Box::new(move |slot| {
-            if skip.is_cancelled() {
-                return;
-            }
             let Some(rt) = slot.as_mut() else { return };
+            {
+                let mut running = in_job.lock().unwrap_or_else(|e| e.into_inner());
+                if skip.is_cancelled() {
+                    return;
+                }
+                if deadline.is_some_and(|t| Instant::now() >= t) {
+                    let _ = reply.send(Err(ActorError::SoftTimeout));
+                    return;
+                }
+                *running = true;
+            }
             let outcome = f(rt);
+            *in_job.lock().unwrap_or_else(|e| e.into_inner()) = false;
             if let Err(CallError::Trap(e)) = &outcome {
                 *crash.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                 alive.store(false, Ordering::Release);
                 *slot = None;
             }
+            let outcome = match outcome {
+                Ok(_) if deadline.is_some_and(|t| Instant::now() > t) => Err(ActorError::SoftTimeout),
+                other => other.map_err(ActorError::Call),
+            };
             let _ = reply.send(outcome);
         });
         {
@@ -203,25 +241,34 @@ impl Actor {
                     drop(outcome);
                     return Err(ActorError::Cancelled);
                 }
-                Ok(outcome) => return outcome.map_err(ActorError::Call),
+                Ok(outcome) => return outcome,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(if cancel.is_cancelled() { ActorError::Cancelled } else { ActorError::Stopped });
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             if !cancel.is_cancelled() {
+                if deadline.is_some_and(|t| Instant::now() >= t) && !*running.lock().unwrap_or_else(|e| e.into_inner())
+                {
+                    return Err(ActorError::SoftTimeout);
+                }
                 continue;
             }
             match cancelled_at {
                 None => {
                     cancelled_at = Some(Instant::now());
-                    if self.is_busy() {
-                        self.cancel.cancel_soft();
+                    let running = running.lock().unwrap_or_else(|e| e.into_inner());
+                    if !*running {
+                        return Err(ActorError::Cancelled);
                     }
+                    self.cancel.cancel_soft();
                 }
                 Some(at) if at.elapsed() >= grace => {
                     // Did not return in time: interrupt it (the instance is rebuilt).
-                    self.cancel();
+                    let running = running.lock().unwrap_or_else(|e| e.into_inner());
+                    if *running {
+                        self.cancel();
+                    }
                     return Err(ActorError::Cancelled);
                 }
                 Some(_) => {}
