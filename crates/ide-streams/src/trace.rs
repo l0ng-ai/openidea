@@ -6,7 +6,8 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tokio_util::sync::CancellationToken;
+
+use ide_core::CancellationToken;
 
 use crate::decode::{DecodeError, DecodedTrace, E1Value, EvalFailure, Recording, classify_eval_error, decode};
 use crate::generate::TracePlan;
@@ -104,6 +105,9 @@ async fn traced<E: Evaluator, R: RecordingReader>(
     reader: &R,
     cancel: &CancellationToken,
 ) -> Result<Traced, TraceError> {
+    if cancel.is_cancelled() {
+        return Err(TraceError::Cancelled);
+    }
     let e1 = eval.evaluate(&plan.e1).await;
     // A cancelled evaluate usually comes back as an error; report the cancellation.
     if cancel.is_cancelled() {
@@ -114,7 +118,7 @@ async fn traced<E: Evaluator, R: RecordingReader>(
     let recording = reader.read(&plan.key, plan.budget + 2).await.map_err(TraceError::Read)?;
     let trace = decode(plan, &recording, &e1).map_err(TraceError::Decode)?;
 
-    let kinds: Vec<_> = plan.steps[1..].iter().map(|s| s.kind).collect();
+    let kinds: Vec<_> = plan.steps.iter().skip(1).map(|s| s.kind).collect();
     let links = resolve(&kinds, &trace.records);
     let drops = plan
         .steps

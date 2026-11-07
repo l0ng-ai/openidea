@@ -65,6 +65,7 @@ struct FakeEval {
     e0: Result<E1Value, String>,
     e1: Result<E1Value, String>,
     e3: Result<E1Value, String>,
+    cancel_on_e0: Option<CancellationToken>,
     cancel_on_e1: Option<CancellationToken>,
     plan: TracePlan,
 }
@@ -77,6 +78,7 @@ impl FakeEval {
             e0: ok(),
             e1: Ok(e1_value()),
             e3: ok(),
+            cancel_on_e0: None,
             cancel_on_e1: None,
             plan: plan.clone(),
         }
@@ -98,6 +100,9 @@ impl Evaluator for FakeEval {
         } else if expression == self.plan.e3 {
             self.e3.clone()
         } else {
+            if let Some(token) = &self.cancel_on_e0 {
+                token.cancel();
+            }
             self.e0.clone()
         }
     }
@@ -212,6 +217,34 @@ async fn cancelled_before_start_calls_nothing() {
 
     assert_eq!(err, TraceError::Cancelled);
     assert!(eval.calls().is_empty());
+}
+
+#[tokio::test]
+async fn cancelled_after_e0_skips_e1_but_cleans() {
+    let p = filter_plan();
+    let cancel = CancellationToken::new();
+    let mut eval = FakeEval::new(&p);
+    eval.cancel_on_e0 = Some(cancel.clone());
+    let reader = FakeReader::new(Ok(completed_recording()));
+
+    let err = run_trace(&p, &eval, &reader, &cancel).await.unwrap_err();
+
+    assert_eq!(err, TraceError::Cancelled);
+    assert_eq!(eval.calls(), [p.e0.clone(), p.e3.clone()]);
+    assert!(reader.asked.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn plan_without_steps_does_not_panic() {
+    let mut p = filter_plan();
+    p.steps.clear();
+    let eval = FakeEval::new(&p);
+    let reader = FakeReader::new(Ok(Recording { entries: vec![], total_len: 0 }));
+
+    let result = run_trace(&p, &eval, &reader, &CancellationToken::new()).await.unwrap();
+
+    assert_eq!(result.links, []);
+    assert_eq!(result.drops, []);
 }
 
 #[tokio::test]
