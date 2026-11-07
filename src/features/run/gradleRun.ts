@@ -175,8 +175,12 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
 
 /** The wrapper's Gradle is 8.1+ (a local or PATH Gradle's version is not known here). */
 async function supportsConfigurationCache(ctx: Pick<DelegationContext, "root" | "gradle">): Promise<boolean> {
-  if (!/(^|[/\\])gradlew(\.bat)?$/.test(ctx.gradle.command)) return false;
+  // A wrapper reports its version in gradle-wrapper.properties; a local distribution
+  // often names the version in its directory (`.../gradle-8.10/bin/gradle`).
+  const local = /(?:^|[/\\])gradle-(\d+)\.(\d+)(?:\.|[/\\])/.exec(ctx.gradle.command);
+  const localVersion = local ? ([Number(local[1]), Number(local[2])] as [number, number]) : null;
+  if (!/(^|[/\\])gradlew(\.bat)?$/.test(ctx.gradle.command)) return atLeast(localVersion, 8, 1);
   const props = `${absolute(ctx.root, ctx.gradle.dir)}/gradle/wrapper/gradle-wrapper.properties`;
   const text = await call(commands.fsReadText(props)).catch(() => "");
-  return atLeast(wrapperGradleVersion(text), 8, 1);
+  return atLeast(wrapperGradleVersion(text) ?? localVersion, 8, 1);
 }
