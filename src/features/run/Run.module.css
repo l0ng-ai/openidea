@@ -482,6 +482,31 @@
   flex-direction: column;
   gap: 8px;
 }
+.editFormTomcat {
+  overflow: hidden;
+}
+.tomcatTreeIconWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.tomcatTreeErrorBadge {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: var(--fg-on-accent, white);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 9px;
+  text-align: center;
+  pointer-events: none;
+}
 .editForm > .notice {
   border: 1px solid var(--border-popup);
   border-radius: var(--radius-small);
@@ -549,6 +574,21 @@
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-popup);
 }
+.formHeaderTomcat {
+  padding-bottom: 4px;
+  border-bottom: none;
+  flex: none;
+}
+.formHeaderTomcat .field {
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  max-width: 440px;
+}
+.storeProjectGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .formSection {
   display: flex;
   align-items: center;
@@ -567,10 +607,15 @@
 .inputWithButton {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  min-width: 0;
 }
 .inputWithButton > :first-child {
   flex: 1;
+  min-width: 0;
+}
+.inputWithButton > button {
+  flex-shrink: 0;
 }
 .textarea {
   min-height: 72px;
@@ -807,4 +852,494 @@
   min-height: 0;
   padding: 4px 0 0 8px;
   background: var(--bg-island);
+}
+
+/* Tomcat Server configuration tabs, sections, and Application Servers dialog */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.tomcatContainer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tomcatTabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0 8px;
+  border-bottom: 1px solid var(--border-popup);
+  margin-bottom: 6px;
+}
+.tomcatTab {
+  padding: 4px 10px;
+  border-radius: var(--radius-small);
+  font-size: var(--fs-ui);
+  color: var(--fg-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+.tomcatTab:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.tomcatTabActive,
+.tomcatTabActive:hover {
+  background: var(--bg-selected-strong);
+  color: var(--fg-strong);
+  font-weight: 500;
+}
+.tomcatScrollArea {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+  padding-bottom: 8px;
+}
+.tomcatFormRow {
+  display: grid;
+  grid-template-columns: 126px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.tomcatRowLabel {
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  white-space: nowrap;
+}
+.tomcatSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+.tomcatSectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+.tomcatSectionLine {
+  flex: 1;
+  height: 1px;
+  background: var(--border-popup);
+}
+.tomcatOpenBrowserControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding-left: 14px;
+}
+.tomcatBrowserSelect {
+  width: 124px;
+  flex: none;
+}
+.tomcatDotsBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: var(--h-control, 24px);
+  padding: 0;
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-button);
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+  cursor: pointer;
+  flex: none;
+}
+.tomcatDotsBtn:hover {
+  background: var(--bg-hover);
+}
+.tomcatUrlRow {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding-left: 34px;
+}
+.tomcatUrlLabel {
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+}
+.tomcatInputInside {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+.tomcatInputInside > input {
+  flex: 1;
+  min-width: 0;
+  padding-right: 28px;
+}
+.tomcatInputInside:has(.tomcatInlineChevronBtn) > input {
+  padding-right: 52px;
+}
+.tomcatInlineIconBtn {
+  position: absolute;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  color: var(--fg-subtle);
+}
+.tomcatInputInside:has(.tomcatInlineChevronBtn) .tomcatInlineIconBtn {
+  right: 25px;
+}
+.tomcatInlineChevronBtn {
+  position: absolute;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  color: var(--fg-subtle);
+  border-left: 1px solid var(--border-button);
+  border-radius: 0 var(--radius-control, 4px) var(--radius-control, 4px) 0;
+}
+.tomcatDivider {
+  flex: none;
+  height: 1px;
+  background: var(--border-popup);
+  margin: 2px 0;
+}
+.tomcatUpdateRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.tomcatUpdateSelect {
+  width: 164px;
+  max-width: 100%;
+}
+.tomcatServerSettingsGrid {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) 1fr;
+  gap: 16px 24px;
+  align-items: start;
+  padding-left: 14px;
+}
+.tomcatPortsCol {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tomcatPortField {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.tomcatFlagsCol {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 2px;
+}
+.tomcatWarningBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 4px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-popup);
+  background: transparent;
+}
+.tomcatWarningText {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warning, var(--fg-strong));
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+.appServersBody {
+  display: flex;
+  min-height: 360px;
+  max-height: 480px;
+}
+.appServersSidebar {
+  width: 200px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-popup);
+}
+.appServersToolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-popup);
+}
+.appServersToolbarPlain {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0;
+}
+.appServersList {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+}
+.appServersDetail {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.appServerFieldRow {
+  display: grid;
+  grid-template-columns: 145px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.appServerFieldLabel {
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  white-space: nowrap;
+}
+.appServersLibs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 140px;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+}
+.appServersLibTree {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+}
+.appServersLibHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: var(--fs-ui);
+  color: var(--fg-secondary);
+}
+.appServersLibRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 8px 2px 24px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg);
+  text-align: left;
+}
+.appServersLibRow:hover {
+  background: var(--bg-hover);
+}
+.appServersLibRowSelected,
+.appServersLibRowSelected:hover {
+  background: var(--bg-selected-strong);
+  color: var(--fg-strong);
+}
+.tomcatBoxPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+}
+.tomcatDeployPanel {
+  min-height: 220px;
+}
+.tomcatLogsPanel {
+  min-height: 185px;
+}
+.tomcatCoveragePanel {
+  min-height: 110px;
+}
+.tomcatEnvPanel {
+  min-height: 130px;
+}
+.tomcatBoxSmall {
+  min-height: 76px;
+}
+.tomcatBoxEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 12px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-ui);
+}
+.tomcatPlainLabel {
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+}
+.tomcatSaveLogRow {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.tomcatLogHeader,
+.tomcatLogRow {
+  display: grid;
+  grid-template-columns: 72px 1fr 90px;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--h-row);
+  padding: 0 10px;
+  font-size: var(--fs-ui);
+}
+.tomcatLogHeader {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  border-bottom: 1px solid var(--border-popup);
+}
+.tomcatLogRow {
+  cursor: pointer;
+}
+.tomcatLogRow:hover {
+  background: var(--bg-hover);
+}
+.tomcatLogRowSelected,
+.tomcatLogRowSelected:hover {
+  background: var(--bg-selected-strong);
+  color: var(--fg-strong);
+}
+.tomcatLogCheckCell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tomcatEnvHeader,
+.tomcatEnvRow {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--h-row);
+  padding: 0 10px;
+  font-size: var(--fs-ui);
+}
+.tomcatEnvHeader {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  border-bottom: 1px solid var(--border-popup);
+}
+.tomcatEnvRow:hover {
+  background: var(--bg-hover);
+}
+.tomcatEnvRowSelected,
+.tomcatEnvRowSelected:hover {
+  background: var(--bg-selected-strong);
+  color: var(--fg-strong);
+}
+.tomcatRunnerList {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+  padding: 2px 0;
+}
+.tomcatScriptRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.tomcatDebugConnectionSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+.tomcatDebugTransportRow {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.tomcatDebugPortRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tomcatDebugLabel {
+  width: 72px;
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  flex: none;
+}
+.tomcatRadioLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-ui);
+}
+.tomcatDebugPortInput {
+  width: 110px;
+}
+.tomcatDebugSettingsBtnWrap {
+  margin-left: auto;
+}
+.tomcatBeforeLaunchFooter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 4px;
+}
+.tomcatSectionToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  cursor: pointer;
+}
+.addServerDialogBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.addServerFieldRow {
+  display: grid;
+  grid-template-columns: 145px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+.addServerErrorRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.addServerErrorIcon {
+  color: var(--danger);
+  flex: none;
 }

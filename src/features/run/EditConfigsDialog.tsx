@@ -530,6 +530,12 @@ function EditConfigsDialog() {
                     );
                   }
                   const c = r.config;
+                  const isTomcat = c.kind === "tomcat" || c.kind === "tomcat-remote";
+                  const tomcatNoArtifact =
+                    isTomcat &&
+                    ((c.params?.deployment ?? "artifact") === "artifact"
+                      ? !c.params?.artifact
+                      : !c.params?.deploymentPath?.trim());
                   return (
                     <button
                       key={r.key}
@@ -546,15 +552,20 @@ function EditConfigsDialog() {
                         e.dataTransfer.effectAllowed = "move";
                       }}
                     >
-                      <Icon
-                        name={configIcon(c)}
-                        size={13}
-                        className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
-                      />
+                      <span className={styles.tomcatTreeIconWrap}>
+                        <Icon
+                          name={configIcon(c)}
+                          size={13}
+                          className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
+                        />
+                        {tomcatNoArtifact && <span className={styles.tomcatTreeErrorBadge}>×</span>}
+                      </span>
                       <span className={styles.chooserName}>{c.name || <T>Unnamed</T>}</span>
                       {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
                       {errorsById[c.id] && <Icon name="error" size={12} className={styles.failed} label="Invalid" />}
-                      {!c.detected && <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>}
+                      {!c.detected && !isTomcat && (
+                        <span className={styles.chooserMuted}>{c.local ? "local" : "user"}</span>
+                      )}
                     </button>
                   );
                 })}
@@ -631,7 +642,14 @@ function EditConfigsDialog() {
             </>
           )}
         </div>
-        <div className={styles.editForm}>
+        <div
+          className={clsx(
+            styles.editForm,
+            mode === "configs" &&
+              (current?.kind === "tomcat" || current?.kind === "tomcat-remote") &&
+              styles.editFormTomcat,
+          )}
+        >
           {mode === "templates" ? (
             currentTemplate ? (
               <>
