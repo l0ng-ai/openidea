@@ -6,8 +6,8 @@
 //! other project files are silently missing. So, as a word index would, the
 //! project files of the server's languages that contain the symbol's name as a
 //! whole word (found through the host's [`CandidateFn`]) and that the first
-//! answer did not cover are opened on the server for a second request, then
-//! closed again. Diagnostics the server publishes for them are dropped.
+//! answer and the server's analysis scope did not cover are opened for a second
+//! request, then closed again. Diagnostics the server publishes for them are dropped.
 
 use crate::server::{Running, Server};
 use crate::text::DocText;
@@ -29,6 +29,8 @@ pub const MAX_CANDIDATES: usize = 300;
 const MAX_CANDIDATE_BYTES: u64 = 1 << 20;
 /// How long a search that found nothing waits for a server to finish indexing.
 const INDEX_WAIT: Duration = Duration::from_secs(10);
+/// Optional server command: candidate URIs in, already analysed candidate URIs out.
+const COVERED_FILES: &str = "openidea.workspace.coveredFiles";
 
 /// Project files that may mention a symbol.
 #[derive(Clone, Debug)]
@@ -103,7 +105,7 @@ impl LspManager {
     }
 
     /// Runs `query` on `t`; then again with the project files that mention the
-    /// symbol at `pos` and are not in `covered(first)` opened on the server.
+    /// symbol at `pos` outside `covered(first)` and the server's analysis scope opened.
     /// A first answer that is empty while the server indexes is retried once
     /// indexing ends.
     pub(crate) async fn widened<R, F, Fut>(
@@ -146,6 +148,10 @@ impl LspManager {
         }
         let known: HashSet<PathBuf> = covered(&first).into_iter().chain([snap.path.clone()]).collect();
         let files: Vec<PathBuf> = candidates.files.into_iter().filter(|f| !known.contains(f)).collect();
+        let files = self.files_beyond_scope(t, files, cancel).await;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         if files.is_empty() {
             return Ok(Widened { first, second: None, incomplete });
         }
@@ -170,6 +176,27 @@ impl LspManager {
             Err(e) => {
                 tracing::debug!("{}: widened references search: {}", t.server.name, e.message);
                 Ok(Widened { first, second: None, incomplete })
+            }
+        }
+    }
+
+    async fn files_beyond_scope(&self, t: &Target, files: Vec<PathBuf>, cancel: &CancellationToken) -> Vec<PathBuf> {
+        if files.is_empty() || !t.caps().commands().iter().any(|c| c == COVERED_FILES) {
+            return files;
+        }
+        let uris: Vec<String> = files.iter().map(|p| crate::uri::path_to_uri_string(p)).collect();
+        let params = json!({ "command": COVERED_FILES, "arguments": [uris] });
+        // An unsupported, failed or malformed scope answer must not remove candidates.
+        let covered: IdeResult<Vec<String>> =
+            self.call(t, "workspace/executeCommand", params, Some(cancel), crate::DEFAULT_TIMEOUT).await;
+        match covered {
+            Ok(covered) => {
+                let covered: HashSet<_> = covered.into_iter().collect();
+                files.into_iter().zip(uris).filter_map(|(f, uri)| (!covered.contains(&uri)).then_some(f)).collect()
+            }
+            Err(e) => {
+                tracing::debug!("{}: analysis scope unavailable: {}", t.server.name, e.message);
+                files
             }
         }
     }
