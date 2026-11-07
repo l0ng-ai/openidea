@@ -372,10 +372,10 @@ pub(crate) fn commit(
         args.extend(["-F", "-"]);
         Some(message.as_bytes())
     };
-    if options.partial.is_empty() && options.stage.is_empty() && options.exclude.is_empty() {
-        run(r.root(), &args, stdin)?;
-    } else {
+    if selects(options) {
         commit_selected(r, &args, stdin, options, encoding)?;
+    } else {
+        run(r.root(), &args, stdin)?;
     }
     // A commit concluding a merge brings back the local changes put aside for it.
     let _ = crate::preserve::restore(r);
@@ -393,9 +393,13 @@ impl Drop for TempIndex {
     }
 }
 
+/// Whether `options` commit something else than the index as it is.
+fn selects(options: &CommitOptions) -> bool {
+    !(options.partial.is_empty() && options.stage.is_empty() && options.exclude.is_empty())
+}
+
 /// Commits a selection of the changes through a copy of the index (`GIT_INDEX_FILE`):
-/// `exclude` goes back to HEAD in the copy, `stage` takes its working-tree content and
-/// `partial` only the chosen hunks. The working tree and the user's index are left alone
+/// see [`select_into`]. The working tree and the user's index are left alone
 /// except that the committed files' entries end up matching the new commit, so changes
 /// left out keep their staged state.
 fn commit_selected(
@@ -406,6 +410,23 @@ fn commit_selected(
     encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
 ) -> IdeResult<()> {
     let tmp = TempIndex(r.git_dir.join("openidea-partial-index"));
+    let env = [("GIT_INDEX_FILE", tmp.0.as_os_str())];
+    let rels = select_into(r, &tmp, options, encoding)?;
+    cli::run_env(r.root(), commit_args, stdin, &env)?;
+    // The user's index still holds the partial files' previous entries: align them with
+    // the commit so the remaining changes show as unstaged, nothing as staged.
+    run_paths(r, &["reset", "-q", "HEAD"], &rels)
+}
+
+/// Fills `tmp`, a copy of the index, with what a commit of `options` holds: `exclude`
+/// goes back to HEAD, `stage` takes its working-tree content and `partial` only the
+/// chosen hunks. Returns the root-relative paths of `stage` and `partial`.
+fn select_into(
+    r: &Repo,
+    tmp: &TempIndex,
+    options: &CommitOptions,
+    encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
+) -> IdeResult<Vec<String>> {
     let index = r.git_dir.join("index");
     if index.exists() {
         std::fs::copy(&index, &tmp.0)?;
@@ -459,10 +480,120 @@ fn commit_selected(
         write_index_blob(r, &rel, &bytes, &env)?;
         rels.push(rel);
     }
-    cli::run_env(r.root(), commit_args, stdin, &env)?;
-    // The user's index still holds the partial files' previous entries: align them with
-    // the commit so the remaining changes show as unstaged, nothing as staged.
-    run_paths(r, &["reset", "-q", "HEAD"], &rels)
+    Ok(rels)
+}
+
+/// The changes a commit of `options` would make, as `git diff` reports them (renames
+/// detected), from HEAD (an empty tree without one). Nothing is committed and the
+/// working tree and the index are left alone: a selection is made in a copy of the
+/// index. Patches stop growing at `max_bytes` in all.
+pub(crate) fn pending_changes(
+    r: &Repo,
+    options: &CommitOptions,
+    max_bytes: usize,
+    encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
+) -> IdeResult<Vec<PendingChange>> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = TempIndex(r.git_dir.join(format!("openidea-pending-index-{}-{n}", std::process::id())));
+    let env_tmp = [("GIT_INDEX_FILE", tmp.0.as_os_str())];
+    let env: &[(&str, &std::ffi::OsStr)] = if selects(options) {
+        select_into(r, &tmp, options, encoding)?;
+        &env_tmp
+    } else {
+        &[]
+    };
+    // `--cached` compares with HEAD, or with an empty tree on an unborn branch.
+    let base = ["diff", "--cached", "-M", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative"];
+    let names = cli::run_env(r.root(), &[&base[..], &["--name-status", "-z"]].concat(), None, env)?;
+    let patch = cli::run_env(
+        r.root(),
+        &[&base[..], &["--patch", "--src-prefix=a/", "--dst-prefix=b/", "--full-index"]].concat(),
+        None,
+        env,
+    )?;
+    let mut changes = parse_name_status(&names.stdout, r.root());
+    let sections = split_patch(&patch.stdout);
+    let mut budget = max_bytes;
+    for (change, section) in changes.iter_mut().zip(sections) {
+        if patch_is_binary(section) {
+            continue;
+        }
+        let charset = encoding(&change.path).unwrap_or_else(|_| encoding_rs::UTF_8.into());
+        let text = crate::text_encoding::decode_raw(section, charset);
+        if text.len() <= budget {
+            budget -= text.len();
+            change.diff = Some(text.into_owned());
+        } else {
+            let mut cut = budget.min(text.len());
+            // Whole lines only, at a character boundary.
+            while cut > 0 && !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let kept = text[..cut].rfind('\n').map_or(0, |i| i + 1);
+            budget -= kept;
+            change.diff = Some(text[..kept].to_owned());
+            change.truncated = true;
+        }
+    }
+    Ok(changes)
+}
+
+/// A file a pending commit changes ([`Repo::pending_changes`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingChange {
+    pub path: PathBuf,
+    /// The path before a rename or copy.
+    pub old_path: Option<PathBuf>,
+    /// `added`, `modified`, `deleted`, `renamed`, `copied` or `type-changed`.
+    pub status: &'static str,
+    /// Its section of the unified diff; `None` for binary content.
+    pub diff: Option<String>,
+    /// `diff` was cut at the size limit.
+    pub truncated: bool,
+}
+
+/// `git diff --name-status -z`: `M\0path\0`, `R100\0old\0new\0`.
+fn parse_name_status(out: &[u8], root: &Path) -> Vec<PendingChange> {
+    let mut fields = out.split(|b| *b == 0).filter(|f| !f.is_empty());
+    let path = |f: &[u8]| root.join(String::from_utf8_lossy(f).as_ref());
+    let mut changes = Vec::new();
+    while let Some(code) = fields.next() {
+        let status = match code.first() {
+            Some(b'A') => "added",
+            Some(b'D') => "deleted",
+            Some(b'R') => "renamed",
+            Some(b'C') => "copied",
+            Some(b'T') => "type-changed",
+            _ => "modified",
+        };
+        let two = matches!(code.first(), Some(b'R' | b'C'));
+        let first = fields.next().map(path);
+        let (old_path, path) = if two { (first, fields.next().map(path)) } else { (None, first) };
+        let Some(path) = path else { break };
+        changes.push(PendingChange { path, old_path, status, diff: None, truncated: false });
+    }
+    changes
+}
+
+/// The per-file sections of a patch, each starting at its `diff --git` line.
+fn split_patch(patch: &[u8]) -> Vec<&[u8]> {
+    let mut starts: Vec<usize> = Vec::new();
+    let mut at = 0;
+    for line in patch.split_inclusive(|b| *b == b'\n') {
+        if line.starts_with(b"diff --git ") {
+            starts.push(at);
+        }
+        at += line.len();
+    }
+    starts.iter().enumerate().map(|(i, &s)| &patch[s..starts.get(i + 1).copied().unwrap_or(patch.len())]).collect()
+}
+
+fn patch_is_binary(section: &[u8]) -> bool {
+    section
+        .split(|b| *b == b'\n')
+        .take_while(|l| !l.starts_with(b"@@"))
+        .any(|l| l.starts_with(b"Binary files ") || l.starts_with(b"GIT binary patch"))
 }
 
 pub(crate) fn checkout(r: &Repo, branch: &str, create: bool) -> IdeResult<()> {

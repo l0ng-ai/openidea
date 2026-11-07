@@ -14,7 +14,7 @@ import { contextConfig, relToCwd, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
-import { phpunitArgs, phpunitFilter } from "./testing/phpunit";
+import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -36,6 +36,7 @@ export interface RunTarget {
   unittest?: boolean;
   /** Ruby: a `module` suite, which runs the tests of every class declared inside it. */
   rubyModule?: boolean;
+  pest?: boolean;
 }
 
 /** Above this size we skip detection (generated / minified files). */
@@ -173,6 +174,30 @@ function phpTargets(lines: string[]): RunTarget[] {
     if (m && (marked || /^test/.test(m[1]!)))
       out.push({ line: i, kind: "test", name: `${cls}::${m[1]}`, path: [cls, m[1]!] });
     if (m || /^\s*(?:public|private|protected)\b/.test(line)) marked = false;
+  }
+  return out;
+}
+
+const PEST_RE = /^(\s*)(describe|test|it)\s*\(\s*(['"])((?:\\.|(?!\3).)*)\3/;
+
+function pestTargets(lines: string[]): RunTarget[] {
+  const out: RunTarget[] = [];
+  const stack: Array<{ indent: number; name: string }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = PEST_RE.exec(lines[i]!);
+    if (!m) continue;
+    const indent = indentOf(m[1]!);
+    while (stack.length && stack[stack.length - 1]!.indent >= indent) stack.pop();
+    const text = m[4]!.replace(m[3] === "'" ? /\\(['\\])/g : /\\(["\\$])/g, "$1");
+    const describes = stack.map((s) => s.name);
+    if (m[2] === "describe") {
+      const path = [...describes, text];
+      out.push({ line: i, kind: "suite", name: path.join(" → "), path, pest: true });
+      stack.push({ indent, name: text });
+    } else {
+      const path = [...describes, m[2] === "it" ? `it ${text}` : text];
+      out.push({ line: i, kind: "test", name: path.join(" → "), path, pest: true });
+    }
   }
   return out;
 }
@@ -412,7 +437,9 @@ export function detectRunTargets(text: string, relPath: string, django = false):
           (django && /(^|\/)tests\.py$/.test(relPath)),
       );
     case "php":
-      return /Test\.php$|(^|\/)tests?\//.test(relPath) ? phpTargets(lines) : [];
+      return /Test\.php$|(^|\/)tests?\//.test(relPath)
+        ? [...phpTargets(lines), ...pestTargets(lines)].sort((a, b) => a.line - b.line)
+        : [];
     case "go":
       return goTargets(lines).filter((t) => t.kind === "main" || t.kind === "generate" || /_test\.go$/.test(relPath));
     case "jvm":
@@ -479,7 +506,11 @@ export function targetConfig(
       return named(withLast(file.args, (f) => `${f}::${target.path.join("::")}`));
     case "phpunit": {
       const [cls, method] = [target.path[0]!, target.path[1]];
-      const filter = phpunitFilter([method ? [cls, method] : [cls]]);
+      const filter = !target.pest
+        ? phpunitFilter([method ? [cls, method] : [cls]])
+        : target.kind === "suite"
+          ? pestFilter(target.path)
+          : pestFilter(target.path.slice(0, -1), target.path[target.path.length - 1]);
       return named(phpunitArgs(file.args, { target: relToCwd(relPath, file), filter }));
     }
     case "django-test": {
@@ -499,13 +530,14 @@ export function targetConfig(
         ...withoutGoSelection(parts.flags),
         ...parts.targets,
         ...selection,
-        ...parts.program,
+        ...withoutGoSelection(parts.program),
       ]);
       if (file.params?.goKind)
         result.params = {
           ...file.params,
           pattern: benchmark ? "^$" : pattern,
           toolArgs: formatArgs([...withoutGoSelection(parts.flags), ...(benchmark ? ["-bench", pattern] : [])]),
+          programArgs: formatArgs(withoutGoSelection(parts.program).slice(1)),
         };
       return result;
     }

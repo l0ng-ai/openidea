@@ -7,6 +7,7 @@ use ide_core::error::ErrorKind;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
+use std::path::Path;
 
 async fn prepare_actions(
     project: std::sync::Arc<crate::Project>,
@@ -85,7 +86,12 @@ const PLUGIN_SERVER: ServerId = ServerId(0);
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PluginActionRef {
     plugin: String,
-    data: String,
+    data: Option<String>,
+    /// Opened once the action is applied.
+    open: Option<ide_core::IpcPath>,
+    /// Listed by the plugin's `file-actions` export, which resolves it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    file: bool,
 }
 
 /// A plugin's `completion-item.kind` (wit/providers.wit lists them).
@@ -195,9 +201,24 @@ pub async fn lsp_hover(
 ) -> IdeResult<Option<Hover>> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.hover(doc, pos, cancel).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Hover) else {
+        let result = lsp.hover(doc, pos, cancel).await;
+        host.end_request(request);
+        return result;
+    };
+    let (result, hovers) =
+        tokio::join!(lsp.hover(doc, pos, cancel), plugin_call(move || plugins.provide_hover(&d, pos)));
     host.end_request(request);
-    result
+    let hovers = hovers.unwrap_or_default();
+    if hovers.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => None,
+        Err(e) => return Err(e),
+    };
+    Ok(crate::plugins::merge_hover(server, hovers))
 }
 
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
@@ -428,7 +449,7 @@ pub async fn lsp_code_actions(
     };
     let plugin_actions: Vec<CodeAction> = plugin_actions
         .into_iter()
-        .map(|(plugin, a)| plugin_code_action(&plugin, a))
+        .map(|(plugin, a)| plugin_code_action(&plugin, &project.root, a))
         .filter(|a| {
             only.is_empty()
                 || a.kind.as_ref().is_some_and(|k| only.iter().any(|o| k == o || k.starts_with(&format!("{o}."))))
@@ -444,28 +465,78 @@ pub async fn lsp_code_actions(
     prepare_actions(project, doc, version, actions).await
 }
 
-fn plugin_code_action(plugin: &str, a: ide_plugin::CodeAction) -> CodeAction {
-    // With `data` and no edits, the plugin computes them when the action is picked.
-    let lazy = a.edits.is_empty() && a.data.is_some();
-    let files: Vec<_> = a
-        .edits
-        .into_iter()
-        .map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None })
-        .collect();
-    let data = a
-        .data
-        .filter(|_| lazy)
-        .and_then(|data| serde_json::to_value(PluginActionRef { plugin: plugin.to_owned(), data }).ok());
+fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> CodeAction {
+    // With `data` and nothing to apply, the plugin computes the edits when the action is picked.
+    let lazy = a.edits.is_empty() && a.operations.is_empty() && a.data.is_some();
+    let (files, open, disabled_reason) = match plugin_file_edits(root, &a) {
+        Ok((files, open)) => (files, open, None),
+        Err(reason) => (Vec::new(), None, Some(reason)),
+    };
+    let data = (lazy || open.is_some())
+        .then(|| PluginActionRef {
+            plugin: plugin.to_owned(),
+            data: a.data.filter(|_| lazy),
+            open: open.map(Into::into),
+            file: a.file_action,
+        })
+        .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
         kind: a.kind,
         is_preferred: a.preferred,
-        disabled_reason: None,
+        disabled_reason,
         edit: (!lazy).then(|| WorkspaceEdit { files, preconditions: Vec::new() }),
         command: None,
         data,
         server: PLUGIN_SERVER,
     }
+}
+
+/// The action's file operations, then its text edits, as one workspace edit's files, and the
+/// file to open. An action with file operations or an `open` target stays inside the project
+/// root as a whole: a path outside it disables the action.
+fn plugin_file_edits(
+    root: &Path,
+    a: &ide_plugin::CodeAction,
+) -> Result<(Vec<ide_core::FileEdit>, Option<std::path::PathBuf>), String> {
+    use ide_core::FileEdit;
+    use ide_plugin::FileOperation;
+    let confine = !a.operations.is_empty() || a.open.is_some();
+    let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
+    let mut files = Vec::new();
+    let mut created_with_text = Vec::new();
+    for operation in &a.operations {
+        match operation {
+            FileOperation::Create { path, text, overwrite } => {
+                let path = confined(path)?;
+                files.push(FileEdit::Create { path: path.clone().into(), overwrite: *overwrite });
+                if !text.is_empty() {
+                    let start = Range::point(Pos::new(0, 0));
+                    files.push(FileEdit::Edit {
+                        path: path.clone().into(),
+                        edits: vec![TextEdit { range: start, new_text: text.clone() }],
+                        version: None,
+                    });
+                    created_with_text.push(path);
+                }
+            }
+            FileOperation::Rename { from, to } => {
+                files.push(FileEdit::Rename { from: confined(from)?.into(), to: confined(to)?.into() });
+            }
+            FileOperation::Delete { path } => {
+                files.push(FileEdit::Delete { path: confined(path)?.into(), recursive: false });
+            }
+        }
+    }
+    for (path, edits) in &a.edits {
+        let path = if confine { confined(path)? } else { path.clone() };
+        if created_with_text.contains(&path) {
+            return Err("put the text of a created file in its `create`, not in an edit".into());
+        }
+        files.push(FileEdit::Edit { path: path.into(), edits: edits.clone(), version: None });
+    }
+    let open = a.open.as_deref().map(confined).transpose()?;
+    Ok((files, open))
 }
 
 /// A code action resolved by whoever offered it: its language server, or
@@ -484,11 +555,15 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
         kind: action.kind.clone(),
         preferred: action.is_preferred,
         edits: Vec::new(),
-        data: Some(r.data),
+        operations: Vec::new(),
+        open: None,
+        data: r.data,
+        file_action: r.file,
     };
     let plugin = r.plugin.clone();
     let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending)).await?;
-    Ok(plugin_code_action(&r.plugin, ide_plugin::CodeAction { data: None, ..resolved }))
+    let root = host.project(window)?.root.clone();
+    Ok(plugin_code_action(&r.plugin, &root, ide_plugin::CodeAction { data: None, ..resolved }))
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -539,17 +614,39 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
     } else {
         action
     };
+    if let Some(reason) = &action.disabled_reason {
+        return Err(ide_core::IdeError::invalid(reason.clone()));
+    }
     if let Some(edit) = &action.edit {
         let documents = project.documents.clone();
         let edit = edit.clone();
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
+    open_plugin_action_target(&action, window);
     if let Some(command) = action.command
         && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
     {
         project.lsp.execute_command(doc, command).await?;
     }
     Ok(())
+}
+
+/// The plugin and the file its action asks to show once applied.
+fn plugin_action_open(action: &CodeAction) -> Option<(String, ide_core::IpcPath)> {
+    if action.server != PLUGIN_SERVER {
+        return None;
+    }
+    let r = action.data.clone().and_then(|d| serde_json::from_value::<PluginActionRef>(d).ok())?;
+    Some((r.plugin, r.open?))
+}
+
+/// Opens the file a plugin's action asked to show, now that the action is applied.
+fn open_plugin_action_target(action: &CodeAction, window: &str) {
+    let (Some((plugin, path)), Some(plugins)) = (plugin_action_open(action), crate::plugins::editor_plugin_host())
+    else {
+        return;
+    };
+    plugins.open_file(&plugin, window, path);
 }
 
 /// A command after a code action's edit that no server provides: what other editors'
@@ -662,7 +759,22 @@ pub async fn lsp_format(
 }
 
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
-    host.project(window)?.lsp.inlay_hints(doc, range).await
+    let lsp = host.project(window)?.lsp.clone();
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::InlayHints) else {
+        return lsp.inlay_hints(doc, range).await;
+    };
+    let (result, hints) =
+        tokio::join!(lsp.inlay_hints(doc, range), plugin_call(move || plugins.provide_inlay_hints(&d, range)));
+    let hints = hints.unwrap_or_default();
+    if hints.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    Ok(crate::plugins::merge_inlay_hints(server, hints, range))
 }
 
 pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<SemanticTokens>> {
@@ -816,6 +928,8 @@ pub async fn lsp_execute_code_action(
             return Err(ide_core::IdeError::cancelled());
         }
         let edited = action.edit.is_some();
+        // A plugin's action may name a file to show once applied; the caller opens it.
+        let open = plugin_action_open(&action).map(|(_, path)| path);
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
@@ -831,7 +945,7 @@ pub async fn lsp_execute_code_action(
                 .execute_action_command(doc, action.server, command, answers, cancel)
                 .await
                 .map(|paths| paths.into_iter().map(ide_core::IpcPath::from).collect()),
-            None => Ok(Vec::new()),
+            None => Ok(open.into_iter().collect()),
         }
     }
     .await;
@@ -995,15 +1109,19 @@ mod tests {
             kind: None,
             preferred: false,
             edits,
+            operations: Vec::new(),
+            open: None,
             data: data.map(str::to_owned),
+            file_action: false,
         };
-        let lazy = plugin_code_action("acme.x", action(Vec::new(), Some("ref")));
+        let root = Path::new("/p");
+        let lazy = plugin_code_action("acme.x", root, action(Vec::new(), Some("ref")));
         assert!(lazy.edit.is_none());
         let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
-        assert_eq!((r.plugin.as_str(), r.data.as_str()), ("acme.x", "ref"));
+        assert_eq!((r.plugin.as_str(), r.data.as_deref()), ("acme.x", Some("ref")));
         // With edits, `data` is the plugin's business: applied as is.
         let edit = TextEdit { range: Range::default(), new_text: "x".into() };
-        let eager = plugin_code_action("acme.x", action(vec![("/a".into(), vec![edit])], Some("ref")));
+        let eager = plugin_code_action("acme.x", root, action(vec![("/a".into(), vec![edit])], Some("ref")));
         assert!(eager.edit.is_some() && eager.data.is_none());
     }
 
@@ -1078,6 +1196,83 @@ mod tests {
             ["/app/_ide_helper_models.php", "/app/.phpstorm.meta.php"]
         );
         assert!(without_generated_helpers(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn a_plugin_action_maps_its_file_operations_before_its_edits_and_stays_in_the_project() {
+        use ide_core::FileEdit;
+        use ide_plugin::FileOperation;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let action = |operations: Vec<FileOperation>| ide_plugin::CodeAction {
+            title: "Create view".into(),
+            kind: Some("quickfix".into()),
+            preferred: false,
+            edits: vec![(root.join("a.txt"), vec![TextEdit { range: Range::default(), new_text: "x".into() }])],
+            operations,
+            open: Some(root.join("views/home.html")),
+            data: None,
+            file_action: true,
+        };
+
+        let created = plugin_code_action(
+            "acme.x",
+            &root,
+            action(vec![
+                FileOperation::Create { path: "views/home.html".into(), text: "<h1/>".into(), overwrite: false },
+                FileOperation::Rename { from: root.join("old.txt"), to: root.join("new.txt") },
+                FileOperation::Delete { path: root.join("gone.txt") },
+            ]),
+        );
+        assert_eq!(created.disabled_reason, None);
+        let files = created.edit.unwrap().files;
+        let home = root.join("views/home.html");
+        assert!(matches!(&files[0], FileEdit::Create { path, overwrite: false } if **path == home));
+        assert!(
+            matches!(&files[1], FileEdit::Edit { path, edits, .. } if **path == home && edits[0].new_text == "<h1/>")
+        );
+        assert!(matches!(&files[2], FileEdit::Rename { to, .. } if **to == root.join("new.txt")));
+        assert!(matches!(&files[3], FileEdit::Delete { recursive: false, .. }));
+        assert!(matches!(&files[4], FileEdit::Edit { path, .. } if **path == root.join("a.txt")));
+        let r: PluginActionRef = serde_json::from_value(created.data.unwrap()).unwrap();
+        assert_eq!(r.data, None);
+        assert!(r.file, "resolved by the file-actions export");
+        let opened = r.open.unwrap().to_path_buf();
+        assert!(opened.components().eq(dunce::simplified(&home).components()), "{opened:?}");
+
+        let outside = tmp.path().join("evil.txt");
+        let mut open_outside = action(Vec::new());
+        open_outside.open = Some(outside.clone());
+        assert!(plugin_code_action("acme.x", &root, open_outside).disabled_reason.is_some());
+        let mut edit_outside = action(vec![FileOperation::Delete { path: root.join("gone.txt") }]);
+        edit_outside.edits.push((outside, Vec::new()));
+        assert!(plugin_code_action("acme.x", &root, edit_outside).disabled_reason.is_some());
+        let mut edit_created =
+            action(vec![FileOperation::Create { path: root.join("n.txt"), text: "x".into(), overwrite: false }]);
+        edit_created.edits = vec![(root.join("n.txt"), Vec::new())];
+        assert!(plugin_code_action("acme.x", &root, edit_created).disabled_reason.is_some());
+
+        for outside in [tmp.path().join("evil.txt"), "../evil.txt".into()] {
+            for operation in [
+                FileOperation::Create { path: outside.clone(), text: String::new(), overwrite: false },
+                FileOperation::Rename { from: root.join("old.txt"), to: outside.clone() },
+                FileOperation::Delete { path: outside.clone() },
+            ] {
+                let rejected = plugin_code_action("acme.x", &root, action(vec![operation]));
+                assert!(rejected.disabled_reason.is_some_and(|r| r.contains("outside the project root")));
+                assert!(rejected.edit.unwrap().files.is_empty());
+            }
+        }
+
+        // `data` and nothing to apply: the file-actions export computes it when picked.
+        let mut lazy = action(Vec::new());
+        (lazy.edits, lazy.open, lazy.data) = (Vec::new(), None, Some("ref".into()));
+        let lazy = plugin_code_action("acme.x", &root, lazy);
+        assert!(lazy.edit.is_none());
+        let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
+        assert_eq!((r.data.as_deref(), r.file), (Some("ref"), true));
     }
 
     #[test]
