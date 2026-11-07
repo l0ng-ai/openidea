@@ -11,6 +11,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import type { JvmClassRow, JvmMemoryResult, JvmMemoryUnavailable } from "@/platform/ipc";
 import { useDebug, type DebugSession } from "../state";
 import { registerActions } from "@/platform/actions";
+import { setLocale } from "@/platform/i18n";
 import { refreshMemory, useMemory } from "../memory/memoryState";
 import { MemoryView } from "../memory/MemoryView";
 
@@ -126,7 +127,10 @@ describe("MemoryView", () => {
   });
 
   it.each<[JvmMemoryUnavailable, string]>([
-    [{ kind: "attachedJvmNotFound" }, "Memory view works for programs the IDE launches."],
+    [
+      { kind: "attachedJvmNotFound" },
+      "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.",
+    ],
     [{ kind: "unsupportedPlatform" }, "Memory view is not available on this platform yet."],
     [{ kind: "noJvmProcess" }, "Could not find the program's JVM process."],
     [
@@ -143,6 +147,25 @@ describe("MemoryView", () => {
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(unavailable(reason)));
     render(<MemoryView session={session} />);
     expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  it("translates the toolbar and the attach hint in zh", async () => {
+    await setLocale("zh");
+    try {
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(unavailable({ kind: "attachedJvmNotFound" })));
+      render(<MemoryView session={session} />);
+      expect(
+        await screen.findByText(
+          "Memory 视图需要本机上以 -XX:+StartAttachListener 启动的 JVM。由 IDE 调试的程序会自动添加该选项。",
+        ),
+      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: "刷新内存视图" }).getAttribute("data-tooltip")).toBe("刷新内存视图");
+      const filter = screen.getByRole("textbox", { name: "筛选类" });
+      expect(filter.getAttribute("placeholder")).toBe("筛选类");
+      expect(screen.getByRole("checkbox", { name: "仅显示有变化的" })).toBeTruthy();
+    } finally {
+      await setLocale("en");
+    }
   });
 
   it("marks the snapshot outdated after a stop of this session only", async () => {

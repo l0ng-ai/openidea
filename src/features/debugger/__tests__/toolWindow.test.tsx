@@ -84,6 +84,18 @@ describe("debug tool window", () => {
     expect(screen.getByRole("tab", { name: "Threads & Variables" }).getAttribute("aria-selected")).toBe("true");
   });
 
+  it("shows the Memory tab for a java-debug attach session", () => {
+    const attach = {
+      ...session,
+      adapter: "java-debug",
+      launch: { request: "attach" } as DebugSession["launch"],
+      caps: { jvmMemory: true } as DebugSession["caps"],
+    };
+    useDebug.setState({ sessions: { 1: attach }, active: 1 });
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
+  });
+
   it("keeps the Memory tab selected when the session pauses", async () => {
     const caps = { jvmMemory: true } as DebugSession["caps"];
     useDebug.setState({ sessions: { 1: { ...session, caps, status: "running" } }, active: 1 });

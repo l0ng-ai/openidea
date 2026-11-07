@@ -68,10 +68,18 @@ describe("formatting", () => {
     expect(formatBytes(16_000_000)).toBe("15.3 MB");
   });
 
+  it("rolls to the next unit instead of rounding up to 1024", () => {
+    expect(formatBytes(1023)).toBe("1023 B");
+    expect(formatBytes(1024)).toBe("1.0 KB");
+    expect(formatBytes(1_048_575)).toBe("1.0 MB");
+  });
+
   it("formats deltas", () => {
     expect(formatDelta(null)).toBe("");
     expect(formatDelta(0)).toBe("0");
     expect(formatDelta(3)).toBe("+3");
     expect(formatDelta(-2)).toBe("−2");
+    expect(formatDelta(4312)).toBe("+4,312");
+    expect(formatDelta(-1500)).toBe("−1,500");
   });
 });

@@ -6454,7 +6454,7 @@
   "Counts include objects that are unreachable but not yet collected.": "计数包含已不可达但尚未回收的对象。",
   "Taken before the last stop. Refresh to update.": "这是上次暂停之前获取的数据。刷新以更新。",
   "Loaded by more than one class loader": "由多个类加载器加载",
-  "Memory view works for programs the IDE launches.": "内存视图仅适用于由 IDE 启动的程序。",
+  "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.": "Memory 视图需要本机上以 -XX:+StartAttachListener 启动的 JVM。由 IDE 调试的程序会自动添加该选项。",
   "Memory view is not available on this platform yet.": "此平台暂不支持内存视图。",
   "Could not find the program's JVM process.": "找不到程序的 JVM 进程。",
   "The JVM does not accept attach requests. Restart the debug session without -XX:+DisableAttachMechanism.": "JVM 不接受 attach 请求。请在不使用 -XX:+DisableAttachMechanism 的情况下重新启动调试会话。",

@@ -32,10 +32,14 @@ export function visibleRows(rows: readonly JvmClassRow[], q: RowQuery): JvmClass
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"];
 
+/** Thousands-grouped count; shared by the Count and Diff columns so they read alike. */
+export const formatCount = (n: number): string => n.toLocaleString();
+
 export function formatBytes(n: number): string {
   let value = n;
   let unit = 0;
-  while (Math.abs(value) >= 1024 && unit < UNITS.length - 1) {
+  // Compare the rounded value so 1048575 B becomes "1.0 MB", not "1024.0 KB".
+  while (Math.abs(Number(value.toFixed(1))) >= 1024 && unit < UNITS.length - 1) {
     value /= 1024;
     unit++;
   }
@@ -45,6 +49,6 @@ export function formatBytes(n: number): string {
 /** `null` (no baseline) renders empty; negatives use U+2212 so they align with `+`. */
 export function formatDelta(n: number | null): string {
   if (n == null) return "";
-  if (n > 0) return `+${n}`;
-  return n < 0 ? `−${-n}` : "0";
+  if (n > 0) return `+${formatCount(n)}`;
+  return n < 0 ? `−${formatCount(-n)}` : "0";
 }

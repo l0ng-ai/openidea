@@ -6,7 +6,7 @@ import { tx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemoryUnavailable } from "@/platform/ipc";
 import type { DebugSession } from "../state";
 import { DEFAULT_QUERY, isOutdated, refreshMemory, setMemoryQuery, useMemory } from "./memoryState";
-import { formatBytes, formatDelta, visibleRows, type SortKey } from "./rows";
+import { formatBytes, formatCount, formatDelta, visibleRows, type SortKey } from "./rows";
 import styles from "./MemoryView.module.css";
 
 const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> = [
@@ -16,12 +16,12 @@ const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> 
   { key: "bytes", label: "Shallow Size", numeric: true },
 ];
 
-const count = (n: number) => n.toLocaleString();
-
 function unavailableText(reason: JvmMemoryUnavailable): string {
   switch (reason.kind) {
     case "attachedJvmNotFound":
-      return tx("Memory view works for programs the IDE launches.");
+      return tx(
+        "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.",
+      );
     case "unsupportedPlatform":
       return tx("Memory view is not available on this platform yet.");
     case "noJvmProcess":
@@ -61,7 +61,7 @@ function ClassRow({ row }: { row: JvmClassRow }) {
         )}
         {row.module && <span className={styles.module}>{row.module}</span>}
       </span>
-      <span className={clsx(styles.cell, styles.num)}>{count(row.instances)}</span>
+      <span className={clsx(styles.cell, styles.num)}>{formatCount(row.instances)}</span>
       <span className={clsx(styles.cell, styles.num, row.deltaInstances === 0 && styles.zero)}>{delta}</span>
       <span className={clsx(styles.cell, styles.num)}>{formatBytes(row.bytes)}</span>
     </div>
@@ -154,8 +154,8 @@ export function MemoryView({ session }: { session: DebugSession }) {
 }
 
 function FooterTotals({ snapshot }: { snapshot: { rows: JvmClassRow[]; totalInstances: number; totalBytes: number } }) {
-  const n = count(snapshot.rows.length);
-  const m = count(snapshot.totalInstances);
+  const n = formatCount(snapshot.rows.length);
+  const m = formatCount(snapshot.totalInstances);
   const size = formatBytes(snapshot.totalBytes);
   return (
     <div className={styles.footer}>
