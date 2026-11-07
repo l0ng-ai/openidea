@@ -60,6 +60,9 @@ Sáu thí nghiệm của tôi và bảy bài nghiên cứu (agent Opus). Thư m�
 
 | S7 | Attach lúc dừng ở breakpoint, listener bật bằng `-XX:+StartAttachListener`, không `SIGQUIT` | **[XM]** socket có ngay khi khởi động trên 8/11/17/21/25. Histogram `-all` khi dừng: 17 → 32 ms, 21 → 34 ms, 25 → 32 ms; **8 và 11 treo** (timeout 15 s, kể cả `VM.version`). Khi VM dừng lúc khởi động (`suspend=y`, chưa ai nối) `VM.version` trả lời trên mọi bản (5–16 ms). JDK 8 nhận `-all`. Mã: `scratchpad/m1-spike` |
 | S8 | JVM do Gradle/Maven sinh ra (debug qua JDWP attach): có socket không, và tìm pid bằng cách nào | **[XM]** Đặt `-XX:+StartAttachListener` cạnh agent JDWP trong init script Gradle: JVM của task có `.java_pid` ngay khi chờ debugger. JVM đó là con của **Gradle daemon**, không nằm dưới tiến trình `gradle` mà app chạy, nên không tìm được theo cây tiến trình. Lệnh attach `agentProperties` (không phải `VM.system_properties`) trả `sun.jdwp.listenerAddress=dt_socket\:<port>`, đúng cổng JDWP in ra, trên 8/11/17/21/25 (16–98 ms, VM đang `suspend=y` lúc khởi động). Quét mọi socket `.java_pid*` của user: 51 ms. Mã: `scratchpad/m1-spike/gradle_spike.py`, `agentprops_versions.py` |
+| G1 (M2) | Reflection tới VM của java-debug với bản app cài hôm nay; ánh xạ phiên → VM | **[XM]** vscode-java-debug 0.60.0 (plugin 0.53.2) + JDT LS 1.63.0 chạy được. Launch khớp theo pid; attach khớp theo cổng đầu xa của socket JDWP. Danh sách thread **không** dùng được: hai JVM cùng chương trình trùng id và tên thread |
+| G2 (M2) | JVM đếm ObjectID theo từng lần xuất hiện trong reply? Dispose ReferenceTypeID? | **[XM 8/11/17/21/25]** Đếm từng lần, kể cả hai lần trong một reply; link dispose đúng phần mình thì object của adapter vẫn sống. Dispose ReferenceTypeID không làm nó hết hiệu lực → không dispose |
+| G3 (M2) | `InstanceCounts` một lần khi dừng; timeout ~3 s của Eclipse JDI | **[XM]** 10M object: JDK 8 1,3 s, 11 0,8 s, 21 5–8 s (ở timeout mặc định cả lệnh đếm lẫn `evaluate` của java-debug hỏng; `setRequestTimeout` 60 s sửa được). `executeCommand` dài không chặn jdtls (hover 5 ms) |
 
 **Chưa kiểm chứng [SL]** (mỗi mục có thí nghiệm ở mục 15): kotlin-lsp DAP qua relay có chịu gói chèn; Windows; JDK 12–16 khi attach lúc dừng (coi như 11); heap thật 4–8 GB; ECJ trên JRE-only.
 
@@ -85,29 +88,29 @@ flowchart LR
 
 ### 3.1 Crate và thành phần mới
 
-| Thành phần         | Trách nhiệm                                                                                                                                                                                               | Phụ thuộc                                      |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| `ide-jvm-attach`   | Client attach HotSpot bằng Rust thuần: tìm pid/socket, gửi lệnh `GC.class_histogram`, `GC.heap_dump`, `VM.version`. Unix trước, Windows qua `jcmd` rồi stub sau                                           | `ide-core`                                     |
-| `ide-jvm-inspect`  | Trait `JvmInspector` (classes, instances, referrers, fields, arrays, strings) và các bộ giải mã dùng chung: diff histogram, dựng cây coroutine, parser `@DebugMetadata` từ `.class`. Không IO tới adapter | `ide-core`                                     |
-| `ide-jdwp`         | Codec JDWP và `JdwpLink` (relay) cho Kotlin, cài `JvmInspector` bằng JDWP                                                                                                                                 | `ide-core`, `ide-jvm-inspect`                  |
-| `java/jvm-inspect` | Bundle jdtls (mẫu `java/java-usages`), cài `JvmInspector` bằng JDI. Phía Rust gọi qua `workspace/executeCommand` (cạnh `crates/ide-lsp/src/jdtls/hierarchy.rs`)                                           | embed bằng `include_bytes!` như bundle hiện có |
-| `ide-streams`      | Tìm chuỗi (tree-sitter-java qua `ide-syntax`), chuẩn hoá, sinh biểu thức, giải mã log, resolver                                                                                                           | `ide-core`, `ide-syntax`                       |
-| `ide-heap` (M4)    | Parser hprof streaming, dominator tree, retained size, đường tới GC root, chỉ mục trên đĩa                                                                                                                | `ide-core`                                     |
-| `ide-dap`          | Sở hữu backend theo phiên, chọn nguồn dữ liệu, capabilities, API cho `ide-host`                                                                                                                           | các crate trên                                 |
+| Thành phần         | Trách nhiệm                                                                                                                                                                                               | Phụ thuộc                                             |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `ide-jvm-attach`   | Client attach HotSpot bằng Rust thuần: tìm pid/socket, gửi lệnh `GC.class_histogram`, `GC.heap_dump`, `VM.version`. Unix trước, Windows qua `jcmd` rồi stub sau                                           | `ide-core`                                            |
+| `ide-jvm-inspect`  | Trait `JvmInspector` (classes, instances, referrers, fields, arrays, strings) và các bộ giải mã dùng chung: diff histogram, dựng cây coroutine, parser `@DebugMetadata` từ `.class`. Không IO tới adapter | `ide-core`                                            |
+| `ide-jdwp`         | Codec JDWP và `JdwpLink` (relay) cho Kotlin, cài `JvmInspector` bằng JDWP                                                                                                                                 | `ide-core`, `ide-jvm-inspect`                         |
+| `java/jvm-inspect` | Bundle jdtls (mẫu `java/java-usages`), cài `JvmInspector` bằng JDI. Phía Rust gọi qua `workspace/executeCommand` (cạnh `crates/ide-lsp/src/jdtls/hierarchy.rs`)                                           | embed bằng `include_bytes!` như bundle hiện có        |
+| `ide-streams`      | Tìm chuỗi (tree-sitter-java qua `ide-syntax`), chuẩn hoá, sinh biểu thức, giải mã log, resolver                                                                                                           | `ide-core`, `ide-syntax` (`with_tree`), `tree-sitter` |
+| `ide-heap` (M4)    | Parser hprof streaming, dominator tree, retained size, đường tới GC root, chỉ mục trên đĩa                                                                                                                | `ide-core`                                            |
+| `ide-dap`          | Sở hữu backend theo phiên, chọn nguồn dữ liệu, capabilities, API cho `ide-host`                                                                                                                           | các crate trên                                        |
 
 Theo `CLAUDE.md`, mỗi crate một domain; `src-tauri` chỉ có wrapper mỏng.
 
 ## 4. Mỗi câu hỏi lấy dữ liệu từ đâu
 
-| Cần                          | Nguồn chính                                                   | Đo được                                                    | Điều kiện / dự phòng                                                                                                                                                |
-| ---------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bảng class (số lượng, bytes) | Attach `GC.class_histogram -all`                              | 40–60 ms (10M object, G1/ZGC); 316 ms Shenandoah           | Cùng máy, HotSpot, listener sẵn sàng. JDK 11 treo khi dừng, JVM từ xa, Windows → dự phòng: JDWP `InstanceCounts` **một lần, không chia lô**, kèm cảnh báo thời gian |
-| Danh sách instance           | `Instances(max ≤ 1000)` qua JDI (Java) hoặc JdwpLink (Kotlin) | 3–35 ms                                                    | Cần `canGetInstanceInfo`                                                                                                                                            |
-| Referrer một bước            | `ReferringObjects`                                            | ~0,9–1 s mỗi lần (20M object, duyệt cả heap)               | Không gọi lặp để lần ngược                                                                                                                                          |
-| Coroutine                    | Đọc field qua `JvmInspector`                                  | 15–22 ms (registry agent); 90–550 ms (quét heap, heap nhỏ) | Không invoke                                                                                                                                                        |
-| Retained size, GC root       | Heap dump + `ide-heap`                                        | Dump 0,8–1,6 s + phân tích ~4–5 s (20M object)             | JDK ≥ 21 + listener; HotSpot                                                                                                                                        |
-| Allocation                   | async-profiler `event=alloc[,live]`                           | —                                                          | Sau; không Windows                                                                                                                                                  |
-| Stream trace                 | `evaluate` + `ide-streams`                                    | 15–30 ms mỗi evaluate                                      | Tắt breakpoint khi trace                                                                                                                                            |
+| Cần                          | Nguồn chính                                                   | Đo được                                                    | Điều kiện / dự phòng                                                                                                                                                                                                                                                                                                                |
+| ---------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bảng class (số lượng, bytes) | Attach `GC.class_histogram -all`                              | 40–60 ms (10M object, G1/ZGC); 316 ms Shenandoah           | Cùng máy, HotSpot, listener sẵn sàng. JDK 11 treo khi dừng, JVM từ xa, Windows → dự phòng: JDWP `InstanceCounts` **một lần, không chia lô**, chỉ khi phiên đang dừng, kèm cảnh báo thời gian; đo 10M object: JDK 8 1,3 s, JDK 11 0,8 s, JDK 21 5–8 s **[XM, M2 G3]**; không có shallow size; chênh lệch chỉ với baseline cùng nguồn |
+| Danh sách instance           | `Instances(max ≤ 1000)` qua JDI (Java) hoặc JdwpLink (Kotlin) | 3–35 ms                                                    | Cần `canGetInstanceInfo`                                                                                                                                                                                                                                                                                                            |
+| Referrer một bước            | `ReferringObjects`                                            | ~0,9–1 s mỗi lần (20M object, duyệt cả heap)               | Không gọi lặp để lần ngược                                                                                                                                                                                                                                                                                                          |
+| Coroutine                    | Đọc field qua `JvmInspector`                                  | 15–22 ms (registry agent); 90–550 ms (quét heap, heap nhỏ) | Không invoke                                                                                                                                                                                                                                                                                                                        |
+| Retained size, GC root       | Heap dump + `ide-heap`                                        | Dump 0,8–1,6 s + phân tích ~4–5 s (20M object)             | JDK ≥ 21 + listener; HotSpot                                                                                                                                                                                                                                                                                                        |
+| Allocation                   | async-profiler `event=alloc[,live]`                           | —                                                          | Sau; không Windows                                                                                                                                                                                                                                                                                                                  |
+| Stream trace                 | `evaluate` + `ide-streams`                                    | 15–30 ms mỗi evaluate                                      | Tắt breakpoint khi trace                                                                                                                                                                                                                                                                                                            |
 
 ## 5. ide-jvm-attach
 
@@ -130,13 +133,13 @@ Tab Memory hiện ở mọi phiên của adapter JVM. Khi không có dữ liệu
 
 **Chế độ live** (`GC.class_histogram` không `-all`) luôn chạy Full GC và xoá `WeakReference` của chương trình **[XM]**; chỉ bật khi người dùng yêu cầu, kèm cảnh báo. `-all` có lẫn `jdk.internal.vm.FillerElement` của G1, phải lọc. Đối chiếu tên với `AllClasses` để xử lý nhiều classloader (đánh dấu mơ hồ).
 
-**Windows:** attach dùng named pipe và `CreateRemoteThread` chạy stub gọi `JVM_EnqueueOperation`. v1: chạy `jcmd` của JDK của debuggee nếu có, nếu không thì dự phòng JDWP; stub native là việc sau **[SL]**.
+**Windows:** attach dùng named pipe và `CreateRemoteThread` chạy stub gọi `JVM_EnqueueOperation`. M2: chỉ dự phòng JDWP (khi đang dừng), vì đường này đã đo còn `jcmd` trên VM đang dừng chưa kiểm được trên Windows; `jcmd` và stub native để sau **[SL]**.
 
 **Không dùng được khi** `-XX:+DisableAttachMechanism`, hoặc OpenJ9 (giao thức khác) **[SL]**.
 
 ## 6. JdwpLink (cho Kotlin)
 
-Relay đặt giữa adapter Kotlin và JVM do app chạy, thay `kotlin_jdwp.rs`. Phục vụ danh sách instance, referrer và phần đọc field của Coroutine view.
+Relay đặt giữa adapter Kotlin và JVM, thay `kotlin_jdwp.rs`. Mã hiện tại relay **mọi** phiên Kotlin, cả launch và attach (`StartupRelay` dựng theo adapter, không theo request), nên phiên attach Kotlin cũng có link. Phục vụ danh sách instance, referrer và phần đọc field của Coroutine view.
 
 ### 6.1 Bất biến
 
@@ -153,6 +156,8 @@ Relay đặt giữa adapter Kotlin và JVM do app chạy, thay `kotlin_jdwp.rs`.
 - **`EnableCollection` không đếm**: gọi nó có thể bỏ pin của adapter, làm object bị GC. Link không dùng `DisableCollection`/`EnableCollection`. Từ JDK 17, `suspendAll` đã pin mọi ID trong lúc VM dừng.
 - Ghi nhận: ID ta đang giữ cũng làm object sống, tính vào số đếm.
 - Tham chiếu nhận được chỉ dùng trong cùng `generation` của lần dừng; `Resume` của adapter huỷ mọi truy vấn nội bộ đang chờ.
+- JVM đếm mỗi lần một ID xuất hiện trong reply, kể cả hai lần trong cùng một reply **[XM 8/11/17/21/25, M2 G2]**.
+- Không dispose ReferenceTypeID: `DisposeObjects` lên nó không làm nó hết hiệu lực, nên nó không theo cùng quy tắc đếm **[XM]**.
 
 ### 6.3 Invoke (chỉ khi thật cần)
 
@@ -168,12 +173,13 @@ Bản 2 **không dùng invoke** cho coroutine và Memory. Khi một tính năng 
 
 **Lệnh dự kiến:** `openidea.jvm.vms`, `.classes`, `.instances`, `.fields`, `.values`, `.referrers`. Chạy 3–4 ms mỗi class; `instanceCounts` toàn bộ ~600 class 6–9 ms (lần chậm nhất 108 ms) trên heap nhỏ.
 
-**Ánh xạ phiên → VM:** launch: pid của DAP `process` trùng `vm.process().pid()`. Attach: VM không có pid; khớp bằng danh sách `threads` của DAP (id + tên). Có thể mơ hồ khi hai phiên attach cùng chương trình → thí nghiệm ở mục 15.
+**Ánh xạ phiên → VM:** launch: `vm.process().pid()` trùng pid java-debug báo. Attach (cả "Listen to remote JVM" qua relay): cổng đầu xa của socket JDWP (`VirtualMachineImpl.packetReceiveManager()` → `fConnection` → `fSocket`) trùng `port` của request `attach`, lọc thêm theo host khi trùng cổng. Danh sách thread không dùng được: hai JVM cùng chương trình có cùng id và tên thread **[XM, M2 G1]**.
 
 **Giới hạn đã đo:**
 
 - Không dùng invoke thô: một breakpoint của người dùng trong `toString` làm java-debug phát `stopped` bất ngờ và invoke timeout ~3 s. DAP `evaluate` thì được che chắn (`isInEvaluation`).
-- Timeout gói JDWP của Eclipse JDI là toàn cục (~3 s). `Instances` (max 1000) nhanh; `ReferringObjects` ~1 s trên 20M object, gần ngưỡng.
+- Timeout gói JDWP của Eclipse JDI là toàn cục (~3 s). Bundle nâng bằng `org.eclipse.jdi.VirtualMachine.setRequestTimeout` (API công khai) trong lệnh dài rồi trả lại. Đo trên JDK 21, 10M object: không nâng thì cả lệnh đếm lẫn `evaluate` của java-debug đang chờ hỏng ở 3 s; nâng thì `evaluate` chờ 4,5 s vẫn thành công **[XM, M2 G3]**. `Instances` (max 1000) nhanh.
+- Ba điểm reflection (`connectedVMs`, `packetReceiveManager()`, `fConnection`/`fSocket`) đều có guard: thiếu → `unsupported`.
 - Không ghim phiên bản java-debug (app cài bản mới nhất). Guard: thiếu class/field → trả `unsupported`, `caps.jvmInspect = false`; gửi PR upstream để `connectedVirtualMachines()` trả đúng danh sách; test trong CI "Language smoke" với bản cài thật.
 - Launch Java của java-debug không chuyển tiếp stdin và luôn báo mã thoát 0 **[XM]**: không phải tính năng ta cần "giữ nguyên".
 
@@ -202,11 +208,11 @@ Bản 2 **không dùng invoke** cho coroutine và Memory. Khi một tính năng 
 
 **Phạm vi theo loại phiên Kotlin:**
 
-| Phiên                               | Memory (bảng class) | Memory (instance)     | Coroutine                                      |
-| ----------------------------------- | ------------------- | --------------------- | ---------------------------------------------- |
-| Run/Debug do app khởi động          | Có (attach)         | Có (JdwpLink)         | Có                                             |
-| Gradle/Maven debug do frontend chạy | Có                  | Có nếu qua link       | Có, agentless; agent qua `jvmArgs` của task    |
-| Attach vào JVM có sẵn               | Có nếu cùng máy     | Không (không có link) | Chỉ nếu đi qua link; nếu không, tab hiện lý do |
+| Phiên                               | Memory (bảng class) | Memory (instance) | Coroutine                                   |
+| ----------------------------------- | ------------------- | ----------------- | ------------------------------------------- |
+| Run/Debug do app khởi động          | Có (attach)         | Có (JdwpLink)     | Có                                          |
+| Gradle/Maven debug do frontend chạy | Có                  | Có nếu qua link   | Có, agentless; agent qua `jvmArgs` của task |
+| Attach vào JVM có sẵn               | Có nếu cùng máy     | Có (JdwpLink)     | Có, agentless                               |
 
 **Async stack trong panel Frames và smart step-over (M3b):** frame thật của thread tới `invokeSuspend` đầu tiên, rồi nối chuỗi `completion`. Step qua điểm treo: Kotlin ≥ 2.2 có trường `nl` trong `DebugMetadata` v2 → breakpoint ở dòng đó lọc theo continuation; bản cũ dùng method-entry `invokeSuspend` + `InstanceOnly($continuation)`. Cần kiểm với adapter thật.
 
@@ -219,8 +225,8 @@ Bản 2 **không dùng invoke** cho coroutine và Memory. Khi một tính năng 
 1. Action `debug.traceStreamChain` (khi `debugSessionPaused`, frame Java). `ide-streams` tìm chuỗi bằng tree-sitter-java quanh dòng đang dừng.
 2. **Điều kiện được trace** (xem 10.2); không đạt thì từ chối kèm lý do.
 3. **Chuẩn hoá** theo quy tắc ở 10.3, ghi lại mọi điều chỉnh và hiện trong hộp thoại.
-4. **Sinh biểu thức:** chèn `peek` sau nguồn và sau mỗi bước trung gian. Bộ ghi là một `ArrayList` đặt vào `System.getProperties()` dưới khoá `oi.<nonce>` (E0). Mỗi `peek` của bước `k` thêm hai phần tử liên tiếp: `Integer.valueOf(k)` rồi chính đối tượng `x`. Chỉ số trong list là thời gian (đơn điệu, duy nhất). Không gọi `toString` trong lúc stream chạy. Bộ ghi ném `IllegalStateException("oi-budget")` khi vượt ngân sách (mặc định 100.000 mục) hoặc khi `Thread.currentThread()` khác luồng ghi đầu tiên.
-5. **Bốn bước:** E0 tạo bộ ghi; E1 chạy chuỗi (lấy kết quả cuối); E2 đọc list bằng `JvmInspector` (giữ danh tính đối tượng; trong phiên Java bằng bundle); E3 dọn `oi.<nonce>` (luôn chạy).
+4. **Sinh biểu thức:** chèn `peek` sau nguồn và sau mỗi bước trung gian. Bộ ghi là một `ArrayList` đặt vào `System.getProperties()` dưới khoá `oi.<nonce>` (E0). Mỗi `peek` của bước `k` thêm hai phần tử liên tiếp: `Integer.valueOf(k)` rồi chính đối tượng `x`. Chỉ số trong list là thời gian (đơn điệu, duy nhất). Không gọi `toString` trong lúc stream chạy. Bộ ghi ném `IllegalStateException("oi-budget:<nonce>")` khi vượt ngân sách (mặc định 100.000 mục) và `IllegalStateException("oi-thread:<nonce>")` khi luồng ghi khác luồng chạy E1 (ForkJoin bọc lại ngoại lệ, nên so bằng `contains`; nonce tránh trùng thông điệp của người dùng). Sau phép kết thúc, E1 ghi `Integer.valueOf(-1)` rồi kết quả (phép kết thúc `void` ghi `null`) **[XM, S1 Q3]**.
+5. **Bốn bước:** E0 tạo bộ ghi; E1 chạy chuỗi (lấy kết quả cuối); E2 đọc list bằng `JvmInspector` (giữ danh tính đối tượng; trong phiên Java bằng bundle; DAP `variables` không thay được: `String` mất danh tính, `Integer` không có giá trị **[XM, S1 Q3]**); E3 dọn `oi.<nonce>` (luôn chạy).
 6. **Giải mã** thành các cột theo bước, resolver theo phép toán (10.4), hiển thị giá trị theo kiểu lười và có giới hạn.
 
 ### 10.2 Chuỗi nào được trace
@@ -240,20 +246,20 @@ Bản 2 **không dùng invoke** cho coroutine và Memory. Khi một tính năng 
 
 1. Bọc thành `Object __r = <expr>; return __r;` (khối lambda có `return` lỗi, ternary cấp ngoài lỗi).
 2. Bỏ kiểu tham số lambda `(Integer x) ->` → `(x) ->`.
-3. Biến bắt có kiểu generic (`List<Integer> nums`): khai alias kiểu thô rồi cast lại trong lambda.
+3. Biến bắt có kiểu generic (`List<Integer> nums`): `<Erasure> __c_x = x;` trước chuỗi, `((<Kiểu khai báo>) __c_x)` trong lambda. Kiểu khai báo lấy từ cú pháp; với `var`/diamond lấy từ jdtls hover (18–22 ms lần đầu, 1–2 ms sau **[XM, S1 Q2]**); không có thì dùng alias thô.
 4. Qualify hàm/field static không qualify trong lambda bằng tên class khai báo (luôn với field private static).
 5. Method private, `this::priv`, `super::m` trong lambda: từ chối hoặc chuyển engine khác.
 6. `instanceof` pattern → `instanceof` + cast; switch expression: từ chối.
-7. Primitive trong `Object[]{…}` → `valueOf`; varargs rỗng → mảng rỗng tường minh.
-8. Frame record: dùng tên đầy đủ; frame generic: cast về erasure; frame class ẩn danh/local/top-level phụ: từ chối lambda.
-9. Ngoại lệ do code người dùng ném ra được `evaluate` trả như giá trị thành công: nhận diện kết quả kiểu `Throwable`.
+7. Primitive trong `Object[]{…}` → `valueOf`; varargs rỗng → mảng rỗng tường minh. Chỉ áp dụng ngoài thân lambda (trong lambda là bytecode thật, chạy được); cast `(Object)` không thay được `valueOf` **[XM, S1 Q2]**.
+8. Frame record (ở file riêng): tên đầy đủ cho mọi kiểu ngoài `java.lang`; frame generic: cast về erasure; frame class ẩn danh/local/top-level phụ (kể cả record top-level phụ): từ chối cả trace, vì `peek` của bộ ghi cũng là lambda **[XM, S1 Q2]**.
+9. Ngoại lệ do code người dùng ném ra được `evaluate` trả như giá trị thành công. Bản ghi không có dấu kết thúc nghĩa là chuỗi đã ném ngoại lệ, và giá trị E1 là ngoại lệ đó (DAP `type` chỉ có tên ngắn, không biết được có phải `Throwable`).
 
 **An toàn phiên (C2, [XM]):** `evaluate` có thể chờ một thread khác đang dừng ở breakpoint, và vì java-debug xử lý request tuần tự, không có DAP `cancel`, cả phiên chết. Vì vậy: **tắt mọi breakpoint và exception breakpoint trước khi trace, khôi phục sau** (kiểm id/verified/điều kiện còn nguyên), timeout phía app, và nếu hết giờ thì báo phiên có thể treo và đề nghị khởi động lại. Mỗi lần evaluate có lambda để lại ~3 class không bao giờ unload.
 
 ### 10.4 Resolver (từ C1, property test 20.000 chuỗi ngẫu nhiên)
 
 - **Phép toán đồng bộ** (`map*/boxed/asXStream/peek/filter/skip/limit/takeWhile/dropWhile/flatMap/mapMulti`, `distinct` phần tử được giữ): bản ghi cha của bước k+1 tại thời điểm t là bản ghi bước k gần nhất trước t. **0 lỗi**, kể cả Integer cache.
-- **`sorted`:** khớp theo danh tính cộng thứ tự xuất hiện; đánh dấu "mơ hồ" với primitive trùng. Nhận ra trường hợp `sorted` không làm gì (nguồn đã SORTED) qua log xen kẽ.
+- **`sorted`:** khớp theo giá trị với kiểu bọc (`Integer`, `Long`… và mọi phần tử của `IntStream`/`LongStream`/`DoubleStream`, vì mỗi `peek` bọc lại), theo danh tính với object khác, cộng thứ tự xuất hiện; "mơ hồ" khi khoá lặp. Chỉ khớp danh tính sai 11.299/431.004 liên kết (29% ở `sorted` primitive), cách này 0 **[XM, S1 Q4]**. Nhận ra trường hợp `sorted` không làm gì (nguồn đã SORTED) qua log xen kẽ.
 - **`distinct`, phần tử bị loại:** gán cho phần tử giữ lại có `equals` bằng nó, tính ở E2 (gọi `equals` của người dùng, có cảnh báo).
 - **`gather`/`mapConcurrent`/phép toán phát trễ:** chỉ hiện giá trị từng bước, không vẽ đường nối (thứ tự thay đổi theo bản JDK).
 - Khớp tham lam theo giá trị (kiểu IntelliJ cũ) sai: `skip` 3,9%, filter có trạng thái 18%, `sorted` theo khoá ẩn 19%. Không dùng.
@@ -283,20 +289,20 @@ kotlin-lsp (JetBrains, đã dùng làm LSP): có DAP tích hợp, khởi động
 - **IPC** (`IdeResult<T>`, `Channel<T>` cho streaming, `RequestId` để huỷ), mỗi lệnh gọi `host.require_trust(window)` và được đăng ký ở `ops/debug.rs::register` để smoke gọi được:
   `debug_jvm_memory_classes(session, request, on_chunk)`, `debug_jvm_memory_instances(session, class_ref, limit)`, `debug_jvm_memory_referrers(session, object_ref, limit)`, `debug_jvm_coroutines(session)`, `debug_stream_chains(session, frame_id)`, `debug_stream_trace(session, frame_id, chain, request)`, và ở M4 `debug_heap_*`.
 - **Capabilities và sự kiện:** thêm `jvm_memory`, `jvm_instances`, `jvm_coroutines`, `stream_trace` vào `DebugCapabilities` (`ide-dap/src/lib.rs:117`). `loadCapabilities` chỉ chạy lúc phiên bắt đầu (`state.ts:213`, `:609`), không tải lại, nên từ M2 thêm `DebugEvent::Capabilities` và `DebugEvent::JvmBackend { state }` vào `crates/ide-core/src/event.rs:205`, xử lý trong `handleDebugEvent` (`state.ts:1034`, switch không có `default`). `jvm_memory` của M1 tĩnh (adapter + `launch`) nên chưa cần sự kiện mới.
-- **Relay hiện có:** `crates/ide-dap/src/jdwp.rs` đã relay JDWP Java cho "Listen to remote JVM" (`debug_listen_for_jvm`); `ide-jdwp` ở M2 phải gộp hoặc dùng lại nó, và nó có thể là đường dự phòng JDWP cho các phiên đó.
+- **Relay hiện có:** `crates/ide-dap/src/jdwp.rs` đã relay JDWP Java cho "Listen to remote JVM" (`debug_listen_for_jvm`); M2 không gộp: phiên đó là phiên java-debug, lấy instance qua bundle (khớp theo cổng relay); `jdwp.rs` giữ là bản copy byte. `kotlin_jdwp.rs` được thay bằng `JdwpLink`.
 - **Frontend:** `src/features/debugger/{memory,coroutines,streams}/`; tab trong `DebugToolWindow.tsx` (`type Tab` ~dòng 106, mảng tab ~174–179) mở rộng và gắn `sessionSupports`. Không import tính năng khác. Action: `debug.memory.refresh`, `debug.coroutines.copyDump`, `debug.traceStreamChain`; action không có phím mặc định thì không cần dòng trong preset (như `debug.reloadChangedClasses`); nếu thêm phím thì thêm cho cả cặp macOS/Windows của IntelliJ và VS Code vì `windows.test.ts` so khớp bộ khoá (preset Eclipse kế thừa IntelliJ). Chuỗi hiển thị vào `en.json` và `zh.json`; title action phải có bản zh khác en. CSS Modules + tokens, icon trong `src/ui/icons.tsx`, `aria-label` cho nút icon.
 
 ## 14. Kiểm thử
 
-| Tầng                             | Cách làm                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ide-jvm-attach`                 | Test giao thức với JVM thật trên JDK 11/21/25 (đã có client Python để đối chiếu); test lọc FillerElement, nhiều classloader; test từ chối khi listener chưa chạy                                                                                                                                                                                |
-| `ide-jdwp`                       | JVM giả bằng script qua loopback: bit-exact passthrough, hold Resume, va chạm id, chèn xen kẽ, đếm/dispose ID (không bao giờ dispose thừa), `Degraded`. JVM thật `#[ignore]` trong CI                                                                                                                                                           |
-| Bundle                           | Test Java của bundle + test tích hợp qua jdtls thật (mẫu `java/java-usages`); test `NoSuchFieldException` → `unsupported`                                                                                                                                                                                                                       |
-| `ide-streams`                    | Test chuỗi/chuẩn hoá/snapshot biểu thức; **property test resolver** với fixture log thật + đáp án theo con trỏ cha (từ `ResolverProp.java`), ma trận JDK 11/17/21/25; test vàng: `count` không chạy pipeline, `sorted` không làm gì, `sorted+limit`, `[1,1,1].skip(2)`, `distinct` khi `equals ≠ toString`, ngoại lệ giữa chừng, vượt ngân sách |
-| Coroutine                        | Fixture đủ trường hợp (`NonCancellable`, `GlobalScope`, `suspendCoroutine` thô, Mutex/select, shaded jar); so quét heap với registry; ma trận 1.5.2–mới nhất                                                                                                                                                                                    |
-| `ide-heap`                       | Dump nhỏ với đáp án tính tay; property test dominator; fuzz parser                                                                                                                                                                                                                                                                              |
-| `ide-dap`, frontend, smoke, perf | Mở rộng `FakeLauncher`, vitest, e2e Playwright, `smoke/debug.test.ts` cho java (Stream + Memory) và kotlin (Memory + Coroutines), ngân sách `perf/budgets.json`                                                                                                                                                                                 |
+| Tầng                             | Cách làm                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide-jvm-attach`                 | Test giao thức với JVM thật trên JDK 11/21/25 (đã có client Python để đối chiếu); test lọc FillerElement, nhiều classloader; test từ chối khi listener chưa chạy                                                                                                                                                                                                                                                                          |
+| `ide-jdwp`                       | JVM giả bằng script qua loopback: bit-exact passthrough, hold Resume, va chạm id, chèn xen kẽ, đếm/dispose ID (không bao giờ dispose thừa), `Degraded`. JVM thật `#[ignore]` trong CI                                                                                                                                                                                                                                                     |
+| Bundle                           | Test Java của bundle + test tích hợp qua jdtls thật (mẫu `java/java-usages`); test `NoSuchFieldException` → `unsupported`                                                                                                                                                                                                                                                                                                                 |
+| `ide-streams`                    | Test chuỗi/chuẩn hoá/snapshot biểu thức; **property test resolver** với fixture log thật + đáp án theo con trỏ cha (từ `ResolverProp.java`), ma trận JDK 11/17/21/25 (S1 đo oracle trên 17/21/25; 11 chạy được với fixture cú pháp Java 11 nhưng chưa đo [SL]); test vàng: `count` không chạy pipeline, `sorted` không làm gì, `sorted+limit`, `[1,1,1].skip(2)`, `distinct` khi `equals ≠ toString`, ngoại lệ giữa chừng, vượt ngân sách |
+| Coroutine                        | Fixture đủ trường hợp (`NonCancellable`, `GlobalScope`, `suspendCoroutine` thô, Mutex/select, shaded jar); so quét heap với registry; ma trận 1.5.2–mới nhất                                                                                                                                                                                                                                                                              |
+| `ide-heap`                       | Dump nhỏ với đáp án tính tay; property test dominator; fuzz parser                                                                                                                                                                                                                                                                                                                                                                        |
+| `ide-dap`, frontend, smoke, perf | Mở rộng `FakeLauncher`, vitest, e2e Playwright, `smoke/debug.test.ts` cho java (Stream + Memory) và kotlin (Memory + Coroutines), ngân sách `perf/budgets.json`                                                                                                                                                                                                                                                                           |
 
 Trước mỗi PR chạy đúng bộ lệnh trong `CLAUDE.md`. Xác minh runtime bằng skill `verify` kèm ảnh chụp.
 
@@ -321,7 +327,7 @@ Hai nhánh làm song song trong worktree riêng. Theo quy tắc repo: một vấ
 
 1. kotlin-lsp DAP qua relay + gói chèn; launch; EULA đầy đủ (K0).
 2. ~~Attach lúc dừng trên JDK 17~~ (đã làm, S7); JDK 12–16; Windows x64/ARM64 (stub, antivirus).
-3. Bundle: heap 4–6 GB với timeout JDI ~3 s; `executeCommand` dài có chặn jdtls (đo độ trễ hover/completion); ánh xạ hai phiên attach cùng chương trình.
+3. Bundle: heap 4–6 GB với timeout JDI nâng; ~~`executeCommand` dài có chặn jdtls~~ (không: hover 5 ms trong lúc đếm 5,2 s, M2 G3); ~~ánh xạ hai phiên attach cùng chương trình~~ (khớp theo cổng, M2 G1).
 4. `evaluate` khi bật exception breakpoint "mọi exception" (có `stopped`/treo?).
 5. Tắt và khôi phục breakpoint không đổi id/verified/điều kiện.
 6. Bộ 30 chuỗi đại diện trên JDK 17/21/25 cho engine A/B.
@@ -356,7 +362,7 @@ Hai nhánh làm song song trong worktree riêng. Theo quy tắc repo: một vấ
 
 **Trạng thái (2026-11-07):** chủ repo duyệt bản 2 và các mặc định 1–6. Mặc định 7 (tạo issue) vẫn cần đồng ý riêng trước PR đầu tiên.
 
-**Câu hỏi của builder check, đã chốt khi lập plan:** JDK 8 là debuggee được hỗ trợ với cùng quy tắc như 11 (S7); không đưa mã thử nghiệm hay bản sao nguồn OpenJDK (GPL) vào repo: fixture viết lại nhỏ gọn, test JVM thật để `#[ignore]` với biến `OPENIDEA_TEST_JAVA`; S1 lấy thông tin kiểu ở đâu (jdtls hay chỉ cú pháp) được quyết khi lập plan S1; Kotlin chạy qua java-debug (dự án trộn) được xét ở M3.
+**Câu hỏi của builder check, đã chốt khi lập plan:** JDK 8 là debuggee được hỗ trợ với cùng quy tắc như 11 (S7); không đưa mã thử nghiệm hay bản sao nguồn OpenJDK (GPL) vào repo: fixture viết lại nhỏ gọn, test JVM thật để `#[ignore]` với biến `OPENIDEA_TEST_JAVA`; S1 lấy thông tin kiểu từ cú pháp trước, phần còn lại (`var`/diamond) qua `TypeHints` do S2 điền từ jdtls hover; gốc chuỗi là method ngoài danh mục (`repo.findAll()`) bị từ chối ở v1 (`RootNotNewStream`); Kotlin chạy qua java-debug (dự án trộn) được xét ở M3.
 
 ## 18. Để lại cho người xây
 
