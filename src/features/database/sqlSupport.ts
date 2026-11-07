@@ -20,7 +20,7 @@ import { offsetToPos } from "@/editor/lsp/positions";
 import type { DbCompletion, DbCompletionTable, DbDriver } from "@/platform/ipc";
 import { formatSql } from "./sql/format";
 import { SqlResolver, type SqlSymbol } from "./sql/resolve";
-import { consoleSource, revealInTree, sourceById, useDatabase } from "./store";
+import { consoleSchema, consoleSource, revealInTree, sourceById, useDatabase } from "./store";
 
 /** Producer id of the console's diagnostics (Problems view, hover). */
 const INSPECTIONS = "sql-inspections";
@@ -28,10 +28,13 @@ const INSPECT_DELAY = 400;
 
 function sourceOf(path: string): { id: string | null; driver: DbDriver; model: DbCompletion | null } {
   const id = consoleSource(path);
+  const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
+  // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
+  const schema = consoleSchema(path);
   return {
     id,
     driver: sourceById(id)?.driver ?? "sqlite",
-    model: id ? (useDatabase.getState().completion[id] ?? null) : null,
+    model: model && schema ? { ...model, defaultSchema: schema } : model,
   };
 }
 
@@ -64,9 +67,10 @@ function inspections(path: string): Extension {
       timer = setTimeout(run, INSPECT_DELAY);
     };
     schedule();
-    // The schema model arrives (or the console is bound to another source) after the editor opens.
+    // The schema model arrives (or the console is bound to another source / schema) after the editor opens.
     const unsubscribe = useDatabase.subscribe((s, prev) => {
-      if (s.completion !== prev.completion || s.consoles !== prev.consoles) schedule();
+      if (s.completion !== prev.completion || s.consoles !== prev.consoles || s.consoleSchemas !== prev.consoleSchemas)
+        schedule();
     });
     return {
       update: (u) => {

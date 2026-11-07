@@ -19,6 +19,7 @@ type Events = Arc<Mutex<Vec<(Option<String>, PluginEvent)>>>;
 /// What plugins see of the test project: real `Documents`, as in the IDE.
 struct TestWorkspace {
     root: PathBuf,
+    other_roots: Mutex<Vec<PathBuf>>,
     documents: Arc<ide_workspace::Documents>,
     trusted: bool,
     /// (producer, path) → published diagnostics.
@@ -35,6 +36,7 @@ impl TestWorkspace {
         );
         Arc::new(Self {
             root: root.to_path_buf(),
+            other_roots: Mutex::default(),
             documents: Arc::new(documents),
             trusted: true,
             diagnostics: Mutex::default(),
@@ -67,10 +69,13 @@ impl TestWorkspace {
 
 impl PluginWorkspace for TestWorkspace {
     fn projects(&self) -> Vec<PathBuf> {
-        vec![self.root.clone()]
+        std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
     fn buffer_text(&self, path: &Path) -> Option<String> {
         self.documents.text_of(path)
+    }
+    fn buffer_dirty(&self, path: &Path) -> bool {
+        self.documents.by_path(path).is_some_and(|doc| self.documents.is_dirty(doc).unwrap_or(false))
     }
     fn document(&self, path: &Path) -> Option<(u64, String)> {
         let snap = self.documents.snapshot(self.documents.by_path(path)?).ok()?;
@@ -122,6 +127,33 @@ fn theme_template() -> PathBuf {
 
 fn misbehave_pkg() -> PathBuf {
     repo().join("crates/ide-plugin/tests/fixtures/misbehave")
+}
+
+/// `misbehave` with `fs.read:<granted>` added to its capabilities.
+fn misbehave_granted(dir: &Path, granted: &Path) -> PathBuf {
+    let pkg = dir.join("misbehave-granted");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let path = granted.to_string_lossy().replace('\\', "/");
+    let required = format!("required = [\"project.read\", \"fs.read:{path}\"]");
+    let text = text.replace("required = [\"project.read\"]", &required);
+    std::fs::write(&manifest, text).unwrap();
+    pkg
+}
+
+/// `misbehave` requiring `capability` too, which is new in API 1.3.
+fn misbehave_with(dir: &Path, name: &str, capability: &str) -> PathBuf {
+    let pkg = dir.join(name);
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let required = format!("required = [\"project.read\", \"{capability}\"]");
+    let text = text
+        .replace("required = [\"project.read\"]", &required)
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"");
+    std::fs::write(&manifest, text).unwrap();
+    pkg
 }
 
 /// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
@@ -370,6 +402,153 @@ fn read_file_is_confined_to_the_project() {
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
+/// `fs.read` reaches the granted paths and nothing else, through the real
+/// component: the same checks the runtime makes, against a real file system.
+#[test]
+fn fs_read_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "outside the project\n").unwrap();
+    // A sibling whose name starts with the grant's: not covered by it.
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    assert_eq!(f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap().unwrap(), "outside the project\n");
+    let err = f.run("misbehave", "fsread", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "the refusal names what to grant: {err}");
+    let err = f.run("misbehave", "fsread", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fsread", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let err = f.run("misbehave", "fsread", Some(shared.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
+    let missing = shared.join("gone.txt");
+    let err = f.run("misbehave", "fsread", Some(missing.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("no such file"), "{err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.read-dir` lists a granted directory, sorted, and refuses the rest.
+#[test]
+fn fs_read_dir_lists_a_granted_directory() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(shared.join("zeta")).unwrap();
+    std::fs::write(shared.join("beta.txt"), "b").unwrap();
+    std::fs::write(shared.join("alpha.txt"), "a").unwrap();
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    let listing = f.run("misbehave", "read-dir", Some(shared.to_str().unwrap())).unwrap().unwrap();
+    let lines: Vec<&str> = listing.lines().collect();
+    assert_eq!(lines, vec!["file alpha.txt", "file beta.txt", "dir zeta"], "{listing}");
+
+    // A file is not a directory, and a path outside the grant is refused.
+    let file = shared.join("alpha.txt");
+    let err = f.run("misbehave", "read-dir", Some(file.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a directory"), "{err}");
+    let err = f.run("misbehave", "read-dir", Some(f._tmp.path().to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "{err}");
+}
+
+/// `project.write` creates and replaces files under the project root, and never
+/// leaves it, through the real component.
+#[test]
+fn project_write_stays_inside_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+
+    // A Run configuration: neither the file nor `.openidea/` exists yet.
+    assert_eq!(f.run("misbehave", "projwrite", Some(".openidea/run.toml")).unwrap(), None);
+    let conf = f.project.join(".openidea").join("run.toml");
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), "written inside the project\n");
+    // What it wrote reads back through the project.
+    assert_eq!(
+        f.run("misbehave", "read", Some(".openidea/run.toml")).unwrap().as_deref(),
+        Some("written inside the project\n")
+    );
+    // An absolute path inside the root lands in the same place.
+    let fresh = f.project.join("build").join("patch.txt");
+    assert_eq!(f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // Replacing an existing file rewrites it whole.
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(f.project.join("src/notes.txt")).unwrap(), "written inside the project\n");
+    // Unsaved changes in an editor are not overwritten.
+    f.workspace.open("src/notes.txt", &[]);
+    f.workspace.type_text("src/notes.txt", "typed ");
+    let err = f.run("misbehave", "projwrite", Some("src/notes.txt")).unwrap_err();
+    assert!(err.contains("unsaved changes"), "{err}");
+    // Leaving the root is refused, and nothing is written.
+    let err = f.run("misbehave", "projwrite", Some("../escape.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.write` replaces files the grant covers and nothing else, through the
+/// real component.
+#[test]
+fn fs_write_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "old\n").unwrap();
+    let bommed = shared.join("bom.txt");
+    std::fs::write(&bommed, b"\xef\xbb\xbfold").unwrap();
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    std::fs::write(&secret, "keep me\n").unwrap();
+    let grant = format!("fs.write:{}", shared.to_string_lossy().replace('\\', "/"));
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-writable", &grant));
+
+    // An existing file is replaced…
+    assert_eq!(f.run("misbehave", "fswrite", Some(notes.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "written by the plugin\n");
+    // …a new one is created…
+    let fresh = shared.join("fresh.txt");
+    assert_eq!(f.run("misbehave", "fswrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written by the plugin\n");
+    // …and a file's encoding and BOM survive the write.
+    assert_eq!(f.run("misbehave", "fswrite", Some(bommed.to_str().unwrap())).unwrap(), None);
+    let bytes = std::fs::read(&bommed).unwrap();
+    assert!(bytes.starts_with(b"\xef\xbb\xbf"), "the BOM stays: {bytes:?}");
+    assert_eq!(String::from_utf8(bytes[3..].to_vec()).unwrap(), "written by the plugin\n");
+
+    // Outside the grant nothing changes.
+    let err = f.run("misbehave", "fswrite", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "the refusal names what to grant: {err}");
+    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep me\n");
+    let err = f.run("misbehave", "fswrite", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fswrite", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let missing_parent = shared.join("conf").join("web.xml");
+    let err = f.run("misbehave", "fswrite", Some(missing_parent.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("directory does not exist"), "{err}");
+    // Writing a directory fails rather than replacing it.
+    assert!(f.run("misbehave", "fswrite", Some(shared.to_str().unwrap())).is_err(), "a directory is not a file");
+    assert!(shared.is_dir(), "the directory is still there");
+
+    // `fs.write` does not carry `fs.read`.
+    let err = f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "write does not imply read: {err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
 /// A missing capability is an error the plugin can handle, not a trap.
@@ -648,7 +827,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 10, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 14, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -1653,6 +1832,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     f.install(&official("git-toolbox"));
     let untrusted = Arc::new(TestWorkspace {
         root: f.project.clone(),
+        other_roots: Mutex::default(),
         documents: f.workspace.documents.clone(),
         trusted: false,
         diagnostics: Mutex::default(),
@@ -2070,6 +2250,86 @@ fn view_item_menus_name_a_declared_view() {
     });
     let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
     assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
+}
+
+#[test]
+fn conditional_and_grouped_views_need_api_1_3() {
+    for field in ["group = \"spring\"", "when = \"workspaceContains:pom.xml || plugin.hello.ready\""] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let old =
+            hello_variant(tmp.path(), |m| m.replace("location = \"right\"", &format!("location = \"right\"\n{field}")));
+        let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+        assert!(err.message.contains("new in plugin API 1.3"), "{err:?}");
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |m| {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"").replace(
+            "location = \"right\"",
+            "location = \"right\"\ngroup = \"spring\"\nwhen = \"workspaceContains:pom.xml || plugin.hello.ready\"",
+        )
+    });
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Inactive, "declaring views must not activate code");
+    let view = f.host.ui_items("views").remove(0);
+    assert_eq!(view.decl["group"], "spring");
+    assert_eq!(view.decl["when"], "workspaceContains:pom.xml || plugin.hello.ready");
+    f.host.set_enabled("hello", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+}
+
+#[test]
+fn grouped_views_fixture_renders_and_scopes_context_and_reveal() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("grouped-views"));
+    assert_eq!(info.status, PluginStatus::Inactive, "views stay lazy");
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let views = f.host.ui_items("views");
+    assert_eq!(views.len(), 3);
+    assert_eq!(views[0].decl["group"], "demo");
+    assert_eq!(views[1].decl["when"], "workspaceContains:grouped-views.txt");
+    f.take_events();
+    f.run("grouped-views", "show", None).unwrap();
+    assert!(f.take_events().iter().any(|(client, event)| matches!(
+        event,
+        PluginEvent::ContextChanged { plugin_id, key, value }
+            if client.as_deref() == Some("main") && plugin_id == "grouped-views"
+                && key == "ready" && value.as_deref() == Some("true")
+    )));
+    assert!(f.host.context_keys(Some("other")).is_empty());
+    for view in ["overview", "files", "legacy"] {
+        let rendered = f.host.render_view("grouped-views", view, None, f.inv()).unwrap();
+        assert!(matches!(rendered.body, ide_plugin::ViewBody::Message(_)));
+        f.run("grouped-views", "reveal", Some(view)).unwrap();
+        assert!(f.take_events().iter().any(|(client, event)| matches!(
+            event,
+            PluginEvent::RevealView { plugin_id, view: target }
+                if client.as_deref() == Some("main") && plugin_id == "grouped-views" && target == view
+        )));
+    }
+    assert!(f.run("grouped-views", "reveal", Some("plugin.hello.greetings")).is_err());
+    f.host.set_enabled("grouped-views", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+    assert!(f.host.context_keys(Some("main")).is_empty());
+}
+
+#[test]
+fn view_conditions_and_group_ids_are_validated() {
+    for (field, message) in [
+        ("group = \"\"", "invalid view group"),
+        ("group = \"../other\"", "invalid view group"),
+        ("when = \"ready && (\"", "when"),
+    ] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |m| {
+            m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = \"right\"\n{field}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{field}: {err:?}");
+    }
 }
 
 /// The sample plugin makes a tool window with a tree view.
@@ -3351,4 +3611,358 @@ fn invalid_plugin_icons_refuse_the_package() {
         let err = f.host.preview_install(&pkg).map(|_| ()).unwrap_err().message;
         assert!(err.contains(expected), "{id}: {err}");
     }
+}
+
+#[test]
+fn endpoint_exports_refresh_matching_files_and_follow_plugin_lifecycle() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+    let routes = f.project.join("routes.txt");
+    std::fs::write(&routes, "/users/{id}\n").unwrap();
+    f.install(&sample("endpoints"));
+    let id = "test.endpoints";
+    let paths = || f.host.endpoints(id, &f.project).unwrap().iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+    let first = f.host.endpoints(id, &f.project).unwrap();
+    assert_eq!(first[0].path, "/users/{id}");
+    assert!(first[0].method.is_none(), "any method is preserved");
+    assert_eq!(first[0].location.path, ide_core::IpcPath::from(to_ipc(&routes)));
+    std::thread::sleep(Duration::from_millis(70));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(paths(), ["/users/{id}"]);
+    assert_eq!(f.host.instances(), 0, "a cached list doesn't wake the plugin");
+    let changed = |f: &Fixture| {
+        f.take_events()
+            .iter()
+            .any(|(_, e)| matches!(e, PluginEvent::EndpointsChanged { plugin_id, .. } if plugin_id == id))
+    };
+    std::fs::write(&routes, "/updated\n").unwrap();
+    f.take_events();
+    f.host.invalidate_endpoints(&f.project, &[f.project.join("unrelated.txt")]);
+    assert!(!changed(&f));
+    assert_eq!(paths(), ["/users/{id}"]);
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert!(changed(&f), "windows are told to ask again");
+    assert_eq!(paths(), ["/updated"]);
+    std::fs::write(&routes, "not-a-path\n").unwrap();
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert_eq!(paths(), ["/updated"], "an invalid list doesn't replace the last valid one");
+    f.host.set_enabled(id, false).unwrap();
+    assert!(paths().is_empty());
+    std::fs::write(&routes, "/enabled\n").unwrap();
+    f.host.set_enabled(id, true).unwrap();
+    assert_eq!(paths(), ["/enabled"]);
+    f.take_events();
+    assert!(f.run(id, "crash", None).is_err());
+    assert!(changed(&f), "a crash withdraws the routes");
+    f.host.uninstall(id).unwrap();
+    assert!(f.host.endpoints(id, &f.project).is_err());
+}
+
+struct EndpointWorkspace {
+    reads: std::sync::atomic::AtomicUsize,
+    inner: Arc<TestWorkspace>,
+    roots: Mutex<Vec<PathBuf>>,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl PluginWorkspace for EndpointWorkspace {
+    fn projects(&self) -> Vec<PathBuf> {
+        self.roots.lock().clone()
+    }
+    fn buffer_text(&self, path: &Path) -> Option<String> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0
+            && let Some(entered) = self.entered.lock().take()
+        {
+            entered.send(()).unwrap();
+            self.release.lock().recv().unwrap();
+        }
+        self.inner.buffer_text(path)
+    }
+    fn document(&self, path: &Path) -> Option<(u64, String)> {
+        self.inner.document(path)
+    }
+    fn trusted(&self, root: &Path) -> bool {
+        self.roots.lock().iter().any(|r| r == root)
+    }
+    fn project_of(&self, _: &str) -> Option<PathBuf> {
+        self.roots.lock().first().cloned()
+    }
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits)
+    }
+    fn publish_diagnostics(
+        &self,
+        source: &str,
+        path: &Path,
+        items: Vec<ide_core::Diagnostic>,
+    ) -> Result<(), HostError> {
+        self.inner.publish_diagnostics(source, path, items)
+    }
+}
+
+#[test]
+fn late_endpoint_results_cannot_restore_a_disabled_plugin_or_closed_project() {
+    for close_project in [false, true] {
+        let f = fixture(Limits::default());
+        std::fs::write(f.project.join("routes.txt"), "/late\n").unwrap();
+        f.install(&sample("endpoints"));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let workspace = Arc::new(EndpointWorkspace {
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            inner: f.workspace.clone(),
+            roots: Mutex::new(vec![f.project.clone()]),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        f.host.set_workspace(Some(workspace.clone()));
+        let late = std::thread::scope(|scope| {
+            // The plugin reads the file, then the host's check reads it again and waits here.
+            let query = scope.spawn(|| f.host.endpoints("test.endpoints", &f.project).unwrap());
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if close_project {
+                workspace.roots.lock().clear();
+            } else {
+                f.host.set_enabled("test.endpoints", false).unwrap();
+            }
+            release_tx.send(()).unwrap();
+            query.join().unwrap()
+        });
+        assert!(late.is_empty());
+        assert!(f.host.endpoints("test.endpoints", &f.project).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn endpoint_results_are_isolated_per_root_and_withdraw_closed_roots() {
+    let f = fixture(Limits::default());
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(f.project.join("routes.txt"), "/first\n").unwrap();
+    std::fs::write(other.join("routes.txt"), "/second\n").unwrap();
+    let (_, release_rx) = std::sync::mpsc::channel();
+    let workspace = Arc::new(EndpointWorkspace {
+        reads: std::sync::atomic::AtomicUsize::new(0),
+        inner: f.workspace.clone(),
+        roots: Mutex::new(vec![f.project.clone(), other.clone()]),
+        entered: Mutex::new(None),
+        release: Mutex::new(release_rx),
+    });
+    f.host.set_workspace(Some(workspace.clone()));
+    f.install(&sample("endpoints"));
+    for (root, route) in [(&f.project, "/first"), (&other, "/second")] {
+        let list = f.host.endpoints("test.endpoints", root).unwrap();
+        assert_eq!(list.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [route]);
+    }
+    workspace.roots.lock().retain(|r| r != &other);
+    assert!(f.host.endpoints("test.endpoints", &other).unwrap().is_empty(), "a closed project has no routes");
+    assert_eq!(f.host.endpoints("test.endpoints", &f.project).unwrap()[0].path, "/first");
+}
+
+#[test]
+fn notification_actions_keep_commands_and_window_scope() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.host
+        .run_command("jobs", "notify-actions", None, Invocation { client: Some("second".into()), ..f.inv() })
+        .unwrap();
+    let notifications = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, event)| match event {
+            PluginEvent::Notification { plugin_id, actions, .. } => Some((client, plugin_id, actions)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].0.as_deref(), Some("second"));
+    assert_eq!(notifications[0].1, "jobs");
+    assert_eq!(notifications[0].2.len(), 3);
+    assert_eq!(notifications[0].2[0].command, "context");
+    assert_eq!(notifications[0].2[0].argument.as_deref(), Some("notification-action=1\nvalue"));
+    for invalid in ["four", "unknown"] {
+        let error = f.run("jobs", "notify-actions", Some(invalid)).unwrap_err();
+        assert!(error.contains(if invalid == "four" { "at most 3" } else { "declares no command" }), "{error}");
+        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::Notification { .. })));
+    }
+    assert_eq!(f.status("jobs"), PluginStatus::Active, "a refused notification leaves the plugin running");
+}
+
+#[test]
+fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, prompt) =
+        run_and_answer(&f, "pick-directory", Some("C:/work"), Some(&["C:/work/repo"]), Duration::from_millis(700));
+    assert_eq!(result.unwrap().as_deref(), Some("C:/work/repo"));
+    assert_eq!(prompt, Prompt::PickDirectory { title: "Clone target".into(), initial: Some("C:/work".into()) });
+    assert_eq!(run_and_answer(&f, "pick-directory", None, None, Duration::ZERO).0.unwrap().as_deref(), Some("none"));
+    assert!(run_and_answer(&f, "pick-directory", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.run("jobs", "pick-directory", Some("relative")).is_err());
+    for (cmd, new_window) in [("open-project", false), ("open-project-new", true)] {
+        f.take_events();
+        let inv = Invocation { client: Some("second".into()), ..f.inv() };
+        f.host.run_command("jobs", cmd, Some("C:/work/repo"), inv).unwrap();
+        let requests = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenProject { plugin_id, path, new_window } => Some((client, plugin_id, path, new_window)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requests, vec![(Some("second".into()), "jobs".into(), "C:/work/repo".into(), new_window)]);
+        let error = f.host.run_command("jobs", cmd, Some("/work/repo"), Invocation::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{error:?}");
+    }
+    assert!(f.host.run_command("jobs", "pick-directory", None, Invocation::default()).is_err());
+    for path in ["relative", "/bad\npath", ""] {
+        f.take_events();
+        assert!(f.run("jobs", "open-project", Some(path)).is_err());
+        assert!(!f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::OpenProject { .. })));
+    }
+}
+
+#[test]
+fn plugin_readonly_fields_and_table_row_extensions_round_trip() {
+    let f = fixture(Limits::default());
+    f.install(&sample("tables"));
+    let view = f.host.render_view("tables", "fields", None, f.inv()).unwrap();
+    let ide_plugin::ViewBody::Form(fields) = view.body else { panic!("form") };
+    assert_eq!(fields[0].value, ide_plugin::FieldValue::Label("Merge request #42".into()));
+    assert_eq!(fields[1].value, ide_plugin::FieldValue::ReadonlyText { text: "Ada Lovelace".into(), multiline: false });
+    assert_eq!(
+        fields[2].value,
+        ide_plugin::FieldValue::ReadonlyText { text: "Ready for review\nAll checks passed".into(), multiline: true }
+    );
+    assert!(matches!(fields[3].value, ide_plugin::FieldValue::Text(_)));
+    for (event, status) in [
+        (ide_plugin::ViewEvent::TableSelect { row: 2 }, "select:2"),
+        (ide_plugin::ViewEvent::TableActivate { row: 2 }, "activate:2"),
+    ] {
+        f.take_events();
+        f.host.view_event("tables", "tables", event, f.inv()).unwrap();
+        assert!(f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::ViewChanged { plugin_id, view } if plugin_id == "tables" && view == "tables")));
+        assert_eq!(f.host.render_view("tables", "tables", None, f.inv()).unwrap().status.as_deref(), Some(status));
+    }
+}
+
+#[test]
+fn path_filtered_events_do_not_wake_idle_plugins_and_recheck_queued_filters() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    f.install(&sample("path-events"));
+    f.run("test.path-events", "count", None).unwrap();
+    let matched = to_ipc(&f.project.join("config/app.yaml"));
+    let other = to_ipc(&f.project.join("src/main.rs"));
+    let deliver = |events| {
+        f.host.post_events(Some("main"), events);
+        f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+    };
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.status("test.path-events"), PluginStatus::Inactive);
+    let activations = f.host.info_of("test.path-events").unwrap().stats.activations;
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone()), WorkbenchEvent::FileSaved(other.clone())]);
+    assert_eq!(f.host.info_of("test.path-events").unwrap().stats.activations, activations);
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone()), WorkbenchEvent::FileSaved(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("2"));
+    assert!(f.run("test.path-events", "filter", Some("../*")).is_err());
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "invalid filter preserves previous one"
+    );
+
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    f.run("test.path-events", "filter", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "queued event uses current filter"
+    );
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("3"));
+    f.run("test.path-events", "all", None).unwrap();
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(other.clone())]);
+    f.run("test.path-events", "off", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    deliver(vec![WorkbenchEvent::FileOpened(other)]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+
+    f.host.set_enabled("test.path-events", false).unwrap();
+    assert!(!f.host.event_kinds().contains(&WorkbenchEvent::FileOpened(String::new()).kind()));
+}
+
+#[test]
+fn project_lookup_works_in_commands_and_provider_calls_without_an_invocation_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("path-events"));
+    let path = f.project.join("src/notes.txt");
+    assert_eq!(f.run("test.path-events", "project", Some(&to_ipc(&path))).unwrap(), Some(to_ipc(&f.project)));
+    assert_eq!(f.run("test.path-events", "project", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&f.project.with_extension("other").join("a")))).unwrap(),
+        None
+    );
+    let doc = ide_plugin::ProviderDocument { path, language: "text".into(), version: 1, text: "one".into() };
+    let hovers = f.host.provide_hover(&doc, ide_core::Pos::new(0, 0));
+    assert_eq!(hovers.len(), 1);
+    assert_eq!(hovers[0].markdown, to_ipc(&f.project));
+    let nested = f.project.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    f.workspace.other_roots.lock().push(nested.clone());
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&nested.join("new.txt")))).unwrap(),
+        Some(to_ipc(&nested))
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&nested, f.project.join("alias")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("alias/new.txt")))).unwrap(),
+            Some(to_ipc(&nested))
+        );
+        std::os::unix::fs::symlink(f._tmp.path(), f.project.join("outside")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("outside/new.txt")))).unwrap(),
+            None
+        );
+    }
+    f.host.set_capability("test.path-events", "project.read", false).unwrap();
+    assert!(f.run("test.path-events", "project", Some(&to_ipc(&doc.path))).unwrap_err().contains("project.read"));
+    f.host.set_capability("test.path-events", "events", false).unwrap();
+    assert!(f.run("test.path-events", "filter", Some("*")).unwrap_err().contains("events"));
+}
+
+#[test]
+fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    let two_mib = "x".repeat(2 << 20);
+    f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: two_mib.clone() }, f.inv()).unwrap();
+    let echoed = f
+        .take_events()
+        .into_iter()
+        .find_map(|(_, e)| match e {
+            PluginEvent::ViewMessage { view, message, .. } if view == "jobs" => Some(message),
+            _ => None,
+        })
+        .expect("2 MiB view message round-trips");
+    assert_eq!(echoed.len(), 2 << 20);
+
+    let too_large = "x".repeat((8 << 20) + 1);
+    let err =
+        f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
+    assert!(err.message.contains("limited to"), "{}", err.message);
 }

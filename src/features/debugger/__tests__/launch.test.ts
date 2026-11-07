@@ -236,7 +236,7 @@ describe("run config → launch config", () => {
   it("delve: debug mode for run, test mode for test", () => {
     const run = launchConfigFor(rc({ kind: "go", command: "go", args: ["run", "."], debugAdapter: "delve" }), "/p")!;
     expect(run.program).toBe("/p");
-    expect(extra(run)).toEqual({ mode: "debug" });
+    expect(extra(run)).toEqual({ mode: "debug", __goToolArgs: [], __goUseTags: true });
     const sub = launchConfigFor(
       rc({ kind: "go", command: "go", args: ["run", "./cmd/api"], debugAdapter: "delve" }),
       "/p",
@@ -246,7 +246,7 @@ describe("run config → launch config", () => {
       rc({ kind: "go", command: "go", args: ["test", "./..."], debugAdapter: "delve" }),
       "/p",
     )!;
-    expect(extra(test)).toEqual({ mode: "test" });
+    expect(extra(test)).toEqual({ mode: "test", __goToolArgs: [], __goUseTags: true });
     expect(test.program).toBe("/p");
     // A gutter test / subtest: the package, and `-run` for the test binary.
     const one = launchConfigFor(
@@ -397,4 +397,20 @@ it("netcoredbg launches the evaluated DLL with resolved profile arguments, env a
   });
   expect(launchConfigFor({ ...c, params: { ...c.params, programArgs: "" } }, "/repo")?.args).toEqual(["--profile"]);
   expect(launchConfigFor({ ...c, params: {} }, "/repo")).toBeNull();
+});
+
+it("raw and typed Go debug configurations inherit custom tags unless explicitly disabled", () => {
+  for (const typed of [false, true]) {
+    for (const useTags of [undefined, "true", "false"]) {
+      const params = {
+        ...(typed ? { goKind: "test", scope: "package", target: "." } : {}),
+        ...(useTags === undefined ? {} : { useTags }),
+      };
+      const launch = launchConfigFor(
+        rc({ kind: "go", command: "go", args: ["test", "-tags=explicit", "."], debugAdapter: "delve", params }),
+        "/p",
+      )!;
+      expect(extra(launch).__goUseTags).toBe(useTags !== "false");
+    }
+  }
 });
