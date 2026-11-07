@@ -22,6 +22,230 @@ fn invalid(e: impl std::fmt::Display) -> IdeError {
 #[serde(rename_all = "camelCase")]
 pub struct TomcatHome {
     pub version: String,
+    #[serde(default)]
+    pub libraries: Vec<String>,
+    #[serde(default)]
+    pub tomee: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub http_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub https_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub ajp_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub shutdown_port: Option<u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TomcatInstallation {
+    pub path: String,
+    pub version: String,
+    #[serde(default)]
+    pub libraries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub tomee: bool,
+}
+
+pub fn is_tomee(home: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(home.join("lib")) else { return false };
+    entries.flatten().any(|e| {
+        e.path().file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            let lower = n.to_ascii_lowercase();
+            lower.ends_with(".jar") && (lower.starts_with("tomee-") || lower.starts_with("openejb-core-"))
+        })
+    })
+}
+
+pub fn read_server_xml_ports(xml: &str) -> (Option<u16>, Option<u16>, Option<u16>, Option<u16>) {
+    let mut reader = Reader::from_str(xml);
+    let mut http = None;
+    let mut https = None;
+    let mut ajp = None;
+    let mut shutdown = None;
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Eof => break,
+            Event::Start(ref tag) | Event::Empty(ref tag) => {
+                let name = tag.name().as_ref().to_owned();
+                let attrs: Vec<(String, String)> = tag
+                    .attributes()
+                    .filter_map(|a| {
+                        let a = a.ok()?;
+                        let v = a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok()?.into_owned();
+                        Some((a.key.as_ref().to_owned(), v))
+                    })
+                    .collect();
+                let attr_val =
+                    |k: &str| attrs.iter().find(|(key, _)| key.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str());
+                let port = attr_val("port").and_then(|p| p.parse::<u16>().ok()).filter(|&p| p > 0);
+                if name == "Server" && shutdown.is_none() {
+                    shutdown = port;
+                } else if name == "Connector" {
+                    let protocol = attr_val("protocol").unwrap_or_default();
+                    let ssl = attr_val("SSLEnabled").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+                        || attr_val("scheme").is_some_and(|v| v.eq_ignore_ascii_case("https"))
+                        || attr_val("secure").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+                    let is_ajp = protocol.to_ascii_uppercase().contains("AJP");
+                    if ssl && https.is_none() {
+                        https = port;
+                    } else if is_ajp && ajp.is_none() {
+                        ajp = port;
+                    } else if http.is_none()
+                        && (protocol.is_empty() || protocol.contains("HTTP") || protocol.contains("Http"))
+                    {
+                        http = port;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (http, https, ajp, shutdown)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdeaTomcatServer {
+    pub name: String,
+    pub home: PathBuf,
+    pub base: Option<PathBuf>,
+    pub libraries: Vec<String>,
+}
+
+pub fn parse_idea_app_servers(xml: &str, user_home: &Path) -> Vec<IdeaTomcatServer> {
+    let home_str = user_home.to_string_lossy();
+    let expand = |raw: &str| -> String { raw.replace("$USER_HOME$", &home_str) };
+    let mut reader = Reader::from_str(xml);
+    let mut servers: Vec<IdeaTomcatServer> = Vec::new();
+    let mut lib_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut cur_server_name: Option<String> = None;
+    let mut cur_integration: Option<String> = None;
+    let mut cur_home: Option<String> = None;
+    let mut cur_base: Option<String> = None;
+    let mut cur_lib_name: Option<String> = None;
+    let mut in_classes = false;
+
+    while let Ok(event) = reader.read_event() {
+        match event {
+            Event::Eof => break,
+            Event::Start(ref tag) | Event::Empty(ref tag) => {
+                let tag_name = tag.name().as_ref().to_owned();
+                let attr = |key: &str| -> Option<String> {
+                    tag.attributes().flatten().find(|a| a.key.as_ref().eq_ignore_ascii_case(key)).and_then(|a| {
+                        a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.into_owned())
+                    })
+                };
+                match tag_name.as_str() {
+                    "ServerDK" => {
+                        cur_server_name = attr("NAME");
+                        cur_integration = None;
+                        cur_home = None;
+                        cur_base = None;
+                    }
+                    "option" if cur_server_name.is_some() => {
+                        if let (Some(n), Some(v)) = (attr("name"), attr("value")) {
+                            match n.as_str() {
+                                "SOURCE_INTEGRATION_NAME" | "INTEGRATION_ID" => cur_integration = Some(v),
+                                "CATALINA_HOME" if !v.trim().is_empty() => cur_home = Some(expand(v.trim())),
+                                "CATALINA_BASE" if !v.trim().is_empty() => cur_base = Some(expand(v.trim())),
+                                _ => {}
+                            }
+                        }
+                    }
+                    "library" => {
+                        cur_lib_name = attr("name");
+                    }
+                    "CLASSES" if cur_lib_name.is_some() => {
+                        in_classes = true;
+                    }
+                    "root" if in_classes && cur_lib_name.is_some() => {
+                        if let Some(url) = attr("url") {
+                            let cleaned =
+                                url.strip_prefix("jar://").or_else(|| url.strip_prefix("file://")).unwrap_or(&url);
+                            let cleaned = cleaned.strip_suffix("!/").unwrap_or(cleaned);
+                            let expanded = expand(cleaned);
+                            if !expanded.is_empty()
+                                && let Some(ref lib_name) = cur_lib_name
+                            {
+                                lib_map.entry(lib_name.clone()).or_default().push(expanded);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::End(ref tag) => match tag.name().as_ref() {
+                "ServerDK" => {
+                    let is_tomcat =
+                        cur_integration.as_deref().is_none_or(|i| i.contains("Tomcat") || i.contains("TomEE"));
+                    if is_tomcat && let (Some(name), Some(home)) = (cur_server_name.take(), cur_home.take()) {
+                        servers.push(IdeaTomcatServer {
+                            name,
+                            home: PathBuf::from(home),
+                            base: cur_base.take().map(PathBuf::from),
+                            libraries: Vec::new(),
+                        });
+                    }
+                    cur_server_name = None;
+                    cur_integration = None;
+                    cur_home = None;
+                    cur_base = None;
+                }
+                "CLASSES" => {
+                    in_classes = false;
+                }
+                "library" => {
+                    cur_lib_name = None;
+                    in_classes = false;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    for srv in &mut servers {
+        if let Some(libs) = lib_map.remove(&srv.name) {
+            srv.libraries = libs;
+        }
+    }
+    servers
+}
+
+pub fn discover_tomcat_libraries(home: &Path) -> Vec<String> {
+    let lib_dir = home.join("lib");
+    let mut out = Vec::new();
+    for preferred in ["jsp-api.jar", "servlet-api.jar"] {
+        let p = lib_dir.join(preferred);
+        if p.is_file() {
+            out.push(p.to_string_lossy().into_owned());
+        }
+    }
+    if let Ok(entries) = fs::read_dir(&lib_dir) {
+        let mut extras: Vec<String> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with("-api.jar") && !matches!(n, "jsp-api.jar" | "servlet-api.jar"))
+            })
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        extras.sort();
+        out.extend(extras);
+    }
+    out
 }
 
 pub fn validate_home(home: &Path) -> IdeResult<TomcatHome> {
@@ -35,13 +259,150 @@ pub fn validate_home(home: &Path) -> IdeResult<TomcatHome> {
     jar.by_name("org/apache/catalina/util/ServerInfo.properties").map_err(invalid)?.read_to_string(&mut properties)?;
     let version =
         properties.lines().find_map(|l| l.strip_prefix("server.info=")).unwrap_or("Apache Tomcat").trim().to_owned();
-    Ok(TomcatHome { version })
+    let libraries = discover_tomcat_libraries(home);
+    let tomee = is_tomee(home);
+    let (http_port, https_port, ajp_port, shutdown_port) = fs::read_to_string(home.join("conf/server.xml"))
+        .ok()
+        .map(|xml| read_server_xml_ports(&xml))
+        .unwrap_or((None, None, None, None));
+    Ok(TomcatHome { version, libraries, tomee, http_port, https_port, ajp_port, shutdown_port })
+}
+
+pub fn detect_installations() -> Vec<TomcatInstallation> {
+    let mut seen = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    let user_home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+
+    if let Some(ref home) = user_home {
+        let mut jetbrains_roots =
+            vec![home.join("Library/Application Support/JetBrains"), home.join(".config/JetBrains")];
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            jetbrains_roots.push(PathBuf::from(appdata).join("JetBrains"));
+        }
+        for jb_root in jetbrains_roots {
+            let Ok(entries) = fs::read_dir(&jb_root) else { continue };
+            let mut idea_dirs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with("IntelliJIdea") || n.starts_with("IdeaIC"))
+                })
+                .collect();
+            idea_dirs.sort_by(|a, b| b.cmp(a));
+            for dir in idea_dirs {
+                let xml_path = dir.join("options/javaeeAppServers.xml");
+                let Ok(xml) = fs::read_to_string(&xml_path) else { continue };
+                for srv in parse_idea_app_servers(&xml, home) {
+                    let Ok(canon) = dunce::canonicalize(&srv.home) else { continue };
+                    if !seen.insert(canon.clone()) {
+                        continue;
+                    }
+                    if let Ok(info) = validate_home(&canon) {
+                        let base = srv
+                            .base
+                            .and_then(|b| dunce::canonicalize(b).ok())
+                            .filter(|b| b != &canon)
+                            .map(|b| b.to_string_lossy().into_owned());
+                        let libraries = if srv.libraries.is_empty() { info.libraries } else { srv.libraries };
+                        found.push(TomcatInstallation {
+                            path: canon.to_string_lossy().into_owned(),
+                            version: info.version,
+                            libraries,
+                            name: Some(srv.name).filter(|s| !s.trim().is_empty()),
+                            base,
+                            tomee: info.tomee,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for var in ["CATALINA_HOME", "TOMCAT_HOME"] {
+        if let Some(val) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+            candidates.push(PathBuf::from(val));
+        }
+    }
+    for brew_opt in ["/opt/homebrew/opt", "/usr/local/opt"] {
+        let opt = Path::new(brew_opt);
+        if let Ok(entries) = fs::read_dir(opt) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("tomcat") {
+                    candidates.push(entry.path().join("libexec"));
+                    candidates.push(entry.path());
+                }
+            }
+        }
+    }
+    let mut roots = vec![
+        PathBuf::from("/Library"),
+        PathBuf::from("/opt"),
+        PathBuf::from("/usr/share"),
+        PathBuf::from("/usr/local"),
+        PathBuf::from("C:/Program Files/Apache Software Foundation"),
+        PathBuf::from("C:/"),
+    ];
+    if let Some(ref home) = user_home {
+        roots.push(home.join("Documents/tomcat"));
+        roots.push(home.join("Documents"));
+        roots.push(home.join("Downloads"));
+        roots.push(home.join("Library"));
+        roots.push(home.clone());
+    }
+    for root in roots {
+        let Ok(entries) = fs::read_dir(&root) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if name.starts_with("tomcat") || name.starts_with("apache-tomcat") || name.starts_with("apache-tomee") {
+                candidates.push(entry.path());
+                candidates.push(entry.path().join("libexec"));
+            }
+        }
+    }
+    for candidate in candidates {
+        let Ok(canon) = dunce::canonicalize(&candidate) else { continue };
+        if !seen.insert(canon.clone()) {
+            continue;
+        }
+        if let Ok(info) = validate_home(&canon) {
+            found.push(TomcatInstallation {
+                path: canon.to_string_lossy().into_owned(),
+                version: info.version,
+                libraries: info.libraries,
+                name: None,
+                base: None,
+                tomee: info.tomee,
+            });
+        }
+    }
+    found
 }
 
 pub fn base_dir(cache: &Path, id: &str) -> PathBuf {
     // Stable and collision-free for configuration IDs, including Windows path characters.
     let key: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
     cache.join("tomcat").join(key)
+}
+
+pub fn effective_base_dir(root: &Path, cache: &Path, config: &RunConfig) -> PathBuf {
+    if let Some(custom) = config.extras.params.get("tomcatBase").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let candidate = root.join(custom);
+        let same_as_home =
+            config.extras.params.get("tomcatHome").map(|s| s.trim()).filter(|s| !s.is_empty()).is_some_and(|h| {
+                let home = root.join(h);
+                home == candidate
+                    || (dunce::canonicalize(&home).ok().zip(dunce::canonicalize(&candidate).ok()))
+                        .is_some_and(|(a, b)| a == b)
+            });
+        if !same_as_home {
+            return candidate;
+        }
+    }
+    base_dir(cache, &config.id)
 }
 
 pub fn free_port() -> IdeResult<u16> {
@@ -93,6 +454,20 @@ pub fn deployed_context_xml(doc_base: &Path, reload: bool) -> String {
     })
 }
 
+pub fn deployed_context_xml_with_descriptor(
+    doc_base: &Path,
+    custom_descriptor: Option<&Path>,
+    reload: bool,
+) -> IdeResult<String> {
+    let Some(custom) = custom_descriptor else {
+        return Ok(deployed_context_xml(doc_base, reload));
+    };
+    let text = fs::read_to_string(custom)
+        .map_err(|e| invalid(format!("Cannot read context descriptor {}: {e}", custom.display())))?;
+    merge_context_xml(&text, doc_base, reload)
+        .map_err(|e| invalid(format!("Invalid context descriptor {}: {e}", custom.display())))
+}
+
 fn merge_context_xml(app: &str, doc_base: &Path, reload: bool) -> IdeResult<String> {
     let mut reader = Reader::from_str(app);
     let mut writer = Writer::new(Vec::new());
@@ -127,10 +502,24 @@ fn merge_context_xml(app: &str, doc_base: &Path, reload: bool) -> IdeResult<Stri
     String::from_utf8(writer.into_inner()).map_err(invalid)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TomcatPorts {
+    pub http: u16,
+    pub https: Option<u16>,
+    pub ajp: Option<u16>,
+    pub shutdown: u16,
+}
+
 pub fn patch_server_xml(xml: &str, http: u16, shutdown: u16, secret: &str) -> IdeResult<String> {
+    patch_server_xml_with_ports(xml, TomcatPorts { http, https: None, ajp: None, shutdown }, secret)
+}
+
+pub fn patch_server_xml_with_ports(xml: &str, ports: TomcatPorts, secret: &str) -> IdeResult<String> {
     let mut reader = Reader::from_str(xml);
     let mut writer = Writer::new(Vec::new());
     let mut http_found = false;
+    let mut https_found = false;
+    let mut ajp_found = false;
     loop {
         let event = reader.read_event().map_err(invalid)?;
         if matches!(event, Event::Eof) {
@@ -149,27 +538,45 @@ pub fn patch_server_xml(xml: &str, http: u16, shutdown: u16, secret: &str) -> Id
                         ))
                     })
                     .collect::<IdeResult<_>>()?;
+                let (protocol, ssl, ajp) = {
+                    let attr_val =
+                        |k: &str| attrs.iter().find(|(key, _)| key.eq_ignore_ascii_case(k)).map(|(_, v)| v.as_str());
+                    let protocol = attr_val("protocol").unwrap_or_default().to_owned();
+                    let ssl = attr_val("SSLEnabled").is_some_and(|v| v.eq_ignore_ascii_case("true"))
+                        || attr_val("scheme").is_some_and(|v| v.eq_ignore_ascii_case("https"))
+                        || attr_val("secure").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+                    let ajp = protocol.to_ascii_uppercase().contains("AJP");
+                    (protocol, ssl, ajp)
+                };
                 let mut set = |key: &str, value: String| {
                     attrs.retain(|(k, _)| k != key);
                     attrs.push((key.into(), value));
                 };
                 match name.as_str() {
                     "Server" => {
-                        set("port", shutdown.to_string());
+                        set("port", ports.shutdown.to_string());
                         set("address", "127.0.0.1".into());
                         set("shutdown", secret.into());
                     }
                     "Connector" => {
-                        let protocol = tag
-                            .try_get_attribute("protocol")
-                            .map_err(invalid)?
-                            .map(|a| a.value.into_owned())
-                            .unwrap_or_default();
-                        let is_http = !http_found
-                            && (protocol.is_empty() || protocol.contains("HTTP") || protocol.contains("Http"));
-                        set("port", if is_http { http } else { free_port()? }.to_string());
-                        if is_http {
+                        if ssl && !https_found {
+                            let p = ports.https.map_or_else(free_port, Ok)?;
+                            set("port", p.to_string());
+                            https_found = true;
+                        } else if ajp && !ajp_found {
+                            let p = ports.ajp.map_or_else(free_port, Ok)?;
+                            set("port", p.to_string());
+                            ajp_found = true;
+                        } else if !http_found
+                            && (protocol.is_empty() || protocol.contains("HTTP") || protocol.contains("Http"))
+                        {
+                            set("port", ports.http.to_string());
                             http_found = true;
+                            if let Some(https_port) = ports.https {
+                                set("redirectPort", https_port.to_string());
+                            }
+                        } else {
+                            set("port", free_port()?.to_string());
                         }
                     }
                     "Engine" => set("name", "Catalina".into()),
@@ -460,13 +867,89 @@ pub fn script_command(home: &Path, windows: bool, verb: &str) -> (String, Vec<St
     }
 }
 
+fn parse_optional_port(
+    params: &std::collections::BTreeMap<String, String>,
+    key: &str,
+    label: &str,
+) -> IdeResult<Option<u16>> {
+    let Some(raw) = params.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let port: u16 = raw.parse().map_err(|_| invalid(format!("{label} must be between 1 and 65535")))?;
+    if port == 0 {
+        return Err(invalid(format!("{label} must be between 1 and 65535")));
+    }
+    Ok(Some(port))
+}
+
+pub fn patch_catalina_properties(props: &str, extra_jars: &[String]) -> String {
+    if extra_jars.is_empty() {
+        return props.to_owned();
+    }
+    let suffix: String = extra_jars.iter().map(|j| format!(",\"{}\"", j.replace('\\', "/"))).collect();
+    let mut patched = false;
+    let mut lines: Vec<String> = props
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("common.loader=") && !l.ends_with('\\') {
+                patched = true;
+                format!("{l}{suffix}")
+            } else {
+                l.to_owned()
+            }
+        })
+        .collect();
+    if !patched {
+        lines.push(format!("common.loader=\"${{catalina.base}}/lib\",\"${{catalina.base}}/lib/*.jar\",\"${{catalina.home}}/lib\",\"${{catalina.home}}/lib/*.jar\"{suffix}"));
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LogConfigItem {
+    pattern: String,
+    active: bool,
+    skip_content: bool,
+}
+
+fn truncate_skipped_logs(base: &Path, raw_logs: Option<&str>) {
+    let logs_dir = base.join("logs");
+    let Ok(entries) = fs::read_dir(&logs_dir) else { return };
+    let prefixes: Vec<String> = match raw_logs.and_then(|s| serde_json::from_str::<Vec<LogConfigItem>>(s).ok()) {
+        Some(items) => items
+            .into_iter()
+            .filter(|i| i.active && i.skip_content)
+            .filter_map(|i| {
+                let file_part = i.pattern.rsplit('/').next().unwrap_or(&i.pattern);
+                file_part.split('*').next().map(|p| p.trim().to_owned()).filter(|p| !p.is_empty())
+            })
+            .collect(),
+        None => vec!["localhost.".into(), "catalina.".into()],
+    };
+    if prefixes.is_empty() {
+        return;
+    }
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && prefixes.iter().any(|pref| name.starts_with(pref))
+        {
+            let _ = fs::write(&path, b"");
+        }
+    }
+}
+
 pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<()> {
     // Batch scripts and their environment variables require ordinary Windows paths.
     let home = dunce::canonicalize(root.join(
         config.extras.params.get("tomcatHome").ok_or_else(|| invalid("Choose a Tomcat installation directory"))?,
     ))?;
     validate_home(&home)?;
-    let base = base_dir(cache, &config.id);
+    let base = effective_base_dir(root, cache, config);
     fs::create_dir_all(&base)?;
     let base = dunce::canonicalize(&base)?;
     let doc = deployment(root, &base, config, false)?;
@@ -477,7 +960,11 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     if port == 0 {
         return Err(invalid("HTTP port must be between 1 and 65535"));
     }
-    let shutdown = free_port()?;
+    let https = parse_optional_port(&config.extras.params, "httpsPort", "HTTPS port")?;
+    let ajp = parse_optional_port(&config.extras.params, "ajpPort", "AJP port")?;
+    let shutdown =
+        parse_optional_port(&config.extras.params, "shutdownPort", "Shutdown port")?.map_or_else(free_port, Ok)?;
+    let jmx = parse_optional_port(&config.extras.params, "jmxPort", "JMX port")?.map_or_else(free_port, Ok)?;
     let secret = format!(
         "OPENIDEA_{}_{}",
         std::process::id(),
@@ -495,10 +982,20 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     for dir in ["logs", "temp", "work", "webapps", "conf/Catalina/localhost"] {
         fs::create_dir_all(base.join(dir))?;
     }
-    let server = patch_server_xml(&fs::read_to_string(home.join("conf/server.xml"))?, port, shutdown, &secret)?;
+    if config.extras.params.get("deployTomcatApps").is_some_and(|v| v == "true") && home.join("webapps").is_dir() {
+        copy_tree(&home.join("webapps"), &base.join("webapps"))?;
+    }
+    let server = patch_server_xml_with_ports(
+        &fs::read_to_string(home.join("conf/server.xml"))?,
+        TomcatPorts { http: port, https, ajp, shutdown },
+        &secret,
+    )?;
     fs::write(base.join("conf/server.xml"), server)?;
     let debug = config.extras.params.get("tomcatDebug").is_some_and(|v| v == "true");
-    fs::write(contexts.join(format!("{context}.xml")), deployed_context_xml(&doc, !debug))?;
+    let custom_descriptor =
+        config.extras.params.get("contextDescriptor").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| root.join(s));
+    let context_xml_content = deployed_context_xml_with_descriptor(&doc, custom_descriptor.as_deref(), !debug)?;
+    fs::write(contexts.join(format!("{context}.xml")), context_xml_content)?;
     config.env.insert("CATALINA_HOME".into(), home.to_string_lossy().into_owned());
     config.env.insert("CATALINA_BASE".into(), base.to_string_lossy().into_owned());
     if let Some(jre) = config.extras.params.get("jre").filter(|s| !s.trim().is_empty()) {
@@ -509,19 +1006,81 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
         config.env.insert("JRE_HOME".into(), java);
     }
     let vm = config.extras.params.get("vmOptions").cloned().unwrap_or_default();
-    let jmx = free_port()?;
     let mut opts = config.env.get("CATALINA_OPTS").cloned().unwrap_or_default();
     opts.push_str(&format!(" {vm} -Dcom.sun.management.jmxremote.port={jmx} -Dcom.sun.management.jmxremote.rmi.port={jmx} -Dcom.sun.management.jmxremote.host=127.0.0.1 -Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"));
+    if config.extras.params.get("preserveSessions") != Some(&"true".into()) {
+        opts.push_str(" -Dorg.apache.catalina.session.StandardManager.PATHNAME=");
+    }
     if debug {
-        opts.push_str(" -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:0");
+        let jdwp_port = parse_optional_port(&config.extras.params, "debugPort", "Debug port")?.unwrap_or(0);
+        opts.push_str(&format!(" -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:{jdwp_port}"));
     }
     config.env.insert("CATALINA_OPTS".into(), opts);
-    (config.command, config.args) = script_command(&home, cfg!(windows), "run");
-    config.extras.stop_command = Some(if cfg!(windows) {
-        script_command(&home, true, "stop").0
+    truncate_skipped_logs(&base, config.extras.params.get("tomcatLogs").map(String::as_str));
+    if let Some(libs) = config.extras.params.get("tomcatLibraries").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let lib_items: Vec<String> =
+            libs.split([';', ':']).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+        let joined = lib_items.join(sep);
+        if !joined.is_empty() {
+            config.env.insert("CLASSPATH".into(), joined);
+        }
+        let home_lib = home.join("lib");
+        let extra_jars: Vec<String> = lib_items.into_iter().filter(|j| !Path::new(j).starts_with(&home_lib)).collect();
+        let cat_props_path = base.join("conf/catalina.properties");
+        if !extra_jars.is_empty()
+            && let Ok(props) = fs::read_to_string(&cat_props_path)
+        {
+            fs::write(&cat_props_path, patch_catalina_properties(&props, &extra_jars))?;
+        }
+    }
+    if config.extras.params.get("passEnvVars").map(String::as_str) != Some("false") {
+        let env_key = if debug { "startupEnvDebug" } else { "startupEnvRun" };
+        if let Some(raw_env) = config.extras.params.get(env_key).or_else(|| config.extras.params.get("startupEnv")) {
+            for pair in raw_env.split('\n').map(str::trim).filter(|s| !s.is_empty()) {
+                if let Some((k, v)) = pair.split_once('=') {
+                    let k = k.trim();
+                    if !k.is_empty() && !v.is_empty() {
+                        config.env.insert(k.to_owned(), v.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    let use_custom_start = config.extras.params.get("useDefaultStartup").map(String::as_str) != Some("true");
+    if use_custom_start
+        && let Some(custom_start) =
+            config.extras.params.get("startupScript").map(|s| s.trim()).filter(|s| !s.is_empty())
+    {
+        let script = root.join(custom_start);
+        if cfg!(windows) {
+            config.command = format!("\"{}\"", script.display());
+            config.args = vec![];
+        } else {
+            config.command = "sh".into();
+            config.args = vec![script.to_string_lossy().into_owned()];
+        }
     } else {
-        format!("sh '{}' stop", home.join("bin/catalina.sh").to_string_lossy().replace('\'', "'\\''"))
-    });
+        (config.command, config.args) = script_command(&home, cfg!(windows), "run");
+    }
+    let use_custom_stop = config.extras.params.get("useDefaultShutdown").map(String::as_str) != Some("true");
+    config.extras.stop_command = Some(
+        if use_custom_stop
+            && let Some(custom_stop) =
+                config.extras.params.get("shutdownScript").map(|s| s.trim()).filter(|s| !s.is_empty())
+        {
+            let script = root.join(custom_stop);
+            if cfg!(windows) {
+                format!("\"{}\"", script.display())
+            } else {
+                format!("sh '{}'", script.to_string_lossy().replace('\'', "'\\''"))
+            }
+        } else if cfg!(windows) {
+            script_command(&home, true, "stop").0
+        } else {
+            format!("sh '{}' stop", home.join("bin/catalina.sh").to_string_lossy().replace('\'', "'\\''"))
+        },
+    );
     config.extras.emulate_terminal = false;
     Ok(())
 }
@@ -530,7 +1089,7 @@ pub fn update(root: &Path, cache: &Path, config: &RunConfig, mode: &str) -> IdeR
     if !matches!(mode, "resources" | "classes" | "redeploy") {
         return Err(invalid("Unknown Tomcat update operation"));
     }
-    let base = base_dir(cache, &config.id);
+    let base = effective_base_dir(root, cache, config);
     let doc = deployment(root, &base, config, mode == "resources")?;
     let context = context_name(&effective_context(config, &doc))?;
     let file = base.join("conf/Catalina/localhost").join(format!("{context}.xml"));
@@ -892,5 +1451,146 @@ mod tests {
         assert!(!c.extras.stop_command.as_ref().unwrap().contains(r"\\?\"));
         assert!(c.env.values().all(|value| !value.contains(r"\\?\")));
         assert!(!fs::read_to_string(context).unwrap().contains(r"\\?\"));
+    }
+
+    #[test]
+    fn supports_idea_custom_base_ports_context_descriptor_and_instance_webapps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("Tomcat Home");
+        fs::create_dir_all(home.join("bin")).unwrap();
+        fs::create_dir_all(home.join("conf")).unwrap();
+        fs::create_dir_all(home.join("webapps/manager")).unwrap();
+        fs::write(home.join("webapps/manager/index.html"), "manager").unwrap();
+        fs::create_dir_all(root.join("WebRoot")).unwrap();
+        fs::write(home.join("bin/catalina.sh"), "").unwrap();
+        fs::write(home.join("bin/catalina.bat"), "").unwrap();
+        archive(
+            &home.join("lib/catalina.jar"),
+            &[("org/apache/catalina/util/ServerInfo.properties", "server.info=Apache Tomcat/10.1")],
+        );
+        fs::write(home.join("lib/jsp-api.jar"), "").unwrap();
+        fs::write(home.join("lib/servlet-api.jar"), "").unwrap();
+        let validated = validate_home(&home).unwrap();
+        assert_eq!(validated.libraries.len(), 2);
+        assert!(validated.libraries[0].ends_with("jsp-api.jar"));
+        assert!(validated.libraries[1].ends_with("servlet-api.jar"));
+        let server = "<Server port='8005'><Service><Connector port='8080' protocol='HTTP/1.1'/><Connector port='8443' protocol='HTTP/1.1' SSLEnabled='true'/><Connector port='8009' protocol='AJP/1.3'/><Engine name='Catalina'><Host name='localhost'/></Engine></Service></Server>";
+        fs::write(home.join("conf/server.xml"), server).unwrap();
+        fs::write(
+            root.join("custom-context.xml"),
+            "<Context privileged=\"true\"><Parameter name=\"env\" value=\"dev\"/></Context>",
+        )
+        .unwrap();
+
+        let mut c = config();
+        for (k, v) in [
+            ("tomcatHome", "Tomcat Home"),
+            ("tomcatBase", "custom-base"),
+            ("deployment", "directory"),
+            ("deploymentPath", "WebRoot"),
+            ("contextPath", "/app"),
+            ("contextDescriptor", "custom-context.xml"),
+            ("httpPort", "18080"),
+            ("httpsPort", "18443"),
+            ("ajpPort", "18009"),
+            ("shutdownPort", "18005"),
+            ("jmxPort", "11099"),
+            ("deployTomcatApps", "true"),
+            ("preserveSessions", "false"),
+        ] {
+            c.extras.params.insert(k.into(), v.into());
+        }
+        let cache = root.join("cache");
+        prepare(root, &cache, &mut c).unwrap();
+
+        let base = PathBuf::from(&c.env["CATALINA_BASE"]);
+        assert_eq!(base, dunce::canonicalize(root.join("custom-base")).unwrap());
+        let patched_server = fs::read_to_string(base.join("conf/server.xml")).unwrap();
+        assert!(patched_server.contains("port=\"18005\""));
+        assert!(patched_server.contains("port=\"18080\""));
+        assert!(patched_server.contains("redirectPort=\"18443\""));
+        assert!(patched_server.contains("port=\"18443\""));
+        assert!(patched_server.contains("port=\"18009\""));
+        assert!(base.join("webapps/manager/index.html").is_file());
+        let ctx_xml = fs::read_to_string(base.join("conf/Catalina/localhost/app.xml")).unwrap();
+        assert!(ctx_xml.contains("privileged=\"true\""));
+        assert!(ctx_xml.contains("<Parameter name=\"env\" value=\"dev\"/>"));
+        assert!(c.env["CATALINA_OPTS"].contains("-Dcom.sun.management.jmxremote.port=11099"));
+        assert!(c.env["CATALINA_OPTS"].contains("-Dorg.apache.catalina.session.StandardManager.PATHNAME="));
+    }
+
+    #[test]
+    fn imports_idea_app_servers_detects_tomee_reads_server_xml_ports_and_patches_catalina_properties() {
+        let idea_xml = r#"<application>
+  <component name="AppserversManager">
+    <ServerDK NAME="Tomcat 9.0.78">
+      <option name="SOURCE_INTEGRATION_NAME" value="Tomcat Server" />
+      <DATA>
+        <option name="CATALINA_HOME" value="$USER_HOME$/Documents/tomcat/apache-tomcat-9.0.82" />
+        <option name="CATALINA_BASE" value="" />
+      </DATA>
+    </ServerDK>
+    <ServerDK NAME="Tomcat10">
+      <option name="SOURCE_INTEGRATION_NAME" value="Tomcat Server" />
+      <DATA>
+        <option name="CATALINA_HOME" value="$USER_HOME$/Documents/tomcat/apache-tomcat-10.1.57" />
+        <option name="CATALINA_BASE" value="$USER_HOME$/Documents/tomcat/base-10" />
+      </DATA>
+    </ServerDK>
+    <LibraryTable>
+      <library name="Tomcat10">
+        <CLASSES>
+          <root url="jar://$USER_HOME$/Documents/tomcat/apache-tomcat-10.1.57/lib/jsp-api.jar!/" />
+          <root url="jar://$USER_HOME$/Documents/tomcat/apache-tomcat-10.1.57/lib/servlet-api.jar!/" />
+        </CLASSES>
+      </library>
+    </LibraryTable>
+  </component>
+</application>"#;
+        let parsed = parse_idea_app_servers(idea_xml, Path::new("/Users/demo"));
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "Tomcat 9.0.78");
+        assert_eq!(parsed[0].home, PathBuf::from("/Users/demo/Documents/tomcat/apache-tomcat-9.0.82"));
+        assert_eq!(parsed[0].base, None);
+        assert_eq!(parsed[1].name, "Tomcat10");
+        assert_eq!(parsed[1].home, PathBuf::from("/Users/demo/Documents/tomcat/apache-tomcat-10.1.57"));
+        assert_eq!(parsed[1].base, Some(PathBuf::from("/Users/demo/Documents/tomcat/base-10")));
+        assert_eq!(
+            parsed[1].libraries,
+            vec![
+                "/Users/demo/Documents/tomcat/apache-tomcat-10.1.57/lib/jsp-api.jar",
+                "/Users/demo/Documents/tomcat/apache-tomcat-10.1.57/lib/servlet-api.jar",
+            ]
+        );
+
+        let server_xml = "<Server port='8005'><Service><Connector port='8080' protocol='HTTP/1.1'/><Connector port='8443' SSLEnabled='true'/><Connector port='8009' protocol='AJP/1.3'/></Service></Server>";
+        assert_eq!(read_server_xml_ports(server_xml), (Some(8080), Some(8443), Some(8009), Some(8005)));
+
+        let patched_props = patch_catalina_properties(
+            "package.access=sun.\ncommon.loader=\"${catalina.base}/lib\",\"${catalina.home}/lib/*.jar\"\n",
+            &["/opt/extra/driver.jar".into()],
+        );
+        assert!(patched_props.contains(
+            "common.loader=\"${catalina.base}/lib\",\"${catalina.home}/lib/*.jar\",\"/opt/extra/driver.jar\""
+        ));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("tomee");
+        fs::create_dir_all(home.join("bin")).unwrap();
+        fs::create_dir_all(home.join("conf")).unwrap();
+        fs::write(home.join("bin/catalina.sh"), "").unwrap();
+        archive(
+            &home.join("lib/catalina.jar"),
+            &[("org/apache/catalina/util/ServerInfo.properties", "server.info=Apache Tomcat (TomEE)/9.0.82\n")],
+        );
+        fs::write(home.join("lib/tomee-catalina-9.1.2.jar"), "").unwrap();
+        fs::write(home.join("conf/server.xml"), server_xml).unwrap();
+        let info = validate_home(&home).unwrap();
+        assert!(info.tomee);
+        assert_eq!(info.http_port, Some(8080));
+        assert_eq!(info.https_port, Some(8443));
+        assert_eq!(info.ajp_port, Some(8009));
+        assert_eq!(info.shutdown_port, Some(8005));
     }
 }

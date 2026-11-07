@@ -58,6 +58,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-binary";
     case "spring-boot":
       return "spring-boot";
+    case "tomcat":
+    case "tomcat-remote":
+      return "tomcat";
     case "npm":
     case "bun":
       return "file-npm";
