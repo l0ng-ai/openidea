@@ -81,6 +81,16 @@ describe("Build and run using: Gradle", () => {
     ]);
   });
 
+  it("Rebuild cleans the module before the Gradle run", () => {
+    const app = applicationConfig(
+      { className: "com.example.ShopApplication" },
+      `${CORE}/src/main/java/com/example/ShopApplication.java`,
+      [],
+    );
+    const run = delegatedGradleConfig({ ...app, buildPolicy: "rebuild" }, CORE, ctx)!;
+    expect(run.args.slice(-2)).toEqual([":billing:core:clean", ":billing:core:openideaRun"]);
+  });
+
   it("uses the test classpath, a project-relative module and offline mode", () => {
     const test = applicationConfig({ className: "a.Tool" }, "app/src/test/java/a/Tool.java", []);
     const run = delegatedGradleConfig(test, "app", { ...ctx, offline: true })!;

@@ -55,6 +55,8 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   // buildSrc tasks are not addressable from the root build; included builds' are (`:lib:core:…`).
   if (!project || project.build?.endsWith(":buildSrc")) return null;
   const task = project.path === ":" ? `:${TASK}` : `${project.path}:${TASK}`;
+  // IDEA's Rebuild before launch: clean the module's outputs, then run the task.
+  const clean = config.buildPolicy === "rebuild" ? [project.path === ":" ? ":clean" : `${project.path}:clean`] : [];
   const args = [
     "--console=plain",
     "--init-script",
@@ -68,6 +70,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     ...(ctx.offline ? ["--offline"] : []),
     // Problems only warn: a build with incompatible plugins still runs, uncached.
     ...(ctx.configurationCache ? ["--configuration-cache", "--configuration-cache-problems=warn"] : []),
+    ...clean,
     task,
   ];
   // A Gradle run from here on: not an Application again (it would be delegated twice), and

@@ -30,7 +30,13 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
 import type { DebugCapabilities, DebugSessionId } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { hotSwapMenuItems, hotSwapMessage, onHotCodeReplace, reloadChangedClasses } from "../hotswap";
+import {
+  hotSwapFailureBody,
+  hotSwapMenuItems,
+  hotSwapMessage,
+  onHotCodeReplace,
+  reloadChangedClasses,
+} from "../hotswap";
 import { publishContext, useDebug, type DebugSession } from "../state";
 
 function session(id: number, hotCodeReplace: boolean): DebugSession {
@@ -110,6 +116,15 @@ describe("HotSwap", () => {
     await reloadChangedClasses();
     expect(ipc.debugRedefineClasses).not.toHaveBeenCalled();
     expect(notes.at(-1)).toMatchObject({ level: "error", title: "Hot Swap failed" });
+  });
+
+  it("tells an unsupported structural change from an ended session", () => {
+    const structural = hotSwapFailureBody([
+      "java.lang.UnsupportedOperationException: class redefinition failed: attempted to change the schema",
+    ]);
+    expect(structural).toContain("Restart");
+    const ended = hotSwapFailureBody(["Debug session has ended"]);
+    expect(ended).toContain("start the application again");
   });
 
   it("words results like IDEA", () => {

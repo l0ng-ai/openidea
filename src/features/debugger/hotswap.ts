@@ -28,12 +28,26 @@ export function hotSwapMenuItems(paths: readonly string[]): MenuItem[] {
 /** "3 classes", translated per count (the sentence around it is translated on its own). */
 const classesText = (n: number) => (n === 1 ? tx`${n} class` : tx`${n} classes`);
 
+/** What the JVM said, in words that tell the user what to do about it. */
+export function hotSwapFailureBody(errors: string[]): string {
+  const text = errors.join("\n");
+  if (
+    /redefinition failed|attempted to change the schema|JVMTI_ERROR_UNSUPPORTED|UnsupportedOperationException|class file version|does not support/i.test(
+      text,
+    )
+  )
+    return tx`The JVM does not support this structural change (method signature, fields or class hierarchy). Restart the application to load it.\n${text}`;
+  if (/session (?:has )?ended|disconnected|not running|process (?:has )?exited|no such session/i.test(text))
+    return tx`The debug session has ended; start the application again to reload classes.\n${text}`;
+  return text;
+}
+
 /** Message for the reload result (IDEA wording). */
 export function hotSwapMessage(
   changed: number,
   errors: string[],
 ): { level: "info" | "error"; title: string; body?: string } {
-  if (errors.length) return { level: "error", title: "Hot Swap failed", body: errors.join("\n") };
+  if (errors.length) return { level: "error", title: "Hot Swap failed", body: hotSwapFailureBody(errors) };
   if (changed === 0) return { level: "info", title: "Loaded classes are up to date. Nothing to reload." };
   return { level: "info", title: tx`${classesText(changed)} reloaded` };
 }

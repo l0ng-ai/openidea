@@ -109,7 +109,9 @@ export async function syncTomcatOutputs(config: RunConfig, resourcesOnly: boolea
   const artifacts = await call(commands.runTomcatArtifacts());
   const artifact = p.artifact ? artifacts.find((a) => a.id === p.artifact) : artifacts[0];
   if (!artifact) return false;
-  const info = await call(commands.javaResolveLaunch(artifact.module, false, "make", nextRequestId())).catch(() => null);
+  const info = await call(commands.javaResolveLaunch(artifact.module, false, "make", nextRequestId())).catch(
+    () => null,
+  );
   if (!info) return false;
   if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
     throw new Error(tx("Application update build failed"));

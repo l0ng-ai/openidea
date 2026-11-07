@@ -6569,5 +6569,7 @@
   "Rebuild": "重新构建",
   "No build": "不构建",
   "Build, no error check": "构建，不检查错误",
-  "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式"
+  "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式",
+  "The JVM does not support this structural change (method signature, fields or class hierarchy). Restart the application to load it.\n{text}": "JVM 不支持这种结构修改（方法签名、字段或类继承关系）。请重启应用以加载修改。\n{text}",
+  "The debug session has ended; start the application again to reload classes.\n{text}": "调试会话已结束；请重新启动应用以重载类。\n{text}"
 }
