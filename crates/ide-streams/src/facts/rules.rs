@@ -64,7 +64,8 @@ impl<'t> Collector<'_, 't> {
                     self.replace(n, with.clone(), Adjustment::StaticQualified { name: name.into(), with });
                 }
             }
-            "switch_expression" => self.block(Rejection::SwitchExpression),
+            // tree-sitter parses switch statements as `switch_expression` too.
+            "switch_expression" if !is_statement(n) => self.block(Rejection::SwitchExpression),
             "lambda_expression" => self.drop_param_types(n),
             "method_invocation" if ctx == Ctx::Lambda => self.call_in_lambda(n),
             "method_reference" if ctx != Ctx::Nested => self.method_reference(n),
@@ -111,6 +112,10 @@ impl<'t> Collector<'_, 't> {
             })
             .map(|n| self.text(n))
             .collect();
+        // `() ->` is an empty `formal_parameters` too.
+        if names.is_empty() {
+            return;
+        }
         self.replace(params, format!("({})", names.join(", ")), Adjustment::LambdaParamTypesRemoved);
     }
 
@@ -151,6 +156,20 @@ impl<'t> Collector<'_, 't> {
             _ => {}
         }
     }
+}
+
+fn is_statement(n: Node) -> bool {
+    n.parent().is_some_and(|p| match p.kind() {
+        "block"
+        | "switch_block_statement_group"
+        | "labeled_statement"
+        | "if_statement"
+        | "while_statement"
+        | "do_statement" => true,
+        // Their header slots hold expressions.
+        "for_statement" | "enhanced_for_statement" => p.child_by_field_name("body") == Some(n),
+        _ => false,
+    })
 }
 
 /// An identifier naming a variable, not a member after `.`, a declaration,

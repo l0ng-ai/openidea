@@ -57,7 +57,7 @@ pub fn normalize(chain: &StreamChain, _hints: &TypeHints) -> Result<NormalizedCh
     let mut segments: Vec<_> = chain
         .ops
         .iter()
-        .filter(|op| !(op.role == OpRole::Modifier && matches!(op.name.as_str(), "parallel" | "sequential")))
+        .filter(|op| !(sequential && matches!(op.name.as_str(), "parallel" | "sequential")))
         .map(|op| Segment { text: edited(chain, op.span), role: op.role, label: op.name.clone() })
         .collect();
     if sequential {

@@ -115,6 +115,76 @@ fn instanceof_patterns_are_rewritten() {
         plain("nums.stream().map(x -> switch (x % 2) { case 0 -> \"e\"; default -> \"o\"; }).toList()"),
         Err(Rejection::SwitchExpression)
     );
+    assert_eq!(
+        plain("nums.stream().map(x -> this.o instanceof Point q ? q.x() : x).toList()"),
+        Err(Rejection::PatternNotRewritable)
+    );
+    assert_eq!(
+        plain("Stream.of(o instanceof Point q ? q.x() : 0).toList()").unwrap(),
+        "Stream.of(o instanceof Point ? ((Point) o).x() : 0).toList()"
+    );
+}
+
+#[test]
+fn switch_statements_are_allowed() {
+    let chain = "nums.stream().map(x -> { switch (x) { case 0: x = 1; break; default: break; } return x; }).toList()";
+    assert_eq!(plain(chain).unwrap(), chain);
+}
+
+#[test]
+fn patterns_whose_name_is_declared_again_are_rejected() {
+    assert_eq!(
+        plain("nums.stream().map(x -> o instanceof Point q ? q.x() : o instanceof Line q ? q.n() : 0).toList()"),
+        Err(Rejection::PatternNotRewritable)
+    );
+    assert_eq!(
+        plain(
+            "nums.stream().map(x -> (o instanceof Point q ? q.x() : 0) + nums.stream().mapToInt(q -> q).sum()).toList()"
+        ),
+        Err(Rejection::PatternNotRewritable)
+    );
+}
+
+#[test]
+fn parameterless_lambdas_are_not_adjusted() {
+    let n = norm(&in_f("Object r = Stream.generate(() -> 1).limit(2).toList(); // HERE"), &[]).unwrap();
+    assert_eq!(n.plain_text(), "Stream.generate(() -> 1).limit(2).toList()");
+    assert!(n.adjustments.is_empty(), "{:?}", n.adjustments);
+}
+
+#[test]
+fn statics_resolve_to_the_nearest_declaring_class() {
+    assert_eq!(
+        norm(&in_g("Object r = nums.stream().map(x -> twice(x) + K).toList(); // HERE"), &[]).unwrap().plain_text(),
+        "nums.stream().map(x -> Sample.twice(x) + Sample.Inner.K).toList()"
+    );
+    let nested = "class Sample {
+    interface Shapes {
+        int SIDES = 4;
+        static int sq(int v) { return v * v; }
+        default Object h(List<Integer> nums) {
+            return nums.stream().map(x -> x * SIDES + sq(x)).toList(); // HERE
+        }
+    }
+    enum Mode {
+        FAST;
+        void m(List<Integer> nums) {
+            {E}
+        }
+    }
+}
+";
+    assert_eq!(
+        norm(&nested.replace("{E}", ""), &[]).unwrap().plain_text(),
+        "nums.stream().map(x -> x * Sample.Shapes.SIDES + Sample.Shapes.sq(x)).toList()"
+    );
+    let in_enum = nested
+        .replace(" // HERE", "")
+        .replace("{E}", "Object r = nums.stream().filter(x -> this == FAST).toList(); // HERE");
+    assert_eq!(
+        norm(&in_enum, &[]).unwrap().plain_text(),
+        "nums.stream().filter(x -> this == Sample.Mode.FAST).toList()"
+    );
 }
 
 #[test]
@@ -128,6 +198,9 @@ fn parallel_becomes_sequential_before_the_terminal() {
     assert_eq!(labels.len(), 3);
     assert_eq!(plain("nums.parallelStream().count()").unwrap(), "nums.parallelStream().sequential().count()");
     assert_eq!(plain("nums.stream().unordered().count()").unwrap(), "nums.stream().unordered().count()");
+    let sequential = norm(&in_f("Object r = nums.stream().sequential().toList(); // HERE"), &[]).unwrap();
+    assert_eq!(sequential.plain_text(), "nums.stream().sequential().toList()");
+    assert!(sequential.adjustments.is_empty(), "{:?}", sequential.adjustments);
 }
 
 #[test]

@@ -97,38 +97,36 @@ pub(super) fn member_of(scope: Node) -> Node {
 /// Every name `member` declares anywhere, whatever its scope: a name that
 /// may be a local is never qualified as a static, which could change its value.
 pub(super) fn declared_names<'t>(t: &SyntaxTree<'t>, member: Node<'t>) -> HashSet<&'t str> {
-    let mut names = HashSet::new();
-    collect_declared(t, member, &mut names);
-    names
+    let mut names = Vec::new();
+    declarations(member, &mut names);
+    names.into_iter().map(|n| &t.text[n.byte_range()]).collect()
 }
 
-fn collect_declared<'t>(t: &SyntaxTree<'t>, n: Node<'t>, out: &mut HashSet<&'t str>) {
-    let text = |n: Node| &t.text[n.byte_range()];
+/// The name nodes of every variable declared in `n`, nested scopes included.
+pub(super) fn declarations<'t>(n: Node<'t>, out: &mut Vec<Node<'t>>) {
     match n.kind() {
         "variable_declarator"
         | "formal_parameter"
         | "catch_formal_parameter"
         | "enhanced_for_statement"
         | "resource"
-        | "instanceof_expression" => out.extend(n.child_by_field_name("name").map(text)),
+        | "instanceof_expression" => out.extend(n.child_by_field_name("name")),
         "lambda_expression" => match n.child_by_field_name("parameters") {
-            Some(p) if p.kind() == "identifier" => {
-                out.insert(text(p));
-            }
+            Some(p) if p.kind() == "identifier" => out.push(p),
             Some(p) if p.kind() == "inferred_parameters" => {
                 let mut cursor = p.walk();
-                out.extend(p.named_children(&mut cursor).filter(|c| c.kind() == "identifier").map(text));
+                out.extend(p.named_children(&mut cursor).filter(|c| c.kind() == "identifier"));
             }
             _ => {}
         },
         "type_pattern" | "record_pattern_component" => {
             let mut cursor = n.walk();
-            out.extend(n.named_children(&mut cursor).filter(|c| c.kind() == "identifier").map(text));
+            out.extend(n.named_children(&mut cursor).filter(|c| c.kind() == "identifier"));
         }
         _ => {}
     }
     let mut cursor = n.walk();
     for child in n.children(&mut cursor) {
-        collect_declared(t, child, out);
+        declarations(child, out);
     }
 }

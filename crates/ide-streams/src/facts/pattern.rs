@@ -1,4 +1,5 @@
 use super::Adjustment;
+use super::members::declarations;
 use super::rules::{Collector, Ctx, is_variable_use};
 use crate::Rejection;
 use tree_sitter::Node;
@@ -17,6 +18,12 @@ impl<'t> Collector<'_, 't> {
             return self.block(Rejection::PatternNotRewritable);
         };
         let (var, ty) = (self.text(name), self.text(ty));
+        let region = self.pattern_region(test);
+        // Uses are replaced by name, not by scope: another `q` in the region
+        // would be rewritten too.
+        if self.declares_again(region, var, name) {
+            return self.block(Rejection::PatternNotRewritable);
+        }
         let subject = match ctx {
             Ctx::Lambda => self.static_field(self.text(left)),
             Ctx::Chain | Ctx::Nested => None,
@@ -25,7 +32,7 @@ impl<'t> Collector<'_, 't> {
         let adjustment = Adjustment::PatternRewritten { name: var.into() };
         self.edit_range(left.end_byte(), name.end_byte(), format!(" instanceof {ty}"), adjustment.clone());
         let mut uses = Vec::new();
-        self.uses_of(self.pattern_region(test), var, name, &mut uses);
+        self.uses_of(region, var, name, &mut uses);
         for u in uses {
             self.edit_range(u.start_byte(), u.end_byte(), format!("(({ty}) {subject})"), adjustment.clone());
         }
@@ -41,6 +48,12 @@ impl<'t> Collector<'_, 't> {
             cur = p;
         }
         self.chain
+    }
+
+    fn declares_again(&self, region: Node<'t>, var: &str, decl: Node<'t>) -> bool {
+        let mut found = Vec::new();
+        declarations(region, &mut found);
+        found.iter().any(|n| *n != decl && self.text(*n) == var)
     }
 
     fn uses_of(&self, n: Node<'t>, var: &str, decl: Node<'t>, out: &mut Vec<Node<'t>>) {

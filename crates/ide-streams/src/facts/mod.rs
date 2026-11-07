@@ -79,5 +79,6 @@ pub(crate) fn collect<'t>(t: &SyntaxTree<'t>, chain: Node<'t>, scope: Node<'t>, 
     let mut facts = collector.facts;
     facts.edits.sort_by_key(|e| e.start);
     facts.edits.dedup();
+    debug_assert!(facts.edits.windows(2).all(|w| w[0].end <= w[1].start), "overlapping edits {:?}", facts.edits);
     facts
 }

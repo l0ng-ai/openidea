@@ -20,7 +20,7 @@ impl Finder<'_, '_> {
             }
         }
         let parallel = sources.first().is_some_and(|(root, _)| self.name(*root) == "parallelStream")
-            || ops.iter().any(|op| matches!(self.name(*op), "parallel" | "sequential"));
+            || ops.iter().any(|op| self.name(*op) == "parallel");
         if parallel {
             warnings.push(ChainWarning::ParallelRemoved);
         }
