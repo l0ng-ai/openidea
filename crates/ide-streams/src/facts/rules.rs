@@ -1,6 +1,7 @@
 use super::members::ClassMembers;
 use super::{Adjustment, ChainFacts, TextEdit};
-use crate::Rejection;
+use crate::qualify::FileImports;
+use crate::{FrameShape, Rejection};
 use ide_syntax::SyntaxTree;
 use std::collections::HashSet;
 use tree_sitter::Node;
@@ -19,6 +20,13 @@ pub(super) enum Ctx {
 pub(super) struct Collector<'a, 't> {
     pub(super) t: &'a SyntaxTree<'t>,
     pub(super) chain: Node<'t>,
+    /// The class member the frame runs in.
+    pub(super) member: Node<'t>,
+    pub(super) frame: &'a FrameShape,
+    /// Only for record frames, whose type names are qualified.
+    pub(super) imports: Option<FileImports>,
+    /// Names that are type variables, not types: the frame's and, in record frames, the chain's own.
+    pub(super) type_params: Vec<String>,
     /// Innermost first.
     pub(super) classes: Vec<ClassMembers<'t>>,
     pub(super) declared: HashSet<&'t str>,
@@ -46,7 +54,7 @@ impl<'t> Collector<'_, 't> {
         self.facts.edits.push(TextEdit { start: start - base, end: end - base, text, adjustment });
     }
 
-    fn replace(&mut self, n: Node, text: String, adjustment: Adjustment) {
+    pub(super) fn replace(&mut self, n: Node, text: String, adjustment: Adjustment) {
         self.edit_range(n.start_byte(), n.end_byte(), text, adjustment);
     }
 
@@ -57,13 +65,18 @@ impl<'t> Collector<'_, 't> {
                 if is_reserved(name) {
                     self.block(Rejection::ReservedIdentifier { name: name.into() });
                 }
-                if ctx == Ctx::Lambda
-                    && is_variable_use(n)
-                    && let Some(with) = self.static_field(name)
-                {
-                    self.replace(n, with.clone(), Adjustment::StaticQualified { name: name.into(), with });
+                if ctx == Ctx::Lambda && is_variable_use(n) {
+                    match self.static_field(name) {
+                        Some(with) => {
+                            self.replace(n, with.clone(), Adjustment::StaticQualified { name: name.into(), with })
+                        }
+                        None => self.capture_use(n),
+                    }
                 }
+                self.type_receiver(n);
             }
+            "type_identifier" => self.type_identifier(n),
+            "array_creation_expression" if ctx == Ctx::Chain => self.box_primitives(n),
             // tree-sitter parses switch statements as `switch_expression` too.
             "switch_expression" if !is_statement(n) => self.block(Rejection::SwitchExpression),
             "lambda_expression" => self.drop_param_types(n),

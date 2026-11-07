@@ -8,12 +8,21 @@ impl Finder<'_, '_> {
     pub(super) fn frame(&self, scope: Node) -> Result<FrameShape, FrameKind> {
         let mut shape = FrameShape::default();
         let mut past_method = false;
+        // A static member or static nested type cannot see the type
+        // parameters of the types around it.
+        let mut sees_outer_params = true;
         let mut cur = Some(scope);
         while let Some(n) = cur {
             let kind = n.kind();
             if matches!(kind, "method_declaration" | "constructor_declaration") && !past_method {
                 self.push_type_params(n, &mut shape.type_params);
                 past_method = true;
+                sees_outer_params = !self.is_static(n);
+            } else if matches!(kind, "field_declaration" | "constant_declaration" | "static_initializer")
+                && !past_method
+            {
+                past_method = true;
+                sees_outer_params = kind == "field_declaration" && !self.is_static(n);
             } else if kind == "class_body"
                 && n.parent().is_some_and(|p| matches!(p.kind(), "object_creation_expression" | "enum_constant"))
             {
@@ -31,7 +40,11 @@ impl Finder<'_, '_> {
                     shape.record = kind == "record_declaration";
                 }
                 shape.class_path.push(name.into());
-                self.push_type_params(n, &mut shape.type_params);
+                if sees_outer_params {
+                    self.push_type_params(n, &mut shape.type_params);
+                }
+                // Nested records, enums and interfaces, and types nested in an interface, are implicitly static.
+                sees_outer_params &= kind == "class_declaration" && parent != "interface_body" && !self.is_static(n);
                 past_method = true;
             } else if kind == "program" {
                 let mut cursor = n.walk();
@@ -65,6 +78,13 @@ impl Finder<'_, '_> {
             });
             out.push((self.text(name).into(), bound));
         }
+    }
+
+    fn is_static(&self, decl: Node) -> bool {
+        let mut cursor = decl.walk();
+        let Some(mods) = decl.children(&mut cursor).find(|c| c.kind() == "modifiers") else { return false };
+        let mut cursor = mods.walk();
+        mods.children(&mut cursor).any(|c| self.text(c) == "static")
     }
 
     fn erasure(&self, ty: Node) -> String {

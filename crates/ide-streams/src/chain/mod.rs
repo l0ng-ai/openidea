@@ -77,8 +77,9 @@ pub struct FrameShape {
     pub record: bool,
     /// Enclosing type names, outermost first.
     pub class_path: Vec<String>,
-    /// Type parameters in scope (the method's, then each enclosing type's from
-    /// the inside out) with the erasure of their first bound.
+    /// Type parameters in scope with the erasure of their first bound: the
+    /// method's, then each enclosing type's from the inside out, stopping at
+    /// the first static member or static nested type.
     pub type_params: Vec<(String, Option<String>)>,
     pub package: Option<String>,
 }

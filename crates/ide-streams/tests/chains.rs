@@ -277,6 +277,16 @@ fn frame_shape_lists_classes_type_params_and_package() {
 }
 
 #[test]
+fn enclosing_type_params_stop_at_static_boundaries() {
+    let params = |marker| only_chain(marker).frame.type_params;
+    assert_eq!(params("C_STATIC_GENERIC"), [("S".to_string(), None)]);
+    assert_eq!(params("C_INNER_GENERIC"), [("K".to_string(), None)]);
+    assert_eq!(params("C_STATIC_NESTED"), [("F".to_string(), None)]);
+    // A nested record is implicitly static.
+    assert_eq!(params("C_RECORD_GENERIC"), [("P".to_string(), None)]);
+}
+
+#[test]
 fn columns_are_utf16() {
     let chain = only_chain("C_UTF16");
     let line = FIXTURE.lines().nth(line_of("C_UTF16") as usize).unwrap();

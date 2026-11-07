@@ -1,4 +1,5 @@
-use crate::{Adjustment, ChainWarning, OpRole, Rejection, StreamChain};
+use crate::qualify::erasure;
+use crate::{Adjustment, Capture, ChainWarning, OpRole, Rejection, StreamChain, TextEdit};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::HashMap;
@@ -40,13 +41,37 @@ impl NormalizedChain {
     }
 }
 
+/// The type in jdtls hover text whose first line reads `<Type> <name> - <owner>`.
+pub fn parse_hover_declared_type(hover: &str, name: &str) -> Option<String> {
+    let line = hover.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("```"))?;
+    let declaration = line.split_once(" - ").map_or(line, |(declaration, _)| declaration).trim_end();
+    let ty = declaration.strip_suffix(name)?;
+    (ty.ends_with(char::is_whitespace) && !ty.trim().is_empty()).then(|| ty.trim().to_string())
+}
+
 /// `Err` is the chain's first blocker.
-pub fn normalize(chain: &StreamChain, _hints: &TypeHints) -> Result<NormalizedChain, Rejection> {
+pub fn normalize(chain: &StreamChain, hints: &TypeHints) -> Result<NormalizedChain, Rejection> {
     if let Some(blocker) = chain.facts.blockers.first() {
         return Err(blocker.clone());
     }
+    let mut prelude = String::new();
+    let mut edits = chain.facts.edits.clone();
+    for capture in &chain.facts.captures {
+        let Some(alias) = alias(capture, hints)? else { continue };
+        let name = &capture.name;
+        prelude.push_str(&format!("{} __c_{name} = {name}; ", alias.erasure));
+        let read = match &alias.cast {
+            Some(ty) => format!("(({ty}) __c_{name})"),
+            None => format!("__c_{name}"),
+        };
+        for &(start, end) in &capture.uses {
+            edits.push(TextEdit { start, end, text: read.clone(), adjustment: alias.adjustment.clone() });
+        }
+    }
+    edits.sort_by_key(|e| e.start);
+    debug_assert!(edits.windows(2).all(|w| w[0].end <= w[1].start), "overlapping edits {edits:?}");
     let mut adjustments = Vec::new();
-    for edit in &chain.facts.edits {
+    for edit in &edits {
         if !adjustments.contains(&edit.adjustment) {
             adjustments.push(edit.adjustment.clone());
         }
@@ -58,22 +83,56 @@ pub fn normalize(chain: &StreamChain, _hints: &TypeHints) -> Result<NormalizedCh
         .ops
         .iter()
         .filter(|op| !(sequential && matches!(op.name.as_str(), "parallel" | "sequential")))
-        .map(|op| Segment { text: edited(chain, op.span), role: op.role, label: op.name.clone() })
+        .map(|op| Segment { text: edited(chain, &edits, op.span), role: op.role, label: op.name.clone() })
         .collect();
     if sequential {
         segments.push(Segment { text: ".sequential()".into(), role: OpRole::Modifier, label: "sequential".into() });
         adjustments.push(Adjustment::ParallelRemoved);
     }
     let terminal = &chain.terminal;
-    segments.push(Segment { text: edited(chain, terminal.span), role: terminal.role, label: terminal.name.clone() });
-    Ok(NormalizedChain { prelude: String::new(), root: edited(chain, chain.root.span), segments, adjustments })
+    segments.push(Segment {
+        text: edited(chain, &edits, terminal.span),
+        role: terminal.role,
+        label: terminal.name.clone(),
+    });
+    Ok(NormalizedChain { prelude, root: edited(chain, &edits, chain.root.span), segments, adjustments })
+}
+
+struct Alias {
+    erasure: String,
+    /// The type each read is cast back to; `None` reads the raw alias.
+    cast: Option<String>,
+    adjustment: Adjustment,
+}
+
+/// Rule 3's alias for `capture`; `None` when a hint shows it needs none.
+fn alias(capture: &Capture, hints: &TypeHints) -> Result<Option<Alias>, Rejection> {
+    let name = capture.name.clone();
+    let hint = capture.query.and_then(|id| hints.0.get(&id)).map(|h| h.trim()).filter(|h| !h.is_empty());
+    let aliased = |ty: &str| Alias {
+        erasure: capture.erasure.clone().unwrap_or_else(|| erasure(ty)),
+        cast: Some(ty.into()),
+        adjustment: Adjustment::CaptureAliased { name: name.clone(), as_type: ty.into() },
+    };
+    Ok(match (&capture.declared, hint, &capture.erasure) {
+        (Some(declared), _, _) => Some(aliased(declared)),
+        // Only type arguments stop the evaluator capturing a variable.
+        (None, Some(hint), _) if !hint.contains('<') => None,
+        (None, Some(hint), _) => Some(aliased(hint)),
+        (None, None, Some(raw)) => Some(Alias {
+            erasure: raw.clone(),
+            cast: None,
+            adjustment: Adjustment::CaptureRaw { name: name.clone(), erasure: raw.clone() },
+        }),
+        (None, None, None) => return Err(Rejection::MissingTypeHint { name }),
+    })
 }
 
 /// The text of `span` with the edits inside it applied.
-fn edited(chain: &StreamChain, (start, end): (usize, usize)) -> String {
+fn edited(chain: &StreamChain, edits: &[TextEdit], (start, end): (usize, usize)) -> String {
     let mut text = chain.text[start..end].to_string();
     // Back to front, so earlier offsets stay valid.
-    for edit in chain.facts.edits.iter().rev().filter(|e| start <= e.start && e.end <= end) {
+    for edit in edits.iter().rev().filter(|e| start <= e.start && e.end <= end) {
         text.replace_range(edit.start - start..edit.end - start, &edit.text);
     }
     text

@@ -293,7 +293,7 @@ impl<'t> Finder<'_, 't> {
             ops: ops.iter().map(|c| op(*c)).collect(),
             terminal: op(terminal),
             warnings: self.warnings(&sources, &ops),
-            facts: facts::collect(self.t, terminal, scope, &frame),
+            facts: facts::collect(self.t, terminal, root, scope, &frame),
             frame,
         }
     }

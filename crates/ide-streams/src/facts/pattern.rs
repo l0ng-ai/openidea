@@ -17,7 +17,8 @@ impl<'t> Collector<'_, 't> {
         let Some(left) = test.child_by_field_name("left").filter(|l| l.kind() == "identifier") else {
             return self.block(Rejection::PatternNotRewritable);
         };
-        let (var, ty) = (self.text(name), self.text(ty));
+        let var = self.text(name);
+        let Some(ty) = self.type_text(ty) else { return };
         let region = self.pattern_region(test);
         // Uses are replaced by name, not by scope: another `q` in the region
         // would be rewritten too.

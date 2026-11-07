@@ -111,6 +111,28 @@ public class Chains {
         <T extends Comparable<T>> long sortedCount(List<T> items) {
             return items.stream().sorted().count(); // C_GENERIC
         }
+
+        static <S> long staticCount(List<S> items) {
+            return items.stream().count(); // C_STATIC_GENERIC
+        }
+
+        class Lid {
+            long count(List<K> items) {
+                return items.stream().count(); // C_INNER_GENERIC
+            }
+        }
+
+        static class Tag<F> {
+            long count(List<F> items) {
+                return items.stream().count(); // C_STATIC_NESTED
+            }
+        }
+
+        record Pair<P>(P left) {
+            long count(List<P> items) {
+                return items.stream().count(); // C_RECORD_GENERIC
+            }
+        }
     }
 
     record Point(int x, int y) {
