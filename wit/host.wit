@@ -65,14 +65,13 @@ interface ui {
     copy-to-clipboard: func(text: string) -> result<_, error>;
     /// Opens an `http://` or `https://` URL in the user's default browser.
     open-url: func(url: string) -> result<_, error>;
-    /// Shows a list in the window the current command or event came from and
-    /// waits for the key of the chosen item, or `none` when the user dismisses
-    /// it. Needs no capability. Returns `invalid` outside a command or event of
-    /// a window (including in editor providers). Waiting doesn't count against
-    /// the call's budget.
+    /// Shows a list and waits for the chosen key, or `none` when dismissed.
+    /// Works in a command/event of a window, or while resolving a selected code
+    /// or file action in its editor's window; `invalid` otherwise.
+    /// Needs no capability. Waiting doesn't count against the call's budget.
     pick: func(title: string, items: list<pick-item>) -> result<option<string>, error>;
     /// Native folder chooser; an absolute path, or `none` when dismissed.
-    /// Same window, command/event and budget rules as `pick`; no capability.
+    /// Only from a command or event of a window; waiting is excluded from the budget.
     pick-directory: func(title: string, initial: option<string>) -> result<option<string>, error>;
     /// Like `pick`, with any number of items chosen.
     pick-many: func(title: string, items: list<pick-item>) -> result<option<list<string>>, error>;
@@ -80,7 +79,8 @@ interface ui {
     /// Same rules as `pick`.
     input: func(prompt: string, value: option<string>) -> result<option<string>, error>;
     /// Asks for text over several lines, pre-filled with `value`; `none` when
-    /// dismissed. Same rules as `input`; the dialog confirms on Cmd/Ctrl+Enter.
+    /// dismissed. Only from a command or event of a window; the dialog confirms
+    /// on Cmd/Ctrl+Enter.
     input-multiline: func(prompt: string, value: option<string>) -> result<option<string>, error>;
     /// Asks for confirmation with OK and Cancel: `true` on OK, `false` on
     /// Cancel or Escape. Same rules as `pick`.

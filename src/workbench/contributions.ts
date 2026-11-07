@@ -1663,3 +1663,13 @@ export function registerCloneSource(source: CloneSourceContribution): () => void
 export function cloneSourceList(sources = useCloneSources.getState().sources): CloneSourceContribution[] {
   return [...sources.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id));
 }
+
+// File templates contributed by plugins, consumed by the templates feature.
+export const useContributedFileTemplates = create<{ templates: import("@/platform/fileTemplates").FileTemplate[] }>(
+  () => ({ templates: [] }),
+);
+
+export function addContributedFileTemplate(t: import("@/platform/fileTemplates").FileTemplate): () => void {
+  useContributedFileTemplates.setState((s) => ({ templates: [...s.templates.filter((x) => x.id !== t.id), t] }));
+  return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
+}

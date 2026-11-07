@@ -80,6 +80,15 @@
   outline: none;
 }
 
+.listItem[aria-selected="true"] {
+  background: var(--bg-tree-selected);
+}
+
+.master {
+  height: 100%;
+  overflow: auto;
+}
+
 .detail {
   color: var(--fg-muted);
 }

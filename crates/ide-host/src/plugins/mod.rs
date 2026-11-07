@@ -326,6 +326,7 @@ pub struct PluginHost {
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
     endpoints: Mutex<endpoints::Endpoints>,
+    web_ptys: Mutex<BTreeMap<String, Vec<web::WebPtySession>>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -382,7 +383,8 @@ impl PluginHost {
         let ui = UiStore::new();
         let index = Arc::new(ContributionIndex::new(
             plugins_dir.join(".cache").join("contributions"),
-            env!("CARGO_PKG_VERSION"),
+            // Revalidate SVGs accepted before URL-valued CSS functions were rejected.
+            concat!(env!("CARGO_PKG_VERSION"), ":svg-2"),
         ));
         ui.set_index(Some(index.clone()));
         let languages = PluginLanguages::new();
@@ -416,6 +418,7 @@ impl PluginHost {
             providers,
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
+            web_ptys: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -1096,8 +1099,7 @@ impl PluginHost {
         })
     }
 
-    /// The Services pane of node `key` of the plugin's `location = "services"`
-    /// view `view`.
+    /// The detail tabs of item `key` of a Services or `detail = true` view.
     pub fn service_detail(
         &self,
         id: &str,
@@ -1105,9 +1107,9 @@ impl PluginHost {
         key: &str,
         invocation: Invocation,
     ) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
-        self.services_view(id, view)?;
+        self.detail_view(id, view)?;
         let (view, key) = (view.to_owned(), key.to_owned());
-        self.code_call(id, invocation, "rendering the service's pane", move |rt, inv| {
+        self.code_call(id, invocation, "rendering the item's detail pane", move |rt, inv| {
             rt.service_detail(&view, &key, inv)
         })
     }
@@ -1163,16 +1165,16 @@ impl PluginHost {
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
     }
 
-    fn services_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        let services = self
-            .ui
-            .items(ui_points::VIEWS, Some(id))
-            .iter()
-            .any(|i| i.key == view && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION));
-        if services {
+    fn detail_view(&self, id: &str, view: &str) -> IdeResult<()> {
+        let detail = self.ui.items(ui_points::VIEWS, Some(id)).iter().any(|i| {
+            i.key == view
+                && (i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION)
+                    || i.decl["detail"].as_bool() == Some(true))
+        });
+        if detail {
             Ok(())
         } else {
-            Err(IdeError::not_found(format!("plugin {id:?} declares no services view {view:?}")))
+            Err(IdeError::not_found(format!("plugin {id:?} declares no detail view {view:?}")))
         }
     }
 
@@ -1365,11 +1367,12 @@ impl PluginHost {
         self.shared.reopen_client(label);
     }
 
-    /// Window `label` closed: drops its context keys and queued events, and ignores
-    /// context writes of commands still running for it.
+    /// Window `label` closed: cancels its prompts, drops its context keys and queued
+    /// events, and ignores context writes of commands still running for it.
     pub fn forget_client(&self, label: &str) {
         self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
         self.shared.forget_client(label);
+        self.forget_web_ptys(label);
     }
 
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
@@ -1762,6 +1765,7 @@ impl PluginHost {
         let actors: Vec<_> = self.plugins.read().values().filter_map(|p| p.runtime.lock().take()).collect();
         for id in self.plugins.read().keys() {
             self.shared.block_prompts(id);
+            self.stop_web_ptys(id);
         }
         for a in &actors {
             a.stop(false);
@@ -1769,6 +1773,7 @@ impl PluginHost {
         for a in actors {
             a.stop(true);
         }
+        self.shared.finish_process_shutdowns();
     }
 
     /// Periodic upkeep (every few seconds): reports crashes nobody waited
@@ -2165,6 +2170,8 @@ impl PluginHost {
             *runtime = None;
         }
         actor.stop(false);
+        // Its handles go with its instance; an idle reclaim is one.
+        self.shared.kill_processes(plugin.id());
         let mut meta = plugin.meta.lock();
         if meta.status == PluginStatus::Active {
             meta.status = PluginStatus::Inactive;
@@ -2175,6 +2182,7 @@ impl PluginHost {
     }
 
     fn stop(&self, plugin: &LoadedPlugin) {
+        self.stop_web_ptys(plugin.id());
         self.clear_plugin_navigation(plugin.id());
         self.clear_plugin_endpoints(plugin.id());
         // A call waiting on the user would keep the join below waiting.
@@ -2195,6 +2203,8 @@ impl PluginHost {
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Failed;
         meta.error = Some(error);
+        drop(meta);
+        self.stop_web_ptys(plugin.id());
     }
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {

@@ -8,8 +8,9 @@ use crate::types::{
     PluginHover, PluginInlayHint, ProviderDocument, SemanticToken,
 };
 use crate::types::{
-    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
-    RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
+    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessChunk,
+    ProcessCommand, ProcessOutput, Prompt, RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken,
+    WorkbenchEvent,
 };
 use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
@@ -121,6 +122,19 @@ pub trait HostApi: Send + Sync {
             .filter(|root| real.starts_with(crate::resolve_real(root)))
             .max_by_key(|root| root.components().count())
     }
+
+    /// Searches the current in-memory index of an open project.
+    fn symbols(
+        &self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Vec<crate::SymbolInfo>, HostError> {
+        let _ = (root, query, limit, cancel, deadline);
+        Err(HostError::NotFound("no project index is available".into()))
+    }
     /// Unsaved text of an open editor's file.
     fn buffer_text(&self, path: &Path) -> Option<String>;
     /// Version and text of the open document at `path`.
@@ -167,11 +181,11 @@ pub trait HostApi: Send + Sync {
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
     fn secret_is_set(&self, name: &str) -> bool;
-    /// Runs the approved file of `process:<program>`.
+    /// Runs the approved file of `process:<program>` with `cmd.env` added to
+    /// the inherited environment, and waits.
     fn run_process(
         &self,
-        program: &str,
-        args: Vec<String>,
+        cmd: ProcessCommand,
         cwd: Option<&Path>,
         stdin: Option<String>,
         cancel: &CancellationToken,
@@ -182,6 +196,35 @@ pub trait HostApi: Send + Sync {
     /// Delivers `kind` (`file-opened`, `file-saved`) only for paths matching `globs`.
     fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
     fn unsubscribe(&self, kind: &str);
+    /// Starts `cmd` and returns the handle to it without waiting.
+    fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
+    /// What process `id` printed since the last call, each stream at most
+    /// `max` bytes (the rest waits for the next call), and its status once it
+    /// ended.
+    fn poll_process(&self, id: u64, max: usize) -> Result<ProcessChunk, HostError>;
+    /// Writes `text` to the stdin of process `id`.
+    fn write_process(
+        &self,
+        id: u64,
+        text: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError>;
+    /// Closes the stdin of process `id`.
+    fn close_process_stdin(&self, id: u64) -> Result<(), HostError>;
+    /// Ends process `id`; not an error if it already ended.
+    fn kill_process(&self, id: u64) -> Result<(), HostError>;
+    /// Forgets the handle and ends its process if it still runs.
+    fn release_process(&self, id: u64);
+    /// Waits up to `timeout` for process `id` to end (`ZERO` only checks) and
+    /// returns what it printed meanwhile with its status once it ended.
+    fn wait_process(
+        &self,
+        id: u64,
+        max: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<ProcessChunk, HostError>;
     /// Starts a progress indicator; cancelling it from the UI cancels `cancel`.
     fn task_begin(&self, client: Option<&str>, title: String, cancellable: bool, cancel: CancellationToken) -> u64;
     fn task_report(&self, id: u64, done: u32, total: Option<u32>, message: Option<String>);
@@ -453,8 +496,10 @@ pub struct StoreData {
     pub(crate) granted: Vec<Capability>,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
-    /// The running call is a command or an event, so it may ask the user.
+    /// The running call is a command or an event.
     pub(crate) interactive: bool,
+    /// Editor window for pick, pick-many, input and confirm during action resolution.
+    pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
@@ -643,6 +688,7 @@ impl Runtime {
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
+            action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
         };
@@ -944,6 +990,7 @@ impl Runtime {
         &mut self,
         doc: &ProviderDocument,
         action: &CodeAction,
+        invocation: Invocation,
         timeout: Duration,
     ) -> Result<CodeAction, CallError> {
         if action.file_action {
@@ -953,13 +1000,20 @@ impl Runtime {
             let d = file_action_doc(doc);
             let a = file_action_to_wit(action);
             let resolved = self.call(Invocation::default(), timeout, |e, store| {
+                store.data_mut().action_prompt_client = invocation.client;
                 e.file_actions.as_ref().expect("checked").call_resolve(store, &d, &a)
             })?;
             return resolved.map(file_action_from_wit).map_err(|e| CallError::Guest(e.into()));
         }
         let d = doc_to_wit(doc);
         let a = code_action_to_wit(action);
-        let resolved = self.provider_call(timeout, |p, s| p.call_resolve_code_action(s, &d, &a))?;
+        if self.exports.providers.is_none() {
+            return Err(CallError::missing_export("providers"));
+        }
+        let resolved = self.call(Invocation::default(), timeout, |e, store| {
+            store.data_mut().action_prompt_client = invocation.client;
+            e.providers.as_ref().expect("checked").call_resolve_code_action(store, &d, &a)
+        })?;
         resolved.map(code_action_from_wit).map_err(|e| CallError::Guest(e.into()))
     }
 
@@ -986,7 +1040,7 @@ impl Runtime {
             .take(MAX_PROVIDER_ITEMS)
             .map(|m| LineMarker {
                 line: m.line,
-                icon: m.icon.map(|i| clip(i, 32)),
+                icon: m.icon.map(|i| clip(i, 256)),
                 tooltip: clip(m.tooltip, 1024),
                 target: m.target.map(location_from_wit),
             })
@@ -1281,6 +1335,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
+        data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
             data.host.task_end(id);

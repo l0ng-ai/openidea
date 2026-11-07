@@ -682,7 +682,8 @@ export const commands = {
 	runGradleJvmArgsScript: (jvmArgs: string[]) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_jvm_args_script", { jvmArgs })),
 	/**  Writes one of the IDE's Gradle init scripts where the build runs; returns its path. */
 	runGradleInitScript: (name: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("run_gradle_init_script", { name, text })),
-	runTomcatHome: (home: string) => typedError<TomcatHome, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatHome: (home: string) => typedError<TomcatHome_Serialize, IdeError>(__TAURI_INVOKE("run_tomcat_home", { home })),
+	runTomcatInstallations: () => typedError<TomcatInstallation_Serialize[], IdeError>(__TAURI_INVOKE("run_tomcat_installations")),
 	runTomcatArtifacts: () => typedError<WebArtifact[], IdeError>(__TAURI_INVOKE("run_tomcat_artifacts")),
 	runTomcatBuild: (config: RunConfig_Deserialize) => typedError<({
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
@@ -1127,6 +1128,7 @@ export const commands = {
 	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
 	/**  The page of a plugin's web view or custom editor (`web = …`). */
 	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
+	pluginWebPtySpawn: (pluginId: string, view: string, command: WebPtyCommand, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_web_pty_spawn", { pluginId, view, command, onOutput })),
 	/**
 	 *  Writes what a web view saves (`openidea.saveFile`) to the path the user
 	 *  chose in the save dialog, on this machine.
@@ -7914,8 +7916,46 @@ export type ThreadInfo = {
 	name: string,
 };
 
-export type TomcatHome = {
+export type TomcatHome = TomcatHome_Serialize | TomcatHome_Deserialize;
+
+export type TomcatHome_Deserialize = {
 	version: string,
+	libraries?: string[],
+	tomee?: boolean,
+	httpPort?: number | null,
+	httpsPort?: number | null,
+	ajpPort?: number | null,
+	shutdownPort?: number | null,
+};
+
+export type TomcatHome_Serialize = {
+	version: string,
+	libraries: string[],
+	tomee: boolean,
+	httpPort?: number | null,
+	httpsPort?: number | null,
+	ajpPort?: number | null,
+	shutdownPort?: number | null,
+};
+
+export type TomcatInstallation = TomcatInstallation_Serialize | TomcatInstallation_Deserialize;
+
+export type TomcatInstallation_Deserialize = {
+	path: string,
+	version: string,
+	libraries?: string[],
+	name?: string | null,
+	base?: string | null,
+	tomee?: boolean,
+};
+
+export type TomcatInstallation_Serialize = {
+	path: string,
+	version: string,
+	libraries: string[],
+	name?: string | null,
+	base?: string | null,
+	tomee: boolean,
 };
 
 /**  UI-facing state of one tool. */
@@ -8236,6 +8276,15 @@ export type WebPage = {
 	 *  stale; relative URLs in the page resolve to the package's files.
 	 */
 	path: string,
+};
+
+/**  A web frame's API 1.3 PTY request. The frame never supplies an executable path or cwd. */
+export type WebPtyCommand = {
+	program: string,
+	args: string[],
+	env: { [key in string]: string },
+	cols: number,
+	rows: number,
 };
 
 export type WebReference = {

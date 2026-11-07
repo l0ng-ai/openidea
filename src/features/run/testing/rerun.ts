@@ -225,7 +225,7 @@ export function testsConfig(config: RunConfig, paths: string[][], name: string):
                   toolArgs: formatArgs(dropFlag(goTestParts(args).flags, ["-run", "-test.run"])),
                   programArgs: formatArgs(goTestParts(args).program.slice(1)),
                 }
-              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "false" },
+              : { module: config.params.module ?? "", useTags: config.params.useTags ?? "true" },
         }
       : {}),
   };

@@ -16,13 +16,17 @@
  * - passes on IDE shortcuts it doesn't handle itself (Save, Close…).
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Channel } from "@tauri-apps/api/core";
 import { tx } from "@/platform/i18n";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
 import { FRAME_TAG, frameTheme, frameThemeMessage } from "./frame";
 import { onViewMessage } from "./viewStore";
+import { ptyBridge } from "./ptyBridge";
 import styles from "./PluginView.module.css";
 
 /** One change of a document, in UTF-16 offsets of the text it applies to. */
@@ -152,6 +156,55 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
 
   useEffect(() => {
     let dialog = false;
+    const createPtys = () =>
+      ptyBridge(
+        pluginId,
+        {
+          spawn: async (command, output) => {
+            const current = usePlugins.getState().plugins.find((p) => p.id === pluginId);
+            if (
+              !isTauri() ||
+              !current?.enabled ||
+              !current.capabilities.some((c) => c.id === `process:${command.program}` && c.granted)
+            )
+              throw new Error(tx`Cannot start PTY: process:${command.program} capability not granted.`);
+            const channel = new Channel<string>();
+            channel.onmessage = output;
+            return call(commands.pluginWebPtySpawn(pluginId, view, command, channel));
+          },
+          write: (id, data) => call(commands.termWrite(id, data)),
+          resize: (id, cols, rows) => call(commands.termResize(id, cols, rows)),
+          kill: (id) => call(commands.termKill(id)),
+          onExit: (listener) => onIdeEvent("terminalExited", (ev) => listener(ev.terminal, ev.code)),
+        },
+        (message) => post({ text: JSON.stringify(message) }),
+      );
+    let ptys = createPtys();
+    const resetPtys = () => {
+      ptys.close();
+      ptys = createPtys();
+    };
+    const offProject = useProject.subscribe((state, previous) => {
+      if (state.project !== previous.project) resetPtys();
+    });
+    const pluginKey = (plugins: ReturnType<typeof usePlugins.getState>["plugins"]) => {
+      const p = plugins.find((p) => p.id === pluginId);
+      return p && JSON.stringify([p.path, p.version, p.enabled, p.status, p.capabilities]);
+    };
+    const offPlugins = usePlugins.subscribe((state, previous) => {
+      if (pluginKey(state.plugins) !== pluginKey(previous.plugins)) resetPtys();
+    });
+    const onUnload = () => ptys.close();
+    window.addEventListener("pagehide", onUnload);
+    const currentFrame = frame.current;
+    // A navigation keeps the iframe's WindowProxy, but must drop its old sessions.
+    let loaded = false;
+    const onLoad = () => {
+      if (loaded) resetPtys();
+      loaded = true;
+    };
+    currentFrame?.addEventListener("load", onLoad);
+
     const run = async (op: string, args: Record<string, unknown>): Promise<[unknown, Transferable[]?]> => {
       switch (op) {
         case "document.get": {
@@ -218,10 +271,13 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
           ([value, transfer]) => post({ reply: id, value }, transfer),
           (err: unknown) => post({ reply: id, error: errorText(err) }),
         );
-      } else if (typeof m.text === "string" && hasCode) {
-        pluginsBackend()
-          .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
-          .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+      } else if (typeof m.text === "string") {
+        if (ptys.handle(m.text)) return;
+        if (hasCode) {
+          pluginsBackend()
+            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
+            .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+        }
       }
     };
     window.addEventListener("message", onMessage);
@@ -229,8 +285,13 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
     return () => {
       window.removeEventListener("message", onMessage);
       off();
+      ptys.close();
+      offPlugins();
+      offProject();
+      window.removeEventListener("pagehide", onUnload);
+      currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, hasCode, post]);
+  }, [pluginId, view, document, doc, hasCode, post, page]);
 
   if (!page)
     return (

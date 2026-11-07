@@ -13,8 +13,8 @@ vi.mock("@/platform/ipc", async (orig) => {
   return { ...actual, isTauri: () => true, commands: { ...actual.commands, lspSemanticTokens } };
 });
 
-const { semanticExtension } = await import("./semantic");
-const { lspDoc } = await import("./lsp");
+const { semanticExtension } = await import("./index");
+const { lspDoc } = await import("../lsp");
 
 const views: EditorView[] = [];
 afterEach(() => {

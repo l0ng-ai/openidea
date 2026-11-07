@@ -71,6 +71,7 @@ import {
   resetRuns,
   runningSessions,
   saveUserConfigs,
+  dropStaleContextConfigs,
   selectConfig,
   selectedConfig,
   startRun,
@@ -654,6 +655,8 @@ export function activate(): () => void {
   disposers.push(
     onIdeEvent("fsChanged", (e) => {
       const paths = [...e.created, ...e.modified, ...e.removed];
+      // A file that moved or was deleted leaves its context configuration behind.
+      dropStaleContextConfigs(e.removed);
       if (paths.some((p) => /(?:^|\/)go\.(?:mod|work)$/.test(p))) invalidateGoModules();
       if (paths.some((p) => p.endsWith("/__init__.py"))) invalidatePythonPackages();
       if (paths.some((p) => CONFIG_FILES.test(p))) scheduleReload();
