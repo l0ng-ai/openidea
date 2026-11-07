@@ -49,6 +49,9 @@ fn language(path: &Path) -> Option<LanguageId> {
     match path.extension()?.to_str()? {
         "yaml" | "yml" => Some(LanguageId::new("yaml")),
         "properties" => Some(LanguageId::new("properties")),
+        // Spring XML wiring declares properties in `<prop key="...">` values
+        // and placeholder-configurer `<property name="...">` entries.
+        "xml" => Some(LanguageId::new("xml")),
         _ => None,
     }
 }
@@ -158,6 +161,16 @@ impl LspManager {
         } else {
             None
         };
+        // A click inside a Spring `${name}` placeholder sits on a value, not a
+        // key: the name names the property whose declaration lives in
+        // configuration files or Spring XML, with Java binding members still
+        // answering through the Java index.
+        let placeholder = if config && key.is_none() && !usages && snap.text.as_str().len() as u64 <= MAX_BYTES {
+            syntax().configuration_placeholder(snap.text.as_str(), pos)
+        } else {
+            None
+        };
+        let key = placeholder.clone().or(key);
         if config && key.is_none() {
             return Ok(None);
         }
@@ -178,7 +191,8 @@ impl LspManager {
                 return Ok(None);
             }
         }
-        let result = self.configuration_query(snap, pos, key, usages, include_declaration, cancel).await;
+        let result =
+            self.configuration_query(snap, pos, key, placeholder.is_some(), usages, include_declaration, cancel).await;
         match result {
             Err(e) if cancel.is_cancelled() || e.kind == ErrorKind::Cancelled => Err(IdeError::cancelled()),
             Err(e) => {
@@ -189,22 +203,46 @@ impl LspManager {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn configuration_query(
         &self,
         snap: &DocSnap,
         pos: Pos,
         key: Option<String>,
+        placeholder: bool,
         usages: bool,
         include_declaration: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<Option<References>> {
-        let (server, run) = self.jdtls(&snap.path, cancel).await?;
+        // A `${name}` reference resolves from configuration files and Spring
+        // XML without Java; those declarations are collected first so
+        // navigation survives an unavailable or outdated Java extension.
+        let local = if placeholder {
+            let name = key.clone().unwrap_or_default();
+            Some(
+                self.configuration_declarations(
+                    vec![Pattern { name, relaxed: true }],
+                    std::slice::from_ref(&self.project_root),
+                    cancel,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let answered = local.as_ref().is_some_and(|local| !local.locations.is_empty());
+        let (server, run) = match self.jdtls(&snap.path, cancel).await {
+            Ok(found) => found,
+            Err(e) if cancel.is_cancelled() || e.kind == ErrorKind::Cancelled => return Err(IdeError::cancelled()),
+            Err(_) if answered => return Ok(local),
+            Err(e) => return Err(e),
+        };
         if !run.caps.read().commands().iter().any(|command| command == COMMAND) {
-            return Ok(None);
+            return Ok(if placeholder { local } else { None });
         }
         let target = Target { server: server.clone(), run };
         let position = snap.text.ide_to_lsp(Encoding::Utf16, pos);
-        let response: Response = self
+        let response: Response = match self
             .call(
                 &target,
                 "workspace/executeCommand",
@@ -214,11 +252,17 @@ impl LspManager {
                 Some(cancel),
                 crate::LONG_TIMEOUT,
             )
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(e) if cancel.is_cancelled() || e.kind == ErrorKind::Cancelled => return Err(IdeError::cancelled()),
+            Err(_) if answered => return Ok(local),
+            Err(e) => return Err(e),
+        };
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        if response.keys.is_empty() {
+        if response.keys.is_empty() && !placeholder {
             return Ok(response
                 .incomplete
                 .then(|| References { incomplete: Some(ReferencesIncomplete::FilesSkipped), ..Default::default() }));
@@ -229,22 +273,13 @@ impl LspManager {
             ..Default::default()
         };
         self.note_virtual(&server, result.locations.iter().map(|l| l.uri.as_deref()));
+        if let Some(local) = local {
+            result.locations.extend(local.locations);
+            result.incomplete = result.incomplete.or(local.incomplete);
+        }
         if key.is_none() || usages {
             let roots: Vec<PathBuf> = response.roots.iter().filter_map(|uri| super::project_path(uri)).collect();
-            let overlays: HashMap<PathBuf, String> = self
-                .docs
-                .lock()
-                .values()
-                .filter(|d| language(&d.path).is_some() && d.text.as_str().len() as u64 <= MAX_BYTES)
-                .map(|d| (d.canonical.clone(), d.text.as_str().to_owned()))
-                .collect();
-            let cache = self.configuration_cache.clone();
-            let cancelled = cancel.clone();
-            let keys = response.keys;
-            let files =
-                tokio::task::spawn_blocking(move || configuration_files(&roots, &keys, &overlays, &cache, &cancelled))
-                    .await
-                    .map_err(|_| IdeError::unavailable("configuration search worker stopped"))?;
+            let files = self.configuration_declarations(response.keys, &roots, cancel).await?;
             result.locations.extend(files.locations);
             result.incomplete = result.incomplete.or(files.incomplete);
         }
@@ -265,6 +300,29 @@ impl LspManager {
         }
         crate::convert::dedup_locations(&mut result.locations);
         Ok(Some(result))
+    }
+
+    /// Configuration-file and Spring-XML declarations matching `patterns` under
+    /// `roots`, with open editor contents taking precedence over disk.
+    async fn configuration_declarations(
+        &self,
+        patterns: Vec<Pattern>,
+        roots: &[PathBuf],
+        cancel: &CancellationToken,
+    ) -> IdeResult<References> {
+        let overlays: HashMap<PathBuf, String> = self
+            .docs
+            .lock()
+            .values()
+            .filter(|d| language(&d.path).is_some() && d.text.as_str().len() as u64 <= MAX_BYTES)
+            .map(|d| (d.canonical.clone(), d.text.as_str().to_owned()))
+            .collect();
+        let cache = self.configuration_cache.clone();
+        let cancelled = cancel.clone();
+        let roots = roots.to_vec();
+        tokio::task::spawn_blocking(move || configuration_files(&roots, &patterns, &overlays, &cache, &cancelled))
+            .await
+            .map_err(|_| IdeError::unavailable("configuration search worker stopped"))
     }
 }
 

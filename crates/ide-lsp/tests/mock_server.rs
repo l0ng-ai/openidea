@@ -4196,6 +4196,127 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_lands_in_spring_xml_and_properties() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let resources = h.root.join("src/main/resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    std::fs::write(
+        resources.join("context.xml"),
+        r#"<beans><util:properties id="db"><prop key="db.user">sa</prop></util:properties></beans>"#,
+    )
+    .unwrap();
+    std::fs::write(h.root.join("db.properties"), "db.user=root\n").unwrap();
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // The Java extension is not needed: the declarations come from the XML
+    // wiring and the properties file, and the open YAML never matches itself.
+    assert_eq!(locations.len(), 2, "{locations:?}");
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == resources.join("context.xml")));
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("db.properties")));
+    assert!(s.requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_merges_java_members_with_xml_declarations() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="db.user">sa</prop></beans>"#).unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Db.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 8}}}],
+            "keys": [{"name": "db.user", "relaxed": true}], "roots": []
+        }),
+    );
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // A bound Java member and the XML declaration are both candidates.
+    assert_eq!(locations.len(), 2, "{locations:?}");
+    assert!(locations.iter().any(|l| l.range.start == Pos::new(1, 4)));
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("context.xml")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_survives_a_failing_java_extension() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="db.user">sa</prop></beans>"#).unwrap();
+    let s = h.launcher.state("jdtls");
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "old server".into()));
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // The XML declaration still answers when the Java extension fails.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("context.xml")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_key_definition_stays_java_only() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="spring.datasource.username">sa</prop></beans>"#)
+        .unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Settings.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 11}}}],
+            "keys": [{"name": "spring.datasource.username", "relaxed": true}], "roots": []
+        }),
+    );
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: sa\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Definition).await.unwrap();
+    // A key keeps the Java-only definition path; the XML declaration is not a candidate.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert_eq!(locations[0].range.start, Pos::new(2, 4));
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "spring.datasource.username");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_definition_on_an_xml_property_asks_java() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Db.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 8}}}],
+            "keys": [{"name": "db.user", "relaxed": true}], "roots": []
+        }),
+    );
+    let xml = h.root.join("context.xml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &xml, &LanguageId::new("xml"), 1, "<beans><prop key=\"db.user\">sa</prop></beans>\n");
+    let locations = h.mgr.goto(doc, Pos::new(0, 19), GotoKind::Definition).await.unwrap();
+    // A Spring XML declaration is a configuration site: it navigates to the
+    // binding member through the Java index.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "db.user");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn configuration_prewarm_starts_java_without_an_open_editor_and_waits_for_import() {
     let mut caps = incremental_caps();
     caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration.warmup"]});
