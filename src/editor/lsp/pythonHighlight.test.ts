@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxTree } from "@/test/syntax";
 import { findLanguageDescription, loadSupport } from "../core/cm/languages";
 import { pythonSyntaxRanges, pythonFallbackRanges, pythonSymbolKinds } from "./pythonHighlight";
 import { semanticRanges } from "./semantic";
@@ -8,9 +8,7 @@ import { semanticRanges } from "./semantic";
 async function parse(source: string) {
   const support = await loadSupport(findLanguageDescription("Python", "demo.py")!);
   const state = EditorState.create({ doc: source, extensions: [support!] });
-  const tree = ensureSyntaxTree(state, state.doc.length, 1000);
-  expect(tree, "Python parsing must finish before checking highlights").not.toBeNull();
-  return { doc: state.doc, tree: tree! };
+  return { doc: state.doc, tree: completedSyntaxTree(state) };
 }
 
 describe("Python PyCharm categories", () => {
