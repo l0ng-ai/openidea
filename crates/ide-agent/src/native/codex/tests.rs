@@ -316,6 +316,39 @@ impl Client {
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn questions_share_one_card_and_keep_their_ids() {
+    let client = Arc::new(Client::default());
+    client.answers.lock().extend([Some(r#"{"first":["One"],"second":["Two","Custom"]}"#), None, Some("invalid")]);
+    let (ours, theirs) = tokio::io::duplex(1 << 16);
+    let (read, write) = tokio::io::split(theirs);
+    let codex = Peer::connect_framed(read, write, Arc::new(ide_jsonrpc::NoopHandler), Framing::Lines);
+    let acp = attach(client.clone(), |events| {
+        let (read, write) = tokio::io::split(ours);
+        Ok(Peer::connect_framed(read, write, events, Framing::Lines))
+    })
+    .unwrap();
+    let params = json!({"threadId": "s", "itemId": "q", "questions": [
+        {"id": "first", "question": "Which?", "options": [{"label": "One", "description": "First"}]},
+        {"id": "second", "question": "Which?", "multiSelect": true, "options": [{"label": "Two"}]}
+    ]});
+    for expected in
+        [json!({"first": {"answers": ["One"]}, "second": {"answers": ["Two", "Custom"]}}), json!({}), json!({})]
+    {
+        let reply: Value = codex.request("item/tool/requestUserInput", params.clone(), None).await.unwrap();
+        assert_eq!(reply, json!({"answers": expected}));
+    }
+    let asked = client.asked.lock();
+    assert_eq!(asked.len(), 3);
+    let questions = &asked[0]["toolCall"]["_meta"]["questions"];
+    assert_eq!(questions.as_array().unwrap().len(), 2);
+    assert_eq!(questions[0]["answerKey"], "first");
+    assert_eq!(questions[1]["answerKey"], "second");
+    assert_eq!(questions[0]["options"][0]["description"], "First");
+    acp.kill();
+    codex.kill();
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Scenario {
     AuthFailure,

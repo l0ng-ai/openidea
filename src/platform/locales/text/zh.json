@@ -6702,5 +6702,13 @@
   "\n[Process finished with exit code {exitCode}]": "\n[进程已结束，退出代码为 {exitCode}]",
   "\nError: {error}": "\n错误：{error}",
   "\n[Log stream stopped]": "\n[日志流已停止]",
-  "Toggle Log Option": "切换日志选项"
+  "Toggle Log Option": "切换日志选项",
+  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE 托管的 Tomcat 运行目录不得与 Tomcat 主目录或基目录重叠",
+  "Read-only: the table schema could not be identified in the result database.": "只读：无法确定结果所在数据库中的表架构。",
+  "devcontainer up exited with {status}": "devcontainer up 已退出，状态为 {status}",
+  "Rename Agent Task": "重命名智能体任务",
+  "Couldn't rename the task": "无法重命名任务",
+  "Start a Fresh Agent Session": "启动全新的智能体会话",
+  "Start Fresh": "重新开始",
+  "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "这会清空整个对话，并使用此消息启动全新的智能体会话。智能体已修改的文件保持不变。"
 }

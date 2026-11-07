@@ -2186,23 +2186,24 @@ mod tests {
     #[test]
     fn process_environment_only_adds_variables() {
         let tmp = tempfile::tempdir().unwrap();
-        let binary = ide_core::process::find_executable(
-            "git",
-            &ide_core::process::user_path().or_else(|| std::env::var_os("PATH")).unwrap(),
-        )
-        .expect("git on PATH");
+        // Environment overrides must be rejected before spawn, so no executable is needed.
+        let binary = tmp.path().join("lint.exe");
+        std::fs::write(&binary, "not an executable").unwrap();
         let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
-        pins.write().insert(("acme.lint".into(), "process:git".into()), ProgramPin::approve(&binary).unwrap());
+        pins.write().insert(("acme.lint".into(), "process:lint".into()), ProgramPin::approve(&binary).unwrap());
         let api = api(tmp.path(), pins);
         let inherited = std::env::vars_os()
-            .find(|(key, _)| key != "PATH" && key.to_str().is_some_and(|key| !key.is_empty() && !key.contains('=')))
+            .find(|(key, _)| {
+                !env_name_eq(key, "PATH".as_ref())
+                    && key.to_str().is_some_and(|key| !key.is_empty() && !key.contains('='))
+            })
             .unwrap()
             .0
             .into_string()
             .unwrap();
         for key in ["PATH".to_owned(), inherited] {
             let cmd = ProcessCommand {
-                program: "git".into(),
+                program: "lint".into(),
                 env: vec![(key.clone(), "replacement".into())],
                 ..Default::default()
             };

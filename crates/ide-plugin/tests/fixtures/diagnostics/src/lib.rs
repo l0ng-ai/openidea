@@ -11,6 +11,7 @@ impl Plugin for Fixture {
     fn run_command(&mut self, id: &str, _: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
             "wait" => {
+                host::set_context("fixture-gate", "wait").unwrap();
                 std::thread::sleep(Duration::from_millis(400));
                 Ok(Some("finished".into()))
             }
@@ -28,6 +29,9 @@ impl Plugin for Fixture {
 impl DiagnosticsProvider for Fixture {
     fn diagnostics(&mut self, doc: &Document) -> Vec<Diagnostic> {
         self.calls += 1;
+        if doc.text.starts_with("gate") {
+            host::set_context("fixture-gate", self.calls.to_string()).unwrap();
+        }
         if doc.text == "limits" {
             let mut diagnostic = Diagnostic::new(Range::default(), Severity::Hint, "m".repeat(5000));
             diagnostic.source = Some("s".repeat(200));
@@ -39,7 +43,7 @@ impl DiagnosticsProvider for Fixture {
         if doc.text.starts_with("slow") {
             std::thread::sleep(Duration::from_millis(200));
         }
-        if doc.text.starts_with("spin") {
+        if doc.text.starts_with("spin") || doc.text.starts_with("gate spin") {
             loop {
                 std::hint::spin_loop();
             }
