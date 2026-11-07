@@ -139,7 +139,7 @@ fn wrapper(exe: &Path, windows: bool) -> io::Result<String> {
     }
     Ok(if windows {
         format!(
-            "@echo off\r\nrem {WRAPPER_MARKER}\r\nsetlocal DisableDelayedExpansion\r\nfor /f \"tokens=2 delims=:\" %%c in ('chcp') do set \"_openidea_codepage=%%c\"\r\nchcp 65001 >nul\r\n\"{}\" --cli %*\r\nset \"_openidea_exit=%errorlevel%\"\r\nchcp %_openidea_codepage% >nul\r\nexit /b %_openidea_exit%\r\n",
+            "@echo off\r\nrem {WRAPPER_MARKER}\r\nsetlocal DisableDelayedExpansion\r\nfor /f \"tokens=2 delims=:\" %%c in ('\"%SystemRoot%\\System32\\chcp.com\"') do set \"_openidea_codepage=%%c\"\r\n\"%SystemRoot%\\System32\\chcp.com\" 65001 >nul\r\n\"{}\" --cli %*\r\nset \"_openidea_exit=%errorlevel%\"\r\n\"%SystemRoot%\\System32\\chcp.com\" %_openidea_codepage% >nul\r\nexit /b %_openidea_exit%\r\n",
             exe.replace('%', "%%")
         )
     } else {
@@ -398,7 +398,9 @@ mod wrapper_tests {
             .unwrap();
         assert!(compiled.status.success(), "{}", String::from_utf8_lossy(&compiled.stderr));
         let path = install_wrapper(&exe, &dir.path().join("bin"), true).unwrap();
+        std::fs::write(dir.path().join("chcp.cmd"), "@echo malicious-chcp\r\nexit /b 99\r\n").unwrap();
         let output = std::process::Command::new("cmd.exe")
+            .current_dir(dir.path())
             .args(["/d", "/s", "/c"])
             .raw_arg(format!("\"\"{}\" \"a b\" \"中文\" \"x&y\"\"", path.display()))
             .output()
@@ -406,13 +408,15 @@ mod wrapper_tests {
         assert_eq!(output.status.code(), Some(7));
         assert_eq!(String::from_utf8(output.stdout).unwrap().replace("\r\n", "\n"), "--cli\na b\n中文\nx&y\n");
         let check = dir.path().join("check.cmd");
-        std::fs::write(&check, "@echo off\r\nfor /f \"tokens=2 delims=:\" %%c in ('chcp') do set \"before=%%c\"\r\ncall \"%~dp0bin\\openidea.cmd\" example\r\nset \"code=%errorlevel%\"\r\nfor /f \"tokens=2 delims=:\" %%c in ('chcp') do set \"after=%%c\"\r\nif not \"%before%\"==\"%after%\" exit /b 99\r\nexit /b %code%\r\n").unwrap();
+        std::fs::write(&check, "@echo off\r\nfor /f \"tokens=2 delims=:\" %%c in ('\"%SystemRoot%\\System32\\chcp.com\"') do set \"before=%%c\"\r\ncall \"%~dp0bin\\openidea.cmd\" example\r\nset \"code=%errorlevel%\"\r\nfor /f \"tokens=2 delims=:\" %%c in ('\"%SystemRoot%\\System32\\chcp.com\"') do set \"after=%%c\"\r\nif not \"%before%\"==\"%after%\" exit /b 99\r\nexit /b %code%\r\n").unwrap();
         let output = std::process::Command::new("cmd.exe")
+            .current_dir(dir.path())
             .args(["/d", "/s", "/c"])
             .raw_arg(format!("\"\"{}\"\"", check.display()))
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(7));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("malicious-chcp"));
     }
 }
 
