@@ -81,6 +81,10 @@ interface MenuDecl {
   view?: string | null;
   command: string;
   when?: string | null;
+  /** Groups the plugin's entries of one context menu under this label. */
+  submenu?: string | null;
+  /** The command's title in the plugin's language, when it ships one. */
+  commandTitle?: string;
 }
 
 const CONTEXT_MENUS: Record<string, ContextMenuId> = {
@@ -92,42 +96,76 @@ const CONTEXT_MENUS: Record<string, ContextMenuId> = {
 const contextItems = new Map<string, { pluginId: string; decl: MenuDecl }>();
 let menuSeq = 0;
 
+/**
+ * Adds `item` to `out`; the entries of one plugin that name the same
+ * `submenu` are collected under it.
+ */
+function addGrouped(
+  out: MenuItem[],
+  groups: Map<string, MenuItem[]>,
+  pluginId: string,
+  submenu: string | null | undefined,
+  item: MenuItem,
+): void {
+  if (!submenu) {
+    out.push(item);
+    return;
+  }
+  const key = `${pluginId}\u0000${submenu}`;
+  let group = groups.get(key);
+  if (!group) {
+    group = [];
+    groups.set(key, group);
+    out.push({ kind: "item", label: submenu, verbatim: true, submenu: group });
+  }
+  group.push(item);
+}
+
+/** A submenu holding one visible entry gains nothing from nesting. */
+function flattenSingleGroups(items: MenuItem[]): MenuItem[] {
+  return items.map((item) =>
+    item.kind !== "action" && "submenu" in item && item.submenu?.length === 1 ? item.submenu[0]! : item,
+  );
+}
+
 /** Plugin items of a context menu: their command's action with the menu's file as argument. */
 export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): MenuItem[] {
   const out: MenuItem[] = [];
+  const groups = new Map<string, MenuItem[]>();
   for (const { pluginId, decl } of contextItems.values()) {
     if (CONTEXT_MENUS[decl.menu] !== menu || !evaluateWhen(decl.when ?? undefined)) continue;
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;
     // The editor menu runs with the focused editor; the others name their file.
-    out.push({
+    addGrouped(out, groups, pluginId, decl.submenu, {
       kind: "action",
       action,
       arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths] },
     });
   }
-  return out;
+  return flattenSingleGroups(out);
 }
 
 /** Plugin entries of a view item's context menu, with the item key as argument. */
 export function pluginViewItemMenuItems(pluginId: string, view: string, key: string): MenuItem[] {
   const ctx = { ...getContext(), viewItem: key, viewItemKind: key.split(":")[0] };
   const out: MenuItem[] = [];
+  const groups = new Map<string, MenuItem[]>();
   for (const { pluginId: owner, decl } of contextItems.values()) {
     if (owner !== pluginId || decl.menu !== "viewItem.context" || decl.view !== view) continue;
     if (!evaluateWhen(decl.when ?? undefined, ctx)) continue;
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;
-    out.push({ kind: "action", action, arg: key });
+    addGrouped(out, groups, pluginId, decl.submenu, { kind: "action", action, arg: key });
   }
-  return out;
+  return flattenSingleGroups(out);
 }
 
 function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () => void {
   if (decl.menu === "tools") {
     const action = pluginActionId(pluginId, decl.command);
-    const title = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
-    return registerMenuSlotItem("pluginTools", { action, label: title });
+    const title = decl.commandTitle ?? getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
+    return registerMenuSlotItem("pluginTools", { action, label: title, verbatim: true });
   }
   if (decl.menu === "commit.message") {
     const action = pluginActionId(pluginId, decl.command);
@@ -135,6 +173,7 @@ function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () =
     return registerMenuSlotItem("commitMessage", {
       action,
       label,
+      verbatim: true,
       icon: pluginIconName(pluginId, plugin.icon),
       when: decl.when ?? null,
     });
@@ -399,6 +438,7 @@ function registerView(pluginId: string, decl: ViewDecl, icon: string): () => voi
   return registerToolWindow({
     id: pluginToolWindowId(pluginId, decl.id),
     title: decl.title,
+    verbatim: true,
     icon,
     anchor: decl.location,
     order: 900,
@@ -561,6 +601,7 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
               label: tx("Open With"),
               submenu: editors.map((e) => ({
                 label: e.decl.title,
+                verbatim: true,
                 run: () => openInput(customEditorInput(e.pluginId, e.decl, path)),
               })),
             });

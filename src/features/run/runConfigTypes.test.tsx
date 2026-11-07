@@ -21,7 +21,17 @@ import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } 
 import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
 import { pasteRows } from "./EnvDialog";
-import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
+import {
+  CURRENT_FILE,
+  prepareLaunch,
+  resetRuns,
+  selectConfig,
+  sessionsOf,
+  setBeforeLaunchRunner,
+  startCompound,
+  startRun,
+  useRun,
+} from "./store";
 import {
   BUILTIN_TYPES,
   blankTemplate,
@@ -68,6 +78,15 @@ beforeEach(() => {
 });
 
 afterEach(() => disposeTypes());
+
+it.each([undefined, false])(
+  "respects the launch origin when a configuration requests focus (%s)",
+  async (showOption) => {
+    await startRun(cfg("focused", { focusToolWindow: true }), undefined, undefined, { show: showOption });
+    if (showOption === false) expect(show).not.toHaveBeenCalled();
+    else expect(show).toHaveBeenCalledWith("run", true);
+  },
+);
 
 describe("configuration types", () => {
   it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
@@ -586,6 +605,18 @@ describe("before launch tasks", () => {
     expect(await runBeforeLaunch(cfg("x", { beforeLaunch: [{ kind: "run", target: "x" }] }), ["x"])).toBe(false);
     dispose();
     disposeBuild();
+  });
+
+  it("forwards the tool-window visibility choice to the before launch runner", async () => {
+    const runner = vi.fn(async () => true);
+    setBeforeLaunchRunner(runner);
+    try {
+      const app = cfg("app", { beforeLaunch: [{ kind: "run", target: "other" }] });
+      expect(await prepareLaunch(app, [], false)).toBe(true);
+      expect(runner).toHaveBeenCalledWith(app, ["app"], false);
+    } finally {
+      setBeforeLaunchRunner(null);
+    }
   });
 });
 

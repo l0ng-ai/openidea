@@ -47,14 +47,14 @@ import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
-import { failedTestPaths, leafTestPaths, rerunFailedConfig, testsConfig } from "./testing/rerun";
+import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
 import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
-import { startedPort } from "./serverPort";
+import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
@@ -530,10 +530,10 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
       : wait > 0
         ? {
-            timeout: window.setTimeout(
-              () => (rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) }),
-              wait,
-            ),
+            timeout: window.setTimeout(() => {
+              if (document.hidden) flush(sessionId);
+              else rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) };
+            }, wait),
           }
         : { raf: requestAnimationFrame(() => flush(sessionId)) };
   }
@@ -627,7 +627,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
 }
 
 /** Runs a configuration's before launch tasks; false aborts the launch. Installed by the feature. */
-export type BeforeLaunchRunner = (config: RunConfig, chain: readonly string[]) => Promise<boolean>;
+export type BeforeLaunchRunner = (config: RunConfig, chain: readonly string[], show?: boolean) => Promise<boolean>;
 let beforeLaunch: BeforeLaunchRunner | null = null;
 
 export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
@@ -635,17 +635,25 @@ export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
 }
 
 /** Runs `config`'s before launch tasks (none: true). `chain` holds the configurations already launching. */
-export async function prepareLaunch(config: RunConfig, chain: readonly string[] = []): Promise<boolean> {
+export async function prepareLaunch(
+  config: RunConfig,
+  chain: readonly string[] = [],
+  show?: boolean,
+): Promise<boolean> {
   if (!config.beforeLaunch?.length || !beforeLaunch) return true;
-  return beforeLaunch(config, [...chain, config.id]);
+  return beforeLaunch(config, [...chain, config.id], show);
 }
 
 /** Starts every configuration of a compound (after the compound's own before launch tasks). */
-export async function startCompound(config: RunConfig, chain: readonly string[] = []): Promise<RunSession[]> {
-  if (!(await prepareLaunch(config, chain))) return [];
+export async function startCompound(
+  config: RunConfig,
+  chain: readonly string[] = [],
+  show?: boolean,
+): Promise<RunSession[]> {
+  if (!(await prepareLaunch(config, chain, show))) return [];
   const children = compoundChildren(config, useRun.getState().configs);
   const sessions = await Promise.all(
-    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id] })),
+    children.map((c) => startRun(c, undefined, undefined, { chain: [...chain, config.id], show })),
   );
   return sessions.filter((s): s is RunSession => !!s);
 }
@@ -677,7 +685,7 @@ export async function startRun(
   } = {},
 ): Promise<RunSession | null> {
   if (config.kind === "compound") {
-    await startCompound(config, options.chain);
+    await startCompound(config, options.chain, options.show);
     return null;
   }
   // IDEA offers only Debug for Remote JVM Debug and the like: there is nothing to run.
@@ -692,7 +700,7 @@ export async function startRun(
     });
     return null;
   }
-  if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain))) return null;
+  if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain, options.show))) return null;
   const state = useRun.getState();
   const busy = (s: RunSession) => isLive(s);
   let session = reuse ? state.sessions.find((s) => s.id === reuse) : undefined;
@@ -789,7 +797,7 @@ export async function startRun(
   });
   rt.onExit = options.onExit;
   try {
-    if (config.focusToolWindow) toolWindowService().show("run", true);
+    if (options.show !== false && config.focusToolWindow) toolWindowService().show("run", true);
     else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
       toolWindowService().show("run");
   } catch {
@@ -1142,9 +1150,11 @@ export function rerunSession(sessionId: string) {
  * `run.debugConfig` entry the Services view and the editor context menu use
  * (`baseConfig` keeps the original configuration for derived launches).
  */
-export function debugSession(sessionId: string) {
+export function debugSession(sessionId: string, options: { show?: boolean } = {}) {
   const session = getSession(sessionId);
-  if (session) void executeAction("run.debugConfig", baseConfigOf(session));
+  if (!session) return;
+  const config = baseConfigOf(session);
+  void executeAction("run.debugConfig", options.show === false ? { config, show: false } : config);
 }
 
 /** Paths of the failed tests of a session's last run. */
@@ -1158,9 +1168,9 @@ export function rerunFailed(sessionId: string): boolean {
   const session = getSession(sessionId);
   if (!session || isLive(session)) return false;
   const base = baseConfigOf(session);
-  const derived = rerunFailedConfig(base, failedTests(sessionId));
-  if (!derived) return false;
-  void startRun(derived, sessionId, base);
+  const derived = rerunFailedConfigs(base, failedTests(sessionId));
+  if (!derived.length) return false;
+  derived.forEach((config, index) => void startRun(config, index === 0 ? sessionId : undefined, base));
   return true;
 }
 
@@ -1180,14 +1190,16 @@ export async function runSelectedTests(
   const paths = leafTestPaths(nodes);
   const base = baseConfigOf(session);
   const name = nodes.length === 1 ? nodes[0]!.name : `${paths.length} tests`;
-  const derived = testsConfig(base, paths, name);
-  if (!derived) return false;
-  const config = adoptTemporary({
-    ...derived,
-    id: `context:tests:${base.id}:${paths.map((p) => p.join("/")).join("|")}`,
-  });
-  if (debug) await executeAction("run.debugConfig", config);
-  else await startRun(config);
+  const derived = testsConfigs(base, paths, name);
+  if (!derived.length) return false;
+  for (const [index, next] of derived.entries()) {
+    const config = adoptTemporary({
+      ...next,
+      id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
+    });
+    if (debug) await executeAction("run.debugConfig", config);
+    else await startRun(config, undefined, base);
+  }
   return true;
 }
 

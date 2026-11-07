@@ -1,3 +1,4 @@
+import { onEndpointsChanged } from "@/workbench/contributions";
 import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
@@ -140,6 +141,15 @@ function SearchEverywhereDialog() {
   const bumpToggles = () => setToggleTick((t) => t + 1);
 
   useEffect(() => () => controller.dispose(), [controller]);
+  const [endpointVersion, setEndpointVersion] = useState(0);
+  useEffect(
+    () =>
+      onEndpointsChanged(() => {
+        controller.invalidateEndpoints();
+        setEndpointVersion((v) => v + 1);
+      }),
+    [controller],
+  );
 
   useEffect(() => {
     if (query === debounced) return;
@@ -182,7 +192,7 @@ function SearchEverywhereDialog() {
       includeDisabled: tab === "actions" ? includeNonProject : undefined,
       extra,
     });
-  }, [controller, searchQuery, tab, includeNonProject, fileSet, filter, extra]);
+  }, [controller, searchQuery, tab, includeNonProject, fileSet, filter, extra, endpointVersion]);
 
   useEffect(() => {
     inputRef.current?.select();

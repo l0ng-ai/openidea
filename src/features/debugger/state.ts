@@ -4,7 +4,7 @@
  */
 import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import { create } from "zustand";
 import { AnsiStream, appendSpans, type Span } from "@/ui/ansi";
 import { setContext } from "@/platform/context";
@@ -25,7 +25,7 @@ import {
 } from "@/platform/ipc";
 import { confirmTerminate } from "@/workbench/confirmTerminate";
 import { maybeEditorService, notifications, toolWindowService, useDebugRunSessions } from "@/workbench/contributions";
-import { startedPort } from "@/features/run/serverPort";
+import { startedPort } from "@/platform/serverPort";
 import { breakpointsOf, consumeTemporary, flushBreakpoints, refreshStates, resetStatuses } from "./breakpoints/store";
 import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
@@ -308,6 +308,8 @@ export function publishContext() {
           processId: session.process,
           httpPort: sessionHttpPort(session.id),
           rerun: session.runConfig || session.launch ? () => void rerunSession(session.id) : null,
+          rerunInPlace:
+            session.runConfig || session.launch ? () => void rerunSession(session.id, { show: false }) : null,
           stop: (options?: { stopProcess?: boolean }) => stopSession(session.id, options),
           show: () => {
             if (!useDebug.getState().sessions[session.id]) return;
@@ -497,6 +499,7 @@ const preparations = new Map<DebugSessionId, AbortController>();
 export async function startPreparedSession(
   config: RunConfig,
   prepare: (signal: AbortSignal, report: (text: string, kind?: "system" | "stderr") => void) => Promise<LaunchConfig>,
+  options: { show?: boolean } = {},
 ): Promise<DebugSessionId | null> {
   const id = --preparationSeq as DebugSessionId;
   const controller = new AbortController();
@@ -511,7 +514,7 @@ export async function startPreparedSession(
   }));
   publishContext();
   try {
-    if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
+    if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
     /* no workbench (tests) */
   }
@@ -522,7 +525,11 @@ export async function startPreparedSession(
     report(tx`Starting debugger for ${config.name}…` + "\n");
     const launch = await prepare(controller.signal, report);
     controller.signal.throwIfAborted();
-    return await startSession(launch, { runConfig: config, preparation: { id, signal: controller.signal } });
+    return await startSession(launch, {
+      runConfig: config,
+      preparation: { id, signal: controller.signal },
+      show: options.show,
+    });
   } catch (e) {
     if (controller.signal.aborted || isCancelled(e)) return null;
     report((e instanceof Error ? e.message : String(e)) + "\n", "stderr");
@@ -542,6 +549,8 @@ export async function startSession(
     process?: RunId | null;
     /** Rerun repeats the launch (false for attaching to a process that is gone afterwards). */
     rerunnable?: boolean;
+    /** `false`: keep the current tool window (the Services panel starts debuggers in place). */
+    show?: boolean;
   } = {},
 ): Promise<DebugSessionId | null> {
   if (!isTauri()) {
@@ -553,7 +562,7 @@ export async function startSession(
   const previousActive = useDebug.getState().active;
   if (!afterDetach) dropFinished();
   try {
-    if (workflowSettings().run.showOnStart) toolWindowService().show("debug");
+    if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
     // Workbench not ready (tests).
   }
@@ -653,6 +662,12 @@ export async function startSession(
   }
 }
 
+/** Stops an associated Run process through its owner, which records the user's stop intent. */
+export async function stopAssociatedProcess(process: RunId): Promise<void> {
+  if (getAction("run.stopProcess")) await executeAction("run.stopProcess", process);
+  else await call(commands.runStop(process)).catch(() => undefined);
+}
+
 export async function stopSession(id: DebugSessionId, options: { stopProcess?: boolean } = {}) {
   const s = useDebug.getState().sessions[id];
   if (!s) return;
@@ -670,6 +685,8 @@ export async function stopSession(id: DebugSessionId, options: { stopProcess?: b
     const target = useDebug.getState().sessions[sid];
     if (target && isLive(target)) patch(sid, { status: "stopping" });
   }
+  const stoppingProcess =
+    options.stopProcess !== false && root.process != null ? stopAssociatedProcess(root.process) : null;
   try {
     await call(commands.debugStop(root.id));
   } catch (e) {
@@ -677,9 +694,7 @@ export async function stopSession(id: DebugSessionId, options: { stopProcess?: b
     console.warn("debugStop failed", e);
     markTerminated(root.id);
   }
-  // Detaching leaves an attached JVM running: stop the process it belongs to, like IDEA.
-  if (options.stopProcess !== false && root.process != null)
-    await call(commands.runStop(root.process)).catch(() => undefined);
+  await stoppingProcess;
 }
 
 /**
@@ -727,19 +742,22 @@ export function removeSession(id: DebugSessionId) {
   publishContext();
 }
 
-export async function rerunSession(id: DebugSessionId) {
+export async function rerunSession(id: DebugSessionId, options: { show?: boolean } = {}) {
   const s = useDebug.getState().sessions[id];
   if (!s) return;
   const root = rootOf(s);
   if (root.runConfig) {
     if (isLive(root)) await stopSession(root.id);
-    await executeAction("run.debugConfig", root.runConfig);
+    await executeAction(
+      "run.debugConfig",
+      options.show === false ? { config: root.runConfig, show: false } : root.runConfig,
+    );
     return;
   }
   const launch = root.launch;
   if (!launch) return;
   if (isLive(root)) await stopSession(root.id);
-  await startSession(launch);
+  await startSession(launch, { show: options.show });
 }
 
 async function loadCapabilities(id: DebugSessionId) {

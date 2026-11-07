@@ -15,7 +15,17 @@ import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
-import { HOME, NO_COMMANDS, refreshProviders, startTask, updateDraft, useAgentCommands, useAgents } from "./store";
+import {
+  HOME,
+  NO_COMMANDS,
+  draftConfig,
+  refreshProviders,
+  setDraftOption,
+  startTask,
+  updateDraft,
+  useAgentCommands,
+  useAgents,
+} from "./store";
 import styles from "./Home.module.css";
 
 export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
@@ -85,7 +95,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const setOption = (id: string, value: string) => updateDraft({ config: { ...draft.config, [id]: value } });
+  const config = draftConfig(provider, draft);
 
   return (
     <div className={clsx(styles.home, docked && styles.docked)}>
@@ -107,8 +117,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           projectRoot={root}
           commands={agentCommands}
           history={history}
-          config={provider?.config ?? []}
-          onConfig={setOption}
+          config={config}
+          onConfig={setDraftOption}
           onSubmit={start}
           disabled={!canStart}
           toolbar={
@@ -122,7 +132,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
                 }
               />
-              <ConfigPickers config={provider?.config ?? []} values={draft.config} onChange={setOption} />
+              <ConfigPickers config={config} onChange={setDraftOption} />
             </>
           }
           actions={

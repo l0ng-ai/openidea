@@ -9,6 +9,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, registerEditorBanner } from "@/workbench/contributions";
 import { promptInput } from "@/workbench/inputDialogs";
+import { importJetBrainsSettings } from "./jetbrainsSettings";
 import { showNewProject } from "./NewProject";
 import { tx } from "@/platform/i18n";
 
@@ -80,11 +81,12 @@ async function importSettings() {
   const picked = await open({
     title: "Import Settings",
     multiple: false,
-    filters: [{ name: "OpenIDEA settings", extensions: ["json"] }],
+    filters: [{ name: "OpenIDEA or JetBrains settings", extensions: ["json", "zip"] }],
   });
   const path = Array.isArray(picked) ? picked[0] : picked;
   if (!path) return;
   try {
+    if (/\.zip$/i.test(path)) return await importJetBrainsSettings(path);
     const result = await call(commands.settingsImport(path));
     for (const [key, value] of Object.entries(result.storage))
       if (isExported(key))
