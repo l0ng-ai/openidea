@@ -109,6 +109,13 @@ mod imp {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
     }
 
+    pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::pick_directory(title, initial).map_err(error)
+    }
+    pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+        wit::workspace::open_project(path, new_window).map_err(error)
+    }
+
     pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
         wit::ui::pick_many(title, &pick_items(items)).map_err(error)
     }
@@ -799,3 +806,17 @@ pub mod storage {
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub use imp::{event as __event, range_from as __range_from, range_to as __range_to};
+
+/// Chooses a directory on the UI machine. `None` when dismissed; no capability.
+/// Same window/command/event rules as [`pick`].
+pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+    imp::pick_directory(title, initial)
+}
+
+/// Requests the normal File > Open flow, including project trust, in the
+/// invoking window (`false`) or a new window (`true`). No capability.
+/// Only commands/events of a window can request this; errors opening the
+/// project are shown by that window. `path` belongs to the UI machine.
+pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+    imp::open_project(path, new_window)
+}

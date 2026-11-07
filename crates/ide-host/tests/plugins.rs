@@ -3352,3 +3352,40 @@ fn invalid_plugin_icons_refuse_the_package() {
         assert!(err.contains(expected), "{id}: {err}");
     }
 }
+
+#[test]
+fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, prompt) =
+        run_and_answer(&f, "pick-directory", Some("C:/work"), Some(&["C:/work/repo"]), Duration::from_millis(700));
+    assert_eq!(result.unwrap().as_deref(), Some("C:/work/repo"));
+    assert_eq!(prompt, Prompt::PickDirectory { title: "Clone target".into(), initial: Some("C:/work".into()) });
+    assert_eq!(run_and_answer(&f, "pick-directory", None, None, Duration::ZERO).0.unwrap().as_deref(), Some("none"));
+    assert!(run_and_answer(&f, "pick-directory", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.run("jobs", "pick-directory", Some("relative")).is_err());
+    for (cmd, new_window) in [("open-project", false), ("open-project-new", true)] {
+        f.take_events();
+        let inv = Invocation { client: Some("second".into()), ..f.inv() };
+        f.host.run_command("jobs", cmd, Some("C:/work/repo"), inv).unwrap();
+        let requests = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenProject { plugin_id, path, new_window } => Some((client, plugin_id, path, new_window)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requests, vec![(Some("second".into()), "jobs".into(), "C:/work/repo".into(), new_window)]);
+        let error = f.host.run_command("jobs", cmd, Some("/work/repo"), Invocation::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{error:?}");
+    }
+    assert!(f.host.run_command("jobs", "pick-directory", None, Invocation::default()).is_err());
+    for path in ["relative", "/bad\npath", ""] {
+        f.take_events();
+        assert!(f.run("jobs", "open-project", Some(path)).is_err());
+        assert!(!f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::OpenProject { .. })));
+    }
+}

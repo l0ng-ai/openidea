@@ -6562,5 +6562,6 @@
   "Per-module language levels and compiler output overrides are not supported yet. Configure them in Maven or Gradle.": "暂不支持模块级语言级别和编译输出覆盖设置。请在 Maven 或 Gradle 中配置。",
   "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.": "此模块运行和调试使用的 JDK。编译 JDK 由 Maven 和 Gradle 管理。",
   "Remove Module Overrides": "移除模块覆盖设置",
-  "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}"
+  "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}",
+  "Cannot choose a directory": "无法选择目录"
 }

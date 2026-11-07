@@ -88,6 +88,8 @@ pub enum Prompt {
     Input { prompt: String, value: Option<String>, multiline: bool },
     #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
+    #[serde(rename_all = "camelCase")]
+    PickDirectory { title: String, initial: Option<String> },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).

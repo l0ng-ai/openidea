@@ -69,6 +69,10 @@ pub trait HostApi: Send + Sync {
         let _ = (client, url);
         Ok(())
     }
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let _ = (client, path, new_window);
+        Err(HostError::Invalid("opening projects is unavailable".into()))
+    }
     /// Shows `prompt` in `client`'s window and waits for the answer until the
     /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
     /// text (`Input`, one element) or any value (`Confirm`: OK); `None` when

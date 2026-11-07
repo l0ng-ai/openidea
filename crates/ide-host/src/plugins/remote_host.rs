@@ -119,6 +119,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::OpenLocation { .. }
             | PluginEvent::CopyToClipboard { .. }
             | PluginEvent::OpenUrl { .. }
+            | PluginEvent::OpenProject { .. }
             | PluginEvent::PromptRequested { .. }
             | PluginEvent::PromptClosed { .. }
             | PluginEvent::RevealView { .. }
