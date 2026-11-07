@@ -11,11 +11,12 @@ use crate::types::{
     RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
 };
 use crate::types::{
-    FieldValue, View, ViewBody, ViewButton, ViewEvent, ViewField, ViewListItem, ViewProcess, ViewTab, ViewTable,
-    ViewToggle, ViewTreeItem, Viewport,
+    FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, View, ViewBody, ViewButton, ViewEvent,
+    ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, indexing_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+    bindings, indexing_bindings, providers_bindings, semantic_bindings, services_bindings, syntax_bindings,
+    views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -35,6 +36,8 @@ use bindings::openidea::plugin::types as wit_types;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
+use services_bindings::exports::openidea::plugin::service_provider as wit_svc;
+use services_bindings::openidea::plugin::service_types as wit_st;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
@@ -520,6 +523,7 @@ struct Exports {
     indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
+    services: Option<wit_svc::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -600,6 +604,7 @@ impl Runtime {
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
+        let service_indices = wit_svc::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -622,9 +627,13 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let services = match service_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer, semantic },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services },
             limits: setup.limits,
             version: setup.version,
         })
@@ -947,6 +956,29 @@ impl Runtime {
         }
     }
 
+    /// The Services pane of node `key` of the plugin's services view `view`.
+    pub fn service_detail(
+        &mut self,
+        view: &str,
+        key: &str,
+        invocation: Invocation,
+    ) -> Result<Vec<ServiceTab>, CallError> {
+        if self.exports.services.is_none() {
+            return Err(CallError::missing_export("service-provider"));
+        }
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let services = e.services.as_ref().expect("checked");
+            let r = services.call_detail(&mut *store, view, key, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        match result {
+            Ok(tabs) => Ok(tabs.into_iter().take(MAX_SERVICE_TABS).map(service_tab_from_wit).collect()),
+            Err(e) => Err(CallError::Guest(e.into())),
+        }
+    }
+
     /// A user action in a view or custom editor.
     pub fn view_event(&mut self, view: &str, event: ViewEvent, invocation: Invocation) -> Result<(), CallError> {
         if self.exports.views.is_none() {
@@ -1144,115 +1176,46 @@ fn opt_clip(s: Option<String>, max: usize) -> Option<String> {
     s.map(|s| clip(s, max))
 }
 
-const MAX_TABS: usize = 8;
-const MAX_TOGGLES: usize = 8;
-const MAX_ARGS: usize = 256;
-const MAX_ARG: usize = 4096;
+const MAX_SERVICE_TABS: usize = 8;
+const MAX_LOG_TOGGLES: usize = 8;
+const MAX_LOG_ARGS: usize = 256;
+const MAX_LOG_ARG: usize = 4096;
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TabsJson {
-    tabs: Vec<TabJson>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TabJson {
-    id: String,
-    label: String,
-    body: TabBodyJson,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-enum TabBodyJson {
-    Message { text: String },
-    Text { text: String },
-    Process(ProcessJson),
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TextJson {
-    text: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProcessJson {
-    program: String,
-    #[serde(default)]
-    args: Vec<String>,
-    #[serde(default)]
-    toggles: Vec<ToggleJson>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ToggleJson {
-    id: String,
-    label: String,
-    #[serde(default)]
-    args: Vec<String>,
-}
-
-fn checked_args(args: Vec<String>) -> Result<Vec<String>, String> {
-    if args.len() > MAX_ARGS || args.iter().any(|a| a.len() > MAX_ARG) {
-        return Err(format!("at most {MAX_ARGS} arguments of {MAX_ARG} bytes"));
-    }
-    Ok(args)
-}
-
-fn process_body(p: ProcessJson) -> Result<ViewBody, String> {
-    if p.toggles.len() > MAX_TOGGLES {
-        return Err(format!("at most {MAX_TOGGLES} toggles"));
-    }
-    let toggles = p
-        .toggles
-        .into_iter()
-        .map(|t| Ok(ViewToggle { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), args: checked_args(t.args)? }))
-        .collect::<Result<_, String>>()?;
-    Ok(ViewBody::Process(ViewProcess { program: clip(p.program, 256), args: checked_args(p.args)?, toggles }))
-}
-
-/// A body sent as `other(extension)`: `None` for a kind this IDE doesn't know.
-fn other_body(kind: &str, data: &str) -> Option<Result<ViewBody, String>> {
-    let parse = |e: serde_json::Error| e.to_string();
-    let body = match kind {
-        "text" => serde_json::from_str::<TextJson>(data).map_err(parse).map(|t| ViewBody::Text(clip(t.text, 1 << 20))),
-        "process" => serde_json::from_str::<ProcessJson>(data).map_err(parse).and_then(process_body),
-        "tabs" => serde_json::from_str::<TabsJson>(data).map_err(parse).and_then(|t| {
-            if t.tabs.len() > MAX_TABS {
-                return Err(format!("at most {MAX_TABS} tabs"));
-            }
-            t.tabs
-                .into_iter()
-                .map(|tab| {
-                    let body = match tab.body {
-                        TabBodyJson::Message { text } => ViewBody::Message(clip(text, 16 << 10)),
-                        TabBodyJson::Text { text } => ViewBody::Text(clip(text, 1 << 20)),
-                        TabBodyJson::Process(p) => process_body(p)?,
-                    };
-                    Ok(ViewTab { id: clip(tab.id, 64), label: clip(tab.label, MAX_TITLE), body })
+fn service_tab_from_wit(t: wit_st::Tab) -> ServiceTab {
+    let body = match t.body {
+        wit_st::Pane::Message(m) => ServicePane::Message(clip(m, 16 << 10)),
+        wit_st::Pane::Text(text) => ServicePane::Text(clip(text, MAX_TEXT)),
+        wit_st::Pane::Log(log) => {
+            let args_fit = |args: &[String]| args.len() <= MAX_LOG_ARGS && args.iter().all(|a| a.len() <= MAX_LOG_ARG);
+            if args_fit(&log.args)
+                && log.toggles.len() <= MAX_LOG_TOGGLES
+                && log.toggles.iter().all(|t| args_fit(&t.args))
+            {
+                ServicePane::Log(ServiceLog {
+                    program: clip(log.program, 256),
+                    args: log.args,
+                    toggles: log
+                        .toggles
+                        .into_iter()
+                        .map(|t| ServiceLogToggle { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), args: t.args })
+                        .collect(),
                 })
-                .collect::<Result<_, String>>()
-                .map(ViewBody::Tabs)
-        }),
-        _ => return None,
+            } else {
+                ServicePane::Message(format!(
+                    "This log asks for more than {MAX_LOG_ARGS} arguments of {MAX_LOG_ARG} bytes or {MAX_LOG_TOGGLES} toggles."
+                ))
+            }
+        }
     };
-    Some(body)
+    ServiceTab { id: clip(t.id, 64), label: clip(t.label, MAX_TITLE), body }
 }
 
 fn view_from_wit(v: wit_vt::View) -> View {
     let body = match v.body {
         wit_vt::Body::Message(m) => ViewBody::Message(clip(m, 16 << 10)),
-        wit_vt::Body::Other(e) => match other_body(&e.kind, &e.data) {
-            Some(Ok(body)) => body,
-            Some(Err(why)) => {
-                ViewBody::Message(clip(format!("This view's {} body is invalid: {why}", e.kind), 16 << 10))
-            }
-            None => ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64))),
-        },
+        wit_vt::Body::Other(e) => {
+            ViewBody::Message(format!("This view needs a newer version of OpenIDEA ({}).", clip(e.kind, 64)))
+        }
         wit_vt::Body::Tree(items) => ViewBody::Tree(
             items
                 .into_iter()
@@ -1388,63 +1351,5 @@ mod tests {
         ])));
         let ViewBody::Form(fields) = form.body else { panic!("a form") };
         assert_eq!(fields.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), ["name"], "unknown fields are left out");
-    }
-
-    fn other_view(kind: &str, data: &str) -> ViewBody {
-        let other = wit_types::Extension { kind: kind.into(), data: data.into() };
-        view_from_wit(wit_vt::View { toolbar: Vec::new(), body: wit_vt::Body::Other(other), status: None }).body
-    }
-
-    fn invalid(body: &ViewBody, kind: &str) -> bool {
-        matches!(body, ViewBody::Message(m) if m.starts_with(&format!("This view's {kind} body is invalid:")))
-    }
-
-    #[test]
-    fn tabs_text_and_process_bodies_decode() {
-        let data = r#"{"tabs":[{"id":"log","label":"Log","body":{"kind":"process","program":"kubectl","args":["logs","x"],"toggles":[{"id":"ts","label":"Timestamps","args":["--timestamps"]}]}},{"id":"inspect","label":"Inspect","body":{"kind":"text","text":"a: 1"}}]}"#;
-        let process = ViewProcess {
-            program: "kubectl".into(),
-            args: vec!["logs".into(), "x".into()],
-            toggles: vec![ViewToggle {
-                id: "ts".into(),
-                label: "Timestamps".into(),
-                args: vec!["--timestamps".into()],
-            }],
-        };
-        assert_eq!(
-            other_view("tabs", data),
-            ViewBody::Tabs(vec![
-                ViewTab { id: "log".into(), label: "Log".into(), body: ViewBody::Process(process.clone()) },
-                ViewTab { id: "inspect".into(), label: "Inspect".into(), body: ViewBody::Text("a: 1".into()) },
-            ])
-        );
-        assert_eq!(other_view("text", r#"{"text":"a: 1"}"#), ViewBody::Text("a: 1".into()));
-        let alone = r#"{"program":"kubectl","args":["logs","x"],"toggles":[{"id":"ts","label":"Timestamps","args":["--timestamps"]}]}"#;
-        assert_eq!(other_view("process", alone), ViewBody::Process(process));
-    }
-
-    #[test]
-    fn nested_tabs_and_bad_json_show_a_message() {
-        let nested = r#"{"tabs":[{"id":"a","label":"A","body":{"kind":"tabs","tabs":[]}}]}"#;
-        assert!(invalid(&other_view("tabs", nested), "tabs"));
-        assert!(invalid(&other_view("tabs", "{not json"), "tabs"));
-        let tab = r#"{"id":"a","label":"A","body":{"kind":"message","text":"m"}}"#;
-        let nine = format!(r#"{{"tabs":[{}]}}"#, [tab; 9].join(","));
-        assert!(invalid(&other_view("tabs", &nine), "tabs"));
-        let eight = format!(r#"{{"tabs":[{}]}}"#, [tab; 8].join(","));
-        assert!(
-            matches!(other_view("tabs", &eight), ViewBody::Tabs(t) if t.len() == 8 && t[0].body == ViewBody::Message("m".into()))
-        );
-    }
-
-    #[test]
-    fn process_limits() {
-        let args = |args: Vec<String>| serde_json::json!({"program": "kubectl", "args": args}).to_string();
-        assert!(invalid(&other_view("process", &args(vec!["a".into(); 257])), "process"));
-        assert!(invalid(&other_view("process", &args(vec!["a".repeat(4097)])), "process"));
-        assert!(matches!(other_view("process", &args(vec!["a".into(); 256])), ViewBody::Process(_)));
-        let toggle = serde_json::json!({"id": "t", "label": "T", "args": []});
-        let toggles = serde_json::json!({"program": "kubectl", "args": [], "toggles": vec![toggle; 9]}).to_string();
-        assert!(invalid(&other_view("process", &toggles), "process"));
     }
 }

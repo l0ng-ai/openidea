@@ -1,6 +1,7 @@
 //! Sample OpenIDEA plugin, written with the `openidea-plugin` SDK.
 //! Build with `openidea-plugin build crates/ide-plugin/tests/fixtures/hello` (see plugins/README.md).
 
+use openidea_plugin::services::{Pane, ProcessLog, Services, Tab};
 use openidea_plugin::views::{Body, Button, TreeItem, View, ViewEvent, Viewport, Views};
 use openidea_plugin::{Context, Error, Invocation, LogLevel, NotificationLevel, Plugin, host, register_plugin};
 use std::collections::BTreeSet;
@@ -83,8 +84,6 @@ impl Views for Hello {
                 self.expanded.remove(&key);
             }
             ViewEvent::Button(b) if b == "collapse" => self.expanded.clear(),
-            // An html body's script gets its message back.
-            ViewEvent::Message(text) => return host::post_view_message(view, &text),
             ViewEvent::Activate(key) => {
                 if let Some((language, word)) = key.split_once('/') {
                     host::notify(NotificationLevel::Info, word, &format!("A greeting in {language}"));
@@ -98,7 +97,15 @@ impl Views for Hello {
     }
 }
 
-register_plugin!(Hello, views);
+/// As a services view (tests): a node's key is the `sh -c` script its Log tab runs.
+impl Services for Hello {
+    fn detail(&mut self, view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
+        let log = ProcessLog::new("sh", &["-c", key]).toggle("named", "Named", &["named"]);
+        Ok(vec![Tab::new("log", "Log", log), Tab::new("info", "Info", Pane::Text(format!("{view}: {key}")))])
+    }
+}
+
+register_plugin!(Hello, views, services);
 
 /// Today's UTC date as `YYYY-MM-DD` (WASI wall clock).
 fn today() -> String {

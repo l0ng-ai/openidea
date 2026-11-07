@@ -1077,33 +1077,58 @@ impl PluginHost {
         })
     }
 
-    /// Runs `program` for a `process` body of one of the plugin's views,
-    /// streaming its output until it exits or `cancel` fires. Needs the
-    /// plugin's `process:<program>` grant.
-    #[allow(clippy::too_many_arguments)]
-    pub fn stream_view_process(
+    /// The Services pane of node `key` of the plugin's `location = "services"`
+    /// view `view`.
+    pub fn service_detail(
         &self,
         id: &str,
         view: &str,
-        program: &str,
-        args: Vec<String>,
-        cwd: Option<PathBuf>,
+        key: &str,
+        invocation: Invocation,
+    ) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
+        self.services_view(id, view)?;
+        let (view, key) = (view.to_owned(), key.to_owned());
+        self.code_call(id, invocation, "rendering the service's pane", move |rt, inv| {
+            rt.service_detail(&view, &key, inv)
+        })
+    }
+
+    /// Runs the program of the log tab `tab` of node `key`'s pane, with the
+    /// arguments of the toggles in `on`, streaming its output until it exits
+    /// or `cancel` fires; returns its exit code. The pane is asked of the
+    /// plugin again, so the UI never names what runs. Needs the plugin's
+    /// `process:<program>` grant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stream_service_log(
+        &self,
+        id: &str,
+        view: &str,
+        key: &str,
+        tab: &str,
+        on: &[String],
+        invocation: Invocation,
         cancel: &ide_core::CancellationToken,
         on_line: &dyn Fn(PluginOutputLine),
     ) -> IdeResult<Option<i32>> {
-        self.declared_view(id, view)?;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let cwd = invocation.workspace_root.clone();
+        let tabs = self.service_detail(id, view, key, invocation)?;
+        let Some(ide_plugin::ServicePane::Log(log)) = tabs.into_iter().find(|t| t.id == tab).map(|t| t.body) else {
+            return Err(IdeError::not_found(format!("the pane of {key:?} has no log tab {tab:?}")));
+        };
+        let toggled = log.toggles.into_iter().filter(|t| on.contains(&t.id)).flat_map(|t| t.args);
+        let args: Vec<String> = log.args.into_iter().chain(toggled).collect();
         let plugin =
             self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("plugin {id:?}")))?;
-        if !plugin.status().is_live() {
-            return Err(IdeError::unavailable(format!("plugin {id:?} is not running")));
-        }
-        let cap = Capability::Process(program.to_owned());
+        let cap = Capability::Process(log.program.clone());
         if !plugin.meta.lock().granted.iter().any(|g| g.covers(&cap)) {
             let denied = HostError::Denied(cap.to_string()).to_string();
             return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, denied));
         }
         let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
-        api.stream_process(program, args, cwd.as_deref(), cancel, on_line).map_err(|e| match e {
+        api.stream_process(&log.program, args, cwd.as_deref(), cancel, on_line).map_err(|e| match e {
             HostError::Cancelled => IdeError::cancelled(),
             e @ HostError::Denied(_) => IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e.to_string()),
             HostError::NotFound(m) => IdeError::not_found(m),
@@ -1113,10 +1138,22 @@ impl PluginHost {
     }
 
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        if view_is_declared(&self.ui, id, view) {
+        let declared = [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
+            .iter()
+            .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
+        if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
+    }
+
+    fn services_view(&self, id: &str, view: &str) -> IdeResult<()> {
+        let services = self
+            .ui
+            .items(ui_points::VIEWS, Some(id))
+            .iter()
+            .any(|i| i.key == view && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION));
+        if services {
             Ok(())
         } else {
-            Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}")))
+            Err(IdeError::not_found(format!("plugin {id:?} declares no services view {view:?}")))
         }
     }
 
@@ -2415,20 +2452,6 @@ impl ide_language::ExternalSyntax for PluginSyntax {
                 .map(|f| ide_language::ExternalFold { start_line: f.start_line, end_line: f.end_line, kind: f.kind })
                 .collect(),
         )
-    }
-}
-
-/// `view` is one of plugin `id`'s views or custom editors, or `"<view>/<item
-/// key>"`: the detail pane of an item of one of its `services` views.
-fn view_is_declared(ui: &UiStore, id: &str, view: &str) -> bool {
-    match view.split_once('/') {
-        Some((services, _)) => ui
-            .items(ui_points::VIEWS, Some(id))
-            .iter()
-            .any(|i| i.key == services && i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION)),
-        None => [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
-            .iter()
-            .any(|point| ui.items(point, Some(id)).iter().any(|i| i.key == view)),
     }
 }
 

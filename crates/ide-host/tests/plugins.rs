@@ -2811,50 +2811,65 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
 }
 
-#[test]
-fn services_location_is_accepted() {
-    let f = fixture(Limits::default());
-    let tmp = tempfile::tempdir().unwrap();
-    let services = hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"services\""));
-    let info = f.install(&services);
-    assert!(info.error.is_none(), "{:?}", info.error);
-    let view = f.host.ui_items("views").remove(0);
-    assert_eq!(view.decl["location"].as_str(), Some("services"));
-
-    let tmp = tempfile::tempdir().unwrap();
-    let middle = hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"middle\""));
-    let err = f.host.install_from_dir(&middle, &Consent::all()).unwrap_err();
-    assert!(err.message.contains("view \"greetings\": `location` is left, right, bottom or services"), "{err:?}");
-
-    let tmp = tempfile::tempdir().unwrap();
-    let web = hello_variant(tmp.path(), |t| {
-        t.replace("location = \"right\"", "location = \"services\"\nweb = \"web/index.html\"")
-    });
-    std::fs::create_dir_all(web.join("web")).unwrap();
-    std::fs::write(web.join("web/index.html"), "<p>x</p>").unwrap();
-    let err = f.host.install_from_dir(&web, &Consent::all()).unwrap_err();
-    assert!(err.message.contains("a services view is rendered by the plugin's code (no `web`)"), "{err:?}");
+/// `hello` as a services view, which needs API 1.3.
+fn services_variant(text: &str) -> String {
+    text.replace("location = \"right\"", "location = \"services\"")
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
 }
 
 #[test]
-fn detail_id_only_for_services_views() {
-    let undeclared = |r: ide_core::IdeResult<ide_plugin::View>| {
-        r.is_err_and(|e| e.kind == ide_core::error::ErrorKind::NotFound && e.message.contains("declares no view"))
-    };
+fn services_views_need_api_1_3_and_code() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let info = f.install(&hello_variant(tmp.path(), services_variant));
+    assert!(info.error.is_none(), "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views").remove(0).decl["location"].as_str(), Some("services"));
+
+    for (edit, message) in [
+        (
+            Box::new(|t: &str| t.replace("location = \"right\"", "location = \"services\""))
+                as Box<dyn Fn(&str) -> String>,
+            "new in plugin API 1.3",
+        ),
+        (
+            Box::new(|t: &str| t.replace("location = \"right\"", "location = \"middle\"")),
+            "left, right, bottom or services",
+        ),
+        (
+            Box::new(|t: &str| {
+                services_variant(t)
+                    .replace("location = \"services\"", "location = \"services\"\nweb = \"web/index.html\"")
+            }),
+            "a services view is rendered by the plugin's code (no `web`)",
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), edit);
+        std::fs::create_dir_all(pkg.join("web")).unwrap();
+        std::fs::write(pkg.join("web/index.html"), "<p>x</p>").unwrap();
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{message}: {err:?}");
+    }
+}
+
+#[test]
+fn services_views_have_a_detail_pane() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    f.install(&hello_variant(tmp.path(), services_variant));
+    let tabs = f.host.service_detail("hello", "greetings", "pod:default/nginx", f.inv()).unwrap();
+    assert_eq!(tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["log", "info"]);
+    assert_eq!(tabs[1].body, ide_plugin::ServicePane::Text("greetings: pod:default/nginx".into()));
+    let ide_plugin::ServicePane::Log(log) = &tabs[0].body else { panic!("a log: {:?}", tabs[0].body) };
+    assert_eq!(
+        (log.program.as_str(), log.args.as_slice()),
+        ("sh", ["-c".to_owned(), "pod:default/nginx".to_owned()].as_slice())
+    );
 
     let f = fixture(Limits::default());
     f.install(&sample("hello"));
-    assert!(undeclared(f.host.render_view("hello", "greetings/English", None, f.inv())), "a right view has no detail");
-    assert!(undeclared(f.host.render_view("hello", "nope/English", None, f.inv())));
-
-    let f = fixture(Limits::default());
-    let tmp = tempfile::tempdir().unwrap();
-    f.install(&hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"services\"")));
-    assert!(!undeclared(f.host.render_view("hello", "greetings/pod:default/nginx", None, f.inv())));
-    assert!(undeclared(f.host.render_view("hello", "nope/pod:default/nginx", None, f.inv())));
-    let event = ide_plugin::ViewEvent::Select { key: "x".into() };
-    let err = f.host.view_event("hello", "greetings/pod:default/nginx", event, f.inv()).err();
-    assert!(err.as_ref().is_none_or(|e| !e.message.contains("declares no view")), "{err:?}");
+    let err = f.host.service_detail("hello", "greetings", "x", f.inv()).unwrap_err();
+    assert!(err.message.contains("declares no services view"), "a right view has no pane: {err:?}");
 }
 
 /// `hello` as a services view that may run `sh`, granted or not.
@@ -2863,7 +2878,7 @@ fn services_with_sh(f: &Fixture, dir: &Path, grant: bool) {
     let sh = PathBuf::from("/bin");
     f.host.set_program_path(Arc::new(move || Some(sh.clone().into_os_string())));
     let pkg = hello_variant(dir, |t| {
-        t.replace("location = \"right\"", "location = \"services\"").replace(
+        services_variant(t).replace(
             "required = [\"editor.read\", \"editor.write\"]",
             "required = [\"editor.read\", \"editor.write\"]\noptional = [\"process:sh\"]",
         )
@@ -2872,57 +2887,79 @@ fn services_with_sh(f: &Fixture, dir: &Path, grant: bool) {
     f.host.set_capability("hello", "process:sh", grant).unwrap();
 }
 
+/// Follows the Log tab of the node whose key is `script`.
 #[cfg(unix)]
 fn stream(
     f: &Fixture,
     script: &str,
+    on: &[&str],
     cancel: &ide_core::CancellationToken,
-    on: impl Fn(PluginOutputLine),
+    lines: impl Fn(PluginOutputLine),
 ) -> ide_core::IdeResult<Option<i32>> {
-    let args = vec!["-c".to_owned(), script.to_owned()];
-    f.host.stream_view_process("hello", "greetings/pod:a", "sh", args, None, cancel, &on)
+    let on: Vec<String> = on.iter().map(|s| (*s).to_owned()).collect();
+    f.host.stream_service_log("hello", "greetings", script, "log", &on, f.inv(), cancel, &lines)
 }
 
 #[cfg(unix)]
 #[test]
-fn view_process_streams_lines() {
+fn service_logs_stream_lines_with_the_toggles_args() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
     services_with_sh(&f, tmp.path(), true);
     let lines = Mutex::new(Vec::new());
-    let status = stream(&f, "printf 'a\\nb\\n'; printf 'e\\n' >&2", &Default::default(), |l| lines.lock().push(l));
-    assert_eq!(status.unwrap(), Some(0));
+    let script = "printf 'a\\nb\\n'; printf 'e\\n' >&2; exit 3";
+    let status = stream(&f, script, &[], &Default::default(), |l| lines.lock().push(l));
+    assert_eq!(status.unwrap(), Some(3));
     let mut lines = lines.into_inner();
     lines.sort_by_key(|l| l.stderr);
     let line = |stderr: bool, text: &str| PluginOutputLine { stderr, text: text.into() };
     assert_eq!(lines, [line(false, "a"), line(false, "b"), line(true, "e")]);
+
+    // `sh -c script arg` names the script `arg` ($0): the toggle's args are appended.
+    let named = Mutex::new(Vec::new());
+    stream(&f, "echo $0", &["named"], &Default::default(), |l| named.lock().push(l.text)).unwrap();
+    assert_eq!(named.into_inner(), ["named"]);
+
+    let long = Mutex::new(Vec::new());
+    stream(&f, "head -c 40000 /dev/zero | tr '\\0' x; echo; echo next", &[], &Default::default(), |l| {
+        long.lock().push(l.text.len())
+    })
+    .unwrap();
+    assert_eq!(long.into_inner(), [16 << 10, 4], "a long line is cut, the next one is whole");
 }
 
 #[cfg(unix)]
 #[test]
-fn view_process_needs_the_grant() {
+fn service_logs_need_the_grant_and_a_log_tab() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
     services_with_sh(&f, tmp.path(), false);
     let marker = tmp.path().join("ran");
     let script = format!("touch {}", marker.display());
-    let err = stream(&f, &script, &Default::default(), |_| {}).unwrap_err();
+    let err = stream(&f, &script, &[], &Default::default(), |_| {}).unwrap_err();
     assert_eq!(err.kind, ErrorKind::PermissionDenied);
     assert!(err.message.contains("permission denied: process:sh is not granted"), "{err:?}");
     assert!(!marker.exists(), "nothing was started");
-    let err = f.host.stream_view_process("hello", "nope/pod:a", "sh", Vec::new(), None, &Default::default(), &|_| {});
-    assert_eq!(err.unwrap_err().kind, ErrorKind::NotFound);
+
+    f.host.set_capability("hello", "process:sh", true).unwrap();
+    let info =
+        f.host.stream_service_log("hello", "greetings", &script, "info", &[], f.inv(), &Default::default(), &|_| {});
+    assert_eq!(info.unwrap_err().kind, ErrorKind::NotFound, "a text tab runs nothing");
+    let cancelled = ide_core::CancellationToken::default();
+    cancelled.cancel();
+    assert_eq!(stream(&f, &script, &[], &cancelled, |_| {}).unwrap_err().kind, ErrorKind::Cancelled);
+    assert!(!marker.exists(), "a cancelled request starts nothing");
 }
 
 #[cfg(unix)]
 #[test]
-fn view_process_cancel_kills_the_child() {
+fn service_log_cancel_kills_the_child() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
     services_with_sh(&f, tmp.path(), true);
     let cancel = ide_core::CancellationToken::default();
     let started = Instant::now();
-    let result = stream(&f, "echo up; sleep 30.4321", &cancel, |l| {
+    let result = stream(&f, "echo up; sleep 30.4321", &[], &cancel, |l| {
         if l.text == "up" {
             cancel.cancel();
         }
@@ -2935,7 +2972,7 @@ fn view_process_cancel_kills_the_child() {
 
 #[cfg(unix)]
 #[test]
-fn view_process_stops_when_the_grant_is_revoked() {
+fn service_log_stops_when_the_grant_is_revoked() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();
     services_with_sh(&f, tmp.path(), true);
@@ -2946,7 +2983,7 @@ fn view_process_stops_when_the_grant_is_revoked() {
         std::thread::sleep(Duration::from_secs(3));
         timer.cancel();
     });
-    let result = stream(&f, "while :; do echo tick; sleep 0.05; done", &watchdog, |l| {
+    let result = stream(&f, "while :; do echo tick; sleep 0.05; done", &[], &watchdog, |l| {
         if l.text == "tick" && started.elapsed() < Duration::from_secs(1) {
             f.host.set_capability("hello", "process:sh", false).unwrap();
         }
@@ -2954,28 +2991,6 @@ fn view_process_stops_when_the_grant_is_revoked() {
     assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
     let err = result.unwrap_err();
     assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
-}
-
-/// A detail pane's `html` script gets the plugin's replies, under the full
-/// `<view>/<item key>` id however long the key.
-#[test]
-fn detail_panes_get_view_messages() {
-    let f = fixture(Limits::default());
-    let tmp = tempfile::tempdir().unwrap();
-    f.install(&hello_variant(tmp.path(), |t| t.replace("location = \"right\"", "location = \"services\"")));
-    let detail = format!("greetings/pod:default/{}", "n".repeat(100));
-    f.take_events();
-    let ping = ide_plugin::ViewEvent::Message { text: "ping".into() };
-    f.host.view_event("hello", &detail, ping, f.inv()).unwrap();
-    let replies: Vec<_> = f
-        .take_events()
-        .into_iter()
-        .filter_map(|(_, e)| match e {
-            PluginEvent::ViewMessage { view, message, .. } => Some((view, message)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(replies, [(detail, "ping".to_owned())]);
 }
 
 #[test]

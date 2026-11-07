@@ -764,7 +764,7 @@ impl views::Host for StoreData {
         if message.len() > MAX_VIEW_MESSAGE {
             return Ok(Err(wit::Error::Invalid(format!("messages are limited to {MAX_VIEW_MESSAGE} bytes"))));
         }
-        Ok(self.host.post_view_message(&clip(view, MAX_VIEW_ID), message).map_err(to_wit))
+        Ok(self.host.post_view_message(&clip(view, 64), message).map_err(to_wit))
     }
 
     fn open_terminal(&mut self, title: String, program: String, args: Vec<String>) -> Fallible<()> {
@@ -805,10 +805,6 @@ impl settings::Host for StoreData {
 
 impl views_bindings::openidea::plugin::view_types::Host for StoreData {}
 
-/// A view id, or a Services detail pane's `"<view>/<item key>"` (keys are
-/// clipped at 1024 bytes).
-const MAX_VIEW_ID: usize = 64 + 1 + 1024;
-
 /// Largest message between a plugin and its view's frame.
 const MAX_VIEW_MESSAGE: usize = 1 << 20;
 
@@ -816,6 +812,19 @@ pub(crate) mod indexing_bindings {
     wasmtime::component::bindgen!({
         world: "indexing", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+/// The optional `service-provider` export.
+pub(crate) mod services_bindings {
+    wasmtime::component::bindgen!({
+        world: "services", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
     });
 }
 

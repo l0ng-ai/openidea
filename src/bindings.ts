@@ -1090,11 +1090,14 @@ export const commands = {
 	language: string,
 	selections: Range[],
 } | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_view_event", { pluginId, view, event, doc, editor })),
+	/**  The Services pane of node `key` of a plugin's `location = "services"` view. */
+	pluginServiceDetail: (pluginId: string, view: string, key: string) => typedError<ServiceTab[], IdeError>(__TAURI_INVOKE("plugin_service_detail", { pluginId, view, key })),
 	/**
-	 *  Runs the program of a plugin view's `process` body, streaming its output
-	 *  until it exits or `request` is cancelled; returns the exit code.
+	 *  Runs the program of the log tab `tab` of node `key`'s Services pane (with
+	 *  the toggles in `on`), streaming its output until it exits or `request` is
+	 *  cancelled; returns the exit code.
 	 */
-	pluginViewProcess: (request: RequestId, pluginId: string, view: string, program: string, args: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_view_process", { request, pluginId, view, program, args, onLine })),
+	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
 	/**  The page of a plugin's web view or custom editor (`web = …`). */
 	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
 	/**
@@ -6967,6 +6970,32 @@ export type ServerStatus = "starting" | "ready" | "busy" | "crashed" | "stopped"
  */
 "misconfigured";
 
+export type ServiceLog = {
+	program: string,
+	args: string[],
+	toggles: ServiceLogToggle[],
+};
+
+/**  A switch above the log; when on, `args` are appended and the program restarts. */
+export type ServiceLogToggle = {
+	id: string,
+	label: string,
+	args: string[],
+};
+
+export type ServicePane = { kind: "message"; value: string } | 
+/**  Read-only text that can be selected and copied. */
+{ kind: "text"; value: string } | 
+/**  A program the IDE runs (with the plugin's `process:` grant), followed in a log. */
+{ kind: "log"; value: ServiceLog };
+
+/**  A tab of the Services pane of a plugin's node (`service-provider.detail`). */
+export type ServiceTab = {
+	id: string,
+	label: string,
+	body: ServicePane,
+};
+
 /**  Exception filters of one session (see [`DebugManager::exception_filters`]). */
 export type SessionExceptionFilters = {
 	session: DebugSessionId,
@@ -7866,13 +7895,7 @@ export type View = {
 	status: string | null,
 };
 
-export type ViewBody = { kind: "message"; value: string } | { kind: "tree"; value: ViewTreeItem[] } | { kind: "list"; value: ViewListItem[] } | { kind: "form"; value: ViewField[] } | { kind: "table"; value: ViewTable } | { kind: "html"; value: string } | 
-/**  Tabs switched by the IDE; a tab's body is a message, text or process. */
-{ kind: "tabs"; value: ViewTab[] } | 
-/**  Read-only text that can be selected and copied. */
-{ kind: "text"; value: string } | 
-/**  A program the IDE runs, its output streamed into a log. */
-{ kind: "process"; value: ViewProcess };
+export type ViewBody = { kind: "message"; value: string } | { kind: "tree"; value: ViewTreeItem[] } | { kind: "list"; value: ViewListItem[] } | { kind: "form"; value: ViewField[] } | { kind: "table"; value: ViewTable } | { kind: "html"; value: string };
 
 export type ViewButton = {
 	id: string,
@@ -7897,32 +7920,12 @@ export type ViewListItem = {
 	detail: string | null,
 };
 
-/**  Runs with the plugin's `process:<program>` grant in the project root. */
-export type ViewProcess = {
-	program: string,
-	args: string[],
-	toggles: ViewToggle[],
-};
-
-export type ViewTab = {
-	id: string,
-	label: string,
-	body: ViewBody,
-};
-
 export type ViewTable = {
 	columns: string[],
 	totalRows: number,
 	firstRow: number,
 	rows: string[][],
 	editable: boolean,
-};
-
-/**  A switch above the log; when on, `args` are appended and the program restarts. */
-export type ViewToggle = {
-	id: string,
-	label: string,
-	args: string[],
 };
 
 export type ViewTreeItem = {

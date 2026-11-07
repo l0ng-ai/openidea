@@ -22,11 +22,11 @@ import type {
   PluginsSnapshot,
   PluginSecretState,
   PluginStatusItem,
+  ServiceTab,
   UiContribution,
   View,
   ViewEvent,
   Viewport,
-  ViewProcess,
   WorkbenchEvent,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
@@ -91,17 +91,21 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  /** The Services pane of node `key` of a plugin's services view. */
+  serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /**
-   * Runs a view's `process` body (with the args of the toggles in `on`) and streams its
-   * lines until the returned stop function is called.
+   * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
+   * lines until it exits (`onExit`) or the returned stop function is called.
    */
-  streamProcess(
+  serviceLog(
     pluginId: string,
     view: string,
-    process: ViewProcess,
+    key: string,
+    tab: string,
     on: ReadonlySet<string>,
     onLine: (line: PluginOutputLine) => void,
     onError: (message: string) => void,
+    onExit: (code: number | null) => void,
   ): () => void;
   /** The URL of a web view's page (`web = …`), under the `openidea-plugin` scheme. */
   webPageUrl(pluginId: string, view: string): Promise<string>;
@@ -218,12 +222,12 @@ export const tauriPluginsBackend: PluginsBackend = {
   viewEvent: async (pluginId, view, event, doc) => {
     await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
   },
-  streamProcess: (pluginId, view, process, on, onLine, onError) => {
+  serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
+  serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
     const request = nextRequestId();
     const channel = new Channel<PluginOutputLine>();
     channel.onmessage = onLine;
-    const args = [...process.args, ...process.toggles.filter((t) => on.has(t.id)).flatMap((t) => t.args)];
-    call(commands.pluginViewProcess(request, pluginId, view, process.program, args, channel)).catch((e: unknown) => {
+    call(commands.pluginServiceLog(request, pluginId, view, key, tab, [...on], channel)).then(onExit, (e: unknown) => {
       if (!isCancelled(e)) onError(e instanceof Error ? e.message : String(e));
     });
     return () => void commands.cancelRequest(request);
@@ -564,8 +568,9 @@ export function createMemoryPluginsBackend(
       status: null,
     }),
     viewEvent: async () => {},
-    streamProcess: (pluginId, view, process, _on, _onLine, onError) => {
-      onError(`${pluginId} · ${view}: running ${process.program} needs the desktop app`);
+    serviceDetail: async () => [],
+    serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
+      onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);
       return () => {};
     },
     webPageUrl: async (pluginId, view) => {

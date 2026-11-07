@@ -137,23 +137,23 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point           | Declaration                                                                                                                       | Code needed   |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`      | `id`, `title`, `category?`, `when?`                                                                                               | to run them   |
-| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                             | no            |
-| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                   | no            |
-| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                     | no            |
-| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                         | no            |
-| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                          | yes           |
-| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                   | to use them   |
-| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`), `view?`, `command`, `when?`   | no            |
-| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                 | no            |
-| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                       | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                        | no            |
-| `views`         | `id`, `title`, `icon?` (an icon name, or an SVG of the package), `location` (`left`, `right`, `bottom`), `web?` (see _Web views_) | without `web` |
-| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                       | without `web` |
-| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                          | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                    | no            |
+| Point           | Declaration                                                                                                                      | Code needed   |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`      | `id`, `title`, `category?`, `when?`                                                                                              | to run them   |
+| `themes`        | `path` (theme JSON), `editor-scheme?`                                                                                            | no            |
+| `iconThemes`    | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                  | no            |
+| `languages`     | `path` (`languages/<id>.toml` format, see §6)                                                                                    | no            |
+| `runDetectors`  | `id`, `name`, `files`, `command`, `args?`, `test?` (§6.2)                                                                        | no            |
+| `providers`     | `kinds`, `languages` (editor providers, see _Providers_)                                                                         | yes           |
+| `secrets`       | `name`, `label`, `description?` (see _Network_)                                                                                  | to use them   |
+| `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`), `view?`, `command`, `when?`  | no            |
+| `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                | no            |
+| `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                      | no            |
+| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                       | no            |
+| `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_) | without `web` |
+| `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                      | without `web` |
+| `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                         | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                   | no            |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -545,10 +545,9 @@ ever added.
 
 #### Services views
 
-`location = "services"` puts a view in the Services tool window, next to
-Docker and the run configurations, instead of a tool window of its own. Its
-code renders it (no `web`), and a plugin using it needs `engines.openidea =
-"^1.2"`:
+`location = "services"` (API 1.3: `engines.openidea = "^1.3"`) puts a view's
+tree in the Services tool window, next to Docker and the run configurations,
+instead of a tool window of its own. Its code renders it (no `web`):
 
 ```toml
 [[contributes.views]]
@@ -561,39 +560,32 @@ location = "services"
 optional = ["process:kubectl"]
 ```
 
-The items of the view's `tree` are Services nodes; select / activate /
-expand / collapse arrive as in a tool window, and its toolbar buttons show
-while one of them is selected (with several selected, a click sends
-`Select(key)` then `Button(id)` for each).
-For the selected node the IDE renders the pane beside the tree with the same
-`render`, under the view id `"<view>/<item key>"` (view ids can't contain
-`/`; `views::split_detail` splits it), and sends that pane's events to
-`handle` under the same id. `host::refresh_view("kube")` renders the nodes
-and the open pane again.
-
-Three bodies suit the pane (they travel as `Other` and work in any view):
-
-- `Body::text(s)`: read-only text the user can select and copy.
-- `Body::process(program, args)`: the IDE runs `program` (it needs the
-  plugin's `process:<program>` grant) in the project root and streams its
-  output into the log Docker containers use (ANSI stripped, the last 5000
-  lines, Soft-wrap, Clear). `.toggle(id, label, args)` adds a switch that
-  appends `args` and restarts the program. It stops when the pane goes away.
-- `Body::tabs(vec![(id, label, body)])`: tabs the IDE switches without
-  calling the plugin; a tab's body is a message, `text` or `process`.
+The items of the view's `tree` are Services nodes: `render`, `handle` and the
+toolbar work as in a tool window, the toolbar's buttons acting on the one
+selected node, and `viewItem.context` menus give the nodes a right-click menu.
+The pane beside the tree comes from the `service-provider` export: register
+`register_plugin!(MyPlugin, views, services)` and implement
+`openidea_plugin::services::Services`, which returns the selected node's tabs
+(at most 8; asked again after `host::refresh_view("kube")`):
 
 ```rust
-fn render(&mut self, view: &str, _: Option<Viewport>, _: &Invocation) -> Result<View, Error> {
-    if let Some(("kube", key)) = views::split_detail(view) {
+impl Services for MyPlugin {
+    fn detail(&mut self, view: &str, key: &str, _ctx: &Invocation) -> Result<Vec<Tab>, Error> {
         let pod = key.trim_start_matches("pod:");
-        let log = Body::process("kubectl", &["logs", "-f", "--tail=1000", pod])
+        let log = ProcessLog::new("kubectl", &["logs", "-f", "--tail=1000", pod])
             .toggle("ts", "Timestamps", &["--timestamps"]);
-        let describe = Body::process("kubectl", &["describe", "pod", pod]);
-        return Ok(View::new(Body::tabs(vec![("log", "Log", log.into()), ("inspect", "Inspect", describe.into())])));
+        Ok(vec![Tab::new("log", "Log", log), Tab::new("inspect", "Inspect", Pane::Text(self.describe(pod)?))])
     }
-    Ok(View::new(Body::Tree(self.pods())).button(Button::new("delete", "Delete").icon("trash")))
 }
 ```
+
+The IDE switches tabs without calling the plugin. A tab is a `Pane::Message`,
+read-only `Pane::Text` (at most 1 MiB) or a `ProcessLog`: the IDE asks for the
+pane again and runs that program (it needs the plugin's `process:<program>`
+grant) in the project root, following its output in the log Docker containers
+use (ANSI stripped, the last 5000 lines and 16 KiB per line, Soft-wrap, Clear,
+the exit code at the end). A toggle appends its `args` and starts the program
+again. It stops when the node's pane closes or the Services window is hidden.
 
 #### Web views
 

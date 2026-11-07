@@ -494,38 +494,6 @@ pub enum ViewBody {
     Form(Vec<ViewField>),
     Table(ViewTable),
     Html(String),
-    /// Tabs switched by the IDE; a tab's body is a message, text or process.
-    Tabs(Vec<ViewTab>),
-    /// Read-only text that can be selected and copied.
-    Text(String),
-    /// A program the IDE runs, its output streamed into a log.
-    Process(ViewProcess),
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ViewTab {
-    pub id: String,
-    pub label: String,
-    pub body: ViewBody,
-}
-
-/// Runs with the plugin's `process:<program>` grant in the project root.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ViewProcess {
-    pub program: String,
-    pub args: Vec<String>,
-    pub toggles: Vec<ViewToggle>,
-}
-
-/// A switch above the log; when on, `args` are appended and the program restarts.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct ViewToggle {
-    pub id: String,
-    pub label: String,
-    pub args: Vec<String>,
 }
 
 /// What a view or custom editor shows.
@@ -535,6 +503,42 @@ pub struct View {
     pub toolbar: Vec<ViewButton>,
     pub body: ViewBody,
     pub status: Option<String>,
+}
+
+/// A tab of the Services pane of a plugin's node (`service-provider.detail`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceTab {
+    pub id: String,
+    pub label: String,
+    pub body: ServicePane,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum ServicePane {
+    Message(String),
+    /// Read-only text that can be selected and copied.
+    Text(String),
+    /// A program the IDE runs (with the plugin's `process:` grant), followed in a log.
+    Log(ServiceLog),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceLog {
+    pub program: String,
+    pub args: Vec<String>,
+    pub toggles: Vec<ServiceLogToggle>,
+}
+
+/// A switch above the log; when on, `args` are appended and the program restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceLogToggle {
+    pub id: String,
+    pub label: String,
+    pub args: Vec<String>,
 }
 
 /// The table rows the UI shows.

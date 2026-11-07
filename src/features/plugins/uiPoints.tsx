@@ -311,7 +311,10 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
 }
 
 function registerView(pluginId: string, decl: ViewDecl, icon: string): () => void {
-  if (decl.location === "services") return registerServiceProvider(pluginServiceProvider(pluginId, decl, icon));
+  if (decl.location === "services") {
+    const itemMenu = (key: string) => pluginViewItemMenuItems(pluginId, decl.id, key);
+    return registerServiceProvider(pluginServiceProvider(pluginId, decl, icon, itemMenu));
+  }
   return registerToolWindow({
     id: pluginToolWindowId(pluginId, decl.id),
     title: decl.title,

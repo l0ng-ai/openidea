@@ -428,7 +428,6 @@ impl PluginApi {
         cancel: &CancellationToken,
         on_line: &dyn Fn(super::PluginOutputLine),
     ) -> Result<Option<i32>, HostError> {
-        use std::io::BufRead;
         let binary = self.approved_program(program)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
@@ -447,12 +446,9 @@ impl PluginApi {
         let read = |pipe: Box<dyn std::io::Read + Send>, stderr: bool| {
             let tx = tx.clone();
             std::thread::spawn(move || {
-                for line in std::io::BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
-                    let text = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line)).into_owned();
-                    if tx.send(super::PluginOutputLine { stderr, text }).is_err() {
-                        break;
-                    }
-                }
+                read_lines(pipe, MAX_OUTPUT_LINE, &mut |text| {
+                    tx.send(super::PluginOutputLine { stderr, text }).is_ok()
+                });
             });
         };
         if let Some(out) = child.stdout.take() {
@@ -495,6 +491,41 @@ impl PluginApi {
                 return Err(e);
             }
             std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Longest output line a followed program sends; the rest of the line is dropped.
+const MAX_OUTPUT_LINE: usize = 16 << 10;
+
+/// Passes `pipe`'s lines (without `\r\n`, at most `max` bytes each) to `line`
+/// until it returns false or the pipe closes, holding at most one line.
+fn read_lines(pipe: Box<dyn std::io::Read + Send>, max: usize, line: &mut dyn FnMut(String) -> bool) {
+    use std::io::{BufRead, Read};
+    let mut reader = std::io::BufReader::new(pipe);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match (&mut reader).take(max as u64).read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        if buf.last() != Some(&b'\n') && buf.len() == max {
+            // Too long: skip to the end of the line.
+            let mut rest = Vec::new();
+            loop {
+                rest.clear();
+                match (&mut reader).take(max as u64).read_until(b'\n', &mut rest) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if rest.last() == Some(&b'\n') => break,
+                    Ok(_) => {}
+                }
+            }
+        }
+        let end = buf.strip_suffix(b"\n").unwrap_or(&buf);
+        let end = end.strip_suffix(b"\r").unwrap_or(end);
+        if !line(String::from_utf8_lossy(end).into_owned()) {
+            return;
         }
     }
 }
@@ -945,7 +976,10 @@ impl HostApi for PluginApi {
     }
 
     fn post_view_message(&self, view: &str, message: String) -> Result<(), HostError> {
-        if !super::view_is_declared(&self.shared.ui, self.id(), view) {
+        let declared = [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
+            .iter()
+            .any(|point| self.shared.ui.items(point, Some(self.id())).iter().any(|i| i.key == view));
+        if !declared {
             return Err(HostError::NotFound(format!("the plugin declares no view {view:?}")));
         }
         let event = PluginEvent::ViewMessage { plugin_id: self.id().to_owned(), view: view.to_owned(), message };

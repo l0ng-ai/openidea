@@ -51,8 +51,10 @@ function backend(view: View = pods) {
 
 const decl = { id: "kube", title: "Kubernetes", location: "services" as const };
 
+const noMenu = () => [];
+
 async function roots(pluginId: string) {
-  const provider = pluginServiceProvider(pluginId, decl, "plugin");
+  const provider = pluginServiceProvider(pluginId, decl, "plugin", noMenu);
   const { result } = renderHook(() => provider.useRoots());
   await waitFor(() => expect(result.current).not.toHaveLength(0));
   return { provider, roots: result.current };
@@ -79,7 +81,9 @@ describe("plugin service providers", () => {
     await waitFor(() => expect(events).toContainEqual(["p", "kube", { kind: "select", key: "pod:default/nginx" }]));
     provider.activate?.(nginx);
     await waitFor(() => expect(events).toContainEqual(["p", "kube", { kind: "activate", key: "pod:default/nginx" }]));
-    provider.actions?.(nginx)[0]?.run();
+    const actions = provider.actions?.(nginx) ?? [];
+    expect(actions[0]?.id).not.toBe(provider.actions?.(nodes[0]!)[0]?.id);
+    actions[0]?.run();
     await waitFor(() => expect(events).toContainEqual(["p", "kube", { kind: "button", id: "delete" }]));
     const select = events.findIndex(([, , e]) => e.kind === "select" && e.key === "pod:default/nginx");
     const button = events.findIndex(([, , e]) => e.kind === "button");
@@ -94,13 +98,25 @@ describe("plugin service providers", () => {
     expect(a.roots[0]?.key).not.toBe(b.roots[0]?.key);
   });
 
-  it("renders the selected node's detail as <view>/<key>", async () => {
-    const { b } = backend({ toolbar: [], status: null, body: { kind: "text", value: "Name: nginx" } });
-    const provider = pluginServiceProvider("p", decl, "plugin");
+  it("asks the plugin's service provider for the selected node's pane", async () => {
+    const { b } = backend();
+    const serviceDetail = vi.fn(async () => [
+      { id: "info", label: "Info", body: { kind: "text" as const, value: "Name: nginx" } },
+    ]);
+    setPluginsBackend({ ...b, serviceDetail });
+    const provider = pluginServiceProvider("p", decl, "plugin", noMenu);
     const Detail = provider.detail!;
     const node: ServiceTreeItem = { key: "plugin:p/kube/pod:default/nginx", label: "nginx", icon: "folder" };
     render(<Detail item={node} />);
-    await waitFor(() => expect(b.renderView).toHaveBeenCalledWith("p", "kube/pod:default/nginx", null, null));
+    await waitFor(() => expect(serviceDetail).toHaveBeenCalledWith("p", "kube", "pod:default/nginx"));
+  });
+
+  it("offers the view's item menu on its nodes", async () => {
+    backend();
+    const itemMenu = vi.fn((key: string) => [{ label: key, run: () => {} }]);
+    const provider = pluginServiceProvider("p", decl, "plugin", itemMenu);
+    const node: ServiceTreeItem = { key: "plugin:p/kube/pod:default/nginx", label: "nginx", icon: "folder" };
+    expect(provider.menu?.(node)).toEqual([{ label: "pod:default/nginx", run: expect.any(Function) }]);
   });
 
   it("registers services views as providers and drops them with the plugin", () => {

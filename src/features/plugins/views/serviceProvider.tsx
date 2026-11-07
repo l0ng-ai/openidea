@@ -1,13 +1,16 @@
 /**
  * A plugin view declared with `location = "services"`: its tree's items are
- * nodes of the Services tool window, its toolbar the Services toolbar for
- * them, and the selected node's pane renders `"<view>/<item key>"`.
+ * nodes of the Services tool window, its toolbar the Services toolbar for one
+ * selected node, `viewItem.context` its nodes' right-click menu, and the
+ * plugin's `service-provider` the selected node's pane.
  */
 import { useEffect, useMemo, useState } from "react";
 import type { View, ViewEvent } from "@/bindings";
+import type { MenuItem } from "@/ui";
 import type { ServiceProviderContribution, ServiceTreeItem } from "@/workbench/contributions";
 import { pluginsBackend } from "../backend";
-import { PluginView, treeNodes, type TreeNode } from "./PluginView";
+import { treeNodes, type TreeNode } from "./PluginView";
+import { ServicePane } from "./ServicePane";
 import { useViewRevision } from "./viewStore";
 
 interface ServicesViewDecl {
@@ -19,6 +22,7 @@ export function pluginServiceProvider(
   pluginId: string,
   decl: ServicesViewDecl,
   icon: string,
+  itemMenu: (key: string) => MenuItem[],
 ): ServiceProviderContribution {
   const prefix = `plugin:${pluginId}/${decl.id}/`;
   const rawKey = (item: ServiceTreeItem) => item.key.slice(prefix.length);
@@ -64,9 +68,11 @@ export function pluginServiceProvider(
       }, [revision]);
       return useMemo(() => (view?.body.kind === "tree" ? treeNodes(view.body.value).map(toItem) : []), [view]);
     },
+    // Ids per node: the Services toolbar offers an action of several selected
+    // nodes only when they share its id, and a plugin's buttons act on one.
     actions: (item) =>
       toolbar.map((b) => ({
-        id: b.id,
+        id: `${item.key}\0${b.id}`,
         title: b.label,
         icon: b.icon ?? "plugin",
         disabled: !b.enabled,
@@ -75,6 +81,7 @@ export function pluginServiceProvider(
           send({ kind: "button", id: b.id });
         },
       })),
+    menu: (item) => itemMenu(rawKey(item)),
     select: (item) => send({ kind: "select", key: rawKey(item) }),
     activate: (item) => send({ kind: "activate", key: rawKey(item) }),
     expand: (item, expanded) => send({ kind: expanded ? "expand" : "collapse", key: rawKey(item) }),
@@ -82,10 +89,6 @@ export function pluginServiceProvider(
   };
 
   function Detail({ item }: { item: ServiceTreeItem }) {
-    // `views.refresh(<view>)` renders the open pane again too.
-    const revision = useViewRevision(pluginId, decl.id);
-    return (
-      <PluginView pluginId={pluginId} view={`${decl.id}/${rawKey(item)}`} label={item.label} revision={revision} />
-    );
+    return <ServicePane pluginId={pluginId} view={decl.id} itemKey={rawKey(item)} />;
   }
 }

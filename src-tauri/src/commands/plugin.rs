@@ -437,31 +437,48 @@ pub async fn plugin_view_event(
     ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc, editor).await
 }
 
-/// Runs the program of a plugin view's `process` body, streaming its output
-/// until it exits or `request` is cancelled; returns the exit code.
+/// The Services pane of node `key` of a plugin's `location = "services"` view.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_service_detail(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    view: String,
+    key: String,
+) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
+    let plugins = state.plugins.clone();
+    ide_host::plugins::views::service_detail(&state.host, plugins, window.label(), plugin_id, view, key).await
+}
+
+/// Runs the program of the log tab `tab` of node `key`'s Services pane (with
+/// the toggles in `on`), streaming its output until it exits or `request` is
+/// cancelled; returns the exit code.
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
-pub async fn plugin_view_process(
+pub async fn plugin_service_log(
     window: Window,
     state: State<'_, AppState>,
     request: ide_core::RequestId,
     plugin_id: String,
     view: String,
-    program: String,
-    args: Vec<String>,
+    key: String,
+    tab: String,
+    on: Vec<String>,
     on_line: Channel<ide_host::plugins::PluginOutputLine>,
 ) -> IdeResult<Option<i32>> {
     let plugins = state.plugins.clone();
     let on_line = super::sender(on_line);
-    ide_host::plugins::views::process(
+    ide_host::plugins::views::service_log(
         &state.host,
         plugins,
         window.label(),
         plugin_id,
         view,
-        program,
-        args,
+        key,
+        tab,
+        on,
         request,
         on_line,
     )

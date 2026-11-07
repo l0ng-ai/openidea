@@ -6,15 +6,25 @@ type Push = (l: LogLine) => void;
 
 function source() {
   const pushes: Push[] = [];
+  const exits: ((code: number | null) => void)[] = [];
   const stops: ReturnType<typeof vi.fn>[] = [];
-  const start = vi.fn((onLine: Push, _onError: (message: string) => void, _on: ReadonlySet<string>) => {
-    pushes.push(onLine);
-    const stop = vi.fn();
-    stops.push(stop);
-    return stop;
-  });
+  const start = vi.fn(
+    (
+      onLine: Push,
+      _onError: (message: string) => void,
+      _on: ReadonlySet<string>,
+      onExit: (code: number | null) => void,
+    ) => {
+      pushes.push(onLine);
+      exits.push(onExit);
+      const stop = vi.fn();
+      stops.push(stop);
+      return stop;
+    },
+  );
   const push = (text: string, stderr = false) => pushes.at(-1)!({ text, stderr });
-  return { start, stops, push };
+  const exit = (code: number | null) => act(() => exits.at(-1)!(code));
+  return { start, stops, push, exit };
 }
 
 let frames: FrameRequestCallback[] = [];
@@ -35,6 +45,14 @@ afterEach(() => {
 });
 
 describe("LogPane", () => {
+  it("says when the program finished, after its last lines", () => {
+    const s = source();
+    render(<LogPane start={s.start} sourceKey="a" live ariaLabel="Log" />);
+    s.push("done");
+    s.exit(3);
+    expect(screen.getByRole("log").textContent).toBe("doneProcess finished with exit code 3");
+  });
+
   it("appends lines and strips ANSI", () => {
     const s = source();
     render(<LogPane start={s.start} sourceKey="a" live ariaLabel="Log" />);

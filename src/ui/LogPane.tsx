@@ -17,8 +17,16 @@ export interface LogToggle {
 }
 
 export interface LogPaneProps {
-  /** Starts the source and returns its stop function; called again whenever the toggles or `sourceKey` change. */
-  start(onLine: (l: LogLine) => void, onError: (message: string) => void, on: ReadonlySet<string>): () => void;
+  /**
+   * Starts the source and returns its stop function; called again whenever the toggles or `sourceKey` change.
+   * A program's source reports its exit code with `onExit`.
+   */
+  start(
+    onLine: (l: LogLine) => void,
+    onError: (message: string) => void,
+    on: ReadonlySet<string>,
+    onExit: (code: number | null) => void,
+  ): () => void;
   sourceKey: string;
   toggles?: LogToggle[];
   /** "Waiting for output…" rather than "No output" while empty. */
@@ -50,6 +58,7 @@ function LogStream(
   const { toggles = [], live, ariaLabel, on, setOn, wrap, setWrap } = props;
   const [lines, setLines] = useState<LogLine[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [exit, setExit] = useState<number | null | undefined>(undefined);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const source = useRef({ start: props.start, on });
@@ -73,6 +82,10 @@ function LogStream(
       },
       setError,
       source.current.on,
+      (code) => {
+        flush();
+        setExit(code);
+      },
     );
     return () => {
       cancelAnimationFrame(frame);
@@ -120,7 +133,14 @@ function LogStream(
           </div>
         ))}
         {error && <div className={styles.stderr}>{error}</div>}
-        {!lines.length && !error && <div className={styles.dim}>{tx(live ? "Waiting for output…" : "No output")}</div>}
+        {exit !== undefined && (
+          <div className={styles.dim}>
+            {exit === null ? "Process finished" : `Process finished with exit code ${exit}`}
+          </div>
+        )}
+        {!lines.length && !error && exit === undefined && (
+          <div className={styles.dim}>{tx(live ? "Waiting for output…" : "No output")}</div>
+        )}
       </div>
     </div>
   );
