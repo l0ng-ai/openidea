@@ -282,6 +282,9 @@ pub struct AgentPermissionOption {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentQuestion {
+    /// Stable answer identity when the provider supplies question ids.
+    #[serde(default)]
+    pub answer_key: Option<String>,
     #[serde(default)]
     pub header: String,
     pub question: String,

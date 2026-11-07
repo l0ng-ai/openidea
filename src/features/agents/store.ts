@@ -18,6 +18,7 @@ import { useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
 import { bypassDefaults, canSend, emptyDraft, toPrompt, type ComposerDraft, type FileRef } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
@@ -601,7 +602,18 @@ export async function forkTask(task: string, turns: number | null): Promise<void
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
  * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
  */
-export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
+export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<boolean> {
+  if (
+    turn === 0 &&
+    !(await confirm({
+      title: "Start a Fresh Agent Session",
+      message:
+        "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.",
+      ok: "Start Fresh",
+      icon: "warning",
+    }))
+  )
+    return false;
   if (isBusy(useAgents.getState().tasks.get(task)?.status ?? "ready")) {
     await cancelTask(task);
     await settled(task);
@@ -619,6 +631,7 @@ export async function rerunFrom(task: string, turn: number, text: string, images
     focusComposer(task);
     throw e;
   }
+  return true;
 }
 
 /** Resolves once the task's turn has ended (or after a while). */
@@ -688,5 +701,6 @@ export const stopBackgroundTask = (task: string, background: string) =>
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
 export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));
+export const renameTask = (task: string, title: string) => call(commands.agentRename(task, title));
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));
