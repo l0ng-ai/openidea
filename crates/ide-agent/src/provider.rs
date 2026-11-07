@@ -184,6 +184,7 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
         installed: installed(&spec.command),
         env: spec.env.iter().cloned().collect(),
         config: vec![],
+        thought_levels: BTreeMap::new(),
         commands: vec![],
         source: spec.source.clone(),
     }
