@@ -22,7 +22,43 @@ impl Syntax {
         if language.as_str() == "properties" {
             return Ok(properties(text));
         }
+        if language.as_str() == "xml" {
+            // Only Spring wiring that mentions property placeholders can declare
+            // a configuration key; skip parsing unrelated XML (POMs, mappers,
+            // manifests) during project scans.
+            if !text.contains("<prop") && !text.contains("placeholder") && !text.contains("Placeholder") {
+                return Ok(Vec::new());
+            }
+            return self.with_parsed(language, text, cancelled, |tree| tree.spring_xml_keys(cancelled));
+        }
         self.with_parsed(language, text, cancelled, |tree| tree.configuration_keys(cancelled))
+    }
+
+    /// Name of the Spring `${name[:default]}` placeholder covering `pos` in
+    /// `text`, if the position lies anywhere inside its braces. The name stops
+    /// at the first `:` or `}`; inside a nested default (`${a:${b}}`) the inner
+    /// braces name `b`. Empty names (`${}`) name nothing.
+    pub fn configuration_placeholder(&self, text: &str, pos: Pos) -> Option<String> {
+        let at = byte_at(text, pos)?;
+        // The innermost `${` at or before `at` that is not closed before it
+        // wins, so a click inside a nested default picks the inner name.
+        let mut best: Option<(usize, usize)> = None;
+        let mut from = 0;
+        while let Some(open) = text[from..].find("${") {
+            let open = from + open;
+            if open > at {
+                break;
+            }
+            let Some(close) = text[open..].find('}').map(|close| open + close) else { break };
+            if at <= close {
+                best = Some((open, close));
+            }
+            from = open + 2;
+        }
+        let (open, close) = best?;
+        let end = open + text[open..close].find([':', '}']).unwrap_or(close - open);
+        let name = text[open + 2..end].trim();
+        (!name.is_empty()).then(|| name.to_owned())
     }
 }
 
@@ -68,6 +104,134 @@ impl ParsedTree<'_> {
         }
         out
     }
+
+    /// Spring property declarations in XML wiring: `<prop key="name">` values
+    /// (util:properties, configurer `<props>`) and `<property name="name"
+    /// value="...">` entries under a placeholder configurer bean. Elements that
+    /// only reference a property file (`<context:property-placeholder>`,
+    /// `<util:properties location="...">`) declare no key of their own; the
+    /// configuration scan finds the keys inside the referenced files.
+    pub fn spring_xml_keys(&self, cancelled: &dyn Fn() -> bool) -> Vec<ConfigurationKey> {
+        let mut out = Vec::new();
+        spring_xml(self.tree.root_node(), self.text, &LineIndex::new(self.text), &mut out, cancelled, 0, false);
+        out
+    }
+}
+
+/// Bean classes whose `<property name="key" value="...">` entries feed
+/// placeholder resolution (the placeholder configurers).
+fn placeholder_bean(class: &str) -> bool {
+    class.to_ascii_lowercase().contains("placeholder")
+}
+
+fn local_name(tag: &str) -> &str {
+    tag.rsplit(':').next().unwrap_or(tag)
+}
+
+fn spring_xml(
+    node: Node<'_>,
+    text: &str,
+    lines: &LineIndex<'_>,
+    out: &mut Vec<ConfigurationKey>,
+    cancelled: &dyn Fn() -> bool,
+    depth: usize,
+    configurer: bool,
+) {
+    if depth > 64 || cancelled() || out.len() >= 20_000 {
+        return;
+    }
+    if node.kind() != "element" {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            spring_xml(child, text, lines, out, cancelled, depth + 1, configurer);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.named_children(&mut cursor).collect();
+    let mut tag = "";
+    let mut inside = configurer;
+    let mut content: Vec<Node<'_>> = Vec::new();
+    for child in children {
+        match child.kind() {
+            "STag" | "EmptyElemTag" => {
+                let mut attrs_cursor = child.walk();
+                let attrs: Vec<_> = child.named_children(&mut attrs_cursor).collect();
+                let mut attributes: Vec<(&str, String, Range)> = Vec::new();
+                for (i, attr) in attrs.iter().enumerate() {
+                    if i == 0 && attr.kind() == "Name" {
+                        tag = local_name(&text[attr.byte_range()]);
+                        continue;
+                    }
+                    if attr.kind() != "Attribute" {
+                        continue;
+                    }
+                    let mut parts_cursor = attr.walk();
+                    let mut name = "";
+                    let mut value = None;
+                    for part in attr.named_children(&mut parts_cursor) {
+                        match part.kind() {
+                            "Name" => name = &text[part.byte_range()],
+                            "AttValue" => value = Some(quoted_value(part, text, lines)),
+                            _ => {}
+                        }
+                    }
+                    if let Some((value, range)) = value {
+                        attributes.push((name, value, range));
+                    }
+                }
+                let attribute = |wanted: &str| attributes.iter().find(|(name, _, _)| *name == wanted);
+                if tag == "prop"
+                    && let Some((_, key, range)) = attribute("key")
+                    && !key.is_empty()
+                    && key.len() <= 1024
+                {
+                    out.push(ConfigurationKey { name: key.clone(), range: *range });
+                }
+                if tag == "property"
+                    && configurer
+                    && let (Some((_, name, range)), Some(_)) = (attribute("name"), attribute("value"))
+                    && !name.is_empty()
+                    && name.len() <= 1024
+                {
+                    out.push(ConfigurationKey { name: name.clone(), range: *range });
+                }
+                if tag == "bean"
+                    && let Some((_, class, _)) = attribute("class")
+                {
+                    inside = placeholder_bean(class);
+                }
+            }
+            "content" => content.extend(child.named_children(&mut cursor).filter(|n| n.kind() == "element")),
+            // Error recovery can nest elements without a `content` node.
+            "element" => content.push(child),
+            _ => {}
+        }
+    }
+    for element in content {
+        spring_xml(element, text, lines, out, cancelled, depth + 1, inside);
+    }
+}
+
+/// The decoded text of an `AttValue` and the range of its quoted contents.
+fn quoted_value(node: Node<'_>, text: &str, lines: &LineIndex<'_>) -> (String, Range) {
+    let raw = &text[node.byte_range()];
+    let quoted = raw.len() >= 2
+        && ((raw.starts_with('"') && raw.ends_with('"')) || (raw.starts_with('\'') && raw.ends_with('\'')));
+    let (value, range) = if quoted {
+        (&raw[1..raw.len() - 1], lines.range(node.start_byte() + 1, node.end_byte() - 1))
+    } else {
+        (raw, lines.range(node.start_byte(), node.end_byte()))
+    };
+    (unescape_xml(value), range)
+}
+
+/// XML's five predefined entities; unknown references keep their text.
+fn unescape_xml(value: &str) -> String {
+    if !value.contains('&') {
+        return value.to_owned();
+    }
+    value.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
 fn yaml(
@@ -316,5 +480,72 @@ class A {
             ["app.time-out", "app.name", "app.a", "space key"]
         );
         assert_eq!(keys[0].range.end.line, 2);
+    }
+    #[test]
+    fn placeholder_names_cover_the_whole_reference() {
+        let text = "name: ${db.url:8080}\nplain: value\nempty: ${}\nnested: ${a:${b.c}}\nspaced: ${ db.h }\n";
+        let syntax = Syntax::new();
+        let at = |needle: &str, offset: u32| {
+            let line = text.lines().position(|l| l.contains(needle)).unwrap();
+            let line_text = text.lines().nth(line).unwrap();
+            let byte = line_text.find(needle).unwrap();
+            let col = line_text[..byte].encode_utf16().count() as u32 + offset;
+            syntax.configuration_placeholder(text, Pos::new(line as u32, col))
+        };
+        // On the `$`, inside the name and on the default all name `db.url`.
+        assert_eq!(at("${db.url", 0), Some("db.url".into()));
+        assert_eq!(at("db.url", 1), Some("db.url".into()));
+        assert_eq!(at("8080", 1), Some("db.url".into()));
+        assert_eq!(at("plain", 1), None);
+        assert_eq!(at("empty", 3), None);
+        // A nested default names its own property; the outer braces name `a`.
+        assert_eq!(at("${b.c", 2), Some("b.c".into()));
+        assert_eq!(at("${a:", 2), Some("a".into()));
+        assert_eq!(at("db.h", 1), Some("db.h".into()));
+        assert_eq!(syntax.configuration_placeholder("no placeholder", Pos::new(0, 3)), None);
+        assert_eq!(syntax.configuration_placeholder("trailing ${open", Pos::new(0, 12)), None);
+    }
+    #[test]
+    fn spring_xml_declares_prop_and_configurer_property_keys() {
+        let text = r#"<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans">
+  <context:property-placeholder location="classpath:db.properties"/>
+  <util:properties id="db">
+    <prop key="db.url">jdbc:h2:mem:test</prop>
+  </util:properties>
+  <bean class="org.springframework.beans.factory.config.PropertyPlaceholderConfigurer">
+    <property name="properties">
+      <props>
+        <prop key="db.user">sa</prop>
+      </props>
+    </property>
+  </bean>
+  <bean class="org.springframework.jdbc.datasource.DriverManagerDataSource">
+    <property name="url" value="jdbc:h2:mem"/>
+  </bean>
+  <bean class="org.springframework.beans.factory.config.PropertySourcesPlaceholderConfigurer">
+    <property name="system.mode" value="test"/>
+  </bean>
+</beans>
+"#;
+        let keys = Syntax::new().configuration_keys(&LanguageId::new("xml"), text, &|| false).unwrap();
+        let names: Vec<_> = keys.iter().map(|k| k.name.as_str()).collect();
+        // The configurer's own `properties` injection names no property, and a
+        // plain bean's `<property name="url">` is not an environment property.
+        assert_eq!(names, ["db.url", "db.user", "system.mode"]);
+        // The range covers the quoted key attribute's value.
+        let line = text.lines().position(|l| l.contains("db.url")).unwrap() as u32;
+        let start = keys[0].range.start;
+        assert_eq!((start.line, keys[0].range.end.line), (line, line));
+        assert_eq!(
+            &text.lines().nth(line as usize).unwrap()[start.col as usize..keys[0].range.end.col as usize],
+            "db.url"
+        );
+    }
+    #[test]
+    fn xml_without_property_markers_is_not_parsed() {
+        let text = "<mappers><mapper resource='a.xml'/><select id='x'>select 1</select></mappers>";
+        let keys = Syntax::new().configuration_keys(&LanguageId::new("xml"), text, &|| false).unwrap();
+        assert!(keys.is_empty());
     }
 }
