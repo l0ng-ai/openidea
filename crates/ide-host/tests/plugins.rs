@@ -3354,6 +3354,152 @@ fn invalid_plugin_icons_refuse_the_package() {
 }
 
 #[test]
+fn endpoint_exports_refresh_matching_files_and_follow_plugin_lifecycle() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+    let routes = f.project.join("routes.txt");
+    std::fs::write(&routes, "/users/{id}\n").unwrap();
+    f.install(&sample("endpoints"));
+    let id = "test.endpoints";
+    let paths = || f.host.endpoints(id, &f.project).unwrap().iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+    let first = f.host.endpoints(id, &f.project).unwrap();
+    assert_eq!(first[0].path, "/users/{id}");
+    assert!(first[0].method.is_none(), "any method is preserved");
+    assert_eq!(first[0].location.path, ide_core::IpcPath::from(to_ipc(&routes)));
+    std::thread::sleep(Duration::from_millis(70));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(paths(), ["/users/{id}"]);
+    assert_eq!(f.host.instances(), 0, "a cached list doesn't wake the plugin");
+    let changed = |f: &Fixture| {
+        f.take_events()
+            .iter()
+            .any(|(_, e)| matches!(e, PluginEvent::EndpointsChanged { plugin_id, .. } if plugin_id == id))
+    };
+    std::fs::write(&routes, "/updated\n").unwrap();
+    f.take_events();
+    f.host.invalidate_endpoints(&f.project, &[f.project.join("unrelated.txt")]);
+    assert!(!changed(&f));
+    assert_eq!(paths(), ["/users/{id}"]);
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert!(changed(&f), "windows are told to ask again");
+    assert_eq!(paths(), ["/updated"]);
+    std::fs::write(&routes, "not-a-path\n").unwrap();
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert_eq!(paths(), ["/updated"], "an invalid list doesn't replace the last valid one");
+    f.host.set_enabled(id, false).unwrap();
+    assert!(paths().is_empty());
+    std::fs::write(&routes, "/enabled\n").unwrap();
+    f.host.set_enabled(id, true).unwrap();
+    assert_eq!(paths(), ["/enabled"]);
+    f.take_events();
+    assert!(f.run(id, "crash", None).is_err());
+    assert!(changed(&f), "a crash withdraws the routes");
+    f.host.uninstall(id).unwrap();
+    assert!(f.host.endpoints(id, &f.project).is_err());
+}
+
+struct EndpointWorkspace {
+    reads: std::sync::atomic::AtomicUsize,
+    inner: Arc<TestWorkspace>,
+    roots: Mutex<Vec<PathBuf>>,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl PluginWorkspace for EndpointWorkspace {
+    fn projects(&self) -> Vec<PathBuf> {
+        self.roots.lock().clone()
+    }
+    fn buffer_text(&self, path: &Path) -> Option<String> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0
+            && let Some(entered) = self.entered.lock().take()
+        {
+            entered.send(()).unwrap();
+            self.release.lock().recv().unwrap();
+        }
+        self.inner.buffer_text(path)
+    }
+    fn document(&self, path: &Path) -> Option<(u64, String)> {
+        self.inner.document(path)
+    }
+    fn trusted(&self, root: &Path) -> bool {
+        self.roots.lock().iter().any(|r| r == root)
+    }
+    fn project_of(&self, _: &str) -> Option<PathBuf> {
+        self.roots.lock().first().cloned()
+    }
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits)
+    }
+    fn publish_diagnostics(
+        &self,
+        source: &str,
+        path: &Path,
+        items: Vec<ide_core::Diagnostic>,
+    ) -> Result<(), HostError> {
+        self.inner.publish_diagnostics(source, path, items)
+    }
+}
+
+#[test]
+fn late_endpoint_results_cannot_restore_a_disabled_plugin_or_closed_project() {
+    for close_project in [false, true] {
+        let f = fixture(Limits::default());
+        std::fs::write(f.project.join("routes.txt"), "/late\n").unwrap();
+        f.install(&sample("endpoints"));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let workspace = Arc::new(EndpointWorkspace {
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            inner: f.workspace.clone(),
+            roots: Mutex::new(vec![f.project.clone()]),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        f.host.set_workspace(Some(workspace.clone()));
+        let late = std::thread::scope(|scope| {
+            // The plugin reads the file, then the host's check reads it again and waits here.
+            let query = scope.spawn(|| f.host.endpoints("test.endpoints", &f.project).unwrap());
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if close_project {
+                workspace.roots.lock().clear();
+            } else {
+                f.host.set_enabled("test.endpoints", false).unwrap();
+            }
+            release_tx.send(()).unwrap();
+            query.join().unwrap()
+        });
+        assert!(late.is_empty());
+        assert!(f.host.endpoints("test.endpoints", &f.project).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn endpoint_results_are_isolated_per_root_and_withdraw_closed_roots() {
+    let f = fixture(Limits::default());
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(f.project.join("routes.txt"), "/first\n").unwrap();
+    std::fs::write(other.join("routes.txt"), "/second\n").unwrap();
+    let (_, release_rx) = std::sync::mpsc::channel();
+    let workspace = Arc::new(EndpointWorkspace {
+        reads: std::sync::atomic::AtomicUsize::new(0),
+        inner: f.workspace.clone(),
+        roots: Mutex::new(vec![f.project.clone(), other.clone()]),
+        entered: Mutex::new(None),
+        release: Mutex::new(release_rx),
+    });
+    f.host.set_workspace(Some(workspace.clone()));
+    f.install(&sample("endpoints"));
+    for (root, route) in [(&f.project, "/first"), (&other, "/second")] {
+        let list = f.host.endpoints("test.endpoints", root).unwrap();
+        assert_eq!(list.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [route]);
+    }
+    workspace.roots.lock().retain(|r| r != &other);
+    assert!(f.host.endpoints("test.endpoints", &other).unwrap().is_empty(), "a closed project has no routes");
+    assert_eq!(f.host.endpoints("test.endpoints", &f.project).unwrap()[0].path, "/first");
+}
+
+#[test]
 fn notification_actions_keep_commands_and_window_scope() {
     let f = fixture(Limits::default());
     f.install(&sample("jobs"));

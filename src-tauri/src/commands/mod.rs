@@ -507,6 +507,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_navigation_index,
         plugin::plugin_navigation_goto,
         plugin::plugin_navigation_markers,
+        plugin::plugin_endpoints,
         plugin::plugin_market,
         plugin::plugin_market_url,
         plugin::plugin_set_market_url,

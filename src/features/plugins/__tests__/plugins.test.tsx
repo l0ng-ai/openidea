@@ -10,7 +10,12 @@ import { useProject } from "@/platform/project";
 import { pluginThemeRef, useContributedIconThemes } from "@/platform/themes";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
-import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import {
+  onEndpointsChanged,
+  provideNotificationService,
+  searchEndpoints,
+  type NotificationService,
+} from "@/workbench/contributions";
 import { applyThemeAttributes, previewTheme, useThemeOverride } from "@/workbench/theme";
 import { createMemoryPluginsBackend, sampleCatalog, setPluginsBackend, type PluginsBackend } from "../backend";
 import {
@@ -1291,4 +1296,38 @@ describe("plugin context keys", () => {
     pending[1]!.resolve([{ pluginId: "p", key: "f", value: "true" }]);
     await waitFor(() => expect(evaluateWhen("plugin.p.f")).toBe(true));
   });
+});
+
+it("asks the plugin for its routes once per plugin and again when they change", async () => {
+  const plugins = [plugin({ id: "routes" })];
+  const endpoints = vi.fn(async () => [
+    {
+      method: null,
+      path: "/users/{id}",
+      framework: "Rails",
+      handler: "Users#show",
+      location: { path: "/p/config/routes.rb", range: { start: { line: 2, col: 4 }, end: { line: 2, col: 8 } } },
+    },
+  ]);
+  setPluginsBackend({ ...createMemoryPluginsBackend(), endpoints });
+  const decl = (key: string) => ({ pluginId: "routes", point: "endpoints", key, decl: { files: [key] } });
+  syncUiContributions([decl("config/routes.rb"), decl("routes/*.rb")], plugins);
+  expect(await searchEndpoints("/p")).toMatchObject([
+    { method: "*", url: "/users/{id}", handler: "Users#show", rel: "config/routes.rb", line: 2, col: 4 },
+  ]);
+  expect(endpoints).toHaveBeenCalledWith("routes");
+  syncUiContributions([decl("config/routes.rb")], plugins);
+  expect(await searchEndpoints("/p")).toHaveLength(1);
+
+  const changed = vi.fn();
+  const stop = onEndpointsChanged(changed);
+  useProject.setState({ project: { root: "/p" } as never });
+  handlePluginEvent({ type: "endpointsChanged", pluginId: "routes", root: "/other" });
+  expect(changed).not.toHaveBeenCalled();
+  handlePluginEvent({ type: "endpointsChanged", pluginId: "routes", root: "/p" });
+  expect(changed).toHaveBeenCalledTimes(1);
+  stop();
+
+  syncUiContributions([], plugins);
+  expect(await searchEndpoints("/p")).toEqual([]);
 });

@@ -140,3 +140,13 @@ world commit-checks {
 world file-actions-provider {
     export file-actions;
 }
+
+/// A plugin with project HTTP endpoints (`[[contributes.endpoints]]`).
+world plugin-endpoints {
+    include plugin;
+    export endpoints-provider;
+}
+
+world endpoints {
+    export endpoints-provider;
+}

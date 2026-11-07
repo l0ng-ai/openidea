@@ -1269,6 +1269,39 @@ The call acknowledges the request; cancellation or opening errors are handled by
 the window. Neither API needs a capability. Paths belong to the UI machine,
 including when plugin code runs on a remote host.
 
+### Project HTTP endpoints (API 1.3)
+
+A plugin with `project.read` can export `endpoints-provider` to share its routes
+with Search Everywhere's Endpoints section, request URL completion in `.http`
+files, and the declaration's **Open in HTTP Client** gutter action. The action
+opens the generated-requests scratch; requests start at `http://localhost:8080`
+and path parameters become HTTP client variables. Adjust the host for the app.
+
+```toml
+engines.openidea = "^1.3"
+[capabilities]
+required = ["project.read"]
+[[contributes.endpoints]]
+files = ["config/routes.rb", "routes/**/*.php"]
+```
+
+Implement `endpoints::EndpointsProvider` and use
+`register_plugin!(MyPlugin, endpoints)` in the Rust SDK. `endpoints(ctx)` receives
+an explicit project invocation. It runs the first time the IDE needs that
+project's routes, and again after a file matching `files` is created, changed or
+removed; in between the host answers from its cache. Return the complete list
+(an empty list clears it). `method = None` accepts any method; the optional handler is a display name.
+Each endpoint has a required declaration location inside that project, with
+zero-based lines and UTF-16 columns. The generated request uses GET for any-method
+routes. Calls run in the background and cannot open prompts.
+
+The host validates a whole batch before replacing the last valid result (up to
+10,000 endpoints, 4 MiB of route metadata, 16 MiB of declaration documents).
+Disabling, uninstalling, reloading or crashing a plugin withdraws its routes;
+idle instance reclamation keeps them cached. Closing a project withdraws its
+cache. Windows only receive routes for their current project. This API does not
+add an Endpoints tool window.
+
 ### Notifications with commands
 
 `host::notify_with_actions(level, title, body, actions)` shows up to three
