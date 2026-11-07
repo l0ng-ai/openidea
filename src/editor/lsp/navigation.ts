@@ -204,25 +204,35 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     fallbackNote = fb.note;
   }
   if (!locs.length) {
-    // The server has no definition here: a link (`href`, `#include`, Markdown) or a file path.
-    if (
-      declaration &&
-      !fromSyntax &&
-      ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset)))
-    )
-      return;
-    // The server only checks this file's syntax: say why instead of just "not found".
-    const reason = serverDown ? null : outsideProjectReason(doc.path);
-    showHint(
-      view,
-      serverDown
-        ? `${NOT_FOUND[kind]}: no language server is running for this file`
-        : reason
-          ? `${tx(NOT_FOUND[kind])}. ${tx(reason)}`
-          : NOT_FOUND[kind],
-    );
-    return;
+    // The server found nothing: the project index resolves the import chain
+    // (relative, tsconfig/vite aliases, re-exports) — vue included.
+    if (declaration) {
+      const fb = await gotoFallback(view, doc, pos);
+      if (fb?.targets.length) {
+        locs = fb.targets;
+        fromSyntax = true;
+        fallbackNote = fb.note;
+      }
+    }
   }
+  // Still nothing: a link (`href`, `#include`, Markdown) or a file path.
+  if (
+    declaration &&
+    !fromSyntax &&
+    ((await gotoWebReference(view, doc, pos, offset)) || (await followReferenceAt(view, doc, offset)))
+  )
+    return;
+  // The server only checks this file's syntax: say why instead of just "not found".
+  const reason = serverDown ? null : outsideProjectReason(doc.path);
+  showHint(
+    view,
+    serverDown
+      ? `${NOT_FOUND[kind]}: no language server is running for this file`
+      : reason
+        ? `${tx(NOT_FOUND[kind])}. ${tx(reason)}`
+        : NOT_FOUND[kind],
+  );
+
   // IDEA: ⌘B on a declaration shows its usages.
   if (kind === "definition" && isSelfTarget(locs, doc.path, pos)) {
     if (!(await executeAction("find.showUsages"))) showHint(view, "No usages found");
