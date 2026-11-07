@@ -726,6 +726,19 @@ fn private_directory_is_owned_persistent_and_removed_on_uninstall() {
     for cmd in ["read", "write"] {
         assert_eq!(run(cmd, other_dir.join("fake-secret.txt").to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
     }
+    for path in [
+        dir.join("../adjacent.txt"),
+        dir.join("../../test.private-dir-other/files/fake-secret.txt"),
+        dir.join("../../test.private-dir-other/files/new.txt"),
+    ] {
+        assert_eq!(run("write", path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        if path.exists() {
+            assert_eq!(run("read", path.to_str()).unwrap_err().kind, ErrorKind::PermissionDenied);
+        }
+    }
+    assert!(!other_dir.join("new.txt").exists());
+    assert_eq!(std::fs::read_to_string(dir.parent().unwrap().join("adjacent.txt")).unwrap(), "other content");
+    assert_eq!(std::fs::read_to_string(other_dir.join("fake-secret.txt")).unwrap(), "fake private data\n");
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
