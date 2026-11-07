@@ -201,5 +201,12 @@
   "Only Python can be debugged in containers": "Only Python can be debugged in containers",
   "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine.": "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine.",
   "Use Project JDK": "Use Project JDK",
-  "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
+  "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.",
+  "Starting the dev container…": "Starting the dev container…",
+  "Command-line tool": "Command-line tool",
+  "Forwarding ports is not supported in a dev container yet": "Forwarding ports is not supported in a dev container yet",
+  "Could not reopen the project in a container": "Could not reopen the project in a container",
+  "Reopen in Container": "Reopen in Container",
+  "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.": "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.",
+  "devcontainer up exited with {status}": "devcontainer up exited with {status}"
 }
