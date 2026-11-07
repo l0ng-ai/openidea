@@ -136,6 +136,8 @@ describe("Build and run using: Gradle", () => {
     const main = (file: string) => applicationConfig({ className: "a.Main" }, file, []);
     const lib = delegatedGradleConfig(main("/w/lib/core/src/main/java/a/Main.java"), "/w/lib/core", nested)!;
     expect(lib.args.at(-1)).toBe(":lib:core:openideaRun");
+    const debug = jdwpLaunch(lib)!;
+    expect(debug.args.at(-1)).toBe(DELEGATED_DEBUG);
     expect(delegatedGradleConfig(main("buildSrc/src/main/java/a/Main.java"), "buildSrc", nested)).toBeNull();
   });
 
