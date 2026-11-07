@@ -2,6 +2,7 @@
  * Before launch tasks (IDEA's "Before launch" list): run in order before a
  * configuration starts; the first failure aborts the launch.
  */
+import { buildCMake, isCMakeBuild } from "./cmake";
 import { dotnetBuildConfig } from "./dotnetTypes";
 import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
@@ -33,7 +34,7 @@ export function taskLabel(task: BeforeLaunchTask, configs: readonly RunConfig[] 
     case "run":
       return `Run '${configs.find((c) => c.id === target)?.name ?? target}'`;
     case "build":
-      return "Build Project";
+      return configs.find((c) => c.id === target)?.name ?? "Build Project";
     case "dotnetBuild":
       return "Build .NET project";
     case "tool":
@@ -71,6 +72,7 @@ async function runTask(
     case "dotnetBuild":
       return (await runToEnd(dotnetBuildConfig(config), chain, show)) ? null : "Build failed";
     case "build": {
+      if (target) return buildCMake(target, show === true);
       if (!getAction(BUILD_ACTION)) return "Building is not available";
       if (!(await executeAction(BUILD_ACTION, { activate: false }))) return "A build is already running";
       return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
@@ -79,6 +81,7 @@ async function runTask(
       if (chain.includes(target)) return "The before launch tasks run in a cycle";
       const other = useRun.getState().configs.find((c) => c.id === target);
       if (!other) return `Configuration '${target}' no longer exists`;
+      if (isCMakeBuild(other)) return buildCMake(other.id, show === true);
       return (await runToEnd(other, chain, show)) ? null : `'${other.name}' failed`;
     }
     case "tool": {

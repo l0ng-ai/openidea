@@ -761,7 +761,7 @@ export const commands = {
 	 *  with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 	 *  are cleared first; the new messages are published as `build` diagnostics.
 	 */
-	buildRun: (kind: BuildKind, file: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, request, clear, onEvent })),
+	buildRun: (kind: BuildKind, file: string | null, cmake: string | null, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_run", { kind, file, cmake, request, clear, onEvent })),
 	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds the workspace (when `build`), then resolves the runtime (or test)
@@ -1949,7 +1949,8 @@ export type AutoUpload = "never" |
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
 	/**
-	 *  `run` (another configuration, `target` = its id) | `build` | `tool` (external tool id) |
+	 *  `run` (another configuration id) | `build` (project, or `target` = CMake build id) |
+	 *  `tool` (external tool id) |
 	 *  `command` (a shell command line) | `toolWindow` (tool window id).
 	 */
 	kind: string,
