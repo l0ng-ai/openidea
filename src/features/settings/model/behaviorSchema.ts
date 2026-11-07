@@ -30,6 +30,8 @@ export interface AppearanceExtras {
   redGreenVision: boolean;
   differentToolWindowBackground: boolean;
   compactMode: boolean;
+  /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
+  smallTreeIndents: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
@@ -88,6 +90,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   redGreenVision: false,
   differentToolWindowBackground: false,
   compactMode: false,
+  smallTreeIndents: false,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
@@ -144,6 +147,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     redGreenVision: b("redGreenVision"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
+    smallTreeIndents: b("smallTreeIndents"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),

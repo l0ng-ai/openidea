@@ -1,4 +1,4 @@
-package openidea:plugin@1.2.0;
+package openidea:plugin@1.3.0;
 
 /// Cross-file associations a plugin publishes for the files it declares under
 /// `[[contributes.documentIndexers]]`. The host calls `index` in cancellable

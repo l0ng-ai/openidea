@@ -208,6 +208,8 @@ export interface ServiceTreeItem {
   dim?: boolean;
   /** Expanded the first time the node appears. */
   expanded?: boolean;
+  /** Shows an expander before its children are known (the provider's `expand` loads them). */
+  expandable?: boolean;
   /** Undefined for leaves. */
   children?: ServiceTreeItem[];
 }
@@ -239,6 +241,10 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** A node of this provider became the lead selection. */
+  select?(item: ServiceTreeItem): void;
+  /** A node of this provider was expanded or collapsed. */
+  expand?(item: ServiceTreeItem, expanded: boolean): void;
   /** Right pane for a selected node. */
   detail?: ComponentType<{ item: ServiceTreeItem }>;
   /** Status line above the tree (a long operation in progress…); renders null when idle. */
@@ -325,10 +331,25 @@ export const registerToolWindow = (c: ToolWindowContribution) => register("toolW
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
 
+type GitLogChecksCell = ComponentType<{ root: string; revision: string }>;
+export const useGitLogChecks = create<{ cell: GitLogChecksCell | null }>(() => ({ cell: null }));
+
+export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
+  useGitLogChecks.setState({ cell });
+  return () => {
+    if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
 const EditorShown = createContext(true);
 export const EditorShownProvider = EditorShown.Provider;
 /** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
 export const useEditorShown = () => useContext(EditorShown);
+
+const ToolWindowShown = createContext(true);
+export const ToolWindowShownProvider = ToolWindowShown.Provider;
+/** Whether this tool window is showing (one shown once stays mounted while hidden). */
+export const useToolWindowShown = () => useContext(ToolWindowShown);
 
 export const registerEditorKind = (c: EditorKindContribution) => register("editorKinds", c.kind, c);
 export const registerTitleItem = (c: TitleItemContribution) => register("titleItems", c.id, c);
@@ -1447,6 +1468,8 @@ export interface DebugRunSession {
   configId: string | null;
   name: string;
   startedAt: number;
+  /** Set while the session shuts down after Stop. */
+  status?: "starting" | "running" | "paused" | "stopping" | "terminated";
   paused: boolean;
   rerun: (() => void) | null;
   stop: () => void;
@@ -1458,8 +1481,10 @@ export interface DebugServiceSession {
   id: number;
   config: RunConfig;
   startedAt: number;
-  status: "starting" | "running" | "paused" | "terminated";
+  status: "starting" | "running" | "paused" | "stopping" | "terminated";
   processId: number | null;
+  /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
+  httpPort?: number;
   rerun: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
@@ -1485,6 +1510,11 @@ export interface RunningProcessesProvider {
   id: string;
   /** Processes this feature is running in the window right now. */
   running(): RunningProcess[] | Promise<RunningProcess[]>;
+  /**
+   * Stops them before a close: graceful first (stop command / SIGINT, as IDEA does), the
+   * whole set again when `kill` asks for SIGKILL.
+   */
+  stop?(kill: boolean): Promise<void> | void;
 }
 
 const runningProcessesProviders = new Map<string, RunningProcessesProvider>();
@@ -1494,6 +1524,11 @@ export function registerRunningProcessesProvider(p: RunningProcessesProvider): (
   return () => {
     if (runningProcessesProviders.get(p.id) === p) runningProcessesProviders.delete(p.id);
   };
+}
+
+/** Asks every provider to stop its processes: graceful, or killed when `kill` is set. */
+export async function stopRunningProcesses(kill: boolean): Promise<void> {
+  await Promise.all([...runningProcessesProviders.values()].map((p) => p.stop?.(kill)));
 }
 
 /** Live processes of every provider, one entry per name. */

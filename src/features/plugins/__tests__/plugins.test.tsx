@@ -26,7 +26,8 @@ import {
 import { iconResolver, selectedIconTheme, useIconThemes } from "../iconThemes";
 import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
-import { usePluginStatusItems } from "../runtimeUi";
+import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
+import { evaluateWhen, getContext } from "@/platform/context";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
@@ -446,8 +447,30 @@ describe("bridge events", () => {
           language: "plaintext",
           selections: [{ start: { line: 1, col: 0 }, end: { line: 1, col: 4 } }],
         },
+        [],
       ],
     ]);
+  });
+
+  it("forwards a menu's path and selection to the command", async () => {
+    const calls: unknown[][] = [];
+    setPluginsBackend({
+      ...backend,
+      runCommand: async (...args) => {
+        calls.push(args);
+        return null;
+      },
+    });
+    undefinePoints();
+    undefinePoints = () => {};
+    const stop = startPluginBridge();
+    await refreshPlugins();
+    await act(() =>
+      executeAction("plugin.hello.insert-date", { path: "/p/a.java", paths: ["/p/a.java", "/p/b.java"] }),
+    );
+    expect(calls[0]?.[2]).toBe("/p/a.java");
+    expect(calls[0]?.[4]).toEqual(["/p/a.java", "/p/b.java"]);
+    stop();
   });
 
   it("shows status items and tasks of running plugin code", () => {
@@ -478,6 +501,81 @@ describe("bridge events", () => {
     open.mockRestore();
     handlePluginEvent({ type: "themeChanged", theme: null });
     expect(usePlugins.getState().activeTheme).toBeNull();
+  });
+});
+
+describe("plugin prompts", () => {
+  it("shows a plugin's question and reports the answer or the dismissal", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "1",
+        prompt: {
+          kind: "quickPick",
+          title: "Pick targets",
+          multiple: true,
+          items: [
+            { key: "a", label: "Alpha", description: null },
+            { key: "b", label: "Beta", description: "second" },
+          ],
+        },
+      });
+    });
+    await user.click(await screen.findByRole("checkbox", { name: "Beta" }));
+    await user.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("1", ["b"]));
+
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "2",
+        prompt: { kind: "input", prompt: "Name", value: "Main" },
+      });
+    });
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("2", null));
+  });
+
+  it("returns the typed text untrimmed", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "4",
+        prompt: { kind: "input", prompt: "Name", value: "  Main  " },
+      });
+    });
+    await user.click(await screen.findByRole("button", { name: "OK" }));
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("4", ["  Main  "]));
+  });
+
+  it("closes a question the plugin gave up on without answering", async () => {
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "3",
+        prompt: { kind: "input", prompt: "Name", value: null },
+      });
+    });
+    await screen.findByRole("dialog");
+    act(() => handlePluginEvent({ type: "promptClosed", promptId: "3" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(answerPrompt).not.toHaveBeenCalled();
   });
 });
 
@@ -1051,5 +1149,97 @@ describe("catalog helpers", () => {
     expect(enabled()).toEqual({ a: false, b: false, d: true });
     expect(await setAllInstalledEnabled(true)).toBe(2);
     expect(enabled()).toEqual({ a: true, b: true, d: true });
+  });
+});
+
+describe("plugin context keys", () => {
+  it("applies plugin context keys from the backend", async () => {
+    let keys = [
+      { pluginId: "p", key: "isEntity", value: "true" },
+      { pluginId: "p", key: "kind", value: '"pod"' },
+    ];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      contextKeys: async () => keys,
+    });
+    const changed = {
+      type: "contextChanged",
+      pluginId: "p",
+      key: "isEntity",
+      value: "true",
+    } as const;
+    expect(handleRuntimeEvent(changed)).toBe(true);
+    await waitFor(() => expect(evaluateWhen("plugin.p.isEntity")).toBe(true));
+    expect(evaluateWhen("plugin.p.kind == pod")).toBe(true);
+    keys = keys.slice(1);
+    handleRuntimeEvent({ ...changed, value: null });
+    await waitFor(() => expect(evaluateWhen("plugin.p.isEntity")).toBe(false));
+    expect(evaluateWhen("plugin.p.kind == pod")).toBe(true);
+    keys = [];
+    handleRuntimeEvent({ ...changed, key: "kind", value: null });
+    await waitFor(() => expect(evaluateWhen("plugin.p.kind == pod")).toBe(false));
+    expect("plugin.p.kind" in getContext()).toBe(false);
+    expect("plugin.p.isEntity" in getContext()).toBe(false);
+  });
+
+  it("refreshes the keys when another backend publishes a project with the same root", async () => {
+    let keys = [{ pluginId: "p", key: "backend", value: '"a"' }];
+    setPluginsBackend({ ...createMemoryPluginsBackend(), contextKeys: async () => keys });
+    const project = { root: "/p", trusted: true } as never;
+    act(() => useProject.setState({ project }));
+    const stop = startRuntimeUi();
+    try {
+      keys = [{ pluginId: "p", key: "backend", value: '"b"' }];
+      act(() => useProject.setState({ project: { root: "/p", trusted: true } as never }));
+      await waitFor(() => expect(evaluateWhen("plugin.p.backend == b")).toBe(true));
+    } finally {
+      stop();
+      act(() => useProject.setState({ project: null }));
+    }
+  });
+
+  it("coalesces a burst of changes into one follow-up fetch", async () => {
+    type Keys = { pluginId: string; key: string; value: string }[];
+    const pending: ((k: Keys) => void)[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      contextKeys: () => new Promise<Keys>((resolve) => pending.push(resolve)),
+    });
+    const event = { type: "contextChanged", pluginId: "p", key: "a", value: "true" } as const;
+    for (let i = 0; i < 5; i++) handleRuntimeEvent(event);
+    expect(pending).toHaveLength(1);
+    pending[0]!([{ pluginId: "q", key: "b", value: "true" }]);
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!([
+      { pluginId: "p", key: "a", value: "true" },
+      { pluginId: "q", key: "b", value: "true" },
+    ]);
+    await waitFor(() => expect(evaluateWhen("plugin.p.a")).toBe(true));
+    expect(evaluateWhen("plugin.q.b")).toBe(true);
+    await Promise.resolve();
+    expect(pending).toHaveLength(2);
+
+    handleRuntimeEvent({ ...event, value: null });
+    expect(pending).toHaveLength(3);
+    pending[2]!([{ pluginId: "q", key: "b", value: "true" }]);
+    await waitFor(() => expect(evaluateWhen("plugin.p.a")).toBe(false));
+    expect(evaluateWhen("plugin.q.b")).toBe(true);
+  });
+
+  it("fetches again after a failed fetch when changes arrived meanwhile", async () => {
+    type Keys = { pluginId: string; key: string; value: string }[];
+    const pending: { resolve: (k: Keys) => void; reject: () => void }[] = [];
+    setPluginsBackend({
+      ...createMemoryPluginsBackend(),
+      contextKeys: () =>
+        new Promise<Keys>((resolve, reject) => pending.push({ resolve, reject: () => reject(new Error("x")) })),
+    });
+    const event = { type: "contextChanged", pluginId: "p", key: "f", value: "true" } as const;
+    handleRuntimeEvent(event);
+    handleRuntimeEvent(event);
+    pending[0]!.reject();
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!.resolve([{ pluginId: "p", key: "f", value: "true" }]);
+    await waitFor(() => expect(evaluateWhen("plugin.p.f")).toBe(true));
   });
 });

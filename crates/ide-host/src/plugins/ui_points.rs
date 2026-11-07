@@ -26,7 +26,7 @@
 //! id = "jobs"
 //! title = "Jobs"
 //! icon = "server"
-//! location = "right"               # left, right, bottom
+//! location = "right"               # left, right, bottom, services (nodes of the Services tool window)
 //!
 //! [[contributes.customEditors]]
 //! id = "table"
@@ -55,6 +55,9 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+/// A view whose tree shows in the Services tool window; the plugin's
+/// `service-provider` renders the selected node's pane.
+pub const SERVICES_LOCATION: &str = "services";
 pub const MENUS: &str = "menus";
 pub const KEYMAPS: &str = "keymaps";
 pub const STATUS_BAR: &str = "statusBar";
@@ -395,8 +398,14 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     validate_item_id(&d.id, "view id")?;
     title(VIEWS, &d.title)?;
     let files = web_or_code(pkg, d.web.as_deref(), &format!("view {:?}", d.id))?;
-    if !["left", "right", "bottom"].contains(&d.location.as_str()) {
-        return Err(format!("view {:?}: `location` is left, right or bottom", d.id));
+    if !["left", "right", "bottom", SERVICES_LOCATION].contains(&d.location.as_str()) {
+        return Err(format!("view {:?}: `location` is left, right, bottom or services", d.id));
+    }
+    if d.location == SERVICES_LOCATION {
+        pkg.manifest.needs_api(&format!("view {:?}: `location = \"services\"`", d.id), 3)?;
+        if d.web.is_some() {
+            return Err(format!("view {:?}: a services view is rendered by the plugin's code (no `web`)", d.id));
+        }
     }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {
         return Err(format!("view {:?}: icon names are up to 64 bytes", d.id));
