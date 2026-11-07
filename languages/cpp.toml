@@ -1,6 +1,6 @@
 id = "cpp"
 name = "C++"
-extensions = ["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ipp", "tpp", "inl", "ixx", "cppm", "ino"]
+extensions = ["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ipp", "tpp", "inl", "ixx", "cppm"]
 line-comment = "//"
 block-comment = ["/*", "*/"]
 indent = { tab-size = 4, insert-spaces = true }
