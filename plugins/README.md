@@ -238,6 +238,12 @@ Plugin templates infer `$PACKAGE$` with the built-in rules for their extension:
 Java/Kotlin use source roots, Go uses sibling packages or the directory, and PHP
 uses Composer PSR-4 mappings. No `packageStyle` manifest field is needed.
 
+These declarations do not grant the plugin filesystem access: files are created
+only when the user invokes a template, through the IDE's normal New File flow.
+See `crates/ide-plugin/tests/fixtures/file-templates` for a minimal buildable
+plugin covering dotfiles, multiple variables, and Java/Kotlin packages. Build
+its component with `plugins/build.sh crates/ide-plugin/tests/fixtures/file-templates`.
+
 ### Background associations
 
 `[[contributes.documentIndexers]]` declares file `extensions` and requires the optional

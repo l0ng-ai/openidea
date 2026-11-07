@@ -2892,6 +2892,23 @@ path = "templates/new.draw"
 }
 
 #[test]
+fn file_templates_fixture_installs_without_write_capabilities() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("file-templates"));
+    assert!(info.capabilities.is_empty());
+    let templates = f.host.ui_items("fileTemplates");
+    assert_eq!(templates.len(), 4);
+    let template = |id: &str| templates.iter().find(|t| t.decl["id"] == id).unwrap();
+    assert_eq!(template("dockerignore").decl["fileName"], ".dockerignore");
+    assert_eq!(template("attributes").decl["variables"].as_array().unwrap().len(), 2);
+    assert!(template("repository").decl["body"].as_str().unwrap().contains("$PACKAGE$"));
+    assert!(f.installed("file-templates").join("templates/repository.txt").is_file());
+    assert_eq!(f.run("file-templates", "ping", None).unwrap().as_deref(), Some("File templates ready"));
+    f.host.set_enabled("file-templates", false).unwrap();
+    assert!(f.host.ui_items("fileTemplates").is_empty());
+}
+
+#[test]
 fn file_templates_api_13_names_and_variables() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();

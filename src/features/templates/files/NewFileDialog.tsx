@@ -3,6 +3,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState, type KeyboardEven
 import { create } from "zustand";
 import clsx from "clsx";
 import { relativePath, useProject } from "@/platform/project";
+import { isImeKey } from "@/platform/ime";
 import { notifications } from "@/workbench/contributions";
 import { Dialog, Icon, Input, List, listNavigate } from "@/ui";
 import { createFromTemplate, packageFor, packageStyleFor } from "./create";
@@ -70,6 +71,7 @@ function TemplateStep({
   const [active, setActive] = useState(0);
   const root = useProject((s) => s.project?.root ?? "");
   const onKeyDown = (e: KeyboardEvent) => {
+    if (isImeKey(e.nativeEvent)) return;
     const next = listNavigate(e.key, { items: templates, active, wrap: true });
     if (next !== null) {
       e.preventDefault();
@@ -204,6 +206,7 @@ function NameStep({
   }, [template.fileName, variables.length]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeKey(e.nativeEvent)) return;
     if (template.kinds.length > 1) {
       const next = listNavigate(e.key === "ArrowUp" || e.key === "ArrowDown" ? e.key : "", {
         items: template.kinds,

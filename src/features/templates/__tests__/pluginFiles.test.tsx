@@ -80,6 +80,25 @@ describe("plugin file creation dialog", () => {
     }
   });
 
+  it.each([
+    { field: "Name", ime: { isComposing: true } },
+    { field: "Name", ime: { keyCode: 229 } },
+    { field: "Filter", ime: { isComposing: true } },
+    { field: "Filter", ime: { keyCode: 229 } },
+  ])("does not submit while confirming IME text (%j)", async ({ field, ime }) => {
+    open(
+      template(
+        field === "Name" ? {} : { fileName: ".gitattributes", variables: [{ name: "FILTER", prompt: "Filter" }] },
+      ),
+    );
+    fireEvent.change(screen.getByLabelText(field), { target: { value: "文本" } });
+    fireEvent.keyDown(screen.getByLabelText(field), { key: "Enter", ...ime });
+    expect(createFromTemplate).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(screen.getByLabelText(field), { key: "Enter" });
+    await waitFor(() => expect(createFromTemplate).toHaveBeenCalledTimes(1));
+  });
+
   it("does not create when the variables dialog closes with Escape", () => {
     open(template({ variables: [{ name: "ENTITY", prompt: "Entity class" }] }));
     fireEvent.keyDown(screen.getByLabelText("Entity class"), { key: "Escape" });
