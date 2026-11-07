@@ -1064,11 +1064,12 @@ fn plugin_languages_join_the_registry_and_start_only_granted_servers() {
     assert!(registry.all().iter().any(|l| l.id == toy), "the UI language list includes it");
     assert!(project.get(&toy).unwrap().language_servers.is_empty());
 
-    // Granted: the server is pinned to the approved file.
+    // Granted: the server is pinned to the approved file, under the name the
+    // grant asked for (a shim dispatches on its own name).
     f.host.set_capability("language-toy", "process:toylsp", true).unwrap();
     let server = project.get(&toy).unwrap().language_servers[0].clone();
     let pin = server.pinned.expect("pinned");
-    assert_eq!(pin.verify().unwrap(), dunce::canonicalize(bin.join("toylsp")).unwrap());
+    assert_eq!(pin.verify().unwrap(), bin.join("toylsp"));
     // Replaced afterwards: refused when it would start.
     std::fs::write(bin.join("toylsp"), "#!/bin/sh\necho replaced\n").unwrap();
     assert!(pin.verify().unwrap_err().contains("changed since it was approved"));
@@ -1177,7 +1178,7 @@ fn run_detectors_offer_granted_commands_in_marked_projects() {
         (config.id.as_str(), config.name.as_str(), config.is_test),
         ("plugin:acme.forge:test", "forge test", true)
     );
-    assert_eq!(detection.launch(config).unwrap(), dunce::canonicalize(bin.join("forge")).unwrap());
+    assert_eq!(detection.launch(config).unwrap(), bin.join("forge"));
 
     std::fs::write(bin.join("forge"), "#!/bin/sh\necho swapped\n").unwrap();
     assert!(detection.launch(config).unwrap_err().contains("changed since it was approved"));
@@ -2212,7 +2213,7 @@ fn pinned_programs_fill_views_and_open_terminals() {
     };
     let (client, title, program, args) = open("deploy").expect("a terminal");
     assert_eq!((client.as_deref(), title.as_str()), (Some("main"), "follow: deploy"));
-    assert_eq!(program.0, bin.join("jobs").canonicalize().unwrap());
+    assert_eq!(program.0, bin.join("jobs"));
     assert_eq!(args, ["follow", "deploy", "--lines=20"]);
 
     // The plugin's settings, string and number.

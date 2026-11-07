@@ -307,7 +307,10 @@ pub fn by_risk(caps: &[Capability]) -> Vec<(Risk, Vec<Capability>)> {
 }
 
 /// Resolves a `process:` program to an absolute path once, at grant time:
-/// absolute names are taken as is, others are looked up in `path_var`.
+/// absolute names are taken as is, others are looked up in `path_var`. The
+/// found path is kept as found: version-manager shims such as rustup dispatch
+/// on `argv[0]`, so dereferencing `cargo` to the `rustup` file it points at
+/// makes the program run as rustup. The content hash still pins the bytes.
 pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, String> {
     let candidate = Path::new(name);
     if candidate.is_absolute() {
@@ -325,15 +328,11 @@ pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, 
         for ext in &exts {
             let p = dir.join(format!("{name}{ext}"));
             if is_executable(&p) {
-                return Ok(dunce_canonical(&p));
+                return Ok(p);
             }
         }
     }
     Err(format!("{name} was not found on PATH"))
-}
-
-fn dunce_canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -472,6 +471,24 @@ mod tests {
         assert_eq!(l.check_binary(&r.subject, &cap).unwrap(), resolved);
         std::fs::write(&tool, "#!/bin/sh\necho evil\n").unwrap();
         assert!(l.check_binary(&r.subject, &cap).unwrap_err().contains("changed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keeps_the_shim_name_when_resolving() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir(&bin_dir).unwrap();
+        let rustup = bin_dir.join("rustup");
+        std::fs::write(&rustup, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&rustup, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cargo = bin_dir.join("cargo");
+        std::os::unix::fs::symlink(&rustup, &cargo).unwrap();
+        let path_var = std::env::join_paths([bin_dir]).unwrap();
+        // rustup picks the tool from argv[0]: resolving the shim to the rustup
+        // file would run cargo's arguments as rustup's.
+        assert_eq!(resolve_program("cargo", Some(&path_var)).unwrap(), cargo);
     }
 
     #[test]
