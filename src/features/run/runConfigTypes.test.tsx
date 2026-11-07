@@ -119,7 +119,9 @@ describe("configuration types", () => {
     const type = typeFor(kind)!;
     const original = newConfigOfType(type, []);
     const config =
-      kind === "spring-boot" ? withParams(original, { ...original.params, mainClass: "a.Main" }) : original;
+      kind === "spring-boot"
+        ? withParams(original, { ...original.params, mainClass: "a.Main" })
+        : withParams(original, { ...original.params, deploymentMode: "artifact", artifact: "web" });
     const changed = vi.fn();
     render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
     expect(screen.getByRole("button", { name: "On 'Update' action" }).textContent).toContain("Show chooser");

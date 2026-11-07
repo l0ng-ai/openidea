@@ -387,4 +387,19 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     defaultName: ".gitignore",
     kinds: [{ id: "gitignore", label: ".gitignore file", body: "$END$\n" }],
   },
+  {
+    id: "tomcat-context",
+    name: "Tomcat Context Descriptor",
+    icon: "file-config",
+    extension: "xml",
+    nameStyle: "asis",
+    defaultName: "context",
+    kinds: [
+      {
+        id: "context",
+        label: "Tomcat Context Descriptor (context.xml)",
+        body: '<?xml version="1.0" encoding="UTF-8"?>\n<Context antiJARLocking="true" path="$END$">\n</Context>\n',
+      },
+    ],
+  },
 ];
