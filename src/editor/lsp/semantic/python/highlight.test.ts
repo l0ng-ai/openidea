@@ -1,18 +1,35 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
-import { findLanguageDescription, loadSupport } from "../core/cm/languages";
-import { pythonSyntaxRanges, pythonFallbackRanges, pythonSymbolKinds } from "./pythonHighlight";
-import { semanticRanges } from "./semantic";
+import { completedSyntaxTree } from "@/test/syntax";
+import { findLanguageDescription, loadSupport } from "../../../core/cm/languages";
+import { pythonSyntaxRanges, pythonFallbackRanges, pythonSymbolKinds } from "./highlight";
+import { semanticRanges } from "../index";
 
 async function parse(source: string) {
   const support = await loadSupport(findLanguageDescription("Python", "demo.py")!);
   const state = EditorState.create({ doc: source, extensions: [support!] });
-  ensureSyntaxTree(state, state.doc.length, 1000);
-  return state;
+  return { doc: state.doc, tree: completedSyntaxTree(state) };
 }
 
 describe("Python PyCharm categories", () => {
+  it("uses the completed tree when initial parsing exceeds its time budget", async () => {
+    await parse("");
+    // Exceed the initial 20 ms parse budget, but stay within ensureSyntaxTree's budget.
+    let now = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => (now += 25));
+    try {
+      const state = await parse("def f(self):\n    value = b'bytes'\n    self.run(whatever=1)\n");
+      expect(state.tree.length).toBe(state.doc.length);
+      const styles = pythonSyntaxRanges(state.tree, state.doc).map((r) => [
+        state.doc.sliceString(r.from, r.to),
+        r.className,
+      ]);
+      expect(styles).toContainEqual(["whatever", "cm-sem-python-keyword-arg"]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("distinguishes definitions, nested definitions, docstrings, self, bytes and keyword arguments", async () => {
     const state = await parse(`"""module doc"""
 def outer(x):
@@ -27,7 +44,7 @@ class Foo:
         self.run(whatever=1)
         print(self.__doc__)
 `);
-    const ranges = pythonSyntaxRanges(syntaxTree(state), state.doc);
+    const ranges = pythonSyntaxRanges(state.tree, state.doc);
     const styles = ranges.map((r) => [state.doc.sliceString(r.from, r.to), r.className]);
     expect(styles).toContainEqual(["outer", "cm-sem-python-definition"]);
     expect(styles).toContainEqual(["nested", "cm-sem-python-nested"]);
@@ -42,7 +59,7 @@ class Foo:
 
   it("does not treat a locally shadowed builtin as a library symbol", async () => {
     const state = await parse("def f(print):\n    print(1)\nlen([1])");
-    const ranges = pythonFallbackRanges(syntaxTree(state), state.doc);
+    const ranges = pythonFallbackRanges(state.tree, state.doc);
     const print = ranges.filter((r) => state.doc.sliceString(r.from, r.to) === "print");
     expect(print.map((r) => r.className)).toEqual(["cm-sem-parameter", "cm-sem-parameter"]);
     expect(ranges.find((r) => state.doc.sliceString(r.from, r.to) === "len")?.className).toContain(
@@ -60,7 +77,7 @@ def unused(param):
 def skipped(self, _hidden):
     return 1
 `);
-    const tree = syntaxTree(state);
+    const tree = state.tree;
     const kinds = pythonSymbolKinds(tree, state.doc);
     const kindOf = (name: string) =>
       [...kinds]
@@ -94,7 +111,7 @@ class Child(Plain):
     def method(self, override_a):
         return 2
 `);
-    const stubKinds = pythonSymbolKinds(syntaxTree(stubs), stubs.doc);
+    const stubKinds = pythonSymbolKinds(stubs.tree, stubs.doc);
     const stubKindOf = (name: string) =>
       [...stubKinds]
         .filter(([range]) => {
@@ -122,7 +139,7 @@ class Child(Plain):
       { tokenTypes: ["variable"], tokenModifiers: [], data: [0, 0, 5, 0, 0] },
       false,
       "python",
-      syntaxTree(state),
+      state.tree,
     );
     expect(ranges.some((r) => r.className.includes("python-builtin"))).toBe(false);
   });
@@ -138,7 +155,7 @@ class Child(Plain):
       },
       false,
       "python",
-      syntaxTree(state),
+      state.tree,
     );
     expect(result.filter((r) => state.doc.sliceString(r.from, r.to) === "outer").map((r) => r.className)).toEqual([
       "cm-sem-python-definition",
@@ -150,9 +167,9 @@ class Child(Plain):
     const state = await parse(
       'x = "ordinary"\n"later"\ndef f():\n    b"bytes"\n    "later"\ndef g():\n    f"format {x}"',
     );
-    expect(
-      pythonSyntaxRanges(syntaxTree(state), state.doc).some((r) => r.className === "cm-sem-python-docstring"),
-    ).toBe(false);
+    expect(pythonSyntaxRanges(state.tree, state.doc).some((r) => r.className === "cm-sem-python-docstring")).toBe(
+      false,
+    );
   });
 
   it("honours Pyrefly selfParameter modifiers without applying rainbow colours", async () => {
@@ -195,7 +212,7 @@ class Box[T]:
     def read(self) -> T:
         return Box.count + Box.ICON
 `);
-    const tree = syntaxTree(state);
+    const tree = state.tree;
     const kinds = pythonSymbolKinds(tree, state.doc);
     const kindOf = (name: string) =>
       [...kinds]
@@ -232,7 +249,7 @@ class Box[T]:
       },
       true,
       "python",
-      syntaxTree(state),
+      state.tree,
     );
     const classOf = (name: string) =>
       result.filter((range) => state.doc.sliceString(range.from, range.to) === name).map((range) => range.className);

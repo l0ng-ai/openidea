@@ -779,6 +779,7 @@ describe("plugin line markers", () => {
     const doc = EditorState.create({ doc: "a\nbb\nccc" }).doc;
     const marker = (line: number, icon: string | null) => ({ pluginId: "m", line, icon, tooltip: "t", target: null });
     expect(placeMarkers(doc, [marker(1, "run"), marker(7, null)]).map((m) => m.pos)).toEqual([2]);
+    expect(markerIcon("database")).toBe("database");
     expect(markerIcon("run")).toBe("gutter-run");
     expect(markerIcon("implemented")).toBe("gutter-implemented");
     expect(markerIcon(null)).toBe("gutter-implementing");

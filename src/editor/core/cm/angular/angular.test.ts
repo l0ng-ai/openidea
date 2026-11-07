@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, foldable, matchBrackets } from "@codemirror/language";
+import { foldable, matchBrackets } from "@codemirror/language";
 import { IterMode, NodeProp, type Tree } from "@lezer/common";
 import { buildParserFile } from "@lezer/generator";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
+import { completedSyntaxState, completedSyntaxTree } from "@/test/syntax";
 import { findLanguageDescription, loadSupport } from "../languages";
 import { angular, angularLanguage } from "./index";
 
@@ -38,9 +39,7 @@ function tokens(doc: string, tree: Tree = angularLanguage.parser.parse(doc)): st
 
 /** The tree of `state`, parsed to the end. */
 function stateTree(state: EditorState): Tree {
-  const tree = ensureSyntaxTree(state, state.doc.length, 5000);
-  if (!tree) throw new Error("parse did not finish");
-  return tree;
+  return completedSyntaxTree(state, 5000);
 }
 
 /** A ~6 KB template starting with an element, with blocks and `@let` at the top level. */
@@ -192,8 +191,7 @@ describe("Angular templates", () => {
 
   it("matches a block's braces around its elements", () => {
     const doc = `@if (a) {\n  <p>{{ a }}</p>\n}`;
-    const state = EditorState.create({ doc, extensions: angular() });
-    ensureSyntaxTree(state, doc.length, 5000);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: angular() }));
     expect(matchBrackets(state, doc.indexOf("{"), 1)).toMatchObject({
       matched: true,
       end: { from: doc.lastIndexOf("}") },
@@ -220,8 +218,7 @@ describe("Angular templates", () => {
       "  }",
       "}",
     ].join("\n");
-    const state = EditorState.create({ doc, extensions: angular() });
-    stateTree(state);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: angular() }));
     const folds = [];
     for (let n = 1; n <= state.doc.lines; n++) {
       const line = state.doc.line(n);

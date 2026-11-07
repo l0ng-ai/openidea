@@ -9,6 +9,12 @@ connect to external configuration services.
 
 - **Go to Definition** on a YAML / properties key opens binding members and
   literal consumers in Java. Multiple matches use the existing location chooser.
+- **Go to Definition** inside a Spring `${name}` placeholder in YAML,
+  properties or Spring XML opens matching declarations: configuration keys in
+  other `.properties` / YAML files, properties declared by Spring XML wiring
+  (`<prop key="...">` values and placeholder-configurer `<property name="..."
+  value="...">` entries), and bound Java members. Ordinary YAML key definition
+  navigation remains native.
 - **Go to Definition** inside a Java `@Value` placeholder or a constant
   `Environment.getProperty` / `getRequiredProperty` argument opens matching
   configuration keys. Ordinary Java definition navigation remains native.
@@ -41,7 +47,14 @@ The Java command resolves annotation and method identities with JDT bindings:
 
 YAML key ranges come from the bundled tree-sitter grammar, including nested/flow
 mappings, sequences, quoted keys and multiple documents. Properties support
-escaped keys, Unicode escapes and logical-line continuations. Ranges crossing
+escaped keys, Unicode escapes and logical-line continuations. Spring XML wiring
+declares properties through `<prop key="...">` values and placeholder-configurer
+`<property name="..." value="...">` entries; XML is parsed with the bundled
+tree-sitter grammar and files without placeholder markers are skipped without
+parsing. Keys referenced by `<context:property-placeholder location="...">` or
+`<util:properties location="...">` live in the referenced files, which the
+configuration scan indexes directly — the XML element itself is not offered as a
+declaration. Ranges crossing
 IPC are UTF-16. No new IPC type or frontend provider is required.
 
 ## Scope and costs

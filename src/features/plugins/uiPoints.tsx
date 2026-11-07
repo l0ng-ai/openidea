@@ -30,7 +30,7 @@ import {
   registerExternalIcons,
   type MenuItem,
 } from "@/ui";
-import { addContributedFileTemplate } from "@/features/templates/files/store";
+import { addContributedFileTemplate } from "@/workbench/contributions";
 import {
   registerEditorKind,
   registerFileEditorProvider,
@@ -47,6 +47,7 @@ import {
 } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
 import { pluginIconName } from "./pluginIcon";
+import { projectMarkerIcon, type MarkerIconDecl } from "./markerIcons";
 import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
@@ -365,6 +366,7 @@ interface ViewDecl {
   title: string;
   icon?: string | null;
   location: ToolWindowAnchor | "services";
+  detail?: boolean;
   web?: string;
   group?: string | null;
   when?: string | null;
@@ -378,6 +380,8 @@ interface FileIconDecl {
 }
 
 interface FileTemplateDecl {
+  fileName?: string | null;
+  variables?: { name: string; prompt: string }[];
   id: string;
   name: string;
   extension: string;
@@ -385,8 +389,8 @@ interface FileTemplateDecl {
 }
 
 /** A new file's icon: the plugin's own file icon for it, else the built-in one. */
-function templateIcon(pluginId: string, extension: string): string {
-  const file = `untitled.${extension}`;
+function templateIcon(pluginId: string, extension: string, fileName?: string | null): string {
+  const file = fileName ?? `untitled.${extension}`;
   const own = usePlugins
     .getState()
     .ui.find(
@@ -473,7 +477,7 @@ function projectView(pluginId: string, decl: ViewDecl, index: number): () => voi
         decl.web ? (
           <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
         ) : (
-          <PluginView pluginId={pluginId} view={decl.id} label={decl.title} itemMenu={itemMenu} />
+          <PluginView pluginId={pluginId} view={decl.id} detail={decl.detail} label={decl.title} itemMenu={itemMenu} />
         ),
       index,
     );
@@ -567,6 +571,10 @@ export function defineViewUiPoints(): () => void {
         };
       },
     }),
+    defineUiPoint<MarkerIconDecl>("markerIcons", {
+      title: "Marker Icons",
+      project: ({ pluginId, decl }) => projectMarkerIcon(pluginId, decl),
+    }),
     defineUiPoint<FileIconDecl>("fileIcons", {
       title: "File Icons",
       project: ({ pluginId, decl }) => projectFileIcon(pluginId, decl),
@@ -581,9 +589,12 @@ export function defineViewUiPoints(): () => void {
         addContributedFileTemplate({
           id: `plugin.${pluginId}.${decl.id}`,
           name: decl.name,
-          icon: templateIcon(pluginId, decl.extension),
+          icon: templateIcon(pluginId, decl.extension, decl.fileName),
           extension: decl.extension,
           nameStyle: "asis",
+          fileName: decl.fileName ?? undefined,
+          variables: decl.variables,
+          inferPackage: true,
           kinds: [{ id: "file", label: decl.name, body: decl.body }],
         }),
     }),

@@ -22,6 +22,7 @@ struct TestWorkspace {
     other_roots: Mutex<Vec<PathBuf>>,
     documents: Arc<ide_workspace::Documents>,
     trusted: bool,
+    project_queries_left: Mutex<Option<usize>>,
     /// (producer, path) → published diagnostics.
     diagnostics: Mutex<std::collections::BTreeMap<(String, PathBuf), Vec<ide_core::Diagnostic>>>,
     /// plugin → its settings as the user set them.
@@ -39,6 +40,7 @@ impl TestWorkspace {
             other_roots: Mutex::default(),
             documents: Arc::new(documents),
             trusted: true,
+            project_queries_left: Mutex::new(None),
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
         })
@@ -93,6 +95,12 @@ impl PluginWorkspace for TestWorkspace {
         self.trusted
     }
     fn project_of(&self, _window: &str) -> Option<PathBuf> {
+        if let Some(left) = self.project_queries_left.lock().as_mut() {
+            if *left == 0 {
+                return None;
+            }
+            *left -= 1;
+        }
         Some(self.root.clone())
     }
     fn publish_diagnostics(
@@ -551,6 +559,103 @@ fn fs_write_reaches_only_the_granted_paths() {
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
+/// A program kept running behind a handle: the plugin writes its stdin, closes
+/// it, and waits for the exit status and what the program printed. A one-off run
+/// passes the environment it names.
+#[test]
+fn a_plugin_keeps_a_process_running_behind_a_handle() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    f.host.set_capability("misbehave", "process:git", false).unwrap();
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap_err().contains("process:git"));
+    for command in ["envrun", "envstart", "child"] {
+        let err = f.run("misbehave", command, None).unwrap_err();
+        assert!(err.contains("process:git"), "{command}: {err}");
+    }
+    // The fixture declares `process:git` as optional: it needs a program that
+    // reads stdin and reports its environment. Machines running these tests have
+    // git; without one, there is nothing to run and nothing to check.
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+
+    let out = f.run("misbehave", "child", None).expect("the handle works").expect("a result");
+    let (hash, status) = out.split_once(' ').unwrap_or_else(|| panic!("{out}"));
+    assert_eq!(hash.len(), 40, "a sha1 of what was written: {out}");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{out}");
+    assert_eq!(status, "Some(0)", "it ended by itself: {out}");
+
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap().unwrap().starts_with("git version"));
+    let ident = f.run("misbehave", "envrun", None).expect("a run with extra environment").expect("a result");
+    assert_eq!(ident.trim(), "added by the plugin");
+    assert_eq!(f.run("misbehave", "envstart", None).unwrap().unwrap().trim(), "added by the plugin");
+    for command in ["envdeny-run", "envdeny-start"] {
+        let inherited = std::env::vars().find(|(key, _)| key != "PATH" && !key.contains('=')).unwrap().0;
+        for key in ["PATH", inherited.as_str(), "", "BAD=KEY", "BAD\0KEY"] {
+            let err = f.run("misbehave", command, Some(key)).unwrap_err();
+            assert!(err.contains("environment variable"), "{command} {key:?}: {err}");
+        }
+    }
+    // Dropping a resource returns the slot; the limit is simultaneous handles.
+    for _ in 0..10 {
+        f.run("misbehave", "childkeep", None).unwrap();
+        assert_eq!(f.run("misbehave", "childpoll", None).unwrap().as_deref(), Some("None"));
+        f.run("misbehave", "childdrop", None).unwrap();
+    }
+    for _ in 0..8 {
+        f.run("misbehave", "childkeep", None).unwrap();
+    }
+    assert!(f.run("misbehave", "childkeep", None).unwrap_err().contains("at most 8"));
+    f.run("misbehave", "childdrop", None).unwrap();
+    f.run("misbehave", "childkeep", None).unwrap();
+    f.host.forget_client("main");
+    assert!(f.run("misbehave", "childpoll", None).unwrap_err().contains("no process"));
+    assert!(f.run("misbehave", "childkeep", None).is_err(), "late starts are cancelled");
+    f.host.reopen_client("main");
+    f.run("misbehave", "childdrop", None).unwrap();
+
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_processes_end_with_their_owner() {
+    for mode in ["disable", "unload", "shutdown", "reclaim", "trap", "window"] {
+        let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+        f.install(&misbehave_pkg());
+        f.host.set_capability("misbehave", "process:git", true).unwrap();
+        let marker = format!("--path={}/process-{mode}", f.project.display());
+        let alive = || {
+            let ps = std::process::Command::new("ps").args(["-axo", "command="]).output().unwrap();
+            assert!(ps.status.success());
+            String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
+        };
+        f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        assert!(alive(), "{mode}: the process started");
+        match mode {
+            "disable" => f.host.set_enabled("misbehave", false).unwrap(),
+            "unload" => f.host.uninstall("misbehave").unwrap(),
+            "shutdown" => f.host.shutdown(),
+            "reclaim" => {
+                std::thread::sleep(Duration::from_millis(75));
+                f.host.tick();
+                assert_eq!(f.host.instances(), 0);
+            }
+            "trap" => {
+                assert!(f.run("misbehave", "panic", None).is_err());
+            }
+            "window" => f.host.forget_client("main"),
+            _ => unreachable!(),
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!alive(), "{mode}: the process must end with its owner");
+    }
+}
+
 /// A missing capability is an error the plugin can handle, not a trap.
 #[test]
 fn ungranted_capabilities_are_denied_not_trapped() {
@@ -827,7 +932,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 14, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 23, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -1850,6 +1955,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     git(&f.project, &["init", "-b", "main"]);
     f.install(&official("git-toolbox"));
     let untrusted = Arc::new(TestWorkspace {
+        project_queries_left: Mutex::new(None),
         root: f.project.clone(),
         other_roots: Mutex::default(),
         documents: f.workspace.documents.clone(),
@@ -2910,6 +3016,81 @@ path = "templates/new.draw"
     assert!(f.host.web_page("web-demo", "draw").is_err());
 }
 
+#[test]
+fn file_templates_fixture_installs_without_write_capabilities() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("file-templates"));
+    assert!(info.capabilities.is_empty());
+    let templates = f.host.ui_items("fileTemplates");
+    assert_eq!(templates.len(), 4);
+    let template = |id: &str| templates.iter().find(|t| t.decl["id"] == id).unwrap();
+    assert_eq!(template("dockerignore").decl["fileName"], ".dockerignore");
+    assert_eq!(template("attributes").decl["variables"].as_array().unwrap().len(), 2);
+    assert!(template("repository").decl["body"].as_str().unwrap().contains("$PACKAGE$"));
+    assert!(f.installed("file-templates").join("templates/repository.txt").is_file());
+    assert_eq!(f.run("file-templates", "ping", None).unwrap().as_deref(), Some("File templates ready"));
+    f.host.set_enabled("file-templates", false).unwrap();
+    assert!(f.host.ui_items("fileTemplates").is_empty());
+}
+
+#[test]
+fn file_templates_api_13_names_and_variables() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("template-demo");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("body.txt"), "$ENTITY$ $PACKAGE$\n").unwrap();
+    let install = |api: &str, fields: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "template-demo"
+name = "Templates"
+version = "1.0.0"
+engines.openidea = "{api}"
+[[contributes.fileTemplates]]
+id = "template"
+name = "Template"
+path = "body.txt"
+{fields}
+"#
+            ),
+        )
+        .unwrap();
+        f.host.install_from_dir(&pkg, &Consent::all())
+    };
+    for fields in [r#"fileName = ".dockerignore""#, "extension = \"java\"\nvariables = []"] {
+        let err = install("^1.2", fields).unwrap_err().message;
+        assert!(err.contains("1.3"), "{err}");
+    }
+    for name in ["", ".", "..", "../escape", "a/b", r"a\b", "/absolute", "C:evil", "a?", " a", "a.", "NUL.txt", "COM1"]
+    {
+        let fields = format!("fileName = {}", serde_json::to_string(name).unwrap());
+        assert!(install("^1.3", &fields).is_err(), "accepted {name:?}");
+    }
+    for vars in [
+        r#"[{ name = "", prompt = "Entity" }]"#,
+        r#"[{ name = "1bad", prompt = "Entity" }]"#,
+        r#"[{ name = "bad-name", prompt = "Entity" }]"#,
+        r#"[{ name = "PACKAGE", prompt = "Entity" }]"#,
+        r#"[{ name = "ENTITY", prompt = "" }]"#,
+        r#"[{ name = "ENTITY", prompt = "Entity" }, { name = "ENTITY", prompt = "Again" }]"#,
+    ] {
+        assert!(install("^1.3", &format!("extension = \"java\"\nvariables = {vars}")).is_err(), "accepted {vars}");
+    }
+    install(
+        "^1.3",
+        r#"fileName = ".dockerignore"
+variables = [{ name = "ENTITY", prompt = "Entity class" }]"#,
+    )
+    .unwrap();
+    let items = f.host.ui_items("fileTemplates");
+    assert_eq!(items[0].decl["fileName"], ".dockerignore");
+    assert_eq!(items[0].decl["extension"], "");
+    assert_eq!(items[0].decl["variables"][0]["prompt"], "Entity class");
+    assert_eq!(items[0].decl["body"], "$ENTITY$ $PACKAGE$\n");
+}
+
 /// A view needs a page or code to render it; a page's directory can't be the package itself.
 #[test]
 fn web_view_declarations_are_checked() {
@@ -3504,7 +3685,80 @@ fn services_views_have_a_detail_pane() {
     let f = fixture(Limits::default());
     f.install(&sample("hello"));
     let err = f.host.service_detail("hello", "greetings", "x", f.inv()).unwrap_err();
-    assert!(err.message.contains("declares no services view"), "a right view has no pane: {err:?}");
+    assert!(err.message.contains("declares no detail view"), "a right view has no pane: {err:?}");
+}
+
+#[test]
+fn detail_views_work_in_every_location_and_require_api_1_3_code() {
+    for location in ["left", "right", "bottom", "services"] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = {location:?}\ndetail = true"))
+        });
+        assert!(f.install(&pkg).error.is_none());
+        assert_eq!(f.host.ui_items("views")[0].decl["detail"], true);
+        let tabs = f.host.service_detail("hello", "greetings", "item:😀", f.inv()).unwrap();
+        assert_eq!(tabs[1].body, ide_plugin::ServicePane::Text("greetings: item:😀".into()));
+        assert!(f.host.service_detail("hello", "missing", "x", f.inv()).is_err());
+    }
+    for (api, web, message) in
+        [("^1.0", false, "new in plugin API 1.3"), ("^1.3", true, "`detail` needs a tree or list")]
+    {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = {api:?}")).replace(
+                "location = \"right\"",
+                if web {
+                    "location = \"right\"\ndetail = true\nweb = \"web/index.html\""
+                } else {
+                    "location = \"right\"\ndetail = true"
+                },
+            )
+        });
+        if web {
+            std::fs::create_dir_all(pkg.join("web")).unwrap();
+            std::fs::write(pkg.join("web/index.html"), "<p>x</p>").unwrap();
+        }
+        let error = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(error.message.contains(message), "{error:?}");
+    }
+}
+
+#[test]
+fn detail_fixture_tracks_selection_and_refresh_for_tree_list_and_services() {
+    let f = fixture(Limits::default());
+    assert!(f.install(&sample("detail-views")).error.is_none());
+    for view in ["tree", "list", "services"] {
+        assert!(matches!(
+            f.host.render_view("test.detail-views", view, None, f.inv()).unwrap().body,
+            ide_plugin::ViewBody::Tree(_) | ide_plugin::ViewBody::List(_)
+        ));
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Select { key: "beta".into() }, f.inv())
+            .unwrap();
+        let tabs = f.host.service_detail("test.detail-views", view, "beta", f.inv()).unwrap();
+        let ide_plugin::ServicePane::Text(text) = &tabs[0].body else { panic!("text detail") };
+        assert!(text.starts_with(&format!("{view}: beta")));
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Button { id: "refresh".into() }, f.inv())
+            .unwrap();
+        let refreshed = f.host.service_detail("test.detail-views", view, "beta", f.inv()).unwrap();
+        assert_ne!(tabs, refreshed);
+    }
+    let selections = [("tree", "alpha"), ("list", "beta"), ("services", "alpha")];
+    for (view, key) in selections {
+        f.host
+            .view_event("test.detail-views", view, ide_plugin::ViewEvent::Select { key: key.into() }, f.inv())
+            .unwrap();
+    }
+    for (view, key) in selections {
+        let tabs = f.host.service_detail("test.detail-views", view, key, f.inv()).unwrap();
+        let ide_plugin::ServicePane::Text(text) = &tabs[0].body else { panic!("text detail") };
+        assert!(text.starts_with(&format!("{view}: {key}")));
+    }
 }
 
 /// `hello` as a services view that may run `sh`, granted or not.
@@ -3584,6 +3838,30 @@ fn service_logs_need_the_grant_and_a_log_tab() {
     cancelled.cancel();
     assert_eq!(stream(&f, &script, &[], &cancelled, |_| {}).unwrap_err().kind, ErrorKind::Cancelled);
     assert!(!marker.exists(), "a cancelled request starts nothing");
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_detail_views_reuse_log_grants_and_streaming() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |t| {
+        services_variant(t).replace("location = \"services\"", "location = \"right\"\ndetail = true").replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = [\"editor.read\", \"editor.write\"]\noptional = [\"process:sh\"]",
+        )
+    });
+    f.install(&pkg);
+    f.host.set_capability("hello", "process:sh", false).unwrap();
+    assert_eq!(
+        stream(&f, "echo allowed", &[], &Default::default(), |_| {}).unwrap_err().kind,
+        ErrorKind::PermissionDenied
+    );
+    f.host.set_capability("hello", "process:sh", true).unwrap();
+    f.host.set_program_path(Arc::new(|| Some(PathBuf::from("/bin").into_os_string())));
+    let lines = Mutex::new(Vec::new());
+    assert_eq!(stream(&f, "echo allowed", &[], &Default::default(), |l| lines.lock().push(l.text)).unwrap(), Some(0));
+    assert_eq!(lines.into_inner(), ["allowed"]);
 }
 
 #[cfg(unix)]
@@ -4163,4 +4441,276 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
     let err =
         f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
     assert!(err.message.contains("limited to"), "{}", err.message);
+}
+
+#[test]
+fn web_ptys_require_a_current_exact_program_grant_and_project() {
+    use ide_host::plugins::web::WebPtyCommand;
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-pty"), &Consent::default()).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "process:git" && !c.granted));
+    let command = || WebPtyCommand {
+        program: "git".into(),
+        args: vec!["--version".into()],
+        env: Default::default(),
+        cols: 80,
+        rows: 24,
+    };
+    let options = |cmd| f.host.web_pty_options("web-pty", "terminal", "main", cmd);
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_capability("web-pty", "process:git", true).unwrap();
+    let approved = f.host.program_for("web-pty", "git").unwrap();
+    let got = options(command()).unwrap();
+    assert_eq!(got.shell.as_deref(), approved.to_str());
+    assert!(approved.is_absolute());
+    assert_eq!(got.cwd.0, f.project);
+    assert!(!got.shell_integration);
+    assert_eq!(f.run("web-pty", "ping", None).unwrap().as_deref(), Some("Web PTY ready"));
+    for program in ["sh", "bash", "git-other", "./git", "/tmp/git"] {
+        let cmd = WebPtyCommand { program: program.into(), ..command() };
+        assert!(options(cmd).is_err(), "{program}");
+    }
+    for cmd in [
+        WebPtyCommand { cols: 0, ..command() },
+        WebPtyCommand { rows: 501, ..command() },
+        WebPtyCommand { args: vec!["x".repeat(4097)], ..command() },
+        WebPtyCommand { args: vec!["x".into(); 257], ..command() },
+        WebPtyCommand { args: vec!["\0".into()], ..command() },
+        WebPtyCommand { env: [("PATH".into(), "/tmp".into())].into(), ..command() },
+        WebPtyCommand { env: [("a=b".into(), "x".into())].into(), ..command() },
+        WebPtyCommand { env: [("a".into(), "x".repeat(4097))].into(), ..command() },
+    ] {
+        assert!(options(cmd).is_err());
+    }
+    let got = options(WebPtyCommand { env: [("OPENIDEA_WEB_PTY_TEST_NEW".into(), "yes".into())].into(), ..command() })
+        .unwrap();
+    assert_eq!(got.env["OPENIDEA_WEB_PTY_TEST_NEW"], "yes");
+    assert!(f.host.web_pty_options("web-pty", "missing", "main", command()).is_err());
+    f.host.set_workspace(None);
+    assert!(options(command()).is_err());
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted));
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_workspace(Some(f.workspace.clone()));
+    std::fs::rename(&f.project, f.project.with_extension("moved")).unwrap();
+    assert!(options(command()).unwrap_err().message.contains("no longer exists"));
+    std::fs::rename(f.project.with_extension("moved"), &f.project).unwrap();
+    f.host.set_capability("web-pty", "process:git", false).unwrap();
+    assert_eq!(options(command()).unwrap_err().kind, ErrorKind::PermissionDenied);
+    f.host.set_enabled("web-pty", false).unwrap();
+    assert!(options(command()).is_err());
+    f.host.uninstall("web-pty").unwrap();
+    assert!(options(command()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn web_ptys_keep_the_approved_file_and_require_api_1_3() {
+    use ide_host::plugins::web::WebPtyCommand;
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits::default());
+    let bin = f.plugins_dir.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let executable = bin.join("git");
+    std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = bin.clone();
+    f.host.set_program_path(Arc::new(move || Some(path.clone().into_os_string())));
+    f.install(&sample("web-pty"));
+    let command = || WebPtyCommand { program: "git".into(), args: vec![], env: Default::default(), cols: 80, rows: 24 };
+    f.host.set_program_path(Arc::new(|| Some("/unapproved-path".into())));
+    assert_eq!(
+        f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap().shell.unwrap(),
+        executable.canonicalize().unwrap().to_string_lossy()
+    );
+    std::fs::write(&executable, "#!/bin/sh\nexit 42\n").unwrap();
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap_err().message.contains("changed"));
+    std::fs::remove_file(&executable).unwrap();
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).is_err());
+
+    let old = tempfile::tempdir().unwrap();
+    let pkg = old.path().join("old");
+    copy_dir(&sample("web-pty"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("^1.3", "^1.2");
+    std::fs::write(manifest, text).unwrap();
+    let f = fixture(Limits::default());
+    f.install(&pkg);
+    assert!(f.host.web_pty_options("web-pty", "terminal", "main", command()).unwrap_err().message.contains("1.3"));
+}
+
+#[tokio::test]
+async fn web_ptys_are_capped_across_windows_and_end_with_the_plugin() {
+    use ide_host::{Host, HostConfig, plugins::web::WebPtyCommand};
+    let f = fixture(Limits::default());
+    f.install(&sample("web-pty"));
+    let root = tempfile::tempdir().unwrap();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: root.path().join("config"),
+        data_dir: root.path().join("data"),
+        local_data_dir: root.path().join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let spawn = |window: &str| {
+        f.host.spawn_web_pty(
+            &host,
+            "web-pty",
+            "terminal",
+            window,
+            WebPtyCommand {
+                program: "git".into(),
+                args: vec!["hash-object".into(), "--stdin".into()],
+                env: Default::default(),
+                cols: 80,
+                rows: 24,
+            },
+            Arc::new(|_| {}),
+        )
+    };
+    *f.workspace.project_queries_left.lock() = Some(1);
+    assert!(spawn("main").is_err(), "project closed while spawning");
+    assert!(host.terminals.list().is_empty());
+    *f.workspace.project_queries_left.lock() = None;
+    let mut ids = Vec::new();
+    for i in 0..8 {
+        ids.push(spawn(&format!("window-{i}")).unwrap().id);
+    }
+    assert!(spawn("ninth-window").unwrap_err().message.contains("8 PTYs"));
+    host.terminals.kill(ids[0]).unwrap();
+    let replacement = spawn("another-window").unwrap();
+    f.host.reload("web-pty").unwrap();
+    assert!(!host.terminals.contains(replacement.id));
+    assert!(ids.into_iter().all(|id| !host.terminals.contains(id)));
+    let id = spawn("main").unwrap().id;
+    f.host.set_capability("web-pty", "process:git", false).unwrap();
+    assert!(!host.terminals.contains(id));
+    assert!(spawn("main").is_err());
+    f.host.set_capability("web-pty", "process:git", true).unwrap();
+    let id = spawn("main").unwrap().id;
+    f.host.set_enabled("web-pty", false).unwrap();
+    assert!(!host.terminals.contains(id));
+    f.host.set_enabled("web-pty", true).unwrap();
+    let id = spawn("main").unwrap().id;
+    f.host.forget_client("main");
+    assert!(!host.terminals.contains(id));
+    assert!(spawn("main").is_err());
+    f.host.reopen_client("main");
+    let id = spawn("main").unwrap().id;
+    f.host.uninstall("web-pty").unwrap();
+    assert!(!host.terminals.contains(id));
+}
+
+#[test]
+fn marker_icons_ship_sanitized_light_and_dark_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    let manifest = |engine: &str, icon: &str, dark: &str| {
+        format!(
+            r#"
+id = "marker-icons"
+name = "Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "resource"
+icon = "{icon}"
+iconDark = "{dark}"
+"#
+        )
+    };
+    let clean = r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#;
+    std::fs::write(pkg.join("icons/resource.svg"), clean).unwrap();
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    for (engine, icon, dark) in [
+        ("^1.0", "icons/resource.svg", "icons/resource_dark.svg"),
+        ("^1.3", "../outside.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/missing.svg", "icons/resource_dark.svg"),
+        ("^1.3", "icons/resource.svg", "icons/missing.svg"),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, icon, dark)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.3", "icons/resource.svg", "icons/resource_dark.svg")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.svg");
+        std::fs::write(&outside, clean).unwrap();
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+        std::os::unix::fs::symlink(outside, pkg.join("icons/resource_dark.svg")).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err());
+        std::fs::remove_file(pkg.join("icons/resource_dark.svg")).unwrap();
+    }
+    let mut unsafe_svgs = vec![
+        "<svg><script>alert(1)</script></svg>".to_owned(),
+        "<svg onload=\"alert(1)\"/>".to_owned(),
+        "<svg><foreignObject/></svg>".to_owned(),
+        "<svg><rect style=\"fill:url(https://evil/x)\"/></svg>".to_owned(),
+        "<svg><rect style=\"background-image:image-set('https://evil/x' 1x)\"/></svg>".to_owned(),
+        format!("<svg>{}</svg>", " ".repeat(64 << 10)),
+    ];
+    for attr in ["href", "xlink:href"] {
+        for scheme in ["http://evil/x", "data:image/svg+xml,x", "javascript:alert(1)"] {
+            unsafe_svgs.push(format!("<svg><use {attr}=\"{scheme}\"/></svg>"));
+        }
+    }
+    for path in ["icons/resource.svg", "icons/resource_dark.svg"] {
+        for svg in &unsafe_svgs {
+            std::fs::write(pkg.join(path), svg).unwrap();
+            assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {path}: {svg}");
+        }
+        std::fs::write(pkg.join(path), clean).unwrap();
+    }
+    std::fs::write(pkg.join("icons/resource_dark.svg"), clean.replace("rect", "circle")).unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert_eq!(assets.len(), 2);
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("<rect")));
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/dark") && svg.contains("<circle")));
+    let revision = f.host.ui_items("markerIcons")[0].decl["revision"].clone();
+    std::fs::write(pkg.join("icons/resource.svg"), clean.replace("width=\"16\"", "width=\"14\"")).unwrap();
+    let updated = f.install(&pkg);
+    assert!(updated.error.is_none(), "{:?}", updated.error);
+    assert_ne!(f.host.ui_items("markerIcons")[0].decl["revision"], revision);
+    let assets = f.host.assets("marker-icons", "markerIcon/resource/").unwrap();
+    assert!(assets.iter().any(|(id, svg)| id.ends_with("/light") && svg.contains("width=\"14\"")));
+    std::fs::remove_dir_all(pkg).unwrap();
+    assert_eq!(f.host.assets("marker-icons", "markerIcon/resource/").unwrap(), assets);
+    f.host.set_enabled("marker-icons", false).unwrap();
+    assert!(f.host.assets("marker-icons", "markerIcon/resource/").is_err());
+}
+
+#[test]
+fn marker_providers_preserve_names_and_package_paths() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        format!("{manifest}\n[[contributes.providers]]\nkinds = [\"line-markers\"]\nlanguages = [\"text\"]\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("markers.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "marker-icons\nordinary\ncustom\nlegacy".into(),
+    };
+    assert!(eventually(|| f.host.provide_line_markers(&doc).len() == 4));
+    let markers = f.host.provide_line_markers(&doc);
+    assert_eq!(
+        markers.iter().map(|(_, m)| m.icon.as_deref().unwrap()).collect::<Vec<_>>(),
+        ["run", "database", "icons/very-long-resource-marker-icon.svg", "overriding"]
+    );
 }

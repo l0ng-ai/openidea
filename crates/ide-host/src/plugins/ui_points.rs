@@ -69,6 +69,7 @@ pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
+pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 pub const COMMIT_CHECKS: &str = "commitChecks";
 
@@ -403,6 +404,9 @@ struct ViewDecl {
     group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     when: Option<String>,
+    /// Show the selected tree/list item's detail-provider tabs beside it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    detail: bool,
     /// A web page of the package (`web/index.html`) instead of content the code renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
@@ -440,6 +444,12 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         pkg.manifest.needs_api(&format!("view {:?}: `location = \"services\"`", d.id), 3)?;
         if d.web.is_some() {
             return Err(format!("view {:?}: a services view is rendered by the plugin's code (no `web`)", d.id));
+        }
+    }
+    if d.detail {
+        pkg.manifest.needs_api(&format!("view {:?}: `detail`", d.id), 3)?;
+        if d.web.is_some() {
+            return Err(format!("view {:?}: `detail` needs a tree or list rendered by the plugin (no `web`)", d.id));
         }
     }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {
@@ -555,13 +565,52 @@ pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Stri
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MarkerIconDecl {
+    id: String,
+    icon: PathBuf,
+    #[serde(default)]
+    icon_dark: Option<PathBuf>,
+}
+
+pub(super) fn marker_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    pkg.manifest.needs_api("contributes.markerIcons", 3)?;
+    let d: MarkerIconDecl = decode(MARKER_ICONS, decl)?;
+    validate_item_id(&d.id, "marker icon id")?;
+    if d.icon.to_string_lossy().len() > 256 {
+        return Err("marker icon paths are up to 256 bytes".into());
+    }
+    let mut out = UiDecl::new(d.id.clone(), d.id.clone(), serde_json::json!({ "id": d.id, "icon": d.icon }));
+    for (path, variant) in [(Some(&d.icon), "light"), (d.icon_dark.as_ref(), "dark")] {
+        let Some(path) = path else { continue };
+        let svg = super::icons::read_icon(pkg, path, super::icons::MAX_SVG)?;
+        out.assets.push((format!("markerIcon/{}/{variant}", d.id), svg));
+        out.files.push(path.clone());
+    }
+    // A changed SVG must reproject even when its declared path stays the same.
+    let bytes = serde_json::to_vec(&out.assets).map_err(|e| e.to_string())?;
+    out.json["revision"] = Value::String(blake3::hash(&bytes).to_hex().to_string());
+    Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FileTemplateDecl {
     id: String,
     name: String,
     /// Without the dot.
+    #[serde(default)]
     extension: String,
+    file_name: Option<String>,
+    variables: Option<Vec<FileTemplateVariable>>,
     /// The new file's content (`$NAME$`, `$END$` and the other template variables work).
     path: PathBuf,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FileTemplateVariable {
+    name: String,
+    prompt: String,
 }
 
 const MAX_TEMPLATE: usize = 256 << 10;
@@ -572,8 +621,59 @@ pub(super) fn file_template(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
     validate_item_id(&d.id, "file template id")?;
     title(FILE_TEMPLATES, &d.name)?;
     let what = format!("file template {:?}", d.id);
+    if d.file_name.is_some() || d.variables.is_some() {
+        pkg.manifest.needs_api("contributes.fileTemplates: fileName / variables", 3)?;
+    }
+    if let Some(name) = &d.file_name {
+        let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+        if name.is_empty()
+            || name.len() > 255
+            || name.trim() != name
+            || name.ends_with('.')
+            || matches!(name.as_str(), "." | "..")
+            || name.chars().any(|c| c.is_control() || "/\\<>:\"|?*".contains(c))
+            || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+                && matches!(stem.as_bytes().get(3), Some(b'1'..=b'9'))
+                && stem.len() == 4)
+        {
+            return Err(format!("{what}: `fileName` must be a safe single file name"));
+        }
+    }
+    let mut names = std::collections::HashSet::new();
+    let variables = d.variables.unwrap_or_default();
+    if variables.len() > 32 {
+        return Err(format!("{what}: at most 32 variables are allowed"));
+    }
+    for variable in &variables {
+        let name = &variable.name;
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .bytes()
+                .enumerate()
+                .all(|(i, c)| c.is_ascii_alphabetic() || c == b'_' || i > 0 && c.is_ascii_digit())
+            || matches!(
+                name.as_str(),
+                "NAME"
+                    | "FILE_NAME"
+                    | "PACKAGE"
+                    | "PACKAGE_NAME"
+                    | "PROJECT_NAME"
+                    | "USER"
+                    | "DATE"
+                    | "TIME"
+                    | "YEAR"
+                    | "END"
+            )
+            || !names.insert(name)
+        {
+            return Err(format!("{what}: invalid, reserved or duplicate variable name {name:?}"));
+        }
+        title("file template variable prompt", &variable.prompt)?;
+    }
     let ext = d.extension.trim_start_matches('.');
-    if ext.is_empty()
+    if (ext.is_empty() && d.file_name.is_none())
         || ext.len() > 32
         || !ext.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
     {
@@ -583,7 +683,7 @@ pub(super) fn file_template(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
     if body.len() > MAX_TEMPLATE {
         return Err(format!("{what}: {} is larger than {} KiB", d.path.display(), MAX_TEMPLATE >> 10));
     }
-    let json = serde_json::json!({ "id": d.id, "name": d.name, "extension": ext, "body": body });
+    let json = serde_json::json!({ "id": d.id, "name": d.name, "extension": ext, "body": body, "fileName": d.file_name, "variables": variables });
     let mut out = UiDecl::new(d.id.clone(), d.name.clone(), json);
     out.files = vec![d.path.clone()];
     Ok(out)
