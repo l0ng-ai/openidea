@@ -43,6 +43,8 @@ export interface Action {
   keyWhen?: string;
   /** Extra search terms for the Actions tab. */
   keywords?: string[];
+  /** The title comes from outside the IDE (a plugin) and is shown as written; the category still names an IDE group. */
+  verbatim?: boolean;
   /** Hidden from Search Everywhere (internal / parameterised actions). */
   hidden?: boolean;
   /**
@@ -75,7 +77,7 @@ function localized(key: string, text: string | undefined): string | undefined {
 }
 
 function localize(action: Action): Action {
-  const title = localized(`action.${action.id}`, action.title);
+  const title = action.verbatim ? undefined : localized(`action.${action.id}`, action.title);
   const description = localized(`action.${action.id}.description`, action.description);
   const category = localized(`action.category.${action.category}`, action.category);
   if (!title && !description && !category) return action;

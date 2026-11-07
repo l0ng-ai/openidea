@@ -1,5 +1,6 @@
 //! Shared filesystem rules for discovering builds and resolving their owners.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
 pub const SEARCH_DEPTH: usize = 3;
@@ -36,9 +37,22 @@ pub fn discover_matching(
     stop_at_match: bool,
     marked: impl Fn(&Path) -> bool,
 ) -> Vec<PathBuf> {
+    discover_matching_cancellable(root, max_depth, stop_at_match, &crate::CancellationToken::new(), marked)
+}
+
+pub fn discover_matching_cancellable(
+    root: &Path,
+    max_depth: usize,
+    stop_at_match: bool,
+    cancel: &crate::CancellationToken,
+    marked: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut pending = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = pending.pop() {
+        if cancel.is_cancelled() {
+            break;
+        }
         if marked(&dir) {
             found.push(dir.clone());
             if stop_at_match {
@@ -64,6 +78,70 @@ pub fn discover_matching(
     found.sort();
     found.dedup();
     found
+}
+
+/// Expands workspace member patterns one level deep: `dir`, `dir/*`, `dir/**`.
+pub fn expand_members(root: &Path, patterns: &[String], marker: &str) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for pattern in patterns {
+        let pattern = pattern.trim().trim_start_matches("./").trim_end_matches('/');
+        if pattern.is_empty() || pattern.starts_with('!') {
+            continue;
+        }
+        let base = pattern.strip_suffix("/**").or_else(|| pattern.strip_suffix("/*"));
+        match base {
+            Some(base) if !base.contains('*') => {
+                dirs.extend(children(&root.join(base)).into_iter().filter(|d| d.join(marker).is_file()))
+            }
+            None if !pattern.contains('*') => {
+                let dir = root.join(pattern);
+                if dir.join(marker).is_file() {
+                    dirs.push(dir);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut seen = HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    dirs
+}
+
+pub fn node_workspace_members(root: &Path) -> Vec<PathBuf> {
+    let package = std::fs::read(root.join("package.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .unwrap_or_default();
+    expand_members(root, &node_workspace_patterns(root, &package), "package.json")
+}
+
+fn node_workspace_patterns(root: &Path, pkg: &serde_json::Value) -> Vec<String> {
+    let mut patterns: Vec<String> = Vec::new();
+    let ws = pkg.get("workspaces");
+    let list = ws
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| ws.and_then(|w| w.get("packages")).and_then(serde_json::Value::as_array));
+    if let Some(list) = list {
+        patterns.extend(list.iter().filter_map(serde_json::Value::as_str).map(str::to_owned));
+    }
+    if let Ok(yaml) = std::fs::read_to_string(root.join("pnpm-workspace.yaml")) {
+        let mut in_packages = false;
+        for line in yaml.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if !line.starts_with([' ', '\t', '-']) {
+                in_packages = trimmed.starts_with("packages:");
+                continue;
+            }
+            if in_packages && let Some(item) = trimmed.strip_prefix('-') {
+                let item = item.split(" #").next().unwrap_or_default().trim().trim_matches(['"', '\'']);
+                patterns.push(item.to_owned());
+            }
+        }
+    }
+    patterns
 }
 
 /// The closest package manager declaration or lockfile, shared by build and run.

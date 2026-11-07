@@ -261,7 +261,7 @@ export function matchActions(
     if (!enabled && opts.includeDisabled === false) continue;
     let score: number;
     let indices: number[] = [];
-    const translated = tx(a.title);
+    const translated = shown(a, a.title);
     const title = matchText(translated, q, { wordAligned: true });
     // The English title still matches; its indices don't apply to the translated text.
     const english = title || translated === a.title ? undefined : matchText(a.title, q, { wordAligned: true });
@@ -287,7 +287,7 @@ export function matchActions(
       key: `a:${a.id}`,
       id: a.id,
       title: translated,
-      category: a.category ? tx(a.category) : a.category,
+      category: a.category && tx(a.category),
       icon: a.icon,
       enabled,
       indices,
@@ -335,13 +335,18 @@ export function mergeActionResults(actions: readonly ActionItem[], settings: rea
   return byScore<ActionItem | SettingItem>([...actions, ...settings]);
 }
 
+/** An action's title in the UI language; a plugin's stays as written. */
+function shown(a: Action, text: string): string {
+  return a.verbatim ? text : tx(text);
+}
+
 export function actionItem(a: Action, enabled: boolean): ActionItem {
   return {
     kind: "action",
     key: `a:${a.id}`,
     id: a.id,
-    title: tx(a.title),
-    category: a.category ? tx(a.category) : a.category,
+    title: shown(a, a.title),
+    category: a.category && tx(a.category),
     icon: a.icon,
     enabled,
     indices: [],

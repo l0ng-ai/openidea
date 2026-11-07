@@ -58,6 +58,7 @@ import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { AgentReply } from "./AgentReply";
 import { Markdown } from "./Markdown";
+import { useAgentErrorText } from "./loginHint";
 import {
   branchLabel,
   entriesKey,
@@ -866,11 +867,15 @@ const Entry = memo(function Entry({
       return (
         <div className={styles.error} role="alert">
           <Icon name="error" size={14} />
-          <span>{entry.message}</span>
+          <AgentErrorText message={entry.message} />
         </div>
       );
   }
 });
+
+function AgentErrorText({ message }: { message: string }) {
+  return <span>{useAgentErrorText(message)}</span>;
+}
 
 function UserMessage({
   task,

@@ -17,6 +17,7 @@ import {
   type ChangeSet,
   type TransactionSpec,
 } from "@codemirror/state";
+import { historyField } from "@codemirror/commands";
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
 import {
   _addEditor,
@@ -84,27 +85,36 @@ export class EditorSlot {
       },
     };
     const source = init?.from;
+    const secondary = !model.slots.size
+      ? [...model.attachments]
+          .map((attachment) => attachment.historyState?.())
+          .find((state) => state?.field(historyField, false))
+      : null;
+    const history = secondary?.field(historyField, false);
     this.state = EditorState.create({
       doc: model.sync.localText,
       selection: source ? source.currentState().selection : undefined,
-      extensions: baseExtensions({
-        ctx: model.ctx(),
-        settings: model.settings(),
-        info: model.info,
-        language: model.language,
-        docLength: model.sync.localText.length,
-        indent: model.effectiveIndent(),
-        formatIndent: model.formatIndent(),
-        wrapOverride: model.softWrapOverride,
-        extra: this.slotExtensions(),
-      }),
+      extensions: [
+        history ? historyField.init(() => history) : [],
+        baseExtensions({
+          ctx: model.ctx(),
+          settings: model.settings(),
+          info: model.info,
+          language: model.language,
+          docLength: model.sync.localText.length,
+          indent: model.effectiveIndent(),
+          formatIndent: model.formatIndent(),
+          wrapOverride: model.softWrapOverride,
+          extra: this.slotExtensions(),
+        }),
+      ],
     });
     this.contributionsVersion = model.manager.contributionsVersion;
     if (source?.view) this.scroll = source.view.scrollSnapshot();
     else if (source) this.scroll = source.scroll;
     if (init?.reveal) this.pendingReveal = init.reveal;
     model.addSlot(this);
-    this.detachHistory = model.manager.workspaceHistory.attach(this.historyTarget);
+    this.detachHistory = model.manager.workspaceHistory.attach(this.historyTarget, !history);
   }
 
   get ctx(): EditorDocContext {

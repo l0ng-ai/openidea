@@ -21,6 +21,7 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
+import { MacWindowButtons } from "./MacWindowButtons";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
@@ -301,6 +302,7 @@ export function TitleBar({
   if (bare)
     return (
       <header ref={setBar} className={className} {...windowDragRegion} data-titlebar="bare">
+        {overlay && <MacWindowButtons />}
         {frameless && (
           <>
             <MainMenu />
@@ -323,6 +325,7 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
+      {overlay && <MacWindowButtons />}
       {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
