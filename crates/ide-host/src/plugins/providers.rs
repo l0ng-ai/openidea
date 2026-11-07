@@ -315,11 +315,12 @@ impl PluginHost {
         plugin_id: &str,
         doc: &ProviderDocument,
         action: CodeAction,
+        invocation: ide_plugin::Invocation,
     ) -> ide_core::IdeResult<CodeAction> {
         let d = Arc::new(doc.clone());
         let timeout = self.limits.timeout;
-        self.code_call(plugin_id, ide_plugin::Invocation::default(), "resolving the code action", move |rt, _| {
-            rt.resolve_code_action(&d, &action, timeout)
+        self.code_call(plugin_id, invocation, "resolving the code action", move |rt, inv| {
+            rt.resolve_code_action(&d, &action, inv, timeout)
         })
     }
 
