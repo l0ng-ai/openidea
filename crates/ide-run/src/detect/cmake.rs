@@ -17,7 +17,7 @@ fn reply_file(reply: &Path, name: &str) -> Option<Value> {
 }
 
 fn before(config: &mut RunConfig, id: &str) {
-    config.extras.before_launch.push(BeforeLaunchTask { kind: "run".into(), target: id.into() });
+    config.extras.before_launch.push(BeforeLaunchTask { kind: "build".into(), target: id.into() });
 }
 
 pub(super) fn detect(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut Vec<RunConfig>) {
@@ -211,9 +211,14 @@ fn targets(
             }
             out.push(build_config);
             let binary = build.join(artifact);
-            let mut run =
-                config(&id, format!("{target_name} ({dir} {name})"), "native", &binary.to_string_lossy(), &[])
-                    .debug("lldb-dap");
+            let mut run = config(
+                &id,
+                format!("{target_name} [{}]", if name.is_empty() { dir.to_owned() } else { format!("{name}, {dir}") }),
+                "cmake-application",
+                &binary.to_string_lossy(),
+                &[],
+            )
+            .debug("lldb-dap");
             before(&mut run, &target_build_id);
             let sources: Vec<String> = target["sources"]
                 .as_array()
@@ -236,8 +241,45 @@ fn targets(
     }
 }
 
-/// Request the codemodel only when the user runs a configure configuration.
-pub(crate) fn prepare(config: &RunConfig, cwd: &Path) -> crate::IdeResult<()> {
+/// Ordered configure/build commands for a CMake build configuration. Executables and CTest
+/// are never executed by Build; only their explicit build prerequisites are accepted.
+pub fn build_configs(configs: &[RunConfig], id: &str) -> crate::IdeResult<Vec<RunConfig>> {
+    fn visit(
+        configs: &[RunConfig],
+        id: &str,
+        chain: &mut Vec<String>,
+        out: &mut Vec<RunConfig>,
+    ) -> crate::IdeResult<()> {
+        if chain.iter().any(|entry| entry == id) {
+            return Err(ide_core::IdeError::invalid("The before launch tasks run in a cycle"));
+        }
+        let config = configs
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| ide_core::IdeError::not_found(format!("Configuration '{id}' no longer exists")))?;
+        if config.kind != "cmake" || !config.args.first().is_some_and(|a| a == "--build" || a == "-S") {
+            return Err(ide_core::IdeError::invalid("Not a CMake configure or build configuration"));
+        }
+        chain.push(id.into());
+        for task in &config.extras.before_launch {
+            if !matches!(task.kind.as_str(), "run" | "build") || task.target.is_empty() {
+                return Err(ide_core::IdeError::invalid("CMake builds require configure/build prerequisites"));
+            }
+            visit(configs, &task.target, chain, out)?;
+        }
+        chain.pop();
+        if !out.iter().any(|c| c.id == id) {
+            out.push(config.clone());
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    visit(configs, id, &mut Vec::new(), &mut out)?;
+    Ok(out)
+}
+
+/// Request the codemodel when executing a configure configuration.
+pub fn prepare(config: &RunConfig, cwd: &Path) -> crate::IdeResult<()> {
     if config.kind == "cmake"
         && config.args.first().is_some_and(|a| a == "-S")
         && let Some(dir) = config.extras.params.get("buildDir")
@@ -300,10 +342,10 @@ mod tests {
         };
         let mut configs = Vec::new();
         detect(root.path(), Some(std::slice::from_ref(&profile)), &mut configs);
-        let run = configs.iter().find(|c| c.kind == "native").unwrap();
+        let run = configs.iter().find(|c| c.kind == "cmake-application").unwrap();
         assert!(run.command.ends_with("release/app"));
         assert_eq!(run.env, profile.env);
-        assert_eq!(configs.iter().filter(|c| c.kind == "native").count(), 1);
+        assert_eq!(configs.iter().filter(|c| c.kind == "cmake-application").count(), 1);
         let build = configs.iter().find(|c| c.id == run.extras.before_launch[0].target).unwrap();
         assert_eq!(
             build.args,
@@ -318,6 +360,34 @@ mod tests {
             let build = configured.iter().find(|c| c.id == id).unwrap();
             assert!(build.extras.before_launch.is_empty(), "{id} should use CMake's automatic regeneration");
         }
+    }
+
+    #[test]
+    fn build_dependencies_are_scoped_and_reject_cycles_or_executables() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("CMakeLists.txt"), "project(app)").unwrap();
+        let configs = crate::detect(root.path());
+        let build = configs.iter().find(|c| c.args.first().is_some_and(|a| a == "--build")).unwrap();
+        assert_eq!(build.extras.before_launch[0].kind, "build");
+        let ordered = build_configs(&configs, &build.id).unwrap();
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].args[0], "-S");
+        assert_eq!(ordered[1].args[0], "--build");
+        assert_eq!(ordered[1].cwd, build.cwd);
+        assert!(build_configs(&configs, "missing").is_err());
+        let mut cycle = configs.clone();
+        let configure = cycle.iter_mut().find(|c| c.id == ordered[0].id).unwrap();
+        before(configure, &build.id);
+        assert!(build_configs(&cycle, &build.id).is_err());
+        for kind in ["native", "cmake-application", "shell"] {
+            let mut invalid = build.clone();
+            invalid.kind = kind.into();
+            assert!(build_configs(&[invalid.clone()], &invalid.id).is_err());
+        }
+        let test = configs.iter().find(|c| c.command == "ctest").unwrap();
+        assert!(build_configs(&configs, &test.id).is_err());
     }
 
     #[test]

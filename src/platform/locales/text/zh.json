@@ -1,4 +1,7 @@
 {
+  "Not a CMake configure or build configuration": "不是 CMake 配置或构建配置",
+  "CMake builds require configure/build prerequisites": "CMake 构建需要配置或构建前置任务",
+  "CMake Application": "CMake 应用程序",
   "Invalid PTY request": "无效的 PTY 请求",
   "Cannot write to PTY": "无法写入 PTY",
   "Cannot resize PTY": "无法调整 PTY 大小",

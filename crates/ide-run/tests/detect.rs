@@ -693,7 +693,7 @@ fn cmake_ignores_malformed_file_api_replies() {
     ]);
     let configs = detect(dir.path());
     assert_eq!(configs.iter().filter(|c| c.kind == "cmake").count(), 3);
-    assert!(!configs.iter().any(|c| c.kind == "native"));
+    assert!(!configs.iter().any(|c| c.kind == "cmake-application"));
 }
 
 #[test]

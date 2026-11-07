@@ -1,4 +1,7 @@
 {
+  "Not a CMake configure or build configuration": "Not a CMake configure or build configuration",
+  "CMake builds require configure/build prerequisites": "CMake builds require configure/build prerequisites",
+  "CMake Application": "CMake Application",
   "Invalid PTY request": "Invalid PTY request",
   "Cannot write to PTY": "Cannot write to PTY",
   "Cannot resize PTY": "Cannot resize PTY",
