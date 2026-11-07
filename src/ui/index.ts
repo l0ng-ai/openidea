@@ -34,7 +34,7 @@ export { badgeKind } from "./symbolKind";
 export { acquirePopup, isPopupOpen } from "./popupState";
 export * from "./BarButton";
 export { lazyComponent, lazyWhen, prefetchLazyComponents } from "./lazy";
-export { T } from "./T";
+export { Given, T } from "./T";
 export { selectableText, copyMenuFor, copyText } from "./selectableText";
 export { useSelectionBoundary } from "./useSelectionBoundary";
 export { useSanitizedField } from "./useSanitizedField";

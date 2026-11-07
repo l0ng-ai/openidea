@@ -406,6 +406,9 @@ pub struct AgentProvider {
     pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
     pub config: Vec<AgentConfigOption>,
+    /// Thinking-level options by model value; absent models have not reported their levels.
+    #[serde(default)]
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// Slash commands it offered last time.
     pub commands: Vec<AgentCommand>,
     pub source: AgentSource,

@@ -117,6 +117,41 @@ async fn docker_targets_run_through_the_docker_cli() {
     assert!(out.contains("DATA=/workspaces/proj/data"), "{out}");
     assert!(!args.iter().any(|a| a.contains("/workspaces/proj/data")), "values stay out of the command line");
 
+    // Debug: the program starts under the bootstrap, which waits for the debugger on a
+    // port published on the loopback interface, with the IDE's debugpy mounted.
+    let lib = host.data_dir.join("tools/debugpy/lib");
+    std::fs::create_dir_all(lib.join("debugpy")).unwrap();
+    std::fs::write(lib.join("debugpy/__init__.py"), "").unwrap();
+    let mut debug = config("py", &root);
+    debug.debug_adapter = Some("debugpy".into());
+    debug.extras.params.insert("containerDebug".into(), "true".into());
+    let out = output_of(&host, debug.clone()).await;
+    let args: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("arg:")).collect();
+    let publish = args[args.iter().position(|a| *a == "--publish").unwrap() + 1];
+    let port = publish.strip_prefix("127.0.0.1:").and_then(|p| p.split_once(':')).unwrap();
+    assert_eq!(port.0, port.1, "{out}");
+    let bootstrap = host.data_dir.join("container-debug");
+    assert!(args.contains(&format!("{}:/opt/openidea/debug:ro", bootstrap.display()).as_str()), "{out}");
+    assert!(args.contains(&format!("{}:/opt/openidea/debugpy-lib:ro", lib.display()).as_str()), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(bootstrap.join("openidea_debug.py")).unwrap(),
+        ide_remote::docker::DEBUG_BOOTSTRAP
+    );
+    assert!(
+        args.ends_with(&[
+            "python:3.12",
+            "python3",
+            "/opt/openidea/debug/openidea_debug.py",
+            port.0,
+            "/workspaces/proj",
+            "/workspaces/proj/main.py"
+        ]),
+        "{out}"
+    );
+    debug.debug_adapter = Some("delve".into());
+    let err = ops::run::start(&host, "main", debug, Arc::new(|_| {})).await.unwrap_err();
+    assert!(err.message.contains("only Python"), "{}", err.message);
+
     let err = ops::run::start(&host, "main", config("far", &root), Arc::new(|_| {})).await.unwrap_err();
     assert!(err.message.contains("another machine"), "{}", err.message);
 }

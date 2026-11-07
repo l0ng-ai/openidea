@@ -34,6 +34,22 @@ id = "root"
 title = "root"
 
 [[contributes.commands]]
+id = "fsread"
+title = "fsread"
+
+[[contributes.commands]]
+id = "read-dir"
+title = "List a directory outside the project"
+
+[[contributes.commands]]
+id = "fswrite"
+title = "fswrite"
+
+[[contributes.commands]]
+id = "projwrite"
+title = "projwrite"
+
+[[contributes.commands]]
 id = "insert"
 title = "insert"
 

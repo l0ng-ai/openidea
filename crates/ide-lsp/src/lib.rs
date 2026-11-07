@@ -1385,14 +1385,8 @@ impl LspManager {
             let mut first = Vec::new();
             if method == "textDocument/implementation" {
                 let (locs, complete) = self.java_source_implementations(snap, t, pos, cancel).await;
-                // A type declared in the sources has no implementations in the dependencies:
-                // none found there is the whole answer, without a type hierarchy over every jar.
-                if complete {
-                    if !locs.is_empty() {
-                        return Ok(locs);
-                    }
-                    out.value = Some(Vec::new());
-                    continue;
+                if complete && !locs.is_empty() {
+                    return Ok(locs);
                 }
                 if let Some(partial) = partial
                     && !locs.is_empty()
@@ -1450,9 +1444,9 @@ impl LspManager {
         self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
     }
 
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources are
-    /// searched (`libraries_skipped` when `project_wide`); with it and `project_wide`, those
-    /// found there arrive on `partial` before the dependencies and the JDK are searched.
+    /// [`Self::references`]. Java, `project_wide`: without `libraries`, only the
+    /// workspace's sources are searched (`libraries_skipped`); with it, those found
+    /// there arrive on `partial` before the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -1481,7 +1475,20 @@ impl LspManager {
         };
         let native =
             self.native_references(doc, pos, include_declaration, project_wide, libraries, cancel.clone(), partial);
-        let (configuration, result) = futures::join!(configuration, native);
+        futures::pin_mut!(configuration, native);
+        let (configuration, result) = match futures::future::select(configuration, native).await {
+            futures::future::Either::Left((configuration, native)) => (configuration, native.await),
+            futures::future::Either::Right((result, configuration)) => {
+                // The configuration index is rebuilt after Java changes, which takes seconds in a
+                // project with many dependencies: the usages found meanwhile are shown first.
+                if let (Some(partial), Ok(found)) = (partial, &result)
+                    && !found.locations.is_empty()
+                {
+                    partial(found.clone());
+                }
+                (configuration.await, result)
+            }
+        };
         let configuration = configuration?;
         let mut result = result?;
         if let Some(configuration) = configuration {
@@ -1605,10 +1612,7 @@ impl LspManager {
                     };
                     scope::Widened { first: all, second: Some(found), incomplete: sources.incomplete }
                 } else {
-                    // Bulk probes (usage counts, Safe Delete) ask about the sources' own symbols,
-                    // which no dependency uses: searching every jar and the JDK only adds seconds
-                    // per symbol and delays the searches the user asks for.
-                    let first = query(!libraries).await?;
+                    let first = query(false).await?;
                     let empty = first.is_empty();
                     scope::Widened::only(first, empty, &t.server)
                 };
