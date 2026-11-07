@@ -618,6 +618,26 @@ For a table the user can sort by clicking a header, build it with
 column headers clickable and asks for a column and direction with
 `ViewEvent::sort()` — sort your rows and render again; the sort you report
 shows as an arrow in the header.
+API 1.3 adds read-only form values without changing the released field record:
+`FieldValue::label(text)` uses `other { kind: "label", data }`, where `data`
+is a JSON string. `FieldValue::readonly_text(text, multiline)` uses kind
+`readonly-text` with JSON `{ "text": "…", "multiline": false }` (the flag
+defaults to false). Labels render as plain selectable values; read-only text
+keeps the single-line or multiline text control and never sends field events.
+
+Table row clicks and Space send `other` kind `table-select`; double-click
+and Enter send `table-activate`, both with JSON `{ "row": 0 }`.
+`ViewEvent::table_select()` and `table_activate()` decode the absolute,
+zero-based index, including `first_row` for paged tables. These work for both
+plain tables and the same `other` table shape used by sortable tables above;
+no new table shape is needed. Editable cells still double-click to edit;
+activate their row with Enter on the focused row or double-click its row number.
+`viewItem.context` menus also work on table rows: the command argument and
+`viewItem` context key are the decimal row index, e.g. `"0"`. Editable tables
+keep their insert/delete entries alongside contributed commands. After sorting
+or changing data, plugins resolve row indices against their current row order.
+Declare `engines.openidea = "^1.3"` when relying on these additions.
+
 Bodies, field types and view events added by later APIs travel as `Other {
 kind, data }`: an IDE that doesn't know a body says it needs updating, and
 leaves out a field type it doesn't know.

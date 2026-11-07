@@ -226,3 +226,14 @@
   width: var(--h-floating-toolbar-button);
   height: var(--h-floating-toolbar-button);
 }
+
+.readonlyValue {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.tableRow:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
