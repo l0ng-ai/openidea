@@ -31,6 +31,8 @@ import { useProject } from "@/platform/project";
 import type { ProjectInfo } from "@/bindings";
 import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
+import composerStyles from "./Composer.module.css";
+import tagStyles from "@/ui/InlineTag.module.css";
 import { HOME, updateComposer, useAgents } from "./store";
 import { emptyDraft } from "./composerModel";
 
@@ -123,6 +125,16 @@ describe("New Task composer commands", () => {
     expect(agentCreate.mock.calls[0]![0]).toMatchObject({ prompt: { text: "/triage dry-run" }, provider: "claude" });
   });
 
+  it("tags file references and skills where they stand", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [command("triage", "One pass over issues")] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "12 @Cargo.toml and /triage" } });
+    const mirror = document.querySelector(`.${composerStyles.mirror}`)!;
+    expect(within(mirror as HTMLElement).getByText("@Cargo.toml")).toHaveClass(tagStyles.tag!);
+    expect(within(mirror as HTMLElement).getByText("/triage")).toHaveClass(tagStyles.accent!);
+  });
+
   it("offers nothing the project does not have", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [command("compact", "Free up context")] });
     render(<HomeEditor />);
@@ -149,6 +161,17 @@ describe("New Task composer commands", () => {
     expect(box).toHaveValue("/compact keep this context");
     await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
     expect(agentCreate).not.toHaveBeenCalled();
+  });
+
+  it("completes a command typed after other text in place", async () => {
+    agentCommands.mockResolvedValue({ status: "ok", data: [command("triage", "One pass over open issues and PRs")] });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "fix the failing build /tri" } });
+    await screen.findByRole("listbox", { name: "Commands" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(useAgents.getState().composers.get(HOME)?.text).toBe("fix the failing build /triage ");
   });
 });
 
