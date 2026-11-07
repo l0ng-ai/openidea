@@ -296,6 +296,7 @@ describe("plugin menus", () => {
       {
         kind: "item",
         label: "Arthas",
+        verbatim: true,
         submenu: [
           { kind: "action", action: "plugin.p.watch", arg: undefined },
           { kind: "action", action: "plugin.p.trace", arg: undefined },

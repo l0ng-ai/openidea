@@ -493,7 +493,7 @@ describe("bridge events", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     handlePluginEvent({ type: "notification", pluginId: "p", level: "info", title: "Done", body: "3 words" });
-    expect(notes).toEqual([{ group: "plugins", level: "info", title: "Done", body: "3 words" }]);
+    expect(notes).toEqual([{ group: "plugins", level: "info", title: "Done", body: "3 words", verbatim: true }]);
     handlePluginEvent({ type: "copyToClipboard", pluginId: "p", text: "https://github.com/o/r" });
     expect(writeText).toHaveBeenCalledWith("https://github.com/o/r");
     handlePluginEvent({ type: "openUrl", pluginId: "p", url: "https://github.com/o/r/blob/main/a.rs" });

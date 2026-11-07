@@ -20,6 +20,7 @@ import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
@@ -91,13 +92,15 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
   const text = translate(item.text);
   return (
-    <BarButton
-      tooltip={tooltip}
-      aria-label={tooltip ?? text}
-      onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
-    >
-      {text}
-    </BarButton>
+    <VerbatimTextContext.Provider value={true}>
+      <BarButton
+        tooltip={tooltip}
+        aria-label={tooltip ?? text}
+        onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
+      >
+        {text}
+      </BarButton>
+    </VerbatimTextContext.Provider>
   );
 }
 
@@ -320,7 +323,7 @@ const openPrompts = new Map<string, AbortController>();
 async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | null> {
   switch (prompt.kind) {
     case "quickPick":
-      return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal });
+      return pickItems({ title: prompt.title, items: prompt.items, multiple: prompt.multiple, signal, verbatim: true });
     case "input": {
       const text = await promptInput({
         title: prompt.prompt,
@@ -329,11 +332,14 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
         keepWhitespace: true,
         multiline: prompt.multiline,
         signal,
+        verbatim: true,
       });
       return text === null ? null : [text];
     }
     case "confirm":
-      return (await confirm({ title: prompt.title, message: prompt.message, ok: "OK", signal })) ? [] : null;
+      return (await confirm({ title: prompt.title, message: prompt.message, ok: tx("OK"), signal, verbatim: true }))
+        ? []
+        : null;
   }
 }
 
