@@ -2,6 +2,7 @@
 
 mod catalog;
 mod chain;
+mod decode;
 mod facts;
 mod generate;
 mod model;
@@ -12,6 +13,7 @@ mod resolve;
 
 pub use catalog::OpRole;
 pub use chain::*;
+pub use decode::*;
 pub use facts::{Adjustment, Capture, ChainFacts, TextEdit, TypeQuery};
 pub use generate::*;
 pub use model::*;
