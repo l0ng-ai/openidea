@@ -9,6 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("arduino", include_str!("../../../languages/arduino.toml")),
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
@@ -860,6 +861,7 @@ mod tests {
             ("x.h", "c"),
             ("x.hpp", "cpp"),
             ("x.cc", "cpp"),
+            ("blink.ino", "arduino"),
             ("P.cs", "csharp"),
             ("V.swift", "swift"),
             ("AppDelegate.m", "objective-c"),
