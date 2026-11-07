@@ -235,6 +235,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const databases = useDatabase((s) => s.databases);
   const boundId = bound ? splitTarget(bound).id : null;
   const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
+  const sqlServer = sourceById(boundId)?.driver === "sqlServer";
   const switchable = schemaSwitchable(sourceById(boundId)?.driver);
   // The console's active schema: its pick, else the connection's default (`completion.defaultSchema`).
   const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
@@ -242,20 +243,27 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const schemaList = useDatabase((s) => (bound ? s.schemas[bound] : undefined));
   const schema = activeSchema(pickedSchema, defaultSchema);
   useEffect(() => {
-    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
+    if (boundId && (sqlServer || listsDatabases(sourceById(boundId))) && !useDatabase.getState().databases[boundId])
       void loadDatabases(boundId);
-  }, [boundId]);
+  }, [boundId, sqlServer]);
   useEffect(() => {
-    if (bound && switchable && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
-  }, [bound, switchable]);
+    if (bound && switchable && !sqlServer && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
+  }, [bound, switchable, sqlServer]);
   const schemaOptions = useMemo(() => {
     if (!switchable) return [];
-    const names = schemaList?.status === "ok" ? schemaList.value : [];
+    const databaseList = boundId ? databases[boundId] : undefined;
+    const names = sqlServer
+      ? databaseList?.status === "ok"
+        ? databaseList.value.names
+        : []
+      : schemaList?.status === "ok"
+        ? schemaList.value
+        : [];
     const out = names.map((n) => ({ value: n, label: n }));
     // The connection's default is offered even before its schema list loads.
     if (defaultSchema && !names.includes(defaultSchema)) out.unshift({ value: defaultSchema, label: defaultSchema });
     return out;
-  }, [switchable, schemaList, defaultSchema]);
+  }, [switchable, schemaList, defaultSchema, sqlServer, boundId, databases]);
   const targets = useMemo(() => {
     const out: Array<{ value: string; label: string; detail?: string; icon: string }> = [];
     for (const s of sources) {
@@ -347,7 +355,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       <span className={styles.spacer} />
       {switchable && (
         <Select
-          aria-label="Schema"
+          aria-label={sqlServer ? "Database" : "Schema"}
           value={schema || null}
           placeholder="<schema>"
           options={schemaOptions}

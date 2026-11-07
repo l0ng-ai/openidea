@@ -315,7 +315,7 @@ fn keep_alive(pool: &Arc<Pool>, every: Duration) {
 async fn end_session(session: &Session) {
     let held = session.lock().await.take();
     if let Some(mut conn) = held
-        && conn.command("ROLLBACK").await.is_err()
+        && (conn.command("ROLLBACK").await.is_err() || conn.restore_default().await.is_err())
     {
         conn.discard().await;
     }
@@ -704,8 +704,15 @@ impl DbManager {
         let introspection = self.source(id)?.introspection;
         let system = introspection.show_system;
         let pool = self.pool(id).await?;
+        if pool.driver() == DbDriver::SqlServer {
+            let first =
+                |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
+            let current = first(pool.rows("SELECT DB_NAME()", 1).await?).next().unwrap_or_default();
+            let names = first(pool.rows(sql::sqlserver_databases(), MAX_META_ROWS).await?).collect();
+            return Ok(Databases { current, names });
+        }
         if pool.driver() != DbDriver::Postgres {
-            return Err(IdeError::invalid("only PostgreSQL data sources list databases"));
+            return Err(IdeError::invalid("this data source does not list databases"));
         }
         let first = |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
         let current = first(pool.rows("SELECT current_database()", 1).await?).next().unwrap_or_default();
@@ -1125,17 +1132,6 @@ impl DbManager {
         plan::parse(driver, &result)
     }
 
-    /// Puts `conn` in `schema` (the console's active context) before its
-    /// statement runs on it. Auto-commit statements may land on any pool
-    /// connection, so the switch runs on the one acquired for this statement;
-    /// a manual-commit console re-asserts its schema on its session connection.
-    async fn apply_schema(pool: &Pool, conn: &mut Held, schema: Option<&str>) -> IdeResult<()> {
-        match schema.filter(|s| !s.is_empty()).and_then(|s| sql::use_schema(pool.driver(), s)) {
-            Some(sql) => conn.command(&sql).await,
-            None => Ok(()),
-        }
-    }
-
     async fn run(
         &self,
         id: &str,
@@ -1153,7 +1149,7 @@ impl DbManager {
             }
             // Like `Pool::execute_from`, with the schema applied to the connection first.
             let mut conn = Held::acquire(&pool).await?;
-            let r = match Self::apply_schema(&pool, &mut conn, schema).await {
+            let r = match conn.apply_context(schema).await {
                 Ok(()) => conn.execute_from(&pool, statement, skip, max_rows, cancel).await,
                 Err(e) => Err(e),
             };
@@ -1169,11 +1165,12 @@ impl DbManager {
         let mut held = session.lock().await;
         if held.is_none() {
             let mut conn = Held::acquire(&pool).await?;
+            conn.apply_context(schema).await?;
             conn.command(conn::begin_statement(pool.driver())).await?;
             *held = Some(conn);
         }
         let conn = held.as_mut().expect("opened above");
-        Self::apply_schema(&pool, conn, schema).await?;
+        conn.apply_context(schema).await?;
         let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             // The server rolls the transaction back with the connection.
@@ -1209,7 +1206,12 @@ impl DbManager {
         let Some(session) = session else { return Ok(()) };
         let mut held = session.lock().await;
         let Some(mut conn) = held.take() else { return Ok(()) };
-        match conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await {
+        let result = async {
+            conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await?;
+            conn.restore_default().await
+        }
+        .await;
+        match result {
             Ok(()) => Ok(()),
             Err(e) => {
                 conn.discard().await;

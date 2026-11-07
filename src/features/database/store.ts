@@ -869,7 +869,14 @@ export async function executeConsole(
   useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
   try {
     const pageSize = useDatabase.getState().maxRows;
-    const outcomes = await run(id, statements, request, pageSize, 0, consoleSchema(path) || undefined);
+    const outcomes = await run(
+      id,
+      statements,
+      request,
+      pageSize,
+      0,
+      useDatabase.getState().consoleSchemas[path] || undefined,
+    );
     const tabs: ResultTab[] = outcomes
       .filter((o) => o.result?.columns.length)
       .map((outcome) => {
@@ -949,7 +956,12 @@ export async function explainConsole(path: string, text: string, from: number, t
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;
-    showPlan(path, id, statement, await explain(id, statement, consoleSchema(path) || undefined));
+    showPlan(
+      path,
+      id,
+      statement,
+      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined),
+    );
   } catch (e) {
     if (isCancelled(e)) return;
     log("error", `[${targetLabel(id)}] ${message(e)}`);
@@ -996,7 +1008,11 @@ export async function rerunResult(tabId: number): Promise<void> {
     patchResult(tabId, { busy: true });
     try {
       patchResult(tabId, {
-        plan: await explain(tab.sourceId, tab.outcome.statement, consoleSchema(tab.path) || undefined),
+        plan: await explain(
+          tab.sourceId,
+          tab.outcome.statement,
+          useDatabase.getState().consoleSchemas[tab.path] || undefined,
+        ),
         busy: false,
       });
     } catch (e) {
@@ -1035,7 +1051,7 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
       nextRequestId(),
       maxRows,
       skip,
-      consoleSchema(tab.path) || undefined,
+      useDatabase.getState().consoleSchemas[tab.path] || undefined,
     );
     const r = outcome?.result;
     if (r) {
@@ -1080,7 +1096,7 @@ export async function countResult(tabId: number): Promise<number | null> {
       nextRequestId(),
       1,
       0,
-      consoleSchema(tab.path) || undefined,
+      useDatabase.getState().consoleSchemas[tab.path] || undefined,
     );
     const total = Number(outcome?.result?.rows[0]?.[0]);
     const known = outcome?.error || !Number.isFinite(total) ? null : total;

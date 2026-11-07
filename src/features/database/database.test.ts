@@ -313,7 +313,7 @@ describe("active schema", () => {
   it("follows the console's pick, then the connection default", () => {
     expect(activeSchema("app", "public")).toBe("app");
     expect(activeSchema(undefined, "public")).toBe("public");
-    expect(activeSchema("", "public")).toBe("");
+    expect(activeSchema("", "public")).toBe("public");
     expect(activeSchema(undefined, undefined)).toBe("");
     expect(activeSchema(null, null)).toBe("");
   });

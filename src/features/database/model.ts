@@ -223,7 +223,7 @@ export function schemaSwitchable(driver: DbDriver | null | undefined): boolean {
 
 /** The schema a console's statements run in: its pick, else the connection's default. */
 export function activeSchema(picked: string | null | undefined, defaultSchema: string | null | undefined): string {
-  return picked ?? defaultSchema ?? "";
+  return picked || defaultSchema || "";
 }
 
 /**

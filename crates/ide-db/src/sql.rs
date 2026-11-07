@@ -63,6 +63,11 @@ pub const ORACLE_SYSTEM_SCHEMAS: &[&str] = &[
     "XS$NULL",
 ];
 
+/// Databases available to this login; offline/restoring databases cannot be selected.
+pub fn sqlserver_databases() -> &'static str {
+    "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name"
+}
+
 pub fn schemas(driver: DbDriver, system: bool) -> &'static str {
     match driver {
         DbDriver::Sqlite => "SELECT name FROM pragma_database_list WHERE name <> 'temp' ORDER BY seq",
@@ -1010,7 +1015,10 @@ mod tests {
     fn schema_switch_statement_per_dialect() {
         assert_eq!(use_schema(DbDriver::Postgres, "app data"), Some("SET search_path TO \"app data\"".into()));
         assert_eq!(use_schema(DbDriver::Mysql, "a`b"), Some("USE `a``b`".into()));
-        assert_eq!(use_schema(DbDriver::SqlServer, "dbo"), Some("USE [dbo]".into()));
+        assert_eq!(use_schema(DbDriver::SqlServer, "app] data"), Some("USE [app]] data]".into()));
+        assert_eq!(use_schema(DbDriver::Postgres, "a\"b"), Some("SET search_path TO \"a\"\"b\"".into()));
+        assert_eq!(use_schema(DbDriver::Oracle, "a\"b"), Some("ALTER SESSION SET CURRENT_SCHEMA = \"a\"\"b\"".into()));
+        assert!(sqlserver_databases().contains("state = 0 AND HAS_DBACCESS(name) = 1"));
         assert_eq!(use_schema(DbDriver::Oracle, "hr"), Some("ALTER SESSION SET CURRENT_SCHEMA = \"hr\"".into()));
         // Single-schema (SQLite) and not-yet-supported drivers: no dropdown, no switch.
         assert_eq!(use_schema(DbDriver::Sqlite, "main"), None);

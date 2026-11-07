@@ -57,10 +57,13 @@ async fn active_schema_context_drives_the_executing_connection() -> IdeResult<()
 
     // Both schemas hold `items`; the context resolves the unqualified name in its own,
     // on every pooled connection the autocommit statements may land on.
-    for (schema, tag) in [("oi_a", "from a"), ("oi_b", "from b")] {
-        for _ in 0..6 {
+    for _ in 0..6 {
+        for (schema, tag) in [("oi_a", "from a"), ("oi_b", "from b")] {
             let r = db.execute_from("p", "SELECT tag FROM items", 0, 1, &c, Some(schema)).await?;
             assert_eq!(r.rows, vec![vec![Some(tag.into())]], "of {schema}");
+            let r = db.execute_from("p", "SHOW search_path", 0, 1, &c, Some("")).await?;
+            assert_eq!(r.rows, vec![vec![Some("\"$user\", public".into())]]);
+            assert_eq!(db.completion("p").await?.default_schema, "public");
         }
     }
 
@@ -71,11 +74,62 @@ async fn active_schema_context_drives_the_executing_connection() -> IdeResult<()
     let r = db.execute_from("p", "SELECT tag FROM items", 0, 1, &c, Some("oi_b")).await?;
     assert_eq!(r.rows, vec![vec![Some("from b".into())]]);
     db.finish_transaction("p", true).await?;
+    for commit in [false, true] {
+        db.execute_from("p", "SELECT 1", 0, 1, &c, Some("oi_a")).await?;
+        db.finish_transaction("p", commit).await?;
+        let r = db.execute("p", "SHOW search_path", 1, &c).await?;
+        assert_eq!(r.rows, vec![vec![Some("\"$user\", public".into())]]);
+    }
     db.set_manual_commit("p", false).await?;
+    db.execute("p", "SET search_path TO oi_b", 1, &c).await?;
+    let r = db.execute("p", "SHOW search_path", 1, &c).await?;
+    assert_eq!(r.rows, vec![vec![Some("\"$user\", public".into())]]);
 
     // An unknown schema never resolves the statement's tables (`SET search_path`
     // itself does not validate names; resolution against it does).
     let error = db.execute_from("p", "SELECT tag FROM items", 0, 1, &c, Some("oi_missing")).await.unwrap_err();
     assert!(error.message.to_lowercase().contains("does not exist"), "{}", error.message);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_reused_physical_connection_restores_the_full_default_path() -> IdeResult<()> {
+    use ide_db::{DbOptions, Held, Pool};
+    let Some((host, port, user, password)) = server() else { return Ok(()) };
+    let source = DataSource {
+        driver: DbDriver::Postgres,
+        host,
+        port: Some(port),
+        user,
+        options: DbOptions { default_schema: "public, pg_catalog".into(), ..Default::default() },
+        ..Default::default()
+    };
+    let pool = Pool::connect(&source, Some(&password), None).await?;
+    let c = CancellationToken::new();
+    // Occupy the other three slots: every operation below must reuse the fourth.
+    let _other = [Held::acquire(&pool).await?, Held::acquire(&pool).await?, Held::acquire(&pool).await?];
+    let mut conn = Held::acquire(&pool).await?;
+    let backend = conn.execute(&pool, "SELECT pg_backend_pid()", 1, &c).await?.rows;
+    for schema in ["pg_catalog", "public", "pg_catalog"] {
+        conn.apply_context(Some(schema)).await?;
+        let r = conn.execute(&pool, "SELECT current_schema()", 1, &c).await?;
+        assert_eq!(r.rows, vec![vec![Some(schema.into())]]);
+    }
+    conn.apply_context(Some("public")).await?;
+    conn.execute(&pool, "SELECT set_config('search_path', 'pg_catalog', false)", 1, &c).await?;
+    conn.apply_context(Some("public")).await?;
+    assert_eq!(conn.execute(&pool, "SELECT current_schema()", 1, &c).await?.rows, vec![vec![Some("public".into())]]);
+    drop(conn);
+    assert_eq!(pool.rows("SHOW search_path", 1).await?, vec![vec![Some("public, pg_catalog".into())]]);
+    assert_eq!(pool.execute("SELECT pg_backend_pid()", 1, &c).await?.rows, backend);
+    let mut conn = Held::acquire(&pool).await?;
+    conn.command("BEGIN").await?;
+    conn.apply_context(Some("pg_catalog")).await?;
+    conn.command("ROLLBACK").await?;
+    conn.restore_default().await?;
+    assert_eq!(
+        conn.execute(&pool, "SHOW search_path", 1, &c).await?.rows,
+        vec![vec![Some("public, pg_catalog".into())]]
+    );
     Ok(())
 }
