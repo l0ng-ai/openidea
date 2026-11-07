@@ -48,8 +48,8 @@ function unavailableText(reason: JvmMemoryUnavailable): string {
 function ClassRow({ row }: { row: JvmClassRow }) {
   const delta = formatDelta(row.deltaInstances);
   return (
-    <div className={styles.row}>
-      <span className={clsx(styles.cell, styles.className)}>
+    <div className={styles.row} role="none">
+      <span role="cell" className={clsx(styles.cell, styles.className)}>
         <span className={styles.classText}>{row.name}</span>
         {row.ambiguous && (
           <span
@@ -63,9 +63,15 @@ function ClassRow({ row }: { row: JvmClassRow }) {
         )}
         {row.module && <span className={styles.module}>{row.module}</span>}
       </span>
-      <span className={clsx(styles.cell, styles.num)}>{formatCount(row.instances)}</span>
-      <span className={clsx(styles.cell, styles.num, row.deltaInstances === 0 && styles.zero)}>{delta}</span>
-      <span className={clsx(styles.cell, styles.num)}>{formatBytes(row.bytes)}</span>
+      <span role="cell" className={clsx(styles.cell, styles.num)}>
+        {formatCount(row.instances)}
+      </span>
+      <span role="cell" className={clsx(styles.cell, styles.num, row.deltaInstances === 0 && styles.zero)}>
+        {delta}
+      </span>
+      <span role="cell" className={clsx(styles.cell, styles.num)}>
+        {formatBytes(row.bytes)}
+      </span>
     </div>
   );
 }
@@ -129,29 +135,37 @@ export function MemoryView({ session }: { session: DebugSession }) {
       )}
       {snapshot && (
         <div className={styles.table}>
-          <div className={styles.head} role="row">
-            {COLUMNS.map((c) => (
-              <div
-                key={c.key}
-                role="columnheader"
-                aria-sort={query.sort === c.key ? (query.desc ? "descending" : "ascending") : "none"}
-                className={clsx(styles.headCell, c.numeric && styles.numeric, query.sort === c.key && styles.sorted)}
-              >
-                <button type="button" onClick={() => sortBy(c.key)}>
-                  <T>{c.label}</T>
-                </button>
+          <div className={styles.grid} role="table" aria-label={tx("Memory")} aria-rowcount={rows.length + 1}>
+            <div className={styles.headGroup} role="rowgroup">
+              <div className={styles.head} role="row" aria-rowindex={1}>
+                {COLUMNS.map((c) => (
+                  <div
+                    key={c.key}
+                    role="columnheader"
+                    aria-sort={query.sort === c.key ? (query.desc ? "descending" : "ascending") : "none"}
+                    className={clsx(
+                      styles.headCell,
+                      c.numeric && styles.numeric,
+                      query.sort === c.key && styles.sorted,
+                    )}
+                  >
+                    <button type="button" onClick={() => sortBy(c.key)}>
+                      <T>{c.label}</T>
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
+            <List
+              className={styles.list}
+              items={rows}
+              getKey={(r, i) => `${i}:${r.name}`}
+              renderItem={(r) => <ClassRow row={r} />}
+              rowHeight={22}
+              tableBody={{ headerRows: 1 }}
+              empty={<span className={styles.note}>{tx("No matches")}</span>}
+            />
           </div>
-          <List
-            className={styles.list}
-            items={rows}
-            getKey={(r, i) => `${i}:${r.name}`}
-            renderItem={(r) => <ClassRow row={r} />}
-            rowHeight={22}
-            aria-label={tx("Memory")}
-            empty={<span className={styles.note}>{tx("No matches")}</span>}
-          />
           <FooterTotals snapshot={snapshot} />
         </div>
       )}

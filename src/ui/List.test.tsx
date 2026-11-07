@@ -52,6 +52,23 @@ describe("List", () => {
       />,
     );
 
+  it("renders a table body of numbered rows instead of options", () => {
+    render(
+      <List
+        items={["a", "b"]}
+        getKey={(r) => r}
+        renderItem={(r) => <span role="cell">{r}</span>}
+        tableBody={{ headerRows: 1 }}
+      />,
+    );
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.queryByRole("option")).toBeNull();
+    const rows = screen.getAllByRole("row");
+    expect(rows.map((r) => r.getAttribute("aria-rowindex"))).toEqual(["2", "3"]);
+    expect(rows[0]).not.toHaveAttribute("aria-selected");
+    expect(screen.getByRole("rowgroup")).not.toHaveAttribute("aria-activedescendant");
+  });
+
   it("renders section headers that are skipped by keyboard navigation", () => {
     const onActivate = vi.fn();
     renderList(onActivate);

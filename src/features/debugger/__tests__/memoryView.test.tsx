@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => ({ debugJvmMemoryClasses: vi.fn() }));
 
@@ -214,7 +214,11 @@ describe("MemoryView", () => {
     render(<MemoryView session={session} />);
     await screen.findByText("Heap$Live");
     const header = (name: string) => screen.getByRole("columnheader", { name });
-    const order = () => screen.getAllByRole("option").map((o) => o.textContent?.slice(0, 3));
+    const body = () => screen.getAllByRole("rowgroup")[1]!;
+    const order = () =>
+      within(body())
+        .getAllByRole("row")
+        .map((o) => o.textContent?.slice(0, 3));
 
     expect(header("Shallow Size").getAttribute("aria-sort")).toBe("descending");
     expect(header("Class").getAttribute("aria-sort")).toBe("none");
@@ -226,6 +230,28 @@ describe("MemoryView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Class" }));
     expect(header("Class").getAttribute("aria-sort")).toBe("descending");
+  });
+
+  it("exposes the classes as a table whose cells sit under the column headers", async () => {
+    ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
+    render(<MemoryView session={session} />);
+    await screen.findByText("Heap$Live");
+    const table = screen.getByRole("table", { name: "Memory" });
+    expect(table.getAttribute("aria-rowcount")).toBe("4");
+    const headers = within(table)
+      .getAllByRole("columnheader")
+      .map((h) => h.textContent);
+    expect(headers).toEqual(["Class", "Count", "Diff", "Shallow Size"]);
+    const [head, body] = within(table).getAllByRole("rowgroup");
+    expect(within(head!).getByRole("row").getAttribute("aria-rowindex")).toBe("1");
+    const rows = within(body!).getAllByRole("row");
+    expect(rows.map((r) => r.getAttribute("aria-rowindex"))).toEqual(["2", "3", "4"]);
+    const cells = within(rows[0]!)
+      .getAllByRole("cell")
+      .map((c) => c.textContent);
+    expect(cells).toHaveLength(headers.length);
+    expect(cells[0]).toContain("Heap$Live");
+    expect(cells[3]).toBe("15.3 MB");
   });
 
   it("keeps the old snapshot under the reason when a refresh is refused", async () => {

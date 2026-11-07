@@ -103,6 +103,17 @@
   color: var(--fg-strong);
 }
 
+.grid {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.headGroup {
+  flex: none;
+}
+
 .list {
   flex: 1;
   min-height: 0;
