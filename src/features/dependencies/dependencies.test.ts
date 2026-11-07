@@ -46,14 +46,14 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.useRealTimers();
 });
-function editor(path = "/p/Cargo.toml", readOnly = false) {
+function editor(path = "/p/Cargo.toml", readOnly = false, source = text) {
   const ctx = { doc: 7, path, language: "toml", uiMode: "TOML", readOnly };
   const contribution = editorContributions().find((c) => c.id === "dependency-versions")!;
   const view = new EditorView({
     parent: document.body,
     state: EditorState.create({
-      doc: text,
-      selection: { anchor: from },
+      doc: source,
+      selection: { anchor: Math.min(from, source.length) },
       extensions: [lspDoc.of(ctx), contribution.extensions(ctx)],
     }),
   });
@@ -206,5 +206,39 @@ describe("Cargo dependency versions", () => {
     const context = new CompletionContext(state, 4, true);
     const result = versionCompletions({ ...item, dependency: { ...item.dependency, from: 0, to: 4 } }, context);
     expect(result.options[0]).toMatchObject({ label: "2.0.0-beta.1", apply: "^2.0.0-beta.1" });
+  });
+});
+
+describe("Go module dependency versions", () => {
+  it("requests versions at the caret and replaces the entire version without running inspections", async () => {
+    const source = "module example.com/app\n\nrequire (\n\tgolang.org/x/text v0.1.0 // indirect\n)\n";
+    const from = source.indexOf("v0.1.0");
+    const to = from + "v0.1.0".length;
+    const view = editor("/p/go.mod", false, source);
+    await settle();
+    expect(dependencyVersions).not.toHaveBeenCalled();
+    dependencyVersions.mockResolvedValue({
+      status: "ok",
+      data: [
+        {
+          dependency: { package: "golang.org/x/text", requirement: "v0.1.0", from, to },
+          versions: ["v1.2.0", "v0.12.0", "v0.1.0"],
+          update: null,
+        },
+      ],
+    });
+    const complete = view.state.languageDataAt<(ctx: CompletionContext) => Promise<unknown>>(
+      "openideaCompletion",
+      from,
+    )[0]!;
+    expect(await complete(new CompletionContext(view.state, from + 3, false, view))).toMatchObject({
+      from,
+      to,
+      options: [
+        { label: "v0.12.0", apply: "v0.12.0" },
+        { label: "v0.1.0", apply: "v0.1.0" },
+      ],
+    });
+    expect(dependencyVersions).toHaveBeenCalledExactlyOnceWith(7, from + 3, expect.any(Number));
   });
 });

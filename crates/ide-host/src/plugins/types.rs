@@ -168,6 +168,10 @@ pub enum PluginEvent {
     CommandsChanged,
     /// Cached document associations were disposed (reload, disable or failure).
     DocumentIndexesChanged,
+    /// The routes `plugin_id` reports for the project `root` may have changed:
+    /// ask `plugin_endpoints` again.
+    #[serde(rename_all = "camelCase")]
+    EndpointsChanged { plugin_id: String, root: ide_core::IpcPath },
     /// The marketplace offers newer versions of installed plugins (announced
     /// once per set of versions).
     UpdatesAvailable { updates: Vec<PluginUpdate> },

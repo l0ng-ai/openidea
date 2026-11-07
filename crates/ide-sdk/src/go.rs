@@ -228,7 +228,7 @@ mod command_tests {
     }
 }
 
-pub fn debug_environment(
+pub fn configure_environment(
     root: &std::path::Path,
     settings: &ide_core::settings::Settings,
     env: &mut std::collections::BTreeMap<String, String>,

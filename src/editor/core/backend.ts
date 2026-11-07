@@ -118,6 +118,8 @@ interface MemDoc {
 }
 
 const EXT_LANG: Record<string, string> = {
+  http: "http",
+  rest: "http",
   ts: "typescript",
   mts: "typescript",
   cts: "typescript",
