@@ -1,0 +1,15 @@
+package openidea:plugin@1.3.0;
+
+/// Optional diagnostics for the current, possibly unsaved document (API 1.3).
+interface diagnostics-provider {
+    use diagnostics.{diagnostic};
+
+    record document {
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    diagnostics: func(doc: document) -> list<diagnostic>;
+}

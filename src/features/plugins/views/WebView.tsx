@@ -17,12 +17,18 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
+import { editorService } from "@/workbench/contributions";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
 import { FRAME_TAG, frameTheme, frameThemeMessage } from "./frame";
+import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
+import { logTabData } from "./logTab";
+import { webPtyBackend } from "./ptyBackend";
 import { onViewMessage } from "./viewStore";
+import { ptyBridge } from "./ptyBridge";
 import styles from "./PluginView.module.css";
 
 /** One change of a document, in UTF-16 offsets of the text it applies to. */
@@ -152,6 +158,54 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
 
   useEffect(() => {
     let dialog = false;
+    const handleLogTabMessage = (rawText: string): boolean => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-log-tab") return false;
+      try {
+        const data = logTabData(pluginId, view, parsed, rawText.length);
+        void editorService().openInput({
+          kind: PLUGIN_LOG_EDITOR_KIND,
+          key: `pluginLog:${JSON.stringify([pluginId, view, data.key ?? data.title])}`,
+          data,
+        });
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "log-error", error: errorText(err) }) });
+      }
+      return true;
+    };
+    const createPtys = () =>
+      ptyBridge(pluginId, webPtyBackend(pluginId, view), (message) => post({ text: JSON.stringify(message) }));
+    let ptys = createPtys();
+    const resetPtys = () => {
+      ptys.close();
+      ptys = createPtys();
+    };
+    const offProject = useProject.subscribe((state, previous) => {
+      if (state.project !== previous.project) resetPtys();
+    });
+    const pluginKey = (plugins: ReturnType<typeof usePlugins.getState>["plugins"]) => {
+      const p = plugins.find((p) => p.id === pluginId);
+      return p && JSON.stringify([p.path, p.version, p.enabled, p.status, p.capabilities]);
+    };
+    const offPlugins = usePlugins.subscribe((state, previous) => {
+      if (pluginKey(state.plugins) !== pluginKey(previous.plugins)) resetPtys();
+    });
+    const onUnload = () => ptys.close();
+    window.addEventListener("pagehide", onUnload);
+    const currentFrame = frame.current;
+    // A navigation keeps the iframe's WindowProxy, but must drop its old sessions.
+    let loaded = false;
+    const onLoad = () => {
+      if (loaded) resetPtys();
+      loaded = true;
+    };
+    currentFrame?.addEventListener("load", onLoad);
+
     const run = async (op: string, args: Record<string, unknown>): Promise<[unknown, Transferable[]?]> => {
       switch (op) {
         case "document.get": {
@@ -218,10 +272,14 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
           ([value, transfer]) => post({ reply: id, value }, transfer),
           (err: unknown) => post({ reply: id, error: errorText(err) }),
         );
-      } else if (typeof m.text === "string" && hasCode) {
-        pluginsBackend()
-          .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
-          .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+      } else if (typeof m.text === "string") {
+        if (handleLogTabMessage(m.text)) return;
+        if (ptys.handle(m.text)) return;
+        if (hasCode) {
+          pluginsBackend()
+            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
+            .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+        }
       }
     };
     window.addEventListener("message", onMessage);
@@ -229,8 +287,13 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
     return () => {
       window.removeEventListener("message", onMessage);
       off();
+      ptys.close();
+      offPlugins();
+      offProject();
+      window.removeEventListener("pagehide", onUnload);
+      currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, hasCode, post]);
+  }, [pluginId, view, document, doc, hasCode, post, page]);
 
   if (!page)
     return (

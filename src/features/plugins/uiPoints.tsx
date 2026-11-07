@@ -63,9 +63,11 @@ import {
   type CustomEditorDecl,
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
+import { PLUGIN_LOG_EDITOR_KIND, PluginLogEditor, pluginLogEditorTitle } from "./views/logEditor";
 import { PluginView } from "./views/PluginView";
 import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
+import { registerLogActions } from "./views/logActions";
 import styles from "./PluginsPage.module.css";
 
 // --- menus ------------------------------------------------------------------------
@@ -607,6 +609,7 @@ const openWith = new Map<string, { pluginId: string; decl: CustomEditorDecl; mat
 /** One-time registrations behind the points: the editor kind and the context menu group. */
 export function startViewUi(openInput: (input: ReturnType<typeof customEditorInput>) => void): () => void {
   const disposers = [
+    registerLogActions(),
     registerEditorKind({
       kind: CUSTOM_EDITOR_KIND,
       component: CustomEditor,
@@ -614,6 +617,13 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       icon: () => "db-table",
       restorable: true,
       document: customEditorDocument,
+    }),
+    registerEditorKind({
+      kind: PLUGIN_LOG_EDITOR_KIND,
+      component: PluginLogEditor,
+      keepAlive: true,
+      title: pluginLogEditorTitle,
+      icon: () => "file-log",
     }),
     registerMenuGroup({
       id: "plugins",

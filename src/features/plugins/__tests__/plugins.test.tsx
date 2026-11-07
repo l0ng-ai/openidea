@@ -135,6 +135,15 @@ afterEach(() => {
 });
 
 describe("plugin actions", () => {
+  it("names manual and provider inspection producers after their plugin", async () => {
+    const { useProducerNames } = await import("@/platform/inspections");
+    usePlugins.setState({ plugins: [plugin({ id: "a", name: "Alpha" })] });
+    const stop = syncProjection();
+    expect(useProducerNames.getState().names.get("plugin:a")).toBe("Alpha");
+    expect(useProducerNames.getState().names.get("plugin-provider:a")).toBe("Alpha");
+    stop();
+  });
+
   it("projects command contributions to plugin.<plugin>.<command> actions", () => {
     const cmd = (pluginId: string, id: string, extra: Record<string, unknown> = {}) => ({
       pluginId,

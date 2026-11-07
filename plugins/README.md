@@ -566,7 +566,7 @@ declaration matches the file's language are called (and loaded):
 
 ```toml
 [[contributes.providers]]
-kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints"
+kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints", "diagnostics"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
 ```
 
@@ -675,6 +675,54 @@ The host asks the language server and the plugins together, under the
 edit-path budget, and shows the server's hover first, then each plugin's
 below a rule. `range`, when given, is the text the hover describes (used when
 the server names none). At most 64 KiB of Markdown per plugin.
+
+#### Diagnostics while typing
+
+The `diagnostics` kind (API 1.3) checks unsaved documents in its declared
+`languages` (`"*"` matches any language). Implement
+`openidea_plugin::diagnostics::DiagnosticsProvider` and register with
+`register_plugin!(MyPlugin, diagnostics)`:
+
+```rust
+impl DiagnosticsProvider for MyPlugin {
+    fn diagnostics(&mut self, doc: &Document) -> Vec<Diagnostic> {
+        // doc.path is absolute; doc.language is the editor language id.
+        // doc.version identifies this snapshot; doc.text includes unsaved edits.
+        check(&doc.text)
+    }
+}
+```
+
+The optional WIT export is `diagnostics-provider.diagnostics(document) ->
+list<diagnostic>` in worlds `plugin-diagnostics` / `editor-diagnostics`. It uses the
+same diagnostic record as `diagnostics.publish`, including 0-based UTF-16
+ranges. The export-only world uses `editor-diagnostics` because `diagnostics`
+already names the released host interface. The provider declaration supplies the current document without an
+additional capability; host imports keep their usual capability checks
+(`publish` still requires `project.read`). Providers run without an interactive
+invocation, so they cannot open prompts or write to the active editor.
+
+The host requests diagnostics about 300 ms after opening a document or after
+its latest edit, under the editor-provider budget (normally 50 ms soft /
+500 ms hard). It snapshots the buffer in the background, cancels superseded
+requests, and drops older document versions. Documents over 2 MiB and virtual
+library documents are excluded. Return an empty list to remove provider
+problems. At most 5,000 diagnostics are retained per provider and document;
+messages are limited to 4 KiB, source/code to 128 bytes.
+
+Provider problems and manually published problems use separate producers,
+`plugin-provider:<plugin-id>` and `plugin:<plugin-id>`, and both appear alongside
+language-server diagnostics. Each producer replaces only its own results.
+Closing the document/project or disabling, uninstalling, reloading or failing
+the plugin clears provider results. A reclaimed idle instance keeps its results
+until the next request. Requests and results stay with the originating project
+and window, including when two windows edit the same path differently. Project
+plugins receive documents only from the project where they were granted.
+
+Native plugin tests can use `MockHost::refresh_diagnostics(&mut provider)` to
+check the current versioned mock editor and `provider_diagnostics()` to inspect
+its answers separately from `diagnostics()` (manual publishing). The mock call
+is explicit; debounce and cancellation are exercised by the real Wasm host tests.
 
 #### Inlay hints
 
@@ -961,6 +1009,93 @@ pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
 sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
 checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
 before installing the plugin from the repository.
+
+### Web frame PTYs (API 1.3)
+
+Packages requiring `engines.openidea = "^1.3"` can exchange JSON strings through
+`openidea.postMessage` / `onMessage` to own an interactive PTY. Declare
+`process:<program>` in the manifest; the install dialog shows its high-risk
+permission and the user must grant it. The host runs the exact approved file,
+never a fresh PATH lookup or an implicit fallback shell. A shell requires its
+own grant. The cwd is always this window's trusted project root; a frame cannot
+supply a cwd. Environment entries only add variables: replacing an inherited
+variable (including PATH) is refused.
+
+| Message      | Fields beyond `op` and `sessionId`                                                         |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| `pty-spawn`  | `program`, optional `args` (default `[]`), `env` (default `{}`), `cols` (100), `rows` (28) |
+| `pty-input`  | `data`, at most 64 Ki UTF-16 code units pending or in flight                               |
+| `pty-resize` | Integer `cols` (2–500), `rows` (1–500)                                                     |
+| `pty-kill`   | None                                                                                       |
+| `pty-ack`    | `sequence` from the last `pty-data`, after consuming its data                              |
+
+`sessionId` is 1–64 ASCII letters, digits, underscores, dots or hyphens. Duplicate
+live session ids are refused. There are at most 8 sessions per plugin across its
+frames, including pending spawns. A frame controls only its own sessions. Limits:
+256 arguments of 4096 UTF-8 bytes each, 64 new environment entries (names 256
+bytes, values 4096), no NUL. Bridge messages are at most 2 Mi UTF-16 code units.
+
+The host sends `pty-data { sessionId, data, sequence }`,
+`pty-exit { sessionId, exitCode }` (nullable), or
+`pty-error { sessionId, error }`. Only one output chunk is unacknowledged at a
+time. Outstanding output, including that chunk, is capped at 256 Ki UTF-16 code
+units; overflowing input or output terminates the session and reports an error.
+Exit follows consumption of the remaining output. Unmounting, reloading,
+disabling, unloading, changing grants, switching projects or closing the window
+kills its PTYs, including spawns that complete after cleanup. Pages may start fresh sessions after a reload or grant change.
+
+`crates/ide-plugin/tests/fixtures/web-pty` is a minimal built Wasm package with a
+web page: start bash without the optional grant to see refusal, grant
+`process:bash` in Settings → Plugins, then send commands and resize or stop it.
+This API is a web bridge extension; existing WIT signatures are unchanged.
+
+### Streaming log editor tabs (API 1.3)
+
+A web view can open a read-only editor tab backed by an authorized process:
+
+```js
+openidea.postMessage(JSON.stringify({
+  op: "open-log-tab",
+  key: "server-output",
+  title: "Server logs",
+  program: "my-server",
+  baseArgs: ["logs"],
+  toggles: [{ id: "verbose", label: "Verbose", args: ["--verbose"] }],
+}));
+```
+
+Declare `engines.openidea = "^1.3"` and `process:my-server` in the manifest.
+The install permission prompt and exact pinned executable, trusted project cwd,
+session caps and lifecycle rules are the same as for web frame PTYs. The tab
+uses the backend PTY API, never a shell fallback. It supplies no environment
+overrides; the environment is inherited. A shell requires its own explicit grant.
+
+`program` is required. `baseArgs` and `toggles` default to empty arrays; `title`
+defaults to the program. Each toggle has a unique `id`, a plugin-localized
+`label`, and `args` appended after `baseArgs` in declaration order. Changing a
+toggle terminates the previous process and replaces the stream. `key` defaults
+to the title and is scoped to the calling plugin and view; reopening the same
+key focuses its existing tab. Titles are at most 256 characters, keys 128,
+and at most 32 toggles have ids of 64 and labels of 128 characters. The combined
+arguments must fit the PTY limits above. `cwd` and `env` are refused. Invalid or
+ungranted requests send `log-error { error }` through `openidea.onMessage`;
+backend start errors appear in the tab.
+
+The viewer supports selection/copy, soft wrap, Find, font zoom and Clear. It
+retains at most 5,000 lines and 1 Mi UTF-16 code units, including partial lines.
+Output is acknowledged only after rendering; the PTY bridge's 256 Ki pending
+output cap also applies. Tabs are read-only, never dirty and not restored on
+restart. Recently used tabs keep streaming while hidden under the editor's
+five-tab retention limit; evicting a hidden tab stops its process. Closing the
+tab, disabling/updating the plugin, changing grants, switching projects or
+closing the window stops it, including a pending spawn.
+
+The built fixture `crates/ide-plugin/tests/fixtures/web-log` exercises permission
+refusal, continuous Unicode output and a plugin-defined Verbose toggle. On Unix,
+grant its optional `process:bash` permission and use its Log Probe tool window.
+Its `Log Probe: Open Stream` and `Log Probe: Try Undeclared Program` commands
+also ask the sandboxed page to open a tab, exercising the Wasm-to-page bridge.
+This extends the web bridge without changing released WIT signatures.
 
 ### Translations
 
