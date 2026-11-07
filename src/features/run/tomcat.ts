@@ -23,7 +23,6 @@ export const tomcatType: RunConfigTypeContribution = {
     jmxPort: "1099",
     buildArtifact: "true",
     openBrowser: "true",
-    updateShowDialog: "true",
     ...updatePolicyDefaults,
   },
   fields: [
@@ -77,11 +76,6 @@ export const tomcatType: RunConfigTypeContribution = {
       label: "Deploy applications configured in Tomcat instance",
       control: "checkbox",
     },
-    {
-      key: "preserveSessions",
-      label: "Preserve sessions across restarts and redeploys",
-      control: "checkbox",
-    },
     { key: "openBrowser", label: "Open browser after launch", control: "checkbox" },
     {
       key: "browserUrl",
@@ -92,11 +86,6 @@ export const tomcatType: RunConfigTypeContribution = {
       validate: (value) => (/^https?:\/\//i.test(value) ? null : "Enter an HTTP or HTTPS URL"),
     },
     ...updatePolicyFields(true),
-    {
-      key: "updateShowDialog",
-      label: "Show dialog",
-      control: "checkbox",
-    },
     {
       key: "jre",
       label: "JRE",
@@ -154,138 +143,6 @@ export const tomcatType: RunConfigTypeContribution = {
   },
 };
 
-export const tomcatRemoteType: RunConfigTypeContribution = {
-  id: "tomcat-remote",
-  group: "Tomcat Server",
-  label: "Remote",
-  icon: "tomcat",
-  description: "Deploy to or debug a remote Tomcat server",
-  debugAdapter: "java-debug",
-  terminal: false,
-  defaults: {
-    deployment: "artifact",
-    remoteHost: "localhost",
-    httpPort: "8080",
-    jmxPort: "1099",
-    debugPort: "5005",
-    remoteStaging: "local",
-    buildArtifact: "true",
-    openBrowser: "true",
-    updateShowDialog: "true",
-    ...updatePolicyDefaults,
-  },
-  fields: [
-    { key: "tomcatHome", label: "Tomcat installation directory", required: true, mono: true, browse: "directory" },
-    {
-      key: "remoteHost",
-      label: "Remote host",
-      mono: true,
-      required: true,
-      placeholder: "localhost",
-    },
-    {
-      key: "remoteStaging",
-      label: "Remote staging",
-      control: "select",
-      options: [
-        { value: "local", label: "Same file system (mounted)" },
-        { value: "manager", label: "Tomcat Manager" },
-        { value: "sftp", label: "SFTP / SSH" },
-      ],
-    },
-    {
-      key: "remoteStagingPath",
-      label: "Remote staging path",
-      mono: true,
-      browse: "directory",
-      placeholder: "/var/lib/tomcat/webapps",
-      visible: (p) => (p.remoteStaging ?? "local") !== "manager",
-    },
-    {
-      key: "managerUrl",
-      label: "Tomcat Manager URL",
-      mono: true,
-      placeholder: "http://localhost:8080/manager/text",
-      visible: (p) => p.remoteStaging === "manager",
-    },
-    {
-      key: "deployment",
-      label: "Deployment",
-      control: "select",
-      options: [
-        { value: "artifact", label: "Project WAR artifact (exploded)" },
-        { value: "war", label: "WAR file" },
-        { value: "directory", label: "Exploded directory" },
-      ],
-    },
-    {
-      key: "deploymentPath",
-      label: "Deployment path",
-      mono: true,
-      browse: (p) => (p.deployment === "war" ? "file" : "directory"),
-      required: true,
-      visible: (p) => p.deployment !== "artifact",
-    },
-    {
-      key: "contextPath",
-      label: "Context path",
-      mono: true,
-      placeholder: "/artifact-name",
-      validate: (value) =>
-        value === "/" || /^\/[\p{L}\p{N}_-]+(?:\/[\p{L}\p{N}_-]+)*$/u.test(value)
-          ? null
-          : "Enter / or a context path such as /app",
-    },
-    { key: "openBrowser", label: "Open browser after launch", control: "checkbox" },
-    {
-      key: "browserUrl",
-      label: "Browser URL",
-      mono: true,
-      placeholder: "Server URL from the HTTP port and context path",
-      visible: (p) => p.openBrowser === "true",
-      validate: (value) => (/^https?:\/\//i.test(value) ? null : "Enter an HTTP or HTTPS URL"),
-    },
-    ...updatePolicyFields(true),
-    {
-      key: "updateShowDialog",
-      label: "Show dialog",
-      control: "checkbox",
-    },
-    {
-      key: "httpPort",
-      label: "HTTP port",
-      required: true,
-      validate: validatePort,
-    },
-    {
-      key: "jmxPort",
-      label: "JMX port",
-      placeholder: "1099",
-      validate: validateOptionalPort,
-    },
-    {
-      key: "debugPort",
-      label: "Debug port",
-      placeholder: "5005",
-      validate: validateOptionalPort,
-    },
-    {
-      key: "buildArtifact",
-      label: "Before launch: build the artifact",
-      control: "checkbox",
-      visible: (p) => p.deployment === "artifact",
-    },
-  ],
-  commandLine: (p) => ({
-    command: "catalina",
-    args: ["remote", `${p.remoteHost || "localhost"}:${p.httpPort || "8080"}`],
-  }),
-  async prepareLaunch(config) {
-    if (config.params?.buildArtifact === "true") await buildTomcatArtifact(config);
-    return config;
-  },
-};
-
 export async function buildTomcatArtifact(config: RunConfig): Promise<void> {
   const build = await call(commands.runTomcatBuild(config));
   if (!build) return;
@@ -313,7 +170,7 @@ export async function syncTomcatOutputs(config: RunConfig, resourcesOnly: boolea
 
 export function tomcatBrowserUrl(config: RunConfig): string {
   const p = config.params ?? {};
-  const host = config.kind === "tomcat-remote" ? p.remoteHost || "localhost" : "localhost";
+  const host = "localhost";
   const name =
     p.artifactName ||
     p.deploymentPath

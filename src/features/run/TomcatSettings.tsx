@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri, type RunConfig, type TomcatInstallation, type WebArtifact } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { isRemoteWindow } from "@/platform/remote";
-import { Button, Checkbox, Dialog, Icon, IconButton, Input, Menu, Select, T, type MenuItem } from "@/ui";
+import { Button, Checkbox, Dialog, Icon, IconButton, Input, Menu, Select, Tabs, T, type MenuItem } from "@/ui";
 import { useTx } from "@/platform/i18n";
 import { tomcatBrowserUrl } from "./tomcat";
 import styles from "./Run.module.css";
 
-export type TomcatTab = "server" | "deployment" | "logs" | "coverage" | "startup";
-export type StartupRunnerId = "run" | "debug" | "cover" | "profile" | "visualgc";
+type TomcatTab = "server" | "deployment" | "logs" | "startup";
+type StartupRunnerId = "run" | "debug";
 
-export interface TomcatServerProfile {
+interface TomcatServerProfile {
   id: string;
   name: string;
   home: string;
@@ -19,58 +21,6 @@ export interface TomcatServerProfile {
   libraries: string[];
   tomee?: boolean;
 }
-
-export interface TomcatLogEntry {
-  id: string;
-  name: string;
-  pattern: string;
-  active: boolean;
-  skipContent: boolean;
-  builtin?: boolean;
-}
-
-const DEFAULT_TOMCAT_LOGS: ReadonlyArray<TomcatLogEntry> = [
-  {
-    id: "localhost",
-    name: "Tomcat Localhost Log",
-    pattern: "<CATALINA_BASE>/logs/localhost.*.log",
-    active: true,
-    skipContent: true,
-    builtin: true,
-  },
-  {
-    id: "catalina",
-    name: "Tomcat Catalina Log",
-    pattern: "<CATALINA_BASE>/logs/catalina.*.log",
-    active: true,
-    skipContent: true,
-    builtin: true,
-  },
-  {
-    id: "manager",
-    name: "Tomcat Manager Log",
-    pattern: "<CATALINA_BASE>/logs/manager.*.log",
-    active: false,
-    skipContent: true,
-    builtin: true,
-  },
-  {
-    id: "host-manager",
-    name: "Tomcat Host Manager Log",
-    pattern: "<CATALINA_BASE>/logs/host-manager.*.log",
-    active: false,
-    skipContent: true,
-    builtin: true,
-  },
-  {
-    id: "access",
-    name: "Tomcat Localhost Access Log",
-    pattern: "<CATALINA_BASE>/logs/localhost_access_log.*.txt",
-    active: false,
-    skipContent: true,
-    builtin: true,
-  },
-];
 
 const SERVERS_STORAGE_KEY = "openidea.tomcat.servers.v1";
 
@@ -93,7 +43,14 @@ function loadSavedServers(): TomcatServerProfile[] {
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(
       (x): x is TomcatServerProfile =>
-        x && typeof x.id === "string" && typeof x.name === "string" && typeof x.home === "string",
+        x &&
+        typeof x.id === "string" &&
+        typeof x.name === "string" &&
+        typeof x.home === "string" &&
+        typeof x.base === "string" &&
+        typeof x.version === "string" &&
+        Array.isArray(x.libraries) &&
+        x.libraries.every((library: unknown) => typeof library === "string"),
     );
   } catch {
     return [];
@@ -108,45 +65,6 @@ function saveServersToStorage(servers: TomcatServerProfile[]): void {
   }
 }
 
-function parseLogEntries(raw: string | undefined): TomcatLogEntry[] {
-  if (!raw) return DEFAULT_TOMCAT_LOGS.map((l) => ({ ...l }));
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-  } catch {
-    // fallback to defaults
-  }
-  return DEFAULT_TOMCAT_LOGS.map((l) => ({ ...l }));
-}
-
-function parseEnvPairs(
-  raw: string | undefined,
-  runner: StartupRunnerId,
-  debugPort: string,
-): Array<{ name: string; value: string }> {
-  if (raw !== undefined) {
-    if (!raw.trim()) return [];
-    return raw
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => {
-        const idx = line.indexOf("=");
-        return idx >= 0 ? { name: line.slice(0, idx), value: line.slice(idx + 1) } : { name: line, value: "" };
-      });
-  }
-  if (runner === "run") return [{ name: "JAVA_OPTS", value: "" }];
-  if (runner === "debug") {
-    const port = debugPort || "60981";
-    return [
-      {
-        name: "JAVA_OPTS",
-        value: `-agentlib:jdwp=transport=dt_socket,address=127.0.0.1:${port},suspend=y,server=n`,
-      },
-    ];
-  }
-  return [];
-}
-
 function serializeEnvPairs(rows: ReadonlyArray<{ name: string; value: string }>): string {
   return rows.map((r) => `${r.name}=${r.value}`).join("\n");
 }
@@ -158,9 +76,11 @@ async function pickLocalPath(directory: boolean, defaultPath?: string): Promise<
   return typeof picked === "string" ? picked : Array.isArray(picked) ? (picked[0] ?? null) : null;
 }
 
-/** Asynchronous installation validation, Application Servers dialog, 5-tab IDEA bar, and artifact discovery. */
+/** Local installation validation, server profiles, and WAR artifact discovery. */
 export function TomcatSettings({ config, onChange }: { config: RunConfig; onChange: (config: RunConfig) => void }) {
   const tx = useTx();
+  const windows = usePlatform((state) => state.os === "windows");
+  const openByDefault = useWorkflowSettings((settings) => settings.run.showOnStart);
   const [activeTab, setActiveTab] = useState<TomcatTab>("server");
   const [installations, setInstallations] = useState<TomcatInstallation[]>([]);
   const [savedServers, setSavedServers] = useState<TomcatServerProfile[]>(() => loadSavedServers());
@@ -172,10 +92,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
   const [artifacts, setArtifacts] = useState<WebArtifact[]>([]);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const [selectedLogId, setSelectedLogId] = useState<string>("localhost");
-  const [editingLogId, setEditingLogId] = useState<string | null>(null);
-  const [selectedIncludeIdx, setSelectedIncludeIdx] = useState<number>(0);
-  const [selectedExcludeIdx, setSelectedExcludeIdx] = useState<number>(0);
   const [startupRunner, setStartupRunner] = useState<StartupRunnerId>("run");
   const [selectedEnvIdx, setSelectedEnvIdx] = useState<number>(0);
   const [beforeLaunchOpen, setBeforeLaunchOpen] = useState(true);
@@ -186,14 +102,20 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
     latest.current = { config, onChange };
   }, [config, onChange]);
 
+  const publish = (next: RunConfig) => {
+    const { onChange } = latest.current;
+    latest.current = { config: next, onChange };
+    onChange(next);
+  };
+
   const setParams = (patch: Record<string, string>, nextName?: string) => {
-    const { config, onChange } = latest.current;
+    const { config } = latest.current;
     const nextParams = { ...(config.params ?? {}) };
     for (const [k, v] of Object.entries(patch)) {
-      if (v) nextParams[k] = v;
+      if (v || k === "startupEnvRun" || k === "startupEnvDebug") nextParams[k] = v;
       else delete nextParams[k];
     }
-    onChange({
+    publish({
       ...config,
       ...(nextName ? { name: nextName } : {}),
       params: nextParams,
@@ -201,8 +123,8 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
   };
 
   const select = (artifact: WebArtifact) => {
-    const { config, onChange } = latest.current;
-    onChange({
+    const { config } = latest.current;
+    publish({
       ...config,
       cwd: artifact.module || null,
       params: {
@@ -222,11 +144,11 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
         .then((items) => {
           if (!live) return;
           setInstallations(items);
-          const { config, onChange } = latest.current;
+          const { config } = latest.current;
           if (!config.params?.tomcatHome && items[0]) {
             const first = items[0];
             const isDefaultUnnamed = config.name === "Unnamed" || /^Unnamed \(\d+\)$/.test(config.name);
-            onChange({
+            publish({
               ...config,
               ...(isDefaultUnnamed && first.name ? { name: first.name } : {}),
               params: {
@@ -256,7 +178,8 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
       .then((items) => {
         if (!live) return;
         setArtifacts(items);
-        if (!latest.current.config.params?.artifact && items[0]) select(items[0]);
+        const params = latest.current.config.params;
+        if ((params?.deployment ?? "artifact") === "artifact" && !params?.artifact && items[0]) select(items[0]);
       })
       .catch((e) => {
         if (live) setError(String(e));
@@ -317,45 +240,29 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
     (deploymentKind === "artifact" && !config.params?.artifact) ||
     (deploymentKind !== "artifact" && !config.params?.deploymentPath?.trim());
 
-  const logEntries = parseLogEntries(config.params?.tomcatLogs);
-  const updateLogs = (next: TomcatLogEntry[]) => setParams({ tomcatLogs: JSON.stringify(next) });
-
-  const includePatterns = (config.params?.coverageInclude ?? "")
-    .split(";")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const excludePatterns = (config.params?.coverageExclude ?? "")
-    .split(";")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
   const useDefaultStartup = config.params?.useDefaultStartup !== "false";
   const useDefaultShutdown = config.params?.useDefaultShutdown !== "false";
-  const defaultStartupCmd = home ? `${home.replace(/\/+$/, "")}/bin/catalina.sh run` : "bin/catalina.sh run";
-  const defaultShutdownCmd = home ? `${home.replace(/\/+$/, "")}/bin/catalina.sh stop` : "bin/catalina.sh stop";
+  const defaultStartupCmd = home
+    ? `${home.replace(/\/+$/, "")}/bin/${windows ? "catalina.bat" : "catalina.sh"} run`
+    : "bin/catalina.sh run";
+  const defaultShutdownCmd = home
+    ? `${home.replace(/\/+$/, "")}/bin/${windows ? "catalina.bat" : "catalina.sh"} stop`
+    : "bin/catalina.sh stop";
 
-  const debugPort = config.params?.debugPort || (config.kind === "tomcat-remote" ? "5005" : "60981");
-  const envParamKey =
-    startupRunner === "debug"
-      ? "startupEnvDebug"
-      : startupRunner === "cover"
-        ? "startupEnvCover"
-        : startupRunner === "profile"
-          ? "startupEnvProfile"
-          : startupRunner === "visualgc"
-            ? "startupEnvVisualgc"
-            : "startupEnvRun";
-  const rawEnvForRunner =
-    config.params?.[envParamKey] ?? (startupRunner === "run" ? config.params?.startupEnv : undefined);
-  const envRows = parseEnvPairs(rawEnvForRunner, startupRunner, debugPort);
+  const debugPort = config.params?.debugPort ?? "";
+  const envParamKey = startupRunner === "debug" ? "startupEnvDebug" : "startupEnvRun";
+  const rawEnvForRunner = config.params?.[envParamKey] ?? config.params?.startupEnv ?? "";
+  const envRows = rawEnvForRunner
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const idx = line.indexOf("=");
+      return idx >= 0 ? { name: line.slice(0, idx), value: line.slice(idx + 1) } : { name: line, value: "" };
+    });
   const setEnvRows = (next: Array<{ name: string; value: string }>) => {
     setParams({ [envParamKey]: serializeEnvPairs(next) });
   };
-
-  const defaultJdkInfo = detectedJdks[0];
-  const defaultJrePlaceholder = defaultJdkInfo
-    ? `Default (${defaultJdkInfo.label.split(" ")[0]} - project SDK)`
-    : "Default (project SDK)";
+  const defaultJrePlaceholder = tx("Project JDK");
 
   const jreMenuItems: MenuItem[] = [
     {
@@ -382,56 +289,41 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
           };
         })
       : []),
-    {
-      label: "External Source…",
+    ...(["directory", "war"] as const).map((deployment): MenuItem => ({
+      label: deployment === "war" ? "WAR file" : "Exploded directory",
       icon: "folder-open",
       run: () => {
-        if (isTauri() && !isRemoteWindow()) {
-          void pickLocalPath(true).then((picked) => {
-            if (picked) {
-              const folderName = picked.replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop() || "app";
-              setParams({
-                deployment: picked.endsWith(".war") ? "war" : "directory",
-                deploymentPath: picked,
-                contextPath: config.params?.contextPath || `/${folderName}`,
-              });
-            }
-          });
-        } else {
-          setParams({
-            deployment: "directory",
-            deploymentPath: "src/main/webapp",
-            contextPath: config.params?.contextPath || "/",
-          });
-        }
+        void pickLocalPath(deployment === "directory").then((picked) => {
+          if (!picked) return;
+          const name =
+            picked
+              .replace(/\\/g, "/")
+              .replace(/\/+$/, "")
+              .split("/")
+              .pop()
+              ?.replace(/\.war$/i, "") || "app";
+          setParams({ deployment, deploymentPath: picked, contextPath: config.params?.contextPath || `/${name}` });
+        });
       },
-    },
+    })),
   ];
 
   return (
     <div className={styles.tomcatContainer}>
-      <div className={styles.tomcatTabs} role="tablist" aria-label={tx("Tomcat configuration tabs")}>
-        {(
-          [
-            ["server", "Server"],
-            ["deployment", "Deployment"],
-            ["logs", "Logs"],
-            ["coverage", "Code Coverage"],
-            ["startup", "Startup/Connection"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === id}
-            className={clsx(styles.tomcatTab, activeTab === id && styles.tomcatTabActive)}
-            onClick={() => setActiveTab(id)}
-          >
-            <T>{label}</T>
-          </button>
-        ))}
-      </div>
+      <Tabs
+        className={styles.tomcatTabs}
+        variant="compact"
+        aria-label="Tomcat configuration tabs"
+        panelIdPrefix="tomcat-config"
+        items={[
+          { id: "server", label: "Server" },
+          { id: "deployment", label: "Deployment" },
+          { id: "logs", label: "Logs" },
+          { id: "startup", label: "Startup/Connection" },
+        ]}
+        activeId={activeTab}
+        onSelect={(id) => setActiveTab(id as TomcatTab)}
+      />
 
       {status && (
         <span className={styles.srOnly} role="status">
@@ -444,7 +336,12 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
         </div>
       )}
 
-      <div className={styles.tomcatScrollArea}>
+      <div
+        className={styles.tomcatScrollArea}
+        role="tabpanel"
+        id={`tomcat-config-panel-${activeTab}`}
+        aria-labelledby={`tomcat-config-tab-${activeTab}`}
+      >
         {activeTab === "server" && (
           <>
             <div className={styles.tomcatFormRow}>
@@ -498,33 +395,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   onChange={(on) => setParams({ openBrowser: on ? "true" : "false" })}
                   label="After launch"
                 />
-                <div className={styles.tomcatBrowserSelect}>
-                  <Select
-                    aria-label="Browser"
-                    value={config.params?.browserName || "default"}
-                    options={[
-                      { value: "default", label: "🌐 Default" },
-                      { value: "chrome", label: "Chrome" },
-                      { value: "safari", label: "Safari" },
-                      { value: "firefox", label: "Firefox" },
-                    ]}
-                    onChange={(v) => setParams({ browserName: v === "default" ? "" : v })}
-                  />
-                </div>
-                <button
-                  type="button"
-                  className={styles.tomcatDotsBtn}
-                  aria-label="Configure Browsers"
-                  title="Configure Browsers…"
-                >
-                  ...
-                </button>
-                <Checkbox
-                  checked={config.params?.jsDebugger === "true"}
-                  disabled={config.params?.openBrowser !== "true"}
-                  onChange={(on) => setParams({ jsDebugger: on ? "true" : "" })}
-                  label="with JavaScript debugger"
-                />
               </div>
               <div className={styles.tomcatUrlRow}>
                 <span className={styles.tomcatUrlLabel}>
@@ -536,20 +406,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                     aria-label="Browser URL"
                     value={config.params?.browserUrl || tomcatBrowserUrl(config)}
                     onChange={(e) => setParams({ browserUrl: e.target.value })}
-                  />
-                  <IconButton
-                    icon="folder-open"
-                    size="small"
-                    iconSize={13}
-                    title="Browse… (⇧⏎)"
-                    className={styles.tomcatInlineIconBtn}
-                    onClick={() => {
-                      if (isTauri() && !isRemoteWindow()) {
-                        void pickLocalPath(false).then((picked) => {
-                          if (picked) setParams({ browserUrl: picked });
-                        });
-                      }
-                    }}
                   />
                 </div>
               </div>
@@ -587,13 +443,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                 <div className={styles.tomcatUpdateSelect}>
                   <Select
                     aria-label="On 'Update' action"
-                    value={
-                      config.params?.onUpdate && !(noArtifactConfigured && config.params.onUpdate === "ask")
-                        ? config.params.onUpdate
-                        : noArtifactConfigured
-                          ? "restart"
-                          : "ask"
-                    }
+                    value={config.params?.onUpdate || "ask"}
                     options={[
                       { value: "restart", label: "Restart server" },
                       { value: "redeploy", label: "Redeploy" },
@@ -604,11 +454,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                     onChange={(v) => setParams({ onUpdate: v })}
                   />
                 </div>
-                <Checkbox
-                  checked={config.params?.updateShowDialog !== "false"}
-                  onChange={(on) => setParams({ updateShowDialog: on ? "true" : "false" })}
-                  label="Show dialog"
-                />
               </div>
             </div>
 
@@ -632,127 +477,50 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
               </div>
             )}
 
-            {config.kind !== "tomcat-remote" && (
-              <div className={styles.tomcatFormRow}>
-                <span className={styles.tomcatRowLabel}>
-                  <T>JRE:</T>
-                </span>
-                <div className={styles.tomcatInputInside}>
-                  <Input
-                    mono
-                    aria-label="JRE"
-                    value={config.params?.jre ?? ""}
-                    placeholder={defaultJrePlaceholder}
-                    onChange={(e) => setParams({ jre: e.target.value })}
-                  />
-                  {isTauri() && !isRemoteWindow() && (
-                    <IconButton
-                      icon="folder-open"
-                      size="small"
-                      iconSize={13}
-                      title="Browse…"
-                      className={styles.tomcatInlineIconBtn}
-                      onClick={() =>
-                        void pickLocalPath(true, config.params?.jre || undefined).then((picked) => {
-                          if (picked) setParams({ jre: picked });
-                        })
-                      }
-                    />
-                  )}
+            <div className={styles.tomcatFormRow}>
+              <span className={styles.tomcatRowLabel}>
+                <T>JRE:</T>
+              </span>
+              <div className={styles.tomcatInputInside}>
+                <Input
+                  mono
+                  aria-label="JRE"
+                  value={config.params?.jre ?? ""}
+                  placeholder={defaultJrePlaceholder}
+                  onChange={(e) => setParams({ jre: e.target.value })}
+                />
+                {isTauri() && !isRemoteWindow() && (
                   <IconButton
-                    ref={jreBtnRef}
-                    icon="chevron-down"
+                    icon="folder-open"
                     size="small"
-                    iconSize={12}
-                    title="Select JRE"
-                    className={styles.tomcatInlineChevronBtn}
-                    onClick={() => setJreMenuOpen((v) => !v)}
+                    iconSize={13}
+                    title="Browse…"
+                    className={styles.tomcatInlineIconBtn}
+                    onClick={() =>
+                      void pickLocalPath(true, config.params?.jre || undefined).then((picked) => {
+                        if (picked) setParams({ jre: picked });
+                      })
+                    }
                   />
-                  <Menu
-                    open={jreMenuOpen}
-                    anchor={jreBtnRef}
-                    items={jreMenuItems}
-                    placement="bottom-end"
-                    onClose={() => setJreMenuOpen(false)}
-                  />
-                </div>
-              </div>
-            )}
-
-            {config.kind === "tomcat-remote" && (
-              <>
-                <div className={styles.tomcatFormRow}>
-                  <span className={styles.tomcatRowLabel}>
-                    <T>Remote host:</T>
-                  </span>
-                  <Input
-                    mono
-                    aria-label="Remote host"
-                    value={config.params?.remoteHost ?? "localhost"}
-                    placeholder="localhost"
-                    onChange={(e) => setParams({ remoteHost: e.target.value })}
-                  />
-                </div>
-                <div className={styles.tomcatFormRow}>
-                  <span className={styles.tomcatRowLabel}>
-                    <T>Remote staging:</T>
-                  </span>
-                  <Select
-                    aria-label="Remote staging"
-                    value={config.params?.remoteStaging || "local"}
-                    options={[
-                      { value: "local", label: "Same file system (mounted)" },
-                      { value: "manager", label: "Tomcat Manager" },
-                      { value: "sftp", label: "SFTP / SSH" },
-                    ]}
-                    onChange={(v) => setParams({ remoteStaging: v })}
-                  />
-                </div>
-                {(config.params?.remoteStaging ?? "local") === "manager" ? (
-                  <div className={styles.tomcatFormRow}>
-                    <span className={styles.tomcatRowLabel}>
-                      <T>Tomcat Manager URL:</T>
-                    </span>
-                    <Input
-                      mono
-                      aria-label="Tomcat Manager URL"
-                      value={config.params?.managerUrl ?? ""}
-                      placeholder="http://localhost:8080/manager/text"
-                      onChange={(e) => setParams({ managerUrl: e.target.value })}
-                    />
-                  </div>
-                ) : (
-                  <div className={styles.tomcatFormRow}>
-                    <span className={styles.tomcatRowLabel}>
-                      <T>Remote staging path:</T>
-                    </span>
-                    <div className={styles.tomcatInputInside}>
-                      <Input
-                        mono
-                        aria-label="Remote staging path"
-                        value={config.params?.remoteStagingPath ?? ""}
-                        placeholder="/var/lib/tomcat/webapps"
-                        onChange={(e) => setParams({ remoteStagingPath: e.target.value })}
-                      />
-                      {isTauri() && !isRemoteWindow() && (
-                        <IconButton
-                          icon="folder-open"
-                          size="small"
-                          iconSize={13}
-                          title="Browse…"
-                          className={styles.tomcatInlineIconBtn}
-                          onClick={() =>
-                            void pickLocalPath(true, config.params?.remoteStagingPath || undefined).then((picked) => {
-                              if (picked) setParams({ remoteStagingPath: picked });
-                            })
-                          }
-                        />
-                      )}
-                    </div>
-                  </div>
                 )}
-              </>
-            )}
+                <IconButton
+                  ref={jreBtnRef}
+                  icon="chevron-down"
+                  size="small"
+                  iconSize={12}
+                  title="Select JRE"
+                  className={styles.tomcatInlineChevronBtn}
+                  onClick={() => setJreMenuOpen((v) => !v)}
+                />
+                <Menu
+                  open={jreMenuOpen}
+                  anchor={jreBtnRef}
+                  items={jreMenuItems}
+                  placement="bottom-end"
+                  onClose={() => setJreMenuOpen(false)}
+                />
+              </div>
+            </div>
 
             <div className={styles.tomcatSection}>
               <div className={styles.tomcatSectionHeader}>
@@ -792,7 +560,8 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                     <Input
                       mono
                       aria-label="JMX port"
-                      value={config.params?.jmxPort ?? "1099"}
+                      value={config.params?.jmxPort ?? ""}
+                      placeholder="Automatic"
                       onChange={(e) => setParams({ jmxPort: e.target.value })}
                     />
                   </div>
@@ -813,11 +582,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                     checked={config.params?.deployTomcatApps === "true"}
                     onChange={(on) => setParams({ deployTomcatApps: on ? "true" : "" })}
                     label="Deploy applications configured in Tomcat instance"
-                  />
-                  <Checkbox
-                    checked={config.params?.preserveSessions === "true"}
-                    onChange={(on) => setParams({ preserveSessions: on ? "true" : "" })}
-                    label="Preserve sessions across restarts and redeploys"
                   />
                 </div>
               </div>
@@ -863,15 +627,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   title="Remove"
                   disabled={noArtifactConfigured}
                   onClick={() => setParams({ artifact: "", artifactName: "", deploymentPath: "" })}
-                />
-                <IconButton icon="arrow-up" size="small" iconSize={13} title="Up" disabled />
-                <IconButton icon="arrow-down" size="small" iconSize={13} title="Down" disabled />
-                <IconButton
-                  icon="edit"
-                  size="small"
-                  iconSize={13}
-                  title="Edit Artifact"
-                  disabled={noArtifactConfigured}
                 />
               </div>
               {noArtifactConfigured ? (
@@ -942,129 +697,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
 
         {activeTab === "logs" && (
           <div className={styles.tomcatSection}>
-            <div className={styles.tomcatPlainLabel}>
-              <span>
-                <T>Log files to be shown in console</T>
-              </span>
-              <span>:</span>
-            </div>
-            <div className={clsx(styles.tomcatBoxPanel, styles.tomcatLogsPanel)}>
-              <div className={styles.appServersToolbar} role="toolbar" aria-label={tx("Log files toolbar")}>
-                <IconButton
-                  icon="plus"
-                  size="small"
-                  iconSize={14}
-                  title="Add"
-                  onClick={() => {
-                    const id = `custom:${Date.now()}`;
-                    const next = [
-                      ...logEntries,
-                      {
-                        id,
-                        name: "Custom Tomcat Log",
-                        pattern: "<CATALINA_BASE>/logs/custom.*.log",
-                        active: true,
-                        skipContent: true,
-                      },
-                    ];
-                    updateLogs(next);
-                    setSelectedLogId(id);
-                    setEditingLogId(id);
-                  }}
-                />
-                <IconButton
-                  icon="minus"
-                  size="small"
-                  iconSize={14}
-                  title="Remove"
-                  disabled={!selectedLogId || logEntries.find((l) => l.id === selectedLogId)?.builtin}
-                  onClick={() => {
-                    const next = logEntries.filter((l) => l.id !== selectedLogId);
-                    updateLogs(next);
-                    setSelectedLogId(next[0]?.id ?? "");
-                  }}
-                />
-                <IconButton
-                  icon="edit"
-                  size="small"
-                  iconSize={13}
-                  title="Edit"
-                  disabled={!selectedLogId}
-                  onClick={() => setEditingLogId((prev) => (prev === selectedLogId ? null : selectedLogId))}
-                />
-              </div>
-              <div className={styles.tomcatLogHeader}>
-                <span>
-                  <T>Is Active</T>
-                </span>
-                <span>
-                  <T>Log File Entry</T>
-                </span>
-                <span>
-                  <T>Skip Content</T>
-                </span>
-              </div>
-              <div className={styles.appServersList} role="list" aria-label={tx("Log file entries")}>
-                {logEntries.map((entry) => {
-                  const sel = entry.id === selectedLogId;
-                  return (
-                    <div
-                      key={entry.id}
-                      role="listitem"
-                      className={clsx(styles.tomcatLogRow, sel && styles.tomcatLogRowSelected)}
-                      onClick={() => setSelectedLogId(entry.id)}
-                    >
-                      <span className={styles.tomcatLogCheckCell}>
-                        <Checkbox
-                          checked={entry.active}
-                          aria-label={entry.name}
-                          onChange={(on) =>
-                            updateLogs(logEntries.map((l) => (l.id === entry.id ? { ...l, active: on } : l)))
-                          }
-                        />
-                      </span>
-                      {editingLogId === entry.id ? (
-                        <div className={styles.inputWithButton}>
-                          <Input
-                            aria-label="Log entry name"
-                            value={entry.name}
-                            onChange={(e) =>
-                              updateLogs(
-                                logEntries.map((l) => (l.id === entry.id ? { ...l, name: e.target.value } : l)),
-                              )
-                            }
-                          />
-                          <Input
-                            mono
-                            aria-label="Log file pattern"
-                            value={entry.pattern}
-                            onChange={(e) =>
-                              updateLogs(
-                                logEntries.map((l) => (l.id === entry.id ? { ...l, pattern: e.target.value } : l)),
-                              )
-                            }
-                          />
-                        </div>
-                      ) : (
-                        <span className={styles.chooserName} title={entry.pattern}>
-                          {tx(entry.name)}
-                        </span>
-                      )}
-                      <span className={styles.tomcatLogCheckCell}>
-                        <Checkbox
-                          checked={entry.skipContent}
-                          disabled={!!entry.builtin}
-                          aria-label="Skip Content"
-                          onChange={(on) =>
-                            updateLogs(logEntries.map((l) => (l.id === entry.id ? { ...l, skipContent: on } : l)))
-                          }
-                        />
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
             <div className={styles.tomcatSaveLogRow}>
               <Checkbox
                 checked={config.outputFile !== null && config.outputFile !== undefined}
@@ -1109,128 +741,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
           </div>
         )}
 
-        {activeTab === "coverage" && (
-          <div className={styles.tomcatSection}>
-            <div className={styles.tomcatSectionHeader}>
-              <span>
-                <T>Packages and classes to include in coverage data</T>
-              </span>
-              <span className={styles.tomcatSectionLine} />
-            </div>
-            <div className={clsx(styles.tomcatBoxPanel, styles.tomcatCoveragePanel)} aria-label="Include packages">
-              <div className={styles.appServersToolbar} role="toolbar" aria-label={tx("Include coverage patterns")}>
-                <IconButton
-                  icon="minus"
-                  size="small"
-                  iconSize={14}
-                  title="Remove"
-                  disabled={includePatterns.length === 0}
-                  onClick={() => {
-                    const next = includePatterns.filter((_, i) => i !== selectedIncludeIdx);
-                    setParams({ coverageInclude: next.join(";") });
-                    setSelectedIncludeIdx(0);
-                  }}
-                />
-                <IconButton
-                  icon="plus"
-                  size="small"
-                  iconSize={14}
-                  title="Add"
-                  onClick={() => {
-                    const next = [...includePatterns, "*"];
-                    setParams({ coverageInclude: next.join(";") });
-                    setSelectedIncludeIdx(next.length - 1);
-                  }}
-                />
-              </div>
-              {includePatterns.length === 0 ? (
-                <div className={styles.tomcatBoxEmpty}>
-                  <T>No class patterns configured</T>
-                </div>
-              ) : (
-                <div className={styles.appServersList}>
-                  {includePatterns.map((pat, idx) => (
-                    <div
-                      key={idx}
-                      className={clsx(styles.editItem, idx === selectedIncludeIdx && styles.editItemSelected)}
-                      onClick={() => setSelectedIncludeIdx(idx)}
-                    >
-                      <Input
-                        mono
-                        aria-label="Include package pattern"
-                        value={pat}
-                        onChange={(e) => {
-                          const next = includePatterns.map((p, i) => (i === idx ? e.target.value : p));
-                          setParams({ coverageInclude: next.join(";") });
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className={styles.tomcatSectionHeader}>
-              <span>
-                <T>Packages and classes to exclude from coverage data</T>
-              </span>
-              <span className={styles.tomcatSectionLine} />
-            </div>
-            <div className={clsx(styles.tomcatBoxPanel, styles.tomcatCoveragePanel)}>
-              <div className={styles.appServersToolbar} role="toolbar" aria-label={tx("Exclude coverage patterns")}>
-                <IconButton
-                  icon="minus"
-                  size="small"
-                  iconSize={14}
-                  title="Remove"
-                  disabled={excludePatterns.length === 0}
-                  onClick={() => {
-                    const next = excludePatterns.filter((_, i) => i !== selectedExcludeIdx);
-                    setParams({ coverageExclude: next.join(";") });
-                    setSelectedExcludeIdx(0);
-                  }}
-                />
-                <IconButton
-                  icon="plus"
-                  size="small"
-                  iconSize={14}
-                  title="Add"
-                  onClick={() => {
-                    const next = [...excludePatterns, "*Test*"];
-                    setParams({ coverageExclude: next.join(";") });
-                    setSelectedExcludeIdx(next.length - 1);
-                  }}
-                />
-              </div>
-              {excludePatterns.length === 0 ? (
-                <div className={styles.tomcatBoxEmpty}>
-                  <T>No class patterns configured</T>
-                </div>
-              ) : (
-                <div className={styles.appServersList}>
-                  {excludePatterns.map((pat, idx) => (
-                    <div
-                      key={idx}
-                      className={clsx(styles.editItem, idx === selectedExcludeIdx && styles.editItemSelected)}
-                      onClick={() => setSelectedExcludeIdx(idx)}
-                    >
-                      <Input
-                        mono
-                        aria-label="Exclude package pattern"
-                        value={pat}
-                        onChange={(e) => {
-                          const next = excludePatterns.map((p, i) => (i === idx ? e.target.value : p));
-                          setParams({ coverageExclude: next.join(";") });
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
         {activeTab === "startup" && (
           <div className={styles.tomcatSection}>
             <div className={styles.tomcatRunnerList} role="listbox" aria-label={tx("Startup runners")}>
@@ -1238,9 +748,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                 [
                   ["run", "run", "Run"],
                   ["debug", "debug", "Debug"],
-                  ["cover", "run-coverage", "Cover"],
-                  ["profile", "profile", "Profile"],
-                  ["visualgc", "visualgc", "Run VisualGC"],
                 ] as const
               ).map(([id, icon, label]) => {
                 const sel = startupRunner === id;
@@ -1367,7 +874,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   size="small"
                   iconSize={14}
                   title="Remove"
-                  disabled={envRows.length === 0 || (envRows.length === 1 && envRows[0]?.name === "JAVA_OPTS")}
+                  disabled={envRows.length === 0}
                   onClick={() => {
                     const next = envRows.filter((_, i) => i !== selectedEnvIdx);
                     setEnvRows(next);
@@ -1445,23 +952,6 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
 
             {startupRunner === "debug" && (
               <div className={styles.tomcatDebugConnectionSection}>
-                <div className={styles.tomcatDebugTransportRow}>
-                  <span className={styles.tomcatDebugLabel}>
-                    <T>Transport:</T>
-                  </span>
-                  <label className={styles.tomcatRadioLabel}>
-                    <input type="radio" checked readOnly disabled />
-                    <span>
-                      <T>Socket</T>
-                    </span>
-                  </label>
-                  <label className={styles.tomcatRadioLabel}>
-                    <input type="radio" checked={false} readOnly disabled />
-                    <span>
-                      <T>Shared memory</T>
-                    </span>
-                  </label>
-                </div>
                 <div className={styles.tomcatDebugPortRow}>
                   <span className={styles.tomcatDebugLabel}>
                     <T>Port:</T>
@@ -1471,28 +961,11 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                       mono
                       aria-label="Debug port"
                       value={debugPort}
+                      placeholder="Automatic"
                       onChange={(e) => setParams({ debugPort: e.target.value })}
                     />
                   </div>
-                  <div className={styles.tomcatDebugSettingsBtnWrap}>
-                    <Button size="small">
-                      <T>Debugger Settings...</T>
-                    </Button>
-                  </div>
                 </div>
-                {config.kind === "tomcat-remote" && (
-                  <div className={styles.tomcatFormRow}>
-                    <span className={styles.tomcatRowLabel}>
-                      <T>Command line arguments for remote JVM</T>
-                    </span>
-                    <Input
-                      mono
-                      readOnly
-                      aria-label="Command line arguments for remote JVM"
-                      value={`-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:${config.params?.debugPort || "5005"}`}
-                    />
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -1508,46 +981,40 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
           </div>
           {beforeLaunchOpen && (
             <>
-              <div className={clsx(styles.tomcatBoxPanel, styles.tomcatBoxSmall)}>
-                <div className={styles.appServersToolbar} role="toolbar" aria-label={tx("Before launch tasks")}>
-                  <IconButton
-                    icon="plus"
-                    size="small"
-                    iconSize={14}
-                    title="Add"
-                    onClick={() => setParams({ buildArtifact: "true" })}
-                  />
-                  <IconButton
-                    icon="minus"
-                    size="small"
-                    iconSize={14}
-                    title="Remove"
-                    disabled={config.params?.buildArtifact === "false"}
-                    onClick={() => setParams({ buildArtifact: "false" })}
-                  />
-                  <IconButton icon="edit" size="small" iconSize={13} title="Edit" disabled />
-                  <IconButton icon="arrow-up" size="small" iconSize={13} title="Up" disabled />
-                  <IconButton icon="arrow-down" size="small" iconSize={13} title="Down" disabled />
+              {deploymentKind === "artifact" && (
+                <div className={clsx(styles.tomcatBoxPanel, styles.tomcatBoxSmall)}>
+                  <div className={styles.appServersToolbar} role="toolbar" aria-label={tx("Before launch tasks")}>
+                    <IconButton
+                      icon="plus"
+                      size="small"
+                      iconSize={14}
+                      title="Add"
+                      onClick={() => setParams({ buildArtifact: "true" })}
+                    />
+                    <IconButton
+                      icon="minus"
+                      size="small"
+                      iconSize={14}
+                      title="Remove"
+                      disabled={config.params?.buildArtifact !== "true"}
+                      onClick={() => setParams({ buildArtifact: "false" })}
+                    />
+                  </div>
+                  <div className={styles.appServersList}>
+                    {config.params?.buildArtifact === "true" && (
+                      <div className={styles.editItem}>
+                        <Icon name="build-project" size={13} className={styles.chooserIcon} />
+                        <span className={styles.chooserName}>
+                          <T>Build</T>
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className={styles.appServersList}>
-                  {config.params?.buildArtifact !== "false" && (
-                    <div className={styles.editItem}>
-                      <Icon name="build-project" size={13} className={styles.chooserIcon} />
-                      <span className={styles.chooserName}>
-                        <T>Build</T>
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
+              )}
               <div className={styles.tomcatBeforeLaunchFooter}>
                 <Checkbox
-                  checked={config.params?.showSettingsBeforeRun === "true"}
-                  onChange={(on) => setParams({ showSettingsBeforeRun: on ? "true" : "" })}
-                  label="Show this page"
-                />
-                <Checkbox
-                  checked={config.openToolWindow !== false}
+                  checked={config.openToolWindow ?? openByDefault}
                   onChange={(on) => onChange({ ...config, openToolWindow: on })}
                   label="Activate tool window"
                 />
@@ -1594,7 +1061,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
             <textarea
               className={styles.textarea}
               rows={8}
-              aria-label="VM options editor"
+              aria-label={tx("VM options editor")}
               value={config.params?.vmOptions ?? ""}
               placeholder="-Xmx1024m&#10;-Dfile.encoding=UTF-8"
               onChange={(e) => setParams({ vmOptions: e.target.value.replace(/\r?\n/g, " ") })}
@@ -1674,7 +1141,7 @@ function ApplicationServersDialog({
         const ver = shortVersion(info.version);
         setServers((prev) =>
           prev.map((s) => {
-            if (s.id !== targetId) return s;
+            if (s.id !== targetId || s.home !== nextHome) return s;
             const autoName = !s.name || s.name === "Tomcat" ? defaultServerName(nextHome, info.version) : s.name;
             const autoBase = !s.base || s.base === s.home ? nextHome : s.base;
             const autoLibs = s.libraries.length ? s.libraries : (info.libraries ?? []);
@@ -1700,9 +1167,9 @@ function ApplicationServersDialog({
     setSelectedId(next[0]?.id ?? null);
   };
 
-  const addLibrary = async () => {
+  const addLibrary = async (directory = false) => {
     if (!current) return;
-    const picked = await pickLocalPath(false, current.home || undefined);
+    const picked = await pickLocalPath(directory, current.home || undefined);
     if (!picked || current.libraries.includes(picked)) return;
     updateCurrent({ libraries: [...current.libraries, picked] });
     setSelectedLib(picked);
@@ -1721,7 +1188,6 @@ function ApplicationServersDialog({
       onClose={onClose}
       title="Application Servers"
       width={720}
-      footerStart={<IconButton icon="help" size="small" iconSize={14} title="Help" />}
       buttons={[
         { label: "Cancel", role: "cancel" },
         {
@@ -1875,13 +1341,12 @@ function ApplicationServersDialog({
                     title="Add Library JAR"
                     onClick={() => void addLibrary()}
                   />
-                  <IconButton icon="external-link" size="small" iconSize={13} title="Add External Documentation" />
                   <IconButton
                     icon="folder-open"
                     size="small"
                     iconSize={13}
                     title="Add Classes Directory"
-                    onClick={() => void addLibrary()}
+                    onClick={() => void addLibrary(true)}
                   />
                   <IconButton
                     icon="minus"
@@ -1954,9 +1419,12 @@ function AddTomcatServerDialog({
   const [libraries, setLibraries] = useState<string[]>([]);
   const [tomee, setTomee] = useState(false);
   const [validHome, setValidHome] = useState(false);
+  const inspectedHome = useRef("");
 
   const inspect = (nextHome: string) => {
     const trimmed = nextHome.trim();
+    inspectedHome.current = trimmed;
+    setValidHome(false);
     if (!trimmed) {
       setVersion("");
       setLibraries([]);
@@ -1966,12 +1434,14 @@ function AddTomcatServerDialog({
     }
     void call(commands.runTomcatHome(trimmed))
       .then((info) => {
+        if (inspectedHome.current !== trimmed) return;
         setVersion(shortVersion(info.version));
         setLibraries(info.libraries ?? []);
         setTomee(!!info.tomee);
         setValidHome(true);
       })
       .catch(() => {
+        if (inspectedHome.current !== trimmed) return;
         setVersion("");
         setLibraries([]);
         setTomee(false);
@@ -1989,6 +1459,7 @@ function AddTomcatServerDialog({
         { label: "Cancel", role: "cancel" },
         {
           label: "OK",
+          disabled: !validHome,
           role: "default",
           onClick: () => {
             const id = `server:${Date.now()}`;

@@ -530,7 +530,7 @@ function EditConfigsDialog() {
                     );
                   }
                   const c = r.config;
-                  const isTomcat = c.kind === "tomcat" || c.kind === "tomcat-remote";
+                  const isTomcat = c.kind === "tomcat";
                   const tomcatNoArtifact =
                     isTomcat &&
                     ((c.params?.deployment ?? "artifact") === "artifact"
@@ -558,7 +558,9 @@ function EditConfigsDialog() {
                           size={13}
                           className={clsx(styles.chooserIcon, temporary.includes(c.id) && styles.chooserTemporary)}
                         />
-                        {tomcatNoArtifact && <span className={styles.tomcatTreeErrorBadge}>×</span>}
+                        {tomcatNoArtifact && (
+                          <Icon name="close" size={9} className={styles.tomcatTreeErrorBadge} label="Invalid" />
+                        )}
                       </span>
                       <span className={styles.chooserName}>{c.name || <T>Unnamed</T>}</span>
                       {c.target && <span className={styles.chooserMuted}>@ {targetName(c, runTargets)}</span>}
@@ -643,12 +645,7 @@ function EditConfigsDialog() {
           )}
         </div>
         <div
-          className={clsx(
-            styles.editForm,
-            mode === "configs" &&
-              (current?.kind === "tomcat" || current?.kind === "tomcat-remote") &&
-              styles.editFormTomcat,
-          )}
+          className={clsx(styles.editForm, mode === "configs" && current?.kind === "tomcat" && styles.editFormTomcat)}
         >
           {mode === "templates" ? (
             currentTemplate ? (

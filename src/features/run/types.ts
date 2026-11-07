@@ -20,7 +20,7 @@ import {
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
-import { tomcatRemoteType, tomcatType } from "./tomcat";
+import { tomcatType } from "./tomcat";
 import { goBuildType, goTestType } from "./goTypes";
 
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
@@ -449,7 +449,6 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   applicationType,
   springBootType,
   tomcatType,
-  tomcatRemoteType,
   compound,
 ];
 

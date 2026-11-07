@@ -881,24 +881,6 @@
   border-bottom: 1px solid var(--border-popup);
   margin-bottom: 6px;
 }
-.tomcatTab {
-  padding: 4px 10px;
-  border-radius: var(--radius-small);
-  font-size: var(--fs-ui);
-  color: var(--fg-secondary);
-  background: transparent;
-  cursor: pointer;
-}
-.tomcatTab:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-.tomcatTabActive,
-.tomcatTabActive:hover {
-  background: var(--bg-selected-strong);
-  color: var(--fg-strong);
-  font-weight: 500;
-}
 .tomcatScrollArea {
   flex: 1;
   min-height: 0;
@@ -918,7 +900,7 @@
 .tomcatRowLabel {
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
-  white-space: nowrap;
+  white-space: normal;
 }
 .tomcatSection {
   display: flex;

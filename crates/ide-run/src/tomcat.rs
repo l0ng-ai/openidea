@@ -101,7 +101,9 @@ pub fn read_server_xml_ports(xml: &str) -> (Option<u16>, Option<u16>, Option<u16
                         https = port;
                     } else if is_ajp && ajp.is_none() {
                         ajp = port;
-                    } else if http.is_none()
+                    } else if !ssl
+                        && !is_ajp
+                        && http.is_none()
                         && (protocol.is_empty() || protocol.contains("HTTP") || protocol.contains("Http"))
                     {
                         http = port;
@@ -567,7 +569,9 @@ pub fn patch_server_xml_with_ports(xml: &str, ports: TomcatPorts, secret: &str) 
                             let p = ports.ajp.map_or_else(free_port, Ok)?;
                             set("port", p.to_string());
                             ajp_found = true;
-                        } else if !http_found
+                        } else if !ssl
+                            && !ajp
+                            && !http_found
                             && (protocol.is_empty() || protocol.contains("HTTP") || protocol.contains("Http"))
                         {
                             set("port", ports.http.to_string());
@@ -600,6 +604,12 @@ pub fn patch_server_xml_with_ports(xml: &str, ports: TomcatPorts, secret: &str) 
     }
     if !http_found {
         return Err(invalid("Tomcat server.xml has no HTTP connector"));
+    }
+    if ports.https.is_some() && !https_found {
+        return Err(invalid("Tomcat server.xml has no HTTPS connector"));
+    }
+    if ports.ajp.is_some() && !ajp_found {
+        return Err(invalid("Tomcat server.xml has no AJP connector"));
     }
     String::from_utf8(writer.into_inner()).map_err(invalid)
 }
@@ -907,42 +917,6 @@ pub fn patch_catalina_properties(props: &str, extra_jars: &[String]) -> String {
     out
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LogConfigItem {
-    pattern: String,
-    active: bool,
-    skip_content: bool,
-}
-
-fn truncate_skipped_logs(base: &Path, raw_logs: Option<&str>) {
-    let logs_dir = base.join("logs");
-    let Ok(entries) = fs::read_dir(&logs_dir) else { return };
-    let prefixes: Vec<String> = match raw_logs.and_then(|s| serde_json::from_str::<Vec<LogConfigItem>>(s).ok()) {
-        Some(items) => items
-            .into_iter()
-            .filter(|i| i.active && i.skip_content)
-            .filter_map(|i| {
-                let file_part = i.pattern.rsplit('/').next().unwrap_or(&i.pattern);
-                file_part.split('*').next().map(|p| p.trim().to_owned()).filter(|p| !p.is_empty())
-            })
-            .collect(),
-        None => vec!["localhost.".into(), "catalina.".into()],
-    };
-    if prefixes.is_empty() {
-        return;
-    }
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && prefixes.iter().any(|pref| name.starts_with(pref))
-        {
-            let _ = fs::write(&path, b"");
-        }
-    }
-}
-
 pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<()> {
     // Batch scripts and their environment variables require ordinary Windows paths.
     let home = dunce::canonicalize(root.join(
@@ -1008,19 +982,14 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     let vm = config.extras.params.get("vmOptions").cloned().unwrap_or_default();
     let mut opts = config.env.get("CATALINA_OPTS").cloned().unwrap_or_default();
     opts.push_str(&format!(" {vm} -Dcom.sun.management.jmxremote.port={jmx} -Dcom.sun.management.jmxremote.rmi.port={jmx} -Dcom.sun.management.jmxremote.host=127.0.0.1 -Djava.rmi.server.hostname=127.0.0.1 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"));
-    if config.extras.params.get("preserveSessions") != Some(&"true".into()) {
-        opts.push_str(" -Dorg.apache.catalina.session.StandardManager.PATHNAME=");
-    }
     if debug {
         let jdwp_port = parse_optional_port(&config.extras.params, "debugPort", "Debug port")?.unwrap_or(0);
         opts.push_str(&format!(" -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:{jdwp_port}"));
     }
     config.env.insert("CATALINA_OPTS".into(), opts);
-    truncate_skipped_logs(&base, config.extras.params.get("tomcatLogs").map(String::as_str));
     if let Some(libs) = config.extras.params.get("tomcatLibraries").map(|s| s.trim()).filter(|s| !s.is_empty()) {
         let sep = if cfg!(windows) { ";" } else { ":" };
-        let lib_items: Vec<String> =
-            libs.split([';', ':']).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
+        let lib_items: Vec<String> = libs.split(';').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect();
         let joined = lib_items.join(sep);
         if !joined.is_empty() {
             config.env.insert("CLASSPATH".into(), joined);
@@ -1040,14 +1009,14 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
             for pair in raw_env.split('\n').map(str::trim).filter(|s| !s.is_empty()) {
                 if let Some((k, v)) = pair.split_once('=') {
                     let k = k.trim();
-                    if !k.is_empty() && !v.is_empty() {
+                    if !k.is_empty() {
                         config.env.insert(k.to_owned(), v.to_owned());
                     }
                 }
             }
         }
     }
-    let use_custom_start = config.extras.params.get("useDefaultStartup").map(String::as_str) != Some("true");
+    let use_custom_start = config.extras.params.get("useDefaultStartup").map(String::as_str) == Some("false");
     if use_custom_start
         && let Some(custom_start) =
             config.extras.params.get("startupScript").map(|s| s.trim()).filter(|s| !s.is_empty())
@@ -1063,7 +1032,7 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
     } else {
         (config.command, config.args) = script_command(&home, cfg!(windows), "run");
     }
-    let use_custom_stop = config.extras.params.get("useDefaultShutdown").map(String::as_str) != Some("true");
+    let use_custom_stop = config.extras.params.get("useDefaultShutdown").map(String::as_str) == Some("false");
     config.extras.stop_command = Some(
         if use_custom_stop
             && let Some(custom_stop) =
@@ -1396,6 +1365,27 @@ mod tests {
         let root = PathBuf::from(format!(r"\\?\{}", dunce::canonicalize(tmp.path()).unwrap().display()));
         check_prepared_paths(&root);
     }
+    #[test]
+    fn requires_existing_optional_connectors_and_keeps_http_separate_from_tls() {
+        let xml = "<Server><Connector port='8443' SSLEnabled='true'/><Connector port='9443' SSLEnabled='true'/><Connector port='8080'/></Server>";
+        assert_eq!(read_server_xml_ports(xml), (Some(8080), Some(8443), None, None));
+        let patched = patch_server_xml_with_ports(
+            xml,
+            TomcatPorts { http: 18080, https: Some(18443), shutdown: 18005, ajp: None },
+            "secret",
+        )
+        .unwrap();
+        assert!(patched.contains("port=\"18080\""));
+        assert!(patched.contains("port=\"18443\""));
+        let plain = "<Server><Connector port='8080'/></Server>";
+        for (https, ajp, label) in [(Some(8443), None, "HTTPS"), (None, Some(8009), "AJP")] {
+            let error =
+                patch_server_xml_with_ports(plain, TomcatPorts { http: 8080, https, ajp, shutdown: 8005 }, "secret")
+                    .unwrap_err();
+            assert!(error.to_string().contains(label));
+        }
+    }
+
     fn check_prepared_paths(root: &Path) {
         let home = root.join("Tomcat Home");
         fs::create_dir_all(home.join("bin")).unwrap();
@@ -1451,6 +1441,18 @@ mod tests {
         assert!(!c.extras.stop_command.as_ref().unwrap().contains(r"\\?\"));
         assert!(c.env.values().all(|value| !value.contains(r"\\?\")));
         assert!(!fs::read_to_string(context).unwrap().contains(r"\\?\"));
+        // Serialized library lists use semicolons, including Windows drive letters.
+        c.env.remove("CATALINA_OPTS");
+        c.extras
+            .params
+            .insert("tomcatLibraries".into(), r"C:\Tomcat\lib\servlet-api.jar;D:\extra lib\extra.jar".into());
+        c.extras.params.insert("startupEnvDebug".into(), "EMPTY=\nJAVA_OPTS=-Dmode=debug".into());
+        prepare(root, &cache, &mut c).unwrap();
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        assert_eq!(c.env["CLASSPATH"], [r"C:\Tomcat\lib\servlet-api.jar", r"D:\extra lib\extra.jar"].join(separator));
+        assert_eq!(c.env["EMPTY"], "");
+        assert_eq!(c.env["JAVA_OPTS"], "-Dmode=debug");
+        assert_eq!(c.env["CATALINA_OPTS"].matches("-agentlib:jdwp").count(), 1);
     }
 
     #[test]
@@ -1517,7 +1519,6 @@ mod tests {
         assert!(ctx_xml.contains("privileged=\"true\""));
         assert!(ctx_xml.contains("<Parameter name=\"env\" value=\"dev\"/>"));
         assert!(c.env["CATALINA_OPTS"].contains("-Dcom.sun.management.jmxremote.port=11099"));
-        assert!(c.env["CATALINA_OPTS"].contains("-Dorg.apache.catalina.session.StandardManager.PATHNAME="));
     }
 
     #[test]

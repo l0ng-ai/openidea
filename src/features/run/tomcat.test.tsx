@@ -1,11 +1,12 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, fireEvent, within } from "@testing-library/react";
 import { newConfigOfType, missingParams } from "./types";
-import { tomcatType, tomcatRemoteType, tomcatBrowserUrl, syncTomcatOutputs } from "./tomcat";
+import { tomcatType, tomcatBrowserUrl, syncTomcatOutputs } from "./tomcat";
 import { jdwpLaunch } from "./javaDebug";
 import { TomcatSettings } from "./TomcatSettings";
 import { typeRows } from "./AddConfigPopup";
 import { commands } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
@@ -105,7 +106,18 @@ describe("Tomcat Local", () => {
     );
     expect(await screen.findByText(/Apache Tomcat\/10\.1\.61/)).toBeTruthy();
   });
-  it("validates IDEA server ports and supports custom CATALINA_BASE, context descriptor, and instance options", () => {
+  it.each(["war", "directory"])(
+    "does not replace a configured %s deployment during artifact discovery",
+    async (deployment) => {
+      const config = newConfigOfType(tomcatType, []);
+      config.params = { ...config.params, deployment, deploymentPath: "/external/app", tomcatHome: "/tomcat" };
+      const change = vi.fn();
+      render(<TomcatSettings config={config} onChange={change} />);
+      await screen.findByText(/Apache Tomcat\/10\.1\.61/);
+      expect(change).not.toHaveBeenCalled();
+    },
+  );
+  it("validates server ports and supports custom CATALINA_BASE, context descriptor, and instance options", () => {
     const config = newConfigOfType(tomcatType, []);
     config.params = {
       ...config.params,
@@ -142,9 +154,15 @@ describe("Tomcat Local", () => {
         }),
       ),
     );
+    await waitFor(() =>
+      expect(change.mock.calls.at(-1)?.[0].params).toMatchObject({
+        tomcatHome: "/opt/homebrew/opt/tomcat/libexec",
+        artifact: "maven:pom.xml",
+      }),
+    );
     expect(await screen.findByLabelText("Application server")).toBeTruthy();
   });
-  it("opens Application Servers via Configure..., displays libraries, and switches between IDEA tabs", async () => {
+  it("opens Application Servers via Configure..., displays libraries, and switches between supported tabs", async () => {
     const config = newConfigOfType(tomcatType, []);
     const change = vi.fn();
     render(<TomcatSettings config={config} onChange={change} />);
@@ -181,19 +199,47 @@ describe("Tomcat Local", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Deployment" }));
     expect(screen.getByText("Deploy at the server startup")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Logs" }));
-    expect(screen.getByText("Log files to be shown in console")).toBeTruthy();
-    expect(screen.getByText("Tomcat Localhost Log")).toBeTruthy();
-    expect(screen.getByText("Tomcat Catalina Log")).toBeTruthy();
-    expect(screen.getByText("Tomcat Manager Log")).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: "Code Coverage" }));
-    expect(screen.getByText("Packages and classes to include in coverage data")).toBeTruthy();
-    expect(screen.getByText("Packages and classes to exclude from coverage data")).toBeTruthy();
-    expect(screen.getByLabelText("Include packages")).toBeTruthy();
+    expect(screen.getByLabelText("Console output file")).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Code Coverage" })).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Startup/Connection" }));
     expect(screen.getByRole("option", { name: "Debug" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Run VisualGC" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "Run VisualGC" })).toBeNull();
     expect(screen.getByLabelText("Startup script")).toBeTruthy();
     expect(screen.getByText("Environment Variables")).toBeTruthy();
+  });
+  it("keeps Debug environment overrides separate from the backend JDWP agent", () => {
+    const config = newConfigOfType(tomcatType, []);
+    const change = vi.fn();
+    render(<TomcatSettings config={config} onChange={change} />);
+    expect(screen.queryByLabelText("Browser")).toBeNull();
+    expect(screen.queryByLabelText("with JavaScript debugger")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Startup/Connection" }));
+    fireEvent.click(screen.getByRole("option", { name: "Debug" }));
+    expect(screen.queryByDisplayValue(/agentlib:jdwp/)).toBeNull();
+    fireEvent.click(
+      within(screen.getByRole("toolbar", { name: "Startup environment variables" })).getByRole("button", {
+        name: "Add",
+      }),
+    );
+    expect(change).toHaveBeenCalledWith(
+      expect.objectContaining({
+        params: expect.objectContaining({ startupEnvDebug: "VAR_1=" }),
+      }),
+    );
+  });
+  it.each([undefined, false, true])("inherits the tool window setting unless overridden (%s)", (override) => {
+    const previous = useProject.getState().settings;
+    useProject.setState({ settings: { run: { showOnStart: false } } as never });
+    try {
+      const config = { ...newConfigOfType(tomcatType, []), openToolWindow: override };
+      render(<TomcatSettings config={config} onChange={() => {}} />);
+      expect((screen.getByRole("checkbox", { name: "Activate tool window" }) as HTMLInputElement).checked).toBe(
+        override ?? false,
+      );
+    } finally {
+      cleanup();
+      useProject.setState({ settings: previous });
+    }
   });
   it("reports an invalid installation in the form", async () => {
     vi.mocked(commands.runTomcatHome).mockRejectedValueOnce(new Error("missing catalina.jar"));
@@ -201,33 +247,6 @@ describe("Tomcat Local", () => {
     config.params = { ...config.params, tomcatHome: "/missing" };
     render(<TomcatSettings config={config} onChange={() => {}} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("Invalid Tomcat installation");
-  });
-  it("supports Tomcat Server Remote configuration and displays remote JDWP command line in Startup/Connection", () => {
-    const remote = newConfigOfType(tomcatRemoteType, []);
-    expect(remote.kind).toBe("tomcat-remote");
-    expect(remote.params).toMatchObject({
-      remoteHost: "localhost",
-      httpPort: "8080",
-      jmxPort: "1099",
-      debugPort: "5005",
-      remoteStaging: "local",
-      updateShowDialog: "true",
-    });
-    remote.params = {
-      ...remote.params,
-      tomcatHome: "/tomcat",
-      remoteHost: "10.0.0.12",
-      httpPort: "9080",
-      contextPath: "/demo",
-      debugPort: "5005",
-    };
-    expect(tomcatBrowserUrl(remote)).toBe("http://10.0.0.12:9080/demo/");
-    render(<TomcatSettings config={remote} onChange={() => {}} />);
-    fireEvent.click(screen.getByRole("tab", { name: "Startup/Connection" }));
-    fireEvent.click(screen.getByRole("option", { name: "Debug" }));
-    expect((screen.getByLabelText("Command line arguments for remote JVM") as HTMLInputElement).value).toBe(
-      "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005",
-    );
   });
 });
 

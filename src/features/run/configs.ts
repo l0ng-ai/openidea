@@ -59,7 +59,6 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "spring-boot":
       return "spring-boot";
     case "tomcat":
-    case "tomcat-remote":
       return "tomcat";
     case "npm":
     case "bun":

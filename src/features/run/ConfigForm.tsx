@@ -363,16 +363,8 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         </div>
       )}
       {!template && (
-        <div
-          className={clsx(
-            styles.formHeader,
-            (config.kind === "tomcat" || config.kind === "tomcat-remote") && styles.formHeaderTomcat,
-          )}
-        >
-          <Field
-            label={config.kind === "tomcat" || config.kind === "tomcat-remote" ? "Name:" : "Name"}
-            error={errors.name}
-          >
+        <div className={clsx(styles.formHeader, config.kind === "tomcat" && styles.formHeaderTomcat)}>
+          <Field label={config.kind === "tomcat" ? "Name:" : "Name"} error={errors.name}>
             <Input
               value={config.name}
               invalid={!!errors.name}
@@ -387,19 +379,10 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               label="Store as project file"
               aria-label="Store as project file (.openidea/run.toml); otherwise in the workspace (.openidea/run.local.toml)"
             />
-            {(config.kind === "tomcat" || config.kind === "tomcat-remote") && (
-              <IconButton
-                icon="settings"
-                size="small"
-                iconSize={13}
-                disabled={!!config.local}
-                title="Manage File Location"
-              />
-            )}
           </div>
         </div>
       )}
-      {config.kind === "tomcat" || config.kind === "tomcat-remote" ? (
+      {config.kind === "tomcat" ? (
         <TomcatSettings config={config} onChange={onChange} />
       ) : (
         <>
