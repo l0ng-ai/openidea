@@ -223,13 +223,21 @@ impl StoreData {
     /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
     /// should be told instead (`denied` naming the capability to declare).
     fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        sandbox::resolve_granted(&self.granted, path).map_err(Into::into)
+        let mut granted = self.granted.clone();
+        if let Ok(dir) = self.host.plugin_dir() {
+            granted.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        sandbox::resolve_granted(&granted, path).map_err(Into::into)
     }
 
     /// The same for `fs.write:…`: a file that does not exist yet is resolved
     /// through the directory it would be created in.
     fn writable_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        sandbox::resolve_writable(&self.granted, path).map_err(Into::into)
+        let mut granted = self.granted.clone();
+        if let Ok(dir) = self.host.plugin_dir() {
+            granted.push(Capability::FsWrite(to_ipc(&dir)));
+        }
+        sandbox::resolve_writable(&granted, path).map_err(Into::into)
     }
 
     fn client(&self) -> Option<&str> {
@@ -1144,6 +1152,14 @@ impl views::Host for StoreData {
     }
 
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
+        if let Ok(dir) = self.host.plugin_dir()
+            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], &path)
+        {
+            if let Err(e) = self.require_interactive() {
+                return Ok(Err(e));
+            }
+            return Ok(self.host.open_location(self.client(), &real, line, column).map_err(to_wit));
+        }
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
         }
@@ -1204,6 +1220,10 @@ impl From<sandbox::Refusal> for wit::Error {
 /// Files outside the open projects, gated by `fs.read:<path>` and
 /// `fs.write:<path>` grants.
 impl fs::Host for StoreData {
+    fn plugin_dir(&mut self) -> Fallible<String> {
+        Ok(self.host.plugin_dir().map(|dir| to_ipc(&dir)).map_err(to_wit))
+    }
+
     fn read_file(&mut self, path: String) -> Fallible<String> {
         let real = match self.granted_file(&path) {
             Ok(real) => real,

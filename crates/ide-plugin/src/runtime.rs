@@ -24,7 +24,7 @@ use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -253,6 +253,10 @@ pub trait HostApi: Send + Sync {
     /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
     /// `max` bounds the bytes read.
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
+    /// The plugin's private directory, independent of the current invocation.
+    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
+        Err(HostError::Failed("private plugin storage is unavailable".into()))
+    }
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.

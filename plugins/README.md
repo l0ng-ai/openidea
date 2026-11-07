@@ -325,6 +325,24 @@ used to write outside it. `project.write` does the same inside the open
 projects, creating missing directories. Both are new in API 1.3
 (`engines.openidea = "^1.3"`).
 
+`host::fs::plugin_dir()` (API 1.3) returns a private directory belonging only to
+this plugin, separate from its installed code and key-value storage. Reading and
+writing inside it needs no `fs.*` or `project.read` grant, including during
+activation or provider calls without an open project. The host creates the
+directory owner-only (0700 on Unix, an owner-only inheritable ACL on Windows),
+and files written there are owner-only from creation (0600 on Unix). Paths are
+checked after symlink resolution: another plugin's directory, adjacent paths,
+and links escaping this directory receive no implicit grant. Explicit `fs.*`
+grants retain their normal behavior.
+
+Use it for generated editor content or caches larger than `storage`. Files and
+the directory survive idle reclaim, plugin reloads, updates, and app restarts;
+uninstall removes them. There is no TTL or stop-time deletion. A returned path
+works with `host::open_location` and as an argument to an approved process;
+normal UI, trust, and process approval rules still apply. Editor saves preserve
+the private file's permissions. Filesystem writes keep the usual size limits,
+encoding behavior, and protection of unsaved editor changes.
+
 Logging, notifications, status bar items, tasks and run-time contributions
 are always available. Calling a gated function without its capability returns
 `Error::Denied("<capability>")` — the plugin keeps running and can degrade

@@ -321,17 +321,26 @@ fn sync_error_is_tolerable(e: &std::io::Error) -> bool {
 /// writes through symlinks. Falls back to an in-place write when the directory
 /// does not allow creating files. Returns the new mtime in ms.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
-    write_atomic_impl(path, bytes, true)
+    write_atomic_impl(path, bytes, true, false)
 }
 
 /// Replaces a file atomically without falling back to truncating it in place.
 /// Preserves existing permissions and writes through symlinks; if a sibling
 /// temporary file cannot be created, leaves the existing file untouched.
 pub fn write_atomic_strict(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
-    write_atomic_impl(path, bytes, false)
+    write_atomic_impl(path, bytes, false, false)
 }
 
-fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool) -> IdeResult<f64> {
+/// Atomically creates/replaces a private file, owner-only from creation.
+/// The parent must be a private directory (including an inheritable owner ACL
+/// on Windows). Existing Unix permissions are restricted to the owner.
+pub fn write_atomic_private(path: &Path, bytes: &[u8]) -> IdeResult<f64> {
+    write_atomic_impl(path, bytes, false, true)
+}
+
+fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool, private: bool) -> IdeResult<f64> {
+    #[cfg(not(unix))]
+    let _ = private;
     let target = match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => fs::canonicalize(path)?,
         _ => path.to_path_buf(),
@@ -361,6 +370,11 @@ fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool) -> IdeResu
         Err(e) => return Err(e.into()),
     };
     let result = (|| -> std::io::Result<()> {
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         file.write_all(bytes)?;
         if let Err(e) = file.sync_all() {
             // virtio-fs (macOS VMs) and similar filesystems have no fsync/F_FULLFSYNC
@@ -374,7 +388,14 @@ fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool) -> IdeResu
             }
         }
         if let Some(meta) = &existing {
-            fs::set_permissions(&tmp, meta.permissions())?;
+            #[allow(unused_mut)]
+            let mut permissions = meta.permissions();
+            #[cfg(unix)]
+            if private {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(0o600);
+            }
+            fs::set_permissions(&tmp, permissions)?;
         }
         drop(file);
         fs::rename(&tmp, &target)
