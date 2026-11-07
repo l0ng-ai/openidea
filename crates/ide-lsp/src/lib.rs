@@ -517,7 +517,7 @@ impl LspManager {
         let Some(me) = self.me.upgrade() else { return };
         if !server.root.is_dir() {
             tracing::info!("{}: workspace root {} is gone, dropping", server.name, server.root.display());
-            server.announce_down();
+            server.begin_stop(&self.sink);
             self.forget(std::slice::from_ref(server));
             return;
         }
@@ -526,11 +526,10 @@ impl LspManager {
     }
 
     async fn run_instance(self: Arc<Self>, server: Arc<Server>, generation: u64) {
-        server.set_status(&self.sink, ide_core::event::ServerStatus::Starting, None);
+        let Some(cancel) = server.starting_status(generation, &self.sink) else { return };
         let handler = Arc::new(handler::ClientHandler::new(self.me.clone(), server.clone(), generation));
         let me = self.clone();
         let tail = server.clone();
-        let cancel = server.start_token();
         // The settings hook may touch the filesystem (e.g. scanning for JDKs); TCP
         // servers may take a while to start listening.
         let launched = tokio::task::spawn_blocking(move || {
@@ -649,7 +648,10 @@ impl LspManager {
         };
         let run =
             Running { generation, peer: peer.clone(), caps: Arc::new(RwLock::new(caps)), watchers: Default::default() };
-        server.set_initializing(Some(run.clone()));
+        if !server.set_initializing(run.clone()) {
+            peer.kill();
+            return;
+        }
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
         }
@@ -670,7 +672,6 @@ impl LspManager {
             let mut docs = self.docs.lock();
             if !server.mark_ready(generation, run.clone()) {
                 drop(docs);
-                server.set_initializing(None);
                 peer.kill();
                 return;
             }
@@ -706,79 +707,20 @@ impl LspManager {
     }
 
     async fn on_instance_closed(self: Arc<Self>, server: Arc<Server>, generation: u64, code: Option<i32>) {
-        use ide_core::event::ServerStatus;
-        let intentional = match server.on_closed(generation) {
-            Some(intentional) => intentional || self.shutting_down.load(Ordering::Acquire),
-            None => return, // superseded instance
-        };
-        self.clear_server_state(&server);
-        self.file_watch_roots_changed();
-        if intentional {
-            server.announce_down();
+        if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
-        // The workspace root gone means this server can never serve again:
-        // restarting would respawn with a dead working directory, so the entry
-        // is dropped instead of staying "Crashed" forever.
+        let Some(delay) = server.on_closed(generation, &self.sink, code) else { return };
+        self.file_watch_roots_changed();
         if !server.root.is_dir() {
-            server.announce_down();
             self.forget(std::slice::from_ref(&server));
             return;
         }
-        let tail = server.stderr_tail(5);
-        let cfg = server.effective_config();
-        let mut message = match (code, &cfg.connect) {
-            (Some(c), _) => format!("{} exited with code {c}", server.name),
-            (None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", server.name),
-            (None, None) => format!("{} terminated unexpectedly", server.name),
-        };
-        if !tail.is_empty() {
-            message.push_str(":\n");
-            message.push_str(&tail);
-        }
-        match server.record_crash() {
-            Some(delay) => {
-                server.set_status(&self.sink, ServerStatus::Crashed, Some(format!("{message}\nRestarting…")));
-                // Woken after the crash is reported: a request that finds no instance
-                // reads this status to say why. The restart sets `Starting` again.
-                server.announce_down();
-                tokio::time::sleep(delay).await;
-                if server.is_idle_gen(generation) {
-                    self.ensure_started(&server);
-                }
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+            if server.is_idle_gen(generation) {
+                self.ensure_started(&server);
             }
-            None => {
-                server.give_up(generation);
-                server.set_status(
-                    &self.sink,
-                    ServerStatus::Crashed,
-                    Some(format!("{message}\nCrashed repeatedly; restart it manually.")),
-                );
-                // Requests still waiting for a start read this status for their error.
-                server.announce_down();
-            }
-        }
-    }
-
-    /// Ends progress tasks and withdraws diagnostics of a dead instance.
-    fn clear_server_state(&self, server: &Server) {
-        for (id, title) in server.take_progress() {
-            self.sink.emit(ide_core::IdeEvent::Task {
-                id,
-                title,
-                message: None,
-                fraction: None,
-                done: true,
-                cancellable: false,
-            });
-        }
-        server.progress_ended();
-        for path in server.take_diagnostic_paths() {
-            self.sink.emit(ide_core::IdeEvent::Diagnostics {
-                path: path.into(),
-                source: server.name.clone(),
-                items: Vec::new(),
-            });
         }
     }
 
@@ -3157,7 +3099,7 @@ impl LspManager {
 
     /// Gracefully stops the current instance (`shutdown` + `exit`, then kill).
     async fn stop_instance(&self, server: &Arc<Server>, final_stop: bool) {
-        let Some(run) = server.begin_stop() else {
+        let Some(run) = server.begin_stop(&self.sink) else {
             if final_stop {
                 server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
             }
@@ -3168,9 +3110,8 @@ impl LspManager {
         // ours to shut down: only the connection closes.
         if peer.pid().is_none() && server.effective_config().connect.is_some() {
             peer.kill();
-            server.end_stop(run.generation);
-            self.clear_server_state(server);
-            server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+            server.end_stop(run.generation, &self.sink);
+            self.file_watch_roots_changed();
             return;
         }
         let graceful = async {
@@ -3184,9 +3125,8 @@ impl LspManager {
             let _ = tokio::time::timeout(Duration::from_secs(2), peer.closed()).await;
         }
         peer.kill();
-        server.end_stop(run.generation);
-        self.clear_server_state(server);
-        server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+        server.end_stop(run.generation, &self.sink);
+        self.file_watch_roots_changed();
     }
 
     pub async fn shutdown_all(&self) {
