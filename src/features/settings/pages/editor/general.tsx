@@ -197,10 +197,20 @@ const AUTO_IMPORT = editorPage({
   id: "editor.general.autoImport",
   title: "Auto Import",
   order: 0,
-  keywords: ["import", "organize imports", "unambiguous"],
+  keywords: ["import", "organize imports", "unambiguous", "paste"],
   sections: [
     {
       items: [
+        {
+          t: "select",
+          key: `${P}.autoImport.importsOnPaste`,
+          label: "Insert imports on paste",
+          options: [
+            { value: "always", label: "Always" },
+            { value: "ask", label: "Ask" },
+            { value: "never", label: "Never" },
+          ],
+        },
         {
           t: "check",
           key: `${P}.autoImport.addUnambiguous`,
