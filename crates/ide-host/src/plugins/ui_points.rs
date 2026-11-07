@@ -399,6 +399,10 @@ struct ViewDecl {
     icon: Option<String>,
     #[serde(default = "right")]
     location: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<String>,
     /// A web page of the package (`web/index.html`) instead of content the code renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
@@ -419,6 +423,15 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: ViewDecl = decode(VIEWS, decl)?;
     validate_item_id(&d.id, "view id")?;
     title(VIEWS, &d.title)?;
+    if let Some(group) = &d.group {
+        pkg.manifest.needs_api("contributes.views.group", 3)?;
+        validate_item_id(group, "view group")?;
+    }
+    if let Some(when) = &d.when {
+        pkg.manifest.needs_api("contributes.views.when", 3)?;
+        validate_when(when).map_err(|e| format!("contributes.views: {e}"))?;
+    }
+
     let files = web_or_code(pkg, d.web.as_deref(), &format!("view {:?}", d.id))?;
     if !["left", "right", "bottom", SERVICES_LOCATION].contains(&d.location.as_str()) {
         return Err(format!("view {:?}: `location` is left, right, bottom or services", d.id));

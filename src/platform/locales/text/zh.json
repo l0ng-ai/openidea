@@ -6662,5 +6662,18 @@
   "Tomcat base directory path is not specified": "未指定 Tomcat 基目录路径",
   "VM options editor": "虚拟机选项编辑器",
   "Tomcat server.xml has no HTTPS connector": "Tomcat 的 server.xml 中没有 HTTPS 连接器",
-  "Tomcat server.xml has no AJP connector": "Tomcat 的 server.xml 中没有 AJP 连接器"
+  "Tomcat server.xml has no AJP connector": "Tomcat 的 server.xml 中没有 AJP 连接器",
+  "Read-only: the query joins several tables.": "只读：查询联接了多个表。",
+  "Read-only: the result is aggregated (DISTINCT, GROUP BY or an aggregate function).": "只读：结果已聚合（DISTINCT、GROUP BY 或聚合函数）。",
+  "Read-only: the result combines several queries (UNION / INTERSECT / EXCEPT).": "只读：结果组合了多个查询（UNION / INTERSECT / EXCEPT）。",
+  "Read-only: the result is not a plain select from a single table.": "只读：结果不是对单个表的普通 SELECT 查询。",
+  "Read-only: the result has no primary key of {tableLabel}.": "只读：结果中没有 {tableLabel} 的主键。",
+  "Starting the dev container…": "正在启动开发容器…",
+  "Command-line tool": "命令行工具",
+  "Forwarding ports is not supported in a dev container yet": "开发容器暂不支持端口转发",
+  "Could not reopen the project in a container": "无法在容器中重新打开项目",
+  "Reopen in Container": "在容器中重新打开",
+  "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.": "使用 Dev Containers CLI 构建或启动项目的开发容器（devcontainer.json），并在其中打开项目。",
+  "Read-only: the table schema could not be identified in the result database.": "只读：无法确定结果所在数据库中的表架构。",
+  "devcontainer up exited with {status}": "devcontainer up 已退出，状态为 {status}"
 }

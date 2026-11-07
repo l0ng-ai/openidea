@@ -65,6 +65,8 @@ export interface ResultTab {
   /** Console file the statement came from. */
   path: string;
   sourceId: string;
+  /** Schema used for these rows; retained across edits, paging and refresh. */
+  schema?: string;
   outcome: DbStatementOutcome;
   /** The Query Plan tab: the plan of `outcome.statement` (which was explained, not run). */
   plan?: DbPlanNode[];
@@ -869,19 +871,13 @@ export async function executeConsole(
   useDatabase.setState((s) => ({ running: { ...s.running, [path]: request } }));
   try {
     const pageSize = useDatabase.getState().maxRows;
-    const outcomes = await run(
-      id,
-      statements,
-      request,
-      pageSize,
-      0,
-      useDatabase.getState().consoleSchemas[path] || undefined,
-    );
+    const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
+    const outcomes = await run(id, statements, request, pageSize, 0, schema);
     const tabs: ResultTab[] = outcomes
       .filter((o) => o.result?.columns.length)
       .map((outcome) => {
         const n = nextTab++;
-        return { id: n, title: tx`Result ${n}`, path, sourceId: id, outcome, page: 0, pageSize };
+        return { id: n, title: tx`Result ${n}`, path, sourceId: id, schema, outcome, page: 0, pageSize };
       });
     const failed = outcomes.some((o) => o.error);
     useDatabase.setState((s) => ({
@@ -1008,11 +1004,7 @@ export async function rerunResult(tabId: number): Promise<void> {
     patchResult(tabId, { busy: true });
     try {
       patchResult(tabId, {
-        plan: await explain(
-          tab.sourceId,
-          tab.outcome.statement,
-          useDatabase.getState().consoleSchemas[tab.path] || undefined,
-        ),
+        plan: await explain(tab.sourceId, tab.outcome.statement, tab.schema ?? consoleSchema(tab.path)),
         busy: false,
       });
     } catch (e) {
@@ -1051,7 +1043,7 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
       nextRequestId(),
       maxRows,
       skip,
-      useDatabase.getState().consoleSchemas[tab.path] || undefined,
+      tab.schema ?? consoleSchema(tab.path),
     );
     const r = outcome?.result;
     if (r) {
@@ -1096,7 +1088,7 @@ export async function countResult(tabId: number): Promise<number | null> {
       nextRequestId(),
       1,
       0,
-      useDatabase.getState().consoleSchemas[tab.path] || undefined,
+      tab.schema ?? consoleSchema(tab.path),
     );
     const total = Number(outcome?.result?.rows[0]?.[0]);
     const known = outcome?.error || !Number.isFinite(total) ? null : total;
