@@ -89,14 +89,14 @@ impl Subscriptions {
 
 impl PluginHost {
     pub(super) fn filter_path_events(
-        &self,
+        shared: &super::api::Shared,
         plugin: &LoadedPlugin,
         client: Option<&str>,
         events: &[WorkbenchEvent],
         subs: &Subscriptions,
     ) -> Vec<WorkbenchEvent> {
         let Some(filters) = subs.paths.get(plugin.id()) else { return events.to_vec() };
-        let workspace = self.shared.workspace();
+        let workspace = shared.workspace();
         events
             .iter()
             .filter_map(|event| {

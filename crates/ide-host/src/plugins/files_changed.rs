@@ -34,14 +34,40 @@ pub(super) fn append(events: &mut Vec<WorkbenchEvent>, incoming: Vec<WorkbenchEv
             && let Some(WorkbenchEvent::FilesChanged(previous)) =
                 events.iter_mut().find(|e| matches!(e, WorkbenchEvent::FilesChanged(_)))
         {
-            for (target, paths) in [
-                (&mut previous.created, &batch.created),
-                (&mut previous.modified, &batch.modified),
-                (&mut previous.removed, &batch.removed),
-            ] {
-                target.extend(paths.iter().cloned());
-                target.sort_unstable();
-                target.dedup();
+            use std::collections::BTreeMap;
+            #[derive(Clone, Copy)]
+            enum Change {
+                Created,
+                Modified,
+                Removed,
+            }
+            use Change::*;
+            let mut paths = BTreeMap::new();
+            for (kind, entries) in
+                [(Created, &previous.created), (Modified, &previous.modified), (Removed, &previous.removed)]
+            {
+                for path in entries {
+                    paths.insert(path.clone(), kind);
+                }
+            }
+            for (next, entries) in [(Created, &batch.created), (Modified, &batch.modified), (Removed, &batch.removed)] {
+                for path in entries {
+                    let kind = match (paths.get(path), next) {
+                        (Some(Created), Created | Modified) => Created,
+                        (Some(Removed), Created) | (Some(Modified), Created | Modified) => Modified,
+                        (Some(Removed), Modified) => Removed,
+                        (_, next) => next,
+                    };
+                    paths.insert(path.clone(), kind);
+                }
+            }
+            *previous = FilesChanged::default();
+            for (path, kind) in paths {
+                match kind {
+                    Created => previous.created.push(path),
+                    Modified => previous.modified.push(path),
+                    Removed => previous.removed.push(path),
+                }
             }
         } else {
             events.push(event);
@@ -81,6 +107,247 @@ impl PluginHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn files_changed_host(root: &Path) -> PluginHost {
+        use super::super::Consent;
+        let host =
+            PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Default::default()).unwrap();
+        host.set_workspace(Some(Arc::new(Workspace(root.to_path_buf()))));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/files-events");
+        host.install_from_dir(&fixture, &Consent::all()).unwrap();
+        host
+    }
+
+    fn delta(kind: usize, path: &str) -> WorkbenchEvent {
+        let mut batch = FilesChanged::default();
+        match kind {
+            0 => batch.created.push(path.into()),
+            1 => batch.modified.push(path.into()),
+            _ => batch.removed.push(path.into()),
+        }
+        WorkbenchEvent::FilesChanged(batch)
+    }
+
+    #[test]
+    fn files_changed_preserves_ordered_path_transitions() {
+        for (first, next, expected) in
+            [(0, 0, 0), (0, 1, 0), (0, 2, 2), (1, 0, 1), (1, 1, 1), (1, 2, 2), (2, 0, 1), (2, 1, 2), (2, 2, 2)]
+        {
+            let mut events = vec![delta(first, "/project/path")];
+            append(&mut events, vec![delta(next, "/project/path")]);
+            assert_eq!(events, [delta(expected, "/project/path")], "transition {first} -> {next}");
+        }
+        let mut events = vec![delta(0, "/project/transient"), delta(2, "/project/old-name")];
+        append(&mut events, vec![delta(2, "/project/transient"), delta(0, "/project/new-name")]);
+        append(&mut events, vec![delta(1, "/project/transient")]);
+        // Seed through append too: one coalesced batch keeps both sides of a rename.
+        let mut merged = vec![];
+        append(&mut merged, events);
+        assert_eq!(
+            merged,
+            [WorkbenchEvent::FilesChanged(FilesChanged {
+                created: vec!["/project/new-name".into()],
+                removed: vec!["/project/old-name".into(), "/project/transient".into()],
+                ..Default::default()
+            })]
+        );
+    }
+
+    #[test]
+    fn files_changed_stale_admission_cannot_replace_reopened_queue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host = files_changed_host(&root);
+        let old = Arc::new(AtomicBool::new(true));
+        let new = Arc::new(AtomicBool::new(true));
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let host = &host;
+            let old = &old;
+            let root = &root;
+            scope.spawn(move || {
+                assert!(old.load(Ordering::Acquire));
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                host.post_events_from(
+                    Some("main"),
+                    vec![delta(0, &to_ipc(&root.join("stale.rs")))],
+                    Some(Source { active: Arc::downgrade(old) }),
+                );
+            });
+            waiting.recv().unwrap();
+            old.store(false, Ordering::Release);
+            host.post_files_changed(
+                "main",
+                &root,
+                &new,
+                &ide_vfs::FsBatch { created: vec![root.join("new.rs")], ..Default::default() },
+            );
+            release.send(()).unwrap();
+        });
+        let queues = host.queues.lock();
+        let queue = queues.values().next().expect("new session queue");
+        assert!(queue.files_source.as_ref().unwrap().same(&Source { active: Arc::downgrade(&new) }));
+        assert_eq!(queue.events, [delta(0, &to_ipc(&root.join("new.rs")))]);
+    }
+
+    #[test]
+    fn files_changed_actor_mailbox_is_bounded_and_yields_to_commands() {
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host = files_changed_host(&root);
+        let plugin = host.get("files-events").unwrap();
+        let (actor, _) = host.ensure_active(&plugin, Some("main")).unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        actor.post(
+            move |_| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(())
+            },
+            |_| {},
+        );
+        waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+        for i in 0..600 {
+            host.post_events(Some("main"), vec![delta(i % 3, &to_ipc(&root.join(format!("path-{i}"))))]);
+            host.flush_events();
+        }
+        let pending = plugin.batches.lock().pending;
+        // A command gets a scheduling turn after one coalesced delivery.
+        let command = actor.submit(None, move |rt| rt.run_command("events", None, Default::default())).unwrap();
+        release.send(()).unwrap();
+        let data = command.wait().unwrap().unwrap();
+        assert_eq!(pending, 1, "flushes must not grow the actor job queue");
+        let batches: Vec<FilesChanged> = serde_json::from_str(&data).unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].created.len(), 200);
+        assert_eq!(batches[0].modified.len(), 200);
+        assert_eq!(batches[0].removed.len(), 200);
+        assert!(host.wait_events(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn files_changed_rechecks_filters_after_a_busy_actor_command() {
+        use std::time::Duration;
+        for globs in ["", "other/**", "config/*.yaml"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = dunce::canonicalize(tmp.path()).unwrap();
+            let host = files_changed_host(&root);
+            let plugin = host.get("files-events").unwrap();
+            let (actor, _) = host.ensure_active(&plugin, Some("main")).unwrap();
+            let (entered, waiting) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            actor.post(
+                move |_| {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                    Ok(())
+                },
+                |_| {},
+            );
+            waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+            let filter =
+                actor.submit(None, move |rt| rt.run_command("filter", Some(globs), Default::default())).unwrap();
+            host.post_events(
+                Some("main"),
+                vec![WorkbenchEvent::FilesChanged(FilesChanged {
+                    created: vec![to_ipc(&root.join("config/a.yaml")), to_ipc(&root.join("src/a.rs"))],
+                    modified: vec![to_ipc(&root.join("config/b.yaml"))],
+                    removed: vec![to_ipc(&root.join("config/c.yaml"))],
+                })],
+            );
+            host.flush_events();
+            release.send(()).unwrap();
+            filter.wait().unwrap();
+            assert!(host.wait_events(Duration::from_secs(10)));
+            let data = host.run_command("files-events", "events", None, Default::default()).unwrap();
+            if globs == "config/*.yaml" {
+                let batches: Vec<FilesChanged> = serde_json::from_str(&data.unwrap()).unwrap();
+                assert_eq!(
+                    batches,
+                    [FilesChanged {
+                        created: vec![to_ipc(&root.join("config/a.yaml"))],
+                        modified: vec![to_ipc(&root.join("config/b.yaml"))],
+                        removed: vec![to_ipc(&root.join("config/c.yaml"))],
+                    }]
+                );
+            } else {
+                assert_eq!(data, None, "excluded batches must not invoke the guest handler");
+            }
+        }
+    }
+
+    #[test]
+    fn files_changed_delivery_honors_filters_registered_during_activation() {
+        use super::super::Consent;
+        use std::time::{Duration, Instant};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host =
+            PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Default::default()).unwrap();
+        host.set_workspace(Some(Arc::new(Workspace(root.clone()))));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/path-events");
+        let copy = root.join("activation-fixture");
+        std::fs::create_dir_all(copy.join("dist")).unwrap();
+        std::fs::write(
+            copy.join("plugin.toml"),
+            std::fs::read_to_string(fixture.join("plugin.toml"))
+                .unwrap()
+                .replace("[\"on-command:*\"]", "[\"on-command:*\", \"on-event:file-opened\"]"),
+        )
+        .unwrap();
+        std::fs::copy(fixture.join("dist/plugin.wasm"), copy.join("dist/plugin.wasm")).unwrap();
+        host.install_from_dir(&copy, &Consent::all()).unwrap();
+        host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(to_ipc(&root.join("src/excluded.rs")))]);
+        host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(host.wait_events(Duration::from_secs(10)));
+        assert_eq!(host.run_command("test.path-events", "count", None, Default::default()).unwrap(), None);
+    }
+
+    #[test]
+    fn files_changed_rechecks_runtime_unsubscribe_on_busy_actor() {
+        use super::super::Consent;
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host =
+            PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Default::default()).unwrap();
+        host.set_workspace(Some(Arc::new(Workspace(root.clone()))));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/files-events");
+        let copy = root.join("runtime-fixture");
+        std::fs::create_dir_all(copy.join("dist")).unwrap();
+        std::fs::write(
+            copy.join("plugin.toml"),
+            std::fs::read_to_string(fixture.join("plugin.toml")).unwrap().replace(", \"on-event:files-changed\"", ""),
+        )
+        .unwrap();
+        std::fs::copy(fixture.join("dist/plugin.wasm"), copy.join("dist/plugin.wasm")).unwrap();
+        host.install_from_dir(&copy, &Consent::all()).unwrap();
+        host.run_command("files-events", "filter", Some("**"), Default::default()).unwrap();
+        let plugin = host.get("files-events").unwrap();
+        let (actor, _) = host.ensure_active(&plugin, Some("main")).unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        actor.post(
+            move |_| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                Ok(())
+            },
+            |_| {},
+        );
+        waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+        let off = actor.submit(None, |rt| rt.run_command("unsubscribe", None, Default::default())).unwrap();
+        host.post_events(Some("main"), vec![delta(0, &to_ipc(&root.join("excluded.rs")))]);
+        host.flush_events();
+        release.send(()).unwrap();
+        off.wait().unwrap();
+        assert!(host.wait_events(Duration::from_secs(10)));
+        assert_eq!(host.run_command("files-events", "events", None, Default::default()).unwrap(), None);
+    }
 
     #[test]
     fn every_runtime_event_has_a_matching_manifest_activation() {
