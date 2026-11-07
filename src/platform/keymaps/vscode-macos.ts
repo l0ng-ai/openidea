@@ -323,6 +323,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],
   "editor.copyReference": [],
+  "editor.copyPathReference": [],
   "code.pasteAsPlainText": [],
   "code.expressionTypeInfo": [],
   "code.implementMethods": [],
