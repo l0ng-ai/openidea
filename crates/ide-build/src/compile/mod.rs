@@ -850,8 +850,7 @@ mod tests {
             return;
         };
         let tmp = tempfile::tempdir().unwrap();
-        // GOWORK is the canonical go.work; the runner's temp dir is an 8.3 short path on Windows.
-        let root = &dunce::canonicalize(tmp.path()).unwrap().join("workspace");
+        let root = &tmp.path().join("workspace");
         write(root, "go.work", "go 1.22\nuse (\n ./app\n ./lib\n ../external\n)\n");
         write(root, "lib/go.mod", "module example.com/lib\ngo 1.22\n");
         write(root, "lib/lib.go", "package lib\nfunc Value() int { return 1 }\n");
