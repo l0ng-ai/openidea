@@ -422,7 +422,8 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.open("a.mk", "x");
     h.wait_status("mock", ServerStatus::Ready).await;
     let s = h.launcher.state("mock");
-    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("a.mk"), h.root.join("old.mk"));
+    // `a.mk` is open on the server: its changes reach it through document sync, not here.
+    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("changed.mk"), h.root.join("old.mk"));
     // Other languages and files outside the server's root are left out.
     let other = h.root.join("notes.txt");
     let outside = tempfile::tempdir().unwrap().path().join("far.mk");
@@ -445,6 +446,43 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// An external change to a document open on the server's current instance reaches it only
+/// through the reload's `didChange`: a watched-file change for it too would make a server
+/// that re-reads the file on one (csharp-ls) apply the reload and then the diff computed
+/// against the pre-reload copy, so it would keep analysing stale content (#1780). A closed
+/// file's change is watched as before, and the file is watched again once its document closes.
+#[tokio::test(flavor = "multi_thread")]
+async fn documents_open_on_a_server_are_left_out_of_watched_file_changes() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    eventually(|| !s.notified("textDocument/didOpen").is_empty()).await;
+
+    // The open document and a closed file changed outside the editor.
+    let closed = h.root.join("b.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&closed), "type": 2 }])
+    );
+
+    // The editor reloads the open buffer from disk; the server hears the new text.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 3), "new")], &|| "new".to_owned());
+    eventually(|| s.docs.lock().get(uri_of(&path).as_str()).map(String::as_str) == Some("new")).await;
+
+    // Once the document closes, the file is watched again.
+    h.mgr.did_close(doc);
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+    eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
+        json!([{ "uri": uri_of(&path), "type": 2 }])
+    );
     h.mgr.shutdown_all().await;
 }
 
