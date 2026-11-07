@@ -39,8 +39,12 @@
 //! Build with `openidea-plugin build` (or `cargo build --release --target
 //! wasm32-wasip2`); see `plugins/README.md`.
 
+pub mod commit;
+pub mod details;
 pub mod host;
+pub mod hover;
 pub mod indexing;
+pub mod inlay_hints;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mock;
 pub mod providers;
@@ -129,11 +133,66 @@ pub mod indexing_bindings {
 
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
+pub mod details_bindings {
+    wit_bindgen::generate!({
+        world: "details", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_details_world",
+        default_bindings_module: "openidea_plugin::details_bindings",
+        with: {
+            "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.3.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.3.0": crate::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
 pub mod semantic_bindings {
     wit_bindgen::generate!({
         world: "semantic-tokens", path: "wit", pub_export_macro: true,
         export_macro_name: "__export_semantic_tokens_world",
         default_bindings_module: "openidea_plugin::semantic_bindings",
+        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod hover_bindings {
+    wit_bindgen::generate!({
+        world: "hover", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_hover_world",
+        default_bindings_module: "openidea_plugin::hover_bindings",
+        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod commit_checks_bindings {
+    wit_bindgen::generate!({
+        world: "commit-checks", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_commit_checks_world",
+        default_bindings_module: "openidea_plugin::commit_checks_bindings",
+        with: {
+            "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor@1.3.0": crate::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation@1.3.0": crate::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit@1.3.0": crate::bindings::openidea::plugin::commit,
+        },
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod inlay_bindings {
+    wit_bindgen::generate!({
+        world: "inlay-hints", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_inlay_hints_world",
+        default_bindings_module: "openidea_plugin::inlay_bindings",
         with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
     });
 }
@@ -194,6 +253,18 @@ macro_rules! __optional_exports {
     };
     (semantic_tokens, $plugin:ty, $component:ident) => {
         $crate::__semantic_tokens_exports!($plugin, $component);
+    };
+    (details, $plugin:ty, $component:ident) => {
+        $crate::__details_exports!($plugin, $component);
+    };
+    (hover, $plugin:ty, $component:ident) => {
+        $crate::__hover_exports!($plugin, $component);
+    };
+    (commit_checks, $plugin:ty, $component:ident) => {
+        $crate::__commit_checks_exports!($plugin, $component);
+    };
+    (inlay_hints, $plugin:ty, $component:ident) => {
+        $crate::__inlay_hints_exports!($plugin, $component);
     };
     (syntax, $plugin:ty, $component:ident) => {
         impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
@@ -326,6 +397,48 @@ macro_rules! __indexing_exports {
     };
 }
 
+/// `register_plugin!(T, details)`: `T` is also a [`details::Details`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __details_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::details_bindings::exports::openidea::plugin::detail_provider::Guest for $component {
+            fn detail(
+                view: ::std::string::String,
+                key: ::std::string::String,
+                ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
+            ) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::details_bindings::openidea::plugin::detail_types::Tab>,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
+                $crate::__rt::service_detail::<$plugin>(view, key, ctx)
+            }
+        }
+        $crate::details_bindings::__export_details_world!($component with_types_in $crate::details_bindings);
+    };
+}
+
+/// `register_plugin!(T, commit_checks)`: `T` is also a [`commit::CommitChecks`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __commit_checks_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::Guest for $component {
+            fn check(
+                check: ::std::string::String,
+                draft: $crate::bindings::openidea::plugin::commit::CommitDraft,
+                ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
+            ) -> ::core::result::Result<
+                ::std::vec::Vec<$crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::CommitProblem>,
+                $crate::bindings::openidea::plugin::types::Error,
+            > {
+                $crate::__rt::commit_check::<$plugin>(check, draft, ctx)
+            }
+        }
+        $crate::commit_checks_bindings::__export_commit_checks_world!($component with_types_in $crate::commit_checks_bindings);
+    };
+}
+
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __semantic_tokens_exports {
@@ -340,6 +453,38 @@ macro_rules! __semantic_tokens_exports {
             }
         }
         $crate::semantic_bindings::__export_semantic_tokens_world!($component with_types_in $crate::semantic_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __hover_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::hover_bindings::exports::openidea::plugin::hover_provider::Guest for $component {
+            fn hover(
+                doc: $crate::hover_bindings::exports::openidea::plugin::hover_provider::Document,
+                at: $crate::bindings::openidea::plugin::types::Position,
+            ) -> ::core::option::Option<$crate::hover_bindings::exports::openidea::plugin::hover_provider::HoverContent> {
+                $crate::__rt::hover::<$plugin>(doc, at)
+            }
+        }
+        $crate::hover_bindings::__export_hover_world!($component with_types_in $crate::hover_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __inlay_hints_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Guest for $component {
+            fn inlay_hints(
+                doc: $crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Document,
+                range: $crate::bindings::openidea::plugin::types::Range,
+            ) -> ::std::vec::Vec<$crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::InlayHint> {
+                $crate::__rt::inlay_hints::<$plugin>(doc, range)
+            }
+        }
+        $crate::inlay_bindings::__export_inlay_hints_world!($component with_types_in $crate::inlay_bindings);
     };
 }
 
@@ -598,6 +743,35 @@ pub mod __rt {
             .collect()
     }
 
+    pub fn hover<T: Plugin + crate::hover::HoverProvider + Default>(
+        d: crate::hover_bindings::exports::openidea::plugin::hover_provider::Document,
+        pos: b::types::Position,
+    ) -> Option<crate::hover_bindings::exports::openidea::plugin::hover_provider::HoverContent> {
+        use crate::hover_bindings::exports::openidea::plugin::hover_provider as w;
+        let doc = crate::providers::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        with::<T, _>(|p| p.hover(&doc, at(pos)))
+            .map(|h| w::HoverContent { markdown: h.markdown, range: h.range.map(crate::host::__range_to) })
+    }
+
+    pub fn inlay_hints<T: Plugin + crate::inlay_hints::InlayHints + Default>(
+        d: crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Document,
+        range: b::types::Range,
+    ) -> Vec<crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::InlayHint> {
+        use crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider as w;
+        let doc = crate::providers::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        with::<T, _>(|p| p.inlay_hints(&doc, crate::host::__range_from(range)))
+            .into_iter()
+            .map(|h| w::InlayHint {
+                position: b::types::Position { line: h.position.line, character: h.position.character },
+                label: h.label,
+                kind: h.kind.as_str().into(),
+                tooltip: h.tooltip,
+                padding_left: h.padding_left,
+                padding_right: h.padding_right,
+            })
+            .collect()
+    }
+
     // ---- views ----
 
     use crate::views as v;
@@ -685,6 +859,55 @@ pub mod __rt {
         let ctx = Invocation::__new(ctx);
         let viewport = viewport.map(|v| v::Viewport { first_row: v.first_row, rows: v.rows });
         with::<T, _>(|p| p.render(&view, viewport, &ctx)).map(view_out).map_err(error_out)
+    }
+
+    pub fn service_detail<T: Plugin + crate::details::Details + Default>(
+        view: String,
+        key: String,
+        ctx: &b::invocation::Invocation,
+    ) -> Result<Vec<crate::details_bindings::openidea::plugin::detail_types::Tab>, b::types::Error> {
+        use crate::details as s;
+        use crate::details_bindings::openidea::plugin::detail_types as w;
+        let ctx = Invocation::__new(ctx);
+        let tab = |t: s::Tab| w::Tab {
+            id: t.id,
+            label: t.label,
+            body: match t.body {
+                s::Pane::Message(m) => w::Pane::Message(m),
+                s::Pane::Text(text) => w::Pane::Text(text),
+                s::Pane::Log(log) => w::Pane::Log(w::ProcessLog {
+                    program: log.program,
+                    args: log.args,
+                    toggles: log
+                        .toggles
+                        .into_iter()
+                        .map(|t| w::LogToggle { id: t.id, label: t.label, args: t.args })
+                        .collect(),
+                }),
+            },
+        };
+        with::<T, _>(|p| p.detail(&view, &key, &ctx)).map(|tabs| tabs.into_iter().map(tab).collect()).map_err(error_out)
+    }
+
+    pub fn commit_check<T: Plugin + crate::commit::CommitChecks + Default>(
+        check: String,
+        draft: b::commit::CommitDraft,
+        ctx: &b::invocation::Invocation,
+    ) -> Result<
+        Vec<crate::commit_checks_bindings::exports::openidea::plugin::commit_checker::CommitProblem>,
+        b::types::Error,
+    > {
+        use crate::commit_checks_bindings::exports::openidea::plugin::commit_checker as w;
+        let ctx = Invocation::__new(ctx);
+        let draft = crate::host::__draft_in(draft);
+        with::<T, _>(|p| p.check(&check, &draft, &ctx))
+            .map(|problems| {
+                problems
+                    .into_iter()
+                    .map(|p| w::CommitProblem { message: p.message, location: p.location.map(loc) })
+                    .collect()
+            })
+            .map_err(error_out)
     }
 
     pub fn view_event<T: Plugin + v::Views + Default>(

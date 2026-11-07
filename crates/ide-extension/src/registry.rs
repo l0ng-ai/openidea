@@ -9,6 +9,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// The point behind a package's `locales/<tag>.json` catalogs: it has no
+/// `[[contributes.locales]]` table, the directory declares it.
+pub const LOCALES_POINT: &str = "locales";
+pub const LOCALES_DIR: &str = "locales";
+
 /// A contribution as the plugin details page lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +131,20 @@ impl ExtensionRegistry {
                 }
                 set.items.push((point.id(), prepared));
             }
+        }
+        if let Some(point) = self.point(LOCALES_POINT)
+            && !pkg.manifest.contributes.contains_key(LOCALES_POINT)
+            && pkg.dir.join(LOCALES_DIR).is_dir()
+        {
+            let prepared = point
+                .prepare(pkg, toml::Value::Table(Default::default()))
+                .map_err(|e| format!("{LOCALES_DIR}: {}", strip_prefix(&e, LOCALES_POINT)))?;
+            for f in &prepared.files {
+                if !set.files.contains(f) {
+                    set.files.push(f.clone());
+                }
+            }
+            set.items.push((point.id(), prepared));
         }
         Ok(set)
     }

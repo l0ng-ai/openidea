@@ -9,6 +9,14 @@ pub use ide_plugin::{
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+/// A line a view's `process` body printed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginOutputLine {
+    pub stderr: bool,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum PluginSource {
@@ -224,6 +232,55 @@ pub enum PluginEvent {
     /// Bring the tool window of the plugin's view `view` to the front.
     #[serde(rename_all = "camelCase")]
     RevealView { plugin_id: String, view: String },
+    /// A command needs the window's Commit view: answer with
+    /// `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
+    #[serde(rename_all = "camelCase")]
+    CommitRequested { plugin_id: String, request_id: String, request: CommitRequest },
+}
+
+/// What a plugin asks of a window's Commit view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommitRequest {
+    /// What Commit would commit now ([`CommitAnswer::Selection`]); unsaved
+    /// editors of the included files are saved first.
+    Selection,
+    /// Replace the message if the draft is still at `revision`.
+    SetMessage { revision: u64, message: String },
+}
+
+/// A window's answer to a [`CommitRequest`].
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommitAnswer {
+    /// The window's project has no repository.
+    NoRepository,
+    Selection {
+        selection: CommitSelection,
+    },
+    /// The message was replaced.
+    Done,
+    /// The draft is no longer at the revision.
+    Stale,
+}
+
+/// What a window's Commit view would commit: per repository, the options
+/// `vcs_commit` would get.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSelection {
+    /// Changes whenever the message, the included changes or Amend do.
+    pub revision: u64,
+    pub message: String,
+    pub amend: bool,
+    pub repositories: Vec<CommitSelectionRepo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSelectionRepo {
+    pub root: ide_core::IpcPath,
+    pub options: ide_vcs::CommitOptions,
 }
 
 /// Delivers events to the UI. `client` is the window that invoked the plugin
@@ -291,4 +348,25 @@ pub struct LineMarkerInfo {
     pub tooltip: String,
     /// Opened on click.
     pub target: Option<ide_core::Location>,
+}
+
+/// A plugin's before-commit check to run (`[[contributes.commitChecks]]`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommitCheckRef {
+    pub plugin_id: String,
+    pub check: String,
+}
+
+/// What a plugin's before-commit check found.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommitCheckResult {
+    pub plugin_id: String,
+    pub check: String,
+    /// The check's declared title.
+    pub title: String,
+    pub problems: Vec<ide_plugin::CommitProblem>,
+    /// The check could not run (the plugin failed, timed out or lacks `vcs.read`).
+    pub error: Option<String>,
 }

@@ -125,6 +125,10 @@ mod imp {
         wit::views::reveal(view).map_err(error)
     }
 
+    pub fn locale() -> String {
+        wit::ui::locale()
+    }
+
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
         wit::storage::get(key).map_err(error)
     }
@@ -212,6 +216,35 @@ mod imp {
         wit::vcs::remotes(p).map_err(error)
     }
 
+    pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+        wit::commit::pending_commit().map(|d| d.map(__draft_in)).map_err(error)
+    }
+
+    pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+        wit::commit::set_commit_message(revision, message).map_err(error)
+    }
+
+    #[doc(hidden)]
+    pub fn __draft_in(d: wit::commit::CommitDraft) -> CommitDraft {
+        CommitDraft {
+            revision: d.revision,
+            message: d.message,
+            amend: d.amend,
+            changes: d
+                .changes
+                .into_iter()
+                .map(|c| CommitChange {
+                    repository: c.repository,
+                    path: c.path,
+                    old_path: c.old_path,
+                    status: c.status,
+                    diff: c.diff,
+                    truncated: c.truncated,
+                })
+                .collect(),
+        }
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
     }
@@ -234,6 +267,26 @@ mod imp {
 
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         p.find_files(glob, limit).map_err(error)
+    }
+
+    pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
+        p.exists(path).map_err(error)
+    }
+
+    pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        use wit::workspace::FileKind as K;
+        p.stat(path)
+            .map(|s| FileStat {
+                kind: match s.kind {
+                    K::File => FileKind::File,
+                    K::Directory => FileKind::Directory,
+                    K::Symlink => FileKind::Symlink,
+                    K::Other => FileKind::Other,
+                },
+                size: s.size,
+                modified: s.modified,
+            })
+            .map_err(error)
     }
 
     pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
@@ -395,9 +448,23 @@ impl Project {
     }
 
     /// Reads a UTF-8 file inside the project (absolute or root-relative);
-    /// unsaved editor contents win. Needs `project.read`.
+    /// unsaved editor contents win. A missing path is `Error::NotFound`.
+    /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Whether `path` names an existing file or directory inside the project
+    /// — including hidden and ignored ones — without reading any content.
+    /// Needs `project.read`.
+    pub fn exists(&self, path: &str) -> Result<bool, Error> {
+        imp::project_exists(&self.inner, path)
+    }
+
+    /// Metadata of an existing path inside the project; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn stat(&self, path: &str) -> Result<FileStat, Error> {
+        imp::project_stat(&self.inner, path)
     }
 
     /// The repository containing the project (`None`: not under git). Needs `vcs.read`.
@@ -425,6 +492,27 @@ impl Project {
     pub fn run_process(&self, program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
         imp::run_process(program, args, Some(&self.inner), stdin)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub use imp::__draft_in;
+
+/// The commit being prepared in the window the command or event came from:
+/// the included files and changed blocks only, as Commit would commit them
+/// (unsaved editors of those files are saved first). `None` when the window's
+/// project has no repository. Only from a command or event of a window, in a
+/// trusted project. Needs `vcs.read`.
+pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+    imp::pending_commit()
+}
+
+/// Replaces the commit message of that window, only while its draft is still
+/// at `revision` ([`CommitDraft::revision`]); [`Error::Stale`] when the user
+/// changed the message or the included changes meanwhile, and nothing changes.
+/// Needs `vcs.write`.
+pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+    imp::set_commit_message(revision, message)
 }
 
 /// Replaces the plugin's diagnostics for `path` (absolute, in an open
@@ -654,6 +742,15 @@ pub fn reveal_view(view: &str) -> Result<(), Error> {
     imp::reveal_view(view)
 }
 
+/// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …), for the
+/// text the plugin builds itself (notifications, error messages, HTML). The
+/// strings of the manifest and of views are translated by the IDE from the
+/// package's `locales/<tag>.json`. Read it when the text is made: it follows
+/// a change of language.
+pub fn locale() -> String {
+    imp::locale()
+}
+
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
 /// the session (also after the instance is reclaimed: an event activates the
 /// plugin again). Needs `events` (`events.input` for `ActionPerformed`).
@@ -665,7 +762,8 @@ pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
 }
 
-/// The plugin's persistent key-value store (≤ 1 MiB). Needs `storage`.
+/// The plugin's persistent key-value store (≤ 64 MiB of UTF-8 keys and values).
+/// Needs `storage`; rejected writes preserve the stored data.
 pub mod storage {
     use super::imp;
     use crate::types::Error;

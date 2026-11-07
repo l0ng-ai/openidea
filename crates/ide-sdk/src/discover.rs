@@ -738,12 +738,20 @@ mod maven_path_tests {
     struct Subst {
         name: String,
         root: PathBuf,
+        _lock: std::fs::File,
     }
 
     impl Subst {
         fn new(target: &Path) -> Self {
-            // Tests run in parallel and may race for the same free letter; only a drive that
-            // shows this target's marker is ours.
+            // Drive letters are shared across nextest's test processes; hold the lock until unmapping.
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(std::env::temp_dir().join("openidea-sdk-subst.lock"))
+                .unwrap();
+            lock.lock().unwrap();
             let marker = format!("{}.subst", target.file_name().unwrap().to_string_lossy());
             std::fs::write(target.join(&marker), "").unwrap();
             for letter in (b'D'..=b'Z').rev() {
@@ -754,7 +762,7 @@ mod maven_path_tests {
                 }
                 let output = Command::new("subst").arg(&name).arg(target).output().unwrap();
                 if output.status.success() && root.join(&marker).exists() {
-                    return Self { name, root };
+                    return Self { name, root, _lock: lock };
                 }
             }
             panic!("no free drive for Maven path verification");

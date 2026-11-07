@@ -65,10 +65,16 @@ interface ui {
     /// Asks for confirmation with OK and Cancel: `true` on OK, `false` on
     /// Cancel or Escape. Same rules as `pick`.
     confirm: func(title: string, body: string) -> result<bool, error>;
+    /// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …); it
+    /// follows a change of language. For the text the plugin builds itself:
+    /// the strings of its manifest and views are translated from
+    /// `locales/<tag>.json`.
+    locale: func() -> string;
 }
 
 /// Persistent key-value storage of the plugin (survives restarts and idle
-/// reclaim; instance memory does not). Requires `storage`. At most 1 MiB.
+/// reclaim; instance memory does not). Requires `storage`. At most 64 MiB,
+/// counting UTF-8 bytes of keys and values; rejected writes preserve the data.
 interface storage {
     use types.{error};
 

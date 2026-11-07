@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { resetMermaidForTests } from "../viewers/markdown/mermaid";
+import { StrictMode } from "react";
 import { Markdown } from "./Markdown";
 
 const { openFile, openExternalUrl } = vi.hoisted(() => ({
@@ -39,6 +40,24 @@ beforeEach(() => {
   mockIPC((cmd, args) => (cmd === "fs_read_image" ? readImage((args as { path: string }).path) : null));
 });
 afterEach(clearMocks);
+
+it("keeps one copy control outside each code block when effects restart", () => {
+  const { container } = render(
+    <StrictMode>
+      <Markdown
+        text={"Before\n\n```text\nrust/\n└── src/main.rs\n```\n\n```ts\nconst a = 1;\n```\n\nAfter"}
+        cwd="/repo"
+      />
+    </StrictMode>,
+  );
+  expect(screen.getAllByRole("button", { name: "Copy Code" })).toHaveLength(2);
+  const blocks = [...container.querySelectorAll("pre")];
+  expect(blocks.map((pre) => pre.textContent)).toEqual(["rust/\n└── src/main.rs", "const a = 1;"]);
+  for (const pre of blocks) {
+    expect(pre.querySelector("button")).toBeNull();
+    expect(pre.parentElement!.querySelectorAll(":scope > button[data-copy]")).toHaveLength(1);
+  }
+});
 
 it.each([
   "<style>body{outline:7px solid red}</style>",

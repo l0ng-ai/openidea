@@ -361,6 +361,9 @@ fn read_file_is_confined_to_the_project() {
     let err = f.run("misbehave", "read", Some("src/../../secret.txt")).unwrap_err();
     assert!(err.contains("outside the project root"), "{err}");
     assert!(f.run("misbehave", "read", Some("/etc/hosts")).is_err());
+    // A missing path inside the project is `not-found`, like the mock reports.
+    let err = f.run("misbehave", "read", Some("src/missing.txt")).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
     // Without a project there is nothing to read.
     let inv = Invocation::default();
     let err = f.host.run_command("misbehave", "read", Some("src/notes.txt"), inv).unwrap_err().message;
@@ -1528,13 +1531,50 @@ fn official_key_promoter() {
     assert_eq!(tips.len(), 1, "{tips:?}");
     assert_eq!(tips[0].0.as_deref(), Some("main"), "shown in the window the actions came from");
     assert!(tips[0].1.contains("Ctrl+D") && tips[0].2.contains("3 times"), "{tips:?}");
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.key-promoter/storage.json")).unwrap();
-    assert!(stored.contains("\"count:code.duplicate\":\"3\""), "{stored}");
+    let stored = stored(&f, "openidea.key-promoter");
+    assert!(stored.contains(&("count:code.duplicate".into(), "3".into())), "{stored:?}");
 
     // Uninstalling removes its data.
     f.host.uninstall("openidea.key-promoter").unwrap();
     assert!(!f.plugins_dir.join(".data/openidea.key-promoter").exists());
     assert!(f.host.event_kinds().is_empty());
+}
+
+#[test]
+fn storage_keeps_multimegabyte_indexes_after_idle_reclaim_and_removes_them_on_uninstall() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/storage");
+    f.install(&pkg);
+    f.run("test.storage", "save", None).unwrap();
+    assert_eq!(f.host.instances(), 1);
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.reclaims, 1);
+    assert_eq!(f.run("test.storage", "load", None).unwrap().as_deref(), Some("4194304"));
+    assert_eq!(f.host.info_of("test.storage").unwrap().stats.activations, 2);
+    let storage_dir = f.plugins_dir.join(".data/test.storage");
+    assert_eq!(std::fs::read_dir(storage_dir.join("storage")).unwrap().count(), 1, "one file per key");
+    f.host.uninstall("test.storage").unwrap();
+    assert!(!storage_dir.exists());
+    f.install(&pkg);
+    assert!(f.run("test.storage", "load", None).unwrap_err().contains("missing index"));
+}
+
+/// A plugin's stored entries (key, value), read from its files.
+fn stored(f: &Fixture, plugin: &str) -> Vec<(String, String)> {
+    let dir = f.plugins_dir.join(".data").join(plugin).join("storage");
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| {
+            let bytes = std::fs::read(e.unwrap().path()).unwrap();
+            let len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+            let key = String::from_utf8(bytes[2..2 + len].to_vec()).unwrap();
+            (key, String::from_utf8(bytes[2 + len..].to_vec()).unwrap())
+        })
+        .collect();
+    entries.sort();
+    entries
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -1601,8 +1641,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
         )
     );
     assert!(events.iter().any(|(_, e)| matches!(e, PluginEvent::TaskEnded { .. })));
-    let stored = std::fs::read_to_string(f.plugins_dir.join(".data/openidea.git-toolbox/storage.json")).unwrap();
-    assert!(stored.contains("last-fetch:"), "{stored}");
+    let stored = stored(&f, "openidea.git-toolbox");
+    assert!(stored.iter().any(|(key, _)| key.starts_with("last-fetch:")), "{stored:?}");
 }
 
 /// Restricted Mode: git does not run in an untrusted project (no fetch).
@@ -2379,6 +2419,46 @@ web = "panel/index.html"
     assert!(assets[0].1.contains("<rect"));
 }
 
+#[test]
+fn a_package_ships_translations_in_locales() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let package = |id: &str, catalogs: &[(&str, &str)]| {
+        let pkg = tmp.path().join(id);
+        std::fs::create_dir_all(pkg.join("locales")).unwrap();
+        for (name, text) in catalogs {
+            std::fs::write(pkg.join("locales").join(name), text).unwrap();
+        }
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                "id = \"{id}\"\nname = \"Words\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n\n\
+                 [[contributes.commands]]\nid = \"count\"\ntitle = \"Count Words\"\n"
+            ),
+        )
+        .unwrap();
+        pkg
+    };
+
+    for bad in ["{", "[]", r#"{"Count Words": 1}"#] {
+        let pkg = package("bad-catalog", &[("fr.json", bad)]);
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "{bad}");
+    }
+
+    let pkg = package("words", &[("fr.json", r#"{"Count Words": "Compter les mots"}"#), ("zh-CN.json", "{}")]);
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let item = f.host.ui_items("locales").into_iter().find(|i| i.plugin_id == "words").expect("the catalogs");
+    assert_eq!(item.decl["tags"], serde_json::json!(["fr", "zh-CN"]));
+    let assets = f.host.assets("words", "locale/fr").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("Compter les mots"));
+
+    let other = f.install(&package("other", &[]));
+    assert!(other.error.is_none(), "{:?}", other.error);
+    assert!(f.host.assets("other", "locale/").unwrap().is_empty());
+}
+
 /// A plugin with web views and no code: its pages and their files are
 /// installed with it and served only from the declared directories, while
 /// it is enabled and only for the installed version; file icons and
@@ -2809,6 +2889,188 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
+}
+
+/// `hello` as a services view, which needs API 1.3.
+fn services_variant(text: &str) -> String {
+    text.replace("location = \"right\"", "location = \"services\"")
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+}
+
+#[test]
+fn services_views_need_api_1_3_and_code() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let info = f.install(&hello_variant(tmp.path(), services_variant));
+    assert!(info.error.is_none(), "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views").remove(0).decl["location"].as_str(), Some("services"));
+
+    for (edit, message) in [
+        (
+            Box::new(|t: &str| t.replace("location = \"right\"", "location = \"services\""))
+                as Box<dyn Fn(&str) -> String>,
+            "new in plugin API 1.3",
+        ),
+        (
+            Box::new(|t: &str| t.replace("location = \"right\"", "location = \"middle\"")),
+            "left, right, bottom or services",
+        ),
+        (
+            Box::new(|t: &str| {
+                services_variant(t)
+                    .replace("location = \"services\"", "location = \"services\"\nweb = \"web/index.html\"")
+            }),
+            "a services view is rendered by the plugin's code (no `web`)",
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), edit);
+        std::fs::create_dir_all(pkg.join("web")).unwrap();
+        std::fs::write(pkg.join("web/index.html"), "<p>x</p>").unwrap();
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{message}: {err:?}");
+    }
+}
+
+#[test]
+fn services_views_have_a_detail_pane() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    f.install(&hello_variant(tmp.path(), services_variant));
+    let tabs = f.host.service_detail("hello", "greetings", "pod:default/nginx", f.inv()).unwrap();
+    assert_eq!(tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["log", "info"]);
+    assert_eq!(tabs[1].body, ide_plugin::ServicePane::Text("greetings: pod:default/nginx".into()));
+    let ide_plugin::ServicePane::Log(log) = &tabs[0].body else { panic!("a log: {:?}", tabs[0].body) };
+    assert_eq!(
+        (log.program.as_str(), log.args.as_slice()),
+        ("sh", ["-c".to_owned(), "pod:default/nginx".to_owned()].as_slice())
+    );
+
+    let f = fixture(Limits::default());
+    f.install(&sample("hello"));
+    let err = f.host.service_detail("hello", "greetings", "x", f.inv()).unwrap_err();
+    assert!(err.message.contains("declares no services view"), "a right view has no pane: {err:?}");
+}
+
+/// `hello` as a services view that may run `sh`, granted or not.
+#[cfg(unix)]
+fn services_with_sh(f: &Fixture, dir: &Path, grant: bool) {
+    let sh = PathBuf::from("/bin");
+    f.host.set_program_path(Arc::new(move || Some(sh.clone().into_os_string())));
+    let pkg = hello_variant(dir, |t| {
+        services_variant(t).replace(
+            "required = [\"editor.read\", \"editor.write\"]",
+            "required = [\"editor.read\", \"editor.write\"]\noptional = [\"process:sh\"]",
+        )
+    });
+    f.install(&pkg);
+    f.host.set_capability("hello", "process:sh", grant).unwrap();
+}
+
+/// Follows the Log tab of the node whose key is `script`.
+#[cfg(unix)]
+fn stream(
+    f: &Fixture,
+    script: &str,
+    on: &[&str],
+    cancel: &ide_core::CancellationToken,
+    lines: impl Fn(PluginOutputLine),
+) -> ide_core::IdeResult<Option<i32>> {
+    let on: Vec<String> = on.iter().map(|s| (*s).to_owned()).collect();
+    f.host.stream_service_log("hello", "greetings", script, "log", &on, f.inv(), cancel, &lines)
+}
+
+#[cfg(unix)]
+#[test]
+fn service_logs_stream_lines_with_the_toggles_args() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let lines = Mutex::new(Vec::new());
+    let script = "printf 'a\\nb\\n'; printf 'e\\n' >&2; exit 3";
+    let status = stream(&f, script, &[], &Default::default(), |l| lines.lock().push(l));
+    assert_eq!(status.unwrap(), Some(3));
+    let mut lines = lines.into_inner();
+    lines.sort_by_key(|l| l.stderr);
+    let line = |stderr: bool, text: &str| PluginOutputLine { stderr, text: text.into() };
+    assert_eq!(lines, [line(false, "a"), line(false, "b"), line(true, "e")]);
+
+    // `sh -c script arg` names the script `arg` ($0): the toggle's args are appended.
+    let named = Mutex::new(Vec::new());
+    stream(&f, "echo $0", &["named"], &Default::default(), |l| named.lock().push(l.text)).unwrap();
+    assert_eq!(named.into_inner(), ["named"]);
+
+    let long = Mutex::new(Vec::new());
+    stream(&f, "head -c 40000 /dev/zero | tr '\\0' x; echo; echo next", &[], &Default::default(), |l| {
+        long.lock().push(l.text.len())
+    })
+    .unwrap();
+    assert_eq!(long.into_inner(), [16 << 10, 4], "a long line is cut, the next one is whole");
+}
+
+#[cfg(unix)]
+#[test]
+fn service_logs_need_the_grant_and_a_log_tab() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), false);
+    let marker = tmp.path().join("ran");
+    let script = format!("touch {}", marker.display());
+    let err = stream(&f, &script, &[], &Default::default(), |_| {}).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied);
+    assert!(err.message.contains("permission denied: process:sh is not granted"), "{err:?}");
+    assert!(!marker.exists(), "nothing was started");
+
+    f.host.set_capability("hello", "process:sh", true).unwrap();
+    let info =
+        f.host.stream_service_log("hello", "greetings", &script, "info", &[], f.inv(), &Default::default(), &|_| {});
+    assert_eq!(info.unwrap_err().kind, ErrorKind::NotFound, "a text tab runs nothing");
+    let cancelled = ide_core::CancellationToken::default();
+    cancelled.cancel();
+    assert_eq!(stream(&f, &script, &[], &cancelled, |_| {}).unwrap_err().kind, ErrorKind::Cancelled);
+    assert!(!marker.exists(), "a cancelled request starts nothing");
+}
+
+#[cfg(unix)]
+#[test]
+fn service_log_cancel_kills_the_child() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let cancel = ide_core::CancellationToken::default();
+    let started = Instant::now();
+    let result = stream(&f, "echo up; sleep 30.4321", &[], &cancel, |l| {
+        if l.text == "up" {
+            cancel.cancel();
+        }
+    });
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    let orphan = || std::process::Command::new("pgrep").args(["-f", "sleep 30.4321"]).status().unwrap().success();
+    assert!(eventually(|| !orphan()), "what the program started is killed too");
+}
+
+#[cfg(unix)]
+#[test]
+fn service_log_stops_when_the_grant_is_revoked() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    services_with_sh(&f, tmp.path(), true);
+    let started = Instant::now();
+    let watchdog = ide_core::CancellationToken::default();
+    let timer = watchdog.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        timer.cancel();
+    });
+    let result = stream(&f, "while :; do echo tick; sleep 0.05; done", &[], &watchdog, |l| {
+        if l.text == "tick" && started.elapsed() < Duration::from_secs(1) {
+            f.host.set_capability("hello", "process:sh", false).unwrap();
+        }
+    });
+    assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
 }
 
 #[test]

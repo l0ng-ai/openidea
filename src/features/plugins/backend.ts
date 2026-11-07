@@ -8,19 +8,25 @@ import type {
   ActiveTheme,
   CapabilityInfo,
   CatalogPlugin,
+  CommitAnswer,
+  CommitSelection,
   Consent,
   EventKind,
   InstalledIntellijTheme,
   InstallPreview,
   IntellijThemeSource,
   MarketPlugin,
+  PluginCommitCheckRef,
+  PluginCommitCheckResult,
   PluginContextKey,
   PluginEditor,
   PluginEvent,
   PluginInfo,
+  PluginOutputLine,
   PluginsSnapshot,
   PluginSecretState,
   PluginStatusItem,
+  ServiceTab,
   UiContribution,
   View,
   ViewEvent,
@@ -28,7 +34,7 @@ import type {
   WorkbenchEvent,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { call, commands, IpcError, isTauri } from "@/platform/ipc";
+import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorContext } from "./editorContext";
 
 export interface PluginsBackend {
@@ -66,6 +72,10 @@ export interface PluginsBackend {
   cancelTask(taskId: string): Promise<void>;
   /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
   answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
+  /** This window's answer to a plugin's `commitRequested`. */
+  answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** Runs plugins' before-commit checks on what `selection` commits. */
+  commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
   market(refresh: boolean): Promise<MarketPlugin[]>;
   marketUrl(): Promise<string | null>;
@@ -89,6 +99,22 @@ export interface PluginsBackend {
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
   viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  /** The Services pane of node `key` of a plugin's services view. */
+  serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
+  /**
+   * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
+   * lines until it exits (`onExit`) or the returned stop function is called.
+   */
+  serviceLog(
+    pluginId: string,
+    view: string,
+    key: string,
+    tab: string,
+    on: ReadonlySet<string>,
+    onLine: (line: PluginOutputLine) => void,
+    onError: (message: string) => void,
+    onExit: (code: number | null) => void,
+  ): () => void;
   /** The URL of a web view's page (`web = …`), under the `openidea-plugin` scheme. */
   webPageUrl(pluginId: string, view: string): Promise<string>;
   /** Save dialog for a web view's `openidea.saveFile`; the path written, or `null` when cancelled. */
@@ -169,6 +195,10 @@ export const tauriPluginsBackend: PluginsBackend = {
   answerPrompt: async (promptId, answer) => {
     await commands.pluginAnswerPrompt(promptId, answer);
   },
+  answerCommit: async (requestId, answer) => {
+    await commands.pluginAnswerCommit(requestId, answer);
+  },
+  commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
   setMarketUrl: async (url) => {
@@ -203,6 +233,16 @@ export const tauriPluginsBackend: PluginsBackend = {
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
   viewEvent: async (pluginId, view, event, doc) => {
     await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
+  },
+  serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
+  serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
+    const request = nextRequestId();
+    const channel = new Channel<PluginOutputLine>();
+    channel.onmessage = onLine;
+    call(commands.pluginServiceLog(request, pluginId, view, key, tab, [...on], channel)).then(onExit, (e: unknown) => {
+      if (!isCancelled(e)) onError(e instanceof Error ? e.message : String(e));
+    });
+    return () => void commands.cancelRequest(request);
   },
   webPageUrl: async (pluginId, view) => {
     const page = await call(commands.pluginWebPage(pluginId, view));
@@ -540,6 +580,13 @@ export function createMemoryPluginsBackend(
       status: null,
     }),
     viewEvent: async () => {},
+    serviceDetail: async () => [],
+    answerCommit: async () => {},
+    commitChecks: async () => [],
+    serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
+      onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);
+      return () => {};
+    },
     webPageUrl: async (pluginId, view) => {
       throw new IpcError({ kind: "unavailable", message: `${pluginId} · ${view}: web views need the desktop app` });
     },

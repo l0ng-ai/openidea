@@ -1,10 +1,11 @@
 //! Declarative views and custom editors as the
-//! window commands `plugin_view_render` / `plugin_view_event` serve them —
+//! window commands `plugin_view_render` / `plugin_view_event` (and, for services views,
+//! `plugin_service_detail` / `plugin_service_log`) serve them —
 //! the desktop for local projects, `openidea-server` for remote ones.
 
-use super::{PluginEditor, PluginHost};
+use super::{PluginEditor, PluginHost, PluginOutputLine};
 use ide_core::{DocId, IdeError, IdeResult};
-use ide_plugin::{EditorContext, Invocation, View, ViewEvent, Viewport};
+use ide_plugin::{EditorContext, Invocation, ServiceTab, View, ViewEvent, Viewport};
 use std::sync::Arc;
 
 /// The window's project, plus the editor the call is about: the document a
@@ -65,6 +66,47 @@ pub async fn event(
 ) -> IdeResult<()> {
     let invocation = view_invocation(host, window, doc, editor)?;
     blocking(move || plugins.view_event(&plugin_id, &view, event, invocation)).await
+}
+
+/// The Services pane of node `key` of a plugin's services view.
+pub async fn service_detail(
+    host: &crate::Host,
+    plugins: Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+    view: String,
+    key: String,
+) -> IdeResult<Vec<ServiceTab>> {
+    let invocation = view_invocation(host, window, None, None)?;
+    blocking(move || plugins.service_detail(&plugin_id, &view, &key, invocation)).await
+}
+
+/// Runs the program of the log tab `tab` of node `key`'s pane in the window's
+/// project root, streaming its lines until it exits or request `request` is
+/// cancelled; returns its exit code.
+#[allow(clippy::too_many_arguments)]
+pub async fn service_log(
+    host: &crate::Host,
+    plugins: Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+    view: String,
+    key: String,
+    tab: String,
+    on: Vec<String>,
+    request: ide_core::RequestId,
+    on_line: crate::ops::Channel<PluginOutputLine>,
+) -> IdeResult<Option<i32>> {
+    let invocation = view_invocation(host, window, None, None)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        plugins.stream_service_log(&plugin_id, &view, &key, &tab, &on, invocation, &cancel, &|line| {
+            let _ = on_line.send(line);
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
 }
 
 #[cfg(test)]
