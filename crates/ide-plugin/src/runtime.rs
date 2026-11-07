@@ -1648,9 +1648,9 @@ mod tests {
                 preferred: false,
                 edits: vec![(path.into(), Vec::new())],
                 operations: Vec::new(),
-                file_action: None,
                 open: None,
                 data: None,
+                file_action: false,
             };
             assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
         }
