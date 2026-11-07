@@ -4,7 +4,7 @@ const ipc = vi.hoisted(() => {
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
   return {
     ok,
-    javaBuildWorkspace: vi.fn(() => ok("succeed" as string)),
+    javaBuildWorkspace: vi.fn(() => ok("succeeded" as string)),
     debugRedefineClasses: vi.fn(() =>
       ok({ changedClasses: ["com.x.A", "com.x.B"], errorMessage: null as string | null }),
     ),
@@ -95,7 +95,7 @@ describe("HotSwap", () => {
 
   it("builds, reloads in Java sessions and reports the count", async () => {
     await reloadChangedClasses();
-    expect(ipc.javaBuildWorkspace).toHaveBeenCalledWith("/p/app");
+    expect(ipc.javaBuildWorkspace).toHaveBeenCalledWith("/p/app", expect.any(Number));
     expect(ipc.debugRedefineClasses).toHaveBeenCalledTimes(1);
     expect(ipc.debugRedefineClasses).toHaveBeenCalledWith(1);
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "2 classes reloaded" });
@@ -109,6 +109,13 @@ describe("HotSwap", () => {
     expect(ipc.javaBuildWorkspace).not.toHaveBeenCalled();
     expect(ipc.debugRedefineClasses).toHaveBeenCalledTimes(1);
     expect(ipc.debugRedefineClasses).toHaveBeenCalledWith(2);
+  });
+
+  it("does not reload after a cancelled build", async () => {
+    ipc.javaBuildWorkspace.mockImplementationOnce(() => ipc.ok("cancelled"));
+    await reloadChangedClasses();
+    expect(ipc.debugRedefineClasses).not.toHaveBeenCalled();
+    expect(notes.at(-1)).toMatchObject({ level: "info", title: "Hot Swap cancelled" });
   });
 
   it("does not reload after a failed build", async () => {

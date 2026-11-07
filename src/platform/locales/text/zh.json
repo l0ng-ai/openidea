@@ -6576,5 +6576,8 @@
   "JDK used by Maven sync, builds and run configurations. Empty inherits the Project JDK; the JDK running the IDE and jdtls is separate.": "用于 Maven 同步、构建和运行配置的 JDK。留空继承 Project JDK；运行 IDE 和 jdtls 的 JDK 与此独立。",
   "Toolchains file": "Toolchains 文件",
   "Passed as -t; selects the JDKs Maven compiles with.": "以 -t 传入，用于选择 Maven 编译使用的 JDK。",
-  "Select Maven toolchains.xml": "选择 Maven toolchains.xml"
+  "Select Maven toolchains.xml": "选择 Maven toolchains.xml",
+  "Cancel Hot Swap Build": "取消 Hot Swap 构建",
+  "Stop the compile a Reload Changed Classes action is waiting on": "停止 Reload Changed Classes 正在等待的编译",
+  "Hot Swap cancelled": "Hot Swap 已取消"
 }

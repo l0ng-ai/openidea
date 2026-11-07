@@ -248,11 +248,18 @@ pub async fn java_build_workspace(
     host: &Host,
     window: &str,
     module: PathBuf,
+    request: Option<RequestId>,
 ) -> IdeResult<ide_lsp::jdtls::JavaBuildStatus> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let module = project.root.join(module);
-    project.lsp.java_build(&module, false, &CancellationToken::new()).await
+    // HotSwap may cancel the compile (the request id is allocated by the caller).
+    let cancel = request.map_or_else(CancellationToken::new, |id| host.begin_request(id));
+    let result = project.lsp.java_build(&module, false, &cancel).await;
+    if let Some(id) = request {
+        host.end_request(id);
+    }
+    result
 }
 
 /// Commands of this module the remote server answers.
@@ -262,7 +269,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
             .await
     });
     d.add("java_debug_server", |c| async move { java_debug_server(&c.host, &c.window, c.arg("module")?).await });
-    d.add("java_build_workspace", |c| async move { java_build_workspace(&c.host, &c.window, c.arg("module")?).await });
+    d.add("java_build_workspace", |c| async move {
+        java_build_workspace(&c.host, &c.window, c.arg("module")?, c.arg("request")?).await
+    });
 }
 
 #[cfg(test)]
