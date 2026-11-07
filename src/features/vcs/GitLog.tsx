@@ -77,6 +77,7 @@ import {
   toggleRepository,
   updateLogOptions,
   useGitLog,
+  PAGE,
 } from "./logStore";
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
@@ -1391,8 +1392,10 @@ function CommitList() {
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
 
+  // The next page is requested while a page of rows is still ahead, so scrolling
+  // quickly doesn't reach the end before `git log` answers.
   useEffect(() => {
-    if (!finished && !loading && last && last.index >= commits.length - 40) void loadMore(scope ?? undefined);
+    if (!finished && !loading && last && last.index >= commits.length - PAGE) void loadMore(scope ?? undefined);
   }, [last, commits.length, finished, loading, active, scope]);
 
   const selectedIndex = selected ? commits.findIndex((c) => commitKey(c) === selected) : -1;
