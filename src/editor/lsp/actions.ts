@@ -15,7 +15,7 @@ import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation
 import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
 import { docOf } from "./lsp";
-import { languageSemantics, registeredSemantics } from "./semantic";
+import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
 import { formatDocument, reformatDialog } from "./format";
@@ -32,11 +32,31 @@ import { evaluateWhen } from "@/platform/context";
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
 export const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
 
-/** Languages whose server offers Generate are registered with the flag; elsewhere the shortcut yields to the New popup, as in IDEA. */
-export const GENERATE_KEY_WHEN = registeredSemantics()
-  .filter((e) => e.semantics.generate)
-  .map((e) => `editorLangId == ${e.language}`)
-  .join(" || ");
+/**
+ * Languages whose servers offer Generate (constructors, accessors, overrides…).
+ * Elsewhere the Generate shortcut (⌘N / Alt+Insert) yields to the New popup, as in IDEA.
+ */
+const GENERATE_LANGUAGES = [
+  "java",
+  "kotlin",
+  "scala",
+  "groovy",
+  "rust",
+  "go",
+  "typescript",
+  "typescriptreact",
+  "javascript",
+  "javascriptreact",
+  "c",
+  "cpp",
+  "objective-c",
+  "objective-cpp",
+  "csharp",
+  "swift",
+  "dart",
+  "php",
+];
+export const GENERATE_KEY_WHEN = GENERATE_LANGUAGES.map((id) => `editorLangId == ${id}`).join(" || ");
 
 function withEditor(run: (view: EditorView) => unknown): Action["run"] {
   return () => {

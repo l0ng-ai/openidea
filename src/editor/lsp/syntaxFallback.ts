@@ -9,7 +9,6 @@ import type { Location, Pos, Range, SymbolKind, SymbolMatch } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { structure, type Locals, type LocalSymbol, type NodeAt } from "@/editor/structure";
 import { comparePos, rangeContains, rangeToOffsets } from "./positions";
-import { languageSemantics } from "./semantic";
 import { tx } from "@/platform/i18n";
 
 /** Subtle marker for answers that did not come from the language server. */
@@ -200,6 +199,8 @@ export function localHighlights(locals: Locals): LocalHighlight[] | null {
 // ---------------------------------------------------------------------------
 // Rename
 
+/** Languages whose shorthand fields (`{ x }`, `S { x }`) name both a key and a variable. */
+const SHORTHAND_LANGUAGES = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "rust"]);
 const SHORTHAND_NODES = new Set([
   "shorthand_property_identifier",
   "shorthand_property_identifier_pattern",
@@ -246,7 +247,7 @@ export async function planLocalRename(
     };
   const { symbol } = locals;
   const ranges = [symbol.definition, ...symbol.references].sort((a, b) => comparePos(a.start, b.start));
-  const shorthand = languageSemantics(doc.language)?.shorthandRename
+  const shorthand = SHORTHAND_LANGUAGES.has(doc.language)
     ? await Promise.all(ranges.map((r) => structure.nodeAt(doc.doc, r, { signal }).then(isShorthand)))
     : ranges.map(() => false);
   return {
