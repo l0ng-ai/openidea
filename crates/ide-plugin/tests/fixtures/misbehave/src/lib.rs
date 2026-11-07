@@ -20,9 +20,13 @@ use exports::openidea::plugin::providers::{
 };
 use exports::openidea::plugin::syntax_provider::{self, Fold, Symbol, Token};
 use exports::openidea::plugin::{commands, event_handler, lifecycle};
-use openidea::plugin::{invocation::Invocation, types};
+use openidea::plugin::{invocation::Invocation, process, types};
 
 struct Misbehave;
+
+thread_local! {
+    static CHILDREN: std::cell::RefCell<Vec<process::Child>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 fn failed(message: &str) -> types::Error {
     types::Error::Failed(message.into())
@@ -91,6 +95,73 @@ impl commands::Guest for Misbehave {
             "projwrite" => {
                 let project = ctx.project().ok_or_else(|| failed("no project is open"))?;
                 project.write_file(&arg.unwrap_or_default(), "written inside the project\n").map(|()| None)
+            }
+
+            // API 1.3 `process.start`: a program kept running behind a handle.
+            "child" => {
+                let cmd = process::Command {
+                    program: "git".into(),
+                    args: vec!["hash-object".into(), "--stdin".into()],
+                    env: Vec::new(),
+                };
+                let child = process::start(&cmd, None)?;
+                child.write("hello\n")?;
+                child.close_stdin()?;
+                let chunk = child.wait(30_000)?;
+                child.kill()?;
+                Ok(Some(format!("{} {:?}", chunk.stdout.trim(), chunk.status)))
+            }
+            "childkeep" | "childtrap" => {
+                let cmd = process::Command {
+                    program: "git".into(),
+                    args: vec![
+                        "hash-object".into(),
+                        "--stdin".into(),
+                        format!("--path={}", arg.unwrap_or_else(|| "openidea-process-2027".into())),
+                    ],
+                    env: Vec::new(),
+                };
+                let child = process::start(&cmd, None)?;
+                CHILDREN.with(|children| children.borrow_mut().push(child));
+                if id == "childtrap" {
+                    panic!("trap with a live child");
+                }
+                Ok(Some("running".into()))
+            }
+            "childpoll" => CHILDREN.with(|children| {
+                let children = children.borrow();
+                let child = children.last().ok_or_else(|| failed("no child"))?;
+                Ok(Some(format!("{:?}", child.poll(100)?.status)))
+            }),
+            "childdrop" => {
+                CHILDREN.with(|children| children.borrow_mut().clear());
+                Ok(None)
+            }
+            "envrun" | "envstart" | "envdeny-run" | "envdeny-start" => {
+                if arg.as_deref() == Some("legacy") {
+                    return Ok(Some(process::run("git", &["--version".into()], None, None)?.stdout));
+                }
+                let env = if id.starts_with("envdeny") {
+                    vec![(arg.unwrap_or_else(|| "PATH".into()), "replacement".into())]
+                } else {
+                    vec![("OPENIDEA_PROCESS_TEST_VALUE".into(), "added by the plugin".into())]
+                };
+                let cmd = process::Command {
+                    program: "git".into(),
+                    args: vec![
+                        "--config-env=openidea.test=OPENIDEA_PROCESS_TEST_VALUE".into(),
+                        "config".into(),
+                        "--get".into(),
+                        "openidea.test".into(),
+                    ],
+                    env,
+                };
+                if id.ends_with("start") {
+                    let child = process::start(&cmd, None)?;
+                    Ok(Some(child.wait(30_000)?.stdout))
+                } else {
+                    Ok(Some(process::run_command(&cmd, None, None)?.stdout))
+                }
             }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {
