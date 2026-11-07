@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import type { PluginInfo, ViewEvent } from "@/bindings";
 import { addFileIconProvider, fileIconName, registerExternalIcons } from "@/ui";
+import { provideEditorService, type EditorInput, type EditorService } from "@/workbench/contributions";
 import { addContributedFileTemplate, fileTemplates, isBuiltinFileTemplate } from "@/features/templates/files/store";
 import { createMemoryPluginsBackend, setPluginsBackend, webSchemeUrl } from "../backend";
 import { usePlugins } from "../store";
@@ -243,6 +244,59 @@ describe("WebView", () => {
       expect(events).toEqual(hasCode ? [{ kind: "message", text: "hi" }] : []);
       view.unmount();
     }
+  });
+
+  it("opens a streaming log editor tab only when process:<program> capability is granted", async () => {
+    const opened: EditorInput[] = [];
+    provideEditorService({
+      openFile: async () => {},
+      openVirtual: () => {},
+      openInput: async (input: EditorInput) => void opened.push(input),
+      openDiff: () => {},
+      openMerge: () => {},
+      closeFile: () => {},
+      activeFile: () => null,
+    } as unknown as EditorService);
+
+    const { view, events } = setup(true);
+    const { send } = await frameOf(view.container);
+    const payload = {
+      op: "open-log-tab",
+      title: "App Logs",
+      program: "tail",
+      baseArgs: ["-f", "app.log"],
+      toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
+    };
+
+    // Denied when process:tail is not granted.
+    send({ text: JSON.stringify(payload) });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(opened).toHaveLength(0);
+    expect(events).toHaveLength(0);
+
+    // Granted when process:tail is granted.
+    usePlugins.setState({
+      plugins: [
+        {
+          id: "acme.draw",
+          hasCode: true,
+          capabilities: [{ id: "process:tail", granted: true }],
+        } as unknown as PluginInfo,
+      ],
+    });
+    send({ text: JSON.stringify(payload) });
+    await waitFor(() => expect(opened).toHaveLength(1));
+    expect(opened[0]).toMatchObject({
+      kind: "pluginLog",
+      data: {
+        pluginId: "acme.draw",
+        title: "App Logs",
+        program: "tail",
+        baseArgs: ["-f", "app.log"],
+        toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
+      },
+    });
+    view.unmount();
   });
 });
 

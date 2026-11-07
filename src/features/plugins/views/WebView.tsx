@@ -19,9 +19,11 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { tx } from "@/platform/i18n";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
+import { editorService } from "@/workbench/contributions";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
 import { FRAME_TAG, frameTheme, frameThemeMessage } from "./frame";
+import { PLUGIN_LOG_EDITOR_KIND, type PluginLogEditorData, type PluginLogToggleSpec } from "./logEditor";
 import { onViewMessage } from "./viewStore";
 import styles from "./PluginView.module.css";
 
@@ -152,6 +154,46 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
 
   useEffect(() => {
     let dialog = false;
+    const handleLogTabMessage = (rawText: string): boolean => {
+      if (!rawText.startsWith("{") || !rawText.includes('"open-log-tab"')) return false;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(rawText) as Record<string, unknown>;
+      } catch {
+        return false;
+      }
+      if (parsed.op !== "open-log-tab") return false;
+      const program = typeof parsed.program === "string" ? parsed.program.trim() : "";
+      if (!program) return true;
+      const currentPlugin = usePlugins.getState().plugins.find((p) => p.id === pluginId);
+      const allowed = currentPlugin?.capabilities.some((c) => c.id === `process:${program}` && c.granted) ?? false;
+      if (!allowed) return true;
+      const title = typeof parsed.title === "string" && parsed.title.trim() ? parsed.title : program;
+      const key = typeof parsed.key === "string" ? parsed.key : `${PLUGIN_LOG_EDITOR_KIND}:${pluginId}:${title}`;
+      const baseArgs = Array.isArray(parsed.baseArgs)
+        ? parsed.baseArgs.filter((a): a is string => typeof a === "string")
+        : [];
+      const toggles: PluginLogToggleSpec[] = Array.isArray(parsed.toggles)
+        ? parsed.toggles
+            .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+            .map((t) => ({
+              id: String(t.id ?? ""),
+              label: String(t.label ?? ""),
+              args: Array.isArray(t.args) ? t.args.filter((a): a is string => typeof a === "string") : [],
+            }))
+            .filter((t) => t.id.length > 0 && t.label.length > 0)
+        : [];
+      const data: PluginLogEditorData = {
+        pluginId,
+        title,
+        program,
+        baseArgs,
+        toggles,
+      };
+      void editorService().openInput({ kind: PLUGIN_LOG_EDITOR_KIND, key, data });
+      return true;
+    };
+
     const run = async (op: string, args: Record<string, unknown>): Promise<[unknown, Transferable[]?]> => {
       switch (op) {
         case "document.get": {
@@ -218,10 +260,13 @@ export function WebView({ pluginId, view, label, document = null, doc = null }: 
           ([value, transfer]) => post({ reply: id, value }, transfer),
           (err: unknown) => post({ reply: id, error: errorText(err) }),
         );
-      } else if (typeof m.text === "string" && hasCode) {
-        pluginsBackend()
-          .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
-          .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+      } else if (typeof m.text === "string") {
+        if (handleLogTabMessage(m.text)) return;
+        if (hasCode) {
+          pluginsBackend()
+            .viewEvent(pluginId, view, { kind: "message", text: m.text }, doc)
+            .catch((err: unknown) => console.warn(`plugin ${pluginId}: ${errorText(err)}`));
+        }
       }
     };
     window.addEventListener("message", onMessage);

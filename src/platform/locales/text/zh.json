@@ -6592,5 +6592,7 @@
   "Use Project JDK": "使用项目 SDK",
   "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "用于 Maven 同步、构建、目标和测试的 JDK。运行配置中显式设置的 JAVA_HOME 优先。",
   "Read-only: the table schema could not be identified in the result database.": "只读：无法确定结果所在数据库中的表架构。",
-  "devcontainer up exited with {status}": "devcontainer up 已退出，状态为 {status}"
+  "devcontainer up exited with {status}": "devcontainer up 已退出，状态为 {status}",
+  "Invalid log stream configuration": "无效的日志流配置",
+  "Find in Logs (⌘F)": "在日志中查找 (⌘F)"
 }

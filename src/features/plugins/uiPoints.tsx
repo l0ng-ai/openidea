@@ -62,6 +62,7 @@ import {
   type CustomEditorDecl,
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
+import { PLUGIN_LOG_EDITOR_KIND, PluginLogEditor, pluginLogEditorTitle } from "./views/logEditor";
 import { PluginView } from "./views/PluginView";
 import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
@@ -603,6 +604,12 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       icon: () => "db-table",
       restorable: true,
       document: customEditorDocument,
+    }),
+    registerEditorKind({
+      kind: PLUGIN_LOG_EDITOR_KIND,
+      component: PluginLogEditor,
+      title: pluginLogEditorTitle,
+      icon: () => "file-log",
     }),
     registerMenuGroup({
       id: "plugins",
