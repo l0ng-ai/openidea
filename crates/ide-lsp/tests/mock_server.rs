@@ -1674,6 +1674,18 @@ async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn alternative_java_server_uses_lsp_without_jdt_commands() {
+    let h = harness_for("java", "java", &[("kmp-lsp", incremental_caps())], &[]);
+    let (doc, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("kmp-lsp", ServerStatus::Ready).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 7), Default::default()).await.is_ok());
+    let error = h.mgr.java_debug_server(&path).await.unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(error.message.contains("jdtls"));
+    assert!(h.launcher.state("kmp-lsp").requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     // Preferred installed: the alternative is never started.
     let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
