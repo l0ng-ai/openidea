@@ -1092,6 +1092,25 @@ fn untrusted_or_unconfirmed_project_plugins_never_run() {
     assert!(f.host.reload("misbehave").is_err());
     assert!(f.host.set_enabled("misbehave", true).is_err());
     assert!(f.run("misbehave", "echo", None).is_err());
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "prompts".into(),
+    };
+    let action = ide_plugin::CodeAction {
+        title: "Ask input".into(),
+        kind: None,
+        preferred: false,
+        edits: Vec::new(),
+        operations: Vec::new(),
+        open: None,
+        data: Some("input".into()),
+        file_action: false,
+    };
+    let error = f.host.resolve_code_action("misbehave", &doc, action, f.inv()).unwrap_err();
+    assert!(error.message.contains("Restricted Mode"), "{}", error.message);
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
     f.host.sync_project(&f.project);
     assert!(f.host.list(Some(&f.project)).plugins.is_empty());
 }
@@ -3206,10 +3225,10 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let actions = f.host.provide_code_actions(&doc("lazy"), ide_core::Range::default());
     let (plugin, action) = actions.into_iter().next().expect("offered");
     assert!(action.edits.is_empty() && action.data.as_deref() == Some("fix"));
-    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone()).unwrap();
+    let resolved = f.host.resolve_code_action(&plugin, &doc("lazy"), action.clone(), f.inv()).unwrap();
     assert_eq!(resolved.edits[0].1[0].new_text, "fixed ");
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
-    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
+    assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign, f.inv()).is_err());
 
     // File operations come from the `file-actions` export, next to the providers' own.
     let mut actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default()).into_iter();
@@ -3228,7 +3247,7 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     assert_eq!(action.open, Some(dir.join("created.txt")));
     // Listed with `data` only: `resolve` on the same export computes its operations.
     assert!(later.file_action && later.operations.is_empty() && later.data.is_some());
-    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later).unwrap();
+    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later, f.inv()).unwrap();
     assert_eq!(
         resolved.operations,
         vec![ide_plugin::FileOperation::Create { path: dir.join("later.txt"), text: "later".into(), overwrite: false }]
@@ -3246,6 +3265,185 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     f.host.run_command("misbehave", "diagnose", Some(&path.to_string_lossy()), f.inv()).unwrap();
     let d = f.workspace.diagnostics.lock().get(&("misbehave".into(), path)).cloned().unwrap();
     assert_eq!((d[0].unnecessary, d[0].deprecated, d[0].source.as_deref()), (true, false, Some("lint")));
+}
+
+fn interactive_actions_fixture() -> (Fixture, ide_plugin::ProviderDocument) {
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    let pkg = f._tmp.path().join("interactive-actions");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml"))
+        .unwrap()
+        .replace("required = [\"project.read\"]", "required = [\"project.read\", \"clipboard\"]");
+    std::fs::write(pkg.join("plugin.toml"), format!(
+        "{manifest}\n[[contributes.providers]]\nkinds = [\"completion\", \"code-actions\"]\nlanguages = [\"text\"]\n"
+    )).unwrap();
+    f.install(&pkg);
+    f.host.run_command("misbehave", "echo", None, f.inv()).unwrap();
+    let doc = ide_plugin::ProviderDocument {
+        path: f.project.join("a.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "prompts".into(),
+    };
+    (f, doc)
+}
+
+fn action_prompt(f: &Fixture) -> (String, ide_plugin::Prompt) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some((client, id, prompt)) = f.take_events().into_iter().find_map(|(client, event)| match event {
+            PluginEvent::PromptRequested { prompt_id, prompt, .. } => Some((client, prompt_id, prompt)),
+            _ => None,
+        }) {
+            assert_eq!(client.as_deref(), Some("editor-window"));
+            return (id, prompt);
+        }
+        assert!(Instant::now() < deadline, "code-action resolution never asked");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn action_invocation() -> Invocation {
+    Invocation { client: Some("editor-window".into()), ..Default::default() }
+}
+
+#[test]
+fn code_action_resolution_prompts_in_the_editor_window_under_the_command_budget() {
+    use ide_plugin::Prompt;
+    let (f, doc) = interactive_actions_fixture();
+    let actions = f.host.provide_code_actions(&doc, ide_core::Range::default());
+    assert_eq!(actions.len(), 10);
+    for (kind, answer, expected) in [
+        ("pick", vec!["b"], "b"),
+        ("pick-many", vec!["a", "b"], "a,b"),
+        ("input", vec!["Service😀"], "Service😀"),
+        ("confirm", vec![], "confirmed"),
+    ] {
+        let action = actions.iter().find(|(_, a)| a.data.as_deref() == Some(kind)).unwrap().1.clone();
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let (id, prompt) = action_prompt(&f);
+            assert!(match kind {
+                "pick" => matches!(prompt, Prompt::QuickPick { multiple: false, .. }),
+                "pick-many" => matches!(prompt, Prompt::QuickPick { multiple: true, .. }),
+                "input" => matches!(prompt, Prompt::Input { multiline: false, .. }),
+                _ => matches!(prompt, Prompt::Confirm { .. }),
+            });
+            // More than the command budget; waiting for the user is excluded.
+            std::thread::sleep(Duration::from_millis(650));
+            assert!(f.host.answer_prompt(&id, Some(answer.iter().map(|s| (*s).into()).collect())));
+            let resolved = running.join().unwrap().unwrap();
+            assert_eq!(resolved.edits[0].1[0].new_text, expected);
+        });
+    }
+    for kind in ["input-multiline", "reveal", "open-url", "clipboard", "pick-directory", "open-project"] {
+        let action = actions.iter().find(|(_, a)| a.data.as_deref() == Some(kind)).unwrap().1.clone();
+        let err = std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let mut prompted = false;
+            while !running.is_finished() {
+                for (_, event) in f.take_events() {
+                    if let PluginEvent::PromptRequested { prompt_id, .. } = event {
+                        prompted = true;
+                        f.host.answer_prompt(&prompt_id, None);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let result = running.join().unwrap();
+            assert!(!prompted, "{kind} must remain restricted to commands and events");
+            result.unwrap_err()
+        });
+        assert_eq!(err.kind, ErrorKind::InvalidInput, "{kind}: {}", err.message);
+    }
+    let doc = ide_plugin::ProviderDocument { text: "prompt-provider".into(), ..doc };
+    assert!(eventually(|| !f.host.provide_completion(&doc, ide_core::Pos::new(0, 0), None).is_empty()));
+    assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+}
+
+#[test]
+fn code_action_prompts_dismiss_cancel_and_close_without_edits_or_hanging() {
+    for (how, kind) in [
+        ("dismiss", "pick"),
+        ("dismiss", "pick-many"),
+        ("dismiss", "input"),
+        ("dismiss", "confirm"),
+        ("disable", "pick"),
+        ("close", "pick"),
+        ("close-reopen", "pick"),
+        ("no-window", "pick"),
+    ] {
+        let (f, doc) = interactive_actions_fixture();
+        let action = f
+            .host
+            .provide_code_actions(&doc, ide_core::Range::default())
+            .into_iter()
+            .find(|(_, action)| action.data.as_deref() == Some(kind))
+            .unwrap()
+            .1;
+        if how == "no-window" {
+            assert!(f.host.resolve_code_action("misbehave", &doc, action, Invocation::default()).is_err());
+            assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::PromptRequested { .. })));
+            continue;
+        }
+        std::thread::scope(|scope| {
+            let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+            let (id, _) = action_prompt(&f);
+            let started = Instant::now();
+            match how {
+                "dismiss" => {
+                    assert!(f.host.answer_prompt(&id, None));
+                }
+                "disable" => {
+                    f.host.set_enabled("misbehave", false).unwrap();
+                }
+                "close" => f.host.forget_client("editor-window"),
+                "close-reopen" => {
+                    f.host.forget_client("editor-window");
+                    f.host.reopen_client("editor-window");
+                }
+                _ => unreachable!(),
+            }
+            assert!(running.join().unwrap().is_err());
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(!f.host.answer_prompt(&id, Some(vec!["late".into()])));
+        });
+        assert!(!f.project.join("a.txt").exists(), "resolution must only return edits");
+        if how == "close-reopen" {
+            let action = f.host.provide_code_actions(&doc, ide_core::Range::default()).remove(0).1;
+            std::thread::scope(|scope| {
+                let running =
+                    scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+                let (id, _) = action_prompt(&f);
+                assert!(f.host.answer_prompt(&id, Some(vec!["b".into()])));
+                assert_eq!(running.join().unwrap().unwrap().edits[0].1[0].new_text, "b");
+            });
+        }
+    }
+}
+
+#[test]
+fn file_action_resolution_can_ask_before_returning_resource_operations() {
+    let (f, doc) = interactive_actions_fixture();
+    let doc = ide_plugin::ProviderDocument { text: "prompt-files".into(), ..doc };
+    let action = f.host.provide_code_actions(&doc, ide_core::Range::default()).remove(0).1;
+    assert!(action.file_action && action.operations.is_empty());
+    std::thread::scope(|scope| {
+        let running = scope.spawn(|| f.host.resolve_code_action("misbehave", &doc, action, action_invocation()));
+        let (id, _) = action_prompt(&f);
+        assert!(f.host.answer_prompt(&id, Some(vec!["Service".into()])));
+        let resolved = running.join().unwrap().unwrap();
+        assert_eq!(
+            resolved.operations,
+            vec![ide_plugin::FileOperation::Create {
+                path: f.project.join("Service.txt"),
+                text: "Service".into(),
+                overwrite: false,
+            }]
+        );
+        assert_eq!(resolved.open, Some(f.project.join("Service.txt")));
+        assert!(!f.project.join("Service.txt").exists(), "resolution does not apply the edit");
+    });
 }
 
 /// `hello` as a services view, which needs API 1.3.
