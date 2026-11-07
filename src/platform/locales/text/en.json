@@ -1,4 +1,8 @@
 {
+  "CMake Configure": "CMake Configure",
+  "CMake Build": "CMake Build",
+  "CTest": "CTest",
+  "Build {0}": "Build {0}",
   "Not a CMake configure or build configuration": "Not a CMake configure or build configuration",
   "CMake builds require configure/build prerequisites": "CMake builds require configure/build prerequisites",
   "CMake Application": "CMake Application",

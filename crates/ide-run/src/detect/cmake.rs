@@ -20,13 +20,54 @@ fn before(config: &mut RunConfig, id: &str) {
     config.extras.before_launch.push(BeforeLaunchTask { kind: "build".into(), target: id.into() });
 }
 
+#[derive(Default)]
+struct Names {
+    contexts: Vec<(String, String)>,
+}
+
+impl Names {
+    fn push(&mut self, out: &mut Vec<RunConfig>, config: RunConfig, dir: &str, profile: &str) {
+        self.contexts.push((dir.replace('\\', "/"), profile.into()));
+        out.push(config);
+    }
+
+    fn apply(self, configs: &mut [RunConfig]) {
+        let names: Vec<_> = configs.iter().map(|c| c.name.clone()).collect();
+        for (index, config) in configs.iter_mut().enumerate() {
+            let duplicates: Vec<_> = names.iter().enumerate().filter(|(_, name)| **name == names[index]).collect();
+            if duplicates.len() < 2 {
+                continue;
+            }
+            let (dir, profile) = &self.contexts[index];
+            let needs_dir = duplicates.iter().any(|(other, _)| *other != index && self.contexts[*other].1 == *profile);
+            let mut context = Vec::new();
+            if !profile.is_empty() {
+                context.push(profile.clone());
+            }
+            if needs_dir {
+                context.push(format!("{}/", dir.trim_end_matches('/')));
+            }
+            if !context.is_empty() {
+                config.name = format!("{} [{}]", config.name, context.join(" · "));
+            }
+        }
+    }
+}
+
 pub(super) fn detect(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut Vec<RunConfig>) {
+    let start = out.len();
+    let mut names = Names::default();
+    detect_configs(root, profiles, out, &mut names);
+    names.apply(&mut out[start..]);
+}
+
+fn detect_configs(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut Vec<RunConfig>, names: &mut Names) {
     if !root.join("CMakeLists.txt").is_file() {
         return;
     }
     if let Some(profiles) = profiles {
         for (index, profile) in profiles.iter().enumerate() {
-            detect_profile(root, profile, index, profiles.len() > 1, out);
+            detect_profile(root, profile, index, out, names);
         }
         return;
     }
@@ -62,35 +103,30 @@ pub(super) fn detect(root: &Path, profiles: Option<&[CMakeProfile]>, out: &mut V
         if !build.join("CMakeCache.txt").is_file() {
             args.push("-DCMAKE_BUILD_TYPE=Debug");
         }
-        let mut configure = config(&configure_id, format!("CMake Configure ({dir})"), "cmake", "cmake", &args);
+        let mut configure = config(&configure_id, "CMake Configure", "cmake", "cmake", &args);
         configure.extras.params.insert("buildDir".into(), dir.clone());
-        out.push(configure);
-        let mut all = config(
-            &build_id,
-            format!("CMake Build ({dir})"),
-            "cmake",
-            "cmake",
-            &["--build", &dir, "--config", &configuration],
-        );
+        names.push(out, configure, &dir, "");
+        let mut all =
+            config(&build_id, "CMake Build", "cmake", "cmake", &["--build", &dir, "--config", &configuration]);
         // `cmake --build` regenerates by itself once a build directory is configured.
         if !build.join("CMakeCache.txt").is_file() {
             before(&mut all, &configure_id);
         }
-        out.push(all);
+        names.push(out, all, &dir, "");
         let mut test = config(
             format!("{prefix}:test"),
-            format!("CTest ({dir})"),
+            "CTest",
             "cmake",
             "ctest",
             &["--test-dir", &dir, "-C", &configuration, "--output-on-failure"],
         );
         before(&mut test, &build_id);
-        out.push(test);
-        targets(root, &build, &dir, &prefix, None, out);
+        names.push(out, test, &dir, "");
+        targets(root, &build, &dir, &prefix, None, out, names);
     }
 }
 
-fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: bool, out: &mut Vec<RunConfig>) {
+fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, out: &mut Vec<RunConfig>, names: &mut Names) {
     let dir = if profile.build_dir.trim().is_empty() {
         format!("cmake-build-{}", profile.build_type.to_lowercase())
     } else {
@@ -101,8 +137,7 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: b
     let configure_id = format!("{prefix}:configure");
     let build_id = format!("{prefix}:build");
     let start = out.len();
-    let mut configure =
-        config(&configure_id, format!("CMake Configure ({dir})"), "cmake", "cmake", &["-S", ".", "-B", &dir]);
+    let mut configure = config(&configure_id, "CMake Configure", "cmake", "cmake", &["-S", ".", "-B", &dir]);
     if !profile.generator.trim().is_empty() {
         configure.args.extend(["-G".into(), profile.generator.clone()]);
     }
@@ -110,34 +145,26 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, multiple: b
     configure.args.push("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON".into());
     configure.args.extend_from_slice(&profile.cmake_args);
     configure.extras.params.insert("buildDir".into(), dir.clone());
-    out.push(configure);
-    let mut all = config(
-        &build_id,
-        format!("CMake Build ({dir})"),
-        "cmake",
-        "cmake",
-        &["--build", &dir, "--config", &profile.build_type],
-    );
+    names.push(out, configure, &dir, &profile.name);
+    let mut all =
+        config(&build_id, "CMake Build", "cmake", "cmake", &["--build", &dir, "--config", &profile.build_type]);
     all.args.extend_from_slice(&profile.build_args);
     if !build.join("CMakeCache.txt").is_file() {
         before(&mut all, &configure_id);
     }
-    out.push(all);
+    names.push(out, all, &dir, &profile.name);
     let mut test = config(
         format!("{prefix}:test"),
-        format!("CTest ({dir})"),
+        "CTest",
         "cmake",
         "ctest",
         &["--test-dir", &dir, "-C", &profile.build_type, "--output-on-failure"],
     );
     before(&mut test, &build_id);
-    out.push(test);
-    targets(root, &build, &dir, &prefix, Some(profile), out);
+    names.push(out, test, &dir, &profile.name);
+    targets(root, &build, &dir, &prefix, Some(profile), out, names);
     for config in &mut out[start..] {
         config.env = profile.env.clone();
-        if multiple {
-            config.name = format!("{} [{}]", config.name, profile.name);
-        }
     }
 }
 
@@ -148,6 +175,7 @@ fn targets(
     prefix: &str,
     profile: Option<&CMakeProfile>,
     out: &mut Vec<RunConfig>,
+    names: &mut Names,
 ) {
     let reply = build.join(".cmake/api/v1/reply");
     let Some(index_path) = fs::read_dir(&reply).ok().and_then(|entries| {
@@ -198,8 +226,7 @@ fn targets(
             if !name.is_empty() {
                 args.extend(["--config", name]);
             }
-            let mut build_config =
-                config(&target_build_id, format!("Build {target_name} ({dir} {name})"), "cmake", "cmake", &args);
+            let mut build_config = config(&target_build_id, format!("Build {target_name}"), "cmake", "cmake", &args);
             if let Some(profile) = profile {
                 if name.is_empty() {
                     build_config.args.extend(["--config".into(), profile.build_type.clone()]);
@@ -209,16 +236,11 @@ fn targets(
                     before(&mut build_config, &format!("{prefix}:configure"));
                 }
             }
-            out.push(build_config);
+            let label = profile.map_or(name, |p| p.name.as_str());
+            names.push(out, build_config, dir, label);
             let binary = build.join(artifact);
-            let mut run = config(
-                &id,
-                format!("{target_name} [{}]", if name.is_empty() { dir.to_owned() } else { format!("{name}, {dir}") }),
-                "cmake-application",
-                &binary.to_string_lossy(),
-                &[],
-            )
-            .debug("lldb-dap");
+            let mut run =
+                config(&id, target_name, "cmake-application", &binary.to_string_lossy(), &[]).debug("lldb-dap");
             before(&mut run, &target_build_id);
             let sources: Vec<String> = target["sources"]
                 .as_array()
@@ -236,7 +258,7 @@ fn targets(
                     .params
                     .insert("cmakeCanonicalSourceRoot".into(), source_root.to_string_lossy().replace('\\', "/"));
             }
-            out.push(run);
+            names.push(out, run, dir, label);
         }
     }
 }

@@ -1,4 +1,8 @@
 {
+  "CMake Configure": "CMake 配置",
+  "CMake Build": "CMake 构建",
+  "CTest": "CTest",
+  "Build {0}": "构建 {0}",
   "Not a CMake configure or build configuration": "不是 CMake 配置或构建配置",
   "CMake builds require configure/build prerequisites": "CMake 构建需要配置或构建前置任务",
   "CMake Application": "CMake 应用程序",
