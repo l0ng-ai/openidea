@@ -433,7 +433,9 @@ impl Http {
     /// `-C -` resumes from the bytes `dest` already holds: a `--retry` inside
     /// curl — and a fresh `download` call after a timed-out attempt — keeps the
     /// part it has instead of starting over. A `dest` already the remote's size
-    /// is reported "fully downloaded" and left alone.
+    /// is reported "fully downloaded" and left alone. When the server answers
+    /// no byte ranges (curl exit 33) the partial is dropped and the download
+    /// starts over, the pre-resume behavior.
     pub fn download(
         &self,
         url: &str,
@@ -442,8 +444,46 @@ impl Http {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
+        let had_partial = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0) > 0;
+        let mut resume = true;
+        loop {
+            let (status, stderr, token) = self.fetch(url, dest, size, cancel, emit, resume)?;
+            if status.success() {
+                break;
+            }
+            if resume && had_partial && status.code() == Some(33) {
+                resume = false;
+                let _ = std::fs::remove_file(dest);
+                continue;
+            }
+            return Err(IdeError::new(
+                ErrorKind::Io,
+                format!("download of {url} failed: {}", redact_auth(stderr.trim(), token.as_deref())),
+            ));
+        }
+        let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        emit(progress_event(bytes, size.or(Some(bytes))));
+        Ok(())
+    }
+
+    /// One curl download attempt: with `resume` it continues `dest`'s bytes,
+    /// without it starts over. Returns curl's exit status, its stderr, and the
+    /// auth token for redacting the failure message; spawn and cancellation
+    /// failures are errors.
+    fn fetch(
+        &self,
+        url: &str,
+        dest: &Path,
+        size: Option<u64>,
+        cancel: &CancellationToken,
+        emit: Emit,
+        resume: bool,
+    ) -> IdeResult<(std::process::ExitStatus, String, Option<String>)> {
         let (mut cmd, token) = self.base(url, cancel)?;
-        cmd.args(["-C", "-", "-o"]).arg(dest).arg(url).stdout(Stdio::null()).stderr(Stdio::piped());
+        if resume {
+            cmd.args(["-C", "-"]);
+        }
+        cmd.arg("-o").arg(dest).arg(url).stdout(Stdio::null()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot run curl: {e}")))?;
         send_auth(&mut child, token.as_deref())?;
         let mut stderr = child.stderr.take().expect("piped");
@@ -473,18 +513,7 @@ impl Http {
                 }
             }
         };
-        if !status.success() {
-            return Err(IdeError::new(
-                ErrorKind::Io,
-                format!(
-                    "download of {url} failed: {}",
-                    redact_auth(err_t.join().unwrap_or_default().trim(), token.as_deref())
-                ),
-            ));
-        }
-        let bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
-        emit(progress_event(bytes, size.or(Some(bytes))));
-        Ok(())
+        Ok((status, err_t.join().unwrap_or_default(), token))
     }
 }
 
@@ -913,6 +942,31 @@ mod github_auth_tests {
             assert!(
                 fs::read_to_string(f.path("curl-args")).unwrap().contains("-C\n-\n"),
                 "curl resumes the partial file with `-C -`"
+            );
+        }
+
+        #[test]
+        fn download_restarts_when_the_server_has_no_byte_ranges() {
+            let f = Fixture::new();
+            let dest = f.path("download");
+            let count = f.path("attempts");
+            fs::write(&dest, "partial").unwrap();
+            // First attempt: curl reports it cannot resume (exit 33). Second:
+            // a plain download from zero, which succeeds.
+            f.curl(&format!(
+                "n=$(cat {} 2>/dev/null || echo 0); echo $((n + 1)) > {}; \
+                 if [ \"$n\" = 0 ]; then echo 'curl: (33) no byte ranges' >&2; exit 33; fi; \
+                 printf done > {}",
+                quote(&count),
+                quote(&count),
+                quote(&dest)
+            ));
+            f.http.download("https://example.test/file", &dest, None, &CancellationToken::new(), &|_| {}).unwrap();
+            assert_eq!(fs::read_to_string(&dest).unwrap(), "done");
+            assert_eq!(fs::read_to_string(&count).unwrap().trim(), "2");
+            assert!(
+                !fs::read_to_string(f.path("curl-args")).unwrap().contains("-C\n-\n"),
+                "the restart downloads from zero, without `-C -`"
             );
         }
 
