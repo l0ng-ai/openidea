@@ -545,7 +545,7 @@ pub struct View {
     pub status: Option<String>,
 }
 
-/// A tab of the Services pane of a plugin's node (`service-provider.detail`).
+/// A tab of the Services pane of a plugin's node (`detail-provider.detail`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceTab {

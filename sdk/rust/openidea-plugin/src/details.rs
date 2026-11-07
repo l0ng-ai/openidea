@@ -1,7 +1,7 @@
 //! The pane beside the Services tree for the nodes of the plugin's
-//! `location = "services"` views (world `plugin-services`). The nodes, the
+//! `location = "services"` views (world `plugin-details`). The nodes, the
 //! toolbar and their events come from [`crate::views::Views`] as in any view;
-//! register both: `register_plugin!(MyPlugin, views, services)`.
+//! register both: `register_plugin!(MyPlugin, views, details)`.
 
 use crate::{Error, Invocation};
 
@@ -65,7 +65,7 @@ impl Tab {
 }
 
 /// The detail pane of the nodes of the plugin's services views.
-pub trait Services {
+pub trait Details {
     /// The tabs of node `key` of view `view` (at most 8), asked when the node is
     /// selected and again after [`crate::host::refresh_view`] of the view.
     fn detail(&mut self, view: &str, key: &str, ctx: &Invocation) -> Result<Vec<Tab>, Error>;

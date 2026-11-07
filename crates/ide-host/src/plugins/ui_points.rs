@@ -60,7 +60,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 /// A view whose tree shows in the Services tool window; the plugin's
-/// `service-provider` renders the selected node's pane.
+/// `detail-provider` renders the selected node's pane.
 pub const SERVICES_LOCATION: &str = "services";
 pub const MENUS: &str = "menus";
 pub const KEYMAPS: &str = "keymaps";

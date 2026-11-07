@@ -16,8 +16,8 @@ use crate::types::{
     ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, commit_checks_bindings, hover_bindings, indexing_bindings, providers_bindings, semantic_bindings,
-    services_bindings, syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, details_bindings, hover_bindings, indexing_bindings, providers_bindings,
+    semantic_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -35,12 +35,12 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
+use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
+use details_bindings::openidea::plugin::detail_types as wit_dt;
 use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
-use services_bindings::exports::openidea::plugin::service_provider as wit_svc;
-use services_bindings::openidea::plugin::service_types as wit_st;
 use syntax_bindings::exports::openidea::plugin::syntax_provider as wit_syntax;
 use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
@@ -542,7 +542,7 @@ struct Exports {
     indexer: Option<wit_index::Guest>,
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
-    services: Option<wit_svc::Guest>,
+    details: Option<wit_detail::Guest>,
     hover: Option<wit_hover::Guest>,
     commit_checks: Option<wit_cc::Guest>,
 }
@@ -625,7 +625,7 @@ impl Runtime {
         let provider_indices = wit_prov::GuestIndices::new(&pre).ok();
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
-        let service_indices = wit_svc::GuestIndices::new(&pre).ok();
+        let detail_indices = wit_detail::GuestIndices::new(&pre).ok();
         let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
@@ -650,7 +650,7 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
-        let services = match service_indices {
+        let details = match detail_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
@@ -664,7 +664,7 @@ impl Runtime {
         };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services, hover, commit_checks },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic, details, hover, commit_checks },
             limits: setup.limits,
             version: setup.version,
         })
@@ -1017,13 +1017,13 @@ impl Runtime {
         key: &str,
         invocation: Invocation,
     ) -> Result<Vec<ServiceTab>, CallError> {
-        if self.exports.services.is_none() {
-            return Err(CallError::missing_export("service-provider"));
+        if self.exports.details.is_none() {
+            return Err(CallError::missing_export("detail-provider"));
         }
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
-            let services = e.services.as_ref().expect("checked");
-            let r = services.call_detail(&mut *store, view, key, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            let details = e.details.as_ref().expect("checked");
+            let r = details.call_detail(&mut *store, view, key, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
             r
         })?;
@@ -1270,11 +1270,11 @@ const MAX_LOG_TOGGLES: usize = 8;
 const MAX_LOG_ARGS: usize = 256;
 const MAX_LOG_ARG: usize = 4096;
 
-fn service_tab_from_wit(t: wit_st::Tab) -> ServiceTab {
+fn service_tab_from_wit(t: wit_dt::Tab) -> ServiceTab {
     let body = match t.body {
-        wit_st::Pane::Message(m) => ServicePane::Message(clip(m, 16 << 10)),
-        wit_st::Pane::Text(text) => ServicePane::Text(clip(text, MAX_TEXT)),
-        wit_st::Pane::Log(log) => {
+        wit_dt::Pane::Message(m) => ServicePane::Message(clip(m, 16 << 10)),
+        wit_dt::Pane::Text(text) => ServicePane::Text(clip(text, MAX_TEXT)),
+        wit_dt::Pane::Log(log) => {
             let args_fit = |args: &[String]| args.len() <= MAX_LOG_ARGS && args.iter().all(|a| a.len() <= MAX_LOG_ARG);
             if args_fit(&log.args)
                 && log.toggles.len() <= MAX_LOG_TOGGLES

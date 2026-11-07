@@ -40,6 +40,7 @@
 //! wasm32-wasip2`); see `plugins/README.md`.
 
 pub mod commit;
+pub mod details;
 pub mod host;
 pub mod hover;
 pub mod indexing;
@@ -47,7 +48,6 @@ pub mod indexing;
 pub mod mock;
 pub mod providers;
 pub mod semantic_tokens;
-pub mod services;
 pub mod syntax;
 pub mod text;
 mod types;
@@ -132,11 +132,11 @@ pub mod indexing_bindings {
 
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
-pub mod services_bindings {
+pub mod details_bindings {
     wit_bindgen::generate!({
-        world: "services", path: "wit", pub_export_macro: true,
-        export_macro_name: "__export_services_world",
-        default_bindings_module: "openidea_plugin::services_bindings",
+        world: "details", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_details_world",
+        default_bindings_module: "openidea_plugin::details_bindings",
         with: {
             "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types,
             "openidea:plugin/workspace@1.3.0": crate::bindings::openidea::plugin::workspace,
@@ -242,8 +242,8 @@ macro_rules! __optional_exports {
     (semantic_tokens, $plugin:ty, $component:ident) => {
         $crate::__semantic_tokens_exports!($plugin, $component);
     };
-    (services, $plugin:ty, $component:ident) => {
-        $crate::__services_exports!($plugin, $component);
+    (details, $plugin:ty, $component:ident) => {
+        $crate::__details_exports!($plugin, $component);
     };
     (hover, $plugin:ty, $component:ident) => {
         $crate::__hover_exports!($plugin, $component);
@@ -382,24 +382,24 @@ macro_rules! __indexing_exports {
     };
 }
 
-/// `register_plugin!(T, services)`: `T` is also a [`services::Services`].
+/// `register_plugin!(T, details)`: `T` is also a [`details::Details`].
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __services_exports {
+macro_rules! __details_exports {
     ($plugin:ty, $component:ident) => {
-        impl $crate::services_bindings::exports::openidea::plugin::service_provider::Guest for $component {
+        impl $crate::details_bindings::exports::openidea::plugin::detail_provider::Guest for $component {
             fn detail(
                 view: ::std::string::String,
                 key: ::std::string::String,
                 ctx: &$crate::bindings::openidea::plugin::invocation::Invocation,
             ) -> ::core::result::Result<
-                ::std::vec::Vec<$crate::services_bindings::openidea::plugin::service_types::Tab>,
+                ::std::vec::Vec<$crate::details_bindings::openidea::plugin::detail_types::Tab>,
                 $crate::bindings::openidea::plugin::types::Error,
             > {
                 $crate::__rt::service_detail::<$plugin>(view, key, ctx)
             }
         }
-        $crate::services_bindings::__export_services_world!($component with_types_in $crate::services_bindings);
+        $crate::details_bindings::__export_details_world!($component with_types_in $crate::details_bindings);
     };
 }
 
@@ -811,13 +811,13 @@ pub mod __rt {
         with::<T, _>(|p| p.render(&view, viewport, &ctx)).map(view_out).map_err(error_out)
     }
 
-    pub fn service_detail<T: Plugin + crate::services::Services + Default>(
+    pub fn service_detail<T: Plugin + crate::details::Details + Default>(
         view: String,
         key: String,
         ctx: &b::invocation::Invocation,
-    ) -> Result<Vec<crate::services_bindings::openidea::plugin::service_types::Tab>, b::types::Error> {
-        use crate::services as s;
-        use crate::services_bindings::openidea::plugin::service_types as w;
+    ) -> Result<Vec<crate::details_bindings::openidea::plugin::detail_types::Tab>, b::types::Error> {
+        use crate::details as s;
+        use crate::details_bindings::openidea::plugin::detail_types as w;
         let ctx = Invocation::__new(ctx);
         let tab = |t: s::Tab| w::Tab {
             id: t.id,
