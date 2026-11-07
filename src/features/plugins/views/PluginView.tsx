@@ -16,6 +16,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import clsx from "clsx";
 import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import {
@@ -290,9 +291,9 @@ function FormField({ field, send }: { field: ViewField; send: (e: ViewEvent) => 
       )}
       {v.kind === "readonlyText" &&
         (v.value.multiline ? (
-          <textarea id={id} className={styles.textarea} value={v.value.text} readOnly />
+          <textarea id={id} className={clsx(styles.textarea, styles.readonlyField)} value={v.value.text} readOnly />
         ) : (
-          <Input id={id} value={v.value.text} readOnly />
+          <Input id={id} className={styles.readonlyField} value={v.value.text} readOnly />
         ))}
       {v.kind === "text" && <TextField id={id} initial={v.value} onCommit={commit} />}
       {v.kind === "multiline" && <TextField id={id} initial={v.value} onCommit={commit} multiline />}
