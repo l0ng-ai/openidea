@@ -6,7 +6,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { call, commands, type Sdk } from "@/platform/ipc";
 import { IconButton, Input, type SelectOption, T } from "@/ui";
-import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
+import { JAVA_LANGUAGE_LEVELS, PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
@@ -358,8 +358,13 @@ export function GoPage() {
 // ---------------------------------------------------------------------------
 // Java
 
+export const JAVA_LEVEL_OPTIONS: SelectOption[] = JAVA_LANGUAGE_LEVELS.map((level) =>
+  level ? { value: level, label: level } : { value: "", label: "SDK default", detail: "from build / JDK" },
+);
+
 export function JavaPage() {
   const [vmArgs, setVmArgs] = useSetting<string>("languages.java.jdtlsVmArgs");
+  const [languageLevel, setLanguageLevel] = useSetting<string>("languages.java.languageLevel");
   const id = useId();
   return (
     <div className={styles.page}>
@@ -375,6 +380,17 @@ export function JavaPage() {
           aria-label="Project JDK"
           hint="Compiles and runs the project: the default jdtls runtime, Run/Debug, and JAVA_HOME for Maven and Gradle."
         />
+        <Row
+          label="Language level"
+          hint="Java source and bytecode compliance level when no build descriptor overrides it."
+        >
+          <Select
+            value={languageLevel}
+            options={JAVA_LEVEL_OPTIONS}
+            onChange={setLanguageLevel}
+            aria-label="Java language level"
+          />
+        </Row>
       </Section>
       <Section title="Language Server">
         <SdkRow

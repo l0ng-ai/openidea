@@ -29,6 +29,8 @@ export type ToolWindowAnchor = "left" | "right" | "bottom";
 export interface ToolWindowContribution {
   id: string;
   title: string;
+  /** The title comes from outside the IDE (a plugin) and is shown as written. */
+  verbatim?: boolean;
   /** Icon name from `ui/icons`. */
   icon: string;
   anchor: ToolWindowAnchor;
@@ -616,6 +618,8 @@ export interface NotificationService {
     sticky?: boolean;
     /** Replaces an earlier notification with the same key. */
     key?: string;
+    /** Title, body and action labels come from outside the IDE (a plugin) and are shown as written. */
+    verbatim?: boolean;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
      * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
@@ -1035,6 +1039,8 @@ export interface MenuSlotItem {
   action: string;
   arg?: string | null;
   label: string;
+  /** The label comes from outside the IDE (a plugin) and is shown as written. */
+  verbatim?: boolean;
   /** Icon name, for toolbar slots. */
   icon?: string;
   /** Shown only while this `when` clause holds (toolbar slots). */

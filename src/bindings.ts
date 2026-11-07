@@ -81,6 +81,8 @@ export const commands = {
 	settingsExport: (path: string, storage: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("settings_export", { path, storage })),
 	/**  Import Settings…: replaces the global settings with the file's; every window re-reads them. */
 	settingsImport: (path: string) => typedError<SettingsImport_Serialize, IdeError>(__TAURI_INVOKE("settings_import", { path })),
+	/**  Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it. */
+	settingsReadJetbrains: (path: string) => typedError<JetBrainsSettings, IdeError>(__TAURI_INVOKE("settings_read_jetbrains", { path })),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
 	 *  projects); an empty `name` restores the folder name. Stored in the project's settings.
@@ -1865,11 +1867,28 @@ export type ApplyOutcome = {
 	conflicts: string[],
 };
 
+/**  Packaging artifact definition (Project Structure › Artifacts). */
+export type ArtifactConfig = {
+	name?: string,
+	kind?: ArtifactKind,
+	/**  Module relative path (`"."` for root module). */
+	module?: string,
+	/**  Output directory (relative to project root or absolute). */
+	outputDirectory?: string,
+	/**  Main class for executable JAR artifacts. */
+	mainClass?: string,
+	/**  Project library names included in the packaged artifact (`WEB-INF/lib` or JAR manifest). */
+	includeLibraries?: string[],
+};
+
 /**  `groupId:artifactId` of a dependency. */
 export type ArtifactKey = {
 	groupId: string,
 	artifactId: string,
 };
+
+/**  Packaging type of a Project Structure artifact. */
+export type ArtifactKind = "jar" | "war" | "warExploded";
 
 /**  What an askpass prompt asks for. */
 export type AskpassKind = 
@@ -3099,6 +3118,9 @@ export type DeletedTag = {
 	target: string,
 };
 
+/**  Dependency scope for a module dependency or project library (IDEA's Modules › Dependencies). */
+export type DependencyScope = "compile" | "test" | "runtime" | "provided";
+
 export type DependencyUpdate = {
 	latest: string,
 	replacement: string,
@@ -3745,6 +3767,18 @@ export type ExternalTool = {
 	workingDirectory?: string,
 	synchronizeAfter?: boolean,
 	openConsole?: boolean,
+};
+
+/**  Framework facet attached to a module (Project Structure › Facets). */
+export type FacetConfig = {
+	/**  `"web"` | `"spring"` | `"jpa"`. */
+	kind?: string,
+	/**  Module relative path (`"."` for root module). */
+	module?: string,
+	/**  Deployment descriptor path (e.g. `src/main/webapp/WEB-INF/web.xml`, `src/main/resources/META-INF/persistence.xml`). */
+	descriptor?: string,
+	/**  Web resource root directory for Web facets (e.g. `src/main/webapp`). */
+	webRoot?: string,
 };
 
 export type FieldValue = { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
@@ -4852,6 +4886,8 @@ export type JavaSettings = {
 	 *  Java version it targets.
 	 */
 	jdk?: string,
+	/**  Project Java language level (`8`, `11`, `17`, `21`, `25`); empty = SDK default. */
+	languageLevel?: string,
 	/**
 	 *  JDK home the Java language server (jdtls) runs on, apart from the project
 	 *  JDK (IDEA's "JDK for importer"); empty = the project JDK when new enough,
@@ -4883,6 +4919,16 @@ export type JdkReleases = {
 export type JdkVendor = {
 	id: string,
 	name: string,
+};
+
+/**
+ *  A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+ *  entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
+ */
+export type JetBrainsSettings = {
+	entries: string[],
+	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
+	files: { [key in string]: string },
 };
 
 export type JvmFilePresentation = {
@@ -5565,6 +5611,29 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+};
+
+/**  Dependency entry of a module (Project Structure › Modules › Dependencies). */
+export type ModuleDependency = {
+	/**  `"library"` (references a `ProjectLibrary` by name or path) or `"module"` (references another module). */
+	kind?: string,
+	target?: string,
+	scope?: DependencyScope,
+	exported?: boolean,
+};
+
+/**  Per-module Project Structure overrides (SDK, language level, output paths, dependencies). */
+export type ModuleStructureSettings = {
+	/**  Module SDK home override; empty = inherit Project SDK. */
+	jdk?: string,
+	/**  Module language level override; empty = inherit Project language level. */
+	languageLevel?: string,
+	/**  Module compiler output directory override; empty = inherit Project compiler output. */
+	compilerOutput?: string,
+	/**  Module test compiler output directory override; empty = default. */
+	testCompilerOutput?: string,
+	/**  Additional module dependencies. */
+	dependencies?: ModuleDependency[],
 };
 
 export type NavigationFiles = {
@@ -6263,6 +6332,18 @@ export type ProjectInfo_Serialize = {
 	unity?: UnityProjectInfo | null,
 };
 
+/**  A project-level library (Project Structure › Libraries). */
+export type ProjectLibrary = {
+	name?: string,
+	/**  Class archives (`.jar`) or class directories. */
+	classes?: string[],
+	/**  Source archives (`-sources.jar`, `.zip`) or source directories. */
+	sources?: string[],
+	/**  Documentation archives (`-javadoc.jar`) or directories. */
+	javadocs?: string[],
+	scope?: DependencyScope,
+};
+
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */
 	roots: SourceFolder[],
@@ -6284,6 +6365,16 @@ export type ProjectStructureSettings = {
 	contentRoots?: string[],
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
+	/**  Project compiler output directory (relative to project root or absolute; empty = default). */
+	compilerOutput?: string,
+	/**  Per-module SDK, language level, output paths and dependency overrides, keyed by module relative path (`"."` for root). */
+	modules?: { [key in string]: ModuleStructureSettings },
+	/**  Project-level libraries (`JAR`s / class folders / source archives). */
+	libraries?: ProjectLibrary[],
+	/**  Module framework facets (`web`, `spring`, `jpa`). */
+	facets?: FacetConfig[],
+	/**  Packaging artifacts (`jar`, `war`, `warExploded`). */
+	artifacts?: ArtifactConfig[],
 };
 
 /**
@@ -7631,6 +7722,12 @@ export type SyntaxNode = {
 	hasError: boolean,
 };
 
+/**  A sortable table's order: the column and the direction. */
+export type TableSort = {
+	column: number,
+	descending: boolean,
+};
+
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
@@ -7990,7 +8087,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean };
 
 export type ViewField = {
 	key: string,
@@ -8011,6 +8108,10 @@ export type ViewTable = {
 	firstRow: number,
 	rows: string[][],
 	editable: boolean,
+	/**  The plugin opted its headers in to click-to-sort (a `table` body through `other`). */
+	sortable: boolean,
+	/**  The sort the plugin orders by (none: no arrow yet). */
+	sort: TableSort | null,
 };
 
 export type ViewTreeItem = {

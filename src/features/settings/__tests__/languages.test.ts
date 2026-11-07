@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LANGUAGES,
+  JAVA_LANGUAGE_LEVELS,
   PHP_LANGUAGE_LEVELS,
   folderRole,
   markFolder,
@@ -169,6 +170,101 @@ describe("languages settings", () => {
     expect(folderRole(ps, "src/")).toBe("test");
     ps = markFolder(ps, "src", null);
     expect(folderRole(ps, "src")).toBeNull();
+  });
+
+  it("defaults Java language level to SDK default and keeps only supported levels", () => {
+    expect(validateLanguages({}).java.languageLevel).toBe("");
+    expect(validateLanguages({ java: { languageLevel: "8" } }).java.languageLevel).toBe("8");
+    expect(validateLanguages({ java: { languageLevel: "21" } }).java.languageLevel).toBe("21");
+    for (const invalid of ["6", "26", 17, null]) {
+      expect(validateLanguages({ java: { languageLevel: invalid } }).java.languageLevel).toBe("");
+    }
+    expect(JAVA_LANGUAGE_LEVELS[0]).toBe("");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("8");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("25");
+  });
+
+  it("normalizes project structure modules, libraries, facets, and artifacts", () => {
+    const ps = validateProjectStructure({
+      compilerOutput: " out/production ",
+      modules: {
+        " ./modules/core/ ": {
+          jdk: " /opt/jdk-21 ",
+          languageLevel: "17",
+          compilerOutput: " target/classes ",
+          testCompilerOutput: " target/test-classes ",
+          dependencies: [
+            { target: " common-lib ", kind: "library", scope: "provided", exported: true },
+            { target: " ", kind: "module", scope: "invalid" },
+          ],
+        },
+      },
+      libraries: [
+        {
+          name: " servlet-api ",
+          classes: [" lib/servlet-api.jar ", "lib/servlet-api.jar", ""],
+          sources: [" lib/servlet-api-sources.jar "],
+          javadocs: [],
+          scope: "provided",
+        },
+        { name: "  ", classes: [], sources: [] },
+      ],
+      facets: [
+        {
+          kind: "web",
+          module: " ./modules/web/ ",
+          descriptor: " src/main/webapp/WEB-INF/web.xml ",
+          webRoot: " src/main/webapp ",
+        },
+      ],
+      artifacts: [
+        {
+          name: " app:war exploded ",
+          kind: "warExploded",
+          module: " ./modules/web/ ",
+          outputDirectory: " target/app-exploded ",
+          mainClass: " com.example.Main ",
+          includeLibraries: [" servlet-api ", "servlet-api", ""],
+        },
+      ],
+    });
+    expect(ps.compilerOutput).toBe("out/production");
+    expect(ps.modules).toEqual({
+      "modules/core": {
+        jdk: "/opt/jdk-21",
+        languageLevel: "17",
+        compilerOutput: "target/classes",
+        testCompilerOutput: "target/test-classes",
+        dependencies: [{ target: "common-lib", kind: "library", scope: "provided", exported: true }],
+      },
+    });
+    expect(ps.libraries).toEqual([
+      {
+        name: "servlet-api",
+        classes: ["lib/servlet-api.jar"],
+        sources: ["lib/servlet-api-sources.jar"],
+        javadocs: [],
+        scope: "provided",
+      },
+    ]);
+    expect(ps.facets).toEqual([
+      {
+        kind: "web",
+        module: "modules/web",
+        descriptor: "src/main/webapp/WEB-INF/web.xml",
+        webRoot: "src/main/webapp",
+      },
+    ]);
+    expect(ps.artifacts).toEqual([
+      {
+        name: "app:war exploded",
+        kind: "warExploded",
+        module: "modules/web",
+        outputDirectory: "target/app-exploded",
+        mainClass: "com.example.Main",
+        includeLibraries: ["servlet-api"],
+      },
+    ]);
   });
 });
 

@@ -810,14 +810,7 @@ pub use imp::{event as __event, range_from as __range_from, range_to as __range_
 /// Chooses a directory on the UI machine. `None` when dismissed; no capability.
 /// Same window/command/event rules as [`pick`].
 pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
-    if let Some(path) = initial {
-        validate_ui_path(path)?;
-    }
-    let path = imp::pick_directory(title, initial)?;
-    if let Some(path) = &path {
-        validate_ui_path(path)?;
-    }
-    Ok(path)
+    imp::pick_directory(title, initial)
 }
 
 /// Requests the normal File > Open flow, including project trust, in the
@@ -825,19 +818,5 @@ pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<Strin
 /// Only commands/events of a window can request this; errors opening the
 /// project are shown by that window. `path` belongs to the UI machine.
 pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
-    validate_ui_path(path)?;
     imp::open_project(path, new_window)
-}
-
-fn validate_ui_path(path: &str) -> Result<(), Error> {
-    let b = path.as_bytes();
-    let absolute = path.starts_with('/')
-        || path.starts_with("\\\\")
-        || (b.first().is_some_and(u8::is_ascii_alphabetic)
-            && b.get(1) == Some(&b':')
-            && matches!(b.get(2), Some(b'/' | b'\\')));
-    if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
-        return Err(Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
-    }
-    Ok(())
 }

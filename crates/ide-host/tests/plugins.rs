@@ -2114,6 +2114,45 @@ fn sample_plugin_tool_window_with_a_tree() {
     }
 }
 
+/// The tables fixture sorts its own rows: a `table` body sent through `other`
+/// opts the headers in, and a header click leaves as an `other` view-event
+/// (kind `sort`) the plugin decodes and answers with the rows in the asked
+/// order (plugins/README.md §10: released types stay, `other` carries new
+/// cases).
+#[test]
+fn sortable_plugin_table_round_trips_sort_events() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("tables"));
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    let table = |f: &Fixture| match f.host.render_view("tables", "tables", None, f.inv()).unwrap().body {
+        ide_plugin::ViewBody::Table(t) => t,
+        other => panic!("{other:?}"),
+    };
+    // No sort yet: headers are clickable, rows in the plugin's own order.
+    let t = table(&f);
+    assert_eq!((t.columns.clone(), t.total_rows), (vec!["ext".to_owned(), "files".into()], 4));
+    assert_eq!((t.sortable, t.sort), (true, None), "a `table` through `other` opts the headers in");
+    assert_eq!(t.rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>(), ["rs", "md", "java", "toml"]);
+
+    f.take_events();
+    let sort = |f: &Fixture, descending| {
+        f.host.view_event("tables", "tables", ide_plugin::ViewEvent::Sort { column: 1, descending }, f.inv()).unwrap();
+        assert!(f.take_events().into_iter().any(
+            |(_, e)| matches!(e, PluginEvent::ViewChanged { ref plugin_id, ref view } if plugin_id == "tables" && view == "tables")
+        ));
+        table(f)
+    };
+
+    // The plugin reports the sort it ordered by, with the rows to match.
+    let t = sort(&f, false);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: false }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["3", "9", "12", "20"]);
+    let t = sort(&f, true);
+    assert_eq!(t.sort, Some(ide_plugin::TableSort { column: 1, descending: true }));
+    assert_eq!(t.rows.iter().map(|r| r[1].clone()).collect::<Vec<_>>(), ["20", "12", "9", "3"]);
+}
+
 /// Regex Tester: an `html` body its script talks to; the plugin answers in
 /// view messages, in UTF-16 offsets.
 #[test]
@@ -2911,6 +2950,30 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     assert_eq!(resolved.edits[0].1[0].new_text, "fixed ");
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
     assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
+
+    // File operations come from the `file-actions` export, next to the providers' own.
+    let mut actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default()).into_iter();
+    let (_, action) = actions.next().expect("offered");
+    let (plugin, later) = actions.next().expect("a lazy one too");
+    let dir = f.project.clone();
+    assert_eq!(action.title, "Reorganise");
+    assert_eq!(
+        action.operations,
+        vec![
+            ide_plugin::FileOperation::Create { path: dir.join("created.txt"), text: "hello".into(), overwrite: false },
+            ide_plugin::FileOperation::Rename { from: dir.join("old.txt"), to: dir.join("renamed.txt") },
+            ide_plugin::FileOperation::Delete { path: dir.join("gone.txt") },
+        ]
+    );
+    assert_eq!(action.open, Some(dir.join("created.txt")));
+    // Listed with `data` only: `resolve` on the same export computes its operations.
+    assert!(later.file_action && later.operations.is_empty() && later.data.is_some());
+    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later).unwrap();
+    assert_eq!(
+        resolved.operations,
+        vec![ide_plugin::FileOperation::Create { path: dir.join("later.txt"), text: "later".into(), overwrite: false }]
+    );
+    assert!(f.host.provide_code_actions(&doc("rich"), ide_core::Range::default()).is_empty());
 
     // A kind this IDE doesn't know is refused, not a trap.
     let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();

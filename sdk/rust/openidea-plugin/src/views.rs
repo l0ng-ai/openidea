@@ -148,6 +148,15 @@ pub struct Table {
     pub editable: bool,
 }
 
+/// The column a table's rows are ordered by, and the direction: what
+/// [`Body::sortable_table`] reports and a header click asks for
+/// ([`ViewEvent::sort`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TableSort {
+    pub column: u32,
+    pub descending: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Body {
@@ -165,6 +174,34 @@ pub enum Body {
         kind: String,
         data: String,
     },
+}
+
+impl Body {
+    /// A table whose column headers the IDE makes clickable: the usual
+    /// [`Table`] fields plus the sort the plugin orders by (none: no arrow
+    /// yet), carried by the `other` body case (plugins/README.md §10), so
+    /// IDEs and plugins of any API version keep working. The plugin sorts its
+    /// own rows; a click asks for a column and direction with
+    /// [`ViewEvent::sort`], and [`crate::host::refresh_view`] shows the new
+    /// order.
+    pub fn sortable_table(table: &Table, sort: Option<TableSort>) -> Self {
+        let mut data = String::from(r#"{"columns":"#);
+        json_list(&mut data, table.columns.iter().map(String::as_str));
+        data.push_str(&format!(",\"totalRows\":{},\"firstRow\":{},\"rows\":[", table.total_rows, table.first_row));
+        for (i, row) in table.rows.iter().enumerate() {
+            if i > 0 {
+                data.push(',');
+            }
+            json_list(&mut data, row.iter().map(String::as_str));
+        }
+        data.push_str(&format!("],\"editable\":{},\"sort\":", table.editable));
+        match sort {
+            Some(s) => data.push_str(&format!(r#"{{"column":{},"descending":{}}}"#, s.column, s.descending)),
+            None => data.push_str("null"),
+        }
+        data.push('}');
+        Self::Other { kind: "table".into(), data }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -235,11 +272,112 @@ pub enum ViewEvent {
     },
 }
 
+impl ViewEvent {
+    /// The click on a sortable table's header ([`Body::sortable_table`]): the
+    /// column and the direction to order it by (`other` view-event, kind
+    /// `sort`; the first click asks ascending, a second on the same column
+    /// reverses). `None` for any other event, or one whose data this SDK
+    /// doesn't read.
+    pub fn sort(&self) -> Option<TableSort> {
+        let Self::Other { kind, data } = self else { return None };
+        if kind != "sort" {
+            return None;
+        }
+        Some(TableSort { column: json_number(data, "column")?, descending: json_bool(data, "descending")? })
+    }
+}
+
+/// The value of `"key":` in the host's flat JSON, up to the next `,` or `}`.
+fn json_value<'a>(data: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!(r#""{key}""#);
+    let mut from = 0;
+    while let Some(i) = data[from..].find(&needle) {
+        let after = data[from + i + needle.len()..].trim_start();
+        if let Some(rest) = after.strip_prefix(':') {
+            let rest = rest.trim_start();
+            let end = rest.find([',', '}']).unwrap_or(rest.len());
+            return Some(rest[..end].trim());
+        }
+        from += i + needle.len();
+    }
+    None
+}
+
+fn json_number(data: &str, key: &str) -> Option<u32> {
+    json_value(data, key)?.parse().ok()
+}
+
+fn json_bool(data: &str, key: &str) -> Option<bool> {
+    match json_value(data, key)? {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// A JSON string array.
+fn json_list<'a>(out: &mut String, items: impl Iterator<Item = &'a str>) {
+    out.push('[');
+    for (i, item) in items.enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('"');
+        out.push_str(&crate::text::escape_json(item));
+        out.push('"');
+    }
+    out.push(']');
+}
+
 /// Content of the plugin's declared views and custom editors.
 pub trait Views {
     fn render(&mut self, view: &str, viewport: Option<Viewport>, ctx: &Invocation) -> Result<View, Error>;
 
     fn handle(&mut self, _view: &str, _event: ViewEvent, _ctx: &Invocation) -> Result<(), Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sortable_table_becomes_the_other_table_body() {
+        let table = Table {
+            columns: vec!["ext".into(), "files".into()],
+            total_rows: 2,
+            rows: vec![vec!["rs".into(), "2".into()], vec!["say \"hi\"".into(), "1".into()]],
+            ..Table::default()
+        };
+        let body = Body::sortable_table(&table, Some(TableSort { column: 1, descending: true }));
+        let Body::Other { kind, data } = body else { panic!("{body:?}") };
+        assert_eq!(kind, "table");
+        assert_eq!(
+            data,
+            concat!(
+                r#"{"columns":["ext","files"],"totalRows":2,"firstRow":0,"rows":[["rs","2"],["say \"hi\"","1"]],"#,
+                r#""editable":false,"sort":{"column":1,"descending":true}}"#
+            )
+        );
+
+        // No sort yet: the headers are still clickable.
+        let body = Body::sortable_table(&table, None);
+        let Body::Other { data, .. } = body else { panic!("{body:?}") };
+        assert!(data.ends_with(r#""editable":false,"sort":null}"#), "{data}");
+    }
+
+    #[test]
+    fn a_sort_click_decodes_from_the_other_event() {
+        let sort = |kind: &str, data: &str| ViewEvent::Other { kind: kind.into(), data: data.into() }.sort();
+        assert_eq!(sort("sort", r#"{"column":3,"descending":true}"#), Some(TableSort { column: 3, descending: true }));
+        assert_eq!(
+            sort("sort", r#"{"descending":false,"column": 0 }"#),
+            Some(TableSort { column: 0, descending: false })
+        );
+        assert_eq!(sort("sort", r#"{"column":1}"#), None, "no direction: not a sort");
+        assert_eq!(sort("sort", "{not json"), None);
+        assert_eq!(sort("other-thing", r#"{"column":1,"descending":false}"#), None, "another kind");
+        assert_eq!(ViewEvent::Button("x".into()).sort(), None);
     }
 }

@@ -1011,6 +1011,14 @@ pub(crate) mod inlay_bindings {
     });
 }
 
+/// The optional `file-actions` export.
+pub(crate) mod file_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "file-actions-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
 /// Paths belong to the UI machine, which can have a different OS than the plugin host.
 fn validate_ui_path(path: &str) -> Result<(), wit::Error> {
     let b = path.as_bytes();

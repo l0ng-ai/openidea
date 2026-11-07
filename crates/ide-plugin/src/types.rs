@@ -444,8 +444,21 @@ pub struct CodeAction {
     pub kind: Option<String>,
     pub preferred: bool,
     pub edits: Vec<(PathBuf, Vec<ide_core::TextEdit>)>,
+    /// Applied before `edits`, in one workspace edit with them.
+    pub operations: Vec<FileOperation>,
+    /// Opened once the action is applied.
+    pub open: Option<PathBuf>,
     /// The plugin's reference: the edits come from `resolve_code_action`.
     pub data: Option<String>,
+    /// Listed by the `file-actions` export, which also resolves it.
+    pub file_action: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOperation {
+    Create { path: PathBuf, text: String, overwrite: bool },
+    Rename { from: PathBuf, to: PathBuf },
+    Delete { path: PathBuf },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -528,6 +541,14 @@ pub struct ViewField {
     pub value: FieldValue,
 }
 
+/// A sortable table's order: the column and the direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSort {
+    pub column: u32,
+    pub descending: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewTable {
@@ -536,6 +557,10 @@ pub struct ViewTable {
     pub first_row: u32,
     pub rows: Vec<Vec<String>>,
     pub editable: bool,
+    /// The plugin opted its headers in to click-to-sort (a `table` body through `other`).
+    pub sortable: bool,
+    /// The sort the plugin orders by (none: no arrow yet).
+    pub sort: Option<TableSort>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -616,4 +641,7 @@ pub enum ViewEvent {
     InsertRow { before: u32 },
     DeleteRows { rows: Vec<u32> },
     Message { text: String },
+    // A sortable table's header click: the column and the direction (leaves
+    // as an `other` view-event, kind `sort`). See `TableSort`.
+    Sort { column: u32, descending: bool },
 }
