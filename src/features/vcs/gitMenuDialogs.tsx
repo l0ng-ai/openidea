@@ -586,7 +586,6 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
 interface WorktreeNode {
   key: string;
   label: string;
-  repo: RepoWorktrees;
   worktree?: Worktree;
   children?: WorktreeNode[];
 }
@@ -629,11 +628,9 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         // The main worktree names a repository across reloads (its linked roots come and go).
         key: `r:${group.worktrees.find((w) => w.main)?.path ?? group.root}`,
         label: repoName(group.root),
-        repo: group,
         children: group.worktrees.map((w): WorktreeNode => ({
           key: `w:${w.path}`,
           label: w.branch ?? (w.head ? w.head.slice(0, 8) : tx("(bare)")),
-          repo: group,
           worktree: w,
         })),
       })),
@@ -644,12 +641,13 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     : undefined;
   const current = currentGroup?.worktrees.find((w) => `w:${w.path}` === selected);
   const selectedKeys = useMemo(() => new Set(selected ? [selected] : []), [selected]);
+  const isCurrent = (path: string) => repos.some((root) => isCurrentWorktree(path, root));
   const icon = (node: WorktreeNode) =>
-    node.worktree ? (isCurrentWorktree(node.worktree.path, node.repo.root) ? "current-branch" : "branch") : "folder";
+    node.worktree ? (isCurrent(node.worktree.path) ? "current-branch" : "branch") : "folder";
   const detail = (node: WorktreeNode) => {
     const w = node.worktree;
     if (!w) return "";
-    const current = isCurrentWorktree(w.path, node.repo.root);
+    const current = isCurrent(w.path);
     // "main" only when the main worktree is not the one this window works in.
     const flags = [
       current ? tx("current") : w.main ? "main" : w.locked ? tx("locked") : w.prunable ? tx("prunable") : "",

@@ -69,4 +69,14 @@ describe("groupWorktrees", () => {
     // `error` is absent rather than the stale message.
     expect(groups[0]?.error).toBeUndefined();
   });
+
+  it("keeps errors from roots whose repository was not listed by another root", () => {
+    const failed: RepoWorktrees = { root: "/work/other-feature", worktrees: [], error: "permission denied" };
+    const loaded: RepoWorktrees = {
+      root: "/work/app",
+      worktrees: [worktree("/work/app", true), worktree("/work/app-feature")],
+    };
+    expect(groupWorktrees([failed, loaded])).toEqual([loaded, failed]);
+    expect(groupWorktrees([failed])).toEqual([failed]);
+  });
 });
