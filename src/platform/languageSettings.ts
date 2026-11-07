@@ -183,6 +183,8 @@ export interface LanguagesValid {
       mvndHome: string;
       /** `-T`: a thread count (4) or a core multiplier (2C, 2.5C); empty = Maven's default. */
       threads: string;
+      /** Comma-separated `-P` profiles; empty = POM/settings defaults. */
+      activeProfiles: string;
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -250,6 +252,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       daemon: false,
       mvndHome: "",
       threads: "",
+      activeProfiles: "",
     },
   },
   markdown: { previewFontSize: null },
@@ -409,6 +412,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         daemon: bool(maven.daemon, d.java.maven.daemon),
         mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
         threads: text(maven.threads, d.java.maven.threads),
+        activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },

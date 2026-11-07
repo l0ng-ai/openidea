@@ -453,6 +453,27 @@ fn maven_daemon_uses_the_runner_jre_version() {
         settings.languages.java.maven.runner_jre = format!("jdk{runner}");
         assert_eq!(maven_command(&root, &settings).as_ref(), Some(expected));
     }
+
+#[test]
+fn maven_options_carry_active_profiles_into_the_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.active_profiles = "dev, integration".into();
+    assert_eq!(maven_options(tmp.path(), &s), ["-P", "dev, integration"]);
+    s.languages.java.maven.active_profiles = "  ".into();
+    assert!(maven_options(tmp.path(), &s).is_empty());
+
+    // A run configuration's own -P wins; repeated application does not duplicate the settings group.
+    s.languages.java.maven.active_profiles = "dev".into();
+    let mut configs = vec![run("maven", "./mvnw", &["package"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].args, ["-P", "dev", "package"]);
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].args, ["-P", "dev", "package"]);
+    let mut configured = vec![run("maven", "./mvnw", &["-P", "prod", "package"])];
+    apply_to_run_configs(&mut configured, tmp.path(), &s);
+    assert_eq!(configured[0].args, ["-P", "prod", "package"]);
+}
 }
 
 #[test]

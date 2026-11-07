@@ -3300,7 +3300,7 @@
   "e.g. -Xmx1g -Dkey=value --add-opens java.base/java.lang=ALL-UNNAMED": "例如 -Xmx1g -Dkey=value --add-opens java.base/java.lang=ALL-UNNAMED",
   "Main class": "主类",
   "e.g. com.example.Application": "例如 com.example.Application",
-  "Active profiles": "活动配置文件",
+  "Active profiles": "活动 profiles",
   "e.g. dev,local": "例如 dev,local",
   "Comma separated; passed as --spring.profiles.active": "以逗号分隔；作为 --spring.profiles.active 传递",
   "Comma separated; passed as -Dspring-boot.run.profiles": "以逗号分隔；作为 -Dspring-boot.run.profiles 传递",
@@ -6784,5 +6784,7 @@
   "Always declined": "已设为始终拒绝",
   "Toolchains file": "Toolchains 文件",
   "Passed as -t; selects the JDKs Maven compiles with.": "以 -t 传入，用于选择 Maven 编译使用的 JDK。",
-  "Select Maven toolchains.xml": "选择 Maven toolchains.xml"
+  "Select Maven toolchains.xml": "选择 Maven toolchains.xml",
+  "Comma-separated Maven profiles passed as -P; empty uses the POM/settings defaults.": "以逗号分隔的 Maven profiles，通过 -P 传入；留空使用 POM/settings 默认值。",
+  "dev,integration": "开发,集成"
 }

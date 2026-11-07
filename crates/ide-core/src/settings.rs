@@ -928,6 +928,8 @@ pub struct MavenSettings {
     /// Thread count of Maven builds (`-T`): a number of threads (`4`) or a core
     /// multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
     pub threads: String,
+    /// Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings.
+    pub active_profiles: String,
 }
 
 impl MavenSettings {

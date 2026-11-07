@@ -424,6 +424,9 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     if let Some(threads) = m.thread_count() {
         out.extend(["-T".to_owned(), threads.to_owned()]);
     }
+    if let Some(profiles) = non_empty(&m.active_profiles) {
+        out.extend(["-P".to_owned(), profiles.to_owned()]);
+    }
     out
 }
 
@@ -431,7 +434,7 @@ fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
     let mut prefixes = vec![0];
     let mut i = 0;
     while let Some(arg) = args.get(i) {
-        if (arg == "-s" || arg == "-t" || arg == "-T") && args.get(i + 1).is_some() {
+        if (arg == "-s" || arg == "-t" || arg == "-T" || arg == "-P") && args.get(i + 1).is_some() {
             i += 2;
         } else if arg.starts_with("-Dmaven.repo.local=") {
             i += 1;
