@@ -72,6 +72,7 @@ struct State {
     context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
+    path_subscriptions: BTreeMap<String, Vec<String>>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
     remotes: Vec<(String, String)>,
@@ -228,6 +229,10 @@ impl MockHost {
 
     pub fn storage(&self) -> BTreeMap<String, String> {
         self.state.borrow().storage.clone()
+    }
+
+    pub fn path_subscriptions(&self) -> BTreeMap<String, Vec<String>> {
+        self.state.borrow().path_subscriptions.clone()
     }
 
     pub fn subscriptions(&self) -> BTreeSet<EventKind> {
@@ -613,6 +618,27 @@ pub mod current {
         })
     }
 
+    pub fn project_of(path: &str) -> Option<ProjectRes> {
+        let path = path.replace('\\', "/");
+        let absolute =
+            path.starts_with('/') || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'/'));
+        if !absolute || path.split('/').any(|part| part == "..") {
+            return None;
+        }
+        with(|s| {
+            s.root
+                .iter()
+                .chain(&s.other_projects)
+                .filter(|root| {
+                    let root = root.replace('\\', "/");
+                    path == root
+                        || path.strip_prefix(root.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))
+                })
+                .max_by_key(|root| root.replace('\\', "/").split('/').count())
+                .map(|root| MockProject { root: root.clone() })
+        })
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         with(|s| {
             require(s, "project.read")?;
@@ -797,6 +823,38 @@ pub mod current {
         })
     }
 
+    pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "events")?;
+            if !matches!(kind, "file-opened" | "file-saved")
+                || globs.len() > 64
+                || globs.iter().any(|g| {
+                    let relative = g.trim_start_matches("./");
+                    relative.is_empty()
+                        || g.len() > 1024
+                        || relative.starts_with('/')
+                        || g.contains('\\')
+                        || g.contains(':')
+                        || g.chars().any(char::is_control)
+                        || g.split('/').any(|p| p == "..")
+                })
+            {
+                return Err(Error::Invalid("invalid event path filter".into()));
+            }
+            match kind {
+                "file-opened" => {
+                    s.subscriptions.insert(EventKind::FileOpened);
+                }
+                "file-saved" => {
+                    s.subscriptions.insert(EventKind::FileSaved);
+                }
+                _ => {}
+            }
+            s.path_subscriptions.insert(kind.to_owned(), globs.iter().map(|g| (*g).to_owned()).collect());
+            Ok(())
+        })
+    }
+
     pub fn subscribe(kind: EventKind) -> Result<(), Error> {
         with(|s| {
             let cap = match kind {
@@ -807,13 +865,17 @@ pub mod current {
             if let Some(cap) = cap {
                 require(s, cap)?;
             }
+            s.path_subscriptions.remove(kind.name());
             s.subscriptions.insert(kind);
             Ok(())
         })
     }
 
     pub fn unsubscribe(kind: EventKind) {
-        with(|s| s.subscriptions.remove(&kind));
+        with(|s| {
+            s.path_subscriptions.remove(kind.name());
+            s.subscriptions.remove(&kind);
+        });
     }
 
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
@@ -964,6 +1026,38 @@ fn glob_match(glob: &str, path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::host;
+
+    #[test]
+    fn path_subscriptions_replace_pause_and_restore() {
+        let mock = MockHost::install();
+        host::subscribe_paths("file-opened", &["config/*.yaml"]).unwrap();
+        assert_eq!(mock.path_subscriptions()["file-opened"], ["config/*.yaml"]);
+        host::subscribe_paths("file-opened", &[]).unwrap();
+        assert!(mock.path_subscriptions()["file-opened"].is_empty());
+        assert!(host::subscribe_paths("file-opened", &["../secret"]).is_err());
+        host::subscribe(EventKind::FileOpened).unwrap();
+        assert!(mock.path_subscriptions().is_empty());
+        host::subscribe_paths("file-saved", &["**/*.rs"]).unwrap();
+        host::unsubscribe(EventKind::FileSaved);
+        assert!(mock.path_subscriptions().is_empty());
+        let _denied = MockHost::install().with_capabilities(&[]);
+        assert!(matches!(host::subscribe_paths("file-opened", &[]), Err(Error::Denied(_))));
+    }
+
+    #[test]
+    fn project_lookup_uses_deepest_root_without_granting_read_access() {
+        let mock = MockHost::install();
+        mock.add_project("/project/nested");
+        assert_eq!(host::project_of("/project/nested/new.txt").unwrap().root().unwrap(), "/project/nested");
+        assert!(host::project_of("/project-other/file").is_none());
+        assert!(host::project_of("relative/file").is_none());
+        mock.add_project("C:/workspace");
+        assert_eq!(host::project_of(r"C:\workspace\file.txt").unwrap().root().unwrap(), "C:/workspace");
+        mock.add_project("//server/share");
+        assert_eq!(host::project_of(r"\\server\share\file.txt").unwrap().root().unwrap(), "//server/share");
+        let _denied = MockHost::install().with_capabilities(&[]);
+        assert!(matches!(host::project_of("/project/file").unwrap().root(), Err(Error::Denied(_))));
+    }
 
     #[test]
     fn invocations_carry_selected_paths() {

@@ -110,6 +110,17 @@ pub trait HostApi: Send + Sync {
     }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
+    /// The most specific open project containing a document (including a new file).
+    fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
+        if !path.is_absolute() {
+            return None;
+        }
+        let real = crate::resolve_real(path);
+        self.projects()
+            .into_iter()
+            .filter(|root| real.starts_with(crate::resolve_real(root)))
+            .max_by_key(|root| root.components().count())
+    }
     /// Unsaved text of an open editor's file.
     fn buffer_text(&self, path: &Path) -> Option<String>;
     /// Version and text of the open document at `path`.
@@ -166,7 +177,11 @@ pub trait HostApi: Send + Sync {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError>;
-    fn subscribe(&self, kind: EventKind, on: bool);
+    /// Delivers every event of `kind`, dropping its path filter.
+    fn subscribe(&self, kind: EventKind);
+    /// Delivers `kind` (`file-opened`, `file-saved`) only for paths matching `globs`.
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
+    fn unsubscribe(&self, kind: &str);
     /// Starts a progress indicator; cancelling it from the UI cancels `cancel`.
     fn task_begin(&self, client: Option<&str>, title: String, cancellable: bool, cancel: CancellationToken) -> u64;
     fn task_report(&self, id: u64, done: u32, total: Option<u32>, message: Option<String>);

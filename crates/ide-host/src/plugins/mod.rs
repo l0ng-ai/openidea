@@ -18,6 +18,7 @@
 mod api;
 pub mod commit;
 pub mod endpoints;
+mod event_paths;
 mod hover;
 mod icon_extensions;
 mod icon_patterns;
@@ -1450,7 +1451,7 @@ impl PluginHost {
         let mut out = BTreeSet::new();
         for p in self.plugins.read().values() {
             for kind in EventKind::ALL {
-                if self.wants(p, kind, subs.get(p.id())) {
+                if self.wants(p, kind, subs.kinds.get(p.id())) {
                     out.insert(kind);
                 }
             }
@@ -1483,7 +1484,8 @@ impl PluginHost {
         let mut queues = self.queues.lock();
         for p in plugins {
             let wanted: Vec<WorkbenchEvent> =
-                events.iter().filter(|e| self.wants(&p, e.kind(), subs.get(p.id()))).cloned().collect();
+                events.iter().filter(|e| self.wants(&p, e.kind(), subs.kinds.get(p.id()))).cloned().collect();
+            let wanted = self.filter_path_events(&p, client, &wanted, &subs);
             if wanted.is_empty() {
                 continue;
             }
@@ -1563,6 +1565,18 @@ impl PluginHost {
     /// Returns whether the plugin was activated.
     fn deliver(&self, id: &str, client: Option<String>, events: Vec<WorkbenchEvent>) -> bool {
         let Ok(plugin) = self.get(id) else { return false };
+        let subs = self.shared.subscriptions.lock().clone();
+        let events: Vec<_> = self
+            .filter_path_events(&plugin, client.as_deref(), &events, &subs)
+            .into_iter()
+            .filter(|event| {
+                !matches!(event, WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_))
+                    || self.wants(&plugin, event.kind(), subs.kinds.get(id))
+            })
+            .collect();
+        if events.is_empty() {
+            return false;
+        }
         if !plugin.meta.lock().pending.is_empty() {
             return false;
         }

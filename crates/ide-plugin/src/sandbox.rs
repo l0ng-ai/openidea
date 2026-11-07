@@ -21,7 +21,7 @@ fn joined_path(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), String> {
 /// the canonical path when it exists, else the canonicalized deepest existing
 /// ancestor with the still-missing tail resolved textually — so the location
 /// of a missing path is still judged where it would really land.
-fn resolve_real(joined: &Path) -> PathBuf {
+pub fn resolve_real(joined: &Path) -> PathBuf {
     let mut tail = Vec::new();
     let mut candidate = joined.to_path_buf();
     let mut real = loop {
