@@ -50,9 +50,10 @@ use crate::types::LazyType;
 
 /// Bump whenever a type in this module changes shape, or extraction
 /// computes something differently (7: inferred returns track local
-/// variables; 8: hash-notation types and assertion tags), so stored
+/// variables; 8: hash-notation types and assertion tags; 9: Laravel
+/// provider payloads and `getFacadeAccessor()` values), so stored
 /// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -263,7 +264,7 @@ pub struct Method {
     pub params: Vec<Param>,
     pub return_type: Option<TypeHint>,
     /// What the body returns, for a function-like with a body and neither a
-    /// return type nor `@return`.
+    /// return type nor `@return` (and for Laravel's `getFacadeAccessor()`).
     pub inferred_return: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
@@ -307,7 +308,7 @@ pub struct FunctionDecl {
     pub params: Vec<Param>,
     pub return_type: Option<TypeHint>,
     /// What the body returns, for a function-like with a body and neither a
-    /// return type nor `@return`.
+    /// return type nor `@return` (and for Laravel's `getFacadeAccessor()`).
     pub inferred_return: Option<LazyType>,
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.

@@ -741,7 +741,12 @@ impl<'a> Resolver<'a> {
         let key = Key::Property(class.to_ascii_lowercase(), name.to_owned());
         let mut ty = self.cached(key, || {
             let model = self.class_model(class)?;
-            let property = model.property(name)?;
+            let Some(property) = model.property(name) else {
+                // Not declared: what a type provider says (Eloquent
+                // relation properties).
+                let ty = self.providers.magic_property(model.fqn(), name, self)?;
+                return Some(self.bind(&ty, &Context::in_class(model.fqn())));
+            };
             let context = Context::in_class(&property.self_class);
             let templates = templates(&property.declaring, []);
             let ty = if let Some(declared) = property.declared() {

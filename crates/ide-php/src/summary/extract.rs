@@ -537,11 +537,18 @@ impl Extractor<'_> {
         let params = self.params(&node.parameter_list);
         let return_type = self.return_type(&node.return_type_hint);
         let doc = self.doc_at(node.span().start.offset, names);
+        // Laravel's `getFacadeAccessor()` names the facade's service by its
+        // value (kept literal), which a `: string` hint doesn't give.
+        let accessor = node.name.value.eq_ignore_ascii_case(b"getFacadeAccessor");
         let inferred_return = match &node.body {
             MethodBody::Concrete(body)
-                if self.infers_return(&return_type, &doc) && !node.name.value.eq_ignore_ascii_case(b"__construct") =>
+                if accessor
+                    || (self.infers_return(&return_type, &doc)
+                        && !node.name.value.eq_ignore_ascii_case(b"__construct")) =>
             {
-                Some(body_return(&self.infer(&params, &doc, names), body))
+                let mut infer = self.infer(&params, &doc, names);
+                infer.literals = accessor;
+                Some(body_return(&infer, body))
             }
             _ => None,
         };

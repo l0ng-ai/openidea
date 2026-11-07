@@ -23,13 +23,18 @@
 //! it doesn't know (`mixed`). A provider can wrap the ones after it through
 //! [`CallSite::next`]. [`TypeProviders::builtin`] holds the
 //! `.phpstorm.meta.php` provider ([`MetaProvider`]), the PHPUnit provider
-//! ([`PhpUnitProvider`]) and the core; summaries are always extracted with
-//! it.
+//! ([`PhpUnitProvider`]), the Laravel provider ([`LaravelProvider`]) and the
+//! core; summaries are always extracted with it.
+//!
+//! Providers also type properties a class doesn't declare
+//! ([`TypeProvider::magic_property`], asked by the resolver), such as
+//! Eloquent relation properties.
 
 use std::sync::{Arc, LazyLock};
 
 use mago_syntax::cst::{Access, Argument, ArgumentList, ClassLikeConstantSelector, Expression};
 
+pub use self::laravel::LaravelProvider;
 use super::ops::literal_type;
 use super::{Context, LazyType, Resolver, Type};
 use crate::meta::MetaProvider;
@@ -197,6 +202,14 @@ pub trait TypeProvider: Send + Sync {
     fn resolve(&self, _payload: &str, _args: &[Type], _resolver: &Resolver<'_>, _context: &Context) -> Option<Type> {
         None
     }
+
+    /// Resolve step for a property class `class` (FQN) neither declares,
+    /// documents nor inherits (one its `__get` answers): its type, or
+    /// `None` to let the next provider answer. `self`/`parent` in the
+    /// answer mean `class`.
+    fn magic_property(&self, _class: &str, _name: &str, _resolver: &Resolver<'_>) -> Option<Type> {
+        None
+    }
 }
 
 /// The order of the core provider; built-in providers that override it use
@@ -211,11 +224,15 @@ pub struct TypeProviders {
 }
 
 impl Default for TypeProviders {
-    /// `.phpstorm.meta.php` ([`MetaProvider`], first: its fallback is what
-    /// the others say), PHPUnit and the core.
+    /// Laravel ([`LaravelProvider`], first: it only overrides what the
+    /// others say where they say `mixed` or for container calls, and
+    /// `.phpstorm.meta.php` overrides stay in its stored fallbacks),
+    /// `.phpstorm.meta.php` ([`MetaProvider`]: its fallback is what the
+    /// others say), PHPUnit and the core.
     fn default() -> Self {
         let mut providers = Self::empty();
         providers.register(CORE_ORDER, Arc::new(CoreProvider));
+        providers.register(CORE_ORDER - 30, Arc::new(LaravelProvider));
         providers.register(CORE_ORDER - 10, Arc::new(PhpUnitProvider));
         providers.register(CORE_ORDER - 20, Arc::new(MetaProvider));
         providers
@@ -272,6 +289,11 @@ impl TypeProviders {
     /// The first local answer for an untyped property.
     pub fn property(&self, site: &PropertySite<'_>) -> Option<LazyType> {
         self.providers.iter().find_map(|(_, provider)| provider.property(site))
+    }
+
+    /// The first answer for an undeclared property of `class`.
+    pub fn magic_property(&self, class: &str, name: &str, resolver: &Resolver<'_>) -> Option<Type> {
+        self.providers.iter().find_map(|(_, provider)| provider.magic_property(class, name, resolver))
     }
 }
 
@@ -402,6 +424,8 @@ impl TypeProvider for PhpUnitProvider {
         Some(Type::intersection([Type::named(class), Type::named(adds)]))
     }
 }
+
+mod laravel;
 
 #[cfg(test)]
 mod tests;
