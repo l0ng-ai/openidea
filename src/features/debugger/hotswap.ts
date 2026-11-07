@@ -5,7 +5,15 @@
  * a save) java-debug reports `BUILD_COMPLETE` and, like IDEA's default
  * "Reload classes after compilation: Ask", we offer the reload.
  */
-import { call, commands, isTauri, nextRequestId, type DebugEvent, type DebugSessionId, type RequestId } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isTauri,
+  nextRequestId,
+  type DebugEvent,
+  type DebugSessionId,
+  type RequestId,
+} from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { isLive, useDebug, type DebugSession } from "./state";
 import { tx } from "@/platform/i18n";
