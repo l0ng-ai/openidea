@@ -1,10 +1,13 @@
 use crate::StepKind;
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
 /// What a method name means when it appears in a stream chain.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum OpRole {
     /// Intermediate operation whose elements are recorded.
-    Step(StepKind),
+    Step { link: StepKind },
     /// Intermediate operation that changes no elements (execution-mode flags).
     Modifier,
     /// Ends the chain; `void` terminals produce no result value.
@@ -19,9 +22,9 @@ pub(crate) fn op_role(name: &str) -> Option<OpRole> {
         "filter" | "map" | "mapToInt" | "mapToLong" | "mapToDouble" | "mapToObj" | "flatMap" | "flatMapToInt"
         | "flatMapToLong" | "flatMapToDouble" | "flatMapToObj" | "mapMulti" | "mapMultiToInt" | "mapMultiToLong"
         | "mapMultiToDouble" | "mapMultiToObj" | "boxed" | "asLongStream" | "asDoubleStream" | "peek" | "distinct"
-        | "skip" | "limit" | "takeWhile" | "dropWhile" => Step(StepKind::Sync),
-        "sorted" => Step(StepKind::Reorder),
-        "gather" => Step(StepKind::Unlinked),
+        | "skip" | "limit" | "takeWhile" | "dropWhile" => Step { link: StepKind::Sync },
+        "sorted" => Step { link: StepKind::Reorder },
+        "gather" => Step { link: StepKind::Unlinked },
         "parallel" | "sequential" | "unordered" | "onClose" => Modifier,
         "collect" | "toList" | "reduce" | "count" | "sum" | "average" | "min" | "max" | "summaryStatistics"
         | "anyMatch" | "allMatch" | "noneMatch" | "findFirst" | "findAny" | "toArray" => Terminal { void: false },
@@ -108,9 +111,9 @@ mod tests {
 
     #[test]
     fn op_roles() {
-        assert_eq!(op_role("filter"), Some(OpRole::Step(StepKind::Sync)));
-        assert_eq!(op_role("sorted"), Some(OpRole::Step(StepKind::Reorder)));
-        assert_eq!(op_role("gather"), Some(OpRole::Step(StepKind::Unlinked)));
+        assert_eq!(op_role("filter"), Some(OpRole::Step { link: StepKind::Sync }));
+        assert_eq!(op_role("sorted"), Some(OpRole::Step { link: StepKind::Reorder }));
+        assert_eq!(op_role("gather"), Some(OpRole::Step { link: StepKind::Unlinked }));
         assert_eq!(op_role("parallel"), Some(OpRole::Modifier));
         assert_eq!(op_role("forEach"), Some(OpRole::Terminal { void: true }));
         assert_eq!(op_role("collect"), Some(OpRole::Terminal { void: false }));
@@ -128,5 +131,8 @@ mod tests {
         assert_eq!(classify_source(Some("rnd"), "ints", false), Some(SourceCheck::Stateful));
         assert_eq!(classify_source(None, "stream", false), None);
         assert_eq!(classify_source(Some("repo"), "findAll", false), None);
+        assert_eq!(classify_source(Some("Files"), "walk", false), Some(SourceCheck::Rereads));
+        assert_eq!(classify_source(Some("myStream"), "stream", false), Some(SourceCheck::Fresh));
+        assert_eq!(classify_source(Some("Stream"), "builder", false), None);
     }
 }
