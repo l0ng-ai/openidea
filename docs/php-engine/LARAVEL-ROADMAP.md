@@ -68,6 +68,31 @@ The engine answers through the existing `LanguageService` dispatch (`crates/ide-
 - **HTTP client** (`ide-http`, `src/features/http-client`): "create a request for this route".
 - **Inspection profiles and quick-fixes** from phase 4.10, and **code lens / inlay hints** from `LanguageService`.
 
+### Front-end independence (rule for every 8.x phase)
+
+The engine may later ship as a standalone LSP server for VS Code and other editors. OpenIDEA is then one front end among several, so every Laravel feature is built as engine logic first, with UI on top.
+
+- **All Laravel knowledge lives in `crates/ide-php`.** That covers the project model, string references, schema, routes, generators' file contents and intentions. Nothing Laravel-specific goes into `ide-host` or the frontend beyond wiring and presentation.
+- **Standard editor features answer through `LanguageService` methods that have an LSP equivalent:**
+  - completion, definition, references, rename
+  - diagnostics, code actions
+  - code lens, inlay hints, document links, semantic tokens
+
+  Don't add OpenIDEA-only shortcuts for these.
+
+- **Dialog-driven features are plain engine queries that return data, never UI.** These are route search, the model view, generators and Artisan commands. Some examples:
+  - `laravel_routes()` returns a route table
+  - `laravel_model_info(class)` returns the model's columns, relations and related classes
+  - `laravel_generators()` lists generators with their input fields
+  - `laravel_generate(id, inputs)` returns a `WorkspaceEdit` with the new files and edits
+  - `laravel_artisan_commands()` returns commands with arguments and options
+
+  Results are serialisable (serde) and use 0-based UTF-16 positions, so an LSP server can expose each one as a custom request (for example `php/laravel/routes`). OpenIDEA's dialogs, panels and run configurations are thin clients of these queries.
+
+- **Engine inputs never depend on an OpenIDEA-only service.** The live database schema (8.11) comes through a small `SchemaSource` trait. OpenIDEA implements it with `ide-db`; another front end can implement it differently (for example from `.env`) or leave it out. The same applies to file templates: the engine ships default templates and accepts overrides from the front end.
+- **Settings are one serialisable struct** (`LaravelSettings`) passed into the engine, not read from OpenIDEA's settings store inside the engine. That way VS Code's `contributes.configuration` can map onto it.
+- **Tests:** every query gets engine-level tests in `crates/ide-php`, independent of the frontend. Frontend tests only cover presentation.
+
 ### Test fixture
 
 `fixtures/laravel-app`: a small, current Laravel application, made from the MIT `laravel/laravel` skeleton plus hand-written code. It includes models with relations, casts and migrations, routes with names and groups, views and Blade components, config and translation keys, Form Requests, policies, commands, and Vite entry points. With no `vendor/`, the engine uses phpstorm-stubs plus the minimal Laravel stubs in `laravel_tests.rs`. A corpus-style test can also use a real `vendor/` when `LARAVEL_APP_DIR` points to one, ignored by default.
