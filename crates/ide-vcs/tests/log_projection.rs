@@ -700,3 +700,86 @@ fn many_selected_paths_filter_history_without_a_huge_command_line() {
     let log = repo.log(&LogQuery { paths, text: Some("c3".into()), ..Default::default() }).unwrap();
     assert_eq!(log.len(), 50);
 }
+
+/// One commit per revision of a single file, plus one lightweight tag per commit, made
+/// with fast-import and `update-ref --stdin` so hundreds stay quick.
+fn commit_one_file_with_a_tag_per_commit(repo_dir: &Path, count: usize, file: &str) {
+    let mut stream = String::new();
+    for i in 0..count {
+        stream.push_str(&format!(
+            "commit refs/heads/main\ncommitter T <t@example.com> {} +0000\ndata 3\nc{}\n",
+            1_700_000_000 + i,
+            i % 10
+        ));
+        let content = format!("x{i}");
+        stream.push_str(&format!("M 100644 inline {file}\ndata {}\n{content}\n\n", content.len()));
+    }
+    let mut child = Command::new("git")
+        .current_dir(repo_dir)
+        .args(["fast-import", "--quiet"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stream.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    git(repo_dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git(repo_dir, &["reset", "-q", "--hard"]);
+    let log = git(repo_dir, &["log", "--reverse", "--format=%H"]);
+    let mut input = String::new();
+    for (i, sha) in log.lines().take(count).enumerate() {
+        input.push_str(&format!("update refs/tags/t{i:04} {sha}\n"));
+    }
+    let mut child = Command::new("git")
+        .current_dir(repo_dir)
+        .args(["update-ref", "--stdin"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn many_branch_tips_with_a_path_filter_stay_off_the_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    let file = "module/src/main/java/com/example/Big.java";
+    commit_one_file_with_a_tag_per_commit(dir, 800, file);
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let log = repo.log(&LogQuery { path: Some(file.into()), ..Default::default() }).unwrap();
+    assert_eq!(log.len(), 800);
+}
+
+#[test]
+fn followed_file_history_with_many_branch_tips_stays_off_the_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    let file = "module/src/main/java/com/example/Big.java";
+    commit_one_file_with_a_tag_per_commit(dir, 800, file);
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let log = repo.log(&LogQuery { path: Some(file.into()), follow: true, ..Default::default() }).unwrap();
+    assert_eq!(log.len(), 800);
+    assert!(log.iter().all(|c| c.history_path.as_deref() == Some(file)));
+}
+
+#[test]
+fn followed_file_history_survives_a_long_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    let mut path = String::from("src");
+    while path.len() < 260 {
+        path.push_str("/deep-history-directory-segment");
+    }
+    let file = format!("{path}/DeepHistory.java");
+    std::fs::create_dir_all(dir.join(&path)).unwrap();
+    let first = commit(dir, &file, "first");
+    let second = commit(dir, &file, "second");
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    let log = repo.log(&LogQuery { path: Some(file.clone().into()), follow: true, ..Default::default() }).unwrap();
+    let ids: std::collections::HashSet<_> = log.iter().map(|c| c.id.clone()).collect();
+    assert_eq!(ids, [first, second].into());
+    assert!(log.iter().all(|c| c.history_path.as_deref() == Some(file.as_str())));
+}

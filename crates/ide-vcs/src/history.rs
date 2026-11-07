@@ -80,14 +80,25 @@ fn git_select(
             args.push("--first-parent".into());
         }
         args.extend(filter.iter().cloned());
+        let revs: Vec<String> = scope.split_whitespace().map(str::to_string).collect();
         // Past this many bytes of paths the command line risks Windows' ~32K limit.
-        let stdin = (paths.iter().map(|p| p.len() + 12).sum::<usize>() > 8 * 1024).then(|| paths_stdin(paths));
+        let long_paths = paths.iter().map(|p| p.len() + 12).sum::<usize>() > 8 * 1024;
+        let long_revs = revs.iter().map(|p| p.len() + 12).sum::<usize>() > 8 * 1024;
+        let stdin = if long_revs {
+            Some(stdin_args(&revs, &[], paths))
+        } else if long_paths {
+            Some(paths_stdin(paths))
+        } else {
+            None
+        };
         if stdin.is_some() {
             args.push("--stdin".into());
         }
         args.push("--end-of-options".into());
-        args.extend(scope.split_whitespace().map(str::to_string));
-        if stdin.is_none() {
+        if !long_revs {
+            args.extend(revs);
+        }
+        if !long_paths && !long_revs {
             args.push("--".into());
             args.extend(paths.iter().map(|p| format!(":(literal){p}")));
         }
@@ -104,6 +115,19 @@ fn paths_stdin(paths: &[String]) -> String {
     let mut text = String::from("--\n");
     for p in paths {
         text.push_str(&format!(":(literal){p}\n"));
+    }
+    text
+}
+
+/// Stdin for `git log --stdin` carrying `revs` and `exclusions` followed by the `paths`,
+/// however many of them there are; everything after `--` limits the walk.
+fn stdin_args(revs: &[String], excluded: &[String], paths: &[String]) -> String {
+    let mut text = revs.iter().chain(excluded).map(|rev| format!("{rev}\n")).collect::<String>();
+    text.push_str("--\n");
+    for p in paths {
+        text.push_str(":(literal)");
+        text.push_str(p);
+        text.push('\n');
     }
     text
 }
@@ -153,13 +177,20 @@ fn file_history(
         // `excluded` can name a revision per created file, so it goes through stdin.
         let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
             let mut args = opts.clone();
-            if !excluded.is_empty() {
+            let long = revs.iter().chain(excluded).map(|p| p.len() + 12).sum::<usize>()
+                + pathspec.iter().map(|p| p.len() + 12).sum::<usize>()
+                > 8 * 1024;
+            let stdin = long
+                .then(|| stdin_args(&revs, excluded, std::slice::from_ref(&path)))
+                .or_else(|| (!excluded.is_empty()).then(|| excluded.join("\n") + "\n"));
+            if stdin.is_some() {
                 args.push("--stdin".into());
             }
             args.push("--end-of-options".into());
-            args.extend(revs.iter().cloned());
-            args.extend(pathspec.iter().cloned());
-            let stdin = (!excluded.is_empty()).then(|| excluded.join("\n") + "\n");
+            if !long {
+                args.extend(revs.iter().cloned());
+                args.extend(pathspec.iter().cloned());
+            }
             Ok(parse_name_status_log(&run_log(r, args, stdin.as_deref(), cancel)?.stdout_str()))
         };
         let records = run(&[])?;
