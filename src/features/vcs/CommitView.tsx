@@ -76,6 +76,7 @@ import { KIND_COLOR, KIND_LABEL, fileCount, formatTime, stashLabel, stripSlash }
 import { call, commands } from "@/platform/ipc";
 import type { FileStatus } from "@/bindings";
 import { OperationBanner } from "./operations";
+import { runOp } from "./ops";
 import { ShelfPanel, loadShelves, useShelf } from "./shelf";
 import { refreshNow, repoName, selectRepo, useVcs } from "./store";
 import styles from "./CommitView.module.css";
@@ -220,13 +221,13 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
       label: "Stage",
       icon: "plus",
       disabled: !files.some((f) => f.unstaged),
-      run: () => void call(commands.vcsStage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Stage ${count} files`, () => call(commands.vcsStage(paths))),
     },
     {
       label: "Unstage",
       icon: "minus",
       disabled: !files.some((f) => f.staged),
-      run: () => void call(commands.vcsUnstage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Unstage ${count} files`, () => call(commands.vcsUnstage(paths))),
     },
     { kind: "separator" },
     ...(count
@@ -335,13 +336,13 @@ export function nodeMenu(
       label: "Stage",
       icon: "plus",
       disabled: !files.some((f) => f.unstaged),
-      run: () => void call(commands.vcsStage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Stage ${paths.length} files`, () => call(commands.vcsStage(paths))),
     },
     {
       label: "Unstage",
       icon: "minus",
       disabled: !files.some((f) => f.staged),
-      run: () => void call(commands.vcsUnstage(paths)).finally(() => void refreshNow()),
+      run: () => void runOp(tx`Unstage ${paths.length} files`, () => call(commands.vcsUnstage(paths))),
     },
     { kind: "separator" },
     ...(nodes.some((n) => n.changelist)
