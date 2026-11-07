@@ -308,6 +308,12 @@ pub fn by_risk(caps: &[Capability]) -> Vec<(Risk, Vec<Capability>)> {
 
 /// Resolves a `process:` program to an absolute path once, at grant time:
 /// absolute names are taken as is, others are looked up in `path_var`.
+/// The found path is kept, not canonicalized: `cargo`, `rustc` and friends are
+/// often links to a multicall shim (rustup, asdf, mise) that picks the tool by
+/// the name it was invoked under — a resolved link would start the shim itself
+/// with the tool's arguments. The grant still pins the target's content: a hash
+/// read through a link reads the file it points to, so relinking or replacing
+/// either still fails the approved-file check.
 pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, String> {
     let candidate = Path::new(name);
     if candidate.is_absolute() {
@@ -325,15 +331,11 @@ pub fn resolve_program(name: &str, path_var: Option<&OsStr>) -> Result<PathBuf, 
         for ext in &exts {
             let p = dir.join(format!("{name}{ext}"));
             if is_executable(&p) {
-                return Ok(dunce_canonical(&p));
+                return Ok(p);
             }
         }
     }
     Err(format!("{name} was not found on PATH"))
-}
-
-fn dunce_canonical(p: &Path) -> PathBuf {
-    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -471,6 +473,39 @@ mod tests {
         l.confirm(&r, &[], [(cap.to_string(), bin)].into());
         assert_eq!(l.check_binary(&r.subject, &cap).unwrap(), resolved);
         std::fs::write(&tool, "#!/bin/sh\necho evil\n").unwrap();
+        assert!(l.check_binary(&r.subject, &cap).unwrap_err().contains("changed"));
+    }
+
+    /// A program found as a link stays the link: multicall shims (rustup,
+    /// asdf, mise) pick the tool by the name they were invoked under, so
+    /// `Command::new` must see the link. The hash still covers the target —
+    /// reading through the link reads it — so replacing either still trips
+    /// the approved-file check.
+    #[cfg(unix)]
+    #[test]
+    fn linked_programs_resolve_to_the_link() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let real_dir = tmp.path().join("real");
+        std::fs::create_dir(&bin_dir).unwrap();
+        std::fs::create_dir(&real_dir).unwrap();
+        let target = real_dir.join("shim");
+        std::fs::write(&target, "#!/bin/sh\necho v1\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&target, bin_dir.join("cargo")).unwrap();
+
+        let path_var = std::env::join_paths([bin_dir.clone()]).unwrap();
+        let resolved = resolve_program("cargo", Some(&path_var)).unwrap();
+        assert_eq!(resolved, bin_dir.join("cargo"));
+
+        let mut l = Ledger::in_memory();
+        let r = req("1.0.0", "h", &["process:cargo"], &[]);
+        let cap: Capability = "process:cargo".parse().unwrap();
+        let bin = BinaryGrant { path: resolved.clone(), hash: file_hash(&resolved).unwrap() };
+        l.confirm(&r, &[], [(cap.to_string(), bin)].into());
+        assert_eq!(l.check_binary(&r.subject, &cap).unwrap(), resolved);
+        std::fs::write(&target, "#!/bin/sh\necho evil\n").unwrap();
         assert!(l.check_binary(&r.subject, &cap).unwrap_err().contains("changed"));
     }
 
