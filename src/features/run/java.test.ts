@@ -366,6 +366,12 @@ describe("debugging build tool configurations", () => {
     expect(out.env.MAVEN_OPTS).toMatch(AGENT);
   });
 
+  it("honours Rebuild on a Maven debug command", () => {
+    const out = jdwpLaunch(cfg({ id: "r", kind: "maven", args: ["spring-boot:run"], buildPolicy: "rebuild" }))!;
+    expect(out.args[0]).toBe("clean");
+    expect(out.args.at(-1)).toMatch(/^-Dspring-boot\.run\.jvmArguments=-agentlib:jdwp=/);
+  });
+
   it("keeps plain Maven builds out of the debugger unless set to the Java debugger", () => {
     expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["exec:exec"] }))).toBeNull();
     const chosen = jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"], debugAdapter: "java-debug" }))!;
