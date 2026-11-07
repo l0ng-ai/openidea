@@ -5605,7 +5605,7 @@
   "e.g. --stop-on-failure --testsuite unit": "np. --stop-on-failure --testsuite unit",
   "CLI Interpreter": "Interpretator interfejsu wiersza poleceń (CLI)",
   "PHP interpreter": "Interpretator PHP",
-  "Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too.": "Uruchamia skrypty PHP, PHPUnit, Composer, artisan oraz serwery językowe oparte na PHP (phpactor). Jego folder umieszczany jest na początku zmiennej PATH, dzięki czemu skrypty vendor/bin/phpunit i inne #!/usr/bin/env php również z niego korzystają.",
+  "Runs PHP scripts, PHPUnit, Composer and artisan. Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too.": "Uruchamia skrypty PHP, PHPUnit, Composer i artisan. Jego folder umieszczany jest na początku zmiennej PATH, dzięki czemu skrypty vendor/bin/phpunit i inne #!/usr/bin/env php również z niego korzystają.",
   "Select PHP Interpreter": "Wybierz interpretator PHP",
   "select files in a git repository to shelve": "wybierz pliki w repozytorium Git do odłożenia na półkę (shelve)",
   "select files from a single git repository to shelve": "wybierz pliki z pojedynczego repozytorium Git do odłożenia na półkę (shelve)",

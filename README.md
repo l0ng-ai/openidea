@@ -47,6 +47,27 @@ IDEA analyses Python more deeply, so "ready" doesn't mean the same work on
 both sides. Both are measured from the outside, the same way: see
 [`perf/compare`](perf/compare) to run it on your machine and projects.
 
+## Languages
+
+Code insight comes from a built-in engine or a language server, which OpenIDEA
+starts on its own once it's installed:
+
+| Language                | Code insight                                                          |
+| ----------------------- | --------------------------------------------------------------------- |
+| PHP                     | **Built-in engine** ([docs](docs/php.md)); Intelephense as a fallback |
+| Java                    | jdtls                                                                 |
+| Kotlin                  | kotlin-lsp or kotlin-language-server                                  |
+| Python                  | basedpyright, pyright, ty or pyrefly, with ruff                       |
+| TypeScript / JavaScript | vtsls or typescript-language-server, with oxlint                      |
+| Go                      | gopls                                                                 |
+| Rust                    | rust-analyzer                                                         |
+| C / C++                 | clangd                                                                |
+| C#                      | csharp-ls                                                             |
+| Ruby                    | ruby-lsp or solargraph                                                |
+
+The other languages are defined in [`languages/`](languages), and
+[plugins](#plugins) can add more.
+
 ## Plugins
 
 Plugins add actions, completion, quick fixes, tool windows, custom editors,

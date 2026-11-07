@@ -146,14 +146,14 @@ export function PhpPage() {
         </Row>
         <Row
           label="PHP language level"
-          hint="The PHP version Intelephense checks the code against: newer syntax and functions are reported. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."
+          hint="The PHP version the code is checked against: newer syntax and functions are reported, and only the built-in functions and classes of that version are offered. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."
         >
           <Select value={level} options={PHP_LEVEL_OPTIONS} onChange={setLevel} aria-label="PHP language level" />
         </Row>
         <Row
           label="Include paths"
           stacked
-          hint="Folders outside the project whose classes and functions Intelephense indexes too, such as the platform a module extends. Absolute, or relative to the project."
+          hint="Folders outside the project whose classes and functions are indexed too, such as the platform a module extends. Absolute, or relative to the project."
         >
           <GlobListEditor
             value={includePaths ?? []}
@@ -167,7 +167,7 @@ export function PhpPage() {
         <Row
           label="Additional stubs"
           stacked
-          hint="Intelephense stub sets loaded on top of its defaults, such as wordpress. Each ext-* in require or require-dev of composer.json adds its own."
+          hint="Stub sets loaded on top of the defaults: phpstorm-stubs folder names such as redis or mongodb (Intelephense also knows wordpress). Each ext-* in require or require-dev of composer.json adds its own."
         >
           <GlobListEditor
             value={stubs ?? []}
@@ -188,7 +188,7 @@ export function PhpPage() {
           emptyDetail="php on PATH"
           browseTitle="Select PHP Interpreter"
           aria-label="PHP interpreter"
-          hint="Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
+          hint="Runs PHP scripts, PHPUnit, Composer and artisan. Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
         />
         {selected?.version && <Row label="Version">{selected.version}</Row>}
       </Section>

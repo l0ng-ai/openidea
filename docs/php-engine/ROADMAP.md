@@ -51,7 +51,7 @@ The design:
 - **Integration:**
   - `Project` (`crates/ide-host/src/project.rs`) owns an `Arc<PhpEngine>`, registers a `DocumentObserver`, and forwards watcher batches to it.
   - A `LanguageService` trait in `ide-host` is consulted before LSP in `crates/ide-host/src/ops/lsp.rs`, so local and remote development both work with no frontend or IPC changes.
-  - `PhpSettings.engine` (`Native | Intelephense`) chooses between the two. It defaults to Intelephense until phase 6.4.
+  - `PhpSettings.engine` (`Native | Intelephense`) chooses between the two. It defaulted to Intelephense until phase 6.4 and defaults to Native since. The architecture as built is described in [architecture.md](architecture.md).
 - **Reuse:**
   - `crates/ide-sdk/src/php.rs` for the language level, include paths and stubs.
   - `crates/ide-sdk/src/discover.rs` `php()` for interpreter discovery.
@@ -430,7 +430,7 @@ The design:
   3. Adapt `crates/ide-sdk/src/php.rs`, keeping the Intelephense settings the fallback needs.
   4. Update the tool registry and the smoke tests: the PHP smoke runs on Native by default, and a test covers switching to the Intelephense fallback.
 
-- [ ] Phase 6.5: Documentation close-out
+- [x] Phase 6.5: Documentation close-out
       Update the user docs (Settings › PHP, features) and the README's language table. Write an architecture note for contributors (`docs/php-engine/architecture.md`).
 
 ## Plan 7: Beyond Intelephense
