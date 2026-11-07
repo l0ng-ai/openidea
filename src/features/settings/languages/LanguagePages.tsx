@@ -494,6 +494,7 @@ export function GradlePage() {
 export function MavenPage() {
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
   const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
   const id = useId();
   return (
     <div className={styles.page}>
@@ -542,6 +543,21 @@ export function MavenPage() {
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
         />
+        <Row
+          label="Active profiles"
+          htmlFor={`${id}-profiles`}
+          hint="Comma-separated Maven profiles passed as -P; empty uses the POM/settings defaults."
+        >
+          <Input
+            id={`${id}-profiles`}
+            mono
+            className={styles.pathInput}
+            value={activeProfiles}
+            placeholder="dev,integration"
+            onChange={(e) => setActiveProfiles(e.target.value.trim())}
+            aria-label="Active profiles"
+          />
+        </Row>
         <Row
           label="Thread count"
           htmlFor={id}

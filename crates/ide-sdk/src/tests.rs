@@ -304,6 +304,16 @@ fn project_jdk_and_maven_settings() {
 }
 
 #[test]
+fn maven_options_carry_active_profiles_into_the_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.active_profiles = "dev, integration".into();
+    assert_eq!(maven_options(tmp.path(), &s), ["-P", "dev, integration"]);
+    s.languages.java.maven.active_profiles = "  ".into();
+    assert!(maven_options(tmp.path(), &s).is_empty());
+}
+
+#[test]
 fn maven_options_carry_the_thread_count_into_the_command_line() {
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();

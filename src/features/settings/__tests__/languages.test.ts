@@ -49,6 +49,7 @@ describe("languages settings", () => {
       daemon: false,
       mvndHome: "/opt/mvnd",
       threads: "2C",
+      activeProfiles: "",
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
