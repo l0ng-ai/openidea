@@ -8,10 +8,10 @@ import { indentUnit } from "@codemirror/language";
 import type { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
 import type { ContributedIntention } from "@/editor/api";
-import { docOf, lspRequest, reportLspError } from "./lsp";
-import { offsetToPos } from "./positions";
-import { readFileLines } from "./files";
-import { showHint } from "./hint";
+import { docOf, lspRequest, reportLspError } from "../../lsp";
+import { offsetToPos } from "../../positions";
+import { readFileLines } from "../../files";
+import { showHint } from "../../hint";
 
 const CLASS_HEADER = /^(\s*)class\s+\w+\s*\((.*)\)\s*:/;
 const CLASS = /^\s*class\s/;
