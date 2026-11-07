@@ -154,6 +154,14 @@ pub(crate) fn to_wit(e: HostError) -> wit::Error {
     }
 }
 
+fn notification_level(level: wit::NotificationLevel) -> NotificationLevel {
+    match level {
+        wit::NotificationLevel::Info => NotificationLevel::Info,
+        wit::NotificationLevel::Warning => NotificationLevel::Warning,
+        wit::NotificationLevel::Error => NotificationLevel::Error,
+    }
+}
+
 /// A guest's `error` as text (`denied: net:example.com`, `stale`, …).
 impl From<wit::Error> for crate::runtime::GuestError {
     fn from(e: wit::Error) -> Self {
@@ -266,19 +274,40 @@ impl StoreData {
 }
 
 impl ui::Host for StoreData {
+    fn notify(
+        &mut self,
+        level: wit::NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ui::NotificationAction>,
+    ) -> Fallible<()> {
+        const MAX_ACTIONS: usize = 3;
+        if actions.len() > MAX_ACTIONS {
+            return Ok(Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions"))));
+        }
+        let mut checked = Vec::with_capacity(actions.len());
+        for a in actions {
+            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+                return Ok(Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label))));
+            }
+            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                return Ok(Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into())));
+            }
+            checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
+        }
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        Ok(self.host.notify(self.client(), notification_level(level), title, body, checked).map_err(to_wit))
+    }
+
     fn show_notification(
         &mut self,
         level: wit::NotificationLevel,
         title: String,
         body: String,
     ) -> wasmtime::Result<()> {
-        let level = match level {
-            wit::NotificationLevel::Info => NotificationLevel::Info,
-            wit::NotificationLevel::Warning => NotificationLevel::Warning,
-            wit::NotificationLevel::Error => NotificationLevel::Error,
-        };
-        let max = crate::runtime::MAX_TITLE;
-        self.host.notify(self.client(), level, clip(title, max), clip(body, 16 << 10));
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        // A plain notification has nothing the host could refuse.
+        let _ = self.host.notify(self.client(), notification_level(level), title, body, Vec::new());
         Ok(())
     }
 

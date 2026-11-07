@@ -1268,3 +1268,13 @@ reused as usual, and the normal trust prompt and unsaved-change guard apply.
 The call acknowledges the request; cancellation or opening errors are handled by
 the window. Neither API needs a capability. Paths belong to the UI machine,
 including when plugin code runs on a remote host.
+
+### Notifications with commands
+
+`host::notify_with_actions(level, title, body, actions)` shows up to three
+buttons. Build each with `NotificationAction::new(label, command)` and an
+optional `.argument(text)`. Commands must be declared by that plugin; choosing
+one dismisses the balloon and runs the command in the receiving window with
+its normal editor and project context. No capability is needed. Invalid or
+undeclared actions reject the whole notification. Labels are limited to 256
+bytes and arguments to 64 KiB. Plain `host::notify` behaves as before.

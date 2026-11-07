@@ -41,7 +41,41 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
      * own stamps), do not change the index either. */
     private static final int IGNORED_FLAGS = IJavaElementDelta.F_CHILDREN | IJavaElementDelta.F_PRIMARY_WORKING_COPY
             | IJavaElementDelta.F_AST_AFFECTED | IJavaElementDelta.F_FINE_GRAINED;
-    static { JavaCore.addElementChangedListener(event -> { if (affects(event.getDelta())) REVISION.incrementAndGet(); }, ElementChangedEvent.POST_CHANGE); }
+    /** Entries read from each library's Spring metadata, by project and archive. They depend
+     * on the archive and the project's classpath only, so a source change rebuilds the index
+     * without reading every dependency's metadata again: resolving its thousands of properties
+     * to library members takes seconds. A changed archive stamp or classpath drops them. */
+    private static final Map<String, Archive> ARCHIVES = new HashMap<>();
+    private record Archive(FileStamp stamp, List<Entry> entries) {}
+    static {
+        JavaCore.addElementChangedListener(event -> {
+            if (affects(event.getDelta())) REVISION.incrementAndGet();
+            if (classpathChanged(event.getDelta())) synchronized (ARCHIVES) { ARCHIVES.clear(); }
+        }, ElementChangedEvent.POST_CHANGE);
+    }
+    /** A project or package fragment root added, removed or reconfigured (not a change of
+     * the sources or resources inside it). */
+    static boolean classpathChanged(IJavaElementDelta delta) {
+        if (delta.getElement().getElementType() > IJavaElement.PACKAGE_FRAGMENT_ROOT) return false;
+        int flags = delta.getFlags() & ~(IGNORED_FLAGS | IJavaElementDelta.F_CONTENT);
+        if (delta.getKind() != IJavaElementDelta.CHANGED || flags != 0) return true;
+        for (IJavaElementDelta child : delta.getAffectedChildren()) if (classpathChanged(child)) return true;
+        return false;
+    }
+    private static List<Entry> archive(String key, FileStamp stamp) {
+        synchronized (ARCHIVES) {
+            Archive known = ARCHIVES.get(key);
+            return known != null && known.stamp.equals(stamp) ? known.entries : null;
+        }
+    }
+    private static void remember(String key, FileStamp stamp, List<Entry> entries) {
+        synchronized (ARCHIVES) {
+            ARCHIVES.remove(key);
+            if (ARCHIVES.values().stream().mapToInt(known -> known.entries.size()).sum() + entries.size() > MAX_ENTRIES)
+                ARCHIVES.clear();
+            if (entries.size() <= MAX_ENTRIES) ARCHIVES.put(key, new Archive(stamp, entries));
+        }
+    }
     static boolean affects(IJavaElementDelta delta) {
         int flags = delta.getFlags() & ~IGNORED_FLAGS;
         if (delta.getElement().getElementType() < IJavaElement.COMPILATION_UNIT) flags &= ~IJavaElementDelta.F_CONTENT;
@@ -465,8 +499,18 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
             Path path = root.getPath().toFile().toPath();
             if (!root.isExternal() && root.getResource() != null && root.getResource().getLocation() != null)
                 path = root.getResource().getLocation().toFile().toPath();
-            files.put(path, stamp(path));
+            FileStamp stamp = stamp(path);
+            files.put(path, stamp);
             if (!Files.isRegularFile(path)) return;
+            String key = project.getHandleIdentifier() + '\n' + path;
+            List<Entry> known = archive(key, stamp);
+            if (known != null && entries.size() + known.size() <= MAX_ENTRIES) {
+                entries.addAll(known);
+                return;
+            }
+            int start = entries.size();
+            boolean before = incomplete;
+            incomplete = false;
             try (ZipFile zip = new ZipFile(path.toFile())) {
                 for (String filename : List.of("spring-configuration-metadata.json", "additional-spring-configuration-metadata.json")) {
                     var entry = zip.getEntry("META-INF/" + filename);
@@ -481,6 +525,9 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
                     metadataObject(metadata, project);
                 }
             } catch (Exception e) { if (e instanceof OperationCanceledException) throw (OperationCanceledException)e; incomplete = true; }
+            // Only a complete reading is reused; an incomplete one is read again next time.
+            if (!incomplete) remember(key, stamp, List.copyOf(entries.subList(start, entries.size())));
+            incomplete |= before;
         }
         void metadataObject(JsonObject metadata, IJavaProject project) throws JavaModelException {
             JsonArray groups = metadata.has("groups") ? metadata.getAsJsonArray("groups") : new JsonArray();

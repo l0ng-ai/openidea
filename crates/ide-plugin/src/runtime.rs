@@ -60,7 +60,15 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
+    /// Shows a notification; `actions` name commands the plugin declares.
+    fn notify(
+        &self,
+        client: Option<&str>,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<crate::NotificationAction>,
+    ) -> Result<(), HostError>;
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
         let _ = (client, text);
         Ok(())

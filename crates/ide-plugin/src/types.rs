@@ -645,3 +645,12 @@ pub enum ViewEvent {
     // as an `other` view-event, kind `sort`). See `TableSort`.
     Sort { column: u32, descending: bool },
 }
+
+/// A notification button that runs one of the publishing plugin's commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
+}
