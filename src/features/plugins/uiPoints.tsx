@@ -15,7 +15,7 @@
 import { useMemo } from "react";
 import type { PluginInfo } from "@/bindings";
 import { getAction } from "@/platform/actions";
-import { evaluateWhen } from "@/platform/context";
+import { evaluateWhen, getContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
 import {
@@ -34,6 +34,7 @@ import {
   registerFileEditorProvider,
   registerMenuGroup,
   registerMenuSlotItem,
+  registerServiceProvider,
   registerSettingsPage,
   registerTextEditorWrapper,
   registerToolWindow,
@@ -46,6 +47,7 @@ import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
 import { declareStatusItem } from "./runtimeUi";
+import { pluginToolWindowId } from "./views/viewStore";
 import {
   CUSTOM_EDITOR_KIND,
   CustomEditor,
@@ -57,13 +59,15 @@ import {
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
 import { PluginView } from "./views/PluginView";
+import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
 import styles from "./PluginsPage.module.css";
 
 // --- menus ------------------------------------------------------------------------
 
 interface MenuDecl {
-  menu: "editor.context" | "projectView.context" | "editorTab.context" | "tools";
+  menu: "editor.context" | "projectView.context" | "editorTab.context" | "viewItem.context" | "tools";
+  view?: string | null;
   command: string;
   when?: string | null;
 }
@@ -85,7 +89,25 @@ export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): 
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;
     // The editor menu runs with the focused editor; the others name their file.
-    out.push({ kind: "action", action, arg: menu === "editor" ? undefined : paths[0] });
+    out.push({
+      kind: "action",
+      action,
+      arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths] },
+    });
+  }
+  return out;
+}
+
+/** Plugin entries of a view item's context menu, with the item key as argument. */
+export function pluginViewItemMenuItems(pluginId: string, view: string, key: string): MenuItem[] {
+  const ctx = { ...getContext(), viewItem: key, viewItemKind: key.split(":")[0] };
+  const out: MenuItem[] = [];
+  for (const { pluginId: owner, decl } of contextItems.values()) {
+    if (owner !== pluginId || decl.menu !== "viewItem.context" || decl.view !== view) continue;
+    if (!evaluateWhen(decl.when ?? undefined, ctx)) continue;
+    const action = pluginActionId(pluginId, decl.command);
+    if (!getAction(action)) continue;
+    out.push({ kind: "action", action, arg: key });
   }
   return out;
 }
@@ -222,7 +244,7 @@ interface ViewDecl {
   id: string;
   title: string;
   icon?: string | null;
-  location: ToolWindowAnchor;
+  location: ToolWindowAnchor | "services";
   web?: string;
 }
 
@@ -288,9 +310,11 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
   };
 }
 
-export const pluginToolWindowId = (pluginId: string, view: string) => `plugin.${pluginId}.${view}`;
-
 function registerView(pluginId: string, decl: ViewDecl, icon: string): () => void {
+  if (decl.location === "services") {
+    const itemMenu = (key: string) => pluginViewItemMenuItems(pluginId, decl.id, key);
+    return registerServiceProvider(pluginServiceProvider(pluginId, decl, icon, itemMenu));
+  }
   return registerToolWindow({
     id: pluginToolWindowId(pluginId, decl.id),
     title: decl.title,
@@ -301,7 +325,12 @@ function registerView(pluginId: string, decl: ViewDecl, icon: string): () => voi
       decl.web ? (
         <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
       ) : (
-        <PluginView pluginId={pluginId} view={decl.id} label={decl.title} />
+        <PluginView
+          pluginId={pluginId}
+          view={decl.id}
+          label={decl.title}
+          itemMenu={(key) => pluginViewItemMenuItems(pluginId, decl.id, key)}
+        />
       ),
   });
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatPattern, formatTimestamp } from "@/platform/dateFormat";
 import { resolveThemeId } from "@/workbench/theme";
-import { applyAppearanceOptions, nextZoom } from "../appearanceRuntime";
+import { applyAppearanceOptions, nextZoom, SMALL_TREE_INDENT } from "../appearanceRuntime";
 import { validateSettings } from "../model/schema";
 import { validateAppearanceExtras, validateNotifications } from "../model/behaviorSchema";
 
@@ -67,6 +67,20 @@ describe("appearance & behavior settings", () => {
     expect(validateAppearanceExtras({}).showToolWindowBadges).toBe(true);
     expect(validateAppearanceExtras({ showToolWindowBadges: false }).showToolWindowBadges).toBe(false);
     expect(validateAppearanceExtras({ showToolWindowBadges: 1 }).showToolWindowBadges).toBe(true);
+  });
+
+  it("defaults Use smaller indents in trees to off and applies the indent variable", () => {
+    expect(validateAppearanceExtras({}).smallTreeIndents).toBe(false);
+    expect(validateAppearanceExtras({ smallTreeIndents: true }).smallTreeIndents).toBe(true);
+    expect(validateAppearanceExtras({ smallTreeIndents: "on" }).smallTreeIndents).toBe(false);
+    const root = document.createElement("div");
+    applyAppearanceOptions(validateSettings({ appearance: { smallTreeIndents: true } }), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe(SMALL_TREE_INDENT);
+    // Off (or a stored non-boolean) restores the default indents.
+    applyAppearanceOptions(validateSettings({}), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe("");
+    applyAppearanceOptions(validateSettings({ appearance: { smallTreeIndents: false } }), root);
+    expect(root.style.getPropertyValue("--tree-indent")).toBe("");
   });
 
   it("keeps the UI fallback font empty by default and trims a stored one", () => {

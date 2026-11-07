@@ -314,6 +314,14 @@ pub struct Endorsement {
     pub signature: String,
 }
 
+/// A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginIcon {
+    pub light: String,
+    pub dark: Option<String>,
+}
+
 /// A published plugin version.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -340,6 +348,10 @@ pub struct IndexEntry {
     /// Marketplace categories (`CATEGORIES`); an IDE ignores those it doesn't know.
     #[serde(default)]
     pub categories: Vec<String>,
+    /// The manifest's icon, sanitised by whoever wrote the index and again by
+    /// the IDE before showing it.
+    #[serde(default)]
+    pub icon: Option<PluginIcon>,
 }
 
 impl IndexEntry {
@@ -672,6 +684,7 @@ mod tests {
             capabilities: Vec::new(),
             engine: "^1.0".into(),
             categories: Vec::new(),
+            icon: None,
         }
     }
 

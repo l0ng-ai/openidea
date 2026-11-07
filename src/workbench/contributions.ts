@@ -208,6 +208,8 @@ export interface ServiceTreeItem {
   dim?: boolean;
   /** Expanded the first time the node appears. */
   expanded?: boolean;
+  /** Shows an expander before its children are known (the provider's `expand` loads them). */
+  expandable?: boolean;
   /** Undefined for leaves. */
   children?: ServiceTreeItem[];
 }
@@ -239,6 +241,10 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** A node of this provider became the lead selection. */
+  select?(item: ServiceTreeItem): void;
+  /** A node of this provider was expanded or collapsed. */
+  expand?(item: ServiceTreeItem, expanded: boolean): void;
   /** Right pane for a selected node. */
   detail?: ComponentType<{ item: ServiceTreeItem }>;
   /** Status line above the tree (a long operation in progress…); renders null when idle. */
@@ -325,10 +331,25 @@ export const registerToolWindow = (c: ToolWindowContribution) => register("toolW
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
 
+type GitLogChecksCell = ComponentType<{ root: string; revision: string }>;
+export const useGitLogChecks = create<{ cell: GitLogChecksCell | null }>(() => ({ cell: null }));
+
+export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
+  useGitLogChecks.setState({ cell });
+  return () => {
+    if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
 const EditorShown = createContext(true);
 export const EditorShownProvider = EditorShown.Provider;
 /** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
 export const useEditorShown = () => useContext(EditorShown);
+
+const ToolWindowShown = createContext(true);
+export const ToolWindowShownProvider = ToolWindowShown.Provider;
+/** Whether this tool window is showing (one shown once stays mounted while hidden). */
+export const useToolWindowShown = () => useContext(ToolWindowShown);
 
 export const registerEditorKind = (c: EditorKindContribution) => register("editorKinds", c.kind, c);
 export const registerTitleItem = (c: TitleItemContribution) => register("titleItems", c.id, c);
@@ -1462,6 +1483,8 @@ export interface DebugServiceSession {
   startedAt: number;
   status: "starting" | "running" | "paused" | "stopping" | "terminated";
   processId: number | null;
+  /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
+  httpPort?: number;
   rerun: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;

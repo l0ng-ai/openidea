@@ -38,3 +38,4 @@ export { selectableText, copyMenuFor, copyText } from "./selectableText";
 export { useSelectionBoundary } from "./useSelectionBoundary";
 export { useSanitizedField } from "./useSanitizedField";
 export * from "./rowSelection";
+export * from "./LogPane";

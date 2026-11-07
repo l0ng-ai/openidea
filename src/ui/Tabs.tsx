@@ -5,6 +5,7 @@
  */
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -213,24 +214,39 @@ export function Tabs({
     });
   }, [dndType]);
 
+  // Bring a tab's whole slot (label + close button) into view. Narrowing the strip clips
+  // the active tab's close button (#1740), and clicking the already-active tab doesn't
+  // change `activeId`, so the strip must also reveal on clicks and resizes.
+  const revealTab = useCallback(
+    (id: string | null) => {
+      const scroller = scrollRef.current;
+      const tab = id ? tabRefs.current.get(id)?.parentElement : null;
+      if (scroller && tab) (vertical ? revealVertically : revealHorizontally)(scroller, tab);
+    },
+    [vertical],
+  );
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     // A vertical strip shows its scrollbar instead of the overflow dropdown.
-    const measure = () => setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
+    const measure = () => {
+      setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
+      // A resize (e.g. the editor area narrowing) must scroll the active tab back
+      // into view instead of leaving its close button clipped until a tab switch.
+      revealTab(latest.current.activeId);
+    };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [items.length, vertical]);
+  }, [items.length, revealTab, vertical]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.
-    const tab = activeId ? tabRefs.current.get(activeId)?.parentElement : null;
-    const scroller = scrollRef.current;
-    if (tab && scroller) (vertical ? revealVertically : revealHorizontally)(scroller, tab);
-  }, [activeId, vertical]);
+    revealTab(activeId);
+  }, [activeId, revealTab]);
 
   const focusTab = (index: number) => {
     const item = items[(index + items.length) % items.length];
@@ -389,6 +405,9 @@ export function Tabs({
                     return;
                   }
                   onSelect(item.id);
+                  // Revealing on every click: re-selecting the active tab doesn't change
+                  // `activeId`, so the reveal effect wouldn't re-run (#1740).
+                  revealTab(item.id);
                 }}
                 onDoubleClick={onDoubleClick ? () => onDoubleClick(item.id) : undefined}
                 onKeyDown={(e) => onKeyDown(e, index, item)}

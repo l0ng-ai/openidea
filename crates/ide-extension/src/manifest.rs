@@ -32,7 +32,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.2.0";
+pub const ENGINE_VERSION: &str = "1.3.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -54,6 +54,10 @@ pub struct Manifest {
     pub change_notes: Option<String>,
     /// Marketplace categories as declared (see [`Manifest::categories`]).
     pub declared_categories: Vec<String>,
+    /// SVG shown in Settings › Plugins and the marketplace.
+    pub icon: Option<PathBuf>,
+    /// Its variant for dark themes.
+    pub icon_dark: Option<PathBuf>,
     /// `engines.openidea` (a semver requirement), or the legacy `openidea-api`.
     pub engine: String,
     /// Written in the 0.1 format.
@@ -175,6 +179,10 @@ struct Raw {
     #[serde(default)]
     categories: Vec<String>,
     #[serde(default)]
+    icon: Option<PathBuf>,
+    #[serde(default)]
+    icon_dark: Option<PathBuf>,
+    #[serde(default)]
     engines: Option<Engines>,
     /// 0.1 format.
     #[serde(default)]
@@ -253,6 +261,8 @@ impl Manifest {
             license: raw.license,
             change_notes: raw.change_notes,
             declared_categories: raw.categories,
+            icon: raw.icon,
+            icon_dark: raw.icon_dark,
             engine,
             legacy,
             wasm: raw.wasm,
@@ -268,6 +278,16 @@ impl Manifest {
         let path = dir.join(MANIFEST_FILE);
         let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::parse(&src).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Refuses `what`, new in plugin API 1.`minor`, while `engines.openidea`
+    /// still admits an older 1.x: those IDEs reject the manifest at install.
+    pub fn needs_api(&self, what: &str, minor: u64) -> Result<(), String> {
+        let older = |m| engine_compatible_with(&self.engine, &semver::Version::new(1, m, u64::MAX));
+        if self.legacy || (0..minor).any(older) {
+            return Err(format!("{what} is new in plugin API 1.{minor}: set engines.openidea to \"^1.{minor}\""));
+        }
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -290,6 +310,16 @@ impl Manifest {
         }
         if let Some(wasm) = &self.wasm {
             check_relative(wasm, "wasm")?;
+        }
+        if let Some(icon) = &self.icon {
+            self.needs_api("`icon`", 2)?;
+            check_relative(icon, "icon")?;
+        }
+        if let Some(dark) = &self.icon_dark {
+            if self.icon.is_none() {
+                return Err("`icon-dark` needs `icon`".into());
+            }
+            check_relative(dark, "icon-dark")?;
         }
         if self.wasm.is_none() && !self.activation.is_empty() {
             return Err("`activation` needs `wasm`: there is no code to activate".into());
@@ -376,9 +406,11 @@ pub fn engine_compatible(engine: &str, legacy: bool) -> bool {
     if legacy {
         return engine == LEGACY_API || engine.strip_prefix(LEGACY_API).is_some_and(|rest| rest.starts_with('.'));
     }
-    let Ok(req) = semver::VersionReq::parse(engine) else { return false };
-    let host = semver::Version::parse(ENGINE_VERSION).expect("valid engine version");
-    req.matches(&host)
+    engine_compatible_with(engine, &semver::Version::parse(ENGINE_VERSION).expect("valid engine version"))
+}
+
+fn engine_compatible_with(engine: &str, api: &semver::Version) -> bool {
+    semver::VersionReq::parse(engine).is_ok_and(|req| req.matches(api))
 }
 
 /// Segments of `[a-z0-9][a-z0-9_-]*` joined by `.` (an optional publisher
@@ -547,6 +579,28 @@ mod tests {
             err("id = \"a..b\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"").contains("plugin id")
         );
         assert!(err("id = \"ok\"\nname = \"N\"\nversion = \"1.0\"\nengines.openidea = \"^1.0\"").contains("version"));
+    }
+
+    const BASE: &str = "id = \"ok\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n";
+
+    #[test]
+    fn parses_icons() {
+        let m = Manifest::parse(&format!("{BASE}icon = \"icon.svg\"\nicon-dark = \"icon_dark.svg\"\n")).unwrap();
+        assert_eq!(m.icon.as_deref(), Some(Path::new("icon.svg")));
+        assert_eq!(m.icon_dark.as_deref(), Some(Path::new("icon_dark.svg")));
+        assert_eq!(Manifest::parse(BASE).unwrap().icon, None);
+    }
+
+    #[test]
+    fn rejects_invalid_icons() {
+        assert!(err(&format!("{BASE}icon-dark = \"d.svg\"\n")).contains("`icon-dark` needs `icon`"));
+        assert!(err(&format!("{BASE}icon = \"../x.svg\"\n")).contains("icon"));
+        assert!(err(&format!("{BASE}icon = \"/abs.svg\"\n")).contains("icon"));
+        assert!(err(&format!("{BASE}icon = \"i.svg\"\nicon-dark = \"../d.svg\"\n")).contains("icon-dark"));
+        for engine in ["^1.0", ">=1.1, <2"] {
+            let old = BASE.replace("^1.2", engine);
+            assert!(err(&format!("{old}icon = \"i.svg\"\n")).contains("new in plugin API 1.2"), "{engine}");
+        }
     }
 
     #[test]

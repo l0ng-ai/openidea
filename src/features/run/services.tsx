@@ -228,12 +228,14 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
   if (!s) return undefined;
   const debug = serviceDebugger(s);
   if (debug?.status === "paused") return "Suspended";
-  if (debug)
-    return s.run && busy(s.run) && s.run.httpPort
-      ? `:${s.run.httpPort}`
-      : debug.status === "starting"
-        ? "Starting"
-        : "Debugging";
+  if (debug) {
+    // The app's HTTP port: a Run owns the console for an attached debugger, a direct
+    // debug launch announces it on the debug session's own console (#1718).
+    const run = s.run && busy(s.run) ? s.run : undefined;
+    const port = run?.httpPort ?? debug.httpPort;
+    if (port) return `:${port}`;
+    return debug.status === "starting" ? "Starting" : "Debugging";
+  }
   return s.run ? sessionDetail(s.run) : "Finished";
 }
 

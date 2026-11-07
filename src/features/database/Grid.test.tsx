@@ -53,6 +53,73 @@ describe("database grid", () => {
     expect(writeText).toHaveBeenCalledWith("one\ttwo\nthree\tfour");
     expect(globalCopy).not.toHaveBeenCalled();
   });
+  it("copies the selection in the extractor's format for plain ⌘C", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const data = [
+      ["1", "Shanghai"],
+      ["2", "Bei'jing"],
+      ["3", null],
+    ];
+    render(
+      <Grid
+        columns={[
+          { name: "id", type: "INTEGER" },
+          { name: "city", type: "TEXT" },
+        ]}
+        rowCount={3}
+        value={(r, c) => data[r]![c]!}
+        copyFormat="onerow"
+      />,
+    );
+    const cells = screen.getAllByRole("gridcell");
+    // A column of three cells: the values on one line.
+    fireEvent.mouseDown(cells[0]!, { button: 0 });
+    fireEvent.mouseEnter(cells[4]!);
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenCalledWith("1, 2, 3");
+    // Text values are single-quoted with `'` doubled; nulls are NULL.
+    writeText.mockClear();
+    fireEvent.mouseDown(cells[1]!, { button: 0 });
+    fireEvent.mouseEnter(cells[5]!);
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenCalledWith("'Shanghai', 'Bei''jing', NULL");
+    // Several columns join in reading order, all on one line.
+    writeText.mockClear();
+    fireEvent.mouseDown(cells[0]!, { button: 0 });
+    fireEvent.mouseEnter(cells[3]!);
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenCalledWith("1, 'Shanghai', 2, 'Bei''jing'");
+  });
+  it("copies a selection as CSV with ⌘C when the extractor is csv", () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(
+      <Grid
+        columns={[
+          { name: "a", type: "text" },
+          { name: "b", type: "text" },
+        ]}
+        rowCount={2}
+        value={(r, c) =>
+          [
+            ["one", "two"],
+            ["three", "four"],
+          ][r]![c]!
+        }
+        copyFormat="csv"
+      />,
+    );
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[0]!, { button: 0 });
+    fireEvent.mouseEnter(cells[3]!);
+    fireEvent.mouseUp(window);
+    fireEvent.keyDown(screen.getByRole("grid"), { key: "c", ctrlKey: true });
+    expect(writeText).toHaveBeenCalledWith("one,two\r\nthree,four");
+  });
   it("pastes a rectangle as pending edits and skips deleted rows", () => {
     const onEdit = vi.fn();
     render(

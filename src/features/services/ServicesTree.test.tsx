@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
+import { ToolWindowShownProvider, useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
 import { selectedServices, selectionActions, selectionMenu } from "./selection";
@@ -12,6 +12,7 @@ const roots: ServiceTreeItem[] = ["one", "two", "three"].map((key) => ({ key, la
 const run = vi.fn();
 const stop = vi.fn();
 const remove = vi.fn();
+const select = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -32,6 +33,7 @@ beforeEach(() => {
             { label: "Remove from Services", run: () => remove(item.key) },
           ],
           detail: ({ item }) => <div data-testid="detail">{item.label}</div>,
+          select: (item) => select(item.key),
         },
       ],
     ]),
@@ -65,6 +67,45 @@ describe("Services selection → actions", () => {
     fireEvent.mouseDown(row("two"), { [modifier]: true });
     expect(selected()).toEqual([]);
     expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+  });
+
+  it("tells the provider which node became the lead selection", () => {
+    const { row } = setup();
+    fireEvent.mouseDown(row("one"));
+    fireEvent.mouseDown(row("two"));
+    expect(select.mock.calls).toEqual([["one"], ["two"]]);
+  });
+
+  it("drops the detail pane (and what it streams) while the Services window is hidden", () => {
+    const view = (shown: boolean) => (
+      <ToolWindowShownProvider value={shown}>
+        <ServicesTreeView />
+      </ToolWindowShownProvider>
+    );
+    const { rerender } = render(view(true));
+    fireEvent.mouseDown(within(screen.getByRole("tree", { name: "Services" })).getByText("one"));
+    expect(screen.getByTestId("detail")).toHaveTextContent("one");
+    rerender(view(false));
+    expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+    rerender(view(true));
+    expect(screen.getByTestId("detail")).toHaveTextContent("one");
+  });
+
+  it("Expand All and Collapse All reach lazy nodes and tell their provider", () => {
+    const expand = vi.fn();
+    const lazy: ServiceTreeItem[] = [{ key: "lazy", label: "lazy", icon: "run", expandable: true, children: [] }];
+    useServiceProviders.setState({
+      providers: new Map([["lazy", { id: "lazy", useRoots: () => lazy, expand: (i, open) => expand(i.key, open) }]]),
+    });
+    render(<ServicesTreeView />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand All" }));
+    expect(useServicesTree.getState().expanded.has("lazy")).toBe(true);
+    expect(expand.mock.calls).toEqual([["lazy", true]]);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse All" }));
+    expect(expand.mock.calls).toEqual([
+      ["lazy", true],
+      ["lazy", false],
+    ]);
   });
 
   it("Shift click selects a range; Stop skips disabled services", () => {
