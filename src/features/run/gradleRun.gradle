@@ -21,6 +21,8 @@ if (target != null) {
                 t.mainClass.set(System.getProperty('openidea.run.main'))
                 t.args(list('openidea.run.args'))
                 t.jvmArgs(list('openidea.run.jvmArgs'))
+                def javaExec = System.getProperty('openidea.run.javaExec')
+                if (javaExec) t.executable = javaExec
                 // The IDE attaches to this JVM, not to the Gradle daemon; port 0 prints the one picked.
                 if (Boolean.getBoolean('openidea.run.debug')) {
                     t.jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')

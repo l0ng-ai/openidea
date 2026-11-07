@@ -150,6 +150,16 @@ describe("Build and run using: Gradle", () => {
     expect(RUN_SCRIPT).toContain("t.dependsOn(p.tasks.named(sourceSet == 'test' ? 'testClasses' : 'classes'))");
   });
 
+  it("uses a JRE chosen on the Application as the JavaExec launcher", () => {
+    const app = applicationConfig(
+      { className: "com.example.ShopApplication" },
+      `${CORE}/src/main/java/com/example/ShopApplication.java`,
+      [],
+    );
+    const run = delegatedGradleConfig({ ...app, command: "/jdks/17/bin/java" }, CORE, ctx)!;
+    expect(run.args).toContain("-Dopenidea.run.javaExec=/jdks/17/bin/java");
+  });
+
   it("debugs the forked JVM: the init script adds the agent", () => {
     const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
     const run = delegatedGradleConfig(app, "app", ctx)!;
