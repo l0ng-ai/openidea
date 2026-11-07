@@ -13,6 +13,7 @@ mod convert;
 mod external_project;
 mod file_ops;
 mod file_watch;
+mod go_scope;
 mod handler;
 mod inspect;
 pub mod jdtls;
@@ -53,7 +54,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use server::{Conn, Running, Server};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -1688,6 +1689,19 @@ impl LspManager {
         }
         let mut v = out.finish(References::default())?;
         convert::dedup_locations(&mut v.locations);
+        if project_wide && let Some(t) = targets.first().filter(|_| snap.language.as_str() == "go") {
+            // Usages in other modules take a view per module: those in reach come first.
+            if let Some(partial) = partial
+                && !v.locations.is_empty()
+            {
+                partial(v.clone());
+            }
+            v.locations.extend(self.go_other_module_references(&snap, t, pos, &cancel).await);
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            convert::dedup_locations(&mut v.locations);
+        }
         Ok(v)
     }
 
@@ -2120,7 +2134,20 @@ impl LspManager {
         };
         let w = self.widened(snap, t, pos, cancel, query, files).await?;
         // The second edit covers the first: its files stay analysed.
-        Ok(Renamed { edit: w.second.unwrap_or(w.first), incomplete: w.incomplete })
+        let mut edit = w.second.unwrap_or(w.first);
+        let mut more: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
+        for l in self.go_other_module_references(snap, t, pos, cancel).await {
+            more.entry(l.path.to_path_buf())
+                .or_default()
+                .push(TextEdit { range: l.range, new_text: new_name.to_owned() });
+        }
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let files =
+            more.into_iter().map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None });
+        convert::merge_workspace_edit(&mut edit, WorkspaceEdit { files: files.collect(), ..Default::default() });
+        Ok(Renamed { edit, incomplete: w.incomplete })
     }
 
     // ---- file operations (`workspace/willRenameFiles`, `workspace/didRenameFiles`) ----
