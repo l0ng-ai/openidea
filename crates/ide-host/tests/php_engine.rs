@@ -304,3 +304,69 @@ async fn inspect_code_runs_the_native_engine_over_php_files() {
     assert_eq!(summary.problems, 0);
     host.close_project("main");
 }
+
+/// Change Signature through the dispatch: the native engine offers the
+/// action with the current signature as `data` and no edit; resolved with
+/// the new signature filled in (as the editor's dialog does), it changes the
+/// declaration and the calls in other files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn change_signature_is_resolved_by_the_native_engine() {
+    use ide_php::refactor::{CHANGE_SIGNATURE, ChangeSignature, SignatureParameter};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("shop");
+    write(&root.join("composer.json"), r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#);
+    let util =
+        "<?php\nnamespace App;\n\nfunction total(int $qty, float $price): float\n{\n    return $qty * $price;\n}\n";
+    write(&root.join("src/util.php"), util);
+    write(&root.join("src/Cart.php"), "<?php\nnamespace App;\n\necho total(2, 1.5);\n");
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    assert!(project.php.engine().unwrap().wait_idle(WAIT));
+
+    let doc = ops::doc::open(&host, "main", root.join("src/util.php")).await.unwrap();
+    let at = ide_core::Pos::new(3, 10);
+    let range = ide_core::Range::new(at, at);
+    let query =
+        ops::lsp::lsp_code_action_query(&host, "main", ide_core::RequestId(3), doc.id, range, vec!["refactor".into()])
+            .await
+            .unwrap();
+    assert!(query.advertised_kinds.unwrap().contains(&CHANGE_SIGNATURE.to_owned()));
+    let mut action = query
+        .actions
+        .into_iter()
+        .find(|a| a.kind.as_deref() == Some(CHANGE_SIGNATURE))
+        .expect("Change signature is offered");
+    assert_eq!(action.title, r"Change signature of 'App\total'");
+    assert!(action.edit.is_none());
+    let Some(serde_json::Value::String(json)) = &action.data else { panic!("data: {:?}", action.data) };
+    let mut data: ChangeSignature = serde_json::from_str(json).unwrap();
+    assert_eq!(data.signature.parameters.len(), 2);
+
+    // Without the new signature there is nothing to do.
+    let unresolved = ops::lsp::lsp_resolve_code_action(&host, "main", doc.id, action.clone()).await;
+    assert!(unresolved.unwrap_err().message.contains("new signature"));
+
+    let mut change = data.signature.clone();
+    change.parameters.swap(0, 1);
+    change.parameters.push(SignatureParameter {
+        name: "discount".into(),
+        ty: "float".into(),
+        default_value: "0.0".into(),
+        ..SignatureParameter::default()
+    });
+    data.change = Some(change);
+    action.data = Some(serde_json::Value::String(serde_json::to_string(&data).unwrap()));
+    let resolved = ops::lsp::lsp_resolve_code_action(&host, "main", doc.id, action.clone()).await.unwrap();
+    assert_eq!(resolved.edit.expect("an edit").files.len(), 2);
+
+    ops::lsp::lsp_apply_code_action(&host, "main", doc.id, action).await.unwrap();
+    let text = project.documents.snapshot(doc.id).unwrap().text;
+    assert!(text.contains("function total(float $price, int $qty, float $discount = 0.0): float"), "{text}");
+    let cart = std::fs::read_to_string(root.join("src/Cart.php")).unwrap();
+    assert!(cart.contains("echo total(1.5, 2);"), "{cart}");
+    host.close_project("main");
+}

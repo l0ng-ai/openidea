@@ -455,11 +455,20 @@ fn plugin_code_action(plugin: &str, a: ide_plugin::CodeAction) -> CodeAction {
     }
 }
 
-/// A code action resolved by whoever offered it: its language server, or
+/// A code action resolved by whoever offered it: the in-process language
+/// service, its language server, or
 /// the plugin its `data` names.
 async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeAction) -> IdeResult<CodeAction> {
     if action.server != PLUGIN_SERVER {
-        return host.project(window)?.lsp.resolve_code_action(doc, action).await;
+        let project = host.project(window)?;
+        let native = {
+            let action = action.clone();
+            ask(&project, doc, move |s| s.resolve_code_action(doc, &action, &ide_core::CancellationToken::new())).await
+        };
+        if let Some(resolved) = native {
+            return resolved;
+        }
+        return project.lsp.resolve_code_action(doc, action).await;
     }
     let Some(r) = action.data.clone().and_then(|d| serde_json::from_value::<PluginActionRef>(d).ok()) else {
         return Ok(action);

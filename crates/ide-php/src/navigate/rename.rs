@@ -230,7 +230,7 @@ impl PhpEngine {
     }
 
     /// Whether `path` is the bundled stubs' or a Composer package's.
-    pub(super) fn is_library(&self, path: &Path) -> bool {
+    pub(crate) fn is_library(&self, path: &Path) -> bool {
         let key = path_key(path);
         if key.starts_with(&path_key(&self.stub_dir())) {
             return true;
@@ -300,7 +300,7 @@ impl PhpEngine {
 
     /// The class-likes above `declaring` that declare the member themselves
     /// (not private), each with whether it is library code.
-    fn member_roots(
+    pub(crate) fn member_roots(
         &self,
         resolver: &Resolver<'_>,
         kind: MemberKind,
@@ -331,7 +331,7 @@ impl PhpEngine {
 
     /// Every class-like declaring the member in its hierarchy: the topmost
     /// declarations above `declaring` and the overriding ones below them.
-    fn member_family(
+    pub(crate) fn member_family(
         &self,
         subtypes: &Subtypes,
         kind: MemberKind,
@@ -533,7 +533,7 @@ impl PhpEngine {
 /// the scope of a variable declared at `declaration`: the docblock in front
 /// of its function or method (`@param T $name`) and those inside it
 /// (`@var T $name`). Nothing for a variable outside any function.
-fn doc_variable_names(text: &str, file: &str, name: &str, declaration: Range) -> Vec<(u32, u32)> {
+pub(crate) fn doc_variable_names(text: &str, file: &str, name: &str, declaration: Range) -> Vec<(u32, u32)> {
     let parsed = ParsedFile::parse(file, text);
     let summary = FileSummary::extract(&parsed);
     let at = parsed.line_index().byte(declaration.start);

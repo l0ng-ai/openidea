@@ -58,7 +58,7 @@ pub const ORGANIZE_IMPORTS: &str = "source.organizeImports";
 /// type, add or update the PHPDoc).
 pub const REWRITE: &str = "refactor.rewrite";
 /// The code action kinds the engine offers.
-pub const ACTION_KINDS: [&str; 10] = [
+pub const ACTION_KINDS: [&str; 11] = [
     QUICKFIX,
     REWRITE,
     crate::refactor::EXTRACT_VARIABLE,
@@ -68,6 +68,7 @@ pub const ACTION_KINDS: [&str; 10] = [
     crate::refactor::INLINE_VARIABLE,
     crate::refactor::INLINE_METHOD,
     crate::refactor::INLINE_FUNCTION,
+    crate::refactor::CHANGE_SIGNATURE,
     ORGANIZE_IMPORTS,
 ];
 

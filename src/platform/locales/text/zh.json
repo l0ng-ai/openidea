@@ -6235,5 +6235,18 @@
   "The profile turns off every problem of the built-in engine. Turn it on again in Editor › Inspections.": "该配置文件关闭了内置引擎的所有问题。请在编辑器 › 检查中重新开启。",
   "Strict also reports possible type mismatches against PHPDoc types, as warnings. Without it, only values that certainly fail at runtime are reported.": "严格模式还会以警告报告与 PHPDoc 类型可能不匹配的类型。不开启时，只报告运行时必然失败的值。",
   "Problems the built-in PHP engine reports (Settings › PHP › Code insight engine: Built-in). Severity \"As reported\" keeps the level the engine assigns; an inspection below can override it.": "内置 PHP 引擎报告的问题（设置 › PHP › 代码分析引擎：内置）。严重性“按报告”保留引擎分配的级别；下方的检查可以覆盖它。",
-  "Strict: also report possible mismatches against PHPDoc types": "严格：同时报告与 PHPDoc 类型可能的不匹配"
+  "Strict: also report possible mismatches against PHPDoc types": "严格：同时报告与 PHPDoc 类型可能的不匹配",
+  "Change Signature": "更改签名",
+  "Return type:": "返回类型：",
+  "Return type": "返回类型",
+  "Add Parameter": "添加形参",
+  "Remove Parameter": "移除形参",
+  "Value at call sites": "调用处的值",
+  "Signature preview:": "签名预览：",
+  "A promoted property: rename the property instead": "这是提升的属性：请改为重命名该属性",
+  "Every parameter needs a name": "每个形参都需要名称",
+  "There are two parameters named '${name}'": "有两个名为 '${name}' 的形参",
+  "The variadic parameter '${name}' must be the last one": "可变形参 '${name}' 必须是最后一个",
+  "The new parameter '${name}' needs a default value or a value for the existing calls": "新形参 '${name}' 需要默认值或现有调用处的值",
+  "Change Signature of '{name}'": "更改 '{name}' 的签名"
 }

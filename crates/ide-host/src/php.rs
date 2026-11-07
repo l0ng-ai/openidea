@@ -29,6 +29,7 @@ use ide_php::complete::{Completion, CompletionData};
 use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
 use ide_php::inspect::InspectionConfig;
 use ide_php::project::LayoutConfig;
+use ide_php::refactor::{CHANGE_SIGNATURE, ChangeSignature};
 use ide_php::stubs::StubFilter;
 use ide_text::AppliedChange;
 use ide_workspace::documents::DocumentObserver;
@@ -199,7 +200,8 @@ impl DocumentObserver for PhpObserver {
 /// implementation (also for the gutter markers), the type and call
 /// hierarchies, rename, the reference updates of file moves, the
 /// code actions (inspection quick-fixes, auto-import fixes, Optimize
-/// Imports) and Reformat Code. Diagnostics don't go through it: the engine inspects open
+/// Imports, the refactorings, and Change Signature resolved with the
+/// dialog's new signature) and Reformat Code. Diagnostics don't go through it: the engine inspects open
 /// documents in the background and publishes them itself.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
 
@@ -443,10 +445,56 @@ impl crate::language_service::LanguageService for PhpService {
         let engine = self.0.engine()?;
         let server = engine.server_id();
         let actions = engine.code_actions(doc, range, only)?;
+        let mut actions: Vec<CodeAction> = actions.into_iter().map(|action| code_action(action, server)).collect();
+        // Change signature: the editor's dialog asks for the new signature,
+        // then resolves the action (`resolve_code_action`).
+        let wanted = only.is_empty()
+            || only.iter().any(|o| {
+                CHANGE_SIGNATURE == o || CHANGE_SIGNATURE.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('.'))
+            });
+        if wanted
+            && let Some(info) = engine.change_signature_info(doc, range)
+            && let Ok(data) = serde_json::to_string(&info)
+        {
+            actions.push(CodeAction {
+                title: format!("Change signature of '{}'", info.signature.name),
+                kind: Some(CHANGE_SIGNATURE.to_owned()),
+                is_preferred: false,
+                disabled_reason: None,
+                edit: None,
+                command: None,
+                data: Some(serde_json::Value::String(data)),
+                server,
+            });
+        }
         Some(Ok(CodeActionQuery {
-            actions: actions.into_iter().map(|action| code_action(action, server)).collect(),
+            actions,
             advertised_kinds: Some(ide_php::imports::ACTION_KINDS.iter().map(|k| k.to_string()).collect()),
         }))
+    }
+
+    /// Change signature, with the new signature the editor's dialog put in
+    /// the action's `data` ([`ide_php::refactor::ChangeSignature`]).
+    fn resolve_code_action(&self, doc: DocId, action: &CodeAction, cancel: &CancellationToken) -> Answer<CodeAction> {
+        let engine = self.0.engine()?;
+        if action.server != engine.server_id() || action.kind.as_deref() != Some(CHANGE_SIGNATURE) {
+            return None;
+        }
+        let parsed = action.data.as_ref().and_then(|data| match data {
+            serde_json::Value::String(json) => serde_json::from_str::<ChangeSignature>(json).ok(),
+            other => serde_json::from_value::<ChangeSignature>(other.clone()).ok(),
+        });
+        let Some(data) = parsed else {
+            return Some(Err(ide_core::IdeError::invalid("The Change Signature request is malformed")));
+        };
+        let Some(change) = &data.change else {
+            return Some(Err(ide_core::IdeError::invalid("Choose the new signature first")));
+        };
+        let edit = match engine.change_signature(doc, data.position, change, cancel)? {
+            Ok(edit) => edit,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok(CodeAction { edit: Some(edit), data: None, ..action.clone() }))
     }
 
     /// Moving PHP files inside the autoload roots updates their namespace,

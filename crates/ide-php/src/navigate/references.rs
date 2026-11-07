@@ -69,7 +69,7 @@ pub struct Usage {
 
 /// What is searched for.
 #[derive(Clone, Debug)]
-pub(super) enum Sought {
+pub(crate) enum Sought {
     /// A class-like, function or constant.
     Name {
         kind: NameKind,
@@ -173,7 +173,7 @@ impl PhpEngine {
         out
     }
 
-    pub(super) fn find_usages(
+    pub(crate) fn find_usages(
         &self,
         sought: &[Sought],
         path: &Path,

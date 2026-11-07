@@ -39,7 +39,7 @@ import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
 import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
-import { HierarchyDialog } from "@/editor/refactor";
+import { ChangeSignatureDialog, HierarchyDialog } from "@/editor/refactor";
 
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
   return [
@@ -76,6 +76,7 @@ export function activate(): () => void {
     registerEditorContribution({ id: "lsp.parameterTab", order: 95, extensions: () => parameterTabKeys }),
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
+    registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.

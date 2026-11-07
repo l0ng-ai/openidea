@@ -107,6 +107,13 @@ pub trait LanguageService: Send + Sync {
         None
     }
 
+    /// Computes the edit of a code action this service offered without one
+    /// (its `data` says what to do; Change Signature's dialog fills it in).
+    /// `None` for actions it didn't offer.
+    fn resolve_code_action(&self, doc: DocId, action: &CodeAction, cancel: &CancellationToken) -> Answer<CodeAction> {
+        None
+    }
+
     fn prepare_rename(&self, doc: DocId, pos: Pos) -> Answer<Option<Range>> {
         None
     }

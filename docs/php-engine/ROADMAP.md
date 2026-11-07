@@ -385,7 +385,7 @@ The design:
 - [x] Phase 5.4: Inline
       Inline a variable (single assignment) and inline a method or function, handling parameters and returns. Tests: before and after text.
 
-- [ ] Phase 5.5: Change signature
+- [x] Phase 5.5: Change signature
       Add, remove, reorder and rename parameters, change defaults, and update call sites across the hierarchy. This needs the UI the catalog already maps; check `src/editor/refactor/catalog.ts` and add a dialog if none exists (text in `en` and `zh`). Tests: before and after text, and a frontend test for the dialog.
 
 - [ ] Phase 5.6: Pull members up / push members down

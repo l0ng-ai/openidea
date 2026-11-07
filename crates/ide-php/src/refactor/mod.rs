@@ -23,6 +23,8 @@
 //!
 //! - **Extract method / function** (`refactor.extract.method` in methods,
 //!   `refactor.extract.function` elsewhere): see [`method`].
+//! - **Change signature** (`refactor.rewrite.changeSignature`): see
+//!   [`signature`].
 //! - **Inline variable / method / function** (`refactor.inline.*`): see
 //!   [`inline`].
 //!
@@ -36,6 +38,9 @@
 mod inline;
 mod method;
 pub(crate) mod names;
+pub mod signature;
+#[cfg(test)]
+mod signature_tests;
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +62,7 @@ use crate::syntax::ParsedFile;
 pub(crate) use inline::inline_actions;
 pub use inline::{INLINE_FUNCTION, INLINE_METHOD, INLINE_VARIABLE};
 pub use method::{EXTRACT_FUNCTION, EXTRACT_METHOD};
+pub use signature::{CHANGE_SIGNATURE, ChangeSignature, Signature, SignatureParameter};
 
 /// The code action kind of Extract variable.
 pub const EXTRACT_VARIABLE: &str = "refactor.extract.variable";
