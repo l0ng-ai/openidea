@@ -10,6 +10,7 @@ import {
 } from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
 import { isJvmApplication } from "@/platform/javaLaunch";
+import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 
@@ -143,6 +144,10 @@ describe("Build and run using: Gradle", () => {
     const run = delegatedGradleConfig({ ...app, params: { vmOptions: "-Xmx1g" } }, "app", ctx)!;
     expect(isJvmApplication(run)).toBe(false);
     expect(run.params).toBeUndefined();
+  });
+
+  it("compiles the source set before running it", () => {
+    expect(RUN_SCRIPT).toContain("t.dependsOn(p.tasks.named(sourceSet == 'test' ? 'testClasses' : 'classes'))");
   });
 
   it("debugs the forked JVM: the init script adds the agent", () => {
