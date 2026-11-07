@@ -367,6 +367,7 @@ then run `openidea-plugin check`.
 | `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Asks the user to pick from `PickItem`s and waits: the chosen key(s), or `None` when dismissed. Only from a command or event of a window (else `invalid`); the wait isn't charged to the time limit.                  |
 | `host::input(prompt, value)`                                             | `ui.input`                       | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                            |
 | `host::confirm(title, body)`                                             | `ui.confirm`                     | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                     |
+| `host::locale()`                                                         | `ui.locale`                      | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                      |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
@@ -718,6 +719,30 @@ pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and
 sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
 checked in (it is tens of MB): run `plugins/build.sh official/excalidraw`
 before installing the plugin from the repository.
+
+### Translations
+
+A package translates its own text with `locales/<tag>.json`, one file per language
+(`fr.json`, `zh-CN.json`), no manifest entry needed. A catalog maps the English source
+text to its translation, like the IDE's text catalogs:
+
+```json
+{ "Count Words": "Compter les mots", "Refresh": "Actualiser" }
+```
+
+The IDE applies the catalog of the selected language (the exact tag, then the language,
+then a variant such as `zh-TW` for `zh`) to the titles, categories, labels and tooltips
+of the manifest's commands, views, editors, status bar items, settings (and their
+properties), file templates, themes and secrets, and to what views show: toolbar
+buttons, tree and list items, form field labels, table column names, messages and the
+status line, and status bar items set by code. Text without an entry, and every text
+when the language has no catalog, shows as written. A catalog applies to its own plugin
+only and never changes the IDE's text. `openidea-plugin check` refuses a catalog that is
+not a JSON object of strings.
+
+Text the plugin builds itself (notifications, error messages, `html` bodies, cell data)
+is not translated: read `host::locale()` when making it. It follows a change of
+language, and `MockHost::set_locale` sets it in tests.
 
 ### Settings
 

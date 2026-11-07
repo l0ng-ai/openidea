@@ -33,6 +33,7 @@ import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
+import { usePluginT } from "./pluginText";
 import { bumpView, deliverViewMessage, pluginToolWindowId } from "./views/viewStore";
 import { runPluginCommand, usePlugins } from "./store";
 
@@ -81,16 +82,21 @@ function PluginStatusItemView({ itemKey }: { itemKey: ItemKey }) {
   const running = usePluginStatusItems((s) => s.items.get(itemKey));
   const declared = useDeclaredStatusItems((s) => s.items.get(itemKey));
   const entry = running ?? declared;
+  const t = usePluginT(entry?.pluginId ?? "");
   if (!entry) return null;
   const { pluginId, item } = entry;
   const command = item.command;
+  // Declared items were translated with their declaration.
+  const translate = running ? t : (text: string) => text;
+  const tooltip = item.tooltip ? translate(item.tooltip) : undefined;
+  const text = translate(item.text);
   return (
     <BarButton
-      tooltip={item.tooltip ?? undefined}
-      aria-label={item.tooltip ?? item.text}
+      tooltip={tooltip}
+      aria-label={tooltip ?? text}
       onClick={command ? () => void runPluginCommand(pluginId, command) : undefined}
     >
-      {item.text}
+      {text}
     </BarButton>
   );
 }

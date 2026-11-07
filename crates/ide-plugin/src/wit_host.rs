@@ -363,6 +363,10 @@ impl ui::Host for StoreData {
         let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(body, 16 << 10) };
         Ok(self.ask(prompt).map(|answer| answer.is_some()))
     }
+
+    fn locale(&mut self) -> wasmtime::Result<String> {
+        Ok(self.host.locale())
+    }
 }
 
 impl storage::Host for StoreData {
