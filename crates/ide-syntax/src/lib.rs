@@ -24,12 +24,14 @@ mod kinds;
 mod lines;
 mod locals;
 mod nodes;
+mod tree;
 mod types;
 
 #[cfg(test)]
 mod tests;
 
 pub use jvm::{JvmPresentation, JvmTypeKind, jvm_type_header};
+pub use tree::SyntaxTree;
 pub use types::*;
 
 use ide_core::{CancellationToken, DocId, IdeError, LanguageId, Pos, Range};
