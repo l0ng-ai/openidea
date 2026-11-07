@@ -58,3 +58,10 @@ generatesMetadataFilesAtProjectRoot = false
 exclusions = ["**/node_modules/**", "**/.metadata/**", "**/archetype-resources/**", "**/META-INF/maven/**"]
 maven = { enabled = true }
 gradle = { enabled = true, wrapper = { enabled = true } }
+
+[[language-servers]]
+name = "kmp-lsp"
+fallback = true
+command = "kmp-lsp"
+root-markers = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "build.xml", ".project"]
+install-hint = "Install kmp-lsp in Settings › Languages & Frameworks › Language Servers (https://github.com/Hessesian/kmp-lsp)"

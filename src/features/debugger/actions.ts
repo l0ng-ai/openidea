@@ -1,12 +1,22 @@
 /** Debugger actions (ids match `keymaps/intellij-macos.ts`). */
 import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
-import { call, commands, isCancelled, isTauri, nextRequestId, type RunConfig, type RunId } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  isCancelled,
+  isTauri,
+  nextRequestId,
+  type LaunchConfig,
+  type RunConfig,
+  type RunId,
+} from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
 import { classFileBreakpointReason } from "@/platform/classFiles";
+import { lineHasCode } from "./breakpoints/codeLines";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
 import {
   removeAllBreakpoints,
@@ -312,10 +322,34 @@ async function startConfig(arg: unknown) {
     });
     return;
   }
+  const xdebugCheck = config.debugAdapter === "php-debug" && isTauri() ? warnWithoutXdebug(launch) : null;
   await maybeEditorService()
     ?.saveAll()
     .catch(() => undefined);
   await startSession(launch, { runConfig: origin ?? config });
+  await xdebugCheck;
+}
+
+/**
+ * A PHP without the Xdebug extension ignores the `-dxdebug.*` options php-debug starts it with: the
+ * script runs past every breakpoint. Warns, without holding the session back (a command may load
+ * Xdebug itself with `-dzend_extension=`).
+ */
+async function warnWithoutXdebug(launch: LaunchConfig) {
+  const runtime = (JSON.parse(launch.extraJson ?? "{}") as { runtimeExecutable?: string }).runtimeExecutable;
+  // Without one, php-debug runs the `php` on the search path.
+  const php = runtime ?? (await call(commands.sdkLocateTools(["php"], null)).catch(() => null))?.tools[0]?.path;
+  // In the session's folder: a version manager's `php` shim picks the PHP from it.
+  const probe = php ? await call(commands.sdkPhpXdebug(php, launch.cwd)).catch(() => null) : null;
+  if (!probe || probe.xdebug) return;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    key: "debug.phpXdebug",
+    title: `Xdebug is not loaded in PHP ${probe.phpVersion}`,
+    body: tx`${probe.php} runs without Xdebug, so breakpoints are skipped. Install Xdebug 3 for this PHP or choose another PHP interpreter.`,
+    actions: [{ label: "Open PHP Settings", run: () => void executeAction("file.settings", "languages.php") }],
+  });
 }
 
 export function registerDebugActions(): () => void {
@@ -628,6 +662,9 @@ export function registerDebugActions(): () => void {
           return;
         }
         const ed = activeEditor();
+        // Like IDEA, no new breakpoint on a blank or comment-only line; an existing one still goes.
+        const taken = exists || specialAt(c.path).some((b) => b.line === c.line);
+        if (!taken && ed && !lineHasCode(ed.view.state, c.line)) return;
         if (ed) toggleBreakpointSmart(c.path, c.line, language, ed.view.state.doc.toString());
         else toggleBreakpoint(c.path, c.line);
       },
@@ -640,8 +677,11 @@ export function registerDebugActions(): () => void {
       description: "A line breakpoint that is removed after it is hit",
       run: () => {
         const c = cursor();
-        if (c && breakpointPathAllowed(c.path) && canPlaceBreakpoint(activeEditor()?.ctx.language ?? "", c.path))
-          toggleTemporaryBreakpoint(c.path, c.line);
+        const ed = activeEditor();
+        if (!c || !breakpointPathAllowed(c.path) || !canPlaceBreakpoint(ed?.ctx.language ?? "", c.path)) return;
+        const exists = useBreakpoints.getState().byFile[c.path]?.some((b) => b.line === c.line);
+        if (!exists && ed && !lineHasCode(ed.view.state, c.line)) return;
+        toggleTemporaryBreakpoint(c.path, c.line);
       },
     },
     {

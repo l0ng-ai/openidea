@@ -8,7 +8,7 @@
 use crate::host::Invocation;
 use crate::types::*;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
 use std::rc::Rc;
 
@@ -55,19 +55,25 @@ struct State {
     root: Option<String>,
     other_projects: Vec<String>,
     files: BTreeMap<String, String>,
+    dirs: BTreeSet<String>,
     editor: Option<Editor>,
+    selected_paths: Vec<String>,
     notifications: Vec<Notification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
+    context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
     remotes: Vec<(String, String)>,
+    commit: Option<CommitDraft>,
     fetches: u32,
     fetch_error: Option<Error>,
     clipboard: Option<String>,
     opened_urls: Vec<String>,
+    answers: VecDeque<Option<Vec<String>>>,
+    revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
@@ -79,6 +85,7 @@ struct State {
     terminals: Vec<MockTerminal>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
+    locale: Option<String>,
 }
 
 /// A terminal the plugin opened.
@@ -144,6 +151,17 @@ impl MockHost {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
     }
 
+    /// A project directory `exists` and `stat` report (project-relative or
+    /// absolute path); file paths count as existing too.
+    pub fn add_dir(&self, path: &str) {
+        self.state.borrow_mut().dirs.insert(path.to_owned());
+    }
+
+    /// Sets the paths invocations report as selected.
+    pub fn select_paths(&self, paths: &[&str]) {
+        self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
     pub fn open_editor(&self, path: &str, language: &str, text: &str, selections: &[(u32, u32, u32, u32)]) {
         let selections =
@@ -185,6 +203,10 @@ impl MockHost {
         self.state.borrow().status.clone()
     }
 
+    pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
+        self.state.borrow().context.clone()
+    }
+
     pub fn storage(&self) -> BTreeMap<String, String> {
         self.state.borrow().storage.clone()
     }
@@ -224,6 +246,40 @@ impl MockHost {
         self.state.borrow().opened_urls.clone()
     }
 
+    /// The answer the next [`crate::host::pick`], [`crate::host::input`] or
+    /// [`crate::host::confirm`] gets: the chosen keys, the text (one element),
+    /// anything for OK, or `None` for dismissed. Unscripted prompts are dismissed.
+    pub fn answer_next_prompt(&self, answer: Option<&[&str]>) {
+        let answer = answer.map(|a| a.iter().map(|&s| s.to_owned()).collect());
+        self.state.borrow_mut().answers.push_back(answer);
+    }
+
+    /// Views brought forward with [`crate::host::reveal_view`], in order.
+    pub fn revealed_views(&self) -> Vec<String> {
+        self.state.borrow().revealed_views.clone()
+    }
+
+    /// The commit being prepared that [`crate::host::pending_commit`] returns
+    /// (`None`: no repository).
+    pub fn set_commit_draft(&self, draft: Option<CommitDraft>) {
+        self.state.borrow_mut().commit = draft;
+    }
+
+    /// The draft as the plugin left it: [`crate::host::set_commit_message`]
+    /// replaces the message and moves the revision on.
+    pub fn commit_draft(&self) -> Option<CommitDraft> {
+        self.state.borrow().commit.clone()
+    }
+
+    /// The user edits the draft: its revision moves on, so a later
+    /// [`crate::host::set_commit_message`] for the old one is stale.
+    pub fn edit_commit_message(&self, message: &str) {
+        if let Some(d) = self.state.borrow_mut().commit.as_mut() {
+            d.message = message.to_owned();
+            d.revision += 1;
+        }
+    }
+
     /// Makes `vcs-fetch` fail.
     pub fn fail_fetch(&self, error: Option<Error>) {
         self.state.borrow_mut().fetch_error = error;
@@ -260,6 +316,11 @@ impl MockHost {
     /// The value of one of the plugin's settings, as JSON (`true`, `"text"`).
     pub fn set_setting(&self, key: &str, json: &str) {
         self.state.borrow_mut().settings.insert(key.into(), json.into());
+    }
+
+    /// The UI language [`crate::host::locale`] reports (`en` by default).
+    pub fn set_locale(&self, tag: &str) {
+        self.state.borrow_mut().locale = Some(tag.into());
     }
 
     /// A secret the user stored.
@@ -377,12 +438,25 @@ pub mod current {
         with(|s| s.status.remove(id));
     }
 
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        with(|s| s.context.insert(key.to_owned(), value));
+        Ok(())
+    }
+
+    pub fn remove_context(key: &str) {
+        with(|s| s.context.remove(key));
+    }
+
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         with(|s| {
             require(s, "clipboard")?;
             s.clipboard = Some(text.to_owned());
             Ok(())
         })
+    }
+
+    pub fn locale() -> String {
+        with(|s| s.locale.clone().unwrap_or_else(|| "en".into()))
     }
 
     pub fn open_url(url: &str) -> Result<(), Error> {
@@ -394,6 +468,40 @@ pub mod current {
             s.opened_urls.push(trimmed.to_owned());
             Ok(())
         })
+    }
+
+    pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+        let keys = pick_many(title, items)?;
+        match keys {
+            Some(keys) if keys.len() > 1 => Err(Error::Invalid("more than one item chosen".into())),
+            keys => Ok(keys.and_then(|keys| keys.into_iter().next())),
+        }
+    }
+
+    pub fn pick_many(_title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+        let answer = with(|s| s.answers.pop_front().flatten());
+        let Some(keys) = answer else { return Ok(None) };
+        if let Some(unknown) = keys.iter().find(|k| !items.iter().any(|i| &i.key == *k)) {
+            return Err(Error::Invalid(format!("{unknown:?} is not one of the items")));
+        }
+        Ok(Some(keys))
+    }
+
+    pub fn input(_prompt: &str, _value: Option<&str>) -> Result<Option<String>, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn input_multiline(_prompt: &str, _value: Option<&str>) -> Result<Option<String>, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn confirm(_title: &str, _body: &str) -> Result<bool, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).is_some())
+    }
+
+    pub fn reveal_view(view: &str) -> Result<(), Error> {
+        with(|s| s.revealed_views.push(view.to_owned()));
+        Ok(())
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -440,19 +548,63 @@ pub mod current {
         })
     }
 
+    /// `path` inside `p`'s root as a project-relative key, or `Invalid` for a
+    /// path leaving the root (as the host does).
+    fn rel_in_root<'a>(p: &ProjectRes, path: &'a str) -> Result<&'a str, Error> {
+        let root = p.root.as_str();
+        let rel = path.strip_prefix(root).map(|p| p.trim_start_matches('/')).unwrap_or(path);
+        if rel.starts_with('/') || rel.split('/').any(|seg| seg == "..") {
+            return Err(Error::Invalid(format!("{path}: access outside the project root is not allowed")));
+        }
+        Ok(rel)
+    }
+
+    fn path_known(s: &State, p: &ProjectRes, path: &str, rel: &str) -> bool {
+        let root = p.root.as_str();
+        s.files.contains_key(rel)
+            || s.files.contains_key(path)
+            || s.dirs.contains(rel)
+            || s.dirs.contains(path)
+            || s.editor.as_ref().is_some_and(|e| e.path == path || e.path == format!("{root}/{rel}"))
+    }
+
     pub fn project_read(p: &ProjectRes, path: &str) -> Result<String, Error> {
         with(|s| {
             require(s, "project.read")?;
             let root = p.root.as_str();
-            let rel = path.strip_prefix(root).map(|p| p.trim_start_matches('/')).unwrap_or(path);
-            if rel.starts_with('/') || rel.split('/').any(|seg| seg == "..") {
-                return Err(Error::Invalid(format!("{path}: access outside the project root is not allowed")));
-            }
+            let rel = rel_in_root(p, path)?;
             let open = s.editor.as_ref().filter(|e| e.path == path || e.path == format!("{root}/{rel}"));
             if let Some(e) = open {
                 return Ok(e.text.clone());
             }
             s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })
+    }
+
+    pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let rel = rel_in_root(p, path)?;
+            Ok(rel.is_empty() || path_known(s, p, path, rel))
+        })
+    }
+
+    pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let rel = rel_in_root(p, path)?;
+            if !path_known(s, p, path, rel) {
+                return if rel.is_empty() {
+                    Ok(FileStat { kind: FileKind::Directory, size: 0, modified: None })
+                } else {
+                    Err(Error::NotFound(path.into()))
+                };
+            }
+            let file = s.files.get(rel).or_else(|| s.files.get(path));
+            let open = s.editor.as_ref().filter(|e| e.path == path || e.path == format!("{}/{rel}", p.root));
+            let kind = if file.is_some() || open.is_some() { FileKind::File } else { FileKind::Directory };
+            let size = file.or_else(|| open.map(|e| &e.text)).map_or(0, |t| t.len() as u64);
+            Ok(FileStat { kind, size, modified: None })
         })
     }
 
@@ -471,6 +623,10 @@ pub mod current {
             s.editor = Some(e);
             r
         })
+    }
+
+    pub fn invocation_selected_paths(_: InvocationRef<'_>) -> Vec<String> {
+        with(|s| s.selected_paths.clone())
     }
 
     pub fn editor_path(_: &EditorRes) -> String {
@@ -546,6 +702,26 @@ pub mod current {
         with(|s| {
             require(s, "vcs.read")?;
             Ok(s.remotes.clone())
+        })
+    }
+
+    pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+        with(|s| {
+            require(s, "vcs.read")?;
+            Ok(s.commit.clone())
+        })
+    }
+
+    pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "vcs.write")?;
+            let draft = s.commit.as_mut().ok_or_else(|| Error::Invalid("no repository".into()))?;
+            if draft.revision != revision {
+                return Err(Error::Stale);
+            }
+            draft.message = message.to_owned();
+            draft.revision += 1;
+            Ok(())
         })
     }
 
@@ -718,6 +894,14 @@ mod tests {
     use crate::host;
 
     #[test]
+    fn invocations_carry_selected_paths() {
+        let host = MockHost::install();
+        assert!(host.invocation().selected_paths().is_empty());
+        host.select_paths(&["/p/a", "/p/b"]);
+        assert_eq!(host.invocation().selected_paths(), ["/p/a", "/p/b"]);
+    }
+
+    #[test]
     fn records_and_enforces() {
         let mock = MockHost::install();
         mock.add_file("src/a.txt", "hello");
@@ -733,6 +917,13 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
+        host::set_context("a", 1.0).unwrap();
+        host::set_context("b", "x").unwrap();
+        assert_eq!(mock.context_keys()["a"], ContextValue::Number(1.0));
+        assert_eq!(mock.context_keys()["b"], ContextValue::Text("x".into()));
+        host::remove_context("a");
+        host::remove_context("b");
+        assert!(mock.context_keys().is_empty());
         mock.set_vcs_remotes(&[("origin", "git@github.com:o/r.git")]);
         assert_eq!(project.vcs_remotes().unwrap(), [("origin".into(), "git@github.com:o/r.git".into())]);
         host::copy_to_clipboard("copied").unwrap();
@@ -740,6 +931,29 @@ mod tests {
         host::open_url("https://example.com/a").unwrap();
         assert_eq!(mock.opened_urls(), ["https://example.com/a"]);
         assert!(matches!(host::open_url("file:///etc/passwd"), Err(Error::Invalid(_))));
+        let items = [PickItem::new("a", "A"), PickItem::new("b", "B").description("second")];
+        assert_eq!(host::pick("Pick", &items).unwrap(), None);
+        mock.answer_next_prompt(Some(&["b"]));
+        assert_eq!(host::pick("Pick", &items).unwrap().as_deref(), Some("b"));
+        mock.answer_next_prompt(Some(&["a", "b"]));
+        assert_eq!(host::pick_many("Pick", &items).unwrap(), Some(vec!["a".to_owned(), "b".to_owned()]));
+        mock.answer_next_prompt(Some(&["zzz"]));
+        assert!(matches!(host::pick_many("Pick", &items), Err(Error::Invalid(_))));
+        mock.answer_next_prompt(Some(&["x.txt"]));
+        assert_eq!(host::input("Name", Some("a.txt")).unwrap().as_deref(), Some("x.txt"));
+        mock.answer_next_prompt(Some(&["a\nb"]));
+        assert_eq!(host::input_multiline("Notes", None).unwrap().as_deref(), Some("a\nb"));
+        mock.answer_next_prompt(None);
+        assert_eq!(host::input_multiline("Notes", None).unwrap(), None);
+        mock.answer_next_prompt(Some(&[]));
+        assert!(host::confirm("Sure?", "Really").unwrap());
+        mock.answer_next_prompt(None);
+        assert!(!host::confirm("Sure?", "Really").unwrap());
+        host::reveal_view("panel").unwrap();
+        assert_eq!(mock.revealed_views(), ["panel"]);
+        assert_eq!(host::locale(), "en");
+        mock.set_locale("zh-CN");
+        assert_eq!(host::locale(), "zh-CN");
         {
             let task = host::begin_task("Work", true);
             task.report(1, Some(2), None);
@@ -747,6 +961,35 @@ mod tests {
             assert!(task.is_cancelled());
         }
         assert!(mock.tasks()[0].ended);
+    }
+
+    #[test]
+    fn exists_and_stat_report_missing_as_not_found() {
+        let mock = MockHost::install();
+        mock.add_file("src/a.txt", "hello");
+        mock.add_dir("src");
+        mock.add_dir(".hidden");
+        let project = mock.invocation().project().unwrap();
+        assert!(project.exists("src/a.txt").unwrap());
+        assert!(project.exists("src").unwrap());
+        assert!(project.exists(".hidden").unwrap());
+        assert!(project.exists("/project/src/a.txt").unwrap());
+        assert!(!project.exists("missing.txt").unwrap());
+        assert!(!project.exists("missing/dir").unwrap());
+        assert!(matches!(project.exists("../outside"), Err(Error::Invalid(_))));
+        assert!(matches!(project.read_file("missing.txt"), Err(Error::NotFound(_))));
+
+        let file = project.stat("src/a.txt").unwrap();
+        assert_eq!((file.kind, file.size), (FileKind::File, 5));
+        let dir = project.stat("src").unwrap();
+        assert_eq!(dir.kind, FileKind::Directory);
+        assert!(matches!(project.stat("missing.txt"), Err(Error::NotFound(_))));
+        assert!(matches!(project.stat("../outside"), Err(Error::Invalid(_))));
+
+        let read_only = MockHost::install().with_capabilities(&[]);
+        let project = read_only.invocation().project().unwrap();
+        assert!(matches!(project.exists("x"), Err(Error::Denied(_))));
+        assert!(matches!(project.stat("x"), Err(Error::Denied(_))));
     }
 
     #[test]

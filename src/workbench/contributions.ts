@@ -17,7 +17,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
+import type { CommitSelection, FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -122,6 +122,12 @@ export interface EditorKindContribution {
   restorable?: boolean;
   /** Can remain visible in a window without a project (for example, an external Git log). */
   standalone?: boolean;
+  /**
+   * Its recently used tabs stay mounted, hidden, while another tab is active: switching back
+   * shows them as they were instead of building them again (long agent conversations). A hidden
+   * tab keeps running; `useEditorShown` tells it whether it is the one shown.
+   */
+  keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
   /**
@@ -202,6 +208,8 @@ export interface ServiceTreeItem {
   dim?: boolean;
   /** Expanded the first time the node appears. */
   expanded?: boolean;
+  /** Shows an expander before its children are known (the provider's `expand` loads them). */
+  expandable?: boolean;
   /** Undefined for leaves. */
   children?: ServiceTreeItem[];
 }
@@ -233,6 +241,10 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** A node of this provider became the lead selection. */
+  select?(item: ServiceTreeItem): void;
+  /** A node of this provider was expanded or collapsed. */
+  expand?(item: ServiceTreeItem, expanded: boolean): void;
   /** Right pane for a selected node. */
   detail?: ComponentType<{ item: ServiceTreeItem }>;
   /** Status line above the tree (a long operation in progress…); renders null when idle. */
@@ -318,6 +330,27 @@ export const registerWorkbenchBanner = (c: WorkbenchBannerContribution) => regis
 export const registerToolWindow = (c: ToolWindowContribution) => register("toolWindows", c.id, c);
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
+
+type GitLogChecksCell = ComponentType<{ root: string; revision: string }>;
+export const useGitLogChecks = create<{ cell: GitLogChecksCell | null }>(() => ({ cell: null }));
+
+export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
+  useGitLogChecks.setState({ cell });
+  return () => {
+    if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
+const EditorShown = createContext(true);
+export const EditorShownProvider = EditorShown.Provider;
+/** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
+export const useEditorShown = () => useContext(EditorShown);
+
+const ToolWindowShown = createContext(true);
+export const ToolWindowShownProvider = ToolWindowShown.Provider;
+/** Whether this tool window is showing (one shown once stays mounted while hidden). */
+export const useToolWindowShown = () => useContext(ToolWindowShown);
+
 export const registerEditorKind = (c: EditorKindContribution) => register("editorKinds", c.kind, c);
 export const registerTitleItem = (c: TitleItemContribution) => register("titleItems", c.id, c);
 export const registerServiceView = (c: ServiceViewContribution) => register("serviceViews", c.id, c);
@@ -644,6 +677,53 @@ export const maybeEditorService = (): EditorService | undefined => services.edit
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
 
 /**
+ * The commit being prepared (the Commit tool window or dialog), for plugins:
+ * provided by the vcs feature.
+ */
+export interface CommitService {
+  /**
+   * What Commit would commit now, per repository (unsaved editors saved first, as
+   * Commit does); `null` without a repository.
+   */
+  selection(): Promise<CommitSelection | null>;
+  /** Replaces the message if the draft is still at `revision`; false when it changed. */
+  setMessage(revision: number, message: string): boolean;
+}
+
+let commitServiceImpl: CommitService | undefined;
+export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
+export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+/** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
+export interface ContributedCommitCheck {
+  /** Stable key (`<plugin id>/<check id>`), stored when the check is turned off. */
+  key: string;
+  title: string;
+}
+
+/** A problem a contributed check reported (or why the check could not run). */
+export interface ContributedCommitProblem {
+  title: string;
+  message: string;
+  path?: string;
+  /** 0-based. */
+  line?: number;
+}
+
+export interface CommitCheckProvider {
+  checks(): ContributedCommitCheck[];
+  /** Runs the checks `keys` on what `selection` commits. */
+  run(selection: CommitSelection, keys: string[]): Promise<ContributedCommitProblem[]>;
+}
+
+export const useCommitCheckProviders = create<{ providers: CommitCheckProvider[] }>(() => ({ providers: [] }));
+
+export function registerCommitCheckProvider(p: CommitCheckProvider): () => void {
+  useCommitCheckProviders.setState((s) => ({ providers: [...s.providers, p] }));
+  return () => useCommitCheckProviders.setState((s) => ({ providers: s.providers.filter((x) => x !== p) }));
+}
+
+/**
  * Handles a pointer drag dropped on the editor content: features register handlers for
  * their own drag types (e.g. an agent task dragged from the tool window) without the
  * editor depending on them. The editor shows its center drop-zone for accepted types.
@@ -947,13 +1027,18 @@ export type ContextMenuId =
   | "new";
 
 /**
- * Entries of the native main menu's open slots (src-tauri/src/menu.rs
- * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ * Entries of open menu slots: the native main menu's (src-tauri/src/menu.rs
+ * `Entry::Dynamic`, e.g. `pluginTools` at the end of Tools) and in-app toolbars
+ * (`commitMessage`, above the commit message). Each runs `action`.
  */
 export interface MenuSlotItem {
   action: string;
   arg?: string | null;
   label: string;
+  /** Icon name, for toolbar slots. */
+  icon?: string;
+  /** Shown only while this `when` clause holds (toolbar slots). */
+  when?: string | null;
 }
 
 export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));
@@ -1435,6 +1520,8 @@ export interface DebugRunSession {
   configId: string | null;
   name: string;
   startedAt: number;
+  /** Set while the session shuts down after Stop. */
+  status?: "starting" | "running" | "paused" | "stopping" | "terminated";
   paused: boolean;
   rerun: (() => void) | null;
   stop: () => void;
@@ -1446,8 +1533,10 @@ export interface DebugServiceSession {
   id: number;
   config: RunConfig;
   startedAt: number;
-  status: "starting" | "running" | "paused" | "terminated";
+  status: "starting" | "running" | "paused" | "stopping" | "terminated";
   processId: number | null;
+  /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
+  httpPort?: number;
   rerun: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
@@ -1473,6 +1562,11 @@ export interface RunningProcessesProvider {
   id: string;
   /** Processes this feature is running in the window right now. */
   running(): RunningProcess[] | Promise<RunningProcess[]>;
+  /**
+   * Stops them before a close: graceful first (stop command / SIGINT, as IDEA does), the
+   * whole set again when `kill` asks for SIGKILL.
+   */
+  stop?(kill: boolean): Promise<void> | void;
 }
 
 const runningProcessesProviders = new Map<string, RunningProcessesProvider>();
@@ -1482,6 +1576,11 @@ export function registerRunningProcessesProvider(p: RunningProcessesProvider): (
   return () => {
     if (runningProcessesProviders.get(p.id) === p) runningProcessesProviders.delete(p.id);
   };
+}
+
+/** Asks every provider to stop its processes: graceful, or killed when `kill` is set. */
+export async function stopRunningProcesses(kill: boolean): Promise<void> {
+  await Promise.all([...runningProcessesProviders.values()].map((p) => p.stop?.(kill)));
 }
 
 /** Live processes of every provider, one entry per name. */

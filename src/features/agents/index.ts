@@ -23,6 +23,7 @@ import { sendPaths, sendSelection } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { connect, disconnect, openHome, useAgents } from "./store";
 import { taskActions } from "./taskActions";
+import { replyActions } from "./replyActions";
 
 /** Settings › Tools › Agents (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
@@ -73,6 +74,8 @@ export function activate(): () => void {
       icon: () => "toolwindow-agents",
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      // Rebuilding a long conversation on every switch back is slow.
+      keepAlive: true,
     }),
     registerEditorKind({
       kind: HOME_KIND,
@@ -98,6 +101,7 @@ export function activate(): () => void {
     }),
     registerActions([
       ...taskActions,
+      ...replyActions,
       {
         id: "agents.findInConversation",
         title: "Find in Conversation",

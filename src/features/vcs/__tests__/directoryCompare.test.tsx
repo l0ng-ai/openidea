@@ -84,7 +84,7 @@ describe("disk directory comparison", () => {
   it("previews on selection and opens the existing diff on double click, including missing sides", async () => {
     setup();
     fireEvent.mouseDown(await screen.findByText("中文.txt"), { button: 0 });
-    expect(screen.getByTestId("diff")).toHaveTextContent("/p/left/nested/中文.txt");
+    expect(await screen.findByTestId("diff")).toHaveTextContent("/p/left/nested/中文.txt");
     fireEvent.doubleClick(screen.getByText("中文.txt"));
     expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ path: "/p/right/nested/中文.txt" }));
     expect(directoryDiff("/l", "/r", rows[2]!)?.right.type).toBe("text");
@@ -122,7 +122,7 @@ describe("disk directory comparison", () => {
           ? ["/p/right", "/p/left", "nested/中文.txt"]
           : ["/p/left", "/p/right", "nested/中文.txt"],
       );
-      expect(screen.getByTestId("diff")).toBeInTheDocument();
+      expect(await screen.findByTestId("diff")).toBeInTheDocument();
     },
   );
 

@@ -84,9 +84,9 @@ describe("commit plan and rollback with renames", () => {
     expect(renamedFromPath(fs("a.ts"))).toBeNull();
   });
 
-  it("unstages both sides of an excluded rename so the deletion is not committed alone", () => {
+  it("leaves both sides of an excluded rename out so the deletion is not committed alone", () => {
     const plan = planCommit([renamed], new Map([[renamed.path, "none"]]));
-    expect(plan.unstage).toEqual(["/p/src/new.ts", "/p/src/old.ts"]);
+    expect(plan.exclude).toEqual(["/p/src/new.ts", "/p/src/old.ts"]);
     expect(plan.included).toEqual([]);
   });
 

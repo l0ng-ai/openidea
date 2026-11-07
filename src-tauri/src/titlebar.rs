@@ -1,106 +1,191 @@
-//! Keep the native window buttons aligned with the web toolbar, in AppKit points.
+//! Size the native title bar around the window buttons to match the web toolbar.
+//!
+//! An empty unified toolbar makes AppKit lay out and vertically centre the buttons itself, so
+//! nothing moves them behind its back and they stay still during live resize.
+//!
+//! In native full screen the same toolbar is drawn as an opaque strip over the web title bar, so
+//! it is hidden from the moment the window starts entering full screen until it has left (#1899).
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::rc::Rc;
-
-use block2::RcBlock;
-use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowStyleMask};
-use objc2_core_foundation::{
-    CFIndex, CFOptionFlags, CFRetained, CFRunLoop, CFRunLoopActivity, CFRunLoopObserver, kCFRunLoopCommonModes,
+use objc2::{
+    MainThreadMarker,
+    rc::{Retained, Weak},
+    runtime::ProtocolObject,
 };
-use objc2_foundation::NSPoint;
+use objc2_app_kit::{
+    NSToolbar, NSWindow, NSWindowDidExitFullScreenNotification, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSWindowWillEnterFullScreenNotification,
+};
+use objc2_foundation::{NSNotificationCenter, NSObjectProtocol};
+use std::{cell::Cell, cell::RefCell, collections::HashMap, rc::Rc};
 
-/// AppKit lays out the title bar in a run loop observer and puts the buttons back at their
-/// defaults on resize, title changes and fullscreen exit. Core Animation commits at 2000000, so
-/// correcting the frames just before it keeps AppKit's positions off screen.
-const BEFORE_COMMIT: CFIndex = 1_999_999;
+/// Unified compact (38pt) and unified (52pt) toolbars; pick the one closer to the web bar.
+const COMPACT_MAX_HEIGHT: f64 = 45.0;
 
-struct Titlebar {
-    height: Rc<Cell<f64>>,
-    spacing: f64,
-    observer: CFRetained<CFRunLoopObserver>,
+fn style_for(height: f64) -> NSWindowToolbarStyle {
+    if height < COMPACT_MAX_HEIGHT { NSWindowToolbarStyle::UnifiedCompact } else { NSWindowToolbarStyle::Unified }
 }
 
-impl Drop for Titlebar {
-    fn drop(&mut self) {
-        self.observer.invalidate();
+/// Whether a window is in, or on its way into, native full screen. `styleMask` cannot answer
+/// this: its full screen flag only turns on at `didEnterFullScreen`, after the resize.
+#[derive(Default)]
+struct Fullscreen(Cell<bool>);
+
+impl Fullscreen {
+    fn will_enter(&self) {
+        self.0.set(true);
+    }
+
+    fn did_exit(&self) {
+        self.0.set(false);
+    }
+
+    fn toolbar_visible(&self) -> bool {
+        !self.0.get()
     }
 }
 
+struct Observer(Retained<ProtocolObject<dyn NSObjectProtocol>>);
+
+impl Drop for Observer {
+    fn drop(&mut self) {
+        let observer: &ProtocolObject<dyn NSObjectProtocol> = &self.0;
+        unsafe { NSNotificationCenter::defaultCenter().removeObserver(observer.as_ref()) };
+    }
+}
+
+struct Tracked {
+    state: Rc<Fullscreen>,
+    _observers: [Observer; 2],
+}
+
 thread_local! {
-    static TITLEBARS: RefCell<HashMap<String, Titlebar>> = RefCell::default();
+    static WINDOWS: RefCell<HashMap<String, Tracked>> = RefCell::default();
+}
+
+fn apply(window: &NSWindow, state: &Fullscreen) {
+    if let Some(toolbar) = window.toolbar() {
+        let visible = state.toolbar_visible();
+        if toolbar.isVisible() != visible {
+            toolbar.setVisible(visible);
+        }
+    }
+}
+
+fn track(window: &NSWindow) -> Tracked {
+    let state = Rc::new(Fullscreen::default());
+    if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        state.will_enter();
+    }
+    let observe = |name, change: fn(&Fullscreen)| {
+        let weak = Weak::new(window);
+        let state = state.clone();
+        let block = block2::RcBlock::new(move |_| {
+            change(&state);
+            if let Some(window) = weak.load() {
+                apply(&window, &state);
+            }
+        });
+        let observer = unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(name),
+                Some(window),
+                None,
+                &block,
+            )
+        };
+        Observer(observer)
+    };
+    let observers = unsafe {
+        [
+            observe(NSWindowWillEnterFullScreenNotification, Fullscreen::will_enter),
+            observe(NSWindowDidExitFullScreenNotification, Fullscreen::did_exit),
+        ]
+    };
+    Tracked { state, _observers: observers }
 }
 
 pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<()> {
     let label = window.label().to_owned();
-    // with_webview runs on the AppKit thread; the observer is also delivered there.
+    // with_webview runs on the AppKit thread.
     window.with_webview(move |webview| unsafe {
+        let Some(mtm) = MainThreadMarker::new() else { return };
         let native = &*webview.ns_window().cast::<NSWindow>();
-        let Some(close) = native.standardWindowButton(NSWindowButton::CloseButton) else { return };
-        let Some(minimize) = native.standardWindowButton(NSWindowButton::MiniaturizeButton) else { return };
-        let Some(run_loop) = CFRunLoop::main() else { return };
-        let spacing = minimize.frame().origin.x - close.frame().origin.x;
-        TITLEBARS.with_borrow_mut(|bars| {
-            if let Some(bar) = bars.get(&label) {
-                bar.height.set(height);
-                center_buttons(native, height, bar.spacing);
-                return;
-            }
-            let shared = Rc::new(Cell::new(height));
-            let current = shared.clone();
-            let pointer = native as *const NSWindow;
-            let block = RcBlock::new(move |_: *mut CFRunLoopObserver, _: CFRunLoopActivity| {
-                center_buttons(&*pointer, current.get(), spacing)
-            });
-            let activities = CFRunLoopActivity::BeforeWaiting.0 as CFOptionFlags;
-            let Some(observer) = CFRunLoopObserver::with_handler(None, activities, true, BEFORE_COMMIT, Some(&block))
-            else {
-                return;
-            };
-            run_loop.add_observer(Some(&observer), kCFRunLoopCommonModes);
-            center_buttons(native, height, spacing);
-            bars.insert(label, Titlebar { height: shared, spacing, observer });
-        });
+        let state =
+            WINDOWS.with_borrow_mut(|windows| windows.entry(label).or_insert_with(|| track(native)).state.clone());
+        if native.toolbar().is_none() {
+            let toolbar = NSToolbar::new(mtm);
+            native.setToolbar(Some(&toolbar));
+        }
+        let style = style_for(height);
+        if native.toolbarStyle() != style {
+            native.setToolbarStyle(style);
+        }
+        apply(native, &state);
     })
 }
 
+/// Stops tracking a destroyed window, which removes its notification observers.
 pub fn forget(window: &tauri::Window) {
     let label = window.label().to_owned();
-    let _ = window.run_on_main_thread(move || {
-        TITLEBARS.with_borrow_mut(|bars| bars.remove(&label));
-    });
+    let forget = move || {
+        WINDOWS.with_borrow_mut(|windows| windows.remove(&label));
+    };
+    if MainThreadMarker::new().is_some() {
+        forget();
+    } else {
+        let _ = window.run_on_main_thread(forget);
+    }
 }
 
-unsafe fn center_buttons(window: &NSWindow, height: f64, spacing: f64) {
-    // Fullscreen uses AppKit's own revealable title bar.
-    if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
-        return;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        WillEnter,
+        DidExit,
     }
-    let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else { return };
-    let Some(container) = (unsafe { close.superview().and_then(|view| view.superview()) }) else { return };
-    let Some(content) = window.contentView() else { return };
-    let mut frame = container.frame();
-    let top = frame.origin.y + frame.size.height;
-    if (frame.size.height - height).abs() > 0.01 {
-        frame.size.height = height;
-        frame.origin.y = top - height;
-        container.setFrame(frame);
+
+    /// Visibility after each step, starting from a window on the desktop.
+    #[test]
+    fn toolbar_follows_native_full_screen() {
+        use Step::*;
+        let cases: &[(&[Step], &[bool])] = &[
+            (&[], &[]),
+            (&[WillEnter], &[false]),
+            (&[WillEnter, DidExit], &[false, true]),
+            // `set_height` between the two notifications must not bring the toolbar back.
+            (&[WillEnter, WillEnter], &[false, false]),
+            // A second exit, as a group member leaving after its host did, changes nothing.
+            (&[WillEnter, DidExit, DidExit], &[false, true, true]),
+            (&[DidExit], &[true]),
+            (&[WillEnter, DidExit, WillEnter], &[false, true, false]),
+        ];
+        for (steps, expected) in cases {
+            let state = Fullscreen::default();
+            assert!(state.toolbar_visible(), "a new window is on the desktop");
+            let seen: Vec<bool> = steps
+                .iter()
+                .map(|step| {
+                    match step {
+                        WillEnter => state.will_enter(),
+                        DidExit => state.did_exit(),
+                    }
+                    state.toolbar_visible()
+                })
+                .collect();
+            assert_eq!(&seen, expected, "{steps:?}");
+        }
     }
-    let bounds = content.bounds();
-    let y = bounds.origin.y + if content.isFlipped() { height / 2.0 } else { bounds.size.height - height / 2.0 };
-    for (index, kind) in [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton]
-        .into_iter()
-        .enumerate()
-    {
-        let Some(button) = window.standardWindowButton(kind) else { continue };
-        let Some(parent) = (unsafe { button.superview() }) else { continue };
-        let center = parent.convertPoint_fromView(NSPoint::new(0.0, y), Some(&content));
-        let frame = button.frame();
-        let x = 14.0 + index as f64 * spacing;
-        let target = center.y - frame.size.height / 2.0;
-        if (frame.origin.x - x).abs() > 0.01 || (frame.origin.y - target).abs() > 0.01 {
-            button.setFrameOrigin(NSPoint::new(x, target));
+
+    #[test]
+    fn toolbar_style_follows_the_web_bar_height() {
+        for (height, compact) in
+            [(31.9, true), (32.0, true), (40.0, true), (44.9, true), (45.0, false), (52.0, false), (120.0, false)]
+        {
+            let expected = if compact { NSWindowToolbarStyle::UnifiedCompact } else { NSWindowToolbarStyle::Unified };
+            assert_eq!(style_for(height), expected, "{height}");
         }
     }
 }

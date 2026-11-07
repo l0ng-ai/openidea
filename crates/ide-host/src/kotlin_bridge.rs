@@ -170,8 +170,7 @@ impl KotlinBridge {
             let settings = self.settings.effective();
             let has_sources = tokio::task::spawn_blocking(move || {
                 let model = crate::ops::build::load(&root, &cache, &settings);
-                let enabled =
-                    model.maven.as_ref().is_some_and(|m| !m.projects.is_empty()) && kotlin_bridge::has_kotlin(&root);
+                let enabled = kotlin_bridge::has_kotlin(&root, &model);
                 (model, enabled)
             })
             .await;

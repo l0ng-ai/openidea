@@ -2,7 +2,7 @@
  * `openidea-server --stdio`, spoken to as the desktop app does in remote development:
  * JSON-RPC with `Content-Length` framing over the server's stdin / stdout.
  */
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -21,6 +21,28 @@ function serverBinary(): string {
 interface Pending {
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
+}
+
+/** `taskkill /T /F`: the tree rooted at `pid` (see `Server.close`). Always resolves. */
+function treeKill(pid: number | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (pid === undefined) return resolve();
+    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => resolve());
+  });
+}
+
+/** Resolves once no process group `pid` exists anymore (signal 0 only checks). */
+async function waitForGroupExit(pid: number, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      process.kill(-pid, 0);
+    } catch {
+      return;
+    }
+    if (Date.now() - start > timeoutMs) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 export class Server {
@@ -52,6 +74,9 @@ export class Server {
     const child = spawn(serverBinary(), ["--stdio"], {
       env: { ...process.env, OPENIDEA_SERVER_HOME: home, ...env },
       stdio: ["pipe", "pipe", "pipe"],
+      // Its own process group: the language servers it starts (jdtls's JVM) stay in
+      // it, so `close` can reap them together with the server (see below).
+      detached: true,
     });
     const server = new Server(child);
     await server.request("initialize", { version: PROTOCOL_VERSION });
@@ -78,9 +103,36 @@ export class Server {
     }
   }
 
-  close() {
-    this.child.stdin.end();
-    this.child.kill();
+  /**
+   * Kills the server and everything it started; resolves once they're all gone.
+   * The server alone is not enough: a language server's own process (jdtls's JVM)
+   * outlives it and keeps writing under the test's home directory, so deleting that
+   * directory afterwards raced its writes (`ENOTEMPTY` on teardown). The server runs
+   * detached (its own process group), so the group is only it and its children.
+   */
+  async close(): Promise<void> {
+    if (this.child.exitCode === null && !this.child.killed) {
+      const exited = new Promise<void>((resolve) => this.child.once("exit", () => resolve()));
+      this.child.stdin.end();
+      if (process.platform === "win32") {
+        // `child.kill()` stops only the server; take the whole tree while it is
+        // still enumerable, then wait for the exit below.
+        await treeKill(this.child.pid);
+      } else {
+        this.child.kill();
+      }
+      await exited;
+    }
+    if (process.platform !== "win32" && this.child.pid !== undefined) {
+      // Reap what the server started: `SIGKILL` to the group, then wait until it is
+      // gone (termination is asynchronous; files held open can't be deleted meanwhile).
+      try {
+        process.kill(-this.child.pid, "SIGKILL");
+      } catch {
+        // Nothing left running.
+      }
+      await waitForGroupExit(this.child.pid);
+    }
   }
 
   private request(method: string, params: unknown): Promise<unknown> {
