@@ -293,6 +293,92 @@ fn project_jdk_and_maven_settings() {
 }
 
 #[test]
+fn maven_runner_jre_overrides_the_project_jdk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    for name in ["project-jdk", "runner-jdk", "next-jdk"] {
+        fake_jdk(&root.join(name));
+    }
+    let mut settings: Settings = serde_json::from_value(serde_json::json!({
+        "languages": { "java": {
+            "jdk": "project-jdk",
+            "maven": { "runnerJre": "runner-jdk" }
+        } }
+    }))
+    .unwrap();
+    for runner in ["", "runner-jdk", "runner-jdk/bin", "runner-jdk/bin/java"] {
+        settings.languages.java.maven.runner_jre =
+            if runner.ends_with("java") { format!("runner-jdk/bin/{}", exe("java")) } else { runner.into() };
+        let expected = root.join(if runner.is_empty() { "project-jdk" } else { "runner-jdk" });
+        assert_eq!(crate::apply::maven_build_env(&root, &settings, Some(8))["JAVA_HOME"], expected.to_string_lossy());
+        for (detected, is_test, debug) in
+            [(true, false, false), (false, false, false), (true, true, false), (true, true, true)]
+        {
+            let mut config = run("maven", "mvn", &["test"]);
+            config.detected = detected;
+            config.is_test = is_test;
+            if debug {
+                config.env.insert(
+                    "MAVEN_OPTS".into(),
+                    "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005".into(),
+                );
+            }
+            let mut configs =
+                [config.clone(), run("gradle", "gradle", &["build"]), run("tomcat", "catalina", &["run"])];
+            apply_to_run_configs(&mut configs, &root, &settings);
+            assert_eq!(configs[0].env["JAVA_HOME"], expected.to_string_lossy());
+            for other in &configs[1..] {
+                assert_eq!(other.env["JAVA_HOME"], root.join("project-jdk").to_string_lossy());
+            }
+            let saved = without_derived(&configs[0], &root, &settings);
+            assert!(!saved.env.contains_key("JAVA_HOME"));
+            let mut next_settings = settings.clone();
+            next_settings.languages.java.maven.runner_jre = "next-jdk".into();
+            let mut next = saved;
+            crate::apply::prepare_maven_run(&mut next, &root, &next_settings);
+            assert_eq!(next.env["JAVA_HOME"], root.join("next-jdk").to_string_lossy());
+            config.env.insert("JAVA_HOME".into(), "explicit-jdk".into());
+            apply_to_run_configs(std::slice::from_mut(&mut config), &root, &settings);
+            assert_eq!(config.env["JAVA_HOME"], "explicit-jdk");
+        }
+    }
+    settings.languages.java.jdk.clear();
+    settings.languages.java.maven.runner_jre.clear();
+    assert!(crate::apply::maven_build_env(&root, &settings, None).is_empty());
+    for release in [8, 17, 21] {
+        let installed = crate::java::installed_jdks();
+        let expected = crate::java::pick_jdk(&installed, Some(release));
+        assert_eq!(crate::apply::maven_jdk(&root, &settings, Some(release)).as_ref(), expected);
+    }
+}
+
+#[test]
+fn maven_daemon_uses_the_runner_jre_version() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    for major in [8, 21] {
+        let home = root.join(format!("jdk{major}"));
+        fake_jdk(&home);
+        std::fs::write(home.join("release"), format!("JAVA_VERSION=\"{major}\"\n")).unwrap();
+    }
+    let mvn = root.join("maven/bin").join(if cfg!(windows) { "mvn.cmd" } else { "mvn" });
+    let mvnd = root.join("mvnd/bin").join(if cfg!(windows) { "mvnd.cmd" } else { "mvnd" });
+    for path in [&mvn, &mvnd] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+    let mut settings = Settings::default();
+    settings.languages.java.maven.home = "maven".into();
+    settings.languages.java.maven.mvnd_home = "mvnd".into();
+    settings.languages.java.maven.daemon = true;
+    for (project, runner, expected) in [(8, 21, &mvnd), (21, 8, &mvn)] {
+        settings.languages.java.jdk = format!("jdk{project}");
+        settings.languages.java.maven.runner_jre = format!("jdk{runner}");
+        assert_eq!(maven_command(&root, &settings).as_ref(), Some(expected));
+    }
+}
+
+#[test]
 fn maven_options_carry_the_thread_count_into_the_command_line() {
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
@@ -920,6 +1006,13 @@ fn node_libraries_list_direct_dependencies_and_core_typings() {
     for dir in ["react", "@scope/ui", "@types/node", "transitive"] {
         std::fs::create_dir_all(root.join("node_modules").join(dir)).unwrap();
     }
+    #[cfg(unix)]
+    {
+        let package = root.join("node_modules/.pnpm/@scope+ui@1/node_modules/@scope/ui");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::remove_dir(root.join("node_modules/@scope/ui")).unwrap();
+        std::os::unix::fs::symlink(package, root.join("node_modules/@scope/ui")).unwrap();
+    }
     let groups = crate::libraries::node_libraries(root, None);
     let summary: Vec<(&str, &str, Vec<&str>)> = groups
         .iter()
@@ -936,16 +1029,46 @@ fn node_libraries_list_direct_dependencies_and_core_typings() {
 }
 
 #[test]
-fn cargo_metadata_lists_registry_packages_only() {
+fn libraries_include_nested_packages_and_refresh_after_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for dir in ["", "packages/web", "packages/api", "node_modules/ignored", "target/ignored"] {
+        let package = root.join(dir);
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), r#"{"dependencies":{"dep":"1"}}"#).unwrap();
+    }
+    let settings = Settings::default();
+    assert!(crate::libraries::project_libraries(root, &settings, &[]).is_empty());
+    for dir in ["packages/web", "packages/api", "node_modules/ignored", "target/ignored"] {
+        std::fs::create_dir_all(root.join(dir).join("node_modules/dep")).unwrap();
+    }
+    let groups = crate::libraries::project_libraries(root, &settings, &[]);
+    let node = groups.iter().find(|g| g.kind == "nodeModules").expect("nested packages after install");
+    assert_eq!(node.roots.len(), 2);
+    assert!(node.roots.iter().all(|r| r.path.starts_with(root.join("packages"))));
+    std::fs::remove_dir(root.join("packages/web/node_modules/dep")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/dep")).unwrap();
+    let groups = crate::libraries::project_libraries(root, &settings, &[]);
+    let node = groups.iter().find(|g| g.kind == "nodeModules").unwrap();
+    assert_eq!(node.roots.len(), 2, "hoisted dependencies are shared across members");
+}
+
+#[test]
+fn cargo_metadata_lists_registry_and_non_workspace_path_dependencies() {
     let tmp = tempfile::tempdir().unwrap();
     let serde = tmp.path().join("registry/src/index/serde-1.0.200");
     let json = serde_json::json!({ "packages": [
-        { "name": "app", "version": "0.1.0", "source": null, "manifest_path": tmp.path().join("Cargo.toml") },
+        { "name": "app", "id": "app", "version": "0.1.0", "source": null, "manifest_path": tmp.path().join("Cargo.toml") },
         { "name": "serde", "version": "1.0.200", "source": "registry+https://github.com/rust-lang/crates.io-index",
           "manifest_path": serde.join("Cargo.toml") },
-    ]});
-    assert_eq!(crate::libraries::parse_cargo_metadata(&json.to_string()), [("serde 1.0.200".to_owned(), serde)]);
-    assert!(crate::libraries::parse_cargo_metadata("error: no Cargo.toml").is_empty());
+        { "name": "local", "id": "local", "version": "0.2.0", "source": null,
+          "manifest_path": tmp.path().join("local/Cargo.toml") },
+    ], "workspace_members": ["app"]});
+    assert_eq!(
+        crate::libraries::parse_cargo_metadata(&json.to_string()).unwrap(),
+        [("local 0.2.0".to_owned(), tmp.path().join("local")), ("serde 1.0.200".to_owned(), serde),]
+    );
+    assert!(crate::libraries::parse_cargo_metadata("error: no Cargo.toml").is_none());
 }
 
 #[test]
