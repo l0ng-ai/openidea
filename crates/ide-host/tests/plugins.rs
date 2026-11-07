@@ -3255,3 +3255,32 @@ fn invalid_plugin_icons_refuse_the_package() {
         assert!(err.contains(expected), "{id}: {err}");
     }
 }
+
+#[test]
+fn notification_actions_keep_commands_and_window_scope() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.host
+        .run_command("jobs", "notify-actions", None, Invocation { client: Some("second".into()), ..f.inv() })
+        .unwrap();
+    let notifications = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, event)| match event {
+            PluginEvent::NotificationWithActions { plugin_id, actions, .. } => Some((client, plugin_id, actions)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].0.as_deref(), Some("second"));
+    assert_eq!(notifications[0].1, "jobs");
+    assert_eq!(notifications[0].2.len(), 3);
+    assert_eq!(notifications[0].2[0].command, "context");
+    assert_eq!(notifications[0].2[0].argument.as_deref(), Some("notification-action=1\nvalue"));
+    for invalid in ["four", "unknown"] {
+        f.run("jobs", "notify-actions", Some(invalid)).unwrap();
+        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::NotificationWithActions { .. })));
+    }
+    assert_eq!(f.status("jobs"), PluginStatus::Active, "invalid notifications do not crash the plugin");
+}

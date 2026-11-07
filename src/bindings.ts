@@ -5656,6 +5656,13 @@ export type NotebookSnapshot = {
 	cells: NotebookCell[],
 };
 
+/**  A notification button that runs one of the publishing plugin's commands. */
+export type NotificationAction = {
+	label: string,
+	command: string,
+	argument: string | null,
+};
+
 export type NotificationGroupSettings = {
 	/**  `balloon` | `sticky` | `none` */
 	display?: string,
@@ -5870,7 +5877,7 @@ export type PluginEvent =
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
  */
-{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
+{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | { type: "notificationWithActions"; pluginId: string; level: NotificationLevel; title: string; body: string; actions: NotificationAction[] } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**

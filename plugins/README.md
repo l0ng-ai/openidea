@@ -1223,3 +1223,13 @@ A new host function touches:
 Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
 plus fmt, clippy (host and wasm) and the tests of the SDK, the official
 plugins and the fixtures.
+
+### Notifications with commands
+
+`host::notify_with_actions(level, title, body, actions)` shows up to three
+buttons. Build each with `NotificationAction::new(label, command)` and an
+optional `.argument(text)`. Commands must be declared by that plugin; choosing
+one dismisses the balloon and runs the command in the receiving window with
+its normal editor and project context. No capability is needed. Invalid or
+undeclared actions reject the whole notification. Labels are limited to 256
+bytes and arguments to 64 KiB. Plain `host::notify` behaves as before.

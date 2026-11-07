@@ -614,3 +614,12 @@ pub enum ViewEvent {
     DeleteRows { rows: Vec<u32> },
     Message { text: String },
 }
+
+/// A notification button that runs one of the publishing plugin's commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
+}

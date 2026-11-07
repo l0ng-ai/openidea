@@ -60,6 +60,16 @@ pub const CANCELLED: &str = "was cancelled";
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
     fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
+    fn notify_with_actions(
+        &self,
+        _client: Option<&str>,
+        _level: NotificationLevel,
+        _title: String,
+        _body: String,
+        _actions: Vec<crate::NotificationAction>,
+    ) -> Result<(), HostError> {
+        Err(HostError::Invalid("notification actions are unavailable".into()))
+    }
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
         let _ = (client, text);
         Ok(())

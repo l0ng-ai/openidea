@@ -266,6 +266,30 @@ impl StoreData {
 }
 
 impl ui::Host for StoreData {
+    fn notify(
+        &mut self,
+        level: wit::NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ui::NotificationAction>,
+    ) -> wasmtime::Result<()> {
+        let level = match level {
+            wit::NotificationLevel::Info => NotificationLevel::Info,
+            wit::NotificationLevel::Warning => NotificationLevel::Warning,
+            wit::NotificationLevel::Error => NotificationLevel::Error,
+        };
+        let actions = actions
+            .into_iter()
+            .map(|a| crate::NotificationAction { label: a.label, command: a.command, argument: a.argument })
+            .collect();
+        if let Err(error) =
+            self.host.notify_with_actions(self.client(), level, clip(title, MAX_TITLE), clip(body, 16 << 10), actions)
+        {
+            tracing::warn!(%error, "plugin notification rejected");
+        }
+        Ok(())
+    }
+
     fn show_notification(
         &mut self,
         level: wit::NotificationLevel,

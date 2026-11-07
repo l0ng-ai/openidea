@@ -38,3 +38,8 @@ category = "Jobs"
 [contributes.settings]
 title = "Jobs"
 schema = "settings.schema.json"
+
+[[contributes.commands]]
+id = "notify-actions"
+title = "Jobs: Show Notification Actions"
+category = "Jobs"

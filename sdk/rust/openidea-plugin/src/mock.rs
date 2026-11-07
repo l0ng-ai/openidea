@@ -19,6 +19,13 @@ pub struct Notification {
     pub body: String,
 }
 
+/// A notification with command buttons, recorded by the mock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionNotification {
+    pub notification: Notification,
+    pub actions: Vec<NotificationAction>,
+}
+
 /// A task the plugin began.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MockTask {
@@ -59,6 +66,7 @@ struct State {
     editor: Option<Editor>,
     selected_paths: Vec<String>,
     notifications: Vec<Notification>,
+    action_notifications: Vec<ActionNotification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     context: BTreeMap<String, ContextValue>,
@@ -193,6 +201,11 @@ impl MockHost {
 
     pub fn notifications(&self) -> Vec<Notification> {
         self.state.borrow().notifications.clone()
+    }
+
+    /// Notifications that carried command buttons, in publication order.
+    pub fn notifications_with_actions(&self) -> Vec<ActionNotification> {
+        self.state.borrow().action_notifications.clone()
     }
 
     pub fn logs(&self) -> Vec<(LogLevel, String)> {
@@ -428,6 +441,26 @@ pub mod current {
 
     pub fn notify(level: NotificationLevel, title: &str, body: &str) {
         with(|s| s.notifications.push(Notification { level, title: title.into(), body: body.into() }))
+    }
+
+    pub fn notify_with_actions(level: NotificationLevel, title: &str, body: &str, actions: &[NotificationAction]) {
+        if actions.len() > 3
+            || actions.iter().any(|a| {
+                a.label.trim().is_empty()
+                    || a.label.len() > 256
+                    || a.label.chars().any(char::is_control)
+                    || a.command.is_empty()
+                    || a.command.len() > 64
+                    || a.argument.as_ref().is_some_and(|s| s.len() > 64 << 10)
+            })
+        {
+            return;
+        }
+        with(|s| {
+            let notification = Notification { level, title: title.into(), body: body.into() };
+            s.notifications.push(notification.clone());
+            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
+        });
     }
 
     pub fn set_status_item(id: &str, item: &StatusItem) {
@@ -994,6 +1027,17 @@ mod tests {
         assert_eq!(editor.apply_edits(1, &[]), Err(Error::Stale));
         mock.type_in_editor("!");
         assert_eq!(mock.editor_version(), 3);
+    }
+
+    #[test]
+    fn notification_buttons_are_recorded_and_bounded() {
+        let mock = MockHost::install();
+        let action = NotificationAction::new("Open", "open").argument("first\nsecond");
+        host::notify_with_actions(NotificationLevel::Info, "Done", "", std::slice::from_ref(&action));
+        assert_eq!(mock.notifications_with_actions()[0].actions, vec![action.clone()]);
+        let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
+        host::notify_with_actions(NotificationLevel::Info, "Done", "", &too_many);
+        assert_eq!(mock.notifications().len(), 1);
     }
 
     #[test]

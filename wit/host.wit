@@ -33,9 +33,21 @@ interface ui {
         text(string),
     }
 
+    /// A notification button running a command of the publishing plugin.
+    record notification-action {
+        label: string,
+        /// One of this plugin's declared command ids.
+        command: string,
+        argument: option<string>,
+    }
+
     /// Shows a notification balloon in the window the current command or
     /// event came from (every window when there is none).
     show-notification: func(level: notification-level, title: string, body: string);
+    /// Like `show-notification`, with at most three actions. Choosing one
+    /// dismisses the balloon and runs that plugin command in its window.
+    /// Invalid actions reject the whole notification.
+    notify: func(level: notification-level, title: string, body: string, actions: list<notification-action>);
     /// Shows or updates the plugin's status bar item `id` in every window.
     set-status-item: func(id: string, item: status-item);
     remove-status-item: func(id: string);

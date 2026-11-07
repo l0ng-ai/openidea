@@ -60,6 +60,23 @@ mod imp {
         wit::ui::show_notification(level, title, body)
     }
 
+    pub fn notify_with_actions(level: NotificationLevel, title: &str, body: &str, actions: &[NotificationAction]) {
+        let level = match level {
+            NotificationLevel::Info => wit::types::NotificationLevel::Info,
+            NotificationLevel::Warning => wit::types::NotificationLevel::Warning,
+            NotificationLevel::Error => wit::types::NotificationLevel::Error,
+        };
+        let actions: Vec<_> = actions
+            .iter()
+            .map(|a| wit::ui::NotificationAction {
+                label: a.label.clone(),
+                command: a.command.clone(),
+                argument: a.argument.clone(),
+            })
+            .collect();
+        wit::ui::notify(level, title, body, &actions)
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         let item = wit::ui::StatusItem {
             text: item.text.clone(),
@@ -789,3 +806,10 @@ pub mod storage {
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub use imp::{event as __event, range_from as __range_from, range_to as __range_to};
+
+/// Shows a notification with at most three buttons. Each runs one of this
+/// plugin's declared commands in the balloon's window and dismisses it.
+/// Like [`notify`], needs no capability. Invalid actions reject the whole notification.
+pub fn notify_with_actions(level: NotificationLevel, title: &str, body: &str, actions: &[NotificationAction]) {
+    imp::notify_with_actions(level, title, body, actions)
+}
