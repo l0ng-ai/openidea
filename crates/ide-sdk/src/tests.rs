@@ -1006,6 +1006,13 @@ fn node_libraries_list_direct_dependencies_and_core_typings() {
     for dir in ["react", "@scope/ui", "@types/node", "transitive"] {
         std::fs::create_dir_all(root.join("node_modules").join(dir)).unwrap();
     }
+    #[cfg(unix)]
+    {
+        let package = root.join("node_modules/.pnpm/@scope+ui@1/node_modules/@scope/ui");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::remove_dir(root.join("node_modules/@scope/ui")).unwrap();
+        std::os::unix::fs::symlink(package, root.join("node_modules/@scope/ui")).unwrap();
+    }
     let groups = crate::libraries::node_libraries(root, None);
     let summary: Vec<(&str, &str, Vec<&str>)> = groups
         .iter()
@@ -1022,16 +1029,46 @@ fn node_libraries_list_direct_dependencies_and_core_typings() {
 }
 
 #[test]
-fn cargo_metadata_lists_registry_packages_only() {
+fn libraries_include_nested_packages_and_refresh_after_install() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for dir in ["", "packages/web", "packages/api", "node_modules/ignored", "target/ignored"] {
+        let package = root.join(dir);
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), r#"{"dependencies":{"dep":"1"}}"#).unwrap();
+    }
+    let settings = Settings::default();
+    assert!(crate::libraries::project_libraries(root, &settings, &[]).is_empty());
+    for dir in ["packages/web", "packages/api", "node_modules/ignored", "target/ignored"] {
+        std::fs::create_dir_all(root.join(dir).join("node_modules/dep")).unwrap();
+    }
+    let groups = crate::libraries::project_libraries(root, &settings, &[]);
+    let node = groups.iter().find(|g| g.kind == "nodeModules").expect("nested packages after install");
+    assert_eq!(node.roots.len(), 2);
+    assert!(node.roots.iter().all(|r| r.path.starts_with(root.join("packages"))));
+    std::fs::remove_dir(root.join("packages/web/node_modules/dep")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/dep")).unwrap();
+    let groups = crate::libraries::project_libraries(root, &settings, &[]);
+    let node = groups.iter().find(|g| g.kind == "nodeModules").unwrap();
+    assert_eq!(node.roots.len(), 2, "hoisted dependencies are shared across members");
+}
+
+#[test]
+fn cargo_metadata_lists_registry_and_non_workspace_path_dependencies() {
     let tmp = tempfile::tempdir().unwrap();
     let serde = tmp.path().join("registry/src/index/serde-1.0.200");
     let json = serde_json::json!({ "packages": [
-        { "name": "app", "version": "0.1.0", "source": null, "manifest_path": tmp.path().join("Cargo.toml") },
+        { "name": "app", "id": "app", "version": "0.1.0", "source": null, "manifest_path": tmp.path().join("Cargo.toml") },
         { "name": "serde", "version": "1.0.200", "source": "registry+https://github.com/rust-lang/crates.io-index",
           "manifest_path": serde.join("Cargo.toml") },
-    ]});
-    assert_eq!(crate::libraries::parse_cargo_metadata(&json.to_string()), [("serde 1.0.200".to_owned(), serde)]);
-    assert!(crate::libraries::parse_cargo_metadata("error: no Cargo.toml").is_empty());
+        { "name": "local", "id": "local", "version": "0.2.0", "source": null,
+          "manifest_path": tmp.path().join("local/Cargo.toml") },
+    ], "workspace_members": ["app"]});
+    assert_eq!(
+        crate::libraries::parse_cargo_metadata(&json.to_string()).unwrap(),
+        [("local 0.2.0".to_owned(), tmp.path().join("local")), ("serde 1.0.200".to_owned(), serde),]
+    );
+    assert!(crate::libraries::parse_cargo_metadata("error: no Cargo.toml").is_none());
 }
 
 #[test]

@@ -4,14 +4,15 @@
 //! the JDK, `node_modules` packages, Cargo crates and the Rust standard
 //! library, GOROOT and the Go module cache.
 //!
-//! Each ecosystem is detected only when the project has its manifest, and its
-//! result is cached until the manifests (or the relevant settings) change.
+//! Ecosystems are detected in the project and its modules. SDK and graph probes
+//! are cached until manifests or settings change; Node packages are read on refresh.
 //!
 //! Archives are listed as browsable roots (`<archive>!`, see `ide_vfs`): the
 //! JDK's `src.zip` and the Maven / Gradle dependency jars (source attachments resolved by JDT).
 
 use crate::exe;
-use crate::exec::{query_in, which};
+use crate::exec::{query_in, query_in_cancellable, which};
+use ide_core::CancellationToken;
 use ide_core::settings::Settings;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -51,7 +52,6 @@ print(json.dumps([p.get(k) for k in ('stdlib','platstdlib','purelib','platlib')]
 
 const JAVA_MANIFESTS: &[&str] =
     &["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
-const NODE_MANIFESTS: &[&str] = &["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb"];
 const CARGO_MANIFESTS: &[&str] = &["Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"];
 const GO_MANIFESTS: &[&str] = &["go.mod", "go.sum", "go.work"];
 const RUBY_MANIFESTS: &[&str] = &["Gemfile", "Gemfile.lock", ".ruby-version", ".tool-versions", "mise.toml"];
@@ -66,18 +66,208 @@ pub struct BuildDependency {
     pub version: String,
 }
 
-/// The project's library groups; empty when no SDK is configured. Runs the
+/// The project's SDK and dependency library groups. Runs the
 /// toolchains (in parallel), so call it off the UI / command thread.
 /// `dependencies` (from the build model) are listed when their jars are in the local repositories.
 pub fn project_libraries(root: &Path, settings: &Settings, dependencies: &[BuildDependency]) -> Vec<LibraryGroup> {
-    type Detect = fn(&Path, &Settings) -> Vec<LibraryGroup>;
-    let detectors: [Detect; 7] =
-        [python_groups, jdk_groups, node_groups, rust_groups, go_groups, ruby_groups, project_structure_groups];
+    project_libraries_stream(root, settings, dependencies, &CancellationToken::new(), &|_| {})
+}
+
+/// Publishes each ecosystem independently; a failed or slow graph cannot hide other libraries.
+pub fn project_libraries_stream(
+    root: &Path,
+    settings: &Settings,
+    dependencies: &[BuildDependency],
+    cancel: &CancellationToken,
+    on_groups: &(dyn Fn(Vec<LibraryGroup>) + Sync),
+) -> Vec<LibraryGroup> {
+    type Detect = fn(&Path, &Settings, &CancellationToken) -> Vec<LibraryGroup>;
+    let detectors: [Detect; 5] = [python_groups, jdk_groups, node_groups, go_groups, ruby_groups];
+    let roots = library_project_roots(root, cancel);
+    let settings = module_settings(root, settings);
     std::thread::scope(|s| {
-        let handles: Vec<_> = detectors.iter().map(|d| s.spawn(move || d(root, settings))).collect();
-        let deps = s.spawn(|| dependency_groups(root, settings, dependencies));
-        handles.into_iter().chain([deps]).flat_map(|h| h.join().unwrap_or_default()).collect()
+        let handles: Vec<_> = detectors
+            .iter()
+            .map(|d| {
+                let (roots, settings) = (&roots, &settings);
+                s.spawn(move || {
+                    let mut groups = Vec::new();
+                    for dir in roots {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                        let batch = d(dir, settings, cancel);
+                        if !cancel.is_cancelled() && !batch.is_empty() {
+                            on_groups(batch.clone());
+                            groups.extend(batch);
+                        }
+                    }
+                    groups
+                })
+            })
+            .collect();
+        let rust = s.spawn(|| {
+            let mut seen = std::collections::HashSet::new();
+            let mut groups = Vec::new();
+            for dir in &roots {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                if !dir.join("Cargo.toml").is_file() {
+                    continue;
+                }
+                let bin = crate::apply::rust_bin(dir, &settings).map(|(bin, _)| bin);
+                let workspace = tool(bin, "cargo")
+                    .and_then(|cargo| {
+                        query_in_cancellable(
+                            &cargo,
+                            &["locate-project", "--workspace", "--message-format", "plain"],
+                            dir,
+                            &[],
+                            QUERY_TIMEOUT,
+                            cancel,
+                        )
+                    })
+                    .map(PathBuf::from)
+                    .filter(|manifest| manifest.is_file())
+                    .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+                    .unwrap_or_else(|| dir.clone());
+                if !seen.insert(workspace.clone()) {
+                    continue;
+                }
+                let batch = rust_groups(&workspace, &settings, cancel);
+                if !cancel.is_cancelled() && !batch.is_empty() {
+                    on_groups(batch.clone());
+                    groups.extend(batch);
+                }
+            }
+            groups
+        });
+        let deps = s.spawn(|| {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let mut groups = dependency_groups(root, &settings, dependencies);
+            groups.extend(project_structure_groups(root, &settings));
+            if !cancel.is_cancelled() && !groups.is_empty() {
+                on_groups(groups.clone());
+            }
+            groups
+        });
+        merge_groups(
+            handles
+                .into_iter()
+                .chain([rust, deps])
+                .flat_map(|h| {
+                    h.join().unwrap_or_else(|error| {
+                        tracing::warn!(?error, "external libraries provider panicked");
+                        Vec::new()
+                    })
+                })
+                .collect(),
+        )
     })
+}
+
+fn library_project_roots(root: &Path, cancel: &CancellationToken) -> Vec<PathBuf> {
+    use ide_core::project_roots::{
+        SEARCH_DEPTH, discover_matching_cancellable, expand_members, node_workspace_members,
+    };
+    let mut roots = discover_matching_cancellable(root, SEARCH_DEPTH, false, cancel, |dir| {
+        [
+            "package.json",
+            "pnpm-workspace.yaml",
+            "Cargo.toml",
+            "go.mod",
+            "go.work",
+            "Gemfile",
+            ".ruby-version",
+            "pyproject.toml",
+            "setup.py",
+            "requirements.txt",
+            ".python-version",
+            ".tool-versions",
+            "mise.toml",
+        ]
+        .iter()
+        .chain(JAVA_MANIFESTS)
+        .any(|name| dir.join(name).is_file())
+            || [".venv", "venv", ".pixi"].iter().any(|name| dir.join(name).is_dir())
+            || dir == root
+    });
+    let mut scanned = std::collections::HashSet::new();
+    let mut index = 0;
+    while index < roots.len() && !cancel.is_cancelled() {
+        let dir = roots[index].clone();
+        index += 1;
+        if !scanned.insert(dir.clone()) {
+            continue;
+        }
+        let mut members = node_workspace_members(&dir);
+        if let Some(manifest) = std::fs::read_to_string(dir.join("Cargo.toml"))
+            .ok()
+            .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        {
+            let patterns: Vec<String> = manifest
+                .get("workspace")
+                .and_then(|w| w.get("members"))
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            members.extend(expand_members(&dir, &patterns, "Cargo.toml"));
+        }
+        if let Ok(work) = std::fs::read_to_string(dir.join("go.work")) {
+            members.extend(ide_run::go::work_modules(&work).into_iter().map(|path| dir.join(path)));
+        }
+        roots.extend(
+            members
+                .into_iter()
+                .map(|dir| ide_core::project_roots::resolve(&dir, Path::new("")))
+                .filter(|dir| !scanned.contains(dir)),
+        );
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn module_settings(root: &Path, settings: &Settings) -> Settings {
+    let mut settings = settings.clone();
+    let l = &mut settings.languages;
+    for value in [
+        &mut l.python.interpreter,
+        &mut l.ruby.interpreter,
+        &mut l.node.interpreter,
+        &mut l.rust.toolchain,
+        &mut l.rust.stdlib,
+        &mut l.go.goroot,
+        &mut l.go.gopath,
+        &mut l.java.jdk,
+    ] {
+        if let Some(path) = crate::apply::setting_path(root, value) {
+            *value = path.to_string_lossy().into_owned();
+        }
+    }
+    settings
+}
+
+pub fn merge_groups(groups: Vec<LibraryGroup>) -> Vec<LibraryGroup> {
+    let mut merged: Vec<LibraryGroup> = Vec::new();
+    for group in groups {
+        if let Some(existing) = merged.iter_mut().find(|g| g.kind == group.kind && g.name == group.name) {
+            for root in group.roots {
+                if !existing.roots.iter().any(|r| r.path == root.path) {
+                    existing.roots.push(root);
+                }
+            }
+        } else {
+            merged.push(group);
+        }
+    }
+    merged
 }
 
 // ------------------------------------------------------------------ cache
@@ -117,17 +307,42 @@ pub(crate) fn cached(
     manifests: &[PathBuf],
     detect: impl FnOnce() -> Vec<LibraryGroup>,
 ) -> Vec<LibraryGroup> {
+    cached_optional(root, ecosystem, key, manifests, || Some(detect())).unwrap_or_default()
+}
+
+fn cached_cancellable(
+    root: &Path,
+    ecosystem: &'static str,
+    key: String,
+    manifests: &[PathBuf],
+    cancel: &CancellationToken,
+    detect: impl FnOnce() -> Vec<LibraryGroup>,
+) -> Vec<LibraryGroup> {
+    cached_optional(root, ecosystem, key, manifests, || {
+        let groups = detect();
+        (!cancel.is_cancelled()).then_some(groups)
+    })
+    .unwrap_or_default()
+}
+
+fn cached_optional(
+    root: &Path,
+    ecosystem: &'static str,
+    key: String,
+    manifests: &[PathBuf],
+    detect: impl FnOnce() -> Option<Vec<LibraryGroup>>,
+) -> Option<Vec<LibraryGroup>> {
     let id = (root.to_path_buf(), ecosystem);
     let now = stamp(manifests);
     if let Some(c) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&id)
         && c.key == key
         && c.stamp == now
     {
-        return c.groups.clone();
+        return Some(c.groups.clone());
     }
-    let groups = detect();
+    let groups = detect()?;
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(id, Cached { key, stamp: now, groups: groups.clone() });
-    groups
+    Some(groups)
 }
 
 /// `names` below `root` when at least one of them exists (the project uses that ecosystem).
@@ -147,11 +362,11 @@ fn tool(bin: Option<PathBuf>, name: &str) -> Option<PathBuf> {
 
 // ------------------------------------------------------------------ python
 
-fn python_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+fn python_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(python) = crate::apply::python_interpreter(root, s) else { return Vec::new() };
     let mut files = vec![python.clone()];
     files.extend(crate::venv_of(&python).map(|v| v.join("pyvenv.cfg")));
-    cached(root, "python", python.display().to_string(), &files, || {
+    cached_cancellable(root, "python", python.display().to_string(), &files, cancel, || {
         python_libraries(&python, Some(root)).into_iter().collect()
     })
 }
@@ -199,13 +414,13 @@ pub(crate) fn named_roots(roots: Vec<(String, PathBuf)>) -> Vec<LibraryRoot> {
 
 // ------------------------------------------------------------------ ruby
 
-fn ruby_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+fn ruby_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(files) = manifests(root, RUBY_MANIFESTS) else { return Vec::new() };
     if !root.join("Gemfile").is_file() && !root.join(".ruby-version").is_file() {
         return Vec::new();
     }
     let Some(ruby) = crate::apply::ruby_interpreter(root, s) else { return Vec::new() };
-    cached(root, "ruby", ruby.display().to_string(), &files, || {
+    cached_cancellable(root, "ruby", ruby.display().to_string(), &files, cancel, || {
         let name = crate::ruby::ruby_sdk(&ruby, "system").map(|s| s.name).unwrap_or_else(|| "Ruby".into());
         let (stdlib, gems) = crate::ruby::library_roots(&ruby, Some(root));
         let mut out = Vec::new();
@@ -217,13 +432,13 @@ fn ruby_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
 
 // ------------------------------------------------------------------ jdk
 
-fn jdk_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+fn jdk_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let files = match manifests(root, JAVA_MANIFESTS) {
         Some(files) => files,
         None if !s.languages.java.jdk.trim().is_empty() || !s.project_structure.source_roots.is_empty() => Vec::new(),
         None => return Vec::new(),
     };
-    cached(root, "jdk", s.languages.java.jdk.clone(), &files, || {
+    cached_cancellable(root, "jdk", s.languages.java.jdk.clone(), &files, cancel, || {
         let jdk = crate::apply::project_jdk(root, s).or_else(|| {
             crate::java::pick_jdk(&crate::java::installed_jdks(), crate::java::project_java_version(root)).cloned()
         });
@@ -274,7 +489,7 @@ pub(crate) fn jdk_name(home: &Path) -> Option<String> {
 
 // ------------------------------------------------------------------ maven / gradle
 
-fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) -> Vec<LibraryGroup> {
+pub fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) -> Vec<LibraryGroup> {
     if deps.is_empty() {
         return Vec::new();
     }
@@ -388,24 +603,27 @@ pub(crate) fn gradle_jar(home: &Path, d: &BuildDependency) -> Option<PathBuf> {
 
 // ------------------------------------------------------------------ node
 
-fn node_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
-    let Some(files) = manifests(root, NODE_MANIFESTS) else { return Vec::new() };
+fn node_groups(root: &Path, s: &Settings, _cancel: &CancellationToken) -> Vec<LibraryGroup> {
     if !root.join("package.json").is_file() {
         return Vec::new();
     }
-    cached(root, "node", s.languages.node.interpreter.clone(), &files, || {
-        let node = tool(crate::apply::node_dir(root, s), "node");
-        node_libraries(root, node.as_deref())
-    })
+    let node = tool(crate::apply::node_dir(root, s), "node");
+    node_libraries(root, node.as_deref())
 }
 
 /// `node_modules/<dep>` of the direct dependencies in `package.json`, and the
 /// Node.js core typings (`@types/node`, from the project or the runtime's global `lib`).
 pub(crate) fn node_libraries(root: &Path, node: Option<&Path>) -> Vec<LibraryGroup> {
-    let manifest = std::fs::read_to_string(root.join("package.json")).unwrap_or_default();
-    let modules = root.join("node_modules");
-    let deps = named_roots(package_dependencies(&manifest).into_iter().map(|d| (d.clone(), modules.join(d))).collect());
-    let mut core = vec![modules.join("@types/node")];
+    let manifest = std::fs::read_to_string(root.join("package.json")).unwrap_or_else(|error| {
+        tracing::warn!(?root, %error, "cannot read package.json for external libraries");
+        String::new()
+    });
+    let resolve =
+        |name: &str| root.ancestors().map(|dir| dir.join("node_modules").join(name)).find(|path| path.is_dir());
+    let deps = named_roots(
+        package_dependencies(&manifest).into_iter().filter_map(|d| Some((d.clone(), resolve(&d)?))).collect(),
+    );
+    let mut core: Vec<_> = resolve("@types/node").into_iter().collect();
     // `<prefix>/bin/node` → `<prefix>/lib/node_modules`.
     if let Some(prefix) =
         node.and_then(|n| dunce::canonicalize(n).ok()).and_then(|n| Some(n.parent()?.parent()?.to_path_buf()))
@@ -422,7 +640,13 @@ pub(crate) fn node_libraries(root: &Path, node: Option<&Path>) -> Vec<LibraryGro
 
 /// Names of the direct dependencies (all dependency kinds), sorted, deduplicated.
 pub(crate) fn package_dependencies(package_json: &str) -> Vec<String> {
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(package_json) else { return Vec::new() };
+    let json = match serde_json::from_str::<serde_json::Value>(package_json) {
+        Ok(json) => json,
+        Err(error) => {
+            tracing::warn!(%error, "cannot parse package.json for external libraries");
+            return Vec::new();
+        }
+    };
     let mut names: Vec<String> = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
         .iter()
         .filter_map(|k| json.get(k)?.as_object())
@@ -436,19 +660,19 @@ pub(crate) fn package_dependencies(package_json: &str) -> Vec<String> {
 
 // ------------------------------------------------------------------ rust
 
-fn rust_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+fn rust_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(files) = manifests(root, CARGO_MANIFESTS) else { return Vec::new() };
     if !root.join("Cargo.toml").is_file() {
         return Vec::new();
     }
     let r = &s.languages.rust;
-    cached(root, "rust", format!("{}\n{}", r.toolchain, r.stdlib), &files, || {
-        let bin = crate::apply::rust_bin(root, s).map(|(b, _)| b);
+    let bin = crate::apply::rust_bin(root, s).map(|(b, _)| b);
+    let mut out = cached_cancellable(root, "rust", format!("{}\n{}", r.toolchain, r.stdlib), &files, cancel, || {
         let mut out = Vec::new();
         if let Some(rustc) = tool(bin.clone(), "rustc") {
-            let version = query_in(&rustc, &["--version"], Some(root), &[], QUERY_TIMEOUT);
+            let version = query_in_cancellable(&rustc, &["--version"], root, &[], QUERY_TIMEOUT, cancel);
             let library = crate::apply::setting_path(root, &r.stdlib).or_else(|| {
-                let sysroot = query_in(&rustc, &["--print", "sysroot"], Some(root), &[], QUERY_TIMEOUT)?;
+                let sysroot = query_in_cancellable(&rustc, &["--print", "sysroot"], root, &[], QUERY_TIMEOUT, cancel)?;
                 Some(PathBuf::from(sysroot).join("lib/rustlib/src/rust/library"))
             });
             let name = match version.as_deref().and_then(|v| v.split_whitespace().nth(1)) {
@@ -457,43 +681,104 @@ fn rust_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
             };
             out.extend(library.and_then(|l| group(name, "rust", library_roots(vec![l]))));
         }
-        if let Some(cargo) = tool(bin, "cargo")
-            && let Some(json) =
-                query_in(&cargo, &["metadata", "--format-version", "1", "--offline"], Some(root), &[], GRAPH_TIMEOUT)
-        {
-            out.extend(group("Cargo dependencies", "cargo", named_roots(parse_cargo_metadata(&json))));
-        }
         out
-    })
+    });
+    if let Some(cargo) = tool(bin, "cargo") {
+        let graph = cached_optional(root, "cargo", r.toolchain.clone(), &files, || {
+            let json = query_in_cancellable(
+                &cargo,
+                &["metadata", "--format-version", "1", "--offline"],
+                root,
+                &[],
+                GRAPH_TIMEOUT,
+                cancel,
+            )?;
+            let roots = parse_cargo_metadata(&json)?;
+            Some(group("Cargo dependencies", "cargo", named_roots(roots)).into_iter().collect())
+        });
+        out.extend(graph.unwrap_or_else(|| {
+            let home = ide_core::process::host_var_os("CARGO_HOME")
+                .map(PathBuf::from)
+                .or_else(|| Some(crate::home_dir()?.join(".cargo")));
+            let roots = home.map(|home| cargo_lock_roots(root, &root.join(home))).unwrap_or_default();
+            group("Cargo dependencies", "cargo", named_roots(roots)).into_iter().collect()
+        }));
+    }
+    out
+}
+
+/// An incomplete offline graph still has useful downloaded sources recorded in Cargo.lock.
+fn cargo_lock_roots(root: &Path, home: &Path) -> Vec<(String, PathBuf)> {
+    let lock = std::fs::read_to_string(root.join("Cargo.lock")).ok();
+    let Some(lock) = lock.and_then(|s| toml::from_str::<toml::Value>(&s).ok()) else {
+        return Vec::new();
+    };
+    let Some(packages) = lock.get("package").and_then(toml::Value::as_array) else {
+        return Vec::new();
+    };
+    let sources: Vec<PathBuf> =
+        std::fs::read_dir(home.join("registry/src")).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    packages
+        .iter()
+        .filter_map(|p| {
+            let source = p.get("source")?.as_str()?;
+            // Other registries cannot be identified safely from a hashed cache folder alone.
+            if source != "registry+https://github.com/rust-lang/crates.io-index" {
+                return None;
+            }
+            let name = p.get("name")?.as_str()?;
+            let version = p.get("version")?.as_str()?;
+            let path = sources
+                .iter()
+                .filter(|dir| {
+                    dir.file_name().is_some_and(|n| {
+                        let n = n.to_string_lossy();
+                        n.starts_with("index.crates.io-") || n.starts_with("github.com-")
+                    })
+                })
+                .map(|dir| dir.join(format!("{name}-{version}")))
+                .find(|dir| dir.join("Cargo.toml").is_file())?;
+            Some((format!("{name} {version}"), path))
+        })
+        .collect()
 }
 
 /// `(name version, source dir)` of the non-workspace packages in `cargo metadata` output, by name.
-pub(crate) fn parse_cargo_metadata(json: &str) -> Vec<(String, PathBuf)> {
+pub(crate) fn parse_cargo_metadata(json: &str) -> Option<Vec<(String, PathBuf)>> {
     #[derive(Deserialize)]
     struct Package {
         name: String,
         version: String,
+        id: Option<String>,
         source: Option<String>,
         manifest_path: PathBuf,
     }
     #[derive(Deserialize)]
     struct Metadata {
         packages: Vec<Package>,
+        #[serde(default)]
+        workspace_members: Vec<String>,
     }
-    let Ok(meta) = serde_json::from_str::<Metadata>(json) else { return Vec::new() };
+    let meta = match serde_json::from_str::<Metadata>(json) {
+        Ok(meta) => meta,
+        Err(error) => {
+            tracing::warn!(%error, "cannot parse Cargo metadata for external libraries");
+            return None;
+        }
+    };
     let mut out: Vec<(String, PathBuf)> = meta
         .packages
         .into_iter()
-        .filter(|p| p.source.is_some())
+        .filter(|p| p.source.is_some() || p.id.as_ref().is_some_and(|id| !meta.workspace_members.contains(id)))
         .filter_map(|p| Some((format!("{} {}", p.name, p.version), p.manifest_path.parent()?.to_path_buf())))
         .collect();
     out.sort_by_cached_key(|(name, _)| name.to_lowercase());
-    out
+    Some(out)
 }
 
 // ------------------------------------------------------------------ go
 
-fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
+fn go_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(mut files) = manifests(root, GO_MANIFESTS) else { return Vec::new() };
     if !root.join("go.mod").is_file() && !root.join("go.work").is_file() {
         return Vec::new();
@@ -505,7 +790,7 @@ fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
     }
     files.extend([root.join("go.work.sum"), root.join("vendor/modules.txt")]);
     let g = &s.languages.go;
-    cached(root, "go", serde_json::to_string(g).unwrap_or_default(), &files, || {
+    cached_cancellable(root, "go", serde_json::to_string(g).unwrap_or_default(), &files, cancel, || {
         let goroot = crate::apply::goroot(root, s);
         let Some(go) = tool(goroot.as_ref().map(|r| r.join("bin")), "go") else { return Vec::new() };
         let goroot_s = goroot.as_ref().map(|p| p.to_string_lossy().into_owned());
@@ -518,7 +803,9 @@ fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
         env.extend(goroot_s.as_deref().map(|v| ("GOROOT", v)));
         env.extend(gopath.as_deref().map(|v| ("GOPATH", v)));
         let mut out = Vec::new();
-        if let Some(vars) = query_in(&go, &["env", "GOROOT", "GOVERSION"], Some(root), &env, QUERY_TIMEOUT) {
+        if let Some(vars) =
+            query_in_cancellable(&go, &["env", "GOROOT", "GOVERSION"], root, &env, QUERY_TIMEOUT, cancel)
+        {
             let mut lines = vars.lines().map(str::trim);
             let (dir, version) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
             let name = match version.strip_prefix("go") {
@@ -539,7 +826,8 @@ fn go_groups(root: &Path, s: &Settings) -> Vec<LibraryGroup> {
                 let modules = vendor_roots(&vendor, &text);
                 out.extend(group("Go Modules", "goModules", named_roots(modules)));
             }
-        } else if let Some(text) = query_in(&go, &["list", "-m", "-e", "-json", "all"], Some(root), &env, GRAPH_TIMEOUT)
+        } else if let Some(text) =
+            query_in_cancellable(&go, &["list", "-m", "-e", "-json", "all"], root, &env, GRAPH_TIMEOUT, cancel)
         {
             out.extend(group("Go Modules", "goModules", named_roots(parse_go_modules(&text))));
         }
@@ -589,6 +877,191 @@ pub(crate) fn parse_go_modules(text: &str) -> Vec<(String, PathBuf)> {
 #[cfg(test)]
 mod go_cache_tests {
     use super::*;
+
+    #[test]
+    fn library_discovery_includes_declared_workspace_members_beyond_the_search_depth() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("package.json"), r#"{"workspaces":["nested/very/deep/packages/*"]}"#).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['nested/very/deep/crates/*']\n").unwrap();
+        std::fs::write(root.join("go.work"), "go 1.22\nuse ./nested/very/deep/go\n").unwrap();
+        for (dir, marker) in [("packages/web", "package.json"), ("crates/api", "Cargo.toml"), ("go", "go.mod")] {
+            let member = root.join("nested/very/deep").join(dir);
+            std::fs::create_dir_all(&member).unwrap();
+            std::fs::write(member.join(marker), "").unwrap();
+        }
+        let roots = library_project_roots(root, &CancellationToken::new());
+        for member in ["packages/web", "crates/api", "go"] {
+            assert!(roots.contains(&root.join("nested/very/deep").join(member)), "{member}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_sdk_queries_do_not_poison_the_next_refresh() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Instant;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname='app'\nversion='0.1.0'\n").unwrap();
+        let bin = root.join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let library = root.join("stdlib");
+        std::fs::create_dir(&library).unwrap();
+        let started = root.join("rustc-started");
+        for (name, script) in [
+            ("rustc", format!("#!/bin/sh\ntouch '{}'\nexec sleep 60\n", started.display())),
+            ("cargo", "#!/bin/sh\nexit 1\n".into()),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "tools".into();
+        settings.languages.rust.stdlib = "stdlib".into();
+        let cancel = CancellationToken::new();
+        std::thread::scope(|scope| {
+            let task = scope.spawn(|| project_libraries_stream(root, &settings, &[], &cancel, &|_| {}));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !started.is_file() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            cancel.cancel();
+            task.join().unwrap();
+            assert!(started.is_file());
+        });
+        std::fs::write(bin.join("rustc"), "#!/bin/sh\necho 'rustc 1.2.3'\n").unwrap();
+        let groups = project_libraries(root, &settings, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "Rust 1.2.3");
+        assert_eq!(groups[0].roots[0].path, library);
+    }
+
+    #[test]
+    fn libraries_keep_downloaded_crates_when_an_offline_graph_is_incomplete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let home = tmp.path().join("cargo");
+        std::fs::create_dir_all(&root).unwrap();
+        let serde = home.join("registry/src/index.crates.io-test/serde-1.0.200");
+        std::fs::create_dir_all(&serde).unwrap();
+        std::fs::write(serde.join("Cargo.toml"), "").unwrap();
+        std::fs::write(
+            root.join("Cargo.lock"),
+            r#"
+            version = 4
+            [[package]]
+            name = "serde"
+            version = "1.0.200"
+            source = "registry+https://github.com/rust-lang/crates.io-index"
+            [[package]]
+            name = "not-downloaded"
+            version = "9.0.0"
+            source = "registry+https://github.com/rust-lang/crates.io-index"
+        "#,
+        )
+        .unwrap();
+        assert_eq!(cargo_lock_roots(&root, &home), [("serde 1.0.200".into(), serde)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_cargo_queries_are_retried_without_manifest_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['members/*']\n").unwrap();
+        let member = root.join("members/app");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(member.join("Cargo.toml"), "[package]\nname='app'\nversion='0.1.0'\n").unwrap();
+        let bin = root.join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        for name in ["cargo", "rustc"] {
+            let path = bin.join(name);
+            std::fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "tools".into();
+        assert!(project_libraries(root, &settings, &[]).is_empty());
+        let source = root.join("local");
+        std::fs::create_dir(&source).unwrap();
+        let json = serde_json::json!({"packages": [{"id":"dep", "name":"dep", "version":"1.0.0", "source":null,
+            "manifest_path":source.join("Cargo.toml")}], "workspace_members":[]});
+        let calls = root.join("metadata-calls");
+        std::fs::write(bin.join("cargo"), format!("#!/bin/sh\nif [ \"$1\" = locate-project ]; then echo '{}'; exit; fi\necho called >> '{}'\ncat <<'JSON'\n{json}\nJSON\n", root.join("Cargo.toml").display(), calls.display())).unwrap();
+        let groups = project_libraries(root, &settings, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].kind, "cargo");
+        assert_eq!(groups[0].roots[0].path, source);
+        assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn libraries_publish_node_and_maven_while_cargo_is_running_and_cancel_it() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname='app'\nversion='0.1.0'\n").unwrap();
+        std::fs::write(root.join("package.json"), r#"{"dependencies":{"dep":"1"}}"#).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/dep")).unwrap();
+        let bin = root.join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let started = root.join("cargo-started");
+        for (name, script) in [
+            ("rustc", "#!/bin/sh\nexit 1\n".to_owned()),
+            (
+                "cargo",
+                format!(
+                    "#!/bin/sh\nif [ \"$1\" = locate-project ]; then echo '{}'; exit; fi\ntouch '{}'\nexec sleep 60\n",
+                    root.join("Cargo.toml").display(),
+                    started.display()
+                ),
+            ),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "tools".into();
+        settings.languages.java.maven.local_repository = root.join("m2").to_string_lossy().into_owned();
+        let jar = root.join("m2/g/a/1/a-1.jar");
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(jar, "").unwrap();
+        let deps = [BuildDependency { gradle: false, group: "g".into(), artifact: "a".into(), version: "1".into() }];
+        let cancel = CancellationToken::new();
+        let (tx, rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let task = scope.spawn(|| {
+                project_libraries_stream(root, &settings, &deps, &cancel, &|g| {
+                    tx.send(g).unwrap();
+                })
+            });
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut kinds = Vec::new();
+            while Instant::now() < deadline
+                && !(kinds.contains(&"nodeModules".to_owned())
+                    && kinds.contains(&"maven".to_owned())
+                    && started.is_file())
+            {
+                if let Ok(groups) = rx.recv_timeout(Duration::from_millis(20)) {
+                    kinds.extend(groups.into_iter().map(|g| g.kind));
+                }
+            }
+            cancel.cancel();
+            task.join().unwrap();
+            assert!(started.is_file(), "cargo query should have started");
+            assert!(kinds.contains(&"nodeModules".to_owned()));
+            assert!(kinds.contains(&"maven".to_owned()));
+            assert!(Instant::now() < deadline, "cancellation should stop the graph query promptly");
+        });
+    }
 
     #[test]
     fn finds_published_version_catalogs_in_the_gradle_cache_and_maven_repository() {
