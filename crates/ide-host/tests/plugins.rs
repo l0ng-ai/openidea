@@ -2252,6 +2252,86 @@ fn view_item_menus_name_a_declared_view() {
     assert!(err.message.contains("new in plugin API 1.2"), "{}", err.message);
 }
 
+#[test]
+fn conditional_and_grouped_views_need_api_1_3() {
+    for field in ["group = \"spring\"", "when = \"workspaceContains:pom.xml || plugin.hello.ready\""] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let old =
+            hello_variant(tmp.path(), |m| m.replace("location = \"right\"", &format!("location = \"right\"\n{field}")));
+        let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+        assert!(err.message.contains("new in plugin API 1.3"), "{err:?}");
+    }
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = hello_variant(tmp.path(), |m| {
+        m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"").replace(
+            "location = \"right\"",
+            "location = \"right\"\ngroup = \"spring\"\nwhen = \"workspaceContains:pom.xml || plugin.hello.ready\"",
+        )
+    });
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Inactive, "declaring views must not activate code");
+    let view = f.host.ui_items("views").remove(0);
+    assert_eq!(view.decl["group"], "spring");
+    assert_eq!(view.decl["when"], "workspaceContains:pom.xml || plugin.hello.ready");
+    f.host.set_enabled("hello", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+}
+
+#[test]
+fn grouped_views_fixture_renders_and_scopes_context_and_reveal() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("grouped-views"));
+    assert_eq!(info.status, PluginStatus::Inactive, "views stay lazy");
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let views = f.host.ui_items("views");
+    assert_eq!(views.len(), 3);
+    assert_eq!(views[0].decl["group"], "demo");
+    assert_eq!(views[1].decl["when"], "workspaceContains:grouped-views.txt");
+    f.take_events();
+    f.run("grouped-views", "show", None).unwrap();
+    assert!(f.take_events().iter().any(|(client, event)| matches!(
+        event,
+        PluginEvent::ContextChanged { plugin_id, key, value }
+            if client.as_deref() == Some("main") && plugin_id == "grouped-views"
+                && key == "ready" && value.as_deref() == Some("true")
+    )));
+    assert!(f.host.context_keys(Some("other")).is_empty());
+    for view in ["overview", "files", "legacy"] {
+        let rendered = f.host.render_view("grouped-views", view, None, f.inv()).unwrap();
+        assert!(matches!(rendered.body, ide_plugin::ViewBody::Message(_)));
+        f.run("grouped-views", "reveal", Some(view)).unwrap();
+        assert!(f.take_events().iter().any(|(client, event)| matches!(
+            event,
+            PluginEvent::RevealView { plugin_id, view: target }
+                if client.as_deref() == Some("main") && plugin_id == "grouped-views" && target == view
+        )));
+    }
+    assert!(f.run("grouped-views", "reveal", Some("plugin.hello.greetings")).is_err());
+    f.host.set_enabled("grouped-views", false).unwrap();
+    assert!(f.host.ui_items("views").is_empty());
+    assert!(f.host.context_keys(Some("main")).is_empty());
+}
+
+#[test]
+fn view_conditions_and_group_ids_are_validated() {
+    for (field, message) in [
+        ("group = \"\"", "invalid view group"),
+        ("group = \"../other\"", "invalid view group"),
+        ("when = \"ready && (\"", "when"),
+    ] {
+        let f = fixture(Limits::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |m| {
+            m.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                .replace("location = \"right\"", &format!("location = \"right\"\n{field}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{field}: {err:?}");
+    }
+}
+
 /// The sample plugin makes a tool window with a tree view.
 /// Its menus, shortcut and status bar item are declarations, listed before
 /// any code runs; the tree is rendered by the code, which loads on first show.
