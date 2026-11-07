@@ -7,6 +7,7 @@ use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
+pub mod commit_message;
 pub use text_encoding::TextEncoding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

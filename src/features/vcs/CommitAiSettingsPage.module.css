@@ -1,0 +1,22 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 600px;
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.hint {
+  margin: 0;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}

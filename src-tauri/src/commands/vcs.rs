@@ -9,6 +9,44 @@ use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{State, Window};
 
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_commit_ai_settings(state: State<'_, AppState>) -> IdeResult<CommitAiSettings> {
+    ide_host::ops::vcs::vcs_commit_ai_settings(&state.host).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_commit_ai_read_text(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    revision: Option<String>,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_commit_ai_read_text(&state.host, window.label(), path, revision).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_commit_ai_save_settings(
+    state: State<'_, AppState>,
+    config: CommitAiConfig,
+    api_key: Option<String>,
+) -> IdeResult<CommitAiSettings> {
+    ide_host::ops::vcs::vcs_commit_ai_save_settings(&state.host, config, api_key).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_generate_commit_message(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    diff: String,
+) -> IdeResult<String> {
+    ide_host::ops::vcs::vcs_generate_commit_message(&state.host, window.label(), request, diff).await
+}
+
 /// Changes of every repository of the project.
 #[tauri::command]
 #[specta::specta]

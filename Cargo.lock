@@ -4720,10 +4720,13 @@ dependencies = [
  "libc",
  "redb",
  "regex-lite",
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "specta",
  "tempfile",
+ "tokio",
  "tracing",
  "which",
 ]
