@@ -55,12 +55,16 @@ pub(crate) fn query_in(
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    if !env.iter().any(|(k, _)| *k == "PATH") {
+    cmd.args(args).envs(env.iter().copied());
+    query_command(cmd, timeout)
+}
+
+/// [`query`] of a command built by the caller; `PATH` is the search path unless it sets one.
+pub(crate) fn query_command(mut cmd: Command, timeout: Duration) -> Option<String> {
+    if !cmd.get_envs().any(|(k, _)| k == "PATH") {
         cmd.env("PATH", search_path());
     }
     let mut child = ide_core::process::prepare(&mut cmd)
-        .args(args)
-        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

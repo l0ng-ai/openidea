@@ -2,9 +2,10 @@
 
 use crate::state::AppState;
 use ide_build::compile::{BuildEvent, BuildKind, BuildResult};
+use ide_build::maven::PomGoto;
 use ide_build::pom_edit::ArtifactKey;
 use ide_build::{BuildModel, BuildTool, SyncProgress};
-use ide_core::{IdeResult, Location, RequestId};
+use ide_core::{IdeResult, Location, Pos, RequestId};
 #[allow(unused_imports)]
 pub use ide_host::ops::build::*;
 use tauri::ipc::Channel;
@@ -112,6 +113,20 @@ pub async fn maven_dependency_declaration(
     dependency: ArtifactKey,
 ) -> IdeResult<Location> {
     ide_host::ops::build::maven_dependency_declaration(&state.host, window.label(), pom, dependency).await
+}
+
+/// The go-to-declaration target at `pos` of a Maven POM: the definition of the
+/// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
+/// entry providing the dependency's / plugin's version, along the parent chain.
+#[tauri::command]
+#[specta::specta]
+pub async fn maven_goto_declaration(
+    window: Window,
+    state: State<'_, AppState>,
+    pom: String,
+    pos: Pos,
+) -> IdeResult<Option<PomGoto>> {
+    ide_host::ops::build::maven_goto_declaration(&state.host, window.label(), pom, pos).await
 }
 
 /// Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency

@@ -53,6 +53,19 @@ it("does not republish service metadata when console output changes", () => {
   expect(useDebugRunSessions.getState().serviceSessions).toBe(summaries);
 });
 
+it("announces the app's web server port once it appears on the console", () => {
+  adoptSession(1, { runConfig: config });
+  const before = useDebugRunSessions.getState().serviceSessions;
+  expect(before).toHaveLength(1);
+  appendConsole(1, "stdout", "Tomcat started on port 8080 (http) with context path '/'\n");
+  const withPort = useDebugRunSessions.getState().serviceSessions;
+  expect(withPort).not.toBe(before);
+  expect(withPort).toMatchObject([{ id: 1, httpPort: 8080 }]);
+  // Later output without a new port keeps the announced one without republishing.
+  appendConsole(1, "stdout", "application output\n");
+  expect(useDebugRunSessions.getState().serviceSessions).toBe(withPort);
+});
+
 it("stops shared-process debugger roots without stopping their process until requested", async () => {
   adoptSession(1, { runConfig: config, process: 7 });
   await stopSession(1, { stopProcess: false });

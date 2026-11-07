@@ -466,3 +466,37 @@ describe("Tree scroll following", () => {
     expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Tree indents", () => {
+  // Settings › Appearance › "Use smaller indents in trees" sets `--tree-indent`
+  // on the root; the row padding reads it so the setting reaches every tree at
+  // once, without a restart, and chevrons keep aligning with it.
+  const pads = (root: HTMLElement) =>
+    within(root)
+      .queryAllByRole("treeitem")
+      .map((el) => el.style.paddingLeft);
+
+  it("pads each level through --tree-indent, falling back to the indent prop", () => {
+    const { tree } = setup({ defaultExpanded: ["src"] });
+    expect(pads(tree)).toEqual([
+      "calc(4px + 0 * var(--tree-indent, 20px))", // src
+      "calc(4px + 1 * var(--tree-indent, 20px))", // main
+      "calc(4px + 1 * var(--tree-indent, 20px))", // util.ts
+      "calc(4px + 0 * var(--tree-indent, 20px))", // README.md
+    ]);
+  });
+
+  it("honours a custom indent prop as the fallback value", () => {
+    const { tree } = setup({ defaultExpanded: ["src"], indent: 16 });
+    expect(pads(tree)[1]).toBe("calc(4px + 1 * var(--tree-indent, 16px))");
+  });
+
+  it("indents lazy-loading placeholder rows past their parent level", () => {
+    const { tree, key } = setup({ getChildren: () => undefined, loadChildren: () => undefined });
+    key("ArrowDown");
+    key("ArrowRight");
+    // Loading placeholders are `role="presentation"`, not tree items.
+    const placeholder = tree.querySelector<HTMLElement>('[role="presentation"]');
+    expect(placeholder?.style.paddingLeft).toBe("calc(24px + 1 * var(--tree-indent, 20px))");
+  });
+});
