@@ -401,6 +401,11 @@ fn canonical_path(path: &Path) -> IdeResult<PathBuf> {
             std::path::Component::CurDir => {}
             _ => resolved.push(component),
         }
+        // A drive prefix such as `\\?\D:` has no directory form to resolve; the
+        // following `RootDir` component canonicalizes the drive itself.
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
         match dunce::canonicalize(&resolved) {
             Ok(path) => resolved = path,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound && fs::symlink_metadata(&resolved).is_err() => {}
