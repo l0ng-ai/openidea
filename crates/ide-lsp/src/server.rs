@@ -451,7 +451,12 @@ impl Server {
         }
     }
 
-    /// One drainer preserves lifecycle event order, including when a sink reenters
+    pub fn emit(&self, sink: &SharedSink, event: IdeEvent) {
+        self.state.lock().events.push_back(event);
+        self.publish(sink);
+    }
+
+    /// One drainer preserves event order, including when a sink reenters
     /// the server. No state or manager lock is held across an external callback.
     fn publish(&self, sink: &SharedSink) {
         let mut st = self.state.lock();
@@ -772,6 +777,49 @@ fn is_error_headline(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn retirement_events_preserve_successor_diagnostics_on_the_same_path() {
+        for stopping in [false, true] {
+            let s = Arc::new(server());
+            let path = PathBuf::from("/p/a.vue");
+            let generation = s.begin_start().unwrap();
+            s.set_diagnostics(path.clone(), vec![lsp::Diagnostic::default()]);
+            s.progress.lock().insert(
+                "old".into(),
+                Progress { task: TaskId::next(), title: "Old work".into(), message: None, cancel: None },
+            );
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let manager = Arc::new(Mutex::new(std::sync::Weak::<crate::LspManager>::new()));
+            let sink: SharedSink = {
+                let (s, path, seen, manager) = (s.clone(), path.clone(), seen.clone(), manager.clone());
+                Arc::new(move |event: IdeEvent| match event {
+                    IdeEvent::Diagnostics { items, .. } => seen.lock().push(items.len()),
+                    IdeEvent::Task { done: true, .. } => {
+                        s.begin_start().unwrap();
+                        let shown = s.set_diagnostics(path.clone(), vec![lsp::Diagnostic::default()]);
+                        let mgr = manager.lock().upgrade().unwrap();
+                        mgr.emit_diagnostics(&s, path.clone(), shown, crate::text::Encoding::Utf16);
+                    }
+                    _ => {}
+                })
+            };
+            let mgr = crate::LspManager::new(
+                PathBuf::from("/p"),
+                Arc::new(ide_language::LanguageRegistry::from_configs(vec![])),
+                sink.clone(),
+            );
+            *manager.lock() = Arc::downgrade(&mgr);
+            if stopping {
+                s.state.lock().conn = Conn::Stopping;
+                s.end_stop(generation, &sink);
+            } else {
+                assert!(s.on_closed(generation, &sink, None).is_some());
+            }
+            assert_eq!(s.diagnostics_for(&path).len(), 1);
+            assert_eq!(*seen.lock(), vec![0, 1], "the UI must retain the replacement's diagnostics");
+        }
+    }
 
     fn server() -> Server {
         let cfg: LanguageServerConfig = toml::from_str("name = \"s\"\ncommand = \"s\"").unwrap();

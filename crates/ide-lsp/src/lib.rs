@@ -3056,11 +3056,10 @@ impl LspManager {
             let conv = self.conv(encoding);
             for (path, items) in server.diagnostics_by_path() {
                 let items = items.into_iter().map(|d| convert::diagnostic(&conv, &path, d, &server.name)).collect();
-                self.sink.emit(ide_core::IdeEvent::Diagnostics {
-                    path: path.into(),
-                    source: server.name.clone(),
-                    items,
-                });
+                server.emit(
+                    &self.sink,
+                    ide_core::IdeEvent::Diagnostics { path: path.into(), source: server.name.clone(), items },
+                );
             }
         }
     }
