@@ -294,6 +294,26 @@ pub struct RepositoryStatus {
     pub changed_files: u32,
 }
 
+/// What a path inside a project is, as [`crate::host::Project::stat`] reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileKind {
+    File,
+    Directory,
+    Symlink,
+    #[default]
+    Other,
+}
+
+/// Metadata of a path inside a project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileStat {
+    pub kind: FileKind,
+    /// Bytes, for a file.
+    pub size: u64,
+    /// Seconds since the Unix epoch; `None` when the file system does not track it.
+    pub modified: Option<u64>,
+}
+
 /// A file the commit being prepared changes ([`crate::host::pending_commit`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitChange {
