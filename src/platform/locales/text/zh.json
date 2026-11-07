@@ -4854,6 +4854,11 @@
   "Read-only data source.": "只读数据源。",
   "Use the query console to change ClickHouse data.": "请使用查询控制台修改 ClickHouse 数据。",
   "Read-only: the table has no primary key to identify rows.": "只读：该表没有可用于标识行的主键。",
+  "Read-only: the query joins several tables.": "只读：查询联接了多个表。",
+  "Read-only: the result is aggregated (DISTINCT, GROUP BY or an aggregate function).": "只读：结果已聚合（DISTINCT、GROUP BY 或聚合函数）。",
+  "Read-only: the result combines several queries (UNION / INTERSECT / EXCEPT).": "只读：结果组合了多个查询（UNION / INTERSECT / EXCEPT）。",
+  "Read-only: the result is not a plain select from a single table.": "只读：结果不是对单个表的普通 SELECT 查询。",
+  "Read-only: the result has no primary key of {tableLabel}.": "只读：结果中没有 {tableLabel} 的主键。",
   "The session has finished.": "会话已结束。",
   "Variables are available while suspended.": "变量仅在挂起时可用。",
   "Verified": "已验证",
@@ -6586,5 +6591,6 @@
   "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.": "debugpy 未在 120 秒内就绪。请检查运行控制台和容器的 Python 解释器。",
   "Use Project JDK": "使用项目 SDK",
   "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "用于 Maven 同步、构建、目标和测试的 JDK。运行配置中显式设置的 JAVA_HOME 优先。",
+  "Read-only: the table schema could not be identified in the result database.": "只读：无法确定结果所在数据库中的表架构。",
   "devcontainer up exited with {status}": "devcontainer up 已退出，状态为 {status}"
 }
