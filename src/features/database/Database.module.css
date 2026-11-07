@@ -1231,6 +1231,12 @@
   color: transparent !important;
   caret-color: var(--fg-strong);
 }
+/* The input's own glyphs are transparent so the highlight layer below paints them; without
+   this the selection would be an empty highlight. */
+.sqlInputText::selection {
+  background: var(--bg-editor-selection);
+  color: var(--fg-strong);
+}
 .sqlHighlight {
   position: absolute;
   inset: 0;

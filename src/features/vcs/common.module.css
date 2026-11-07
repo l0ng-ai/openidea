@@ -322,17 +322,30 @@
 .manageRowSelected:hover {
   background: var(--bg-list-selected);
 }
-/* A fixed slot, so the names line up whether or not a row is marked. */
-.worktreeMark {
-  display: flex;
-  flex: none;
-  width: 14px;
-  margin-right: -4px;
+/* Worktrees dialog: the tree needs a height of its own inside the auto-sized body. */
+.worktreeListDialog {
+  height: 340px;
+  min-height: 0;
 }
-/* The branch keeps its width; the path is what gets cut short. */
-.worktreeName {
+/* Worktrees tree rows: the worktree name keeps its width, the path is what gets cut short. */
+.worktreeIcon {
   flex: none;
-  max-width: 40%;
+  margin-right: 2px;
+  color: var(--fg-muted);
+}
+.worktreeLabel {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktreeDetail {
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
 }
 
 .comparisonDialog > [data-dialog-body] {

@@ -95,45 +95,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             <T>What should the agent do?</T>
           </h1>
         )}
-        <Composer
-          id={HOME}
-          autoFocus
-          placeholder={
-            docked
-              ? "Describe a task…"
-              : "Describe a task for the agent. @ references a file or folder, / runs a command"
-          }
-          root={root}
-          projectRoot={root}
-          commands={agentCommands}
-          history={history}
-          config={provider?.config ?? []}
-          onConfig={setOption}
-          onSubmit={start}
-          disabled={!canStart}
-          toolbar={
-            <>
-              <Select
-                variant="ghost"
-                aria-label="Agent"
-                value={provider?.id ?? null}
-                options={providerOptions}
-                onChange={(id) =>
-                  id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
-                }
-              />
-              <ConfigPickers config={provider?.config ?? []} values={draft.config} onChange={setOption} />
-            </>
-          }
-          actions={
-            <SubmitButton
-              label={starting ? "Starting…" : "Start"}
-              pending={starting}
-              disabled={!canStart}
-              onClick={start}
-            />
-          }
-        />
+        {/* Above the box, like the running session's state line. */}
         <div className={styles.where}>
           {members.length > 1 ? (
             <Select
@@ -202,6 +164,45 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             </>
           )}
         </div>
+        <Composer
+          id={HOME}
+          autoFocus
+          placeholder={
+            docked
+              ? "Describe a task…"
+              : "Describe a task for the agent. @ references a file or folder, / runs a command"
+          }
+          root={root}
+          projectRoot={root}
+          commands={agentCommands}
+          history={history}
+          config={provider?.config ?? []}
+          onConfig={setOption}
+          onSubmit={start}
+          disabled={!canStart}
+          toolbar={
+            <>
+              <Select
+                variant="ghost"
+                aria-label="Agent"
+                value={provider?.id ?? null}
+                options={providerOptions}
+                onChange={(id) =>
+                  id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
+                }
+              />
+              <ConfigPickers config={provider?.config ?? []} values={draft.config} onChange={setOption} />
+            </>
+          }
+          actions={
+            <SubmitButton
+              label={starting ? "Starting…" : "Start"}
+              pending={starting}
+              disabled={!canStart}
+              onClick={start}
+            />
+          }
+        />
         {probe && (!docked || probe.error) && (
           <p className={probe.error ? styles.warning : styles.note}>
             {probe.error

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { FILES_DRAG, dragSession } from "@/ui";
 
 const findFiles = vi.fn();
 const findDirs = vi.fn();
@@ -49,6 +50,28 @@ beforeEach(() => {
   findFiles.mockReset().mockReturnValue(ok([match("/p/src/agents.ts", "src/agents.ts", 40)]));
   findDirs.mockReset().mockReturnValue(ok([match("/p/src/agents", "src/agents/", 90)]));
   pathCompletions.mockReset().mockReturnValue(ok([{ name: "lib", dir: true }]));
+});
+
+describe("Composer dropped paths", () => {
+  it("references files and folders dragged from the Project view", () => {
+    const box = renderComposer();
+    const restore = document.elementFromPoint;
+    document.elementFromPoint = () => box;
+    try {
+      act(() => {
+        // Folders carry a trailing slash, as the Project view marks them.
+        const drag = dragSession({ type: FILES_DRAG, payload: "/p/src/a.ts\n/p/src/dir/" });
+        expect(drag.drop(0, 0)).toBe(true);
+      });
+    } finally {
+      document.elementFromPoint = restore;
+    }
+    expect(composerDraft(ID).files).toEqual([
+      { path: "/p/src/a.ts", rel: "src/a.ts" },
+      { path: "/p/src/dir", rel: "src/dir" },
+    ]);
+    expect(box.value).toBe("@src/a.ts @src/dir ");
+  });
 });
 
 describe("Composer @ folders", () => {
