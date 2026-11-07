@@ -153,7 +153,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_)                  | without `web` |
 | `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                       | without `web` |
 | `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                          | no            |
-| `fileTemplates` | `id`, `name`, `extension`, `path` (the new file's content; template variables work) — New menu                                                    | no            |
+| `fileTemplates` | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                               | no            |
 | `commitChecks`  | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                           | yes           |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
@@ -211,6 +211,32 @@ Plugins can set their own keys, `plugin.<id>.<key>`, with `host::set_context`:
 a key set from a command or event applies to that window, one set outside any
 applies to every window, and a window's value wins over the global one. Keys are
 kept across a window reload and idle reclaim, and dropped when the plugin stops.
+
+### File template names and variables (API 1.3)
+
+With `engines.openidea = "^1.3"`, `fileName` creates an exact single filename
+(including dotfiles) without a name prompt. `extension` may be omitted for these
+files; it is never appended to `fileName`. Without `fileName`, naming behaves as before.
+Declared variables are required text fields shown together in the new-file dialog;
+cancelling creates nothing. Names must be unique ASCII identifiers and cannot
+replace built-in variables (`NAME`, `PACKAGE`, `END`, etc.). Prompts can be translated
+through the plugin's text catalog. Values are inserted literally with `$ENTITY$`
+or `${ENTITY}` syntax.
+
+```toml
+engines.openidea = "^1.3"
+
+[[contributes.fileTemplates]]
+id = "ignore"
+name = "Docker ignore"
+fileName = ".dockerignore"
+path = "templates/dockerignore.txt"
+variables = [{ name = "OUTPUT", prompt = "Output folder" }]
+```
+
+Plugin templates infer `$PACKAGE$` with the built-in rules for their extension:
+Java/Kotlin use source roots, Go uses sibling packages or the directory, and PHP
+uses Composer PSR-4 mappings. No `packageStyle` manifest field is needed.
 
 ### Background associations
 

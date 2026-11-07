@@ -30,7 +30,7 @@ import {
   registerExternalIcons,
   type MenuItem,
 } from "@/ui";
-import { addContributedFileTemplate } from "@/features/templates/files/store";
+import { addContributedFileTemplate } from "@/workbench/contributions";
 import {
   registerEditorKind,
   registerFileEditorProvider,
@@ -376,6 +376,8 @@ interface FileIconDecl {
 }
 
 interface FileTemplateDecl {
+  fileName?: string | null;
+  variables?: { name: string; prompt: string }[];
   id: string;
   name: string;
   extension: string;
@@ -383,8 +385,8 @@ interface FileTemplateDecl {
 }
 
 /** A new file's icon: the plugin's own file icon for it, else the built-in one. */
-function templateIcon(pluginId: string, extension: string): string {
-  const file = `untitled.${extension}`;
+function templateIcon(pluginId: string, extension: string, fileName?: string | null): string {
+  const file = fileName ?? `untitled.${extension}`;
   const own = usePlugins
     .getState()
     .ui.find(
@@ -563,9 +565,12 @@ export function defineViewUiPoints(): () => void {
         addContributedFileTemplate({
           id: `plugin.${pluginId}.${decl.id}`,
           name: decl.name,
-          icon: templateIcon(pluginId, decl.extension),
+          icon: templateIcon(pluginId, decl.extension, decl.fileName),
           extension: decl.extension,
           nameStyle: "asis",
+          fileName: decl.fileName ?? undefined,
+          variables: decl.variables,
+          inferPackage: true,
           kinds: [{ id: "file", label: decl.name, body: decl.body }],
         }),
     }),
