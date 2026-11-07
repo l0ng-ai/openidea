@@ -1640,6 +1640,7 @@ mod tests {
                 preferred: false,
                 edits: vec![(path.into(), Vec::new())],
                 operations: Vec::new(),
+                file_action: None,
                 open: None,
                 data: None,
             };

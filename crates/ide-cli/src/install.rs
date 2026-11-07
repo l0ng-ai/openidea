@@ -399,17 +399,19 @@ mod wrapper_tests {
         assert!(compiled.status.success(), "{}", String::from_utf8_lossy(&compiled.stderr));
         let path = install_wrapper(&exe, &dir.path().join("bin"), true).unwrap();
         let output = std::process::Command::new("cmd.exe")
-            .args(["/d", "/c"])
-            .arg(&path)
-            .args(["a b", "中文"])
-            .raw_arg("\"x&y\"")
+            .args(["/d", "/s", "/c"])
+            .raw_arg(format!("\"\"{}\" \"a b\" \"中文\" \"x&y\"\"", path.display()))
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(7));
         assert_eq!(String::from_utf8(output.stdout).unwrap().replace("\r\n", "\n"), "--cli\na b\n中文\nx&y\n");
         let check = dir.path().join("check.cmd");
         std::fs::write(&check, "@echo off\r\nfor /f \"tokens=2 delims=:\" %%c in ('chcp') do set \"before=%%c\"\r\ncall \"%~dp0bin\\openidea.cmd\" example\r\nset \"code=%errorlevel%\"\r\nfor /f \"tokens=2 delims=:\" %%c in ('chcp') do set \"after=%%c\"\r\nif not \"%before%\"==\"%after%\" exit /b 99\r\nexit /b %code%\r\n").unwrap();
-        let output = std::process::Command::new("cmd.exe").args(["/d", "/c"]).arg(check).output().unwrap();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/s", "/c"])
+            .raw_arg(format!("\"\"{}\"\"", check.display()))
+            .output()
+            .unwrap();
         assert_eq!(output.status.code(), Some(7));
     }
 }

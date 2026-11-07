@@ -33,6 +33,8 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
     for command in [
         "app_info",
         "app_build_info",
+        "app_cli_install",
+        "app_cli_uninstall",
         "app_log_location",
         "app_check_update",
         "app_startup_update_check",
