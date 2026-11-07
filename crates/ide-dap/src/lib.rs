@@ -651,6 +651,10 @@ impl DebugManager {
         {
             spec.env.push(("JAVA_HOME".into(), home));
         }
+        // Delve looks up Go before applying the debuggee's launch environment.
+        if config.adapter == "delve" {
+            spec.env.extend(config.env.iter().map(|(key, value)| (key.clone(), value.clone())));
+        }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }

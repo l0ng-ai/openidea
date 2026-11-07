@@ -28,8 +28,10 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         let settings = settings.clone();
         config = host
             .blocking(move || {
+                ide_sdk::go::prepare_debug_compiler(&mut config.env, &config.extra_json)?;
                 ide_sdk::go::debug_environment(&root, &settings, &mut config.env);
                 ide_sdk::go::apply_to_debug(
+                    &mut config.program,
                     &mut config.env,
                     &mut config.extra_json,
                     &settings.languages.go.build_tags,
