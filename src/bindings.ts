@@ -1923,6 +1923,7 @@ export type AttachableProcess = {
 export type AutoImportSettings = {
 	addUnambiguous?: boolean,
 	optimizeOnTheFly?: boolean,
+	importsOnPaste?: ImportsOnPaste,
 };
 
 /**  When local changes are uploaded to the default deployment server. */
@@ -4574,6 +4575,8 @@ export type ImportedRunConfig_Serialize = {
 	/**  Keys of the source entry with no equivalent here (`preLaunchTask`, `justMyCode`…). */
 	ignored: string[],
 };
+
+export type ImportsOnPaste = "ask" | "always" | "never";
 
 export type IndentConfig = IndentConfig_Serialize | IndentConfig_Deserialize;
 
@@ -7427,6 +7430,7 @@ export type SmartKeysSettings = {
 	tabOutOfPair?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
+	escapeOnPaste?: boolean,
 	smartIndent?: boolean,
 	/**  Enter › Insert documentation comment stub: Enter after `/**` closes the comment. */
 	insertDocStub?: boolean,

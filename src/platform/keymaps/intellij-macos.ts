@@ -195,7 +195,8 @@ export const intellijMacos: Record<string, string[]> = {
   "window.previous": ["Meta+Alt+Shift+`"],
   "file.reloadFromDisk": ["Meta+Alt+Y"],
   // Before the project view's ⇧⌘C (Copy Absolute Path), which wins there.
-  "editor.copyPath": ["Meta+Shift+C"],
+  "editor.copyPath": [],
+  "editor.copyPathReference": ["Meta+Shift+C"],
 
   // Project view (when: projectViewFocus)
   "project.newFile": ["Meta+N"],
@@ -408,4 +409,6 @@ export const intellijMacos: Record<string, string[]> = {
   "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Meta+Shift+Enter"],
   "find.field.recentSearches": ["Alt+Down"],
+  "editor.pasteHistory.paste": ["Enter"],
+  "editor.pasteHistory.remove": ["Delete", "Backspace"],
 };

@@ -1,4 +1,5 @@
 {
+  "Escape text on paste in string literals": "粘贴到字符串字面量时转义文本",
   "Cannot copy reference": "无法复制引用",
   "Group actions": "分组操作",
   "New Project Group": "新建项目组",
@@ -6563,5 +6564,22 @@
   "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.": "此模块运行和调试使用的 JDK。编译 JDK 由 Maven 和 Gradle 管理。",
   "Remove Module Overrides": "移除模块覆盖设置",
   "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}",
-  "Cannot choose a directory": "无法选择目录"
+  "Cannot choose a directory": "无法选择目录",
+  "Path From Source Root": "相对于源根的路径",
+  "Copy Path From Source Root": "复制相对于源根的路径",
+  "Path with line number": "带行号的路径",
+  "Copy Path with Line Number": "复制带行号的路径",
+  "Reference": "引用",
+  "Resolving reference…": "正在解析引用…",
+  "Copied {text}": "已复制 {text}",
+  "Filter clipboard history": "筛选剪贴板历史",
+  "Clipboard history": "剪贴板历史",
+  "Paste preview": "粘贴预览",
+  "1 line": "1 行",
+  "(whitespace)": "（空白）",
+  "Nothing to paste: the clipboard history is empty": "没有可粘贴的内容：剪贴板历史为空",
+  "Insert imports on paste": "粘贴时插入导入",
+  "Add Imports on Paste": "粘贴时添加导入",
+  "Add Imports": "添加导入",
+  "Select imports to add to the pasted code:": "选择要为粘贴的代码添加的导入："
 }
