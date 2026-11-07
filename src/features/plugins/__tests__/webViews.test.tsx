@@ -271,6 +271,7 @@ describe("WebView", () => {
     const payload = {
       op: "open-log-tab",
       title: "App Logs",
+      key: "shared",
       program: "tail",
       baseArgs: ["-f", "app.log"],
       toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
@@ -287,6 +288,7 @@ describe("WebView", () => {
       plugins: [
         {
           id: "acme.draw",
+          enabled: true,
           hasCode: true,
           capabilities: [{ id: "process:tail", granted: true }],
         } as unknown as PluginInfo,
@@ -296,7 +298,9 @@ describe("WebView", () => {
     await waitFor(() => expect(opened).toHaveLength(1));
     expect(opened[0]).toMatchObject({
       kind: "pluginLog",
+      key: `pluginLog:${JSON.stringify(["acme.draw", "draw", "shared"])}`,
       data: {
+        view: "draw",
         pluginId: "acme.draw",
         title: "App Logs",
         program: "tail",

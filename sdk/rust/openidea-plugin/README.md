@@ -13,3 +13,9 @@ See [the protocol, permission and resource limits](../../../plugins/README.md#we
 and the [minimal fixture](../../../crates/ide-plugin/tests/fixtures/web-pty).
 The frame cannot access IPC directly. Its sessions belong to that frame and
 end with its view or plugin. There is no new WIT import for this API.
+
+API 1.3 also adds `open-log-tab` to the web bridge: a generic read-only editor
+tab streams output from a granted process, with plugin-defined argument toggles.
+It uses the same backend authorization and bounded PTY transport. See the
+[protocol and lifecycle](../../../plugins/README.md#streaming-log-editor-tabs-api-13)
+and the [built fixture](../../../crates/ide-plugin/tests/fixtures/web-log).

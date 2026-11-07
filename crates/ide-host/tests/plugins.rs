@@ -4444,6 +4444,50 @@ fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
 }
 
 #[test]
+fn web_log_tabs_use_the_web_pty_permission_boundary() {
+    use ide_host::plugins::web::WebPtyCommand;
+    let f = fixture(Limits::default());
+    let info = f.host.install_from_dir(&sample("web-log"), &Consent::default()).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "process:bash" && !c.granted));
+    assert_eq!(f.run("web-log", "ping", None).unwrap().as_deref(), Some("Web log ready"));
+    for command in ["open", "denied"] {
+        f.take_events();
+        assert_eq!(f.run("web-log", command, None).unwrap(), None);
+        assert!(
+            f.take_events()
+                .iter()
+                .any(|(_, event)| matches!(event, PluginEvent::ViewMessage { plugin_id, view, message }
+                if plugin_id == "web-log" && view == "logs" && message == command))
+        );
+    }
+    let command = |program: &str| WebPtyCommand {
+        program: program.into(),
+        args: vec!["--noprofile".into(), "--norc".into()],
+        env: Default::default(),
+        cols: 240,
+        rows: 40,
+    };
+    for program in ["bash", "sh", "/bin/bash"] {
+        assert_eq!(
+            f.host.web_pty_options("web-log", "logs", "main", command(program)).unwrap_err().kind,
+            ErrorKind::PermissionDenied
+        );
+    }
+    #[cfg(unix)]
+    {
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        let options = f.host.web_pty_options("web-log", "logs", "main", command("bash")).unwrap();
+        assert_eq!(options.shell.as_deref(), f.host.program_for("web-log", "bash").unwrap().to_str());
+        assert_eq!(options.cwd.0, f.project);
+        assert!(options.env.is_empty());
+        assert!(!options.shell_integration);
+        assert!(f.host.web_pty_options("web-log", "logs", "main", command("sh")).is_err());
+        f.host.set_capability("web-log", "process:bash", false).unwrap();
+        assert!(f.host.web_pty_options("web-log", "logs", "main", command("bash")).is_err());
+    }
+}
+
+#[test]
 fn web_ptys_require_a_current_exact_program_grant_and_project() {
     use ide_host::plugins::web::WebPtyCommand;
     let f = fixture(Limits::default());

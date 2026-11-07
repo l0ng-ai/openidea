@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Channel } from "@tauri-apps/api/core";
 import { Compartment, EditorState, Prec, type StateEffect } from "@codemirror/state";
 import { EditorView, highlightSpecialChars, keymap } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
@@ -13,31 +12,21 @@ import { caretExtension, fontZoom, setFontZoom, softWrapActive, stepFontZoom } f
 import { fontExtension, heavyExtension, lineNumbersExtension, prefsOf } from "@/editor/core/cm/setup";
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
+import { executeAction } from "@/platform/actions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
-import { call, commands, isTauri, onIdeEvent, type TerminalId } from "@/platform/ipc";
 import { bindingsFor, normalizeBinding, registerKeyClaim, strokeOf } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { EmptyState, IconButton, Toggle, selectableText } from "@/ui";
 import logStyles from "@/ui/LogPane.module.css";
 import type { EditorInput } from "@/workbench/contributions";
-import { errorText } from "../store";
+import { usePlugins } from "../store";
+import { bindLogControls } from "./logActions";
+import { boundedLog, type PluginLogEditorData } from "./logTab";
+import { webPtyBackend } from "./ptyBackend";
+import { ptyBridge } from "./ptyBridge";
 
 export const PLUGIN_LOG_EDITOR_KIND = "pluginLog";
-
-export interface PluginLogToggleSpec {
-  id: string;
-  label: string;
-  args: string[];
-}
-
-export interface PluginLogEditorData {
-  pluginId: string;
-  title: string;
-  program: string;
-  baseArgs: string[];
-  toggles?: PluginLogToggleSpec[];
-}
 
 export function pluginLogEditorTitle(input: EditorInput): string {
   const data = input.data as Partial<PluginLogEditorData> | undefined;
@@ -45,7 +34,6 @@ export function pluginLogEditorTitle(input: EditorInput): string {
 }
 
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g; // eslint-disable-line no-control-regex
-const MAX_LINES = 5000;
 
 function isActionStroke(stroke: string | null, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
@@ -63,7 +51,7 @@ const wheelZoom = EditorView.domEventHandlers({
 export function PluginLogEditor({ input }: { input: EditorInput }) {
   const data = input.data as PluginLogEditorData | undefined;
   if (!data || !data.program) {
-    return <EmptyState title="Invalid log stream configuration" />;
+    return <EmptyState title={tx("Invalid log stream configuration")} />;
   }
   return <PluginLogEditorBody input={input} data={data} />;
 }
@@ -83,6 +71,7 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
   const viewRef = useRef<EditorView | null>(null);
   const wrapSlotRef = useRef(new Compartment());
   const stickRef = useRef(true);
+  const receivedRef = useRef(false);
   const findOpenRef = useRef(false);
   const findWatchersRef = useRef(new Set<(u: { docChanged: boolean; selectionSet: boolean }) => void>());
   const findEscapeRef = useRef<() => boolean>(() => false);
@@ -165,7 +154,7 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
     const view = new EditorView({
       parent: host,
       state: EditorState.create({
-        doc: "Waiting for output…",
+        doc: tx("Waiting for output…"),
         extensions: [
           fontSlot.of(fontExtension(editorSettings())),
           caretSlot.of(caretExtension(editorPrefs())),
@@ -343,140 +332,110 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
     e.stopPropagation();
   };
 
-  // Start / restart the streaming log process whenever source or toggles change.
-  const onKey = [...on].sort().join("\0");
+  // One bounded PTY bridge per mounted tab; toggling replaces the owned process.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    let hasReceivedLine = false;
-    view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: "Waiting for output…" },
-    });
+    receivedRef.current = false;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: tx("Waiting for output…") } });
     stickRef.current = true;
-
-    if (!isTauri()) {
-      view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: "Live log streaming requires the desktop app." },
-      });
-      return;
-    }
-
     let stopped = false;
-    let termId: TerminalId | undefined;
-    let remainder = "";
-    let pendingLines: string[] = [];
+    let pending = "";
+    let sequence: unknown;
     let frame = 0;
-
+    const append = (text: string) => {
+      if (stopped) return;
+      const previous = receivedRef.current ? view.state.doc.toString() : "";
+      receivedRef.current = true;
+      const clean = text.replace(/\r\n/g, "\n").replace(ANSI, "");
+      const result = boundedLog(previous + clean);
+      const removed = previous.length + clean.length - result.length;
+      const stick = stickRef.current;
+      if (view.state.doc.toString() !== previous || removed > previous.length) {
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: result } });
+      } else {
+        view.dispatch({
+          changes: [
+            { from: 0, to: removed, insert: "" },
+            { from: previous.length, insert: clean },
+          ],
+        });
+      }
+      if (stick && !findOpenRef.current) view.scrollDOM.scrollTop = view.scrollDOM.scrollHeight;
+    };
     const flush = () => {
       frame = 0;
-      const v = viewRef.current;
-      if (stopped || !v || pendingLines.length === 0) return;
-      const batch = pendingLines;
-      pendingLines = [];
-      const wasStick = stickRef.current;
-      if (!hasReceivedLine) {
-        hasReceivedLine = true;
-        const text = batch.slice(-MAX_LINES).join("\n");
-        v.dispatch({
-          changes: { from: 0, to: v.state.doc.length, insert: text },
-        });
-      } else {
-        const insertText = `\n${batch.join("\n")}`;
-        v.dispatch({
-          changes: { from: v.state.doc.length, to: v.state.doc.length, insert: insertText },
-        });
-        const excess = v.state.doc.lines - MAX_LINES;
-        if (excess > 0) {
-          const cutLine = v.state.doc.line(excess);
-          v.dispatch({
-            changes: { from: 0, to: Math.min(v.state.doc.length, cutLine.to + 1), insert: "" },
-          });
-        }
-      }
-      if (wasStick && !findOpenRef.current) {
-        v.scrollDOM.scrollTop = v.scrollDOM.scrollHeight;
-      }
+      append(pending);
+      pending = "";
+      const consumed = sequence;
+      sequence = undefined;
+      bridge.handle(JSON.stringify({ op: "pty-ack", sessionId: "log", sequence: consumed }));
     };
-
-    const pushLine = (raw: string) => {
+    const bridge = ptyBridge(data.pluginId, webPtyBackend(data.pluginId, data.view), (message) => {
+      const m = message as Record<string, unknown>;
       if (stopped) return;
-      pendingLines.push(raw.replace(/\r$/, "").replace(ANSI, ""));
-      frame ||= requestAnimationFrame(flush);
-    };
-
-    const flushRemainder = () => {
-      if (remainder.length > 0) {
-        pushLine(remainder);
-        remainder = "";
-      }
-      if (frame) {
-        cancelAnimationFrame(frame);
-        flush();
-      }
-    };
-
-    const offExit = onIdeEvent("terminalExited", (ev) => {
-      if (stopped || termId === undefined || ev.terminal !== termId) return;
-      flushRemainder();
-      const msg = ev.code === null ? "[Process finished]" : `[Process finished with exit code ${ev.code}]`;
-      pushLine(msg);
-      if (frame) {
-        cancelAnimationFrame(frame);
-        flush();
+      if (m.op === "pty-data") {
+        pending = String(m.data);
+        sequence = m.sequence;
+        frame ||= requestAnimationFrame(flush);
+      } else if (m.op === "pty-exit") {
+        const exitCode = m.exitCode;
+        append(m.exitCode === null ? tx("\n[Process finished]") : tx`\n[Process finished with exit code ${exitCode}]`);
+      } else if (m.op === "pty-error") {
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+        append(pending);
+        pending = "";
+        const error = m.error;
+        append(tx`\nError: ${error}`);
       }
     });
-
-    const extraArgs = (data.toggles ?? []).filter((t) => on.has(t.id)).flatMap((t) => t.args);
-    const args = [...data.baseArgs, ...extraArgs];
-    const cwd = useProject.getState().project?.root ?? "/";
-    const channel = new Channel<string>();
-    channel.onmessage = (chunk) => {
-      if (stopped) return;
-      remainder += chunk;
-      const parts = remainder.split("\n");
-      remainder = parts.pop() ?? "";
-      for (const rawLine of parts) {
-        pushLine(rawLine);
-      }
-    };
-
-    void call(
-      commands.termSpawn(
-        {
-          cwd,
-          shell: data.program,
-          args,
-          env: { TERM: "dumb" },
-          cols: 240,
-          rows: 40,
-          shellIntegration: false,
-        },
-        channel,
-      ),
-    ).then(
-      (info) => {
-        if (stopped) {
-          void commands.termKill(info.id);
-          return;
-        }
-        termId = info.id;
-      },
-      (err: unknown) => {
-        if (!stopped) {
-          pushLine(`Error: ${errorText(err)}`);
-        }
-      },
+    bridge.handle(
+      JSON.stringify({
+        op: "pty-spawn",
+        sessionId: "log",
+        program: data.program,
+        args: [...data.baseArgs, ...data.toggles.filter((t) => on.has(t.id)).flatMap((t) => t.args)],
+        cols: 240,
+        rows: 40,
+      }),
     );
-
-    return () => {
+    const stop = (report = true) => {
+      if (stopped) return;
+      bridge.close();
+      if (frame) cancelAnimationFrame(frame);
+      if (report) append(pending + tx("\n[Log stream stopped]"));
       stopped = true;
-      cancelAnimationFrame(frame);
-      offExit();
-      if (termId !== undefined) {
-        void commands.termKill(termId);
-      }
+      pending = "";
     };
-  }, [input.key, data.program, data.baseArgs, data.toggles, onKey, on]);
+    const offPlugin = usePlugins.subscribe((state, previous) => {
+      const key = (plugins: typeof state.plugins) => {
+        const p = plugins.find((p) => p.id === data.pluginId);
+        return (
+          p &&
+          JSON.stringify([
+            p.path,
+            p.version,
+            p.enabled,
+            ["failed", "disabled", "needsConsent"].includes(p.status),
+            p.capabilities,
+          ])
+        );
+      };
+      if (key(state.plugins) !== key(previous.plugins)) stop();
+    });
+    const offProject = useProject.subscribe((state, previous) => {
+      if (state.project !== previous.project) stop();
+    });
+    const onUnload = () => stop();
+    window.addEventListener("pagehide", onUnload);
+    return () => {
+      stop(false);
+      offPlugin();
+      offProject();
+      window.removeEventListener("pagehide", onUnload);
+    };
+  }, [data, on]);
 
   const toggle = (id: string, checked: boolean) => {
     const next = new Set(on);
@@ -488,24 +447,48 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
   const clearLogs = () => {
     const view = viewRef.current;
     if (!view) return;
+    receivedRef.current = true;
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: "" },
     });
   };
 
+  useEffect(() =>
+    bindLogControls(findId, {
+      key: input.key,
+      find: openFind,
+      clear: clearLogs,
+      wrap: () => setWrap((value) => !value),
+      toggle,
+    }),
+  );
+
   return (
     <div ref={rootRef} className={logStyles.pane} onKeyDown={onKeyDown}>
       <div className={logStyles.toolbar}>
         {(data.toggles ?? []).map((t) => (
-          <Toggle key={t.id} checked={on.has(t.id)} onChange={(checked) => toggle(t.id, checked)} label={t.label} />
+          <Toggle
+            key={t.id}
+            checked={on.has(t.id)}
+            onChange={(checked) =>
+              void executeAction("plugins.log.toggleArgument", { target: findId, id: t.id, checked })
+            }
+            label={t.label}
+            aria-label={t.label}
+          />
         ))}
-        <Toggle checked={wrap} onChange={setWrap} label="Soft-wrap" />
+        <Toggle
+          checked={wrap}
+          onChange={() => void executeAction("plugins.log.wrap", findId)}
+          label={tx("Soft-wrap")}
+          aria-label={tx("Soft-wrap")}
+        />
         <span className={logStyles.flex} />
-        <IconButton icon="search" size="small" title="Find in Logs (⌘F)" onClick={openFind} />
-        <IconButton icon="trash" size="small" title="Clear" onClick={clearLogs} />
+        <IconButton icon="search" size="small" title="Find in Logs" action="plugins.log.find" actionArg={findId} />
+        <IconButton icon="trash" size="small" title="Clear" action="plugins.log.clear" actionArg={findId} />
       </div>
       {find && <FindPanel target={findTarget} version={viewGen} replace={false} seq={find.seq} onClose={closeFind} />}
-      <div ref={hostRef} style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }} />
+      <div ref={hostRef} className={logStyles.output} />
     </div>
   );
 }

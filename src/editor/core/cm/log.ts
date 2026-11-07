@@ -17,7 +17,6 @@ const TIMESTAMP = [
 
 const EXCEPTION = /^[\w$]+(?:\.[\w$]+)*(?:Exception|Error)\b/;
 const FRAME = /^\s+(?:at\s|\.\.\. \d+ (?:more|common frames omitted))/;
-const KLOG_LEVEL = /^([IWEF])\d{4}(?=\s+\d\d:\d\d:\d\d)/;
 const SOURCE_LOC = /^[\w./-]+\.(?:go|rs|py|java|kt|ts|tsx|js|c|cc|cpp|h|hpp|rb|cs|php):\d+\b/;
 const KV_KEY = /^[a-zA-Z_][\w.-]*=/;
 const QUOTED_STR = /^"(?:[^"\\]|\\.)*"/;
@@ -73,10 +72,6 @@ const parser: StreamParser<State> = {
     if (wordStart) {
       if (stream.match(KV_KEY)) return "propertyName";
       for (const re of TIMESTAMP) if (stream.match(re)) return "number";
-      const klog = stream.match(KLOG_LEVEL) as RegExpMatchArray | null;
-      if (klog) {
-        return klog[1] === "I" ? "string" : klog[1] === "W" ? "logWarning" : "invalid";
-      }
       const level = (stream.match(LEVEL_UPPER) || (/[[<]/.test(before) && stream.match(LEVEL_MARKED))) as
         | RegExpMatchArray
         | boolean
