@@ -34,6 +34,7 @@ ipc.remoteStopForwarding.mockImplementation(async (remotePort: number) => {
 afterEach(() => {
   cleanup();
   forwarded.length = 0;
+  localStorage.clear();
   usePorts.setState({ ports: [] });
 });
 
@@ -102,6 +103,8 @@ it("forwards and remembers ports of a dev container, per folder and configuratio
   expect(await forwardPort(8000)).toEqual({ remotePort: 8000, localPort: 8000 });
   expect(ipc.remoteForwardPort).toHaveBeenCalledWith(8000);
   expect(savedPorts()).toEqual([8000]);
+  useRemote.setState({ session: { ...container(""), root: "/another-workspace" } });
+  expect(savedPorts()).toEqual([8000]);
   useRemote.setState({ session: container(".devcontainer/other/devcontainer.json") });
   expect(savedPorts()).toEqual([]);
   useRemote.setState({ session: null });
@@ -116,4 +119,78 @@ it("doesn't forward ports of a WSL project yet", async () => {
   expect(await forwardPort(8080)).toBeNull();
   expect(ipc.remoteForwardPort).not.toHaveBeenCalled();
   useRemote.setState({ session: null });
+});
+
+it("restores manually forwarded container ports alongside configured ports", async () => {
+  const { useRemote } = await import("@/platform/remote");
+  const { restorePorts, savedPorts } = await import("./ports");
+  const session = {
+    target: { kind: "devContainer" as const, folder: "/w/app", config: "" },
+    root: "/workspaces/app",
+    host: "app",
+    os: "linux",
+    commands: [],
+  };
+  useRemote.setState({ session });
+  await forwardPort(9000);
+  expect(savedPorts()).toEqual([9000]);
+  forwarded.splice(0, forwarded.length, { remotePort: 8000, localPort: 8000 });
+  await restorePorts();
+  expect(usePorts.getState().ports).toEqual([
+    { remotePort: 8000, localPort: 8000 },
+    { remotePort: 9000, localPort: 9000 },
+  ]);
+  useRemote.setState({ session: { ...session, target: { ...session.target, folder: "/w/other" } } });
+  expect(savedPorts()).toEqual([]);
+  useRemote.setState({ session: null });
+});
+
+it("does not display a previous session's delayed port response", async () => {
+  const { useRemote } = await import("@/platform/remote");
+  const { refreshPorts } = await import("./ports");
+  let resolve!: (ports: typeof forwarded) => void;
+  ipc.remoteForwardedPorts.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const pending = refreshPorts(true);
+  useRemote.setState({
+    session: {
+      target: { kind: "devContainer", folder: "/other", config: "" },
+      root: "/workspaces/other",
+      host: "other",
+      os: "linux",
+      commands: [],
+    },
+  });
+  resolve([{ remotePort: 8000, localPort: 8000 }]);
+  await pending;
+  expect(usePorts.getState().ports).toEqual([]);
+  useRemote.setState({ session: null });
+});
+
+it("reloads ports when switching directly between connected sessions", async () => {
+  const { useRemote } = await import("@/platform/remote");
+  const { activate } = await import("./index");
+  const session = (folder: string) => ({
+    target: { kind: "devContainer" as const, folder, config: "" },
+    root: "/workspaces/app",
+    host: "app",
+    os: "linux",
+    commands: [],
+  });
+  useRemote.setState({ session: session("/first") });
+  forwarded.push({ remotePort: 8000, localPort: 8000 });
+  const dispose = activate();
+  try {
+    await waitFor(() => expect(usePorts.getState().ports).toEqual([{ remotePort: 8000, localPort: 8000 }]));
+    forwarded.splice(0, forwarded.length, { remotePort: 9000, localPort: 9000 });
+    useRemote.setState({ session: session("/second") });
+    await waitFor(() => expect(usePorts.getState().ports).toEqual([{ remotePort: 9000, localPort: 9000 }]));
+  } finally {
+    dispose();
+    useRemote.setState({ session: null });
+  }
 });

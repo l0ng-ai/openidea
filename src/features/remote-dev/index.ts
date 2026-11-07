@@ -18,9 +18,16 @@ import { restorePorts, usePorts } from "./ports";
 /** Forwarded ports are available while this window is connected to an SSH host or a dev container. */
 function trackPortsWindow(): () => void {
   let off: (() => void) | null = null;
-  const sync = (connected: boolean) => {
-    if (connected && !off) {
+  let session = useRemote.getState().session;
+  const sync = () => {
+    const next = useRemote.getState().session;
+    const connected = next?.target.kind === "ssh" || next?.target.kind === "devContainer";
+    if (connected && (next !== session || !off)) {
+      usePorts.setState({ ports: [] });
       void restorePorts();
+    }
+    session = next;
+    if (connected && !off) {
       off = registerToolWindow({
         id: "remote.ports",
         title: "Ports",
@@ -36,9 +43,8 @@ function trackPortsWindow(): () => void {
       usePorts.setState({ ports: [] });
     }
   };
-  const forwards = (kind: string | undefined) => kind === "ssh" || kind === "devContainer";
-  sync(forwards(useRemote.getState().session?.target.kind));
-  const unsubscribe = useRemote.subscribe((s) => sync(forwards(s.session?.target.kind)));
+  sync();
+  const unsubscribe = useRemote.subscribe(sync);
   return () => {
     unsubscribe();
     off?.();

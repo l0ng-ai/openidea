@@ -243,6 +243,22 @@ mod tests {
     }
 
     #[test]
+    fn forward_ports_skip_malformed_entries_and_keep_valid_bounds() {
+        let config = parse(
+            r#"{
+            "remoteEnv": {"PORT": "8000"},
+            "forwardPorts": [1, 65535, " 8000 ", "localhost:8000", "127.0.0.1:8000",
+                -1, 1.5, 65536, 18446744073709551616, true, false, {}, [], null,
+                "", " ", ":80", "db:5432", "localhost:", "localhost:0", "localhost:65536",
+                "localhost:80:90", "localhost: 80", "http://localhost:80", "::1:80"]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(config.forward_ports, [1, 65535, 8000]);
+        assert_eq!(config.remote_env["PORT"].as_deref(), Some("8000"));
+    }
+
+    #[test]
     fn post_start_command_forms() {
         let parse_cmd = |json: &str| parse(&format!(r#"{{ "postStartCommand": {json} }}"#)).map(|c| c.post_start);
         assert_eq!(parse_cmd(r#""echo hi""#).unwrap().unwrap().argv().unwrap(), ["/bin/sh", "-c", "echo hi"]);

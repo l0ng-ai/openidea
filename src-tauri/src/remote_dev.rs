@@ -72,7 +72,7 @@ pub struct Connection {
     /// Keeps the SSH connection alive; `None` for WSL and dev containers.
     session: Option<Arc<ide_ssh::Session>>,
     /// How to reach a dev container's ports; `None` for SSH and WSL.
-    exec: Option<Arc<crate::remote_container::Exec>>,
+    exec: Option<Arc<ide_remote::container_tunnel::Exec>>,
     /// Remote ports forwarded to this machine (Ports tool window), by remote port.
     forwards: Mutex<Vec<(u16, Forward)>>,
 }
@@ -80,7 +80,7 @@ pub struct Connection {
 /// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
 enum Forward {
     Ssh(ide_ssh::Tunnel),
-    Container(crate::remote_container::Tunnel),
+    Container(ide_remote::container_tunnel::Tunnel),
 }
 
 impl Forward {
@@ -146,6 +146,7 @@ impl Connections {
     pub fn disconnect(&self, window: &str) {
         if let Some(c) = self.0.lock().remove(window) {
             c.peer.kill();
+            c.forwards.lock().clear();
         }
     }
 }
@@ -533,6 +534,14 @@ pub async fn remote_connect(
     state.remote_dev.disconnect(&label);
     state.host.close_project(&label);
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
+    let weak = Arc::downgrade(&connection);
+    let peer = connection.peer.clone();
+    tauri::async_runtime::spawn(async move {
+        peer.closed().await;
+        if let Some(connection) = weak.upgrade() {
+            connection.forwards.lock().clear();
+        }
+    });
     let plugins = state.plugins.clone();
     tauri::async_runtime::spawn(async move {
         sync_plugin_languages(&plugins, &connection, &label).await;
@@ -685,6 +694,9 @@ pub async fn remote_forward_port(
     let tunnel = open_forward(&c, remote_port).await?;
     let port = ForwardedPort { remote_port, local_port: tunnel.port() };
     let mut forwards = c.forwards.lock();
+    if c.peer.is_closed() {
+        return Err(IdeError::cancelled());
+    }
     if let Some(existing) = forwards.iter().find(|(remote, _)| *remote == remote_port) {
         return Ok(ForwardedPort { remote_port, local_port: existing.1.port() });
     }
@@ -699,7 +711,9 @@ async fn open_forward(c: &Connection, remote_port: u16) -> IdeResult<Forward> {
         return Ok(Forward::Ssh(tunnel));
     }
     if let Some(exec) = c.exec.clone() {
-        return Ok(Forward::Container(crate::remote_container::Tunnel::listen(exec, remote_port, remote_port).await?));
+        return Ok(Forward::Container(
+            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, remote_port).await?,
+        ));
     }
     Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
 }
@@ -707,14 +721,19 @@ async fn open_forward(c: &Connection, remote_port: u16) -> IdeResult<Forward> {
 /// Forwards the `forwardPorts` of the dev container's configuration (the local folder's).
 async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
     let local = std::path::PathBuf::from(folder);
-    let path = match config.trim() {
-        "" => ide_workspace::devcontainer::find(&local),
-        config => Some(local.join(config)),
-    };
-    let Some(path) = path else { return };
-    let ports = match ide_workspace::devcontainer::load_file(&path) {
-        Ok(c) => c.forward_ports,
-        Err(e) => return tracing::warn!("{}: forwardPorts: {e}", c.host),
+    let config = config.to_owned();
+    let ports = tokio::task::spawn_blocking(move || {
+        let path = match config.trim() {
+            "" => ide_workspace::devcontainer::find(&local),
+            config => Some(local.join(config)),
+        };
+        path.map(|path| ide_workspace::devcontainer::load_file(&path).map(|c| c.forward_ports)).transpose()
+    })
+    .await;
+    let ports = match ports {
+        Ok(Ok(Some(ports))) => ports,
+        Ok(Ok(None)) => return,
+        result => return tracing::warn!("{}: forwardPorts: {result:?}", c.host),
     };
     for remote_port in ports {
         if c.forwards.lock().iter().any(|(remote, _)| *remote == remote_port) {
@@ -730,8 +749,15 @@ async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
 /// Stops forwarding `remote_port`.
 #[tauri::command]
 #[specta::specta]
-pub fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, remote_port: u16) -> IdeResult<()> {
-    connection(&window, &state)?.forwards.lock().retain(|(remote, _)| *remote != remote_port);
+pub async fn remote_stop_forwarding(window: Window, state: State<'_, AppState>, remote_port: u16) -> IdeResult<()> {
+    let c = connection(&window, &state)?;
+    let tunnel = {
+        let mut forwards = c.forwards.lock();
+        forwards.iter().position(|(remote, _)| *remote == remote_port).map(|index| forwards.remove(index).1)
+    };
+    if let Some(Forward::Container(tunnel)) = tunnel {
+        tunnel.close().await;
+    }
     Ok(())
 }
 

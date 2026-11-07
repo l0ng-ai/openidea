@@ -5,9 +5,11 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const EOF_GRACE: Duration = Duration::from_secs(5);
 
 /// `<host> <port>` from the arguments after `--connect`.
 pub fn parse_args(args: &[String]) -> Result<(String, u16), String> {
@@ -23,22 +25,58 @@ pub fn parse_args(args: &[String]) -> Result<(String, u16), String> {
 
 /// Connects to `host:port`, copies `input` to it and its replies to `output`, and returns when
 /// the target is done (the copy of `input` may still be blocked: the caller exits). Fails only
-/// when the connection can't be opened.
+/// when the connection can't be opened. An input EOF allows five idle seconds for a final reply.
 pub fn relay(host: &str, port: u16, mut input: impl Read + Send + 'static, mut output: impl Write) -> io::Result<()> {
     let mut from_target = connect(host, port)?;
+    from_target.set_read_timeout(Some(Duration::from_millis(100)))?;
     let mut to_target = from_target.try_clone()?;
+    let writing = Arc::new(Mutex::new(None::<Instant>));
+    let stalled = writing.clone();
+    let (finished, eof) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = io::copy(&mut input, &mut to_target);
+        let mut buf = [0; 16 * 1024];
+        loop {
+            let n = match input.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
+            *writing.lock().unwrap() = Some(Instant::now());
+            let result = to_target.write_all(&buf[..n]);
+            *writing.lock().unwrap() = None;
+            if result.is_err() {
+                break;
+            }
+        }
         // The client closed its side: tell the target, which may still answer.
         let _ = to_target.shutdown(Shutdown::Write);
+        let _ = finished.send(Instant::now());
     });
     let mut buf = [0u8; 16 * 1024];
+    let mut input_closed = None;
     loop {
+        // A blocked write must not hide Docker closing stdin indefinitely.
+        if stalled.lock().unwrap().is_some_and(|at| at.elapsed() >= CONNECT_TIMEOUT) {
+            break;
+        }
+        if let Ok(at) = eof.try_recv() {
+            input_closed = Some(at);
+        }
+        // Docker closing stdin must end an idle relay too. Keep a bounded grace for
+        // a target replying to a half-closed request before tearing down the socket.
+        if input_closed.is_some_and(|at| at.elapsed() >= EOF_GRACE) {
+            break;
+        }
         match from_target.read(&mut buf) {
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => continue,
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 if output.write_all(&buf[..n]).and_then(|()| output.flush()).is_err() {
                     break;
+                }
+                if input_closed.is_some() {
+                    input_closed = Some(Instant::now());
                 }
             }
         }
@@ -90,6 +128,59 @@ mod tests {
         relay("127.0.0.1", port, &b"ping"[..], &mut out).unwrap();
         server.join().unwrap();
         assert_eq!(out, b"got ping");
+    }
+
+    #[test]
+    fn input_eof_ends_a_relay_even_when_the_target_ignores_it() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done, wait) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            socket.read_to_end(&mut request).unwrap();
+            // Remain open after seeing EOF, like an idle keep-alive server.
+            wait.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        let start = Instant::now();
+        relay("127.0.0.1", port, io::empty(), io::sink()).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(8));
+        done.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn final_responses_keep_flowing_after_input_eof() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.read_to_end(&mut Vec::new()).unwrap();
+            for _ in 0..7 {
+                socket.write_all(b"x").unwrap();
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+        let mut out = Vec::new();
+        relay("127.0.0.1", port, io::empty(), &mut out).unwrap();
+        assert_eq!(out, b"xxxxxxx");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_target_that_never_reads_cannot_keep_a_relay_alive() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done, wait) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (_socket, _) = listener.accept().unwrap();
+            wait.recv_timeout(Duration::from_secs(30)).unwrap();
+        });
+        let start = Instant::now();
+        relay("127.0.0.1", port, io::repeat(0).take(32 * 1024 * 1024), io::sink()).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(25));
+        done.send(()).unwrap();
+        server.join().unwrap();
     }
 
     #[test]
