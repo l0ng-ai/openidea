@@ -862,6 +862,47 @@ fn private_uninstall_cleanup_failure_is_retryable() {
     }
 }
 
+#[test]
+fn private_uninstall_blocks_inactive_reactivation_during_cleanup() {
+    struct BlockingSecrets {
+        entered: std::sync::Barrier,
+        release: std::sync::Barrier,
+    }
+    impl SecretStore for BlockingSecrets {
+        fn get(&self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        fn set(&self, _: &str, _: &str, _: Option<&str>) -> Result<(), String> {
+            self.entered.wait();
+            self.release.wait();
+            Ok(())
+        }
+    }
+    let f = fixture(Limits::default());
+    let pkg = f._tmp.path().join("private-with-secret");
+    copy_dir(&sample("private-dir"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap().replace("required = []", "required = [\"secrets\"]");
+    std::fs::write(
+        manifest,
+        format!("{text}\n[[contributes.secrets]]\nname = \"cleanup-test\"\nlabel = \"Cleanup test\"\n"),
+    )
+    .unwrap();
+    f.install(&pkg);
+    assert_eq!(f.status("test.private-dir"), PluginStatus::Inactive);
+    let store = Arc::new(BlockingSecrets { entered: std::sync::Barrier::new(2), release: std::sync::Barrier::new(2) });
+    f.host.set_secret_store(store.clone());
+    let result = std::thread::scope(|scope| {
+        let uninstall = scope.spawn(|| f.host.uninstall("test.private-dir"));
+        store.entered.wait();
+        let result = f.run("test.private-dir", "roundtrip", None);
+        store.release.wait();
+        uninstall.join().unwrap().unwrap();
+        result
+    });
+    assert!(result.is_err(), "plugin must remain stopped during uninstall");
+}
+
 #[cfg(unix)]
 #[test]
 fn private_paths_work_with_open_location_and_approved_process_arguments() {

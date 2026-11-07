@@ -1028,6 +1028,11 @@ impl PluginHost {
             .flatten()
             .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
             .collect();
+        // Retain registration for retry, but prevent concurrent on-demand activation.
+        {
+            let _runtime = plugin.runtime.lock();
+            plugin.meta.lock().status = PluginStatus::Disabled;
+        }
         self.stop(&plugin);
         {
             let store = self.shared.secrets.read().clone();
