@@ -38,6 +38,7 @@ pub enum ProviderKind {
     Definition,
     LineMarkers,
     SemanticTokens,
+    Hover,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -116,6 +117,9 @@ impl ExtensionPoint for ProvidersPoint {
         if d.kinds.contains(&ProviderKind::SemanticTokens) {
             pkg.manifest.needs_api("contributes.providers: semantic-tokens", 3)?;
         }
+        if d.kinds.contains(&ProviderKind::Hover) {
+            pkg.manifest.needs_api("contributes.providers: hover", 3)?;
+        }
         for l in &d.languages {
             if l != "*"
                 && (l.is_empty()
@@ -164,7 +168,7 @@ pub(super) fn secret(_pkg: &Package, decl: toml::Value) -> Result<UiDecl, String
 use super::{LoadedPlugin, PluginHost, PluginStatus};
 use ide_core::CancellationToken;
 use ide_plugin::{
-    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending,
+    ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending, PluginHover,
     ProviderDocument, Runtime, SemanticToken,
 };
 use std::sync::Weak;
@@ -343,6 +347,14 @@ impl PluginHost {
         .into_iter()
         .flat_map(|(_, tokens)| tokens)
         .collect()
+    }
+
+    pub fn provide_hover(&self, doc: &ProviderDocument, at: ide_core::Pos) -> Vec<PluginHover> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::Hover, &doc.language, move |rt, timeout| rt.provide_hover(&d, at, timeout))
+            .into_iter()
+            .filter_map(|(_, hover)| hover)
+            .collect()
     }
 
     /// Ghost text from the first plugin that has some. Not bound by the

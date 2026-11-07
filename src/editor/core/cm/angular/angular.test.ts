@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EditorState } from "@codemirror/state";
 import { ensureSyntaxTree, foldable, matchBrackets } from "@codemirror/language";
-import { NodeProp, type Tree } from "@lezer/common";
+import { IterMode, NodeProp, type Tree } from "@lezer/common";
 import { buildParserFile } from "@lezer/generator";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { findLanguageDescription, loadSupport } from "../languages";
@@ -554,6 +554,39 @@ describe("Angular templates", () => {
       const text = state.doc.toString();
       expect(tokens(text, stateTree(state))).toEqual(tokens(text));
     }
+  });
+
+  it("reuses the trees of identical text and attributes wherever they are", () => {
+    const part = '<p [title]="t">{{ a + 1 }} @if (b) {</p>\n';
+    tokens(part);
+    // The same nodes at other offsets come from the memo; tokens are sliced at their positions.
+    const doc = `<div>${part}</div>\n${part}<span>x</span>${part}`;
+    const all = tokens(doc);
+    expect(all.filter((tok) => tok == "a:var")).toHaveLength(3);
+    expect(all.filter((tok) => tok == "title:attr")).toHaveLength(3);
+    expect(all.filter((tok) => tok == "@if:control")).toHaveLength(3);
+    const mounts: unknown[] = [];
+    angularLanguage.parser.parse(doc).iterate({
+      mode: IterMode.IgnoreMounts,
+      enter: (n) => {
+        const mount = n.name == "Text" && n.tree?.prop(NodeProp.mounted);
+        if (mount) mounts.push(mount.tree);
+      },
+    });
+    expect(mounts).toHaveLength(3);
+    expect(new Set(mounts).size).toBe(1);
+  });
+
+  it("parses only text with Angular syntax as Angular", () => {
+    const doc = "<ul>\n  <li>Tom &amp; Jerry</li>\n  <li>{{ a }} &amp; {{ b }}</li>\n</ul>\n@if (x) {\n}";
+    const tree = angularLanguage.parser.parse(doc);
+    const parentAt = (text: string) => tree.resolveInner(doc.indexOf(text) + 1, 1).parent?.name;
+    // Plain text and the whitespace between tags stay HTML text.
+    expect(parentAt("Tom")).toBe("Element");
+    expect(parentAt("\n  <li>")).toBe("Element");
+    expect(parentAt("{{ a")).toBe("Interpolation");
+    expect(tokens(doc)).toContain("@if:control");
+    expect(tokens(doc)).toContain("b:var");
   });
 
   it("is generated from angular.grammar", () => {

@@ -33,7 +33,8 @@ import {
   type TreeHandle,
   T,
 } from "@/ui";
-import { editorService } from "@/workbench/contributions";
+import { editorService, useMenuSlotItems } from "@/workbench/contributions";
+import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   aggregateCheck,
@@ -935,6 +936,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
             },
           }))}
         />
+        <CommitMessageActions />
         <span className={styles.grow} />
         <IconButton
           action={generating ? "vcs.cancelCommitMessage" : "vcs.generateCommitMessage"}
@@ -1015,6 +1017,21 @@ export function CommitMessageField({ included, runner }: { included: number; run
           </div>
         </div>
       )}
+    </>
+  );
+}
+
+/** Actions contributed above the message (a plugin's `commit.message` menu items). */
+function CommitMessageActions() {
+  const items = useMenuSlotItems((s) => s.slots.commitMessage);
+  useContextKeys();
+  return (
+    <>
+      {(items ?? [])
+        .filter((i) => evaluateWhen(i.when ?? undefined))
+        .map((i) => (
+          <IconButton key={i.action} icon={i.icon ?? "plugin"} action={i.action} actionArg={i.arg} size="small" />
+        ))}
     </>
   );
 }

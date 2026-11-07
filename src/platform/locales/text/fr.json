@@ -175,6 +175,7 @@
   "Allow placing breakpoints in any file": "Autoriser les points d'arrêt dans n'importe quel fichier",
   "Also expand in comments and strings": "Développer aussi dans les commentaires et les chaînes",
   "Always": "Toujours",
+  "Always Select Opened File": "Toujours sélectionner le fichier ouvert",
   "Always show full path in window header": "Toujours afficher le chemin complet dans l'en-tête de la fenêtre",
   "Amend": "Amender",
   "Analysing…": "Analyse…",

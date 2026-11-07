@@ -219,6 +219,7 @@
   "Allow placing breakpoints in any file": "Zezwalaj na umieszczanie punktów przerwania w dowolnym pliku",
   "Also expand in comments and strings": "Rozwijaj również w komentarzach i ciągach znaków",
   "Always": "Zawsze",
+  "Always Select Opened File": "Zawsze zaznaczaj otwarty plik",
   "Always show full path in window header": "Zawsze pokazuj pełną ścieżkę w nagłówku okna",
   "Amend": "Popraw (Amend)",
   "Analysing…": "Analizowanie…",

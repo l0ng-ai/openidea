@@ -1,14 +1,14 @@
 //! [`HostApi`] for one plugin's code: what its imports reach in the IDE.
 //! Capabilities were checked by the runtime before any of this runs.
 
-use super::{PluginContextKey, PluginEvent, PluginEventSink};
+use super::{CommitAnswer, CommitRequest, CommitSelection, PluginContextKey, PluginEvent, PluginEventSink};
 use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
 use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
-    EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel, ProcessOutput, Prompt,
-    RepositoryStatus, StatusItem,
+    CommitChange, CommitDraft, EventKind, HostApi, HostError, HttpRequest, HttpResponse, NotificationLevel,
+    ProcessOutput, Prompt, RepositoryStatus, StatusItem,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -23,6 +23,11 @@ const MAX_KEY: usize = 256;
 /// Most status bar items per plugin.
 const MAX_STATUS_ITEMS: usize = 8;
 const MAX_CONTEXT_KEYS: usize = 100;
+/// Most diff text of a pending commit, all files together.
+const MAX_COMMIT_DIFF: usize = 1 << 20;
+/// How long a window may take to describe its pending commit (it saves editors first).
+const COMMIT_SELECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const COMMIT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// (window or `None` for every window, plugin, key).
 type ContextKey = (Option<String>, String, String);
@@ -51,6 +56,10 @@ pub trait PluginWorkspace: Send + Sync {
     /// Shows `items` as producer `source`'s diagnostics of `path` (replacing earlier ones).
     fn publish_diagnostics(&self, source: &str, path: &Path, items: Vec<ide_core::Diagnostic>)
     -> Result<(), HostError>;
+    /// The encoding git content of `path` is read in (the project's file encoding).
+    fn vcs_encoding(&self, _path: &Path) -> ide_vcs::TextEncoding {
+        encoding_rs::UTF_8.into()
+    }
     /// The user's values of `plugin`'s settings: the project's at `root`
     /// (over global), or global.
     fn plugin_settings(&self, _plugin: &str, _root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
@@ -150,10 +159,15 @@ struct TaskEntry {
     cancelled: bool,
 }
 
-/// A question a plugin's call waits on.
+/// A question a plugin's call waits on: the user's (a prompt) or a window's.
 struct PromptEntry {
     plugin: String,
-    answer: std::sync::mpsc::SyncSender<Option<Vec<String>>>,
+    answer: Waiter,
+}
+
+enum Waiter {
+    Prompt(std::sync::mpsc::SyncSender<Option<Vec<String>>>),
+    Commit(std::sync::mpsc::SyncSender<CommitAnswer>),
 }
 
 /// State shared by the host and every plugin's [`PluginApi`].
@@ -211,7 +225,7 @@ impl Shared {
         })
     }
 
-    fn workspace(&self) -> Option<Arc<dyn PluginWorkspace>> {
+    pub(super) fn workspace(&self) -> Option<Arc<dyn PluginWorkspace>> {
         self.workspace.read().clone()
     }
 
@@ -358,8 +372,22 @@ impl Shared {
 
     /// The user answered (`Some`) or dismissed (`None`) a prompt.
     pub fn answer_prompt(&self, id: u64, answer: Option<Vec<String>>) -> bool {
-        let Some(prompt) = self.prompts.lock().remove(&id) else { return false };
-        prompt.answer.send(answer).is_ok()
+        let mut prompts = self.prompts.lock();
+        if !matches!(prompts.get(&id), Some(PromptEntry { answer: Waiter::Prompt(_), .. })) {
+            return false;
+        }
+        let Some(PromptEntry { answer: Waiter::Prompt(tx), .. }) = prompts.remove(&id) else { return false };
+        tx.send(answer).is_ok()
+    }
+
+    /// A window answered a [`CommitRequest`].
+    pub fn answer_commit(&self, id: u64, answer: CommitAnswer) -> bool {
+        let mut prompts = self.prompts.lock();
+        if !matches!(prompts.get(&id), Some(PromptEntry { answer: Waiter::Commit(_), .. })) {
+            return false;
+        }
+        let Some(PromptEntry { answer: Waiter::Commit(tx), .. }) = prompts.remove(&id) else { return false };
+        tx.send(answer).is_ok()
     }
 
     fn end_task(&self, id: u64) {
@@ -540,6 +568,91 @@ fn kill_group(child: &mut std::process::Child) {
     ide_core::process::kill_tree(child);
 }
 
+impl PluginApi {
+    /// Sends `request` to `client`'s window and waits for its answer, until
+    /// `cancel` fires, the plugin stops or `timeout` passes.
+    fn ask_commit(
+        &self,
+        client: &str,
+        request: CommitRequest,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<CommitAnswer, HostError> {
+        let id = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
+        let (answer, answers) = std::sync::mpsc::sync_channel(1);
+        {
+            let blocked = self.shared.prompts_blocked.lock();
+            if blocked.contains(self.id()) {
+                return Err(HostError::Cancelled);
+            }
+            self.shared
+                .prompts
+                .lock()
+                .insert(id, PromptEntry { plugin: self.id().to_owned(), answer: Waiter::Commit(answer) });
+        }
+        let request_id = id.to_string();
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::CommitRequested { plugin_id: self.id().to_owned(), request_id: request_id.clone(), request },
+        );
+        let deadline = Instant::now() + timeout;
+        loop {
+            match answers.recv_timeout(Duration::from_millis(100)) {
+                Ok(answer) => return Ok(answer),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if !cancel.is_cancelled() && Instant::now() < deadline => {}
+                Err(e) => {
+                    self.shared.prompts.lock().remove(&id);
+                    self.shared.sink.emit(Some(client), PluginEvent::PromptClosed { prompt_id: request_id });
+                    return Err(match e {
+                        std::sync::mpsc::RecvTimeoutError::Timeout if !cancel.is_cancelled() => {
+                            HostError::Failed("the window did not answer".into())
+                        }
+                        _ => HostError::Cancelled,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The changes `selection` commits, diffed repository by repository.
+pub(super) fn commit_draft(
+    workspace: &dyn PluginWorkspace,
+    selection: CommitSelection,
+    cancel: &CancellationToken,
+) -> Result<CommitDraft, HostError> {
+    let mut changes = Vec::new();
+    let mut budget = MAX_COMMIT_DIFF;
+    for repo in &selection.repositories {
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let Some(r) = ide_vcs::Repo::discover(&repo.root.0).map_err(failed)? else {
+            return Err(HostError::NotFound(format!("{} is not in a git repository", repo.root.0.display())));
+        };
+        let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
+            |e| match e.kind {
+                ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
+                _ => HostError::Failed(e.message),
+            },
+        )?;
+        let root = to_ipc(r.root());
+        for c in pending {
+            budget -= c.diff.as_ref().map_or(0, String::len).min(budget);
+            changes.push(CommitChange {
+                repository: root.clone(),
+                path: to_ipc(&c.path),
+                old_path: c.old_path.as_deref().map(to_ipc),
+                status: c.status.to_owned(),
+                diff: c.diff,
+                truncated: c.truncated,
+            });
+        }
+    }
+    Ok(CommitDraft { revision: selection.revision, message: selection.message, amend: selection.amend, changes })
+}
+
 fn failed(e: impl std::fmt::Display) -> HostError {
     HostError::Failed(e.to_string())
 }
@@ -577,7 +690,10 @@ impl HostApi for PluginApi {
             if blocked.contains(self.id()) {
                 return Err(HostError::Cancelled);
             }
-            self.shared.prompts.lock().insert(id, PromptEntry { plugin: self.id().to_owned(), answer });
+            self.shared
+                .prompts
+                .lock()
+                .insert(id, PromptEntry { plugin: self.id().to_owned(), answer: Waiter::Prompt(answer) });
         }
         let prompt_id = id.to_string();
         self.shared.sink.emit(
@@ -594,6 +710,37 @@ impl HostApi for PluginApi {
                     return Err(HostError::Cancelled);
                 }
             }
+        }
+    }
+
+    fn pending_commit(
+        &self,
+        client: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<CommitDraft>, HostError> {
+        let client = from_window(client, "read the pending commit")?;
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::Failed("no workspace".into()))?;
+        let root =
+            workspace.project_of(client).ok_or_else(|| HostError::Invalid("the window has no project".into()))?;
+        if !workspace.trusted(&root) {
+            return Err(HostError::Invalid("the project is in Restricted Mode: git does not run there".into()));
+        }
+        let answer = self.ask_commit(client, CommitRequest::Selection, cancel, COMMIT_SELECTION_TIMEOUT)?;
+        match answer {
+            CommitAnswer::NoRepository => Ok(None),
+            CommitAnswer::Selection { selection } => commit_draft(&*workspace, selection, cancel).map(Some),
+            CommitAnswer::Done | CommitAnswer::Stale => Err(HostError::Failed("unexpected answer".into())),
+        }
+    }
+
+    fn set_commit_message(&self, client: Option<&str>, revision: u64, message: String) -> Result<(), HostError> {
+        let client = from_window(client, "set the commit message")?;
+        let request = CommitRequest::SetMessage { revision, message };
+        match self.ask_commit(client, request, &CancellationToken::new(), COMMIT_MESSAGE_TIMEOUT)? {
+            CommitAnswer::Done => Ok(()),
+            CommitAnswer::Stale => Err(HostError::Stale),
+            CommitAnswer::NoRepository => Err(HostError::Invalid("the window's project has no repository".into())),
+            CommitAnswer::Selection { .. } => Err(HostError::Failed("unexpected answer".into())),
         }
     }
 
@@ -1110,6 +1257,15 @@ impl PluginWorkspace for HostWorkspace {
             items,
         });
         Ok(())
+    }
+
+    fn vcs_encoding(&self, path: &Path) -> ide_vcs::TextEncoding {
+        HostWorkspace::projects(self)
+            .into_iter()
+            .filter(|p| path.starts_with(&p.root))
+            .max_by_key(|p| p.root.as_os_str().len())
+            .and_then(|p| p.vcs_encoding(path, None).ok())
+            .unwrap_or_else(|| encoding_rs::UTF_8.into())
     }
 
     fn plugin_settings(&self, plugin: &str, root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {

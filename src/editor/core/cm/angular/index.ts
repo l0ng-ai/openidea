@@ -7,10 +7,23 @@
  * parsed as one, and folding blocks.
  */
 import { LRLanguage, LanguageSupport, foldService, matchBrackets, syntaxTree } from "@codemirror/language";
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { html } from "@codemirror/lang-html";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import { styleTags, tags as t } from "@lezer/highlight";
-import { IterMode, parseMixed, type Input, type NestedParse, type SyntaxNode, type SyntaxNodeRef } from "@lezer/common";
+import {
+  IterMode,
+  Parser,
+  parseMixed,
+  type Input,
+  type NestedParse,
+  type PartialParse,
+  type SyntaxNode,
+  type SyntaxNodeRef,
+  type Tree,
+  type TreeFragment,
+} from "@lezer/common";
 import { JS_TAGS } from "../jsTags";
 import { parser } from "./parser";
 
@@ -84,8 +97,66 @@ const attrParser = baseParser.configure({
   top: "Attribute",
 });
 
-const textMixed = { parser: textParser },
-  attrMixed = { parser: attrParser };
+/**
+ * `inner` with its trees remembered by text. Most text and attribute nodes
+ * an edit recreates (the document's own text, nodes up to the viewport) are
+ * unchanged, but the mixed parser only reuses nested trees of nodes it kept, so
+ * each would be parsed again on every keystroke. Their parse depends on
+ * nothing but their text, and trees are relative to their start.
+ */
+class TextMemo extends Parser {
+  private readonly trees = new Map<string, Tree>();
+  private chars = 0;
+  constructor(private readonly inner: Parser) {
+    super();
+  }
+  createParse(
+    input: Input,
+    fragments: readonly TreeFragment[],
+    ranges: readonly { from: number; to: number }[],
+  ): PartialParse {
+    const range = ranges.length == 1 ? ranges[0]! : null;
+    if (!range || range.to - range.from > MEMO_MAX_TEXT) return this.inner.startParse(input, fragments, ranges);
+    const text = input.read(range.from, range.to);
+    const known = this.trees.get(text);
+    if (known) return { advance: () => known, parsedPos: range.to, stoppedAt: null, stopAt() {} };
+    const parse = this.inner.startParse(input, fragments, ranges);
+    const remember = (tree: Tree) => this.remember(text, tree);
+    return {
+      advance() {
+        const tree = parse.advance();
+        // Stopping past the text (the outer parse's stop point) still parses all of it.
+        if (tree && (parse.stoppedAt == null || parse.stoppedAt >= range.to)) remember(tree);
+        return tree;
+      },
+      get parsedPos() {
+        return parse.parsedPos;
+      },
+      get stoppedAt() {
+        return parse.stoppedAt;
+      },
+      stopAt: (pos) => parse.stopAt(pos),
+    };
+  }
+  private remember(text: string, tree: Tree) {
+    if (this.trees.has(text)) return;
+    this.trees.set(text, tree);
+    this.chars += text.length;
+    // Oldest first.
+    for (const [old] of this.trees) {
+      if (this.chars <= MEMO_CHARS) break;
+      this.trees.delete(old);
+      this.chars -= old.length;
+    }
+  }
+}
+
+/** Longer texts are parsed incrementally as usual; the memo holds about this much text. */
+const MEMO_MAX_TEXT = 4096,
+  MEMO_CHARS = 2_000_000;
+
+const textMixed = { parser: new TextMemo(textParser) },
+  attrMixed = { parser: new TextMemo(attrParser) };
 
 // Text is parsed per node, like upstream, so an unfinished `{{` or `@if (`
 // ends with it. But HTML splits text at each `&` (`@if (a && b) {`), so a run
@@ -93,8 +164,15 @@ const textMixed = { parser: textParser },
 // document) holding it.
 const TEXT_NODES = new Set(["Text", "EntityReference", "CharacterReference", "InvalidEntity"]);
 
-/** The runs of text directly in `node` that entities split, `null` without any. */
-function entityRuns(node: SyntaxNode): { from: number; to: number }[] | null {
+/**
+ * Whether text holds Angular syntax: interpolations, blocks and their braces all
+ * need a `{`, `}` or `@`. Other text (mostly the whitespace between tags) stays
+ * plain HTML text instead of costing a nested parse each.
+ */
+const ANGULAR_TEXT = /[{}@]/;
+
+/** The runs of Angular text directly in `node` that entities split, `null` without any. */
+function entityRuns(node: SyntaxNode, input: Input): { from: number; to: number }[] | null {
   const runs: { from: number; to: number }[] = [];
   let from = -1,
     to = -1,
@@ -108,12 +186,12 @@ function entityRuns(node: SyntaxNode): { from: number; to: number }[] | null {
         parts++;
         continue;
       }
-      if (parts > 1) runs.push({ from, to });
+      if (parts > 1 && ANGULAR_TEXT.test(input.read(from, to))) runs.push({ from, to });
       ({ from, to } = child);
       parts = 1;
     } while (child.nextSibling());
   }
-  if (parts > 1) runs.push({ from, to });
+  if (parts > 1 && ANGULAR_TEXT.test(input.read(from, to))) runs.push({ from, to });
   return runs.length ? runs : null;
 }
 
@@ -125,10 +203,10 @@ function mixAngular(node: SyntaxNodeRef, input: Input): NestedParse | null {
       return /^[*#([]|\{\{/.test(input.read(node.from, node.to)) ? attrMixed : null;
     // Text in a run is covered by its parent's overlay, so not asked about.
     case "Text":
-      return textMixed;
+      return ANGULAR_TEXT.test(input.read(node.from, node.to)) ? textMixed : null;
     case "Document":
     case "Element": {
-      const overlay = entityRuns(node.node);
+      const overlay = entityRuns(node.node, input);
       return overlay && { parser: node.name == "Document" ? documentRunsParser : runsParser, overlay };
     }
   }
@@ -154,9 +232,40 @@ const blockFolding = foldService.of((state, lineStart, lineEnd) => {
   return null;
 });
 
+const selfCloseTags = EditorView.inputHandler.of((view, from, to, text, insertTransaction) => {
+  const { state } = view;
+  if (view.composing || state.readOnly || from !== to || text !== "/") return false;
+  const heads = state.selection.ranges
+    .filter((range) => {
+      if (!range.empty || !angularLanguage.isActiveAt(state, range.head, -1)) return false;
+      const node = syntaxTree(state).resolveInner(range.head, -1);
+      return node.name === "TagName" && node.to === range.head && node.parent?.name === "OpenTag";
+    })
+    .map((range) => range.head);
+  if (!heads.length) return false;
+  const base = insertTransaction();
+  const mappedHeads = new Set(heads.map((head) => base.changes.mapPos(head, 1)));
+  const closing = base.state.changeByRange((range) => {
+    if (!range.empty || !mappedHeads.has(range.head) || base.state.sliceDoc(range.head - 1, range.head) !== "/")
+      return { range };
+    return {
+      range: EditorSelection.cursor(range.head + 1),
+      changes: {
+        from: range.head,
+        to: range.head + (base.state.sliceDoc(range.head, range.head + 1) === ">" ? 1 : 0),
+        insert: ">",
+      },
+    };
+  });
+  if (closing.changes.empty) return false;
+  view.dispatch([base, base.state.update(closing, { userEvent: "input.type", scrollIntoView: true })]);
+  return true;
+});
+
 export function angular(): LanguageSupport {
   return new LanguageSupport(angularLanguage, [
     baseHTML.support,
+    selfCloseTags,
     blockFolding,
     baseHTML.language.data.of({
       closeBrackets: { brackets: ["[", "{", '"'] },

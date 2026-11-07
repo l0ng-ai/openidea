@@ -267,6 +267,7 @@
   "Allow placing breakpoints in any file": "모든 파일에 중단점 설정 허용",
   "Also expand in comments and strings": "주석과 문자열에서도 확장",
   "Always": "항상",
+  "Always Select Opened File": "항상 열린 파일 선택",
   "Always show full path in window header": "항상 창 헤더에 전체 경로 표시",
   "Amend": "수정",
   "Analysing…": "분석 중…",

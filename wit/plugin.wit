@@ -17,6 +17,7 @@ world plugin {
     import editor;
     import invocation;
     import vcs;
+    import commit;
     import events;
     import tasks;
     import diagnostics;
@@ -61,11 +62,22 @@ world plugin-semantic-tokens {
     export semantic-tokens-provider;
 }
 
+world plugin-hover {
+    include plugin;
+    export hover-provider;
+}
+
 /// A plugin whose views show in the Services tool window
 /// (`location = "services"`): their nodes' detail pane.
 world plugin-services {
     include plugin;
     export service-provider;
+}
+
+/// A plugin with before-commit checks (`[[contributes.commitChecks]]`).
+world plugin-commit-checks {
+    include plugin;
+    export commit-checker;
 }
 
 /// Only the `syntax-provider` export: guests generate it next to `plugin`
@@ -93,7 +105,16 @@ world semantic-tokens {
     export semantic-tokens-provider;
 }
 
+world hover {
+    export hover-provider;
+}
+
 /// Only the `service-provider` export, generated next to `plugin` like `syntax`.
 world services {
     export service-provider;
+}
+
+/// Only the `commit-checker` export, generated next to `plugin` like `syntax`.
+world commit-checks {
+    export commit-checker;
 }

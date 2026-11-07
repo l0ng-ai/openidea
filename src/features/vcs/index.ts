@@ -40,6 +40,7 @@ import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
 import { installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
+import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
 import { activate as activateConflictMarkers } from "./conflictMarkers";
 import { MergeRebaseWidget } from "./MergeRebaseWidget";
@@ -228,6 +229,8 @@ export function activate(): () => void {
     installGitLog(),
     installDiagnosticsTracking(),
     installPreparedMessage(),
+    installDraftRevision(),
+    provideCommit(),
     installIncomingCheck(),
     installFileConfirmations(),
     // Settings › Git › Sign-off commit: the default of Commit Options › Sign-off Commit.

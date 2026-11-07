@@ -1235,6 +1235,61 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
 }
 
+/// The whole workspace root deleted: the server can never start again
+/// (its cwd is gone), so the crash drops the entry instead of restarting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_below_a_deleted_workspace_root_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // A crash on a root that still exists restarts; removing it changes that.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    eventually(|| s.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    s.peer().kill();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 2, "no restart with a dead working directory");
+}
+
+/// The root deleted while a crash backoff is still sleeping: the pending
+/// restart must drop the server rather than leave a permanently "Crashed" row.
+#[tokio::test(flavor = "multi_thread")]
+async fn root_deleted_during_crash_backoff_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // Crash with the root alive: "Crashed" is published before the backoff
+    // sleep, so removing the root here lands inside that window.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    std::fs::remove_dir_all(&h.root).unwrap();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1, "no restart with a dead working directory");
+}
+
+/// A manual restart with the root gone fails instead of spawning into a dead cwd.
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_below_a_deleted_workspace_root_fails() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let id = h.mgr.servers()[0].id;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    let err = h.mgr.restart(id).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.message.contains("workspace root"), "{err:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_server_reports_once() {
     let h = harness(&[("ghost", json!({}))]);
@@ -2928,6 +2983,165 @@ async fn references_open_unopened_files_that_mention_the_name() {
     let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(seen.lock().len(), 2);
+}
+
+/// A Go project: the module at the root, `tools` replacing it with `../` and `other` requiring a
+/// published copy. The mock answers a definition in `tools` like gopls in that module's view.
+fn go_modules_harness() -> (Harness, Arc<MockState>, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let h = harness_for("go", "go", &[("gopls", incremental_caps())], &[]);
+    let s = h.launcher.state("gopls");
+    let write = |rel: &str, text: &str| {
+        let path = h.root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+    write("go.mod", "module example.com/app\n");
+    write("tools/go.mod", "module example.com/tools\n\nreplace example.com/app => ../\n");
+    write("other/go.mod", "module example.com/other\n\nrequire example.com/app v1.0.0\n");
+    let same = write("same.go", "package app\nvar x = New()\n");
+    // Line 1 uses the declaration; line 2 is a local `New` of the tools module.
+    let tools = write("tools/gen.go", "package tools\nvar a = app.New()\nfunc New() {}\n");
+    write("other/o.go", "package other\nvar b = app.New()\n");
+    // Built for plan9 only: outside gopls' default view of the root module.
+    let plan9 = write("boot_plan9.go", "package app\nfunc boot() { New() }\n");
+    let decl = h.root.join("a.go");
+    let candidates = vec![same.clone(), tools.clone(), h.root.join("other/o.go"), plan9.clone()];
+    h.mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+        files: candidates.clone(),
+        limit_hit: false,
+    }));
+    let at = |line: u32, col: u32| json!({ "start": { "line": line, "character": col }, "end": { "line": line, "character": col + 3 } });
+    let (decl_uri, same_uri, tools_uri, plan9_uri) = (uri_of(&decl), uri_of(&same), uri_of(&tools), uri_of(&plan9));
+    let span = |line: u32, from: u32, to: u32| json!({ "start": { "line": line, "character": from }, "end": { "line": line, "character": to } });
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default().to_owned();
+        let line = params["position"]["line"].as_u64().unwrap_or(0);
+        match method {
+            // The view of the root module: the declaration and its usage in same.go.
+            "textDocument/references" => Some(json!([
+                { "uri": decl_uri, "range": at(0, 5) },
+                { "uri": same_uri, "range": at(1, 8) },
+            ])),
+            "textDocument/rename" => Some(json!({ "changes": {
+                decl_uri.clone(): [{ "range": at(0, 5), "newText": "Make" }],
+                same_uri.clone(): [{ "range": at(1, 8), "newText": "Make" }],
+            } })),
+            "textDocument/definition" if uri == decl_uri => Some(json!({ "uri": decl_uri, "range": at(0, 5) })),
+            "textDocument/definition" if uri == tools_uri && line == 1 => {
+                Some(json!({ "uri": decl_uri, "range": at(0, 5) }))
+            }
+            "textDocument/definition" if uri == tools_uri => Some(json!({ "uri": tools_uri, "range": at(2, 5) })),
+            "textDocument/definition" if uri == plan9_uri => Some(json!({ "uri": decl_uri, "range": at(0, 5) })),
+            "textDocument/documentSymbol" if uri == tools_uri => Some(json!([
+                { "name": "a", "kind": 13, "range": span(1, 0, 17), "selectionRange": span(1, 4, 5) },
+                { "name": "New", "kind": 12, "range": span(2, 0, 13), "selectionRange": span(2, 5, 8) },
+            ])),
+            "textDocument/documentSymbol" if uri == plan9_uri => Some(json!([
+                { "name": "boot", "kind": 12, "range": span(1, 0, 20), "selectionRange": span(1, 5, 9) },
+            ])),
+            "textDocument/prepareCallHierarchy" => Some(
+                json!([{ "name": "New", "kind": 12, "uri": decl_uri, "range": span(0, 0, 13), "selectionRange": at(0, 5) }]),
+            ),
+            "callHierarchy/incomingCalls" => Some(json!([{
+                "from": { "name": "x", "kind": 13, "uri": same_uri, "range": span(1, 0, 13), "selectionRange": span(1, 4, 5) },
+                "fromRanges": [at(1, 8)],
+            }])),
+            _ => None,
+        }
+    }));
+    (h, s, decl, same, tools, plan9)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_searches_resolve_other_modules_that_replace_the_declarations_module() {
+    let (h, s, decl, same, tools, plan9) = go_modules_harness();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let partials = Arc::new(Mutex::new(Vec::new()));
+    let seen = partials.clone();
+    let partial = move |r: ide_lsp::types::References| seen.lock().push(r.locations.len());
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), Some(&partial))
+        .await
+        .unwrap();
+    let mut found: Vec<(PathBuf, u32)> =
+        refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
+    found.sort();
+    let mut want = vec![(decl.clone(), 0), (same.clone(), 1), (tools.clone(), 1), (plan9.clone(), 1)];
+    want.sort();
+    assert_eq!(found, want);
+    // Those in gopls' reach arrive first.
+    assert_eq!(*partials.lock(), [2]);
+    // Only the module replacing the declaration's module was opened, never the root module's file.
+    let opened = uris(&s.notified("textDocument/didOpen"));
+    assert!(opened.contains(&uri_of(&tools)));
+    assert!(opened.contains(&uri_of(&plan9)));
+    assert!(!opened.contains(&uri_of(&same)));
+    assert!(!opened.iter().any(|u| u.ends_with("other/o.go")));
+    assert_eq!(s.requested("textDocument/references").len(), 1);
+
+    let renamed = h.mgr.rename(doc, Pos::new(0, 5), "Make".into(), Default::default()).await.unwrap();
+    let mut edited: Vec<(PathBuf, Vec<u32>)> = renamed
+        .edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            ide_core::FileEdit::Edit { path, edits, .. } => {
+                Some((path.to_path_buf(), edits.iter().map(|e| e.range.start.line).collect()))
+            }
+            _ => None,
+        })
+        .collect();
+    edited.sort();
+    let mut want = vec![(decl, vec![0]), (same, vec![1]), (tools, vec![1]), (plan9, vec![1])];
+    want.sort();
+    assert_eq!(edited, want);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_incoming_calls_include_callers_beyond_the_search() {
+    let (h, s, _, same, tools, plan9) = go_modules_harness();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let calls =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    let mut callers: Vec<(PathBuf, String, Vec<u32>)> = calls
+        .items
+        .iter()
+        .map(|i| (i.path.to_path_buf(), i.name.clone(), i.from_ranges.iter().map(|r| r.start.line).collect()))
+        .collect();
+    callers.sort();
+    let mut want = vec![
+        (same, "x".to_owned(), vec![1]),
+        (tools, "a".to_owned(), vec![1]),
+        (plan9.clone(), "boot".to_owned(), vec![1]),
+    ];
+    want.sort();
+    assert_eq!(callers, want);
+    let boot = calls.items.iter().find(|i| i.name == "boot").unwrap();
+    assert_eq!((boot.selection_range.start, boot.from_ranges[0].start), (Pos::new(1, 5), Pos::new(1, 14)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn go_searches_open_nothing_when_no_other_module_uses_the_declaration() {
+    let (h, s, _, same, _, plan9) = go_modules_harness();
+    std::fs::write(h.root.join("tools/go.mod"), "module example.com/tools\n").unwrap();
+    std::fs::remove_file(&plan9).unwrap();
+    let (doc, _) = h.open("a.go", "func New() {}\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    assert_eq!(refs.locations.len(), 2);
+    assert_eq!(uris(&s.notified("textDocument/didOpen")).len(), 1, "only a.go");
+    assert!(s.requested("textDocument/definition").len() <= 1);
+    assert!(!uris(&s.notified("textDocument/didOpen")).contains(&uri_of(&same)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
