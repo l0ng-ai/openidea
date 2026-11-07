@@ -678,6 +678,38 @@ impl Resolver {
 
 /// Files and source/resource trees consumed by a launch build. Unresolved custom
 /// roots disable reuse rather than silently omitting an input.
+/// Files of a resolved dependency in the local repository: its jar (or other type) and
+/// POM. A SNAPSHOT jar replaced without a POM change must still invalidate a launch
+/// fingerprint, so the artifact itself is an input.
+fn dependency_inputs(dep: &MavenDependency, repo: &Path, out: &mut Vec<PathBuf>) {
+    if !dep.resolved() {
+        return;
+    }
+    if let Some(version) = &dep.version {
+        let mut base = repo.to_path_buf();
+        for part in dep.group_id.split('.') {
+            base.push(part);
+        }
+        base.push(&dep.artifact_id);
+        base.push(version);
+        let classifier = dep.classifier.clone().or_else(|| (dep.kind == "test-jar").then(|| "tests".to_owned()));
+        let ext = match dep.kind.as_str() {
+            "" | "jar" | "test-jar" => "jar",
+            "bundle" => "jar",
+            other => other,
+        };
+        let name = match &classifier {
+            Some(classifier) => format!("{}-{version}-{classifier}.{ext}", dep.artifact_id),
+            None => format!("{}-{version}.{ext}", dep.artifact_id),
+        };
+        out.push(base.join(name));
+        out.push(base.join(format!("{}-{version}.pom", dep.artifact_id)));
+    }
+    for child in &dep.children {
+        dependency_inputs(child, repo, out);
+    }
+}
+
 pub(crate) fn launch_inputs(
     root: &Path,
     projects: &[&MavenProject],
@@ -712,7 +744,8 @@ pub(crate) fn launch_inputs(
         }
         Some(())
     }
-    let mut resolver = Resolver::new(local_repo.or_else(default_local_repo), &[]);
+    let repo = local_repo.clone().or_else(default_local_repo);
+    let mut resolver = Resolver::new(repo.clone(), &[]);
     let mut out = Vec::new();
     for project in projects {
         let dir = root.join(&project.dir);
@@ -720,6 +753,11 @@ pub(crate) fn launch_inputs(
         out.push(dir.join("src"));
         let pom = root.join(&project.pom);
         resolver.context(&pom, 0);
+        if let Some(repo) = &repo {
+            for dependency in &project.dependencies {
+                dependency_inputs(dependency, repo, &mut out);
+            }
+        }
         let mut path = pom;
         let mut seen = HashSet::new();
         loop {

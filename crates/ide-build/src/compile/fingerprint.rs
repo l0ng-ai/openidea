@@ -340,6 +340,29 @@ mod tests {
         assert!(launch_fingerprint(root, &model, &root.join("app"), false, None, &cancel).is_err());
     }
     #[test]
+    fn local_repository_dependency_jar_invalidates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        let repo = dir.path().join("repository");
+        write(
+            &root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>app</artifactId><version>1</version>
+            <dependencies><dependency><groupId>demo</groupId><artifactId>dep</artifactId><version>1</version></dependency></dependencies></project>"#,
+        );
+        write(&root, "src/main/java/a/Main.java", "class Main {}");
+        write(&repo, "demo/dep/1/dep-1.jar", "first");
+        write(&repo, "demo/dep/1/dep-1.pom", "<project/>");
+        let model = crate::load(&root, &root.join("cache"), Some(repo.clone()));
+        let get =
+            || launch_fingerprint(&root, &model, &root, false, Some(repo.clone()), &CancellationToken::new()).unwrap();
+        let before = get();
+        assert!(before.is_some());
+        write(&repo, "demo/dep/1/dep-1.jar", "a different snapshot");
+        assert_ne!(before, get(), "a replaced dependency jar must invalidate the launch snapshot");
+    }
+
+    #[test]
     fn external_parent_and_selected_settings_files_invalidate() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
