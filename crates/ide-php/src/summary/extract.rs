@@ -17,9 +17,9 @@ use mago_syntax::cst::{
 use mago_syntax::walker::Walker;
 
 use super::{
-    ClassConstant, ClassKind, ClassLike, ClassModifiers, ConstantDecl, ConstantKind, DocBlock, DocVar, EnumCase,
-    FileSummary, FunctionDecl, Loc, Method, Param, Promotion, Property, SCHEMA_VERSION, TraitRule, TraitUse, TypeHint,
-    Visibility,
+    ClassConstant, ClassKind, ClassLike, ClassModifiers, ConstantDecl, ConstantKind, DocBlock, DocType, DocVar,
+    EnumCase, FileSummary, FunctionDecl, Loc, Method, Param, Promotion, Property, SCHEMA_VERSION, TraitRule, TraitUse,
+    TypeHint, Visibility,
 };
 use crate::names::{NameKind, NameScope, Resolution};
 use crate::syntax::ParsedFile;
@@ -38,6 +38,21 @@ pub(super) fn extract(file: &ParsedFile) -> FileSummary {
     };
     SummaryWalker.walk_program(file.program(), &mut cx);
     cx.summary
+}
+
+/// The `@var` tags of the docblock directly in front of a statement starting
+/// at `start` (`/** @var Foo $x */`), as `(variable name, type)`, class names
+/// resolved in `scope`. Empty when there is no such docblock.
+pub(crate) fn inline_vars(file: &ParsedFile, scope: &NameScope, start: u32) -> Vec<(Option<String>, DocType)> {
+    let trivia = file.program().trivia.as_slice();
+    let has_var = mago_syntax::comments::docblock::get_docblock_before_position(trivia, start)
+        .is_some_and(|doc| doc.value.windows(4).any(|w| w == b"@var" || w == b"-var"));
+    if !has_var {
+        return Vec::new();
+    }
+    let cx = Extractor { file, scope: scope.clone(), summary: FileSummary::default() };
+    let Some(doc) = cx.doc_at(start, &[]) else { return Vec::new() };
+    doc.vars.into_iter().map(|var| (var.name, var.ty)).collect()
 }
 
 fn lossy(bytes: &[u8]) -> String {

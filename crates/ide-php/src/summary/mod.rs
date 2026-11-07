@@ -36,7 +36,7 @@
 mod extract;
 mod render;
 
-pub(crate) use extract::type_hint;
+pub(crate) use extract::{inline_vars, type_hint};
 
 use std::fmt;
 
@@ -50,8 +50,9 @@ use crate::types::LazyType;
 
 /// Bump whenever a type in this module changes shape, or extraction
 /// computes something differently (7: inferred returns track local
-/// variables), so stored summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 7;
+/// variables; 8: hash-notation types and assertion tags), so stored
+/// summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -388,6 +389,9 @@ pub struct DocBlock {
     pub methods: Vec<DocMethod>,
     /// `@psalm-type` / `@phpstan-type` and their `import-type` tags.
     pub type_aliases: Vec<DocTypeAlias>,
+    /// `@phpstan-assert`, `@psalm-assert-if-true` and the like, on
+    /// parameters.
+    pub asserts: Vec<DocAssert>,
 }
 
 impl DocBlock {
@@ -421,6 +425,28 @@ impl DocBlock {
             .map(|template| template.name.as_str())
             .chain(self.type_aliases.iter().map(|alias| alias.name.as_str()))
     }
+}
+
+/// An assertion tag about a parameter: after the call (or when it returns
+/// true, or false) the argument is (or, `negated`, is not) of type `ty`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocAssert {
+    pub when: AssertWhen,
+    /// Without the `$`.
+    pub param: String,
+    pub ty: DocType,
+    pub negated: bool,
+}
+
+/// When an assertion holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AssertWhen {
+    /// Once the call returns (`@phpstan-assert`).
+    Always,
+    /// When the call returns true (`-if-true`).
+    IfTrue,
+    /// When the call returns false (`-if-false`).
+    IfFalse,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

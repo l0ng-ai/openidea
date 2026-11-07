@@ -137,6 +137,10 @@ pub struct ExprTypes<'a, 'r> {
     flows: RefCell<HashMap<u32, Rc<RefCell<Flow>>>>,
     /// Flows being built, nested.
     depth: Cell<usize>,
+    /// By the start of a closure or arrow function passed as an argument:
+    /// the parameter types of the callable the parameter it is passed to
+    /// expects (recorded by the enclosing scope's flow).
+    expected: RefCell<HashMap<u32, Vec<Type>>>,
 }
 
 const TOP_LEVEL: u32 = u32::MAX - 1;
@@ -148,7 +152,15 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         summary: &'a FileSummary,
         resolver: &'r Resolver<'r>,
     ) -> Self {
-        Self { file, names, summary, resolver, flows: RefCell::new(HashMap::new()), depth: Cell::new(0) }
+        Self {
+            file,
+            names,
+            summary,
+            resolver,
+            flows: RefCell::new(HashMap::new()),
+            depth: Cell::new(0),
+            expected: RefCell::new(HashMap::new()),
+        }
     }
 
     /// The flow of the scope `frames` end in: their innermost function-like,
@@ -489,8 +501,8 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
                 templates.extend(doc.iter().flat_map(|doc| doc.local_type_names()));
                 declared(&decl.params, doc, templates)
             }
-            Frame::Closure(closure) => self.ast_parameter(&closure.parameter_list, &name),
-            Frame::Arrow(arrow) => self.ast_parameter(&arrow.parameter_list, &name),
+            Frame::Closure(closure) => self.function_parameter(&closure.parameter_list, frame.key(), &name),
+            Frame::Arrow(arrow) => self.function_parameter(&arrow.parameter_list, frame.key(), &name),
             Frame::Class(_) => None,
         }
     }
@@ -498,6 +510,23 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
     fn function_decl(&self, function: &Function<'_>) -> Option<&'a FunctionDecl> {
         let start = function.name.span.start.offset;
         self.summary.functions.iter().find(|decl| decl.name_loc.start == start)
+    }
+
+    /// A closure or arrow function parameter's type: its native type, else
+    /// the type the callable it is passed to expects there (bidirectional
+    /// inference, as PHPStan and Psalm do for closures passed as arguments).
+    fn function_parameter(&self, list: &FunctionLikeParameterList<'_>, key: u32, name: &str) -> Option<Type> {
+        let declared = self.ast_parameter(list, name)?;
+        let position = list.parameters.iter().position(|parameter| {
+            parameter.variable.name.strip_prefix(b"$").unwrap_or(parameter.variable.name) == name.as_bytes()
+        })?;
+        let parameter = list.parameters.get(position)?;
+        if parameter.hint.is_some() || parameter.ellipsis.is_some() {
+            return Some(declared);
+        }
+        // The enclosing scope's flow records what the call expects.
+        let expected = self.expected.borrow().get(&key).and_then(|types| types.get(position).cloned());
+        Some(expected.filter(|ty| *ty != Type::Mixed).unwrap_or(declared))
     }
 
     /// A closure, arrow function or anonymous class method parameter's

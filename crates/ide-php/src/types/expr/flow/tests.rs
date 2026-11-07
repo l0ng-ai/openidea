@@ -306,3 +306,116 @@ fn falls_through() {
     assert!(falls("function f() { try { return g(); } catch (\\Exception $e) { $a/*|*/ = 1; } }"));
     assert!(!falls("function stop(): never { exit; }\nfunction f() { $a/*|*/ = 1; stop(); }"));
 }
+
+#[test]
+fn inline_var_tags() {
+    check(&[
+        // On an assignment, named or not.
+        ("/** @var Book $b */\n$b = untyped();\n$b/*|*/;", r"Lib\Book"),
+        ("/** @var Book */\n$b = untyped();\n$b/*|*/;", r"Lib\Book"),
+        ("/** @var Book $b */\n$b/*|*/ = untyped();", r"Lib\Book"),
+        // Naming another variable leaves the assigned one alone.
+        ("/** @var Book $other */\n$b = untyped();\n$b/*|*/;", r"Lib\Author"),
+        // In front of any statement, for a variable that exists.
+        ("$b = untyped();\n/** @var Book $b */\n$b/*|*/;", r"Lib\Book"),
+        ("$b = untyped();\n/** @var Book $b */\necho 1;\n$b/*|*/;", r"Lib\Book"),
+        // On a `foreach`, for its value.
+        ("/** @var Book $b */\nforeach ($list as $b) { $b/*|*/; }", r"Lib\Book"),
+        ("/** @var Book[] $list */\n$list = untyped();\nforeach ($list as $b) { $b/*|*/; }", r"Lib\Book"),
+        // A plain comment is no docblock.
+        ("/* @var Book $b */\n$b = untyped();\n$b/*|*/;", r"Lib\Author"),
+    ]);
+}
+
+#[test]
+fn match_true_narrows_each_arm() {
+    check(&[
+        ("function f(?string $s) { $r = match (true) { is_string($s) => $s/*|*/, default => 1 }; }", "string"),
+        ("function f(?string $s) { $r = match (true) { is_string($s) => 1, default => $s/*|*/ }; }", "null"),
+        (
+            "function f(Book|Author|null $x) { $r = match (true) { $x instanceof Book => 1, $x instanceof Author => $x/*|*/, default => 2 }; }",
+            r"Lib\Author",
+        ),
+        // Any of an arm's conditions.
+        (
+            "function f(Book|Author|int $x) { $r = match (true) { $x instanceof Book, $x instanceof Author => $x/*|*/, default => 2 }; }",
+            r"Lib\Book|Lib\Author",
+        ),
+        // Other subjects don't narrow.
+        ("function f(?string $s, $k) { $r = match ($k) { is_string($s) => $s/*|*/, default => 1 }; }", "?string"),
+    ]);
+}
+
+#[test]
+fn assertion_tags_narrow_arguments() {
+    let is_book = "/** @phpstan-assert-if-true Book $t */\nfunction is_book($t) { return true; }\n";
+    let not_book = "/** @psalm-assert-if-false Book $t */\nfunction not_book($t) { return true; }\n";
+    let ensure = "/** @phpstan-assert Book $t */\nfunction ensure($t) {}\n";
+    let ensure_not = "/** @phpstan-assert !null $t */\nfunction ensure_not($t) {}\n";
+    let generic =
+        "/**\n * @template T\n * @param class-string<T> $c\n * @phpstan-assert T $t\n */\nfunction is_a_t($c, $t) {}\n";
+    let cases = [
+        format!("{is_book}function g(Book|Author $x) {{ if (is_book($x)) {{ $x/*|*/; }} }}"),
+        // The other outcome gets the negation (WordPress's `is_wp_error()`).
+        format!("{is_book}function g(Book|Author $x) {{ if (is_book($x)) {{ return; }} $x/*|*/; }}"),
+        format!("{is_book}function g(Book|Author $x) {{ if (!is_book($x)) {{ $x/*|*/; }} }}"),
+        format!("{not_book}function g(Book|Author $x) {{ if (not_book($x)) {{ $x/*|*/; }} }}"),
+        format!("{ensure}function g(Book|Author|null $x) {{ ensure($x); $x/*|*/; }}"),
+        format!("{ensure_not}function g(?Book $x) {{ ensure_not($x); $x/*|*/; }}"),
+        format!("{ensure}function g(Book|Author $x) {{ ensure(t: $x); $x/*|*/; }}"),
+        // Template assertions aren't applied.
+        format!("{generic}function g(Book|Author $x) {{ is_a_t(Book::class, $x); $x/*|*/; }}"),
+    ];
+    let expected = [
+        r"Lib\Book",
+        r"Lib\Author",
+        r"Lib\Author",
+        r"Lib\Author",
+        r"Lib\Book",
+        r"Lib\Book",
+        r"Lib\Book",
+        r"Lib\Book|Lib\Author",
+    ];
+    let table: Vec<(&str, &str)> = cases.iter().map(String::as_str).zip(expected).collect();
+    check(&table);
+}
+
+#[test]
+fn closure_parameters_from_the_expected_callable() {
+    let each = "/** @param callable(Book, int): void $f */\nfunction each_book(callable $f) {}\n";
+    let closure = "/** @param (\\Closure(Book): mixed)|null $f */\nfunction with_book(?\\Closure $f) {}\n";
+    let coll = "/** @template T */\nclass Coll {\n    /**\n     * @template U\n     * @param callable(T, int, U): void $f\n     */\n    public function each(callable $f) {}\n    /** @param callable(static): void $f */\n    public function tap(callable $f) {}\n}\n";
+    let cases = [
+        format!("{each}each_book(function ($b, $i) {{ $b/*|*/; }});"),
+        format!("{each}each_book(function ($b, $i) {{ $i/*|*/; }});"),
+        format!("{closure}with_book(fn ($b) => $b/*|*/);"),
+        // A native hint wins.
+        format!("{each}each_book(function (Author $b) {{ $b/*|*/; }});"),
+        // Through the receiver's generic arguments; a method template or a
+        // relative class is unknown.
+        format!("{coll}/** @var Coll<Book> $c */\n$c = new Coll();\n$c->each(function ($b) {{ $b/*|*/; }});"),
+        format!("{coll}/** @var Coll<Book> $c */\n$c = new Coll();\n$c->each(function ($b, $i, $u) {{ $u/*|*/; }});"),
+        format!("{coll}/** @var Coll<Book> $c */\n$c = new Coll();\n$c->tap(function ($me) {{ $me/*|*/; }});"),
+        // Not passed anywhere.
+        "$f = function ($b) { $b/*|*/; };".to_owned(),
+    ];
+    let expected = [r"Lib\Book", "int", r"Lib\Book", r"Lib\Author", r"Lib\Book", "mixed", "mixed", "mixed"];
+    let table: Vec<(&str, &str)> = cases.iter().map(String::as_str).zip(expected).collect();
+    check(&table);
+}
+
+#[test]
+fn by_reference_arguments_keep_a_type_that_fits() {
+    let escape = "/** @param string|array $data */\nfunction escape(&$data) {}\n";
+    let fill = "/** @param string[] $out */\nfunction fill(&$out) {}\n";
+    let cases = [
+        format!("{escape}function g(array $args) {{ escape($args); $args/*|*/; }}"),
+        format!("{escape}function g(int $args) {{ escape($args); $args/*|*/; }}"),
+        // A literal or a shape the callee fills in takes the declared type.
+        format!("{fill}$out = [];\nfill($out);\n$out/*|*/;"),
+        format!("{fill}fill($out);\n$out/*|*/;"),
+    ];
+    let expected = ["array", "string|array", "string[]", "string[]"];
+    let table: Vec<(&str, &str)> = cases.iter().map(String::as_str).zip(expected).collect();
+    check(&table);
+}

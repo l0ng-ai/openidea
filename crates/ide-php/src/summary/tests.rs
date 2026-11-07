@@ -547,6 +547,69 @@ class C {
     assert_eq!(handler.var_type("handler"), Some(&DocType::mixed()));
 }
 
+/// WordPress documents array keys in a `{ … }` block after the type: the
+/// type in front of it is kept.
+#[test]
+fn phpdoc_hash_notation_keeps_the_type() {
+    let source = r#"<?php
+namespace App;
+/**
+ * @return array {
+ *     The parts.
+ *
+ *     @type string $name The name.
+ * }
+ */
+function parts() {}
+/**
+ * @return array|WP_Error|\Other\Thing {
+ *     The parts.
+ * }
+ */
+function maybe() {}
+/**
+ * @return array<int, {
+ * }
+ */
+function broken() {}
+"#;
+    let summary = summarize(source);
+    let returns: Vec<Option<&str>> = summary
+        .functions
+        .iter()
+        .map(|function| function.doc.as_ref().and_then(|doc| doc.return_type.as_ref()).map(DocType::as_str))
+        .collect();
+    assert_eq!(returns, [Some("array"), Some(r"array|\App\WP_Error|\Other\Thing"), Some("mixed")]);
+}
+
+#[test]
+fn phpdoc_assertion_tags() {
+    let source = r#"<?php
+namespace App;
+/**
+ * @phpstan-assert-if-true WP_Error $thing
+ * @psalm-assert-if-false !null $other
+ * @phpstan-assert int $count
+ * @phpstan-assert-if-true =string $exact
+ * @phpstan-assert !null $this->prop
+ */
+function is_error($thing, $other, $count, $exact) {}
+"#;
+    let summary = summarize(source);
+    let doc = summary.functions[0].doc.as_ref().expect("doc");
+    let asserts: Vec<(AssertWhen, &str, &str, bool)> =
+        doc.asserts.iter().map(|a| (a.when, a.param.as_str(), a.ty.as_str(), a.negated)).collect();
+    assert_eq!(
+        asserts,
+        [
+            (AssertWhen::IfTrue, "thing", r"\App\WP_Error", false),
+            (AssertWhen::IfFalse, "other", "null", true),
+            (AssertWhen::Always, "count", "int", false),
+            (AssertWhen::IfTrue, "exact", "string", false),
+        ]
+    );
+}
+
 #[test]
 fn phpdoc_multiline_types_and_attributes_between() {
     let source = "<?php\nnamespace App;\n/**\n * @return array{\n *     id: int,\n *     user: User,\n * }\n */\nfunction rows(): array {}\n\nclass C {\n    /** @var User */\n    #[Inject]\n    public $user;\n    /** no tags here */\n    public function plain() {}\n}\n";

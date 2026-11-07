@@ -37,13 +37,14 @@ use std::rc::Rc;
 use mago_span::HasSpan;
 use mago_syntax::cst::{
     Access, Argument, ArgumentList, ArrayElement, Assignment, BinaryOperator, Call, ClassLikeMemberSelector, Construct,
-    DirectVariable, DoWhile, Expression, For, ForBody, Foreach, ForeachBody, ForeachTarget, FunctionLikeParameterList,
-    If, IfBody, Literal, MatchArm, MethodBody, Namespace, NamespaceBody, Node, Statement, StaticItem, Switch,
-    SwitchBody, SwitchCase, Try, UnaryPostfix, UnaryPrefix, UnaryPrefixOperator, Variable, While, WhileBody,
+    DirectVariable, DoWhile, Expression, For, ForBody, Foreach, ForeachBody, ForeachTarget, FunctionCall,
+    FunctionLikeParameterList, If, IfBody, Literal, Match, MatchArm, MethodBody, Namespace, NamespaceBody, Node,
+    Statement, StaticItem, Switch, SwitchBody, SwitchCase, Try, UnaryPostfix, UnaryPrefix, UnaryPrefixOperator,
+    Variable, While, WhileBody,
 };
 
 use super::{ExprTypes, Frame, MAX_SHAPE_FIELDS, TOP_LEVEL, falsy_removed, shape_key};
-use crate::summary::type_hint;
+use crate::summary::{AssertWhen, type_hint};
 use crate::types::ops::{Op, is_float, is_int, op_type};
 use crate::types::{Shape, ShapeField, ShapeKey, Signature, Type};
 
@@ -253,6 +254,10 @@ pub(super) struct Builder<'t, 'a, 'r> {
     /// For each enclosing `try` block: every environment a throw could
     /// leave it with.
     tries: Vec<Vec<Env>>,
+    /// The types an inline `/** @var T $x */` in front of the statement being
+    /// visited gives its variables: writes of those variables in it store
+    /// the documented type.
+    documented: Vec<(Vec<u8>, Type)>,
 }
 
 fn name_of<'a>(variable: &DirectVariable<'a>) -> &'a [u8] {
@@ -261,7 +266,15 @@ fn name_of<'a>(variable: &DirectVariable<'a>) -> &'a [u8] {
 
 impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
     pub(super) fn run(types: &'t ExprTypes<'a, 'r>, frames: &'t [Frame<'a>], flow: Rc<RefCell<Flow>>) {
-        let mut builder = Builder { types, frames, flow, env: Env::new(), loops: Vec::new(), tries: Vec::new() };
+        let mut builder = Builder {
+            types,
+            frames,
+            flow,
+            env: Env::new(),
+            loops: Vec::new(),
+            tries: Vec::new(),
+            documented: Vec::new(),
+        };
         builder.body();
         let mut flow = builder.flow.borrow_mut();
         flow.falls_through = builder.env.reachable;
@@ -337,6 +350,10 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         if name == b"this" {
             return;
         }
+        let ty = match self.documented.iter().find(|(documented, _)| documented == name) {
+            Some((_, documented)) => documented.clone(),
+            None => ty,
+        };
         let state = VarState::defined(ty);
         if name == PROBE_VARIABLE {
             self.flow.borrow_mut().probes.insert(variable.span.start.offset, self.env.vars.clone());
@@ -376,11 +393,48 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 self.flow.borrow_mut().unreachable.push(span.start.offset..span.end.offset);
                 reported = true;
             }
+            let outer = self.document(statement);
             self.statement(statement);
+            self.documented = outer;
             if let Some(points) = self.tries.last_mut() {
                 points.push(self.env.clone());
             }
         }
+    }
+
+    /// Applies an inline `/** @var T $x */` (or `/** @var T */` on an
+    /// assignment or `foreach`) in front of `statement`: an existing `$x` is
+    /// `T` from here, and writes of `$x` in the statement store `T`. Returns
+    /// the documented types in force before, to restore after the statement.
+    fn document(&mut self, statement: &'a Statement<'a>) -> Vec<(Vec<u8>, Type)> {
+        let start = statement.span().start.offset;
+        let vars = crate::summary::inline_vars(self.types.file, self.types.scope(start), start);
+        if vars.is_empty() {
+            return std::mem::take(&mut self.documented);
+        }
+        let assigned = match statement {
+            Statement::Expression(statement) => match statement.expression {
+                Expression::Assignment(assignment) => direct(assignment.lhs),
+                _ => None,
+            },
+            Statement::Foreach(node) => match &node.target {
+                ForeachTarget::Value(target) => direct(target.value),
+                ForeachTarget::KeyValue(target) => direct(target.value),
+            },
+            _ => None,
+        };
+        let mut documented = Vec::new();
+        for (name, ty) in vars {
+            let Some(name) = name.map(String::into_bytes).or_else(|| assigned.map(|v| name_of(v).to_vec())) else {
+                continue;
+            };
+            let ty = Type::from_doc(&ty, &[]);
+            if let Some(state) = self.env.vars.get_mut(&name) {
+                state.ty = ty.clone();
+            }
+            documented.push((name, ty));
+        }
+        std::mem::replace(&mut self.documented, documented)
     }
 
     fn statement(&mut self, statement: &'a Statement<'a>) {
@@ -749,24 +803,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 self.expr(conditional.r#else);
                 self.env = Env::merge([then, self.env.clone()]);
             }
-            Expression::Match(r#match) => {
-                self.expr(r#match.expression);
-                let start = self.env.clone();
-                let mut ends = Vec::new();
-                for arm in r#match.arms.iter() {
-                    self.env = start.clone();
-                    let value = match arm {
-                        MatchArm::Expression(arm) => {
-                            arm.conditions.iter().for_each(|condition| self.expr(condition));
-                            arm.expression
-                        }
-                        MatchArm::Default(arm) => arm.expression,
-                    };
-                    self.expr(value);
-                    ends.push(self.env.clone());
-                }
-                self.env = if ends.is_empty() { start } else { Env::merge(ends) };
-            }
+            Expression::Match(r#match) => self.r#match(r#match),
             Expression::Closure(closure) => {
                 let mut captured = BTreeMap::new();
                 for variable in closure.use_clause.iter().flat_map(|clause| clause.variables.iter()) {
@@ -823,6 +860,43 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
             }
             _ => self.children(expr),
         }
+    }
+
+    /// `match`. Kept out of [`Self::expr`] so the recursion through long
+    /// method chains keeps small stack frames.
+    #[inline(never)]
+    fn r#match(&mut self, r#match: &'a Match<'a>) {
+        self.expr(r#match.expression);
+        let start = self.env.clone();
+        // `match (true)` runs the first arm with a true condition:
+        // each arm sees its condition true and the earlier ones false.
+        let mut rest = is_true(r#match.expression).then(|| start.clone());
+        let mut ends = Vec::new();
+        for arm in r#match.arms.iter() {
+            self.env = rest.clone().unwrap_or_else(|| start.clone());
+            let value = match arm {
+                MatchArm::Expression(arm) => {
+                    match &mut rest {
+                        Some(rest) => {
+                            let mut matched = Vec::new();
+                            for condition in arm.conditions.iter() {
+                                let (then, other) = self.condition(condition);
+                                matched.push(then);
+                                self.env = other;
+                            }
+                            *rest = self.env.clone();
+                            self.env = Env::merge(matched);
+                        }
+                        None => arm.conditions.iter().for_each(|condition| self.expr(condition)),
+                    }
+                    arm.expression
+                }
+                MatchArm::Default(arm) => arm.expression,
+            };
+            self.expr(value);
+            ends.push(self.env.clone());
+        }
+        self.env = if ends.is_empty() { start } else { Env::merge(ends) };
     }
 
     /// The children of an expression, in source order.
@@ -1042,40 +1116,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     fn call(&mut self, call: &'a Call<'a>) {
         let (arguments, signature) = match call {
-            Call::Function(call) => {
-                let name = match call.function {
-                    Expression::Identifier(identifier) => {
-                        String::from_utf8_lossy(identifier.value()).trim_start_matches('\\').to_ascii_lowercase()
-                    }
-                    callee => {
-                        self.expr(callee);
-                        String::new()
-                    }
-                };
-                match name.as_str() {
-                    "assert" => {
-                        let mut arguments = call.argument_list.arguments.iter();
-                        if let Some(first) = arguments.next() {
-                            let (then, _) = self.condition(argument_value(first));
-                            self.env = then;
-                        }
-                        arguments.for_each(|argument| self.expr(argument_value(argument)));
-                        return;
-                    }
-                    "extract" | "get_defined_vars" | "parse_str" | "eval" => self.dynamic(),
-                    _ => {}
-                }
-                let signature = match call.function {
-                    Expression::Identifier(identifier) => {
-                        let scope = self.types.scope(identifier.span().start.offset);
-                        let name = String::from_utf8_lossy(identifier.value());
-                        let resolved = scope.resolve(crate::names::NameKind::Function, &name);
-                        resolved.resolution.candidates().find_map(|fqn| self.types.function_signature(fqn))
-                    }
-                    _ => None,
-                };
-                (&call.argument_list, signature)
-            }
+            Call::Function(call) => return self.function_call(call),
             // The receiver is only typed when an argument may be written
             // through a by-reference parameter: typing goes through the
             // whole call chain, which fluent builders make very long.
@@ -1107,6 +1148,49 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         self.arguments(arguments, signature.as_ref());
     }
 
+    /// `f(…)`. Kept out of [`Self::call`] so the recursion through long
+    /// method chains keeps small stack frames.
+    #[inline(never)]
+    fn function_call(&mut self, call: &'a FunctionCall<'a>) {
+        let name = match call.function {
+            Expression::Identifier(identifier) => {
+                String::from_utf8_lossy(identifier.value()).trim_start_matches('\\').to_ascii_lowercase()
+            }
+            callee => {
+                self.expr(callee);
+                String::new()
+            }
+        };
+        match name.as_str() {
+            "assert" => {
+                let mut arguments = call.argument_list.arguments.iter();
+                if let Some(first) = arguments.next() {
+                    let (then, _) = self.condition(argument_value(first));
+                    self.env = then;
+                }
+                arguments.for_each(|argument| self.expr(argument_value(argument)));
+                return;
+            }
+            "extract" | "get_defined_vars" | "parse_str" | "eval" => self.dynamic(),
+            _ => {}
+        }
+        let signature = match call.function {
+            Expression::Identifier(identifier) => {
+                let scope = self.types.scope(identifier.span().start.offset);
+                let name = String::from_utf8_lossy(identifier.value());
+                let resolved = scope.resolve(crate::names::NameKind::Function, &name);
+                resolved.resolution.candidates().find_map(|fqn| self.types.function_signature(fqn))
+            }
+            _ => None,
+        };
+        self.arguments(&call.argument_list, signature.as_ref());
+        for (variable, target, when, negated) in self.asserts(call) {
+            if matches!(when, AssertWhen::Always) {
+                self.env = self.narrowed_env(&self.env, variable, &target, negated);
+            }
+        }
+    }
+
     fn selector(&mut self, selector: &'a ClassLikeMemberSelector<'a>) {
         self.node(Node::ClassLikeMemberSelector(selector));
     }
@@ -1125,6 +1209,11 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                     signature.params.get(position).or_else(|| signature.params.last().filter(|param| param.variadic))
                 }
             });
+            if let (Some(param), Some(start)) = (param, function_start(value))
+                && let Some(expected) = expected_parameters(&param.ty)
+            {
+                self.types.expected.borrow_mut().insert(start, expected);
+            }
             match param {
                 Some(param) if param.by_ref && is_destination(value) => {
                     self.expr(value);
@@ -1138,8 +1227,19 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                         }
                         _ => None,
                     };
+                    // A value that already fits the declared type keeps its
+                    // own (`escape(string|array &$data)` on an array), unless
+                    // it is a literal or a shape the callee may fill in
+                    // (`$m = []; preg_match($p, $s, $m)`).
                     let ty = match (&param.ty, current) {
                         (Type::Mixed, Some(current)) => current,
+                        (ty, Some(current))
+                            if current.widen() == current
+                                && !current.members().iter().any(|member| matches!(member, Type::Shape(_)))
+                                && current.is_subtype_of(ty, self.types.resolver) =>
+                        {
+                            current
+                        }
                         (ty, _) => ty.clone(),
                     };
                     self.assign_to(value, ty);
@@ -1252,6 +1352,27 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                     Expression::Identifier(identifier) => type_check(identifier.value()),
                     _ => None,
                 };
+                if target.is_none() {
+                    // `call()` applies the unconditional assertions.
+                    self.expr(condition);
+                    let asserts = self.asserts(call);
+                    if asserts.is_empty() {
+                        return self.split();
+                    }
+                    let (mut then, mut other) = self.split();
+                    // An assertion for one outcome is negated for the other,
+                    // as PHPStan does (`is_wp_error()`).
+                    for (variable, target, when, negated) in asserts {
+                        let (holds, fails) = match when {
+                            AssertWhen::IfTrue => (&mut then, &mut other),
+                            AssertWhen::IfFalse => (&mut other, &mut then),
+                            AssertWhen::Always => continue,
+                        };
+                        *holds = self.narrowed_env(holds, variable, &target, negated);
+                        *fails = self.narrowed_env(fails, variable, &target, !negated);
+                    }
+                    return (then, other);
+                }
                 self.expr(condition);
                 let mut arguments = call.argument_list.arguments.iter();
                 match (target, arguments.next().map(argument_value).and_then(direct)) {
@@ -1328,6 +1449,59 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
         env
     }
 
+    /// `env` with `variable` narrowed to `target` (or, `negated`, to what
+    /// isn't one): an assertion.
+    fn narrowed_env(&self, env: &Env, variable: &DirectVariable<'_>, target: &Type, negated: bool) -> Env {
+        let name = name_of(variable);
+        let state = env.get(name);
+        if state.defined == Defined::No {
+            return env.clone();
+        }
+        let ty = if negated { self.narrowed_away(&state.ty, target) } else { self.narrowed_to(&state.ty, target) };
+        let mut env = env.clone();
+        env.vars.insert(name.to_vec(), VarState::defined(ty));
+        env
+    }
+
+    /// The assertion tags (`@phpstan-assert`, `-if-true`, `-if-false` and
+    /// the `@psalm-` ones) of the function `call` calls, on arguments that
+    /// are variables: the variable, the asserted type, when it holds and
+    /// whether it is negated. Assertions naming templates are left out.
+    fn asserts(&self, call: &'a FunctionCall<'a>) -> Vec<(&'a DirectVariable<'a>, Type, AssertWhen, bool)> {
+        let Expression::Identifier(identifier) = call.function else { return Vec::new() };
+        let scope = self.types.scope(identifier.span().start.offset);
+        let name = String::from_utf8_lossy(identifier.value());
+        let resolved = scope.resolve(crate::names::NameKind::Function, &name);
+        let declarations = self.types.resolver.declarations();
+        let Some(function) = resolved.resolution.candidates().find_map(|fqn| declarations.function(fqn)) else {
+            return Vec::new();
+        };
+        let Some(doc) = function.doc.as_deref().filter(|doc| !doc.asserts.is_empty()) else { return Vec::new() };
+        let templates: Vec<&str> = doc.local_type_names().collect();
+        let mut found = Vec::new();
+        for assert in &doc.asserts {
+            let Some(position) = function.params.iter().position(|param| param.name == assert.param) else {
+                continue;
+            };
+            let argument = call.argument_list.arguments.iter().enumerate().find_map(|(at, argument)| match argument {
+                Argument::Named(named) if named.name.value == assert.param.as_bytes() => Some(named.value),
+                Argument::Positional(positional) if at == position => Some(positional.value),
+                _ => None,
+            });
+            let Some(variable) = argument.and_then(direct) else { continue };
+            let ty = Type::from_doc(&assert.ty, &templates);
+            let mut generic = false;
+            ty.map(&mut |member| {
+                generic |= matches!(member, Type::Template(_));
+                None
+            });
+            if !generic {
+                found.push((variable, ty, assert.when, assert.negated));
+            }
+        }
+        found
+    }
+
     /// The environments where `variable` is / is not of type `target`.
     fn narrow(&self, variable: &DirectVariable<'_>, target: &Type) -> (Env, Env) {
         let name = name_of(variable);
@@ -1382,6 +1556,15 @@ fn argument_value<'a>(argument: &'a Argument<'a>) -> &'a Expression<'a> {
     match argument {
         Argument::Positional(argument) => argument.value,
         Argument::Named(argument) => argument.value,
+    }
+}
+
+/// `true`, maybe parenthesized.
+fn is_true(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => is_true(inner.expression),
+        Expression::Literal(Literal::True(_)) => true,
+        _ => false,
     }
 }
 
@@ -1506,8 +1689,52 @@ fn size(ty: &Type, limit: usize) -> usize {
 /// (one is a possible by-reference destination and the receiver's chain
 /// is short enough to type).
 fn may_write(arguments: &ArgumentList<'_>, object: &Expression<'_>) -> bool {
-    arguments.arguments.iter().any(|argument| is_destination(argument_value(argument)))
+    arguments
+        .arguments
+        .iter()
+        .any(|argument| is_destination(argument_value(argument)) || has_untyped_parameter(argument_value(argument)))
         && super::chain_depth(object) <= super::MAX_CHAIN
+}
+
+/// A closure or arrow function with a parameter without a type hint: its
+/// type comes from the parameter the function is passed to.
+fn has_untyped_parameter(expr: &Expression<'_>) -> bool {
+    let list = match expr {
+        Expression::Parenthesized(inner) => return has_untyped_parameter(inner.expression),
+        Expression::Closure(closure) => &closure.parameter_list,
+        Expression::ArrowFunction(arrow) => &arrow.parameter_list,
+        _ => return false,
+    };
+    list.parameters.iter().any(|parameter| parameter.hint.is_none())
+}
+
+/// The closure or arrow function `expr` is, maybe parenthesized: its start.
+fn function_start(expr: &Expression<'_>) -> Option<u32> {
+    match expr {
+        Expression::Parenthesized(inner) => function_start(inner.expression),
+        Expression::Closure(closure) => Some(closure.span().start.offset),
+        Expression::ArrowFunction(arrow) => Some(arrow.span().start.offset),
+        _ => None,
+    }
+}
+
+/// The parameter types of the callable a parameter of type `ty` expects
+/// (`callable(T): U`, `Closure(T): U`, either of them in a union); a type
+/// naming a template or a relative class is unknown (`mixed`) here.
+fn expected_parameters(ty: &Type) -> Option<Vec<Type>> {
+    let signature = ty.members().iter().find_map(|member| match member {
+        Type::Callable(Some(signature)) | Type::Closure(Some(signature)) => Some(signature),
+        _ => None,
+    })?;
+    let concrete = |ty: &Type| {
+        let mut open = false;
+        ty.map(&mut |member| {
+            open |= matches!(member, Type::Template(_) | Type::Relative(_) | Type::GenericRelative { .. });
+            None
+        });
+        if open { Type::Mixed } else { ty.clone() }
+    };
+    Some(signature.params.iter().map(|param| concrete(&param.ty)).collect())
 }
 
 /// Something a value can be stored into.

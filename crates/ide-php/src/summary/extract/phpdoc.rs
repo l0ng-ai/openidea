@@ -18,6 +18,7 @@ use mago_phpdoc_syntax::PHPDocParser;
 use mago_phpdoc_syntax::cst::r#type::{
     GenericParameters, ReferenceKind, ShapeField, ShapeKey, SingleGenericParameter, Type,
 };
+use mago_phpdoc_syntax::cst::{AssertPattern, AssertSubject};
 use mago_phpdoc_syntax::cst::{
     Identifier as DocIdentifier, InvalidTagValue, MethodTagValue, Tag, TagValue, TemplateTagValue,
     TemplateTagValueVariance,
@@ -28,13 +29,20 @@ use mago_syntax::comments::docblock::get_docblock_before_position;
 use super::{Extractor, lossy, variable_name};
 use crate::names::{NameKind, Resolution};
 use crate::summary::{
-    DocBlock, DocMethod, DocMethodParam, DocParam, DocProperty, DocTemplate, DocType, DocTypeAlias, DocVar,
-    PropertyAccess, Variance,
+    AssertWhen, DocAssert, DocBlock, DocMethod, DocMethodParam, DocParam, DocProperty, DocTemplate, DocType,
+    DocTypeAlias, DocVar, PropertyAccess, Variance,
 };
 
 /// Lower-case names that PHPDoc tools treat as types although Mago reads
 /// them as class references.
 const PSEUDO_TYPES: &[&str] = &["noreturn", "number", "callback", "this", "resource", "void"];
+
+/// Type keywords a type written in hash notation may be made of, besides
+/// class names.
+const TYPE_KEYWORDS: &[&str] = &[
+    "array", "object", "bool", "boolean", "false", "true", "null", "int", "integer", "float", "double", "string",
+    "mixed", "iterable", "callable", "resource", "void", "list",
+];
 
 /// How much a tag counts when two describe the same thing: a later tag
 /// replaces an earlier one unless it counts less.
@@ -81,6 +89,7 @@ struct Builder {
     properties: Entries<DocProperty>,
     methods: Entries<DocMethod>,
     type_aliases: Entries<DocTypeAlias>,
+    asserts: Entries<DocAssert>,
 }
 
 impl Builder {
@@ -113,6 +122,7 @@ impl Builder {
             properties: items(self.properties),
             methods: items(self.methods),
             type_aliases: items(self.type_aliases),
+            asserts: items(self.asserts),
         }
     }
 }
@@ -382,13 +392,34 @@ impl Extractor<'_> {
                 };
                 upsert(&mut b.type_aliases, priority, alias, |a, b| a.name == b.name);
             }
-            TagValue::Invalid(invalid) => self.invalid_tag(tag, invalid, b),
+            TagValue::Assert(assert) | TagValue::AssertIfTrue(assert) | TagValue::AssertIfFalse(assert) => {
+                let (AssertSubject::Parameter { variable }, AssertPattern::Type(asserted)) =
+                    (&assert.subject, &assert.pattern)
+                else {
+                    return;
+                };
+                let when = match &tag.value {
+                    TagValue::AssertIfTrue(_) => AssertWhen::IfTrue,
+                    TagValue::AssertIfFalse(_) => AssertWhen::IfFalse,
+                    _ => AssertWhen::Always,
+                };
+                let item = DocAssert {
+                    when,
+                    param: variable_name(variable.value),
+                    ty: ty(asserted),
+                    negated: assert.bang.is_some(),
+                };
+                upsert(&mut b.asserts, priority, item, |a, b| a.when == b.when && a.param == b.param);
+            }
+            TagValue::Invalid(invalid) => self.invalid_tag(tag, invalid, names, b),
             _ => {}
         }
     }
 
-    /// Keeps an unreadable `@param`, `@return` or `@var` with the type `mixed`.
-    fn invalid_tag(&self, tag: &Tag<'_>, invalid: &InvalidTagValue<'_>, b: &mut Builder) {
+    /// Keeps an unreadable `@param`, `@return` or `@var` with the type `mixed`,
+    /// or with the type in front of WordPress's hash notation (`@return
+    /// array { … }`).
+    fn invalid_tag(&self, tag: &Tag<'_>, invalid: &InvalidTagValue<'_>, names: &[String], b: &mut Builder) {
         let raw = lossy(tag.name.value).to_ascii_lowercase();
         let name = match tag.vendor {
             Some(vendor) => raw.strip_prefix(vendor.prefix()).and_then(|rest| rest.strip_prefix('-')).unwrap_or(&raw),
@@ -407,17 +438,44 @@ impl Extractor<'_> {
         span.start.offset = start;
         span.end.offset = span.end.offset.max(line_end as u32);
         let text = self.doc_text(span);
+        let ty = self.hash_notation_type(&text, names).unwrap_or_else(DocType::mixed);
         match name {
             "param" => {
                 if let Some(name) = tag_variable(&text) {
-                    let param = DocParam { name, ty: DocType::mixed(), by_ref: false, variadic: false };
+                    let param = DocParam { name, ty, by_ref: false, variadic: false };
                     b.param(Priority::Fallback, param);
                 }
             }
-            "return" => b.return_type(Priority::Fallback, DocType::mixed()),
-            "var" => b.var(Priority::Fallback, DocVar { name: tag_variable(&text), ty: DocType::mixed() }),
+            "return" => b.return_type(Priority::Fallback, ty),
+            "var" => b.var(Priority::Fallback, DocVar { name: tag_variable(&text), ty }),
             _ => {}
         }
+    }
+
+    /// The type of a tag written in WordPress's hash notation: a plain union
+    /// of keywords and class names followed by a `{` that opens the
+    /// description of its keys (`array {`, `array|false {`, `array $args {`).
+    fn hash_notation_type(&self, text: &str, names: &[String]) -> Option<DocType> {
+        let mut words = text.split_whitespace();
+        let ty = words.next()?;
+        let next = words.next()?;
+        let opens = next.starts_with('{') || (next.starts_with('$') && words.next()?.starts_with('{'));
+        if !opens {
+            return None;
+        }
+        let mut parts = Vec::new();
+        for part in ty.split('|') {
+            let simple = !part.is_empty() && part.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '\\');
+            if !simple {
+                return None;
+            }
+            let keyword = !part.contains('\\') && TYPE_KEYWORDS.contains(&part.to_ascii_lowercase().as_str());
+            parts.push(match self.doc_class_name(part.as_bytes(), names) {
+                Some(fqn) if !keyword => fqn,
+                _ => part.to_owned(),
+            });
+        }
+        Some(DocType(parts.join("|")))
     }
 
     fn doc_template(&self, template: &TemplateTagValue<'_>, names: &[String]) -> DocTemplate {

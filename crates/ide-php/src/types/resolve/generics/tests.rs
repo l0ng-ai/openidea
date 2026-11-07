@@ -315,8 +315,9 @@ fn laravel_style_collection() {
                 "class Caller { public function f(BookCollection $b) { foreach ($b->chunk(2) as $c) { $c/*|*/; } } }",
                 r"Lib\BookCollection",
             ),
-            // An untyped callback's return can't be inferred.
-            ("function f(BookCollection $b) { $b->map(fn ($x) => $x)/*|*/; }", "Lib\\LCollection<int, mixed>"),
+            // An untyped callback parameter is typed from the expected
+            // `callable(TValue, TKey)`, so its return is known.
+            ("function f(BookCollection $b) { $b->map(fn ($x) => $x)/*|*/; }", "Lib\\LCollection<int, Lib\\Book>"),
         ],
     );
 }
