@@ -20,6 +20,15 @@ const disposer = registerEditorKind({
   kind: "renamable",
   component: () => null,
   title: () => title,
+  document: {
+    isDirty: () => true,
+    flush: async () => {},
+    save: async () => {},
+    prepareClose: async () => {},
+    cancelClose: () => {},
+    discard: async () => {},
+    close: async () => {},
+  },
 });
 
 const tab: Tab = { id: "t1", input: { kind: "renamable", key: "k" }, preview: false, pinned: false };
@@ -61,9 +70,39 @@ describe("editor tab titles", () => {
   it("leaves unrelated tab state alone", () => {
     show();
     render(<EditorAreaView />);
+    const modified = screen.getAllByLabelText("Modified");
+    const state = useTabs.getState();
     title = "Beta";
     act(() => notifyTabTitlesChanged());
+    expect(useTabs.getState()).toBe(state);
     expect(screen.getAllByRole("tab")).toHaveLength(1);
     expect(label()).not.toContain("Alpha");
+    expect(screen.getAllByLabelText("Modified")).toEqual(modified);
+  });
+
+  it("refreshes the same input in every split pane", () => {
+    show();
+    act(() =>
+      useTabs.setState({
+        layout: {
+          kind: "split",
+          id: "split",
+          dir: "row",
+          children: [
+            { kind: "pane", paneId: "p1" },
+            { kind: "pane", paneId: "p2" },
+          ],
+        },
+        panes: {
+          ...useTabs.getState().panes,
+          p2: { id: "p2", tabs: [tab], active: tab.id, mru: [tab.id] },
+        },
+      }),
+    );
+    render(<EditorAreaView />);
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
+    title = "Beta";
+    act(() => notifyTabTitlesChanged());
+    expect(screen.getAllByRole("tab").every((el) => el.textContent?.includes("Beta"))).toBe(true);
   });
 });

@@ -260,6 +260,7 @@ export async function connect(): Promise<void> {
     changes: new Map(),
     providers,
   });
+  notifyTabTitlesChanged();
   // Restored tabs of tasks deleted meanwhile close, like editors of deleted files.
   const editors = editorService();
   for (const t of editors.openTabs?.() ?? []) {
