@@ -4,6 +4,7 @@
  */
 import { forwardRef, useEffect, useRef, type KeyboardEvent } from "react";
 import clsx from "clsx";
+import { isPageSwipe, PAGE_SWIPE_EVENT } from "@/platform/pageSwipe";
 import { formatBinding, strokeOf, suspendKeyboardDispatch } from "@/platform/keymap";
 import { T } from "@/ui";
 import styles from "./Keymap.module.css";
@@ -42,6 +43,15 @@ export const StrokeRecorder = forwardRef<HTMLDivElement, StrokeRecorderProps>(fu
     };
   }, [autoFocus]);
 
+  useEffect(() => {
+    const record = (event: Event) => {
+      const stroke = (event as CustomEvent).detail;
+      if (!disabled && document.activeElement === innerRef.current && isPageSwipe(stroke)) onChange(stroke);
+    };
+    window.addEventListener(PAGE_SWIPE_EVENT, record);
+    return () => window.removeEventListener(PAGE_SWIPE_EVENT, record);
+  }, [disabled, onChange]);
+
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
     e.preventDefault();
@@ -50,7 +60,7 @@ export const StrokeRecorder = forwardRef<HTMLDivElement, StrokeRecorderProps>(fu
     const stroke = strokeOf(e.nativeEvent);
     if (!stroke) return;
     const now = e.timeStamp || performance.now();
-    const appending = chord && value && !value.includes(" ") && now - lastAt.current < CHORD_MS;
+    const appending = chord && value && !isPageSwipe(value) && !value.includes(" ") && now - lastAt.current < CHORD_MS;
     lastAt.current = now;
     onChange(appending ? `${value} ${stroke}` : stroke);
   };

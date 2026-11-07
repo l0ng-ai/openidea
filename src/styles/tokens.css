@@ -436,6 +436,18 @@ html {
   --fg-caption-close-hover: #ffffff;
 }
 
+/* macOS window buttons drawn by the web title bar in full screen: the system colours in every theme. */
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark-hc"] {
+  --mac-window-close: #ff5f57;
+  --mac-window-minimize: #febc2e;
+  --mac-window-zoom: #28c840;
+  --mac-window-glyph: rgb(0 0 0 / 55%);
+  --mac-window-edge: rgb(0 0 0 / 12%);
+  --mac-window-inactive: color-mix(in srgb, var(--fg-strong) 22%, transparent);
+}
+
 /*
  * Islands Light. Every colour token of :root is redefined here. Values are
  * PyCharm's own; its secondary greys, comment / metadata colours, line numbers

@@ -4,6 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import type { ServiceTab } from "@/bindings";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { EmptyState, LogPane, Spinner, Tabs } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { pluginsBackend } from "../backend";
@@ -16,7 +17,16 @@ interface ServicePaneProps {
   itemKey: string;
 }
 
-export function ServicePane({ pluginId, view, itemKey }: ServicePaneProps) {
+/** Plugin text is shown as written: the plugin translates it through its own catalog. */
+export function ServicePane(props: ServicePaneProps) {
+  return (
+    <VerbatimTextContext.Provider value={true}>
+      <ServicePaneContent {...props} />
+    </VerbatimTextContext.Provider>
+  );
+}
+
+function ServicePaneContent({ pluginId, view, itemKey }: ServicePaneProps) {
   // `views.refresh(<view>)` asks for the pane again.
   const revision = useViewRevision(pluginId, view);
   const [tabs, setTabs] = useState<ServiceTab[] | null>(null);
@@ -43,7 +53,7 @@ export function ServicePane({ pluginId, view, itemKey }: ServicePaneProps) {
   if (error) return <EmptyState title={error} />;
   if (!tabs) return <Spinner />;
   const active = tabs.find((t) => t.id === picked) ?? tabs[0];
-  if (!active) return <EmptyState title="Nothing to show" />;
+  if (!active) return <EmptyState title={tx("Nothing to show")} />;
   return (
     <div className={styles.pane}>
       <Tabs

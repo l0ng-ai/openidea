@@ -20,6 +20,6 @@ pub use runtime::{
     API_VERSION, CANCELLED, CallCancel, CallError, GuestError, HostApi, PluginEngine, Runtime, RuntimeSetup, check_api,
     component_api, host_api,
 };
-pub use sandbox::{MAX_READ_BYTES, inside_root, read_text, resolve_in_root};
+pub use sandbox::{MAX_READ_BYTES, inside_root, read_text, resolve_in_root, resolve_new_in_root, resolve_real};
 pub use types::*;
 pub use wasmtime::component::Component;

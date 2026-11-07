@@ -17,14 +17,6 @@ fn join_err(e: tokio::task::JoinError) -> IdeError {
     IdeError::internal(e.to_string())
 }
 
-/// `JAVA_HOME`: the project JDK, else the installed JDK matching `release` (none
-/// when the project names no version).
-fn java_env(project_jdk: Option<&ide_sdk::java::Jdk>, release: Option<u32>) -> BTreeMap<String, String> {
-    let jdks = ide_sdk::java::installed_jdks();
-    let jdk = project_jdk.or_else(|| release.and_then(|r| ide_sdk::java::pick_jdk(&jdks, Some(r))));
-    jdk.map(|j| BTreeMap::from([("JAVA_HOME".to_owned(), j.home.to_string_lossy().into_owned())])).unwrap_or_default()
-}
-
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
 /// the Maven home and options from Settings › Maven.
 pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
@@ -40,7 +32,7 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);
         for p in &mut m.projects {
-            p.env = java_env(jdk.as_ref(), p.java_version);
+            p.env = ide_sdk::apply::maven_build_env(root, settings, p.java_version);
             if let Some(mvn) = &mvn {
                 p.command = mvn.to_string_lossy().into_owned();
             }
@@ -64,7 +56,11 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     if let Some(m) = &mut model.maven
         && m.sync_error.is_some()
     {
-        let hint = m.projects.iter().find_map(|p| missing(p.java_version));
+        let hint = if settings.languages.java.maven.runner_jre.trim().is_empty() {
+            m.projects.iter().find_map(|p| missing(p.java_version))
+        } else {
+            None
+        };
         explain(&mut m.sync_error, hint);
     }
     for g in &mut model.gradle {
@@ -625,7 +621,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
 }
 
 #[cfg(test)]
-mod gradle_settings_tests {
+mod build_tool_settings_tests {
     use super::*;
 
     #[test]
@@ -707,6 +703,34 @@ mod gradle_settings_tests {
         assert_eq!(model.gradle.len(), 2);
         for g in model.gradle {
             assert_eq!(g.command, root.join(&g.dir).join(executable).to_string_lossy());
+        }
+    }
+
+    #[test]
+    fn model_for_maven_sync_goals_and_compile_uses_runner_jre() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#
+        ).unwrap();
+        for name in ["project-jdk", "runner-jdk"] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), "JAVA_VERSION=\"21\"\n").unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.java.jdk = "project-jdk".into();
+        for runner in ["", "runner-jdk"] {
+            settings.languages.java.maven.runner_jre = runner.into();
+            let expected = root.join(if runner.is_empty() { "project-jdk" } else { runner });
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
         }
     }
 
