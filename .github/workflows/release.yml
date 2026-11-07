@@ -196,16 +196,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          case "$TARGET" in
-            x86_64-*) arch=x86_64 ;;
-            aarch64-*) arch=aarch64 ;;
-            *) echo "unsupported Linux target: $TARGET" >&2; exit 1 ;;
-          esac
-          asset="openidea-linux-${arch}.tar.gz"
-          tar -czf "$asset" -C "target/$TARGET/release" openidea
-          sha256sum "$asset" > "$asset.sha256"
+        run: scripts/package-linux-desktop.sh "$TARGET" "target/$TARGET/release/openidea" .
       - uses: actions/upload-artifact@v7
         if: runner.os == 'Linux'
         with:
