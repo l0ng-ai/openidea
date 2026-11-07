@@ -569,6 +569,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -1237,6 +1239,8 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);

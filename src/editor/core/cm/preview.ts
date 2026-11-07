@@ -1,7 +1,7 @@
 /**
- * Read-only code previews outside editor tabs (Find in Files, bookmarks): the
+ * Code previews outside editor tabs (Find in Files, bookmarks): the
  * editor's font, colours, line numbers and syntax highlighting, without
- * editing, folding or contributions.
+ * folding or contributions. Editing is opt-in.
  */
 import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView, highlightSpecialChars, lineNumbers } from "@codemirror/view";
@@ -20,6 +20,7 @@ export async function previewExtensions(
   path: string,
   settings: EditorSettings | undefined,
   backend?: DocBackend,
+  editable = false,
 ): Promise<Extension> {
   const open = editorsFor(path)[0]?.ctx;
   // A closed file: its own mode (an Angular project's templates) like an editor would show it.
@@ -32,9 +33,9 @@ export async function previewExtensions(
     lineNumbers(),
     highlightSpecialChars(),
     syntaxHighlighting(openideaHighlightStyle),
-    EditorState.readOnly.of(true),
-    EditorView.editable.of(false),
-    // Not editable, so selection and Copy need the text opted back in and a tab stop.
+    EditorState.readOnly.of(!editable),
+    EditorView.editable.of(editable),
+    // Read-only previews still support selection, Copy and keyboard focus.
     EditorView.contentAttributes.of({ "aria-label": tx`Preview of ${path}`, class: selectableText, tabindex: "0" }),
     support ?? [],
   ];

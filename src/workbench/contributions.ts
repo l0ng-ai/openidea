@@ -1563,6 +1563,8 @@ export interface DebugServiceSession {
   /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
   httpPort?: number;
   rerun: (() => void) | null;
+  /** Rerun without opening the Debug tool window (the Services panel debugs in place). */
+  rerunInPlace?: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
 }
