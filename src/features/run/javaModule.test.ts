@@ -95,6 +95,20 @@ const launchInfo = (build: "succeeded" | "failed" | "withErrors") => ({
   hints: [],
 });
 
+it("applies Rebuild to a Maven run command", async () => {
+  await startRun({
+    ...config,
+    kind: "maven",
+    command: "mvn",
+    args: ["-B", "spring-boot:run"],
+    buildPolicy: "rebuild",
+  });
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({ command: "mvn", args: ["clean", "-B", "spring-boot:run"] }),
+    expect.anything(),
+  );
+});
+
 it("resolves an explicit classpath without building for NoBuild", async () => {
   await startRun({ ...config, module: "app", buildPolicy: "noBuild", args: ["-cp", "lib/*", "a.Main"] });
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "noBuild", expect.any(Number));
