@@ -1,0 +1,23 @@
+package openidea:plugin@1.3.0;
+
+interface inlay-hints-provider {
+    use types.{position, range};
+
+    record document {
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    record inlay-hint {
+        position: position,
+        label: string,
+        kind: string,
+        tooltip: option<string>,
+        padding-left: bool,
+        padding-right: bool,
+    }
+
+    inlay-hints: func(doc: document, range: range) -> list<inlay-hint>;
+}

@@ -21,6 +21,7 @@ mod icon_patterns;
 mod icon_settings;
 mod icons;
 pub mod index_ops;
+mod inlay_hints;
 mod install;
 pub mod intellij;
 mod market;
@@ -41,6 +42,7 @@ pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
 };
+pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
     read_url as read_market_url, resolve as resolve_market_href,

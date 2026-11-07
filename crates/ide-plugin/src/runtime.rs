@@ -4,7 +4,8 @@
 //! themselves are in `wit_host`.
 
 use crate::types::{
-    CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, ProviderDocument, SemanticToken,
+    CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, PluginInlayHint, ProviderDocument,
+    SemanticToken,
 };
 use crate::types::{
     EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
@@ -15,8 +16,8 @@ use crate::types::{
     ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, indexing_bindings, providers_bindings, semantic_bindings, services_bindings, syntax_bindings,
-    views_bindings,
+    bindings, indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, services_bindings,
+    syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -34,6 +35,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
+use inlay_bindings::exports::openidea::plugin::inlay_hints_provider as wit_inlay;
 use providers_bindings::exports::openidea::plugin::providers as wit_prov;
 use semantic_bindings::exports::openidea::plugin::semantic_tokens_provider as wit_sem;
 use services_bindings::exports::openidea::plugin::service_provider as wit_svc;
@@ -524,6 +526,7 @@ struct Exports {
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
     services: Option<wit_svc::Guest>,
+    inlay: Option<wit_inlay::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -605,6 +608,7 @@ impl Runtime {
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
         let service_indices = wit_svc::GuestIndices::new(&pre).ok();
+        let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -631,9 +635,13 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let inlay = match inlay_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
-            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services },
+            exports: Exports { plugin, syntax, providers, views, indexer, semantic, services, inlay },
             limits: setup.limits,
             version: setup.version,
         })
@@ -887,6 +895,40 @@ impl Runtime {
                 range: range_from_wit(t.range),
                 kind: clip(t.kind, 32),
                 modifiers: t.modifiers.into_iter().take(MAX_TOKEN_MODIFIERS).map(|m| clip(m, 32)).collect(),
+            })
+            .collect())
+    }
+
+    pub fn provide_inlay_hints(
+        &mut self,
+        doc: &ProviderDocument,
+        range: ide_core::Range,
+        timeout: Duration,
+    ) -> Result<Vec<PluginInlayHint>, CallError> {
+        if self.exports.inlay.is_none() {
+            return Err(CallError::missing_export("inlay-hints-provider"));
+        }
+        let d = wit_inlay::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let r = wit_types::Range { start: pos_to_wit(range.start), end: pos_to_wit(range.end) };
+        let hints = self.call(Invocation::default(), timeout, |e, store| {
+            e.inlay.as_ref().expect("checked").call_inlay_hints(store, &d, r)
+        })?;
+        Ok(hints
+            .into_iter()
+            .filter(|h| !h.label.trim().is_empty())
+            .take(MAX_PROVIDER_ITEMS)
+            .map(|h| PluginInlayHint {
+                position: ide_core::Pos::new(h.position.line, h.position.character),
+                label: clip(h.label, 256),
+                kind: clip(h.kind, 32),
+                tooltip: h.tooltip.map(|t| clip(t, 1024)),
+                padding_left: h.padding_left,
+                padding_right: h.padding_right,
             })
             .collect())
     }

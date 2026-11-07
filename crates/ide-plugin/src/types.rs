@@ -426,6 +426,16 @@ pub struct SemanticToken {
     pub modifiers: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginInlayHint {
+    pub position: ide_core::Pos,
+    pub label: String,
+    pub kind: String,
+    pub tooltip: Option<String>,
+    pub padding_left: bool,
+    pub padding_right: bool,
+}
+
 // ---- declarative views (wit/views.wit) ---------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

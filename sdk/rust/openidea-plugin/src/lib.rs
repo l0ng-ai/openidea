@@ -41,6 +41,7 @@
 
 pub mod host;
 pub mod indexing;
+pub mod inlay_hints;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mock;
 pub mod providers;
@@ -155,6 +156,17 @@ pub mod semantic_bindings {
     });
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod inlay_bindings {
+    wit_bindgen::generate!({
+        world: "inlay-hints", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_inlay_hints_world",
+        default_bindings_module: "openidea_plugin::inlay_bindings",
+        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
 /// The plugin API version this SDK targets.
 pub const API_VERSION: &str = "1.3";
 
@@ -214,6 +226,9 @@ macro_rules! __optional_exports {
     };
     (services, $plugin:ty, $component:ident) => {
         $crate::__services_exports!($plugin, $component);
+    };
+    (inlay_hints, $plugin:ty, $component:ident) => {
+        $crate::__inlay_hints_exports!($plugin, $component);
     };
     (syntax, $plugin:ty, $component:ident) => {
         impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
@@ -381,6 +396,22 @@ macro_rules! __semantic_tokens_exports {
             }
         }
         $crate::semantic_bindings::__export_semantic_tokens_world!($component with_types_in $crate::semantic_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __inlay_hints_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Guest for $component {
+            fn inlay_hints(
+                doc: $crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Document,
+                range: $crate::bindings::openidea::plugin::types::Range,
+            ) -> ::std::vec::Vec<$crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::InlayHint> {
+                $crate::__rt::inlay_hints::<$plugin>(doc, range)
+            }
+        }
+        $crate::inlay_bindings::__export_inlay_hints_world!($component with_types_in $crate::inlay_bindings);
     };
 }
 
@@ -635,6 +666,25 @@ pub mod __rt {
                 range: crate::host::__range_to(t.range),
                 kind: t.kind.as_str().into(),
                 modifiers: t.modifiers.into_iter().map(|m| m.as_str().into()).collect(),
+            })
+            .collect()
+    }
+
+    pub fn inlay_hints<T: Plugin + crate::inlay_hints::InlayHints + Default>(
+        d: crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::Document,
+        range: b::types::Range,
+    ) -> Vec<crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider::InlayHint> {
+        use crate::inlay_bindings::exports::openidea::plugin::inlay_hints_provider as w;
+        let doc = crate::providers::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        with::<T, _>(|p| p.inlay_hints(&doc, crate::host::__range_from(range)))
+            .into_iter()
+            .map(|h| w::InlayHint {
+                position: b::types::Position { line: h.position.line, character: h.position.character },
+                label: h.label,
+                kind: h.kind.as_str().into(),
+                tooltip: h.tooltip,
+                padding_left: h.padding_left,
+                padding_right: h.padding_right,
             })
             .collect()
     }

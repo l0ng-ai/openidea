@@ -38,6 +38,7 @@ pub enum ProviderKind {
     Definition,
     LineMarkers,
     SemanticTokens,
+    InlayHints,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -116,6 +117,9 @@ impl ExtensionPoint for ProvidersPoint {
         if d.kinds.contains(&ProviderKind::SemanticTokens) {
             pkg.manifest.needs_api("contributes.providers: semantic-tokens", 3)?;
         }
+        if d.kinds.contains(&ProviderKind::InlayHints) {
+            pkg.manifest.needs_api("contributes.providers: inlay-hints", 3)?;
+        }
         for l in &d.languages {
             if l != "*"
                 && (l.is_empty()
@@ -165,7 +169,7 @@ use super::{LoadedPlugin, PluginHost, PluginStatus};
 use ide_core::CancellationToken;
 use ide_plugin::{
     ActorError, CallError, CodeAction, CompletionItem, InlineSuggestion, LineMarker, Location, Pending,
-    ProviderDocument, Runtime, SemanticToken,
+    PluginInlayHint, ProviderDocument, Runtime, SemanticToken,
 };
 use std::sync::Weak;
 use std::time::{Duration, Instant};
@@ -342,6 +346,16 @@ impl PluginHost {
         })
         .into_iter()
         .flat_map(|(_, tokens)| tokens)
+        .collect()
+    }
+
+    pub fn provide_inlay_hints(&self, doc: &ProviderDocument, range: ide_core::Range) -> Vec<PluginInlayHint> {
+        let d = Arc::new(doc.clone());
+        self.edit_calls(ProviderKind::InlayHints, &doc.language, move |rt, timeout| {
+            rt.provide_inlay_hints(&d, range, timeout)
+        })
+        .into_iter()
+        .flat_map(|(_, hints)| hints)
         .collect()
     }
 
