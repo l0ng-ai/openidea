@@ -37,6 +37,7 @@ import {
 } from "./state";
 import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
+import { forgetMemory } from "./memory/memoryState";
 
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
 const useAnyOverlay = () =>
@@ -106,6 +107,10 @@ export function activate(): () => void {
     onIdeEvent("debug", (e) => {
       if (e.event.kind === "hotCodeReplace") onHotCodeReplace(e.session, e.event);
       else handleDebugEvent(e.session, e.event);
+    }),
+    useDebug.subscribe((s, prev) => {
+      if (s.sessions === prev.sessions) return;
+      for (const id of Object.keys(prev.sessions)) if (!(id in s.sessions)) forgetMemory(Number(id));
     }),
     useProject.subscribe((s, prev) => {
       const root = s.project?.root ?? null;
