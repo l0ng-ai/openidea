@@ -12,7 +12,7 @@ export interface MemoryEntry {
   query: RowQuery;
 }
 
-const DEFAULT_QUERY: RowQuery = { filter: "", sort: "bytes", desc: true, changedOnly: false };
+export const DEFAULT_QUERY: RowQuery = { filter: "", sort: "bytes", desc: true, changedOnly: false };
 
 const emptyEntry = (): MemoryEntry => ({
   result: null,

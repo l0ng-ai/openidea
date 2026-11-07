@@ -30,6 +30,7 @@ import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { reloadChangedClasses } from "./hotswap";
+import { refreshMemory } from "./memory/memoryState";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
 import {
@@ -427,6 +428,18 @@ export function registerDebugActions(): () => void {
             ? arg.configId
             : undefined,
         ),
+    },
+    {
+      id: "debug.memory.refresh",
+      title: "Refresh Memory View",
+      category: "Debug",
+      icon: "refresh",
+      keywords: ["memory", "heap", "instances", "classes"],
+      when: "debugSessionActive",
+      run: () => {
+        const s = activeSession();
+        if (s && sessionSupports("jvmMemory", s)) void refreshMemory(s.id);
+      },
     },
     {
       id: "debug.rerun",

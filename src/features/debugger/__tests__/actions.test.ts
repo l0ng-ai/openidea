@@ -19,6 +19,7 @@ const ipc = vi.hoisted(() => {
     ),
     debugStackTrace: vi.fn(() => ok([])),
     debugThreads: vi.fn(() => ok([])),
+    debugJvmMemoryClasses: vi.fn(() => ok({ status: "unavailable", reason: { kind: "programExited" } })),
     debugScopes: vi.fn(() => ok([])),
     debugStart: vi.fn((_launch: { extraJson: string | null }) => ok(42)),
     debugSetBreakpoints: vi.fn(() => ok([])),
@@ -157,6 +158,7 @@ describe("debugger actions (IDEA parity)", () => {
       "debug.setValue": ["F2"],
       "debug.jumpToSource": ["F4", "Meta+Down"],
       "debug.resetFrame": undefined,
+      "debug.memory.refresh": undefined,
       "debug.toggleMethodBreakpoint": undefined,
       "debug.toggleFieldWatchpoint": undefined,
     };
@@ -240,6 +242,18 @@ describe("debugger actions (IDEA parity)", () => {
     paused({ caps: caps({ restartFrame: true }) });
     await executeAction("debug.resetFrame");
     expect(ipc.debugRestartFrame).toHaveBeenCalledWith(3, 71);
+  });
+
+  it("Refresh Memory View reads the class table of a session that supports it", async () => {
+    const result = { status: "unavailable", reason: { kind: "programExited" } };
+    ipc.debugJvmMemoryClasses.mockReturnValue(ipc.ok(result) as never);
+    paused({ caps: caps({ jvmMemory: false }) });
+    await executeAction("debug.memory.refresh");
+    expect(ipc.debugJvmMemoryClasses).not.toHaveBeenCalled();
+    paused({ caps: caps({ jvmMemory: true }) });
+    await executeAction("debug.memory.refresh");
+    await settle();
+    expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledWith(3);
   });
 
   it("Show Execution Point reveals the top frame with focus", async () => {

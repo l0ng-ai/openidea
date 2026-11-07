@@ -38,6 +38,7 @@ import {
   type DebugSession,
 } from "../state";
 import { remoteWaitingNote } from "../remote";
+import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -103,7 +104,7 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console";
+type Tab = "variables" | "console" | "memory";
 
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
@@ -152,9 +153,16 @@ export function DebugToolWindow() {
     setView({
       session: active.startedAt,
       status: active.status,
-      tab: active.status === "starting" ? "console" : active.status === "paused" ? "variables" : view.tab,
+      tab:
+        active.status === "starting"
+          ? "console"
+          : active.status === "paused" && view.tab !== "memory"
+            ? "variables"
+            : view.tab,
     });
-  const tab = view.tab;
+  const hasMemory = !!active && sessionSupports("jvmMemory", active);
+  // The selected session may be one without the Memory tab.
+  const tab: Tab = view.tab === "memory" && !hasMemory ? "variables" : view.tab;
 
   if (!active) {
     return (
@@ -175,6 +183,7 @@ export function DebugToolWindow() {
             [
               ["variables", "Threads & Variables"],
               ["console", "Console"],
+              ...(hasMemory ? [["memory", "Memory"] as const] : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -187,7 +196,7 @@ export function DebugToolWindow() {
               className={clsx(styles.tab, tab === id && styles.tabActive)}
               onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
             >
-              {label}
+              {tx(label)}
             </button>
           ))}
         </div>
@@ -230,6 +239,8 @@ export function DebugToolWindow() {
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
         {tab === "variables" ? (
           <ThreadsAndVariables session={active} />
+        ) : tab === "memory" ? (
+          <MemoryView key={active.id} session={active} />
         ) : (
           <DebugConsole key={active.id} session={active} />
         )}
