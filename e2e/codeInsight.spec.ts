@@ -217,3 +217,37 @@ test("diagnostics underline the range and ⌥⏎ applies the preferred quick fix
   const [applied] = await ipcCalls(page, "lsp_execute_code_action");
   expect(applied).toMatchObject({ action: { title: "Import 'com.acme.orders.model.Order'" } });
 });
+
+test("lazy plugin actions resolve only when invoked, never for their intention preview", async ({
+  workbench: page,
+}) => {
+  const editor = await openSample(page);
+  await page.evaluate(() => {
+    const action = {
+      title: "Choose translation file",
+      kind: "quickfix",
+      isPreferred: true,
+      disabledReason: null,
+      edit: null,
+      command: null,
+      data: { plugin: "test.interactive-actions", data: "pick", file: false },
+      server: 0,
+    };
+    window.__ipc.handlers.lsp_code_actions = () => [action];
+    window.__ipc.handlers.lsp_resolve_code_action = () => ({ ...action, data: null, edit: { files: [] } });
+    window.__ipc.handlers.lsp_execute_code_action = () => [];
+  });
+  await editor.locator(".cm-line", { hasText: "val order: Order" }).click();
+  await page.keyboard.press("Alt+Enter");
+  const fix = page.getByRole("option", { name: "Choose translation file", exact: true });
+  await expect(fix).toBeVisible();
+  await fix.hover();
+  await expect(page.getByText("Preview isn't available for this action", { exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "lsp_resolve_code_action")).toHaveLength(0);
+  expect(await ipcCalls(page, "lsp_execute_code_action")).toHaveLength(0);
+  await fix.click();
+  await expect.poll(() => ipcCalls(page, "lsp_resolve_code_action")).toHaveLength(1);
+  await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
+  const [applied] = await ipcCalls(page, "lsp_execute_code_action");
+  expect(applied).toMatchObject({ action: { title: "Choose translation file", edit: { files: [] } } });
+});

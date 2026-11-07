@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { CodeAction, CommandForm } from "@/bindings";
 
-const { resolve, execute, cancel, openFile } = vi.hoisted(() => ({
+const { resolve, resolveAction, execute, cancel, openFile } = vi.hoisted(() => ({
   resolve: vi.fn(),
+  resolveAction: vi.fn(),
   execute: vi.fn(),
   cancel: vi.fn(async () => {}),
   openFile: vi.fn(async () => {}),
@@ -13,7 +14,13 @@ vi.mock("@/platform/ipc", async (orig) => {
   return {
     ...actual,
     isTauri: () => true,
-    commands: { ...actual.commands, lspResolveCommand: resolve, lspExecuteCodeAction: execute, cancelRequest: cancel },
+    commands: {
+      ...actual.commands,
+      lspResolveCommand: resolve,
+      lspResolveCodeAction: resolveAction,
+      lspExecuteCodeAction: execute,
+      cancelRequest: cancel,
+    },
   };
 });
 vi.mock("@/workbench/contributions", async (orig) => ({
@@ -53,6 +60,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("interactive code actions", () => {
+  it("waits for a lazy plugin action to finish prompting before applying its resolved edit", async () => {
+    let finish!: (value: ReturnType<typeof ok<CodeAction>>) => void;
+    resolveAction.mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          finish = r;
+        }),
+    );
+    const lazy: CodeAction = { ...action, server: 0, command: null, data: "input" };
+    const result = runInteractiveCodeAction(7, lazy);
+    await waitFor(() => expect(resolveAction).toHaveBeenCalledWith(7, lazy));
+    expect(execute).not.toHaveBeenCalled();
+    const full: CodeAction = { ...lazy, edit: { files: [] } };
+    await act(async () => finish(ok(full)));
+    expect(await result).toBe(true);
+    expect(execute.mock.calls[0]!.slice(1)).toEqual([7, full, []]);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("does not execute an action whose plugin prompt was dismissed", async () => {
+    resolveAction.mockResolvedValueOnce({ status: "error", error: { kind: "cancelled", message: "cancelled" } });
+    await expect(runInteractiveCodeAction(7, { ...action, server: 0, command: null })).rejects.toMatchObject({
+      kind: "cancelled",
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("keeps server errors in the prompt, retries, and executes only validated answers", async () => {
     resolve
       .mockResolvedValueOnce(ok(form()))
