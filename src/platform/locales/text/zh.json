@@ -6571,5 +6571,7 @@
   "Build, no error check": "构建，不检查错误",
   "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式",
   "The JVM does not support this structural change (method signature, fields or class hierarchy). Restart the application to load it.\n{text}": "JVM 不支持这种结构修改（方法签名、字段或类继承关系）。请重启应用以加载修改。\n{text}",
-  "The debug session has ended; start the application again to reload classes.\n{text}": "调试会话已结束；请重新启动应用以重载类。\n{text}"
+  "The debug session has ended; start the application again to reload classes.\n{text}": "调试会话已结束；请重新启动应用以重载类。\n{text}",
+  "Maven JDK": "Maven 的 JDK",
+  "JDK used by Maven sync, builds and run configurations. Empty inherits the Project JDK; the JDK running the IDE and jdtls is separate.": "用于 Maven 同步、构建和运行配置的 JDK。留空继承 Project JDK；运行 IDE 和 jdtls 的 JDK 与此独立。"
 }
