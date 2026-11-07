@@ -174,6 +174,20 @@ it("keeps the RunConfig through debug.startConfig and reruns through its debug p
   }
 });
 
+it("reruns a debug service in place without showing the Debug tool window", async () => {
+  const dispose = registerDebugActions();
+  const restart = vi.fn();
+  const unregister = registerActions([{ id: "run.debugConfig", title: "Debug", run: ({ arg }) => restart(arg) }]);
+  try {
+    await executeAction("debug.startConfig", config);
+    await rerunSession(42, { show: false });
+    expect(restart).toHaveBeenCalledWith({ config, show: false });
+  } finally {
+    dispose();
+    unregister();
+  }
+});
+
 it("preserves the source configuration for a separately built debug binary", async () => {
   const dispose = registerDebugActions();
   try {

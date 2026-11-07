@@ -437,7 +437,9 @@ html {
 }
 
 /* macOS window buttons drawn by the web title bar in full screen: the system colours in every theme. */
-:root {
+:root,
+:root[data-theme="light"],
+:root[data-theme="dark-hc"] {
   --mac-window-close: #ff5f57;
   --mac-window-minimize: #febc2e;
   --mac-window-zoom: #28c840;
