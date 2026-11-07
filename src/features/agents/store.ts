@@ -555,9 +555,12 @@ export async function rerunFrom(task: string, turn: number, text: string, images
   try {
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
-    // Rollback removes the inline editor; recover its text in the session composer.
+    // Rollback removes the original turn; recover its prompt in the session composer.
     const current = composerDraft(task);
-    updateComposer(task, { text: current.text ? `${text}\n${current.text}` : text });
+    updateComposer(task, {
+      text: current.text ? `${text}\n${current.text}` : text,
+      images: [...images, ...current.images],
+    });
     focusComposer(task);
     throw e;
   }
