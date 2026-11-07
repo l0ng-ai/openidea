@@ -32,6 +32,7 @@ import type { ProjectInfo } from "@/bindings";
 import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
 import composerStyles from "./Composer.module.css";
+import tagStyles from "@/ui/InlineTag.module.css";
 import { HOME, updateComposer, useAgents } from "./store";
 import { emptyDraft } from "./composerModel";
 
@@ -130,8 +131,8 @@ describe("New Task composer commands", () => {
     await waitFor(() => expect(agentCommands).toHaveBeenCalled());
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "12 @Cargo.toml and /triage" } });
     const mirror = document.querySelector(`.${composerStyles.mirror}`)!;
-    expect(within(mirror as HTMLElement).getByText("@Cargo.toml")).toHaveClass(composerStyles.fileToken!);
-    expect(within(mirror as HTMLElement).getByText("/triage")).toHaveClass(composerStyles.skillToken!);
+    expect(within(mirror as HTMLElement).getByText("@Cargo.toml")).toHaveClass(tagStyles.tag!);
+    expect(within(mirror as HTMLElement).getByText("/triage")).toHaveClass(tagStyles.accent!);
   });
 
   it("offers nothing the project does not have", async () => {

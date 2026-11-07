@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FILES_DRAG, dragSession } from "@/ui";
 
@@ -28,12 +28,12 @@ import { emptyDraft, toPrompt } from "./composerModel";
 const ID = "folders-test";
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok", data });
 
-function renderComposer() {
+function renderComposer(root = "/p") {
   render(
     <Composer
       id={ID}
       placeholder="Ask"
-      root="/p"
+      root={root}
       projectRoot="/p"
       commands={[]}
       history={[]}
@@ -53,6 +53,19 @@ beforeEach(() => {
 });
 
 describe("Composer dropped paths", () => {
+  function drop(box: HTMLElement, payload: string) {
+    const restore = document.elementFromPoint;
+    document.elementFromPoint = () => box;
+    try {
+      act(() => {
+        const drag = dragSession({ type: FILES_DRAG, payload });
+        expect(drag.drop(0, 0)).toBe(true);
+      });
+    } finally {
+      document.elementFromPoint = restore;
+    }
+  }
+
   it("references files and folders dragged from the Project view", () => {
     const box = renderComposer();
     const restore = document.elementFromPoint;
@@ -72,9 +85,39 @@ describe("Composer dropped paths", () => {
     ]);
     expect(box.value).toBe("@src/a.ts @src/dir ");
   });
+
+  it("deduplicates live references and allows a deleted reference to be dropped again", () => {
+    const box = renderComposer();
+    drop(box, "/p/src/a.ts\n/p/src/a.ts\n/p/src/dir/");
+    drop(box, "/p/src/a.ts\n/p/src/dir/");
+    expect(box.value).toBe("@src/a.ts @src/dir ");
+    fireEvent.change(box, { target: { value: "@src/dir " } });
+    drop(box, "/p/src/a.ts");
+    expect(box.value).toBe("@src/dir @src/a.ts ");
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/dir", "/p/src/a.ts"]);
+  });
+
+  it("maps project files and folders into the task worktree, rejecting external paths", () => {
+    const box = renderComposer("/worktree");
+    drop(box, "/p/src/a.ts\n/p/src/dir/\n/external/a.ts\n/p-other/a.ts\n/p/../external/b.ts\nrelative.ts");
+    expect(box.value).toBe("@src/a.ts @src/dir ");
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/worktree/src/a.ts", "/worktree/src/dir"]);
+  });
 });
 
 describe("Composer @ folders", () => {
+  it("lists the root for a bare @ when the index has no results", async () => {
+    findFiles.mockReturnValue(ok([]));
+    findDirs.mockReturnValue(ok([]));
+    const box = renderComposer();
+    await userEvent.type(box, "@");
+    expect(await screen.findByRole("option")).toHaveTextContent("lib/");
+    expect(pathCompletions).toHaveBeenCalledWith("/p/_", "");
+    await userEvent.keyboard("{Enter}");
+    expect(box.value).toBe("@lib/ ");
+    expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/lib"]);
+  });
+
   it("lists index folders among files and references one on Enter", async () => {
     const box = renderComposer();
     await userEvent.type(box, "see @agen");
@@ -103,5 +146,55 @@ describe("Composer @ folders", () => {
     await userEvent.keyboard("{Enter}");
     expect(box.value).toBe("@./lib/ ");
     expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/lib"]);
+  });
+});
+
+describe("Composer tag editing", () => {
+  it.each(["@src/a.ts", "/review"])("deletes %s as a unit", async (tag) => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    fireEvent.change(box, { target: { value: `see ${tag} next` } });
+    box.focus();
+    box.setSelectionRange(4 + tag.length, 4 + tag.length);
+    await user.keyboard("{Backspace}");
+    expect(box.value).toBe("see  next");
+    await waitFor(() => expect(box.selectionStart).toBe(4));
+  });
+
+  it.each(["@src/a.ts", "/review"])("moves across %s with the arrow keys", async (tag) => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    fireEvent.change(box, { target: { value: `see ${tag} next` } });
+    box.focus();
+    box.setSelectionRange(4, 4);
+    await user.keyboard("{ArrowRight}");
+    expect(box.selectionStart).toBe(4 + tag.length);
+    await user.keyboard("{ArrowLeft}");
+    expect(box.selectionStart).toBe(4);
+    await user.keyboard("{Delete}");
+    expect(box.value).toBe("see  next");
+  });
+
+  it("leaves IME keys and composition text to the input method", () => {
+    const box = renderComposer();
+    fireEvent.change(box, { target: { value: "@src/a.ts" } });
+    const before = box.value;
+    box.setSelectionRange(before.length, before.length);
+    expect(fireEvent.keyDown(box, { key: "Backspace", isComposing: true })).toBe(true);
+    expect(fireEvent.keyDown(box, { key: "Backspace", keyCode: 229 })).toBe(true);
+    fireEvent.compositionStart(box);
+    fireEvent.change(box, { target: { value: "@中文" } });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(fireEvent.keyDown(box, { key: "Enter" })).toBe(true);
+    fireEvent.compositionEnd(box);
+    expect(box.value).toBe("@中文");
+  });
+
+  it("pastes plain text through the native textarea", async () => {
+    const box = renderComposer();
+    const user = userEvent.setup();
+    box.focus();
+    await user.paste("look @src/a.ts\nthen /review please");
+    expect(box.value).toBe("look @src/a.ts\nthen /review please");
   });
 });

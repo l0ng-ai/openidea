@@ -42,26 +42,6 @@
   -webkit-user-select: none;
   user-select: none;
 }
-/* Padding widened by equal negative margins: the pill gets room without moving the
-   glyphs or changing where lines wrap, so the textarea's caret stays aligned. */
-.fileToken,
-.skillToken {
-  padding: 1px 3px;
-  margin: 0 -3px;
-  border-radius: 5px;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
-}
-.fileToken {
-  color: var(--fg-strong);
-  background: color-mix(in srgb, var(--fg) 12%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 20%, transparent);
-}
-.skillToken {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
-}
 .textarea {
   position: relative;
   z-index: 1;

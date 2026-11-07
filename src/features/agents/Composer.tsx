@@ -22,7 +22,7 @@ import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { notifications, OWNS_FILE_DROP } from "@/workbench/contributions";
-import { FILES_DRAG, Icon, IconButton, Popup, fileIconName, registerDropTarget } from "@/ui";
+import { FILES_DRAG, Icon, IconButton, InlineTag, Popup, fileIconName, registerDropTarget } from "@/ui";
 import {
   IMAGE_EXTENSIONS,
   MAX_IMAGE_BYTES,
@@ -39,6 +39,7 @@ import {
   modeOption,
   nextValue,
   recall,
+  toPrompt,
   type Completion,
   type FileRef,
 } from "./composerModel";
@@ -93,6 +94,7 @@ export function Composer(props: ComposerProps) {
   const [completion, setCompletion] = useState<Completion | null>(null);
   const [files, setFiles] = useState<Item[]>([]);
   const [active, setActive] = useState(0);
+  const composing = useRef(false);
   const recalled = useRef<{ index: number; stash: string }>({ index: -1, stash: "" });
 
   useEffect(() => {
@@ -202,7 +204,7 @@ export function Composer(props: ComposerProps) {
   const setText = (value: string, caret?: number, restoreSelection = true) => {
     updateComposer(id, { text: value });
     const c = caret ?? value.length;
-    setCompletion(completionAt(value, c));
+    setCompletion(composing.current ? null : completionAt(value, c));
     setActive(0);
     if (caret !== undefined && restoreSelection) {
       requestAnimationFrame(() => {
@@ -242,21 +244,28 @@ export function Composer(props: ComposerProps) {
   const addPaths = useCallback(
     (paths: readonly string[]) => {
       const current = composerDraft(id);
-      const known = new Set(current.files.map((f) => f.path));
+      const known = new Set(toPrompt(current).files);
+      const files = current.files.filter((f) => known.has(f.path));
       const refs: FileRef[] = [];
       for (const raw of paths) {
-        // The Project view marks folders with a trailing slash.
-        const path = raw.endsWith("/") ? raw.slice(0, -1) : raw;
-        if (!path || known.has(path)) continue;
+        const source = resolveTyped("", raw.replace(/\\/g, "/"));
+        const base = [root, projectRoot]
+          .filter(Boolean)
+          .map((path) => resolveTyped(path, "."))
+          .find((path) => source === path || source.startsWith(`${path}/`));
+        if (!base || !/^(\/|[A-Za-z]:[\\/])/.test(raw)) continue;
+        const rel = source === base ? "." : source.slice(base.length + 1);
+        const path = resolveTyped(root, rel);
+        if (known.has(path)) continue;
         known.add(path);
-        refs.push({ path, rel: path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path });
+        refs.push({ path, rel });
       }
       if (!refs.length) return;
       const mentions = refs.map((r) => mentionOf(r.rel)).join(" ");
       const glue = current.text && !/\s$/.test(current.text) ? " " : "";
-      updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...current.files, ...refs] });
+      updateComposer(id, { text: `${current.text}${glue}${mentions} `, files: [...files, ...refs] });
     },
-    [id, root],
+    [id, root, projectRoot],
   );
 
   const addImages = useCallback(
@@ -335,7 +344,34 @@ export function Composer(props: ComposerProps) {
   }, [addPaths]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isImeKey(e.nativeEvent)) return;
+    if (composing.current || isImeKey(e.nativeEvent)) return;
+    const el = e.currentTarget;
+    if (!e.altKey && !e.metaKey && !e.ctrlKey && el.selectionStart === el.selectionEnd) {
+      const backward = e.key === "Backspace" || e.key === "ArrowLeft";
+      const forward = e.key === "Delete" || e.key === "ArrowRight";
+      if (backward || forward) {
+        let offset = 0;
+        for (const token of tokens) {
+          const end = offset + token.value.length;
+          const caret = el.selectionStart;
+          if (token.kind !== "text" && (backward ? caret > offset && caret <= end : caret >= offset && caret < end)) {
+            e.preventDefault();
+            if (e.key === "Backspace" || e.key === "Delete") {
+              setText(text.slice(0, offset) + text.slice(end), offset);
+            } else {
+              const next = backward ? offset : end;
+              el.setSelectionRange(
+                e.shiftKey ? Math.min(caret, next) : next,
+                e.shiftKey ? Math.max(caret, next) : next,
+              );
+            }
+            setCompletion(null);
+            return;
+          }
+          offset = end;
+        }
+      }
+    }
     if (open) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -470,9 +506,9 @@ export function Composer(props: ComposerProps) {
             token.kind === "text" ? (
               <Fragment key={i}>{token.value}</Fragment>
             ) : (
-              <span key={i} className={token.kind === "command" ? styles.skillToken : styles.fileToken}>
+              <InlineTag key={i} accent={token.kind === "command"}>
                 {token.value}
-              </span>
+              </InlineTag>
             ),
           )}
           {"\u200b"}
@@ -490,7 +526,14 @@ export function Composer(props: ComposerProps) {
           onChange={(e) => setText(e.target.value, e.target.selectionStart, false)}
           // The controlled text, not the event's value: closing the completion popup can emit a
           // stale select event with the old text.
-          onSelect={(e) => setCompletion(completionAt(text, e.currentTarget.selectionStart))}
+          onSelect={(e) => setCompletion(composing.current ? null : completionAt(text, e.currentTarget.selectionStart))}
+          onCompositionStart={() => {
+            composing.current = true;
+            setCompletion(null);
+          }}
+          onCompositionEnd={() => {
+            composing.current = false;
+          }}
           onBlur={() => setCompletion(null)}
           onKeyDown={onKeyDown}
           onScroll={syncMirror}
