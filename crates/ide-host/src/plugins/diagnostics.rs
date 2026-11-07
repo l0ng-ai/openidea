@@ -111,12 +111,7 @@ impl Diagnostics {
                 snapshot.text = current.text;
                 drop(documents);
 
-                let generations: HashMap<_, _> = host
-                    .providers
-                    .plugins_for(ProviderKind::Diagnostics, &snapshot.language)
-                    .into_iter()
-                    .filter_map(|p| host.providers.generation(&p, &snapshot.language).map(|seq| (p, seq)))
-                    .collect();
+                let generations = host.providers.diagnostic_generations(&snapshot.language);
                 let results = if snapshot.text.len() <= super::navigation::MAX_DOCUMENT_BYTES {
                     host.provide_project_diagnostics(Some(&root), &snapshot, &cancel)
                 } else {
@@ -131,15 +126,16 @@ impl Diagnostics {
                 if doc.snapshot.version != snapshot.version || doc.snapshot.path != snapshot.path {
                     return;
                 }
-                let matching: Vec<_> = host
+                let matching: HashSet<_> = host
                     .diagnostic_plugins(Some(&root), &snapshot.language)
                     .into_iter()
                     .map(|p| p.id().to_owned())
                     .collect();
+                let latest = host.providers.diagnostic_generations(&snapshot.language);
                 let mut current = HashSet::new();
                 for (plugin, items) in results {
                     if !matching.contains(&plugin)
-                        || generations.get(&plugin).copied() != host.providers.generation(&plugin, &snapshot.language)
+                        || !generations.get(&plugin).is_some_and(|seq| latest.get(&plugin) == Some(seq))
                     {
                         continue;
                     }

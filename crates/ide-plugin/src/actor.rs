@@ -13,12 +13,24 @@
 //! idle reclaim ends it.
 
 use crate::runtime::{CallCancel, CallError, Runtime};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 type Job = Box<dyn FnOnce(&mut Option<Runtime>) + Send>;
+
+fn catch_call<R>(f: impl FnOnce() -> Result<R, CallError>) -> Result<R, CallError> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("unknown panic");
+        Err(CallError::Trap(format!("plugin actor panicked: {message}")))
+    })
+}
 
 /// Why an [`Actor::call`] produced no result.
 #[derive(Debug)]
@@ -85,15 +97,24 @@ impl Actor {
         let cancel = runtime.cancel_handle();
         let alive = Arc::new(AtomicBool::new(true));
         let busy = Arc::new(AtomicBool::new(false));
+        let crash = Arc::new(Mutex::new(None));
         let last_used = Arc::new(AtomicU64::new(0));
         let epoch = Instant::now();
         let thread = {
-            let (alive, busy, last_used) = (alive.clone(), busy.clone(), last_used.clone());
+            let (alive, busy, last_used, crash) = (alive.clone(), busy.clone(), last_used.clone(), crash.clone());
             std::thread::Builder::new().name(format!("plugin:{name}")).spawn(move || {
                 let mut slot = Some(runtime);
                 while let Ok(job) = rx.recv() {
                     busy.store(true, Ordering::Release);
-                    job(&mut slot);
+                    // A completion callback may panic too; never leave a dead thread marked alive.
+                    if let Err(CallError::Trap(error)) = catch_call(|| {
+                        job(&mut slot);
+                        Ok(())
+                    }) {
+                        *crash.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+                        alive.store(false, Ordering::Release);
+                        slot = None;
+                    }
                     last_used.store(epoch.elapsed().as_millis() as u64, Ordering::Release);
                     busy.store(false, Ordering::Release);
                     if slot.is_none() {
@@ -113,7 +134,7 @@ impl Actor {
             thread: Mutex::new(Some(thread)),
             cancel,
             alive,
-            crash: Arc::default(),
+            crash,
             busy,
             last_used,
             epoch,
@@ -148,7 +169,7 @@ impl Actor {
                 return;
             }
             let Some(rt) = slot.as_mut() else { return };
-            let outcome = f(rt);
+            let outcome = catch_call(|| f(rt));
             if let Err(CallError::Trap(e)) = &outcome {
                 *crash.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                 // Before the reply: the caller sees the actor dead.
@@ -216,7 +237,7 @@ impl Actor {
                 }
                 *running = true;
             }
-            let outcome = f(rt);
+            let outcome = catch_call(|| f(rt));
             *in_job.lock().unwrap_or_else(|e| e.into_inner()) = false;
             if let Err(CallError::Trap(e)) = &outcome {
                 *crash.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
@@ -286,7 +307,7 @@ impl Actor {
         let (crash, alive) = (self.crash.clone(), self.alive.clone());
         let job: Job = Box::new(move |slot| {
             let Some(rt) = slot.as_mut() else { return done(Err(ActorError::Stopped)) };
-            let outcome = f(rt);
+            let outcome = catch_call(|| f(rt));
             if let Err(CallError::Trap(e)) = &outcome {
                 *crash.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                 alive.store(false, Ordering::Release);

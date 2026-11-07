@@ -2576,6 +2576,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_panics_stop_actor_and_reply_on_every_call_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host =
+            PluginHost::new(tmp.path().join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/diagnostics");
+        host.install_from_dir(&fixture, &Consent::all()).unwrap();
+        let plugin = host.get("test.diagnostics").unwrap();
+        for mode in 0..5 {
+            let (actor, _) = host.ensure_active(&plugin, None).unwrap();
+            let cancel = ide_core::CancellationToken::new();
+            let panic = |_: &mut Runtime| -> Result<(), CallError> { panic!("host call panic") };
+            let result = match mode {
+                0 => actor.call(None, panic),
+                1 => actor.call_cancellable(&cancel, Duration::ZERO, panic),
+                2 => actor.call_edit_cancellable(&cancel, Duration::ZERO, Duration::from_secs(5), panic),
+                _ => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    if mode == 3 {
+                        actor.post(panic, move |result| {
+                            let _ = tx.send(result);
+                        });
+                    } else {
+                        actor.post(
+                            |_| Ok(()),
+                            move |result| {
+                                let _ = tx.send(result);
+                                panic!("completion callback panic");
+                            },
+                        );
+                    }
+                    rx.recv_timeout(Duration::from_secs(5)).expect("actor must reply")
+                }
+            };
+            actor.stop(true);
+            if mode < 4 {
+                assert!(
+                    matches!(result, Err(ActorError::Call(CallError::Trap(ref message))) if message.contains("host call panic")),
+                    "{result:?}"
+                );
+            }
+            assert!(!actor.is_alive());
+            assert!(!actor.is_busy());
+            assert!(matches!(actor.call(None, |_| Ok(())), Err(ActorError::Stopped)));
+            let crash = actor.take_crash().expect("supervisor must see the panic");
+            assert!(crash.contains(if mode == 4 { "completion callback panic" } else { "host call panic" }));
+            assert!(actor.take_crash().is_none());
+            cancel.cancel();
+            // Re-enable to reset the supervisor before testing the next call path.
+            host.set_enabled("test.diagnostics", false).unwrap();
+            host.set_enabled("test.diagnostics", true).unwrap();
+        }
+    }
+
+    #[test]
     fn globs() {
         assert!(glob_match("**/*Mapper.xml", "src/main/UserMapper.xml"));
         assert!(glob_match("**/*Mapper.xml", "UserMapper.xml"));

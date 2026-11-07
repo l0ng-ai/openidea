@@ -22,6 +22,7 @@
 use ide_extension::{Disposable, ExtensionPoint, Package, Placement, Prepared, UiDecl, decode, validate_item_id};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -74,25 +75,26 @@ impl Providers {
 
     /// Plugins providing `kind` for `language`, in declaration order.
     pub fn plugins_for(&self, kind: ProviderKind, language: &str) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for (_, plugin, kinds, languages) in self.items.read().iter() {
-            if kinds.contains(&kind) && languages.iter().any(|l| l == "*" || l == language) && !out.contains(plugin) {
-                out.push(plugin.clone());
-            }
-        }
-        out
+        self.matching::<Vec<_>>(kind, language).into_iter().map(|(plugin, _)| plugin).collect()
     }
 
-    pub(super) fn generation(&self, plugin: &str, language: &str) -> Option<u64> {
-        self.items
-            .read()
+    /// One coherent declaration snapshot, preserving the first match per plugin.
+    fn matching<T: FromIterator<(String, u64)>>(&self, kind: ProviderKind, language: &str) -> T {
+        let items = self.items.read();
+        let mut seen = HashSet::new();
+        items
             .iter()
-            .find(|(_, p, kinds, languages)| {
-                p == plugin
-                    && kinds.contains(&ProviderKind::Diagnostics)
+            .filter_map(|(seq, plugin, kinds, languages)| {
+                (kinds.contains(&kind)
                     && languages.iter().any(|l| l == "*" || l == language)
+                    && seen.insert(plugin.as_str()))
+                .then(|| (plugin.clone(), *seq))
             })
-            .map(|(seq, ..)| *seq)
+            .collect()
+    }
+
+    pub(super) fn diagnostic_generations(&self, language: &str) -> HashMap<String, u64> {
+        self.matching(ProviderKind::Diagnostics, language)
     }
 
     /// Whether any plugin provides `kind` (for any language).
@@ -473,5 +475,43 @@ impl PluginHost {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_snapshots_preserve_order_first_generation_and_language_matching() {
+        let providers = Arc::new(Providers::default());
+        let declare = |plugin: &str, kind, language: &str| {
+            providers.add(plugin.into(), Decl { kinds: vec![kind], languages: vec![language.into()] })
+        };
+        let mut declarations = Vec::new();
+        declarations.push(declare("unrelated", ProviderKind::Hover, "*"));
+        declarations.push(declare("other-language", ProviderKind::Diagnostics, "rust"));
+        for i in 0..256 {
+            let plugin = format!("plugin-{i}");
+            declarations.push(declare(&plugin, ProviderKind::Diagnostics, "text"));
+            declarations.push(declare(&plugin, ProviderKind::Diagnostics, "*"));
+        }
+        let expected: Vec<_> = (0..256).map(|i| format!("plugin-{i}")).collect();
+        assert_eq!(providers.plugins_for(ProviderKind::Diagnostics, "text"), expected);
+        let before = providers.diagnostic_generations("text");
+        assert_eq!(before.len(), 256);
+        assert_eq!(before["plugin-0"], 2);
+        assert_eq!(providers.diagnostic_generations("rust").len(), 257);
+        assert_eq!(providers.plugins_for(ProviderKind::Hover, "text"), ["unrelated"]);
+        // Removing the first matching declaration must invalidate its generation,
+        // even while a second declaration still provides the same language.
+        drop(declarations.remove(2));
+        let after = providers.diagnostic_generations("text");
+        assert_eq!(after["plugin-0"], 3);
+        assert_ne!(before["plugin-0"], after["plugin-0"]);
+        drop(declarations);
+        assert!(providers.diagnostic_generations("text").is_empty());
+        let _reloaded = declare("plugin-0", ProviderKind::Diagnostics, "text");
+        assert_ne!(providers.diagnostic_generations("text")["plugin-0"], after["plugin-0"]);
     }
 }
