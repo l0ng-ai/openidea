@@ -4,6 +4,9 @@
 use ide_core::remote_settings::{SshAuth, SshConfiguration};
 use ide_core::{IdeError, IdeResult};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+const MATCH_EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// An SSH host and how to authenticate to it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -45,8 +48,19 @@ pub(crate) struct Hop {
     pub user: String,
     pub identity_files: Vec<PathBuf>,
     pub proxy_command: Option<String>,
-    pub strict_host_key_checking: bool,
+    pub host_key_policy: HostKeyPolicy,
     pub known_hosts: Option<PathBuf>,
+}
+
+/// `StrictHostKeyChecking`: what happens to a host key missing from `known_hosts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostKeyPolicy {
+    /// The user decides on an unknown key; a changed key is refused (`yes`, `ask`).
+    Ask,
+    /// An unknown key is recorded without asking; a changed key is refused (`accept-new`).
+    AcceptNew,
+    /// Every key is accepted (`no`, `off`, or no `known_hosts` file to check against).
+    Off,
 }
 
 impl Hop {
@@ -79,7 +93,7 @@ struct RawConfig {
     identity_files: Vec<String>,
     proxy_jump: Option<String>,
     proxy_command: Option<String>,
-    strict_host_key_checking: Option<bool>,
+    host_key_policy: Option<HostKeyPolicy>,
     user_known_hosts_file: Option<String>,
 }
 
@@ -211,6 +225,7 @@ fn expand_tokens(template: &str, alias: &str, host: &str, port: u16, remote_user
     out
 }
 
+/// Runs a `Match exec` command; one that does not finish in time counts as not matching.
 fn eval_match_exec(command: &str) -> bool {
     #[cfg(unix)]
     let mut cmd = {
@@ -225,8 +240,20 @@ fn eval_match_exec(command: &str) -> bool {
         c
     };
     ide_core::process::prepare(&mut cmd);
+    ide_core::process::own_group(&mut cmd);
     cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+    let Ok(mut child) = cmd.spawn() else { return false };
+    let deadline = Instant::now() + MATCH_EXEC_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                ide_core::process::kill_tree(&mut child);
+                return false;
+            }
+        }
+    }
 }
 
 fn eval_match(
@@ -390,21 +417,24 @@ fn parse_config_file(
                     out.identity_files.push(raw.to_owned());
                 }
             }
+            // Whichever of `ProxyJump` and `ProxyCommand` comes first wins, as in OpenSSH.
             "proxyjump" => {
-                if out.proxy_jump.is_none() {
+                if out.proxy_jump.is_none() && out.proxy_command.is_none() {
                     out.proxy_jump = Some(strip_quotes(value).to_owned());
                 }
             }
             "proxycommand" => {
-                if out.proxy_command.is_none() {
+                if out.proxy_command.is_none() && out.proxy_jump.is_none() {
                     out.proxy_command = Some(strip_quotes(value).to_owned());
                 }
             }
             "stricthostkeychecking" => {
-                if out.strict_host_key_checking.is_none() {
-                    let v = strip_quotes(value);
-                    out.strict_host_key_checking =
-                        Some(!matches!(v.to_ascii_lowercase().as_str(), "no" | "off" | "false" | "accept-new"));
+                if out.host_key_policy.is_none() {
+                    out.host_key_policy = Some(match strip_quotes(value).to_ascii_lowercase().as_str() {
+                        "no" | "off" | "false" => HostKeyPolicy::Off,
+                        "accept-new" => HostKeyPolicy::AcceptNew,
+                        _ => HostKeyPolicy::Ask,
+                    });
                 }
             }
             "userknownhostsfile" => {
@@ -453,11 +483,9 @@ fn config_hop(
         Some(kh) => (Some(expand(&expand_tokens(kh, alias, &host, port, &user, &local))), false),
         None => (None, false),
     };
-    let strict_host_key_checking = match raw.strict_host_key_checking {
-        Some(strict) => strict && !null_known_hosts,
-        None => !null_known_hosts,
-    };
-    let hop = Hop { host, port, user, identity_files, proxy_command, strict_host_key_checking, known_hosts };
+    let host_key_policy =
+        if null_known_hosts { HostKeyPolicy::Off } else { raw.host_key_policy.unwrap_or(HostKeyPolicy::Ask) };
+    let hop = Hop { host, port, user, identity_files, proxy_command, host_key_policy, known_hosts };
     (hop, proxy_jump)
 }
 
@@ -492,7 +520,7 @@ pub(crate) fn resolve_hops(target: &SshTarget, config: Option<&Path>) -> IdeResu
                 user: user_override.map(str::to_owned).unwrap_or_else(local_user),
                 identity_files: Vec::new(),
                 proxy_command: None,
-                strict_host_key_checking: true,
+                host_key_policy: HostKeyPolicy::Ask,
                 known_hosts: None,
             },
             None,
@@ -588,7 +616,7 @@ mod tests {
         assert_eq!(hops[0].host, "deng-devbox.coder");
         assert_eq!(hops[0].port, 22);
         assert_eq!(hops[0].user, "dengliu");
-        assert!(!hops[0].strict_host_key_checking);
+        assert_eq!(hops[0].host_key_policy, HostKeyPolicy::Off);
         assert_eq!(hops[0].known_hosts, None);
         assert_eq!(
             hops[0].proxy_command.as_deref(),
@@ -605,7 +633,48 @@ mod tests {
         };
         let hops = resolve_hops(&included, Some(&config)).unwrap();
         assert_eq!(hops[0].proxy_command.as_deref(), Some("/bin/coder ssh --stdio coder-vscode--devbox"));
-        assert!(!hops[0].strict_host_key_checking);
+        assert_eq!(hops[0].host_key_policy, HostKeyPolicy::Off);
+    }
+
+    #[test]
+    fn the_first_of_proxy_jump_and_proxy_command_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        std::fs::write(
+            &config,
+            "Host a\n  ProxyJump bastion\n  ProxyCommand nc %h %p\nHost b\n  ProxyCommand nc %h %p\n  ProxyJump bastion\n",
+        )
+        .unwrap();
+        let target = |host: &str| SshTarget { host: host.into(), auth: SshAuth::OpenSsh, ..Default::default() };
+        let hops = resolve_hops(&target("a"), Some(&config)).unwrap();
+        assert_eq!(hops.len(), 2);
+        assert_eq!(hops[0].host, "bastion");
+        assert_eq!(hops[1].proxy_command, None);
+        let hops = resolve_hops(&target("b"), Some(&config)).unwrap();
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].proxy_command.as_deref(), Some("nc b 22"));
+    }
+
+    #[test]
+    fn strict_host_key_checking_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        std::fs::write(
+            &config,
+            "Host new\n  StrictHostKeyChecking accept-new\nHost off\n  StrictHostKeyChecking=no\n\
+             Host ask\n  StrictHostKeyChecking ask\nHost null\n  UserKnownHostsFile /dev/null\n\
+             Match exec \"exit 1\"\n  StrictHostKeyChecking no\n",
+        )
+        .unwrap();
+        let policy = |host: &str| {
+            let target = SshTarget { host: host.into(), auth: SshAuth::OpenSsh, ..Default::default() };
+            resolve_hops(&target, Some(&config)).unwrap()[0].host_key_policy
+        };
+        assert_eq!(policy("new"), HostKeyPolicy::AcceptNew);
+        assert_eq!(policy("off"), HostKeyPolicy::Off);
+        assert_eq!(policy("ask"), HostKeyPolicy::Ask);
+        assert_eq!(policy("null"), HostKeyPolicy::Off);
+        assert_eq!(policy("other"), HostKeyPolicy::Ask);
     }
 
     #[test]

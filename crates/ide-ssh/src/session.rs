@@ -1,11 +1,13 @@
 //! An authenticated SSH connection (russh), optionally through `ProxyJump`
-//! hosts, and what runs over it: commands, processes, SFTP and TCP channels.
+//! hosts or a `ProxyCommand`, and what runs over it: commands, processes, SFTP
+//! and TCP channels.
 //!
 //! Host keys are checked against `known_hosts`; an unknown key fails the
-//! connection with [`ConnectError::UnknownHostKey`] so the UI can ask the user,
-//! and a changed key is always refused.
+//! connection with [`ConnectError::UnknownHostKey`] so the UI can ask the user
+//! (or is recorded silently under `StrictHostKeyChecking accept-new`), and a
+//! changed key is refused unless host key checking is off.
 
-use crate::target::{Hop, SshFiles, SshTarget, expand, home, resolve_hops};
+use crate::target::{Hop, HostKeyPolicy, SshFiles, SshTarget, expand, home, resolve_hops};
 use ide_core::remote_settings::SshAuth;
 use ide_core::{IdeError, IdeResult, error::ErrorKind};
 use parking_lot::Mutex;
@@ -130,7 +132,13 @@ impl Session {
         secret: Option<&str>,
         files: &SshFiles,
     ) -> Result<Session, ConnectError> {
-        let hops = resolve_hops(target, files.config.as_deref())?;
+        // Resolving may run `Match exec` commands from the config.
+        let hops = {
+            let (target, config) = (target.clone(), files.config.clone());
+            tokio::task::spawn_blocking(move || resolve_hops(&target, config.as_deref()))
+                .await
+                .map_err(|e| io(format!("cannot read the SSH config: {e}")))??
+        };
         let mut sessions: Vec<Handle<Client>> = Vec::new();
         for (i, hop) in hops.iter().enumerate() {
             let last = i == hops.len() - 1;
@@ -368,7 +376,7 @@ pub struct Client {
     host: String,
     port: u16,
     known_hosts: PathBuf,
-    strict_host_key_checking: bool,
+    host_key_policy: HostKeyPolicy,
     issue: Arc<Mutex<Option<HostKeyIssue>>>,
 }
 
@@ -376,7 +384,7 @@ impl client::Handler for Client {
     type Error = russh::Error;
 
     async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
-        if !self.strict_host_key_checking {
+        if self.host_key_policy == HostKeyPolicy::Off {
             return Ok(true);
         }
         let key = match key {
@@ -386,10 +394,22 @@ impl client::Handler for Client {
         let issue = match known_hosts::check_known_hosts_path(&self.host, self.port, &key, &self.known_hosts) {
             Ok(true) => return Ok(true),
             Err(keys::Error::KeyChanged { line }) => HostKeyIssue::Changed(line),
+            Ok(false) | Err(_) if self.host_key_policy == HostKeyPolicy::AcceptNew && self.learn(&key) => {
+                return Ok(true);
+            }
             Ok(false) | Err(_) => HostKeyIssue::Unknown(key),
         };
         *self.issue.lock() = Some(issue);
         Ok(false)
+    }
+}
+
+impl Client {
+    fn learn(&self, key: &PublicKey) -> bool {
+        if let Some(dir) = self.known_hosts.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        known_hosts::learn_known_hosts_path(&self.host, self.port, key, &self.known_hosts).is_ok()
     }
 }
 
@@ -538,7 +558,7 @@ where
         host: hop.host.clone(),
         port: hop.port,
         known_hosts: effective_known_hosts,
-        strict_host_key_checking: hop.strict_host_key_checking,
+        host_key_policy: hop.host_key_policy,
         issue: issue.clone(),
     };
     let result = match stream {
