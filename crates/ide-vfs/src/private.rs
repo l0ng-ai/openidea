@@ -47,10 +47,12 @@ mod windows {
     use std::os::windows::{ffi::OsStrExt, fs::MetadataExt};
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        SetNamedSecurityInfoW,
     };
     use windows_sys::Win32::Security::{
-        DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION, SECURITY_ATTRIBUTES,
+        ACE_HEADER, ACL, DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
+        PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
     };
     use windows_sys::Win32::Storage::FileSystem::{CreateDirectoryW, FILE_ATTRIBUTE_REPARSE_POINT};
 
@@ -61,6 +63,53 @@ mod windows {
                 LocalFree(self.0);
             }
         }
+    }
+
+    fn already_private(path: &[u16], expected: *mut ACL) -> IdeResult<bool> {
+        let mut raw = std::ptr::null_mut();
+        let mut actual = std::ptr::null_mut();
+        let error = unsafe {
+            GetNamedSecurityInfoW(
+                path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut actual,
+                std::ptr::null_mut(),
+                &mut raw,
+            )
+        };
+        if error != 0 {
+            return Err(std::io::Error::from_raw_os_error(error as i32).into());
+        }
+        let descriptor = Descriptor(raw);
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        if control & SE_DACL_PROTECTED == 0 || actual.is_null() {
+            return Ok(false);
+        }
+        // Compare only the single ACE, not unused ACL allocation space.
+        if unsafe { (*actual).AceCount != 1 || (*expected).AceCount != 1 } {
+            return Ok(false);
+        }
+        let mut actual_ace = std::ptr::null_mut();
+        let mut expected_ace = std::ptr::null_mut();
+        if unsafe { GetAce(actual, 0, &mut actual_ace) } == 0 || unsafe { GetAce(expected, 0, &mut expected_ace) } == 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let size = unsafe { (*expected_ace.cast::<ACE_HEADER>()).AceSize };
+        if unsafe { (*actual_ace.cast::<ACE_HEADER>()).AceSize } != size {
+            return Ok(false);
+        }
+        Ok(unsafe {
+            std::slice::from_raw_parts(actual_ace.cast::<u8>(), usize::from(size))
+                == std::slice::from_raw_parts(expected_ace.cast::<u8>(), usize::from(size))
+        })
     }
 
     pub(super) fn create(path: &Path) -> IdeResult<()> {
@@ -101,8 +150,13 @@ mod windows {
         let mut dacl = std::ptr::null_mut();
         if unsafe { GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut dacl, &mut defaulted) } == 0
             || present == 0
+            || dacl.is_null()
         {
             return Err(std::io::Error::last_os_error().into());
+        }
+        // Reapplying an inheritable DACL would walk every cached file.
+        if already_private(&wide, dacl)? {
+            return Ok(());
         }
         let error = unsafe {
             SetNamedSecurityInfoW(
@@ -210,6 +264,9 @@ mod windows_tests {
         let initial_acl = acl(&path);
         assert_eq!(initial_acl.matches("(A;").count(), 1, "{initial_acl}");
         assert!(initial_acl.contains(";;;OW)"), "{initial_acl}");
+        create_private_dir(&dir).unwrap();
+        assert_eq!(acl(&dir), directory_acl);
+        assert_eq!(acl(&path), initial_acl);
         crate::save_text(&path, "edited fake text", "utf-8", false).unwrap();
         assert_eq!(acl(&path), initial_acl);
     }
