@@ -133,6 +133,13 @@ describe("Settings dialog", () => {
     );
   });
 
+  it("finds the Maven JDK setting", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Maven JDK" } });
+    expect(within(dialog).getByLabelText("Maven JDK")).toBeInTheDocument();
+  });
+
   it("searches pages and highlights matching option labels", async () => {
     const dialog = await openDialog("appearance");
     fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "soft wrap" } });
