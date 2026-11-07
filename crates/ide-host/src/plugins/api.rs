@@ -49,6 +49,10 @@ pub trait PluginWorkspace: Send + Sync {
     fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
         None
     }
+    /// Current index of the project rooted at `root`; never reads disk or calls LSP.
+    fn symbols(&self, _root: &Path, _query: &str, _limit: usize) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
+        Err(HostError::NotFound("no project index is available".into()))
+    }
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
     /// Applies `edits` to the open document at `path` if it is still at
@@ -1002,6 +1006,17 @@ impl HostApi for PluginApi {
         }
     }
 
+    fn symbols(&self, root: &Path, query: &str, limit: usize) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
+        if query.len() > 256 {
+            return Err(HostError::Invalid("symbol query exceeds 256 UTF-8 bytes".into()));
+        }
+        self.shared.workspace().ok_or_else(|| HostError::NotFound("no project index is available".into()))?.symbols(
+            root,
+            query,
+            limit.min(1000),
+        )
+    }
+
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError> {
         let matcher = globset::GlobBuilder::new(glob)
             .literal_separator(true)
@@ -1406,6 +1421,27 @@ impl PluginWorkspace for HostWorkspace {
         // The index of the project rooted at `root` (a workspace member's files are in its own).
         let project = HostWorkspace::projects(self).into_iter().find(|p| p.root == root)?;
         project.index.files_matching(root, matches, limit)
+    }
+
+    fn symbols(&self, root: &Path, query: &str, limit: usize) -> Result<Vec<ide_plugin::SymbolInfo>, HostError> {
+        let project = HostWorkspace::projects(self)
+            .into_iter()
+            .find(|p| p.root == root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        Ok(project
+            .index
+            .find_symbols(query, ide_index::SymbolFilter::All, limit)
+            .into_iter()
+            .map(|s| ide_plugin::SymbolInfo {
+                name: s.name,
+                kind: serde_json::to_value(s.kind)
+                    .ok()
+                    .and_then(|k| k.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".into()),
+                container: s.container,
+                location: ide_plugin::Location { path: s.path.0, range: s.range },
+            })
+            .collect())
     }
 
     fn document(&self, path: &Path) -> Option<(u64, String)> {

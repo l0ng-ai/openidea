@@ -479,6 +479,39 @@ impl workspace::Host for StoreData {
         self.host.project_of(Path::new(&path)).map(|root| self.push(ProjectRes { root })).transpose()
     }
 
+    fn symbols(
+        &mut self,
+        project: Resource<ProjectRes>,
+        query: String,
+        limit: u32,
+    ) -> Fallible<Vec<workspace::SymbolInfo>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if query.len() > 256 {
+            return Ok(Err(wit::Error::Invalid("symbol query exceeds 256 UTF-8 bytes".into())));
+        }
+        let root = &self.table.get(&project)?.root;
+        Ok(self
+            .host
+            .symbols(root, &query, limit.min(1000) as usize)
+            .map(|symbols| {
+                symbols
+                    .into_iter()
+                    .map(|s| workspace::SymbolInfo {
+                        name: s.name,
+                        kind: s.kind,
+                        container: s.container,
+                        location: wit::Location {
+                            path: to_ipc(&s.location.path),
+                            range: range_to_wit(&s.location.range),
+                        },
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));

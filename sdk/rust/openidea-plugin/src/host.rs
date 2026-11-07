@@ -310,6 +310,22 @@ mod imp {
         t.is_cancelled()
     }
 
+    pub fn project_symbols(p: &ProjectRes, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        wit::workspace::symbols(p, query, limit)
+            .map(|symbols| {
+                symbols
+                    .into_iter()
+                    .map(|s| SymbolInfo {
+                        name: s.name,
+                        kind: s.kind,
+                        container: s.container,
+                        location: Location { path: s.location.path, range: range_from(s.location.range) },
+                    })
+                    .collect()
+            })
+            .map_err(error)
+    }
+
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         p.find_files(glob, limit).map_err(error)
     }
@@ -567,6 +583,15 @@ impl Project {
     /// at most `limit`, as absolute paths; ignored files are skipped. Needs `project.read`.
     pub fn find_files(&self, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         imp::project_find(&self.inner, glob, limit)
+    }
+
+    /// Fuzzy search of this project's current in-memory index. Needs `project.read`.
+    /// Never waits for LSP or reads files. Empty queries return no symbols;
+    /// queries over 256 UTF-8 bytes are invalid and limits are capped at 1000.
+    /// Results may be incomplete during indexing or lag unsaved edits. A closed
+    /// project returns `Error::NotFound`. Locations use UTF-16 columns.
+    pub fn symbols(&self, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        imp::project_symbols(&self.inner, query, limit)
     }
 
     /// Runs the approved `process:<program>` in this project's root.

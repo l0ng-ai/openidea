@@ -249,7 +249,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 
 | Capability          | Risk   | Unlocks today                                                                                                                |
 | ------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `host::projects`, `publish_diagnostics`                                          |
+| `project.read`      | low    | `Project::root`, `read_file`, `find_files`, `symbols`, `host::projects`, `publish_diagnostics`                               |
 | `project.write`     | medium | `Project::write_file` — creates and replaces text files inside the open projects                                             |
 | `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory            |
 | `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                         |
@@ -407,6 +407,7 @@ then run `openidea-plugin check`.
 | `host::locale()`                                                         | `ui.locale`                      | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                      |
 | `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
 | `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
+| `Project::symbols(query, limit)`                                         | `workspace.symbols`              | New in 1.3; `project.read`. Fuzzy in-memory search (no LSP): name, camelCase kind, container and UTF-16 location. Queries ≤ 256 UTF-8 bytes; limits capped at 1000. Snapshot notes below.                            |
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
 | `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
 | `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |
@@ -416,6 +417,18 @@ then run `openidea-plugin check`.
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
 | `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
+
+`Project::symbols` reads the current in-memory index: results may be partial
+while indexing, and locations can lag unsaved edits. Normal saves and filesystem
+changes update the index in the background. Results include the project's
+configured content roots, with normal exclusions. Empty queries and zero limits
+return no symbols; a closed project returns `Error::NotFound`.
+
+Type resolution and member queries remain deferred to the asynchronous API 2.0
+model. Providers can select their project with `host::project_of(&doc.path)` and
+call `symbols` synchronously; `crates/ide-plugin/tests/fixtures/symbols` demonstrates
+a definition provider. `MockHost::set_symbols(root, symbols)` replaces a test
+snapshot; its mock uses case-insensitive substring matching rather than fuzzy ranking.
 
 `run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`
 from another feature, or nothing when run from Search Everywhere / a shortcut. `ctx.selected_paths()` lists the files and folders a Project view or editor tab menu ran the command on (the argument is the first of them); it is empty otherwise. No capability is needed.

@@ -61,6 +61,7 @@ struct State {
     capabilities: Vec<String>,
     root: Option<String>,
     other_projects: Vec<String>,
+    symbols: BTreeMap<String, Vec<SymbolInfo>>,
     files: BTreeMap<String, String>,
 
     /// Files outside every project, for `fs.read` (absolute paths).
@@ -164,6 +165,12 @@ impl MockHost {
     /// More open projects (for [`crate::host::projects`]).
     pub fn add_project(&self, root: &str) {
         self.state.borrow_mut().other_projects.push(root.to_owned());
+    }
+
+    /// Replaces a project's indexed symbols. Filtering in the mock is a
+    /// case-insensitive substring; the real index also supports fuzzy matching.
+    pub fn set_symbols(&self, root: &str, symbols: Vec<SymbolInfo>) {
+        self.state.borrow_mut().symbols.insert(root.into(), symbols);
     }
 
     /// A project file `read_file` can return (project-relative or absolute path).
@@ -793,6 +800,27 @@ pub mod current {
         })
     }
 
+    pub fn project_symbols(p: &ProjectRes, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if query.len() > 256 {
+                return Err(Error::Invalid("symbol query exceeds 256 UTF-8 bytes".into()));
+            }
+            if !s.root.iter().chain(&s.other_projects).any(|root| *root == p.root) {
+                return Err(Error::NotFound("the project is no longer open".into()));
+            }
+            let query = query.trim().to_lowercase();
+            Ok(s.symbols
+                .get(&p.root)
+                .into_iter()
+                .flatten()
+                .filter(|symbol| !query.is_empty() && symbol.name.to_lowercase().contains(&query))
+                .take(limit.min(1000) as usize)
+                .cloned()
+                .collect())
+        })
+    }
+
     pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
         with(|s| {
             require(s, "project.read")?;
@@ -1358,6 +1386,35 @@ mod tests {
         let project = read_only.invocation().project().unwrap();
         assert!(matches!(project.exists("x"), Err(Error::Denied(_))));
         assert!(matches!(project.stat("x"), Err(Error::Denied(_))));
+    }
+
+    #[test]
+    fn indexed_symbols_are_bounded_scoped_and_capability_checked() {
+        let mock = MockHost::install();
+        let symbol = SymbolInfo {
+            name: "OrderController".into(),
+            kind: "class".into(),
+            container: Some("App".into()),
+            location: Location {
+                path: "/project/Order.php".into(),
+                range: Range::new(Position::new(0, 2), Position::new(0, 17)),
+            },
+        };
+        mock.set_symbols("/project", vec![symbol.clone(); 1001]);
+        mock.add_project("/other");
+        let project = mock.invocation().project().unwrap();
+        assert_eq!(project.symbols("order", u32::MAX).unwrap().len(), 1000);
+        assert_eq!(project.symbols("order", 1).unwrap(), [symbol]);
+        assert!(project.symbols("", 1).unwrap().is_empty());
+        assert!(project.symbols("order", 0).unwrap().is_empty());
+        assert!(matches!(project.symbols(&"é".repeat(129), 1), Err(Error::Invalid(_))));
+        assert!(host::projects().unwrap()[1].symbols("order", 1).unwrap().is_empty());
+        mock.set_symbols("/project", Vec::new());
+        assert!(project.symbols("order", 1).unwrap().is_empty());
+        mock.set_project_root(None);
+        assert!(matches!(project.symbols("order", 1), Err(Error::NotFound(_))));
+        let _mock = mock.with_capabilities(&[]);
+        assert_eq!(project.symbols("order", 1), Err(Error::Denied("project.read".into())));
     }
 
     #[test]
