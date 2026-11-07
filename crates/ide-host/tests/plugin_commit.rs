@@ -232,7 +232,7 @@ fn the_commit_points_need_plugin_api_1_3() {
     let tmp = tempfile::tempdir().unwrap();
     let host =
         PluginHost::new(tmp.path().join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
-    let manifest = std::fs::read_to_string(fixture_dir().join("plugin.toml")).unwrap();
+    let manifest = std::fs::read_to_string(fixture_dir().join("plugin.toml")).unwrap().replace("\r\n", "\n");
     for (what, manifest) in [
         (
             "commit.message",

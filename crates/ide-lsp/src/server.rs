@@ -289,19 +289,22 @@ impl Server {
     }
 
     /// Ready → Stopping, returning the instance to shut down. An in-flight
-    /// start is abandoned instead.
-    pub fn begin_stop(&self) -> Option<Running> {
+    /// start is abandoned instead. When `restarting` is true, `Phase::Starting`
+    /// is kept so `wait_ready` callers wait for the replacement instance rather
+    /// than failing with the old status while the old process shuts down.
+    pub fn begin_stop_for(&self, restarting: bool) -> Option<Running> {
+        let next_phase = if restarting { Phase::Starting } else { Phase::Down };
         let mut st = self.state.lock();
         match std::mem::replace(&mut st.conn, Conn::Idle) {
             Conn::Ready(run) => {
                 st.conn = Conn::Stopping;
-                self.phase.send_replace(Phase::Down);
+                self.phase.send_replace(next_phase);
                 Some(run)
             }
             Conn::Starting => {
                 st.generation += 1; // invalidates the in-flight start
                 self.start_cancel.lock().cancel();
-                self.phase.send_replace(Phase::Down);
+                self.phase.send_replace(next_phase);
                 None
             }
             other => {
@@ -309,6 +312,11 @@ impl Server {
                 None
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn begin_stop(&self) -> Option<Running> {
+        self.begin_stop_for(false)
     }
 
     /// Cancelled when the current start is abandoned.

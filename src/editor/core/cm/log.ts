@@ -17,6 +17,11 @@ const TIMESTAMP = [
 
 const EXCEPTION = /^[\w$]+(?:\.[\w$]+)*(?:Exception|Error)\b/;
 const FRAME = /^\s+(?:at\s|\.\.\. \d+ (?:more|common frames omitted))/;
+const KLOG_LEVEL = /^([IWEF])\d{4}(?=\s+\d\d:\d\d:\d\d)/;
+const SOURCE_LOC = /^[\w./-]+\.(?:go|rs|py|java|kt|ts|tsx|js|c|cc|cpp|h|hpp|rb|cs|php):\d+\b/;
+const KV_KEY = /^[a-zA-Z_][\w.-]*=/;
+const QUOTED_STR = /^"(?:[^"\\]|\\.)*"/;
+const BOOL_LITERAL = /^(?:true|false|null)\b/;
 
 type State = { keyLevel: boolean };
 
@@ -58,6 +63,7 @@ const parser: StreamParser<State> = {
       const m = stream.match(LEVEL_VALUE) as RegExpMatchArray | null;
       if (m) return levelToken(m[0]);
     }
+    if (stream.match(QUOTED_STR)) return "attributeValue";
     if (stream.match(LEVEL_KEY)) {
       state.keyLevel = true;
       return "propertyName";
@@ -65,12 +71,19 @@ const parser: StreamParser<State> = {
     const before = stream.start === 0 ? "" : stream.string[stream.start - 1]!;
     const wordStart = !/[\w$.-]/.test(before);
     if (wordStart) {
+      if (stream.match(KV_KEY)) return "propertyName";
       for (const re of TIMESTAMP) if (stream.match(re)) return "number";
+      const klog = stream.match(KLOG_LEVEL) as RegExpMatchArray | null;
+      if (klog) {
+        return klog[1] === "I" ? "string" : klog[1] === "W" ? "logWarning" : "invalid";
+      }
       const level = (stream.match(LEVEL_UPPER) || (/[[<]/.test(before) && stream.match(LEVEL_MARKED))) as
         | RegExpMatchArray
         | boolean
         | null;
       if (level) return levelToken(stream.current());
+      if (stream.match(SOURCE_LOC)) return "labelName";
+      if (stream.match(BOOL_LITERAL)) return "bool";
       if (stream.match(EXCEPTION)) return "typeName";
       if (stream.match(/^https?:\/\/[^\s"'<>)\]]+/)) return "link";
     }

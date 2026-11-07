@@ -1,0 +1,71 @@
+{
+  "properties": {
+    "kubeconfig": {
+      "type": "string",
+      "title": "Kubeconfig path",
+      "description": "Custom path to kubeconfig file. Leave empty to use default (~/.kube/config or KUBECONFIG).",
+      "default": ""
+    },
+    "context": {
+      "type": "string",
+      "title": "Preferred context",
+      "description": "Cluster context override. Leave empty to use the active context from kubeconfig.",
+      "default": ""
+    },
+    "namespace": {
+      "type": "string",
+      "title": "Default namespace",
+      "description": "Default namespace for cluster queries and commands when not overridden.",
+      "default": "default"
+    },
+    "allNamespaces": {
+      "type": "boolean",
+      "title": "Query all namespaces by default",
+      "description": "List resources across all namespaces (--all-namespaces) when the explorer opens.",
+      "default": false
+    },
+    "tailLines": {
+      "type": "integer",
+      "title": "Log tail lines",
+      "description": "Number of recent log lines to fetch or follow for Pod containers.",
+      "default": 200
+    },
+    "shell": {
+      "type": "string",
+      "title": "Container shell",
+      "description": "Preferred shell executable when opening an interactive terminal in a Pod container.",
+      "enum": ["/bin/sh", "/bin/bash", "sh", "bash"],
+      "default": "/bin/sh"
+    },
+    "portForwardLocalPort": {
+      "type": "integer",
+      "title": "Default local port for Port Forward",
+      "description": "Local port to bind when forwarding a Pod or Service port (0 = match target port).",
+      "default": 0
+    },
+    "validateOnSave": {
+      "type": "boolean",
+      "title": "Inspect manifests on save",
+      "description": "Run static Kubernetes manifest inspections (labels, selectors, images, resources, references) when saving YAML files.",
+      "default": true
+    },
+    "dryRunOnSave": {
+      "type": "boolean",
+      "title": "Run kubectl client dry-run on save",
+      "description": "Also run `kubectl apply --dry-run=client` when saving a Kubernetes manifest.",
+      "default": false
+    },
+    "warnLatestTag": {
+      "type": "boolean",
+      "title": "Warn on :latest or unpinned image tags",
+      "description": "Report a warning when a container image uses `:latest` or omits an explicit version tag.",
+      "default": true
+    },
+    "warnMissingResources": {
+      "type": "boolean",
+      "title": "Warn on missing container resource requests/limits",
+      "description": "Report a warning when a workload container omits `resources.requests` or `resources.limits`.",
+      "default": true
+    }
+  }
+}

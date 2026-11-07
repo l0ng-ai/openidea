@@ -3116,7 +3116,7 @@ impl LspManager {
 
     /// Gracefully stops the current instance (`shutdown` + `exit`, then kill).
     async fn stop_instance(&self, server: &Arc<Server>, final_stop: bool) {
-        let Some(run) = server.begin_stop() else {
+        let Some(run) = server.begin_stop_for(!final_stop) else {
             if final_stop {
                 server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
             }
@@ -3129,7 +3129,9 @@ impl LspManager {
             peer.kill();
             server.end_stop(run.generation);
             self.clear_server_state(server);
-            server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+            if final_stop {
+                server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+            }
             return;
         }
         let graceful = async {
@@ -3145,7 +3147,9 @@ impl LspManager {
         peer.kill();
         server.end_stop(run.generation);
         self.clear_server_state(server);
-        server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+        if final_stop {
+            server.set_status(&self.sink, ide_core::event::ServerStatus::Stopped, None);
+        }
     }
 
     pub async fn shutdown_all(&self) {

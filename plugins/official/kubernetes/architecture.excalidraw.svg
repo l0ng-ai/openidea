@@ -1,0 +1,205 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 940" width="1280" height="940">
+  <metadata>
+    <!-- payload-type:application/vnd.excalidraw+json -->
+    <!-- payload-version:2 -->
+    <!-- payload-start -->
+    {"type":"excalidraw","version":2,"source":"https://openidea.dev","elements":[],"appState":{"viewBackgroundColor":"#ffffff","gridSize":20}}
+    <!-- payload-end -->
+  </metadata>
+  <defs>
+    <style>
+      .title { font-family: "Virgil", "Excalifont", "Segoe UI", sans-serif; font-size: 24px; font-weight: 700; fill: #1e1e1e; }
+      .subtitle { font-family: "Nunito", "Segoe UI", sans-serif; font-size: 13px; fill: #5c6470; }
+      .tier-label { font-family: "Virgil", "Excalifont", "Segoe UI", sans-serif; font-size: 15px; font-weight: 700; fill: #1e1e1e; }
+      .box-title { font-family: "Nunito", "Segoe UI", sans-serif; font-size: 13.5px; font-weight: 700; fill: #1e1e1e; }
+      .box-text { font-family: "Nunito", "Segoe UI", sans-serif; font-size: 11.5px; fill: #343a40; }
+      .code-text { font-family: "Cascadia Code", "JetBrains Mono", monospace; font-size: 11px; fill: #0b5394; }
+      .edge-label { font-family: "Cascadia Code", "JetBrains Mono", monospace; font-size: 10.5px; fill: #3b4252; }
+    </style>
+    <marker id="arrow-dark" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#343a40" />
+    </marker>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#00796b" />
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#1971c2" />
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#6741d9" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="1280" height="940" fill="#ffffff" />
+
+  <!-- Header -->
+  <text x="640" y="36" text-anchor="middle" class="title">OpenIDEA Kubernetes Plugin (openidea.kubernetes) — Architecture</text>
+  <text x="640" y="56" text-anchor="middle" class="subtitle">JetBrains IntelliJ YAML/Helm/Kustomize Code Intelligence + Freelens Cluster Management UI + WASI P2 Sandbox</text>
+
+  <!-- ==================== TIER 1: FRONTEND WORKBENCH & REACT WEBVIEW ==================== -->
+  <rect x="28" y="74" width="1224" height="310" rx="12" fill="#f8f9fa" stroke="#868e96" stroke-width="1.5" stroke-dasharray="6 4" />
+  <text x="46" y="98" class="tier-label">1. Frontend Workbench &amp; Freelens React UI (TypeScript / React / CodeMirror 6 / xterm.js)</text>
+
+  <!-- Box 1A: CodeMirror 6 Editor Tabs -->
+  <rect x="46" y="112" width="365" height="254" rx="10" fill="#e7f5ff" stroke="#1971c2" stroke-width="2" />
+  <text x="64" y="136" class="box-title">OpenIDEA CodeMirror 6 Editor Tabs</text>
+  <text x="64" y="154" class="code-text">src/features/plugins/views/</text>
+
+  <rect x="62" y="166" width="333" height="58" rx="6" fill="#ffffff" stroke="#74c0fc" stroke-width="1.5" />
+  <text x="74" y="184" class="box-title">YAML / Helm / Kustomize Text Editor</text>
+  <text x="74" y="201" class="box-text">• Schema completions, Go-to-Definition, Gutter Icons</text>
+  <text x="74" y="216" class="box-text">• Static inspections (deprecated APIs, probes) + Quick Fixes</text>
+
+  <rect x="62" y="232" width="333" height="58" rx="6" fill="#ffffff" stroke="#74c0fc" stroke-width="1.5" />
+  <text x="74" y="250" class="box-title">PluginLogEditor (logEditor.tsx • pluginLog)</text>
+  <text x="74" y="267" class="box-text">• Live streaming kubectl logs -f in regular Editor Tab</text>
+  <text x="74" y="282" class="box-text">• klog syntax coloring, FindPanel (⌘F), Zoom (⌘=/⌘-)</text>
+
+  <rect x="62" y="298" width="333" height="56" rx="6" fill="#ffffff" stroke="#74c0fc" stroke-width="1.5" />
+  <text x="74" y="316" class="box-title">PluginResourceYamlEditor (resourceYamlEditor.tsx)</text>
+  <text x="74" y="333" class="box-text">• Live cluster resource YAML in regular Editor Tab</text>
+  <text x="74" y="348" class="box-text">• Top-right Reload, Diff (kubectl diff), Save &amp; Apply (⌘S)</text>
+
+  <!-- Box 1B: Freelens React WebView -->
+  <rect x="435" y="112" width="798" height="254" rx="10" fill="#e6fcf5" stroke="#0ca678" stroke-width="2" />
+  <text x="455" y="136" class="box-title">Freelens Cluster Explorer WebView (plugins/official/kubernetes/web-src/)</text>
+  <text x="975" y="136" class="code-text">WebView.tsx + ToolWindowCornerActions</text>
+
+  <!-- Sub-boxes inside Freelens WebView -->
+  <rect x="453" y="152" width="235" height="198" rx="6" fill="#ffffff" stroke="#63e6be" stroke-width="1.5" />
+  <text x="467" y="172" class="box-title">Hotbar &amp; Navigation Tree</text>
+  <text x="467" y="189" class="code-text">App.tsx • SIDEBAR_TREE</text>
+  <text x="467" y="208" class="box-text">• Hotbar rail synced with Freelens</text>
+  <text x="467" y="224" class="box-text">  lens-cluster-store &amp; hotbar-store</text>
+  <text x="467" y="242" class="box-text">• 12 SVG categories: Cluster, Nodes,</text>
+  <text x="467" y="258" class="box-text">  Workloads, Config, Network, Storage,</text>
+  <text x="467" y="274" class="box-text">  Namespaces, Events, Helm, Access,</text>
+  <text x="467" y="290" class="box-text">  Custom Resources (grouped by API</text>
+  <text x="467" y="306" class="box-text">  Group → CRD Kind instances)</text>
+  <text x="467" y="324" class="box-text">• Searchable Namespace Picker</text>
+
+  <rect x="702" y="152" width="248" height="198" rx="6" fill="#ffffff" stroke="#63e6be" stroke-width="1.5" />
+  <text x="716" y="172" class="box-title">Resource Tables &amp; Metrics</text>
+  <text x="716" y="189" class="code-text">App.tsx • columnsForKind()</text>
+  <text x="716" y="208" class="box-text">• Per-kind Freelens column schemas</text>
+  <text x="716" y="224" class="box-text">• Node CPU &amp; Memory progress bars</text>
+  <text x="716" y="240" class="box-text">  (usage / allocatable), Roles, Taints,</text>
+  <text x="716" y="256" class="box-text">  Version, Internal IP, Schedulable</text>
+  <text x="716" y="274" class="box-text">• Pod status bricks, live CPU/Memory</text>
+  <text x="716" y="290" class="box-text">  in single &amp; All-Namespaces modes</text>
+  <text x="716" y="308" class="box-text">• Resizable &amp; reorderable columns</text>
+  <text x="716" y="324" class="box-text">• Sibling horizontal tab navigation</text>
+
+  <rect x="964" y="152" width="252" height="198" rx="6" fill="#ffffff" stroke="#63e6be" stroke-width="1.5" />
+  <text x="978" y="172" class="box-title">Details Drawer &amp; PTY Shell</text>
+  <text x="978" y="189" class="code-text">ResourceDetails.tsx • PodTerminal.tsx</text>
+  <text x="978" y="208" class="box-text">• Node actions: Shell (&gt;_), Cordon/</text>
+  <text x="978" y="224" class="box-text">  Uncordon, Drain, Edit YAML, Delete</text>
+  <text x="978" y="242" class="box-text">• Pod multi-container status popup</text>
+  <text x="978" y="258" class="box-text">  for Logs (☰) &amp; xterm.js Shell (&gt;_)</text>
+  <text x="978" y="276" class="box-text">• 32+ resource detail views, YAML</text>
+  <text x="978" y="292" class="box-text">  Affinities, Capacity/Allocatable,</text>
+  <text x="978" y="308" class="box-text">  Node/Workload Pods table, CRD</text>
+  <text x="978" y="324" class="box-text">  Custom Objects table, Events</text>
+
+  <!-- ==================== TIER 2: TAURI IPC & WIT HOST BRIDGE ==================== -->
+  <rect x="28" y="420" width="1224" height="118" rx="12" fill="#f3f0ff" stroke="#7950f2" stroke-width="1.8" stroke-dasharray="6 4" />
+  <text x="46" y="444" class="tier-label">2. OpenIDEA Tauri Host &amp; WASI P2 Component Runtime (crates/ide-host • crates/ide-plugin • wit/plugin@1.3)</text>
+
+  <rect x="46" y="456" width="370" height="68" rx="8" fill="#ffffff" stroke="#845ef7" stroke-width="1.5" />
+  <text x="62" y="476" class="box-title">WIT Host &amp; View Message Channel</text>
+  <text x="62" y="493" class="code-text">crates/ide-plugin/src/wit_host.rs</text>
+  <text x="62" y="510" class="box-text">• wasmtime WASI P2 sandbox • 8 MiB MAX_VIEW_MESSAGE</text>
+
+  <rect x="444" y="456" width="390" height="68" rx="8" fill="#ffffff" stroke="#845ef7" stroke-width="1.5" />
+  <text x="460" y="476" class="box-title">Process Execution &amp; Login-Shell PATH Bridge</text>
+  <text x="460" y="493" class="code-text">crates/ide-host/src/plugins/api.rs • run_process</text>
+  <text x="460" y="510" class="box-text">• ide_core::process::prepare (kubelogin / Homebrew PATH)</text>
+
+  <rect x="862" y="456" width="372" height="68" rx="8" fill="#ffffff" stroke="#845ef7" stroke-width="1.5" />
+  <text x="878" y="476" class="box-title">Interactive PTY &amp; Streaming Process Bridge</text>
+  <text x="878" y="493" class="code-text">termSpawn / termWrite • runStreamingProcess</text>
+  <text x="878" y="510" class="box-text">• Powers Pod/Node xterm.js TTY &amp; live Editor Tab logs</text>
+
+  <!-- ==================== TIER 3: RUST WASM PLUGIN ==================== -->
+  <rect x="28" y="574" width="1224" height="202" rx="12" fill="#fff9db" stroke="#f08c00" stroke-width="2" />
+  <text x="46" y="598" class="tier-label">3. Rust Wasm Plugin Component (plugins/official/kubernetes/src/ → dist/plugin.wasm • wasm32-wasip2)</text>
+
+  <rect x="46" y="612" width="275" height="148" rx="8" fill="#ffffff" stroke="#f59f00" stroke-width="1.5" />
+  <text x="60" y="632" class="box-title">Plugin Entry &amp; Router (lib.rs)</text>
+  <text x="60" y="650" class="box-text">• Implements Plugin &amp; Providers traits</text>
+  <text x="60" y="667" class="box-text">• Handles ViewEvent::Message ops:</text>
+  <text x="60" y="683" class="code-text">  init, set-context, load-category,</text>
+  <text x="60" y="699" class="code-text">  inspect-json, cordon-node,</text>
+  <text x="60" y="715" class="code-text">  drain-node, trigger-cronjob</text>
+  <text x="60" y="732" class="box-text">• Commands: live-yaml-get/diff/apply</text>
+
+  <rect x="339" y="612" width="285" height="148" rx="8" fill="#ffffff" stroke="#f59f00" stroke-width="1.5" />
+  <text x="353" y="632" class="box-title">YAML &amp; Helm Parser (manifest.rs)</text>
+  <text x="353" y="650" class="box-text">• Multi-doc YAML splitter (---)</text>
+  <text x="353" y="667" class="box-text">• UTF-16 line/column span tracking</text>
+  <text x="353" y="684" class="box-text">• Extracts apiVersion, kind, metadata,</text>
+  <text x="353" y="700" class="box-text">  labels, matchLabels, containers,</text>
+  <text x="353" y="716" class="box-text">  ports, ConfigMap/Secret/PVC/SA refs</text>
+  <text x="353" y="733" class="box-text">• Helm .Values.x &amp; define/include</text>
+
+  <rect x="642" y="612" width="290" height="148" rx="8" fill="#ffffff" stroke="#f59f00" stroke-width="1.5" />
+  <text x="656" y="632" class="box-title">Code Intelligence (intelligence.rs)</text>
+  <text x="656" y="650" class="box-text">• Cross-file ProjectIndex graph</text>
+  <text x="656" y="667" class="box-text">• Context-aware K8s &amp; Helm completions</text>
+  <text x="656" y="684" class="box-text">• Go-to-Definition (Service ↔ Pod,</text>
+  <text x="656" y="700" class="box-text">  Env/Vol ↔ Secret/CM/PVC, Helm values)</text>
+  <text x="656" y="717" class="box-text">• Gutter Line Markers &amp; 6 Inspections</text>
+  <text x="656" y="733" class="box-text">• One-click Quick Fixes (CodeActions)</text>
+
+  <rect x="950" y="612" width="284" height="148" rx="8" fill="#ffffff" stroke="#f59f00" stroke-width="1.5" />
+  <text x="964" y="632" class="box-title">Cluster &amp; CLI Engine (kubectl.rs)</text>
+  <text x="964" y="650" class="box-text">• Merges ~/.kube/config &amp; Freelens</text>
+  <text x="964" y="666" class="box-text">  lens-cluster-store / hotbar-store</text>
+  <text x="964" y="683" class="box-text">• Fast custom-columns &amp; serde parsers</text>
+  <text x="964" y="700" class="box-text">• kubectl top nodes &amp; pods (-A / -n)</text>
+  <text x="964" y="717" class="box-text">• fetch_resource_extras (related Pods,</text>
+  <text x="964" y="733" class="box-text">  ReplicaSets, Jobs, CRs, Events)</text>
+
+  <!-- ==================== TIER 4: EXTERNAL CLI & KUBERNETES CLUSTERS ==================== -->
+  <rect x="28" y="812" width="1224" height="106" rx="12" fill="#edf2ff" stroke="#364fc7" stroke-width="1.8" stroke-dasharray="6 4" />
+  <text x="46" y="836" class="tier-label">4. Local Configuration, CLI Tooling &amp; Target Kubernetes Clusters</text>
+
+  <rect x="46" y="848" width="360" height="56" rx="8" fill="#ffffff" stroke="#4c6ef5" stroke-width="1.5" />
+  <text x="62" y="868" class="box-title">Local Kubeconfig &amp; Freelens Stores</text>
+  <text x="62" y="886" class="code-text">~/.kube/config • lens-cluster-store.json</text>
+
+  <rect x="436" y="848" width="390" height="56" rx="8" fill="#ffffff" stroke="#4c6ef5" stroke-width="1.5" />
+  <text x="452" y="868" class="box-title">Kubernetes CLI &amp; Auth Plugins</text>
+  <text x="452" y="886" class="code-text">kubectl • kubelogin (OIDC) • helm • kustomize</text>
+
+  <rect x="856" y="848" width="378" height="56" rx="8" fill="#ffffff" stroke="#4c6ef5" stroke-width="1.5" />
+  <text x="872" y="868" class="box-title">Kubernetes API Server &amp; Metrics Server</text>
+  <text x="872" y="886" class="code-text">/api/v1 • /apis/* • metrics.k8s.io/v1beta1 • CRDs</text>
+
+  <!-- ==================== ARROWS & DATA FLOWS ==================== -->
+  <!-- Editor Tabs <-> WIT Host -->
+  <line x1="220" y1="366" x2="220" y2="452" stroke="#1971c2" stroke-width="2" marker-end="url(#arrow-blue)" marker-start="url(#arrow-blue)" />
+  <text x="230" y="405" class="edge-label">LSP-like Providers &amp; run_command</text>
+
+  <!-- Freelens WebView <-> WIT Host -->
+  <line x1="620" y1="366" x2="320" y2="452" stroke="#00796b" stroke-width="2" marker-end="url(#arrow-teal)" marker-start="url(#arrow-teal)" />
+  <text x="495" y="405" class="edge-label">postMessage / onMessage JSON</text>
+
+  <!-- PodTerminal / LogEditor <-> PTY & Streaming Bridge -->
+  <line x1="1048" y1="366" x2="1048" y2="452" stroke="#6741d9" stroke-width="2" marker-end="url(#arrow-purple)" marker-start="url(#arrow-purple)" />
+  <text x="1058" y="405" class="edge-label">PTY (kubectl exec/debug) &amp; logs -f</text>
+
+  <!-- WIT Host <-> Wasm Plugin -->
+  <line x1="220" y1="524" x2="220" y2="608" stroke="#6741d9" stroke-width="2" marker-end="url(#arrow-purple)" marker-start="url(#arrow-purple)" />
+  <text x="230" y="562" class="edge-label">WIT exports (complete, inspect, view_event)</text>
+
+  <!-- Process Bridge <-> kubectl.rs -->
+  <line x1="640" y1="524" x2="1040" y2="608" stroke="#343a40" stroke-width="2" marker-end="url(#arrow-dark)" marker-start="url(#arrow-dark)" />
+  <text x="850" y="562" class="edge-label">host::Project::run_process("kubectl")</text>
+
+  <!-- kubectl.rs <-> Local Kubeconfig & CLI -->
+  <line x1="1090" y1="760" x2="630" y2="844" stroke="#343a40" stroke-width="2" marker-end="url(#arrow-dark)" />
+  <line x1="630" y1="876" x2="852" y2="876" stroke="#1971c2" stroke-width="2" marker-end="url(#arrow-blue)" />
+</svg>

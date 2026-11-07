@@ -3175,3 +3175,82 @@ fn invalid_plugin_icons_refuse_the_package() {
         assert!(err.contains(expected), "{id}: {err}");
     }
 }
+
+/// Kubernetes: combines cluster explorer view, pinned `kubectl` execution,
+/// cross-resource YAML navigation/markers/completion, and manifest inspections.
+#[cfg(unix)]
+#[test]
+fn official_kubernetes_navigates_inspects_and_queries_cluster() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture(Limits::default());
+    let bin = f.plugins_dir.parent().unwrap().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake_kubectl = r#"#!/bin/sh
+case "$*" in
+  *"config view"*)
+    echo '{"current-context":"minikube","contexts":[{"name":"minikube","context":{"namespace":"default"}}]}'
+    ;;
+  *"get namespaces"*)
+    echo 'default Active 5d'
+    ;;
+  *"get pods,deployments"*)
+    echo '{"kind":"List","items":[{"kind":"Pod","metadata":{"name":"api-pod","namespace":"default"},"spec":{"containers":[{"name":"api"}]},"status":{"phase":"Running","containerStatuses":[{"name":"api","ready":true,"restartCount":0}]}}]}'
+    ;;
+  *"get secrets"*|*"get crd"*)
+    exit 0
+    ;;
+  *)
+    echo '{"kind":"List","items":[]}'
+    ;;
+esac
+"#;
+    std::fs::write(bin.join("kubectl"), fake_kubectl).unwrap();
+    std::fs::set_permissions(bin.join("kubectl"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = bin.clone();
+    f.host.set_program_path(Arc::new(move || Some(path.clone().into_os_string())));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = with_stand_in_page(&official("kubernetes"), tmp.path());
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
+
+    let manifest = f.project.join("k8s/app.yaml");
+    std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    let yaml = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: app-cm\ndata:\n  PORT: \"8080\"\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: api\nspec:\n  selector:\n    matchLabels:\n      app: api\n  template:\n    metadata:\n      labels:\n        app: api\n    spec:\n      containers:\n        - name: api\n          image: nginx:latest\n          env:\n            - name: PORT\n              valueFrom:\n                configMapKeyRef:\n                  name: app-cm\n                  key: PORT\n";
+    std::fs::write(&manifest, yaml).unwrap();
+
+    let doc =
+        ide_plugin::ProviderDocument { path: manifest.clone(), language: "yaml".into(), version: 1, text: yaml.into() };
+    let mut markers = Vec::new();
+    assert!(eventually(|| {
+        markers = f.host.provide_line_markers(&doc);
+        !markers.is_empty()
+    }));
+    assert!(markers.iter().any(|(_, m)| m.tooltip.contains("Go to ConfigMap 'app-cm'")), "{markers:?}");
+
+    let proj = f.project.clone();
+    f.host.install_from_dir(&pkg, &Consent::all()).unwrap();
+    // Even with a huge pnpm-lock.yaml in the workspace, rendering stays well within the fuel budget.
+    std::fs::write(
+        proj.join("pnpm-lock.yaml"),
+        "packages:\n".to_owned() + &"  /foo: {resolution: {integrity: sha512-abc}}\n".repeat(15_000),
+    )
+    .unwrap();
+
+    let view = f.host.render_view("openidea.kubernetes", "kubernetes", None, f.inv()).unwrap();
+    let ide_plugin::ViewBody::Html(html) = &view.body else { panic!("{view:?}") };
+    assert!(!html.contains("__START_B64__") && view.status.as_deref().unwrap().contains("minikube"));
+    f.host
+        .view_event(
+            "openidea.kubernetes",
+            "kubernetes",
+            ide_plugin::ViewEvent::Message { text: r#"{"op":"refresh"}"#.into() },
+            f.inv(),
+        )
+        .unwrap();
+    assert!(
+        f.take_events()
+            .into_iter()
+            .any(|(_, e)| matches!(e, PluginEvent::ViewMessage { view, message, .. } if view == "kubernetes" && message.contains("api-pod")))
+    );
+}

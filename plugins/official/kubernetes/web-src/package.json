@@ -1,0 +1,26 @@
+{
+  "name": "openidea-plugin-kubernetes-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Freelens-style Kubernetes Explorer web view for OpenIDEA (`pnpm build` writes to ../web).",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vitest": "^5.0.5"
+  }
+}

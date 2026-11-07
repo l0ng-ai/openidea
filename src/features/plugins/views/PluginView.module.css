@@ -167,6 +167,19 @@
   color: var(--fg-muted);
 }
 
+.webWrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.cornerActions {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  z-index: 20;
+}
+
 .frame {
   border: none;
   width: 100%;
