@@ -20,6 +20,7 @@ import { installColorScheme } from "./colorSchemeRuntime";
 import { documentBanner } from "./view/Banner";
 import { EditorAreaView } from "./view/EditorArea";
 import { GotoLineDialog } from "./view/GotoLineDialog";
+import { PasteHistoryDialogHost, registerPasteHistoryActions } from "./view/PasteHistoryDialog";
 import { NavBarPopup } from "./view/NavBarPopup";
 import { installClipboardTracking } from "./clipboardHistory";
 import {
@@ -63,8 +64,10 @@ export function activate(): void | (() => void) {
     installColorScheme(),
     provideEditorArea(EditorAreaView),
     registerEditorActions(),
+    registerPasteHistoryActions(),
     registerEditorBanner(documentBanner),
     registerOverlay({ id: "editor.gotoLine", component: GotoLineDialog }),
+    registerOverlay({ id: "editor.pasteHistory", component: PasteHistoryDialogHost }),
     registerOverlay({ id: "editor.navigationBar", component: NavBarPopup }),
     installClipboardTracking(),
     registerStatusItem({

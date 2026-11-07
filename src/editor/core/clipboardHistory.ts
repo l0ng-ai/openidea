@@ -35,6 +35,11 @@ export function clearClipboardHistory() {
   entries = [];
 }
 
+export function removeClipboardEntries(texts: readonly string[]) {
+  const removed = new Set(texts);
+  entries = entries.filter((e) => !removed.has(e.text));
+}
+
 /** What CodeMirror copies: the selections, or the caret lines when nothing is selected. */
 export function copiedText(state: EditorState): string {
   const ranges = state.selection.ranges;
@@ -58,8 +63,8 @@ export function copiedText(state: EditorState): string {
 export function clipLabel(text: string, max = 80): { label: string; detail: string | undefined } {
   const lines = text.split(/\r\n?|\n/);
   const first = (lines.find((l) => l.trim()) ?? "").trim();
-  const label = first.length > max ? `${first.slice(0, max - 1)}…` : first || "(whitespace)";
-  const count = text.endsWith("\n") ? lines.length - 1 : lines.length;
+  const label = first.length > max ? `${first.slice(0, max - 1)}…` : first || tx("(whitespace)");
+  const count = /[\r\n]$/.test(text) ? lines.length - 1 : lines.length;
   return { label, detail: count > 1 ? tx`${count} lines` : undefined };
 }
 

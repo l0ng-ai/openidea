@@ -10,6 +10,7 @@ import {
   installClipboardTracking,
   isLinewiseClipboardText,
   recordClipboard,
+  removeClipboardEntries,
 } from "./clipboardHistory";
 
 beforeEach(() => clearClipboardHistory());
@@ -79,10 +80,25 @@ describe("clipboard history (Paste from History)", () => {
     expect(isLinewiseClipboardText("one")).toBe(false);
   });
 
+  it("removes entries by content without disturbing the remaining history", () => {
+    recordClipboard("oldest");
+    recordClipboard("middle");
+    recordClipboard("newest");
+    removeClipboardEntries(["oldest", "newest", "missing", "newest"]);
+    expect(clipboardHistory().map((e) => e.text)).toEqual(["middle"]);
+    removeClipboardEntries([]);
+    expect(clipboardHistory().map((e) => e.text)).toEqual(["middle"]);
+    recordClipboard("newest");
+    expect(clipboardHistory().map((e) => e.text)).toEqual(["newest", "middle"]);
+    removeClipboardEntries(clipboardHistory().map((e) => e.text));
+    expect(clipboardHistory().map((e) => e.text)).toEqual([]);
+  });
+
   it("labels rows by their first non-blank line and line count", () => {
     expect(clipLabel("\n  foo()\nbar\n")).toEqual({ label: "foo()", detail: "3 lines" });
     expect(clipLabel("x".repeat(100), 10).label).toBe(`${"x".repeat(9)}…`);
     expect(clipLabel("   ").label).toBe("(whitespace)");
+    expect(clipLabel("first\rsecond\r").detail).toBe("2 lines");
   });
 
   describe("outside editors", () => {

@@ -6570,5 +6570,11 @@
   "Copy Path with Line Number": "复制带行号的路径",
   "Reference": "引用",
   "Resolving reference…": "正在解析引用…",
-  "Copied {text}": "已复制 {text}"
+  "Copied {text}": "已复制 {text}",
+  "Filter clipboard history": "筛选剪贴板历史",
+  "Clipboard history": "剪贴板历史",
+  "Paste preview": "粘贴预览",
+  "1 line": "1 行",
+  "(whitespace)": "（空白）",
+  "Nothing to paste: the clipboard history is empty": "没有可粘贴的内容：剪贴板历史为空"
 }
