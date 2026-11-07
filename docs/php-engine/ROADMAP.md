@@ -391,7 +391,7 @@ The design:
 - [x] Phase 5.6: Pull members up / push members down
       Use the existing `lsp_hierarchy_members` / `lsp_hierarchy_refactor` flow (as used for Java), with the engine as the provider for PHP classes. Tests: before and after text.
 
-- [ ] Phase 5.7: Generate code
+- [x] Phase 5.7: Generate code
       Implement or override methods, generate the constructor (with promoted properties as an option), getters and setters, and a PHPDoc stub. Hook these into the editor's Generate menu. Tests: before and after text.
 
 ## Plan 6: Parity gate and switch-over

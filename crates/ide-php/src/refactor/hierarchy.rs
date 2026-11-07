@@ -295,7 +295,7 @@ fn declares(class: &ClassLike, kind: MemberKind, name: &str) -> bool {
 // ------------------------------------------------------------ text
 
 /// Where the docblock right before `start` begins (`start` without one).
-fn doc_start(text: &str, start: u32) -> u32 {
+pub(super) fn doc_start(text: &str, start: u32) -> u32 {
     let before = text[..start as usize].trim_end();
     if before.ends_with("*/")
         && let Some(open) = before.rfind("/**")
@@ -309,7 +309,7 @@ fn doc_start(text: &str, start: u32) -> u32 {
 /// The bytes to delete to remove a member at `start..end` with its lines
 /// ([`removal`]), plus the blank lines it would leave right after the
 /// class's `{` or right before its `}`.
-fn member_removal(text: &str, start: u32, end: u32) -> (u32, u32) {
+pub(super) fn member_removal(text: &str, start: u32, end: u32) -> (u32, u32) {
     let (mut from, mut to) = removal(text, start, end);
     let blank = |line: &str| line.trim().is_empty();
     if text[..from as usize].trim_end().ends_with('{') {
@@ -403,7 +403,7 @@ fn abstract_declaration(
 
 /// `declaration`'s lines after the first, re-based from `from` indentation
 /// to `to`.
-fn reindent(declaration: &str, from: &str, to: &str) -> String {
+pub(super) fn reindent(declaration: &str, from: &str, to: &str) -> String {
     let mut out = String::new();
     for (i, line) in declaration.split('\n').enumerate() {
         if i > 0 {
@@ -582,10 +582,25 @@ fn replacement(engine: &PhpEngine, kind: NameKind, fqn: &str, dest: &Destination
     if kind != NameKind::ClassLike {
         return format!("\\{fqn}");
     }
-    let scope = dest.names.scope_at(dest.class.name_loc.start);
+    class_reference(engine, fqn, &dest.names, &dest.class, imports)
+}
+
+/// How code in `class` (of a file with `names`) writes class `fqn`: its
+/// short name (imported when needed, added to `imports`), or fully
+/// qualified when the short name means something else there.
+pub(super) fn class_reference(
+    engine: &PhpEngine,
+    fqn: &str,
+    names: &FileNames,
+    class: &ClassLike,
+    imports: &mut Vec<String>,
+) -> String {
+    let kind = NameKind::ClassLike;
+    let fqn = fqn.trim_start_matches('\\');
+    let scope = names.scope_at(class.name_loc.start);
     let short_name = short(fqn);
-    let by_short = scope.resolve(NameKind::ClassLike, short_name);
-    if by_short.resolution.matches(NameKind::ClassLike, fqn) {
+    let by_short = scope.resolve(kind, short_name);
+    if by_short.resolution.matches(kind, fqn) {
         return short_name.to_owned();
     }
     let pending = imports.iter().find(|i| short(i).eq_ignore_ascii_case(short_name));
@@ -594,8 +609,8 @@ fn replacement(engine: &PhpEngine, kind: NameKind, fqn: &str, dest: &Destination
     }
     let free = pending.is_none()
         && !by_short.imported
-        && !by_short.resolution.primary().is_some_and(|other| engine.declares(NameKind::ClassLike, other))
-        && !dest.class.name.eq_ignore_ascii_case(short_name);
+        && !by_short.resolution.primary().is_some_and(|other| engine.declares(kind, other))
+        && !class.name.eq_ignore_ascii_case(short_name);
     if free {
         imports.push(fqn.to_owned());
         short_name.to_owned()
@@ -606,12 +621,18 @@ fn replacement(engine: &PhpEngine, kind: NameKind, fqn: &str, dest: &Destination
 
 /// The import edits for `imports` in `dest`'s file.
 fn import_edits(dest: &Destination, imports: &[String]) -> Vec<(u32, u32, String)> {
+    class_imports(&dest.parsed, dest.class.loc.start, imports)
+}
+
+/// The edits importing classes `imports` for code at byte `at`, in name
+/// order.
+pub(super) fn class_imports(parsed: &ParsedFile, at: u32, imports: &[String]) -> Vec<(u32, u32, String)> {
     let mut sorted: Vec<&String> = imports.iter().collect();
     sorted.sort_by_key(|fqn| fqn.to_ascii_lowercase());
     sorted
         .into_iter()
         .map(|fqn| {
-            let (at, text) = import_insertion(&dest.parsed, dest.class.loc.start, NameKind::ClassLike, fqn);
+            let (at, text) = import_insertion(parsed, at, NameKind::ClassLike, fqn);
             (at, at, text)
         })
         .collect()

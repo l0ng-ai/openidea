@@ -261,14 +261,14 @@ fn add_types_and_phpdoc() {
     assert!(applied(&text, &actions[1].edit).contains(", string $name = 'x',"));
 
     let (text, actions) = rewrites(&mut p, "all");
-    assert_eq!(titles(&actions), ["Add return type 'array'", "Add PHPDoc"]);
+    assert_eq!(titles(&actions), ["Add return type 'array'", "Generate PHPDoc"]);
     assert!(applied(&text, &actions[0].edit).contains("all(array $filter): array\n"));
     assert!(applied(&text, &actions[1].edit).contains(
         "    }\n\n    /**\n     * @param array $filter\n     * @return array\n     */\n    public function all("
     ));
 
     let (text, actions) = rewrites(&mut p, "total");
-    assert_eq!(titles(&actions), ["Add return type 'int'", "Add PHPDoc"]);
+    assert_eq!(titles(&actions), ["Add return type 'int'", "Generate PHPDoc"]);
     assert!(applied(&text, &actions[1].edit).contains("/**\n * @param int $a\n * @return int\n */\nfunction total("));
 
     // Nothing away from the declarations; nothing for other kinds.

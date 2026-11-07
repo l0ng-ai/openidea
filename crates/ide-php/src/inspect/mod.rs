@@ -561,7 +561,7 @@ impl PhpEngine {
     /// The code actions of a range: the quick-fixes of the problems that
     /// touch it (each problem's own fixes, then "suppress"), then the import
     /// actions, then the context actions on a declaration it touches, then
-    /// Extract variable / constant / method.
+    /// Extract variable / constant / method, Inline, and Generate.
     /// Filtered by `only` (code action kinds). `None` when the engine
     /// doesn't hold the document.
     pub fn code_actions(&self, doc: DocId, range: Range, only: &[String]) -> Option<Vec<ImportAction>> {
@@ -617,6 +617,12 @@ impl PhpEngine {
             let path = self.document_path(doc)?;
             let (start, end) = parsed.line_index().byte_range(range);
             out.extend(crate::refactor::inline_actions(self, &parsed, &path, start, end, only));
+        }
+        if crate::refactor::GENERATE_KINDS.iter().any(|kind| wanted(only, kind)) {
+            let parsed = self.parsed_document(doc)?;
+            let path = self.document_path(doc)?;
+            let (start, end) = parsed.line_index().byte_range(range);
+            out.extend(crate::refactor::generate_actions(self, &parsed, &path, start, end, only));
         }
         Some(out)
     }

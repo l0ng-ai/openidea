@@ -29,6 +29,8 @@
 //!   [`inline`].
 //! - **Pull members up / push members down** (not code actions: the
 //!   editor's hierarchy dialog asks for them): see [`hierarchy`].
+//! - **Generate** (implement / override methods, constructor, getters and
+//!   setters, property PHPDoc; `source.generate.*`): see [`generate`].
 //!
 //! The new name comes from the expression ([`names`], the conventions of
 //! the frontend's `src/editor/refactor/names.ts`) and is numbered when
@@ -37,6 +39,9 @@
 //! it in place afterwards with its own suggestions. The rules are our own,
 //! after IntelliJ's documented Introduce Variable / Constant behaviour.
 
+mod generate;
+#[cfg(test)]
+mod generate_tests;
 pub mod hierarchy;
 #[cfg(test)]
 mod hierarchy_tests;
@@ -64,6 +69,8 @@ use crate::stubs::PhpVersion;
 use crate::summary::{ClassKind, FileSummary};
 use crate::syntax::ParsedFile;
 
+pub use generate::{GENERATE_ACCESSORS, GENERATE_CONSTRUCTOR, IMPLEMENT_METHODS, OVERRIDE_METHODS};
+pub(crate) use generate::{GENERATE_KINDS, generate_actions};
 pub(crate) use inline::inline_actions;
 pub use inline::{INLINE_FUNCTION, INLINE_METHOD, INLINE_VARIABLE};
 pub use method::{EXTRACT_FUNCTION, EXTRACT_METHOD};

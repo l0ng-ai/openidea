@@ -8,7 +8,7 @@
 //! - **Add parameter type** before a parameter without one (the range on
 //!   the parameter): its `@param` type, else its default value's type
 //!   (nullable for a `null` default).
-//! - **Add PHPDoc** when the declaration has no docblock: `@param` for each
+//! - **Generate PHPDoc** when the declaration has no docblock: `@param` for each
 //!   parameter (the declared type, else the one above, else `mixed`) and
 //!   `@return` unless it is `void`. **Update PHPDoc** when it has one that
 //!   misses parameters: their `@param` lines, before `@return`/`@throws`.
@@ -347,7 +347,7 @@ pub(crate) fn intentions(
                     doc.push_str(&format!("{indent} * {line}{nl}"));
                 }
                 doc.push_str(&format!("{indent} */{nl}{indent}"));
-                out.push(action("Add PHPDoc".into(), signature.start, signature.start, doc));
+                out.push(action("Generate PHPDoc".into(), signature.start, signature.start, doc));
             }
         }
         None => {}
