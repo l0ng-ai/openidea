@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { t } from "@/platform/i18n";
-import { commands, onIdeEvent } from "@/platform/ipc";
+import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { Icon } from "@/ui";
 import styles from "./TitleBar.module.css";
 
@@ -18,23 +18,31 @@ function useFullscreenWindow(): { fullscreen: boolean; active: boolean } {
   const [fullscreen, setFullscreen] = useState(false);
   const [active, setActive] = useState(() => document.hasFocus());
   useEffect(() => {
+    // The plain-browser shell and tests have no Tauri window to ask.
+    if (!isTauri()) return;
     let disposed = false;
     const offs: (() => void)[] = [];
-    const sync = () => void commands.windowIsFullscreen().then((on) => !disposed && setFullscreen(on));
+    const sync = () =>
+      void commands
+        .windowIsFullscreen()
+        .then((on) => !disposed && setFullscreen(on))
+        .catch(() => {});
     sync();
     offs.push(onIdeEvent("windowFullscreenChanged", sync));
-    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
-      const w: AppWindow = getCurrentWindow();
-      const listeners = await Promise.all([
-        w.onResized(sync),
-        w.onFocusChanged(({ payload }) => {
-          setActive(payload);
-          sync();
-        }),
-      ]);
-      if (disposed) listeners.forEach((off) => off());
-      else offs.push(...listeners);
-    });
+    void import("@tauri-apps/api/window")
+      .then(async ({ getCurrentWindow }) => {
+        const w: AppWindow = getCurrentWindow();
+        const listeners = await Promise.all([
+          w.onResized(sync),
+          w.onFocusChanged(({ payload }) => {
+            setActive(payload);
+            sync();
+          }),
+        ]);
+        if (disposed) listeners.forEach((off) => off());
+        else offs.push(...listeners);
+      })
+      .catch(() => {});
     return () => {
       disposed = true;
       offs.forEach((off) => off());
@@ -44,6 +52,7 @@ function useFullscreenWindow(): { fullscreen: boolean; active: boolean } {
 }
 
 function closeWindow() {
+  if (!isTauri()) return;
   void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => getCurrentWindow().close());
 }
 
