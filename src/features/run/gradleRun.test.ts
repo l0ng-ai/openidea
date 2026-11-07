@@ -6,6 +6,7 @@ import {
   delegatedGradleConfig,
   gradleDelegation,
   withTestEvents,
+  supportsConfigurationCache,
   wrapperGradleVersion,
 } from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
@@ -114,6 +115,13 @@ describe("Build and run using: Gradle", () => {
     ]);
     expect(wrapperGradleVersion(props("https://x/gradle-7.6-all.zip"))).toEqual([7, 6]);
     expect(wrapperGradleVersion("# no distribution\n")).toBeNull();
+  });
+
+  it("recognizes a versioned local Gradle distribution for the configuration cache", async () => {
+    const local = (command: string) => ({ root: "/w", gradle: { ...gradle, command } });
+    expect(await supportsConfigurationCache(local("/opt/gradle-8.10/bin/gradle"))).toBe(true);
+    expect(await supportsConfigurationCache(local("/opt/gradle-7.6/bin/gradle"))).toBe(false);
+    expect(await supportsConfigurationCache(local("/opt/gradle/bin/gradle"))).toBe(false);
   });
 
   it("leaves mains outside the build's modules to the language server", () => {
