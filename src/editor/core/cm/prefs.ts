@@ -50,6 +50,8 @@ import {
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInDocComment } from "./docComment";
 import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { stringClipboard } from "./stringClipboard";
+import { filterCopiedText } from "./clipboard";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -276,9 +278,11 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     }
     const block = indentPastedText(text, targetCol, useTabs ? "\t" : " ", tabSize, unitCols);
     const out = prefix + (prefix ? block.trimStart() : block);
+    const formatted = start.changes({ from, to, insert: out });
     const first: TransactionSpec = {
-      changes: { from, to, insert: out },
-      selection: EditorSelection.cursor(from + out.length),
+      changes: formatted,
+      // Keep line-wise paste carets on their original text after reformatting.
+      selection: tr.newSelection.map(tr.changes.invertedDesc, 1).map(formatted, 1),
       userEvent: "input.paste",
       scrollIntoView: true,
     };
@@ -293,7 +297,7 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     if (lineStart > lineEnd) return first;
     const reindent = indentRange(pasted, lineStart, lineEnd);
     if (reindent.empty) return first;
-    return [first, { changes: reindent, selection: EditorSelection.cursor(reindent.mapPos(end, 1)), sequential: true }];
+    return [first, { changes: reindent, selection: pasted.selection.map(reindent, 1), sequential: true }];
   });
 }
 
@@ -350,6 +354,8 @@ const richCopy = EditorView.domEventHandlers({
     const sel = view.state.selection;
     if (sel.ranges.length !== 1 || sel.main.empty || !e.clipboardData) return false;
     const { from, to } = sel.main;
+    const text = view.state.sliceDoc(from, to);
+    if (filterCopiedText(view.state, text) !== text) return false;
     try {
       const html = richTextHtml(view, from, to);
       e.clipboardData.clearData();
@@ -543,6 +549,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!g.dragAndDrop) out.push(noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
   if (g.richTextCopy) out.push(richCopy);
+  if (k.escapeOnPaste) out.push(stringClipboard(o.language));
   if (!o.readOnly && (k.reformatOnPaste === "indentBlock" || k.reformatOnPaste === "indentEachLine"))
     out.push(pasteReindentFilter(k.reformatOnPaste));
 

@@ -66,6 +66,12 @@ export interface ReformatOptions {
 
 export type LspPopup =
   | {
+      kind: "importsOnPaste";
+      imports: string[];
+      onApply: (selected: number[]) => void;
+      onClose: () => void;
+    }
+  | {
       kind: "doc";
       anchor: PopupPoint;
       /** Navigation history (links followed inside the popup); `index` is shown. */
@@ -152,7 +158,7 @@ export function focusPopup() {
 }
 
 function disposed(popup: LspPopup | null) {
-  if (popup?.kind === "list") popup.onClose?.();
+  if (popup?.kind === "list" || popup?.kind === "importsOnPaste") popup.onClose?.();
 }
 
 export function openPopup(popup: LspPopup) {
