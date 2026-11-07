@@ -467,6 +467,7 @@ async fn indexed_symbol(
     let client = window.to_owned();
     blocking(move || {
         let Ok((path, _)) = project.documents.identity(doc) else { return Ok(None) };
+        let path = ide_plugin::resolve_real(&path);
         Ok(plugins.indexed_symbol_at(&project.root, &path, pos, Some(&client)))
     })
     .await

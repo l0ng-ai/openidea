@@ -35,7 +35,9 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         project_environment: false,
     });
     let project = host.open_light("main", &first).unwrap();
-    let doc = project.documents.open(&first).unwrap();
+    // Editors retain ordinary Windows paths; index snapshots use canonical
+    // (verbatim on Windows) paths and the host's own project-root identity.
+    let doc = project.documents.open(dunce::simplified(&first)).unwrap();
     let plugins =
         Arc::new(PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap());
     plugins.set_project_policy(Arc::new(|_| true));
@@ -88,11 +90,11 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         for (path, text, version) in [(&first, source, Some(doc.version)), (&second, usage, None)] {
             plugins
                 .index_navigation(
-                    &root,
+                    &project.root,
                     Snapshot { path, text, version, symbols: &[], scope: "app" },
                     Invocation {
                         client: Some("main".into()),
-                        workspace_root: Some(root.clone()),
+                        workspace_root: Some(project.root.clone()),
                         ..Default::default()
                     },
                 )
@@ -194,7 +196,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
     assert_eq!(std::fs::read_to_string(&second).unwrap(), "ref new.route\nref other\n");
     plugins.set_enabled("test.indexer", false).unwrap();
     plugins.set_enabled("test.duplicate", false).unwrap();
-    assert!(plugins.indexed_symbol_at(&root, &first, Pos::new(0, 4), Some("main")).is_none());
+    assert!(plugins.indexed_symbol_at(&project.root, &first, Pos::new(0, 4), Some("main")).is_none());
     plugins.set_enabled("test.indexer", true).unwrap();
     project.documents.close(doc.id);
     let invalid = "def 😀\nsymbols \n";
@@ -208,7 +210,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
     };
     plugins
         .index_navigation(
-            &root,
+            &project.root,
             Snapshot {
                 path: &first,
                 version: Some(doc.version),
@@ -216,7 +218,11 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
                 symbols: &[half_surrogate],
                 scope: "app",
             },
-            Invocation { client: Some("main".into()), workspace_root: Some(root.clone()), ..Default::default() },
+            Invocation {
+                client: Some("main".into()),
+                workspace_root: Some(project.root.clone()),
+                ..Default::default()
+            },
         )
         .unwrap();
     assert_eq!(
