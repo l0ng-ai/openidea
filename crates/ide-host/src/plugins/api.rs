@@ -188,7 +188,7 @@ pub(super) struct Shared {
     contexts: Mutex<BTreeMap<ContextKey, String>>,
     closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
-    pub subscriptions: Mutex<HashMap<String, BTreeSet<EventKind>>>,
+    pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
@@ -331,7 +331,7 @@ impl Shared {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
         }
-        if subscriptions && self.subscriptions.lock().remove(plugin).is_some() {
+        if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }
@@ -1167,12 +1167,21 @@ impl HostApi for PluginApi {
     }
 
     fn subscribe(&self, kind: EventKind, on: bool) {
-        let changed = {
-            let mut subs = self.shared.subscriptions.lock();
-            let set = subs.entry(self.id().to_owned()).or_default();
-            if on { set.insert(kind) } else { set.remove(&kind) }
-        };
-        if changed {
+        if self.shared.subscriptions.lock().set(self.id(), kind, on) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+        if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
+            self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
+        }
+        Ok(())
+    }
+
+    fn unsubscribe_paths(&self, kind: &str) {
+        if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
     }

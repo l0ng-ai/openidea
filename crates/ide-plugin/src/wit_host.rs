@@ -460,6 +460,10 @@ impl workspace::Host for StoreData {
         Ok(self.host.open_project(client.as_deref(), path, new_window).map_err(to_wit))
     }
 
+    fn project_of(&mut self, path: String) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
+        self.host.project_of(Path::new(&path)).map(|root| self.push(ProjectRes { root })).transpose()
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -762,10 +766,15 @@ impl events::Host for StoreData {
         Ok(Ok(()))
     }
 
-    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
-        if let Some(kind) = EventKind::parse(&kind) {
-            self.host.subscribe(kind, false);
+    fn subscribe_paths(&mut self, kind: String, globs: Vec<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
         }
+        Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
+    }
+
+    fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
+        self.host.unsubscribe_paths(&kind);
         Ok(())
     }
 }

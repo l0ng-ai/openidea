@@ -36,6 +36,10 @@ interface events {
     /// and an IDE that doesn't know one fails with `invalid`.
     /// Requires `events` (`events.input` for `action-performed`).
     subscribe: func(kind: string) -> result<_, error>;
+    /// Replaces this kind's subscription with project-relative globs (OR).
+    /// Empty globs pause delivery; `subscribe` restores unfiltered delivery.
+    /// Kinds: file-opened, file-saved, files-changed. Requires `events`.
+    subscribe-paths: func(kind: string, globs: list<string>) -> result<_, error>;
     unsubscribe: func(kind: string);
 }
 
