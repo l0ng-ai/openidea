@@ -196,7 +196,7 @@
 }
 .variables::selection {
   background: var(--bg-editor-selection);
-  color: transparent;
+  color: var(--fg);
 }
 
 /*
