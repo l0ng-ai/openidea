@@ -843,7 +843,14 @@ export async function startRun(
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const processStarted = performance.now();
     const info = await startWithRemedies(started, () => call(commands.runStart(started, channel)));
-    console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
+    console.info("Run process started", {
+      sessionId,
+      configId: config.id,
+      kind: config.kind,
+      buildPolicy: config.buildPolicy ?? "automatic",
+      pid: info.id,
+      ms: performance.now() - processStarted,
+    });
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
     // The process may already have exited (fast commands) before we got its id.
