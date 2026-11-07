@@ -245,14 +245,26 @@ describe("Go test targets", () => {
       id: "go:typed",
       kind: "go",
       cwd: "runtime",
-      args: ["test", "-tags", "demo", "-run", "Old", ".", "-args", "-test.short"],
+      args: [
+        "test",
+        "-tags",
+        "demo",
+        "-run",
+        "Old",
+        ".",
+        "-args",
+        "-test.run=Old",
+        "-test.bench",
+        "OldBench",
+        "-test.short",
+      ],
       params: {
         goKind: "test",
         module: "app",
         scope: "package",
         target: ".",
         pattern: "Old",
-        programArgs: "-test.short",
+        programArgs: "-test.run=Old -test.bench OldBench -test.short",
       },
     });
     const text = 'package calc\nfunc TestNew(t *testing.T) {\n t.Run("child case", func(t *testing.T) {})\n}';
@@ -273,6 +285,7 @@ describe("Go test targets", () => {
       scope: "directory",
       target: ".",
       pattern: "^TestNew$/^child_case$",
+      programArgs: "-test.short",
     });
   });
 });
