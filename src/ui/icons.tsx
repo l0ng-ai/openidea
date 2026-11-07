@@ -224,6 +224,7 @@ const ICONS = {
   "search-history": "inline/searchHistory",
   filter: "general/filter",
   refresh: "general/refresh",
+  quote: "openidea/general/quote",
   settings: "general/settings",
   help: "openidea/general/help",
   "page-first": "openidea/general/pageFirst",

@@ -6433,5 +6433,12 @@
   "Running in the background": "后台运行中",
   "Couldn't stop the background task": "无法停止后台任务",
   "Stage {count} files": "暂存 {count} 个文件",
-  "Unstage {count} files": "取消暂存 {count} 个文件"
+  "Unstage {count} files": "取消暂存 {count} 个文件",
+  "Copy Markdown": "复制 Markdown",
+  "Couldn't copy the reply": "无法复制回复",
+  "Quote Reply": "引用回复",
+  "Regenerate Response": "重新生成回复",
+  "Branch Conversation from Here": "从此处创建分支对话",
+  "Couldn't regenerate the response": "无法重新生成回复",
+  "Reasoning": "思考过程"
 }
