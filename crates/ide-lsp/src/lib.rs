@@ -2330,6 +2330,12 @@ impl LspManager {
     /// into `.venv` or a `go.mod` rewritten by `go get` is picked up without a restart. Other
     /// servers hear of their languages' files under their root; without it jdtls's incremental
     /// build never sees them, so a launch runs stale classes.
+    ///
+    /// Documents open on a server's current instance are left out: their text reaches the
+    /// server through `didOpen`/`didChange` (the editor's reload of a clean buffer arrives as
+    /// one), and a server that re-reads the file on the watched change (csharp-ls) would apply
+    /// the reload and then the `didChange` computed against the pre-reload copy, so it would
+    /// keep analysing content that diverges from both the disk and the editor (#1780).
     pub fn watched_files_changed(
         &self,
         created: &[PathBuf],
@@ -2339,6 +2345,20 @@ impl LspManager {
     ) {
         use file_watch::Change;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
+        let open: HashMap<ide_core::ServerId, HashSet<PathBuf>> = {
+            let docs = self.docs.lock();
+            let mut open: HashMap<_, HashSet<_>> = HashMap::new();
+            for d in docs.values() {
+                for a in &d.servers {
+                    if let Some(run) = a.server.running()
+                        && a.opened_gen == Some(run.generation)
+                    {
+                        open.entry(a.server.id).or_default().extend([d.path.clone(), d.canonical.clone()]);
+                    }
+                }
+            }
+            open
+        };
         for s in servers {
             let Some(run) = s.running() else { continue };
             let all = [(created, Change::Created), (modified, Change::Changed), (removed, Change::Deleted)]
@@ -2347,11 +2367,17 @@ impl LspManager {
             let watchers = run.watchers.read();
             let changes: Vec<(&PathBuf, Change)> = if watchers.is_empty() {
                 let languages = s.languages();
-                all.filter(|(p, _)| p.starts_with(&s.root) && languages.contains(&self.languages.detect(p, None)))
-                    .collect()
+                all.filter(|(p, _)| {
+                    p.starts_with(&s.root)
+                        && languages.contains(&self.languages.detect(p, None))
+                        && !open.get(&s.id).is_some_and(|o| o.contains(*p))
+                })
+                .collect()
             } else {
                 all.chain(excluded_dirs.iter().map(|p| (p, Change::Created)))
-                    .filter(|(p, change)| watchers.wants(&s.root, p, *change))
+                    .filter(|(p, change)| {
+                        watchers.wants(&s.root, p, *change) && !open.get(&s.id).is_some_and(|o| o.contains(*p))
+                    })
                     .collect()
             };
             drop(watchers);
