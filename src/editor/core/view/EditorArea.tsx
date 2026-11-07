@@ -23,6 +23,7 @@ import {
   useContributions,
   useFileDecorations,
   useEditorDocumentRevision,
+  useEditorTabTitles,
   useTextEditorWrappers,
   type EditorInput,
   type EditorKindContribution,
@@ -157,6 +158,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const isActivePane = useTabs((s) => s.activePane === paneId);
   const multiPane = useTabs((s) => s.layout.kind === "split");
   const kinds = useContributions((s) => s.editorKinds);
+  const titleRevision = useEditorTabTitles((s) => s.revision);
   const tabs = useMemo(() => pane?.tabs ?? [], [pane]);
   const paths = tabs.map((t) => t.input.path ?? "");
   const textDirty = useDocMeta(useShallow((s) => paths.map((p) => !!s[p]?.dirty)));
@@ -176,6 +178,8 @@ function PaneView({ paneId }: { paneId: string }) {
     showFileIcon ? tabs.flatMap((t) => (t.input.kind === "file" && t.input.path ? [t.input.path] : [])) : [],
   );
   const items: TabItem[] = useMemo(() => {
+    // A kind's title may change without the tab state (a renamed agent task).
+    void titleRevision;
     const names = tabs.map((t) => tabTitle(t.input, kinds));
     return tabs.map((t, i) => {
       const full = names[i]!;
@@ -215,6 +219,7 @@ function PaneView({ paneId }: { paneId: string }) {
     fileIcons,
     tabs,
     kinds,
+    titleRevision,
     dirty,
     colors,
     tints,
