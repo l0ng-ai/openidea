@@ -225,6 +225,14 @@ pub async fn run_tomcat_home(
 }
 #[tauri::command]
 #[specta::specta]
+pub async fn run_tomcat_installations(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_run::tomcat::TomcatInstallation>> {
+    ide_host::ops::run::run_tomcat_installations(&state.host, window.label()).await
+}
+#[tauri::command]
+#[specta::specta]
 pub async fn run_tomcat_artifacts(
     window: Window,
     state: State<'_, AppState>,
