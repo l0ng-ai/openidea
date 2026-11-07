@@ -40,6 +40,7 @@
 //! wasm32-wasip2`); see `plugins/README.md`.
 
 pub mod host;
+pub mod hover;
 pub mod indexing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod mock;
@@ -155,6 +156,17 @@ pub mod semantic_bindings {
     });
 }
 
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod hover_bindings {
+    wit_bindgen::generate!({
+        world: "hover", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_hover_world",
+        default_bindings_module: "openidea_plugin::hover_bindings",
+        with: { "openidea:plugin/types@1.3.0": crate::bindings::openidea::plugin::types },
+    });
+}
+
 /// The plugin API version this SDK targets.
 pub const API_VERSION: &str = "1.3";
 
@@ -214,6 +226,9 @@ macro_rules! __optional_exports {
     };
     (services, $plugin:ty, $component:ident) => {
         $crate::__services_exports!($plugin, $component);
+    };
+    (hover, $plugin:ty, $component:ident) => {
+        $crate::__hover_exports!($plugin, $component);
     };
     (syntax, $plugin:ty, $component:ident) => {
         impl $crate::syntax_bindings::exports::openidea::plugin::syntax_provider::Guest for $component {
@@ -381,6 +396,22 @@ macro_rules! __semantic_tokens_exports {
             }
         }
         $crate::semantic_bindings::__export_semantic_tokens_world!($component with_types_in $crate::semantic_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __hover_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::hover_bindings::exports::openidea::plugin::hover_provider::Guest for $component {
+            fn hover(
+                doc: $crate::hover_bindings::exports::openidea::plugin::hover_provider::Document,
+                at: $crate::bindings::openidea::plugin::types::Position,
+            ) -> ::core::option::Option<$crate::hover_bindings::exports::openidea::plugin::hover_provider::HoverContent> {
+                $crate::__rt::hover::<$plugin>(doc, at)
+            }
+        }
+        $crate::hover_bindings::__export_hover_world!($component with_types_in $crate::hover_bindings);
     };
 }
 
@@ -637,6 +668,16 @@ pub mod __rt {
                 modifiers: t.modifiers.into_iter().map(|m| m.as_str().into()).collect(),
             })
             .collect()
+    }
+
+    pub fn hover<T: Plugin + crate::hover::HoverProvider + Default>(
+        d: crate::hover_bindings::exports::openidea::plugin::hover_provider::Document,
+        pos: b::types::Position,
+    ) -> Option<crate::hover_bindings::exports::openidea::plugin::hover_provider::HoverContent> {
+        use crate::hover_bindings::exports::openidea::plugin::hover_provider as w;
+        let doc = crate::providers::Document { path: d.path, language: d.language, version: d.version, text: d.text };
+        with::<T, _>(|p| p.hover(&doc, at(pos)))
+            .map(|h| w::HoverContent { markdown: h.markdown, range: h.range.map(crate::host::__range_to) })
     }
 
     // ---- views ----

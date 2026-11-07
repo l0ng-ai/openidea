@@ -834,3 +834,10 @@ pub(crate) mod semantic_bindings {
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
 }
+
+pub(crate) mod hover_bindings {
+    wasmtime::component::bindgen!({
+        world: "hover", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
