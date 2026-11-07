@@ -530,10 +530,10 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
       ? { timeout: window.setTimeout(() => flush(sessionId), 100) }
       : wait > 0
         ? {
-            timeout: window.setTimeout(
-              () => (rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) }),
-              wait,
-            ),
+            timeout: window.setTimeout(() => {
+              if (document.hidden) flush(sessionId);
+              else rt.flushHandle = { raf: requestAnimationFrame(() => flush(sessionId)) };
+            }, wait),
           }
         : { raf: requestAnimationFrame(() => flush(sessionId)) };
   }

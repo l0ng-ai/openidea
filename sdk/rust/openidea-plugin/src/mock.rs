@@ -19,6 +19,13 @@ pub struct Notification {
     pub body: String,
 }
 
+/// A notification with command buttons, recorded by the mock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionNotification {
+    pub notification: Notification,
+    pub actions: Vec<NotificationAction>,
+}
+
 /// A task the plugin began.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MockTask {
@@ -59,6 +66,7 @@ struct State {
     editor: Option<Editor>,
     selected_paths: Vec<String>,
     notifications: Vec<Notification>,
+    action_notifications: Vec<ActionNotification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     context: BTreeMap<String, ContextValue>,
@@ -72,6 +80,7 @@ struct State {
     fetch_error: Option<Error>,
     clipboard: Option<String>,
     opened_urls: Vec<String>,
+    opened_projects: Vec<(String, bool)>,
     answers: VecDeque<Option<Vec<String>>>,
     revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
@@ -128,6 +137,11 @@ impl MockHost {
         }));
         CURRENT.with(|c| *c.borrow_mut() = Some(state.clone()));
         Self { state }
+    }
+
+    /// Project-open requests, in order: (UI path, new window).
+    pub fn opened_projects(&self) -> Vec<(String, bool)> {
+        self.state.borrow().opened_projects.clone()
     }
 
     /// Grants exactly these capabilities.
@@ -193,6 +207,11 @@ impl MockHost {
 
     pub fn notifications(&self) -> Vec<Notification> {
         self.state.borrow().notifications.clone()
+    }
+
+    /// Notifications that carried command buttons, in publication order.
+    pub fn notifications_with_actions(&self) -> Vec<ActionNotification> {
+        self.state.borrow().action_notifications.clone()
     }
 
     pub fn logs(&self) -> Vec<(LogLevel, String)> {
@@ -430,6 +449,32 @@ pub mod current {
         with(|s| s.notifications.push(Notification { level, title: title.into(), body: body.into() }))
     }
 
+    /// The host's checks, except that the commands are declared (the mock has no manifest).
+    pub fn notify_with_actions(
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        if actions.len() > 3 {
+            return Err(Error::Invalid("a notification has at most 3 actions".into()));
+        }
+        for a in actions {
+            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+                return Err(Error::Invalid(format!("invalid action label {:?}", a.label)));
+            }
+            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                return Err(Error::Invalid("an action argument is limited to 64 KiB".into()));
+            }
+        }
+        with(|s| {
+            let notification = Notification { level, title: title.into(), body: body.into() };
+            s.notifications.push(notification.clone());
+            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
+        });
+        Ok(())
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         with(|s| s.status.insert(id.to_owned(), item.clone()));
     }
@@ -470,6 +515,33 @@ pub mod current {
         })
     }
 
+    pub fn pick_directory(_title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+        if let Some(path) = initial {
+            ui_path(path)?;
+        }
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+        ui_path(path)?;
+        with(|s| s.opened_projects.push((path.to_owned(), new_window)));
+        Ok(())
+    }
+
+    /// The host's check: an absolute path on the UI machine, whatever its OS.
+    fn ui_path(path: &str) -> Result<(), Error> {
+        let b = path.as_bytes();
+        let absolute = path.starts_with('/')
+            || path.starts_with("\\\\")
+            || (b.first().is_some_and(u8::is_ascii_alphabetic)
+                && b.get(1) == Some(&b':')
+                && matches!(b.get(2), Some(b'/' | b'\\')));
+        if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
+            return Err(Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
+        }
+        Ok(())
+    }
+
     pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
         let keys = pick_many(title, items)?;
         match keys {
@@ -488,6 +560,10 @@ pub mod current {
     }
 
     pub fn input(_prompt: &str, _value: Option<&str>) -> Result<Option<String>, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn input_multiline(_prompt: &str, _value: Option<&str>) -> Result<Option<String>, Error> {
         Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
     }
 
@@ -937,6 +1013,10 @@ mod tests {
         assert!(matches!(host::pick_many("Pick", &items), Err(Error::Invalid(_))));
         mock.answer_next_prompt(Some(&["x.txt"]));
         assert_eq!(host::input("Name", Some("a.txt")).unwrap().as_deref(), Some("x.txt"));
+        mock.answer_next_prompt(Some(&["a\nb"]));
+        assert_eq!(host::input_multiline("Notes", None).unwrap().as_deref(), Some("a\nb"));
+        mock.answer_next_prompt(None);
+        assert_eq!(host::input_multiline("Notes", None).unwrap(), None);
         mock.answer_next_prompt(Some(&[]));
         assert!(host::confirm("Sure?", "Really").unwrap());
         mock.answer_next_prompt(None);
@@ -997,6 +1077,17 @@ mod tests {
     }
 
     #[test]
+    fn notification_buttons_are_recorded_and_bounded() {
+        let mock = MockHost::install();
+        let action = NotificationAction::new("Open", "open").argument("first\nsecond");
+        host::notify_with_actions(NotificationLevel::Info, "Done", "", std::slice::from_ref(&action)).unwrap();
+        assert_eq!(mock.notifications_with_actions()[0].actions, vec![action.clone()]);
+        let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
+        assert!(host::notify_with_actions(NotificationLevel::Info, "Done", "", &too_many).is_err());
+        assert_eq!(mock.notifications().len(), 1);
+    }
+
+    #[test]
     fn missing_capabilities_are_denied() {
         let mock = MockHost::install().with_capabilities(&["project.read"]);
         mock.open_editor("/project/a.txt", "text", "x", &[]);
@@ -1035,5 +1126,24 @@ mod tests {
         host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
             .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod project_ui_tests {
+    use super::MockHost;
+    use crate::host;
+    #[test]
+    fn folder_choices_and_project_requests_need_no_capability() {
+        let mock = MockHost::install().with_capabilities(&[]);
+        mock.answer_next_prompt(Some(&["C:/work/repo"]));
+        assert_eq!(host::pick_directory("Target", Some("C:/work")).unwrap().as_deref(), Some("C:/work/repo"));
+        assert_eq!(host::pick_directory("Target", None).unwrap(), None);
+        host::open_project("C:/work/repo", true).unwrap();
+        host::open_project("/home/user/repo", false).unwrap();
+        assert_eq!(mock.opened_projects(), vec![("C:/work/repo".into(), true), ("/home/user/repo".into(), false)]);
+        for path in ["relative", "C:relative", "/bad\npath", ""] {
+            assert!(host::open_project(path, false).is_err());
+        }
     }
 }

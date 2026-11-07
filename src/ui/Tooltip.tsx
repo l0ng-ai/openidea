@@ -12,10 +12,12 @@ import { tx } from "@/platform/i18n";
 export const TOOLTIP_DELAY = 600;
 const WARM_MS = 400;
 
-export function tooltipAttrs(text: string | undefined, shortcut?: string): Record<string, string> {
+/** `verbatim`: `text` is shown as written (already translated, or a plugin's own text). */
+export function tooltipAttrs(text: string | undefined, shortcut?: string, verbatim?: boolean): Record<string, string> {
   if (!text) return {};
   const attrs: Record<string, string> = { "data-tooltip": text };
   if (shortcut) attrs["data-tooltip-shortcut"] = shortcut;
+  if (verbatim) attrs["data-tooltip-verbatim"] = "";
   return attrs;
 }
 
@@ -46,7 +48,7 @@ export function TooltipHost() {
     };
 
     const show = (el: HTMLElement) => {
-      const text = tx(el.dataset.tooltip);
+      const text = el.dataset.tooltipVerbatim === undefined ? tx(el.dataset.tooltip) : el.dataset.tooltip;
       if (!text || !el.isConnected) return;
       visible = true;
       anchorRef.current = el;

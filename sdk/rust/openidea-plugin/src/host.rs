@@ -60,6 +60,28 @@ mod imp {
         wit::ui::show_notification(level, title, body)
     }
 
+    pub fn notify_with_actions(
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let level = match level {
+            NotificationLevel::Info => wit::types::NotificationLevel::Info,
+            NotificationLevel::Warning => wit::types::NotificationLevel::Warning,
+            NotificationLevel::Error => wit::types::NotificationLevel::Error,
+        };
+        let actions: Vec<_> = actions
+            .iter()
+            .map(|a| wit::ui::NotificationAction {
+                label: a.label.clone(),
+                command: a.command.clone(),
+                argument: a.argument.clone(),
+            })
+            .collect();
+        wit::ui::notify(level, title, body, &actions).map_err(error)
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         let item = wit::ui::StatusItem {
             text: item.text.clone(),
@@ -109,12 +131,23 @@ mod imp {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
     }
 
+    pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::pick_directory(title, initial).map_err(error)
+    }
+    pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+        wit::workspace::open_project(path, new_window).map_err(error)
+    }
+
     pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
         wit::ui::pick_many(title, &pick_items(items)).map_err(error)
     }
 
     pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
         wit::ui::input(prompt, value).map_err(error)
+    }
+
+    pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::input_multiline(prompt, value).map_err(error)
     }
 
     pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
@@ -730,6 +763,12 @@ pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error>
     imp::input(prompt, value)
 }
 
+/// Asks for text over several lines, pre-filled with `value`; `None` when
+/// dismissed. Same rules as [`input`]; the dialog confirms on Cmd/Ctrl+Enter.
+pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    imp::input_multiline(prompt, value)
+}
+
 /// Asks for confirmation: `true` on OK, `false` on Cancel or Escape.
 /// Same rules as [`pick`].
 pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
@@ -789,3 +828,29 @@ pub mod storage {
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub use imp::{event as __event, range_from as __range_from, range_to as __range_to};
+
+/// Chooses a directory on the UI machine. `None` when dismissed; no capability.
+/// Same window/command/event rules as [`pick`].
+pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+    imp::pick_directory(title, initial)
+}
+
+/// Requests the normal File > Open flow, including project trust, in the
+/// invoking window (`false`) or a new window (`true`). No capability.
+/// Only commands/events of a window can request this; errors opening the
+/// project are shown by that window. `path` belongs to the UI machine.
+pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+    imp::open_project(path, new_window)
+}
+
+/// [`notify`] with up to three buttons; each runs one of this plugin's
+/// declared commands in the balloon's window and dismisses the balloon. An
+/// invalid action or an undeclared command is an error and nothing is shown.
+pub fn notify_with_actions(
+    level: NotificationLevel,
+    title: &str,
+    body: &str,
+    actions: &[NotificationAction],
+) -> Result<(), Error> {
+    imp::notify_with_actions(level, title, body, actions)
+}

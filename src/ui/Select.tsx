@@ -3,7 +3,7 @@ import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { Popup } from "./Popup";
 import { List, listNavigate } from "./List";
-import { useTx } from "@/platform/i18n";
+import { tx, useGivenTx } from "@/platform/i18n";
 import { SearchField } from "./Input";
 import styles from "./Select.module.css";
 
@@ -64,7 +64,7 @@ export function Select<V extends string = string>({
   onPreview,
   ...aria
 }: SelectProps<V>) {
-  const tx = useTx();
+  const given = useGivenTx();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = options.find((o) => !o.section && o.value === value);
@@ -79,7 +79,8 @@ export function Select<V extends string = string>({
           const q = query.trim().toLowerCase();
           const tokens = q.split(/\s+/).filter(Boolean);
           const matches = (o: SelectOption<V>) => {
-            const haystack = `${tx(o.label)} ${o.detail != null ? tx(o.detail) : ""} ${o.keywords ?? ""}`.toLowerCase();
+            const haystack =
+              `${given(o.label)} ${o.detail != null ? given(o.detail) : ""} ${o.keywords ?? ""}`.toLowerCase();
             return tokens.every((tok) => containsOrFuzzy(haystack, tok));
           };
           // Keep section headers visible as long as at least one of their
@@ -164,7 +165,7 @@ export function Select<V extends string = string>({
       const n = filtered.length;
       for (let s = prefix.length > 1 ? 0 : 1; s <= n; s++) {
         const i = (activeIndex + s) % n;
-        if (!unavailable(filtered[i]!) && tx(filtered[i]!.label).toLowerCase().startsWith(prefix)) {
+        if (!unavailable(filtered[i]!) && given(filtered[i]!.label).toLowerCase().startsWith(prefix)) {
           setActive(i);
           break;
         }
@@ -179,7 +180,7 @@ export function Select<V extends string = string>({
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={tx(aria["aria-label"])}
+        aria-label={given(aria["aria-label"])}
         disabled={disabled}
         className={clsx(styles.trigger, styles[variant], className)}
         onClick={() => (open ? setOpen(false) : openPopup())}
@@ -196,7 +197,7 @@ export function Select<V extends string = string>({
           <>
             {current?.icon && <Icon name={current.icon} size={14} />}
             <span className={clsx(styles.value, !current && styles.placeholder)}>
-              {tx(current?.label ?? placeholder)}
+              {given(current?.label ?? placeholder)}
             </span>
           </>
         )}
@@ -238,8 +239,8 @@ export function Select<V extends string = string>({
               <div key={`${o.section ? "section" : "option"}:${o.value}`} className={styles.sizerRow}>
                 <span className={styles.check} />
                 {o.icon && <Icon name={o.icon} size={14} />}
-                <span>{tx(o.label)}</span>
-                {o.detail && <span className={styles.sizerDetail}>{tx(o.detail)}</span>}
+                <span>{given(o.label)}</span>
+                {o.detail && <span className={styles.sizerDetail}>{given(o.detail)}</span>}
               </div>
             ))}
           </div>
@@ -247,7 +248,7 @@ export function Select<V extends string = string>({
             items={filtered}
             getKey={(o) => `${o.section ? "section" : "option"}:${o.value}`}
             isSection={isSection}
-            renderSection={(o) => <span className={styles.disabled}>{tx(o.label)}</span>}
+            renderSection={(o) => <span className={styles.disabled}>{given(o.label)}</span>}
             activeIndex={activeIndex}
             onActiveChange={(i) => {
               if (!unavailable(filtered[i]!)) setActive(i);
@@ -256,7 +257,7 @@ export function Select<V extends string = string>({
             focusable={false}
             hoverSelects
             rowHeight={24}
-            aria-label={tx(aria["aria-label"])}
+            aria-label={given(aria["aria-label"])}
             className={styles.list}
             renderItem={(o) => (
               <span
@@ -265,10 +266,10 @@ export function Select<V extends string = string>({
               >
                 <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
                 {o.icon && <Icon name={o.icon} size={14} />}
-                <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)}>{tx(o.label)}</span>
+                <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)}>{given(o.label)}</span>
                 {o.detail && (
                   <span className={styles.detail} title={o.detail}>
-                    {tx(o.detail)}
+                    {given(o.detail)}
                   </span>
                 )}
               </span>

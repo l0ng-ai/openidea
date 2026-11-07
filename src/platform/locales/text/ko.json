@@ -2396,7 +2396,6 @@
   "UI font": "UI 글꼴",
   "UI font size": "UI 글꼴 크기",
   "Uninstalled {name}": "{name} 제거됨",
-  "Unchecked values are inherited from the scheme.": "선택 해제된 값은 구성표에서 상속됩니다.",
   "Uncommitted changes are stashed before the update and restored afterwards.": "커밋되지 않은 변경 사항은 업데이트 전에 스태시되었다가 이후에 복원됩니다.",
   "Underline": "밑줄",
   "Underscored": "밑줄 표시",

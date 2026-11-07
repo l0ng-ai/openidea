@@ -17,7 +17,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { View, ViewEvent, ViewField, ViewTable, ViewTreeItem, Viewport } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import {
   Checkbox,
   EmptyState,
@@ -54,7 +54,16 @@ export interface PluginViewProps {
 const OVERSCAN = 50;
 const ROW_HEIGHT = 24;
 
-export function PluginView({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
+/** Plugin text is shown as written: the plugin translates it through its own catalog. */
+export function PluginView(props: PluginViewProps) {
+  return (
+    <VerbatimTextContext.Provider value={true}>
+      <PluginViewContent {...props} />
+    </VerbatimTextContext.Provider>
+  );
+}
+
+function PluginViewContent({ pluginId, view, doc = null, revision = 0, label, itemMenu }: PluginViewProps) {
   const [rendered, setContent] = useState<View | null>(null);
   const t = usePluginT(pluginId);
   const content = useMemo(() => rendered && localizeView(rendered, t), [rendered, t]);
@@ -384,6 +393,13 @@ function TableBody({
     if (table.editable) showContextMenu(e, items);
   };
 
+  // A sortable table (`table` through the plugin API's `other` body case):
+  // the plugin sorts its own rows, so a header click only asks it to — the
+  // first click ascending, a second on the same column reversed.
+  const sort = table.sortable ? table.sort : null;
+  const sortColumn = (column: number) =>
+    send({ kind: "sort", column, descending: sort?.column === column ? !sort.descending : false });
+
   const rows: React.ReactNode[] = [];
   for (let r = Math.max(first, table.firstRow); r < Math.min(shownEnd, loadedEnd); r++) {
     const cells = table.rows[r - table.firstRow] ?? [];
@@ -446,11 +462,30 @@ function TableBody({
       <div className={styles.tableCanvas} style={{ height: (table.totalRows + 1) * ROW_HEIGHT }}>
         <div className={`${styles.tableRow} ${styles.tableHeader}`} role="row" aria-rowindex={1}>
           <div className={styles.rowNumber} />
-          {table.columns.map((c, i) => (
-            <div key={i} role="columnheader" className={styles.cell} title={c}>
-              {c}
-            </div>
-          ))}
+          {table.columns.map((c, i) => {
+            const sorted = sort?.column === i;
+            return (
+              <div
+                key={i}
+                role="columnheader"
+                className={table.sortable ? `${styles.cell} ${styles.headerCell}` : styles.cell}
+                title={c}
+                aria-sort={sorted ? (sort.descending ? "descending" : "ascending") : undefined}
+                tabIndex={table.sortable ? 0 : undefined}
+                onClick={table.sortable ? () => sortColumn(i) : undefined}
+                onKeyDown={
+                  table.sortable
+                    ? (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), sortColumn(i))
+                    : undefined
+                }
+              >
+                {c}
+                {sorted && (
+                  <Icon name={sort.descending ? "chevron-down" : "chevron-up"} size={12} className={styles.sortIcon} />
+                )}
+              </div>
+            );
+          })}
         </div>
         {rows}
       </div>
