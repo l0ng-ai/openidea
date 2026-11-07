@@ -206,7 +206,7 @@
   "Choose a detected Tomcat installation": "Choose a detected Tomcat installation",
   "Tomcat base directory": "Tomcat base directory",
   "IDE-managed isolated base directory": "IDE-managed isolated base directory",
-  "Custom CATALINA_BASE directory; leave empty to use an isolated directory managed by the IDE": "Custom CATALINA_BASE directory; leave empty to use an isolated directory managed by the IDE",
+  "Read-only configuration source; leave empty to copy from Tomcat Home. Each launch uses an IDE-managed runtime directory.": "Read-only configuration source; leave empty to copy from Tomcat Home. Each launch uses an IDE-managed runtime directory.",
   "Context descriptor": "Context descriptor",
   "META-INF/context.xml from application": "META-INF/context.xml from application",
   "Custom context.xml descriptor; leave empty to use the application's META-INF/context.xml": "Custom context.xml descriptor; leave empty to use the application's META-INF/context.xml",
@@ -306,5 +306,6 @@
   "Could not reopen the project in a container": "Could not reopen the project in a container",
   "Reopen in Container": "Reopen in Container",
   "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.": "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.",
-  "devcontainer up exited with {status}": "devcontainer up exited with {status}"
+  "devcontainer up exited with {status}": "devcontainer up exited with {status}",
+  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory": "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory"
 }

@@ -1095,6 +1095,8 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                 },
                 shouldRename ? active.name : undefined,
               );
+            } else {
+              setParams({ tomcatHome: "", serverName: "", tomcatBase: "", tomcatLibraries: "" });
             }
           }}
         />
@@ -1307,6 +1309,9 @@ function ApplicationServersDialog({
                   <Input
                     mono
                     aria-label="Tomcat base directory"
+                    title={tx(
+                      "Read-only configuration source; leave empty to copy from Tomcat Home. Each launch uses an IDE-managed runtime directory.",
+                    )}
                     value={current.base}
                     onChange={(e) => updateCurrent({ base: e.target.value })}
                   />
@@ -1413,6 +1418,7 @@ function AddTomcatServerDialog({
   onClose: () => void;
   onAdd: (server: TomcatServerProfile) => void;
 }) {
+  const tx = useTx();
   const [home, setHome] = useState("");
   const [base, setBase] = useState("");
   const [version, setVersion] = useState("");
@@ -1540,6 +1546,9 @@ function AddTomcatServerDialog({
             <Input
               mono
               aria-label="New server Tomcat base directory"
+              title={tx(
+                "Read-only configuration source; leave empty to copy from Tomcat Home. Each launch uses an IDE-managed runtime directory.",
+              )}
               value={base}
               onChange={(e) => setBase(e.target.value)}
             />

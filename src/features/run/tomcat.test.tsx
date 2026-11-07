@@ -207,6 +207,30 @@ describe("Tomcat Local", () => {
     expect(screen.getByLabelText("Startup script")).toBeTruthy();
     expect(screen.getByText("Environment Variables")).toBeTruthy();
   });
+  it("clears the selected server when all application server profiles are removed", async () => {
+    localStorage.clear();
+    const config = newConfigOfType(tomcatType, []);
+    config.params = {
+      ...config.params,
+      tomcatHome: "/opt/homebrew/opt/tomcat/libexec",
+      serverName: "Tomcat",
+      tomcatBase: "/custom/base",
+      tomcatLibraries: "/custom/lib.jar",
+    };
+    const change = vi.fn();
+    render(<TomcatSettings config={config} onChange={change} />);
+    await screen.findByText(/Apache Tomcat\/10\.1\.61/);
+    fireEvent.click(screen.getByRole("button", { name: "Configure..." }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Application Server" }));
+    expect(screen.getByText("No application server selected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    const params = change.mock.calls.at(-1)?.[0].params;
+    expect(params).not.toHaveProperty("tomcatHome");
+    expect(params).not.toHaveProperty("serverName");
+    expect(params).not.toHaveProperty("tomcatBase");
+    expect(params).not.toHaveProperty("tomcatLibraries");
+    expect(JSON.parse(localStorage.getItem("openidea.tomcat.servers.v1")!)).toEqual([]);
+  });
   it("keeps Debug environment overrides separate from the backend JDWP agent", () => {
     const config = newConfigOfType(tomcatType, []);
     const change = vi.fn();

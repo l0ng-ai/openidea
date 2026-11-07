@@ -33,7 +33,7 @@ export const tomcatType: RunConfigTypeContribution = {
       mono: true,
       browse: "directory",
       placeholder: "IDE-managed isolated base directory",
-      hint: "Custom CATALINA_BASE directory; leave empty to use an isolated directory managed by the IDE",
+      hint: "Read-only configuration source; leave empty to copy from Tomcat Home. Each launch uses an IDE-managed runtime directory.",
     },
     {
       key: "deployment",

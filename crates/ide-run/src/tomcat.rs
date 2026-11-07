@@ -390,21 +390,48 @@ pub fn base_dir(cache: &Path, id: &str) -> PathBuf {
     cache.join("tomcat").join(key)
 }
 
-pub fn effective_base_dir(root: &Path, cache: &Path, config: &RunConfig) -> PathBuf {
-    if let Some(custom) = config.extras.params.get("tomcatBase").map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        let candidate = root.join(custom);
-        let same_as_home =
-            config.extras.params.get("tomcatHome").map(|s| s.trim()).filter(|s| !s.is_empty()).is_some_and(|h| {
-                let home = root.join(h);
-                home == candidate
-                    || (dunce::canonicalize(&home).ok().zip(dunce::canonicalize(&candidate).ok()))
-                        .is_some_and(|(a, b)| a == b)
-            });
-        if !same_as_home {
-            return candidate;
+/// Resolve existing ancestors before comparing paths, including aliases of a not-yet-created base.
+fn canonical_path(path: &Path) -> IdeResult<PathBuf> {
+    let mut resolved = PathBuf::new();
+    for component in std::path::absolute(path)?.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => resolved.push(component),
+        }
+        match dunce::canonicalize(&resolved) {
+            Ok(path) => resolved = path,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && fs::symlink_metadata(&resolved).is_err() => {}
+            Err(e) => return Err(e.into()),
         }
     }
-    base_dir(cache, &config.id)
+    Ok(resolved)
+}
+
+fn source_base_dir(root: &Path, config: &RunConfig) -> IdeResult<PathBuf> {
+    let source = config
+        .extras
+        .params
+        .get("tomcatBase")
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| config.extras.params.get("tomcatHome"))
+        .ok_or_else(|| invalid("Choose a Tomcat installation directory"))?;
+    canonical_path(&root.join(source.trim()))
+}
+
+/// All launch, build and update writes use this IDE-owned directory, never an installation source.
+pub fn effective_base_dir(root: &Path, cache: &Path, config: &RunConfig) -> IdeResult<PathBuf> {
+    let base = canonical_path(&base_dir(cache, &config.id))?;
+    let home =
+        config.extras.params.get("tomcatHome").ok_or_else(|| invalid("Choose a Tomcat installation directory"))?;
+    for source in [canonical_path(&root.join(home.trim()))?, source_base_dir(root, config)?] {
+        if base.starts_with(&source) || source.starts_with(&base) {
+            return Err(invalid("IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory"));
+        }
+    }
+    Ok(base)
 }
 
 pub fn free_port() -> IdeResult<u16> {
@@ -923,12 +950,8 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
         config.extras.params.get("tomcatHome").ok_or_else(|| invalid("Choose a Tomcat installation directory"))?,
     ))?;
     validate_home(&home)?;
-    let base = effective_base_dir(root, cache, config);
-    fs::create_dir_all(&base)?;
-    let base = dunce::canonicalize(&base)?;
-    let doc = deployment(root, &base, config, false)?;
-    let context = effective_context(config, &doc);
-    let context = context_name(&context)?;
+    let base = effective_base_dir(root, cache, config)?;
+    let source = source_base_dir(root, config)?;
     let port: u16 =
         config.extras.params.get("httpPort").map(String::as_str).unwrap_or("8080").parse().map_err(invalid)?;
     if port == 0 {
@@ -944,34 +967,54 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
         std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(invalid)?.as_nanos()
     );
-    // Refresh only the IDE-owned configuration, leaving logs and deployed artifacts available.
-    if base.join("conf").exists() {
-        fs::remove_dir_all(base.join("conf"))?;
+    let server = patch_server_xml_with_ports(
+        &fs::read_to_string(source.join("conf/server.xml"))?,
+        TomcatPorts { http: port, https, ajp, shutdown },
+        &secret,
+    )?;
+    // Build runs before prepare; retain its archive identity while recreating the runtime.
+    let metadata: Vec<_> = ["artifact-path.txt", "artifact-id.txt", "artifact-project.txt"]
+        .into_iter()
+        .filter_map(|name| fs::read(base.join(name)).ok().map(|bytes| (name, bytes)))
+        .collect();
+    if base.exists() {
+        fs::remove_dir_all(&base)?;
     }
-    copy_tree(&home.join("conf"), &base.join("conf"))?;
-    let contexts = base.join("conf/Catalina/localhost");
-    if contexts.exists() {
-        fs::remove_dir_all(&contexts)?;
+    fs::create_dir_all(&base)?;
+    for (name, bytes) in metadata {
+        fs::write(base.join(name), bytes)?;
+    }
+    copy_tree(&source.join("conf"), &base.join("conf"))?;
+    let deploy_apps = config.extras.params.get("deployTomcatApps").is_some_and(|v| v == "true");
+    let hosts = base.join("conf/Catalina");
+    if !deploy_apps && hosts.is_dir() {
+        for host in fs::read_dir(hosts)? {
+            let host = host?;
+            if host.file_type()?.is_dir() {
+                for descriptor in fs::read_dir(host.path())? {
+                    let path = descriptor?.path();
+                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")) {
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
+        }
     }
     for dir in ["logs", "temp", "work", "webapps", "conf/Catalina/localhost"] {
         fs::create_dir_all(base.join(dir))?;
     }
-    if config.extras.params.get("deployTomcatApps").is_some_and(|v| v == "true") && home.join("webapps").is_dir() {
-        copy_tree(&home.join("webapps"), &base.join("webapps"))?;
+    if deploy_apps && source.join("webapps").is_dir() {
+        copy_tree(&source.join("webapps"), &base.join("webapps"))?;
     }
-    let server = patch_server_xml_with_ports(
-        &fs::read_to_string(home.join("conf/server.xml"))?,
-        TomcatPorts { http: port, https, ajp, shutdown },
-        &secret,
-    )?;
+    let doc = deployment(root, &base, config, false)?;
+    let context = context_name(&effective_context(config, &doc))?;
+    let contexts = base.join("conf/Catalina/localhost");
     fs::write(base.join("conf/server.xml"), server)?;
     let debug = config.extras.params.get("tomcatDebug").is_some_and(|v| v == "true");
     let custom_descriptor =
         config.extras.params.get("contextDescriptor").map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| root.join(s));
     let context_xml_content = deployed_context_xml_with_descriptor(&doc, custom_descriptor.as_deref(), !debug)?;
     fs::write(contexts.join(format!("{context}.xml")), context_xml_content)?;
-    config.env.insert("CATALINA_HOME".into(), home.to_string_lossy().into_owned());
-    config.env.insert("CATALINA_BASE".into(), base.to_string_lossy().into_owned());
     if let Some(jre) = config.extras.params.get("jre").filter(|s| !s.trim().is_empty()) {
         let jre = dunce::canonicalize(root.join(jre))?;
         config.env.insert("JAVA_HOME".into(), jre.to_string_lossy().into_owned());
@@ -1016,6 +1059,8 @@ pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<(
             }
         }
     }
+    config.env.insert("CATALINA_HOME".into(), home.to_string_lossy().into_owned());
+    config.env.insert("CATALINA_BASE".into(), base.to_string_lossy().into_owned());
     let use_custom_start = config.extras.params.get("useDefaultStartup").map(String::as_str) == Some("false");
     if use_custom_start
         && let Some(custom_start) =
@@ -1058,7 +1103,7 @@ pub fn update(root: &Path, cache: &Path, config: &RunConfig, mode: &str) -> IdeR
     if !matches!(mode, "resources" | "classes" | "redeploy") {
         return Err(invalid("Unknown Tomcat update operation"));
     }
-    let base = effective_base_dir(root, cache, config);
+    let base = effective_base_dir(root, cache, config)?;
     let doc = deployment(root, &base, config, mode == "resources")?;
     let context = context_name(&effective_context(config, &doc))?;
     let file = base.join("conf/Catalina/localhost").join(format!("{context}.xml"));
@@ -1503,11 +1548,14 @@ mod tests {
         ] {
             c.extras.params.insert(k.into(), v.into());
         }
+        let source = root.join("custom-base");
+        copy_tree(&home.join("conf"), &source.join("conf")).unwrap();
+        copy_tree(&home.join("webapps"), &source.join("webapps")).unwrap();
         let cache = root.join("cache");
         prepare(root, &cache, &mut c).unwrap();
 
         let base = PathBuf::from(&c.env["CATALINA_BASE"]);
-        assert_eq!(base, dunce::canonicalize(root.join("custom-base")).unwrap());
+        assert_eq!(base, dunce::canonicalize(base_dir(&cache, &c.id)).unwrap());
         let patched_server = fs::read_to_string(base.join("conf/server.xml")).unwrap();
         assert!(patched_server.contains("port=\"18005\""));
         assert!(patched_server.contains("port=\"18080\""));
@@ -1519,6 +1567,166 @@ mod tests {
         assert!(ctx_xml.contains("privileged=\"true\""));
         assert!(ctx_xml.contains("<Parameter name=\"env\" value=\"dev\"/>"));
         assert!(c.env["CATALINA_OPTS"].contains("-Dcom.sun.management.jmxremote.port=11099"));
+    }
+
+    fn tree_hash(root: &Path) -> u64 {
+        use std::hash::{Hash, Hasher};
+        fn hash(dir: &Path, state: &mut std::hash::DefaultHasher) {
+            let mut entries: Vec<_> = fs::read_dir(dir).unwrap().map(Result::unwrap).collect();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                entry.file_name().hash(state);
+                let directory = entry.file_type().unwrap().is_dir();
+                directory.hash(state);
+                if directory {
+                    hash(&entry.path(), state);
+                } else {
+                    fs::read(entry.path()).unwrap().hash(state);
+                }
+            }
+        }
+        let mut state = std::hash::DefaultHasher::new();
+        hash(root, &mut state);
+        state.finish()
+    }
+
+    #[test]
+    fn recreates_owned_runtime_from_read_only_sources_with_optional_instance_apps() {
+        for custom in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path();
+            check_prepared_paths(root);
+            let home = root.join("Tomcat Home");
+            let source = if custom { root.join("custom-base") } else { home.clone() };
+            if custom {
+                copy_tree(&home.join("conf"), &source.join("conf")).unwrap();
+            }
+            for host in ["localhost", "other-host"] {
+                let descriptors = source.join("conf/Catalina").join(host);
+                fs::create_dir_all(&descriptors).unwrap();
+                fs::write(descriptors.join("existing.xml"), "<Context reloadable='false'/>").unwrap();
+            }
+            fs::create_dir_all(source.join("webapps/instance-app")).unwrap();
+            fs::write(source.join("webapps/instance-app/index.html"), "instance").unwrap();
+            fs::write(source.join("conf/source.properties"), "from=source").unwrap();
+            // The configured base, rather than HOME, supplies configuration and applications.
+            if custom {
+                fs::create_dir_all(home.join("webapps/home-only")).unwrap();
+                fs::write(home.join("webapps/home-only/index.html"), "home").unwrap();
+                fs::write(
+                    source.join("conf/server.xml"),
+                    fs::read_to_string(home.join("conf/server.xml"))
+                        .unwrap()
+                        .replace("<Server ", "<Server source='custom' "),
+                )
+                .unwrap();
+            }
+            let before_home = tree_hash(&home);
+            let before_source = tree_hash(&source);
+            let cache = root.join("cache");
+            let mut c = config();
+            c.extras.params.insert("tomcatHome".into(), "Tomcat Home".into());
+            if custom {
+                c.extras.params.insert("tomcatBase".into(), "custom-base".into());
+            }
+            c.extras.params.insert("artifact".into(), "maven:pom.xml".into());
+            let base = effective_base_dir(root, &cache, &c).unwrap();
+            fs::create_dir_all(&base).unwrap();
+            let war = root.join("app.war");
+            archive(&war, &[("WEB-INF/web.xml", "<web-app/>"), ("index.html", "app")]);
+            fs::write(base.join("artifact-path.txt"), war.to_string_lossy().as_bytes()).unwrap();
+            fs::write(base.join("artifact-id.txt"), "maven:pom.xml").unwrap();
+            c.extras.params.insert("contextPath".into(), "/app".into());
+            c.extras.params.insert("httpPort".into(), "18080".into());
+            c.extras
+                .params
+                .insert("startupEnvRun".into(), format!("CATALINA_BASE={}\nCATALINA_HOME=wrong", source.display()));
+            for deploy in [true, false, true] {
+                fs::create_dir_all(base.join("work")).unwrap();
+                fs::write(base.join("work/stale"), "old runtime").unwrap();
+                c.extras.params.insert("deployTomcatApps".into(), deploy.to_string());
+                prepare(root, &cache, &mut c).unwrap();
+                assert_eq!(PathBuf::from(&c.env["CATALINA_BASE"]), base);
+                assert_eq!(PathBuf::from(&c.env["CATALINA_HOME"]), dunce::canonicalize(&home).unwrap());
+                assert!(!base.join("work/stale").exists());
+                for dir in ["logs", "temp", "work"] {
+                    assert!(base.join(dir).is_dir());
+                }
+                assert_eq!(fs::read_to_string(base.join("conf/source.properties")).unwrap(), "from=source");
+                let server = fs::read_to_string(base.join("conf/server.xml")).unwrap();
+                assert!(server.contains("port=\"18080\""));
+                assert_eq!(server.contains("source=\"custom\""), custom);
+                assert_eq!(base.join("webapps/instance-app/index.html").exists(), deploy);
+                assert!(!base.join("webapps/home-only").exists());
+                for host in ["localhost", "other-host"] {
+                    let descriptor = base.join("conf/Catalina").join(host).join("existing.xml");
+                    assert_eq!(descriptor.exists(), deploy);
+                    if deploy {
+                        assert_eq!(
+                            fs::read(descriptor).unwrap(),
+                            fs::read(source.join("conf/Catalina").join(host).join("existing.xml")).unwrap()
+                        );
+                    }
+                }
+                assert!(base.join("conf/Catalina/localhost/app.xml").is_file());
+                assert!(base.join("deployment/WEB-INF/web.xml").is_file());
+                update(root, &cache, &c, "redeploy").unwrap();
+                assert_eq!(tree_hash(&home), before_home);
+                assert_eq!(tree_hash(&source), before_source);
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_runtime_overlapping_either_source_before_any_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        check_prepared_paths(tmp.path());
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let cache = root.join("cache");
+        let mut c = config();
+        c.extras.params.insert("tomcatHome".into(), "Tomcat Home".into());
+        let base = base_dir(&cache, &c.id);
+        for source in [base.clone(), base.join("nested"), cache.clone()] {
+            for key in ["tomcatHome", "tomcatBase"] {
+                let mut c = c.clone();
+                c.extras.params.insert(key.into(), source.to_string_lossy().into_owned());
+                let before = tree_hash(&root);
+                assert!(effective_base_dir(&root, &cache, &c).unwrap_err().to_string().contains("must not overlap"));
+                assert!(prepare(&root, &cache, &mut c).is_err());
+                assert!(update(&root, &cache, &c, "redeploy").is_err());
+                assert_eq!(tree_hash(&root), before);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_runtime_overlaps_through_symlink_aliases() {
+        let tmp = tempfile::tempdir().unwrap();
+        check_prepared_paths(tmp.path());
+        let root = tmp.path();
+        let home = root.join("Tomcat Home");
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        let mut c = config();
+        c.extras.params.insert("tomcatHome".into(), "Tomcat Home".into());
+        let before = tree_hash(&home);
+        assert!(effective_base_dir(root, &alias.join("missing-cache"), &c).is_err());
+        assert!(prepare(root, &alias.join("missing-cache"), &mut c).is_err());
+        let cache = root.join("cache");
+        let base = base_dir(&cache, &c.id);
+        fs::remove_dir_all(&base).unwrap();
+        std::os::unix::fs::symlink(&home, &base).unwrap();
+        assert!(effective_base_dir(root, &cache, &c).is_err());
+        assert!(prepare(root, &cache, &mut c).is_err());
+        assert!(update(root, &cache, &c, "resources").is_err());
+        assert_eq!(tree_hash(&home), before);
+        fs::remove_file(&base).unwrap();
+        fs::create_dir_all(&base).unwrap();
+        let source_alias = root.join("base-alias");
+        std::os::unix::fs::symlink(&base, &source_alias).unwrap();
+        c.extras.params.insert("tomcatBase".into(), source_alias.to_string_lossy().into_owned());
+        assert!(effective_base_dir(root, &cache, &c).is_err());
     }
 
     #[test]

@@ -222,7 +222,7 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             &project.root,
             &model,
             id,
-            &ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config),
+            &ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?,
         )?;
         plan.env.extend(config.env.clone());
         let mut build = RunConfig {
@@ -288,7 +288,7 @@ pub async fn run_tomcat_sync(
         let module = dunce::canonicalize(project.root.join(module))?;
         let class_paths: Vec<_> =
             class_paths.iter().filter_map(|p| dunce::canonicalize(project.root.join(p)).ok()).collect();
-        let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config);
+        let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
         ide_run::tomcat::sync_outputs(&base, &module, &class_paths, resources_only)
     })
     .await
