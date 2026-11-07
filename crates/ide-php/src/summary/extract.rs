@@ -8,11 +8,12 @@
 
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
-    Argument, AttributeList, Class, ClassLikeConstant, ClassLikeMember, Constant, Enum, EnumCase as AstEnumCase,
-    EnumCaseItem, Expression, Function, FunctionCall, FunctionLikeParameter, FunctionLikeParameterList,
-    FunctionLikeReturnTypeHint, Hint, Identifier, Interface, Literal, LocalIdentifier, Method as AstMethod, MethodBody,
-    MethodCall, Modifier, Namespace, NamespaceBody, Property as AstProperty, PropertyItem, Sequence, StaticMethodCall,
-    Trait, TraitUse as AstTraitUse, TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification, Use,
+    Access, Argument, AttributeList, Class, ClassLikeConstant, ClassLikeConstantSelector, ClassLikeMember, Constant,
+    Enum, EnumCase as AstEnumCase, EnumCaseItem, Expression, Function, FunctionCall, FunctionLikeParameter,
+    FunctionLikeParameterList, FunctionLikeReturnTypeHint, Hint, Identifier, Interface, Literal, LocalIdentifier,
+    Method as AstMethod, MethodBody, MethodCall, Modifier, Namespace, NamespaceBody, PartialArgument,
+    Property as AstProperty, PropertyItem, Sequence, StaticMethodCall, Trait, TraitUse as AstTraitUse,
+    TraitUseAdaptation, TraitUseMethodReference, TraitUseSpecification, Use,
 };
 use mago_syntax::walker::Walker;
 
@@ -30,6 +31,9 @@ use infer::{Infer, body_return, this_assignments};
 mod infer;
 mod laravel;
 mod phpdoc;
+
+/// Doctrine's entity mapping attribute.
+const DOCTRINE_ENTITY: &str = "Doctrine\\ORM\\Mapping\\Entity";
 
 pub(super) fn extract(file: &ParsedFile) -> FileSummary {
     let mut cx = Extractor {
@@ -199,6 +203,42 @@ impl Extractor<'_> {
         lists.iter().flat_map(|list| list.attributes.iter()).map(|attribute| self.class_name(&attribute.name)).collect()
     }
 
+    /// The `repositoryClass` of a Doctrine `#[Entity]` attribute: named,
+    /// else the first positional argument, as `Foo::class` or a class-name
+    /// string.
+    fn repository_class(&self, lists: &Sequence<'_, AttributeList<'_>>) -> Option<String> {
+        let entity = lists
+            .iter()
+            .flat_map(|list| list.attributes.iter())
+            .find(|attribute| self.class_name(&attribute.name).eq_ignore_ascii_case(DOCTRINE_ENTITY))?;
+        let arguments = &entity.argument_list.as_ref()?.arguments;
+        let value = arguments
+            .iter()
+            .find_map(|argument| match argument {
+                PartialArgument::Named(argument) if argument.name.value == b"repositoryClass" => Some(argument.value),
+                _ => None,
+            })
+            .or_else(|| match arguments.first() {
+                Some(PartialArgument::Positional(argument)) => Some(argument.value),
+                _ => None,
+            })?;
+        match value {
+            Expression::Access(Access::ClassConstant(access)) => match (&access.constant, access.class) {
+                (ClassLikeConstantSelector::Identifier(constant), Expression::Identifier(class))
+                    if constant.value.eq_ignore_ascii_case(b"class") =>
+                {
+                    Some(self.class_name(class))
+                }
+                _ => None,
+            },
+            Expression::Literal(Literal::String(string)) => {
+                let name = lossy(string.value?).trim_start_matches('\\').to_owned();
+                (!name.is_empty()).then_some(name)
+            }
+            _ => None,
+        }
+    }
+
     fn hint(&self, hint: &Hint<'_>) -> TypeHint {
         type_hint(&self.scope, hint)
     }
@@ -312,6 +352,7 @@ impl Extractor<'_> {
             methods: Vec::new(),
             attributes: self.attributes(attributes),
             doc,
+            repository: self.repository_class(attributes),
         };
         for member in members {
             match member {

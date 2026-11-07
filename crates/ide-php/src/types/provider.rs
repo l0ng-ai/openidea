@@ -23,8 +23,9 @@
 //! it doesn't know (`mixed`). A provider can wrap the ones after it through
 //! [`CallSite::next`]. [`TypeProviders::builtin`] holds the
 //! `.phpstorm.meta.php` provider ([`MetaProvider`]), the PHPUnit provider
-//! ([`PhpUnitProvider`]), the Laravel provider ([`LaravelProvider`]) and the
-//! core; summaries are always extracted with it.
+//! ([`PhpUnitProvider`]), the Laravel provider ([`LaravelProvider`]), the
+//! Symfony provider ([`SymfonyProvider`]) and the core; summaries are
+//! always extracted with it.
 //!
 //! Providers also type properties a class doesn't declare
 //! ([`TypeProvider::magic_property`], asked by the resolver), such as
@@ -38,6 +39,7 @@ use std::sync::{Arc, LazyLock};
 use mago_syntax::cst::{Access, Argument, ArgumentList, ClassLikeConstantSelector, Expression};
 
 pub use self::laravel::LaravelProvider;
+pub use self::symfony::SymfonyProvider;
 use super::ops::literal_type;
 use super::{Context, LazyType, Resolver, Type};
 use crate::meta::MetaProvider;
@@ -286,12 +288,15 @@ impl Default for TypeProviders {
     /// Laravel ([`LaravelProvider`], first: it only overrides what the
     /// others say where they say `mixed` or for container calls, and
     /// `.phpstorm.meta.php` overrides stay in its stored fallbacks),
-    /// `.phpstorm.meta.php` ([`MetaProvider`]: its fallback is what the
-    /// others say), PHPUnit and the core.
+    /// Symfony ([`SymfonyProvider`]: container and repository calls, its
+    /// fallback what the others say), `.phpstorm.meta.php`
+    /// ([`MetaProvider`]: its fallback is what the others say), PHPUnit and
+    /// the core.
     fn default() -> Self {
         let mut providers = Self::empty();
         providers.register(CORE_ORDER, Arc::new(CoreProvider));
         providers.register(CORE_ORDER - 30, Arc::new(LaravelProvider));
+        providers.register(CORE_ORDER - 25, Arc::new(SymfonyProvider));
         providers.register(CORE_ORDER - 10, Arc::new(PhpUnitProvider));
         providers.register(CORE_ORDER - 20, Arc::new(MetaProvider));
         providers
@@ -522,6 +527,7 @@ impl TypeProvider for PhpUnitProvider {
 }
 
 pub(crate) mod laravel;
+pub(crate) mod symfony;
 
 #[cfg(test)]
 mod tests;

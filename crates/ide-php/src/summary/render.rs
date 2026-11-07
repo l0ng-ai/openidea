@@ -338,6 +338,9 @@ fn class_like(out: &mut String, class: &ClassLike) {
     if !class.implements.is_empty() {
         let _ = writeln!(out, "  implements {}", class.implements.join(", "));
     }
+    if let Some(repository) = &class.repository {
+        let _ = writeln!(out, "  repository {repository}");
+    }
     for trait_use in &class.trait_uses {
         let _ = writeln!(out, "  use {} {}", trait_use.traits.join(", "), decl_loc(trait_use.loc));
         for rule in &trait_use.rules {

@@ -55,8 +55,9 @@ use crate::types::LazyType;
 /// variables; 8: hash-notation types and assertion tags; 9: Laravel
 /// provider payloads and `getFacadeAccessor()` values; 10: Laravel
 /// bindings, migrations and casts; 11: locations of casts and
-/// columns), so stored summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 11;
+/// columns; 12: Doctrine repository classes of entities), so stored
+/// summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -175,6 +176,10 @@ pub struct ClassLike {
     pub attributes: Vec<String>,
     /// The docblock in front of the declaration, when it says anything.
     pub doc: Option<Box<DocBlock>>,
+    /// The repository class of a Doctrine entity
+    /// (`#[ORM\Entity(repositoryClass: FooRepository::class)]`), fully
+    /// qualified, for the Symfony type provider.
+    pub repository: Option<String>,
 }
 
 /// One `use A, B { … }` inside a class-like.

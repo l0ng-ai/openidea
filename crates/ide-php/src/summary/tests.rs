@@ -204,6 +204,31 @@ fn attributes_are_resolved_names() {
 }
 
 #[test]
+fn doctrine_entities_record_their_repository_class() {
+    let source = r#"<?php
+namespace App\Entity;
+use App\Repository\ProductRepository;
+use Doctrine\ORM\Mapping as ORM;
+
+#[ORM\Entity(repositoryClass: ProductRepository::class)]
+class Product {}
+#[ORM\Entity('App\Repository\TagRepository')]
+class Tag {}
+#[ORM\Entity]
+class Plain {}
+#[Other\Entity(repositoryClass: ProductRepository::class)]
+class NotDoctrine {}
+"#;
+    let summary = summarize(source);
+    let repositories: Vec<Option<&str>> = summary.class_likes.iter().map(|class| class.repository.as_deref()).collect();
+    assert_eq!(
+        repositories,
+        [Some("App\\Repository\\ProductRepository"), Some("App\\Repository\\TagRepository"), None, None]
+    );
+    assert!(shape(source).contains(&"  repository App\\Repository\\ProductRepository".to_owned()));
+}
+
+#[test]
 fn several_namespaces_and_braced_blocks() {
     let source = "<?php\nnamespace A {\n    use X\\Base;\n    class One extends Base {}\n}\nnamespace {\n    class Two extends Base {}\n    function top() {}\n}\n";
     assert_eq!(shape(source), ["class A\\One", "  extends X\\Base", "class Two", "  extends Base", "function top()"]);
