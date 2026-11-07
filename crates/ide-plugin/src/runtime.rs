@@ -1619,8 +1619,23 @@ fn view_from_wit(v: wit_vt::View) -> View {
                             options: options.into_iter().take(1000).map(|o| clip(o, MAX_TITLE)).collect(),
                             selected: clip(selected, MAX_TITLE),
                         },
-                        // A field type of a newer API: left out.
-                        wit_vt::FieldValue::Other(_) => return None,
+                        wit_vt::FieldValue::Other(e) => match e.kind.as_str() {
+                            "label" => FieldValue::Label(clip(serde_json::from_str(&e.data).ok()?, MAX_CELL)),
+                            "readonly-text" => {
+                                #[derive(serde::Deserialize)]
+                                struct ReadonlyText {
+                                    text: String,
+                                    #[serde(default)]
+                                    multiline: bool,
+                                }
+                                let value: ReadonlyText = serde_json::from_str(&e.data).ok()?;
+                                FieldValue::ReadonlyText {
+                                    text: clip(value.text, if value.multiline { 1 << 20 } else { MAX_CELL }),
+                                    multiline: value.multiline,
+                                }
+                            }
+                            _ => return None,
+                        },
                     };
                     Some(ViewField { key: clip(f.key, 128), label: clip(f.label, MAX_TITLE), value })
                 })
@@ -1673,6 +1688,12 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
         ViewEvent::InsertRow { before } => W::InsertRow(before),
         ViewEvent::DeleteRows { rows } => W::DeleteRows(rows),
         ViewEvent::Message { text } => W::Message(text),
+        ViewEvent::TableSelect { row } => {
+            W::Other(wit_types::Extension { kind: "table-select".into(), data: format!(r#"{{"row":{row}}}"#) })
+        }
+        ViewEvent::TableActivate { row } => {
+            W::Other(wit_types::Extension { kind: "table-activate".into(), data: format!(r#"{{"row":{row}}}"#) })
+        }
         // A sortable table's header click, as an `other` view-event (plugins/
         // README.md §10): the SDKs decode the kinds they know.
         ViewEvent::Sort { column, descending } => W::Other(wit_types::Extension {
@@ -1685,6 +1706,44 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readonly_field_extensions_are_parsed_and_unknown_or_malformed_fields_are_skipped() {
+        let fields = [
+            ("label", r#""Title \"quoted\"""#),
+            ("readonly-text", r#"{"text":"one\ntwo","multiline":true}"#),
+            ("readonly-text", r#"{"text":"author"}"#),
+            ("label", "{}"),
+            ("readonly-text", r#"{"text":false}"#),
+            ("future", "null"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (kind, data))| wit_vt::Field {
+            key: i.to_string(),
+            label: "Field".into(),
+            value: wit_vt::FieldValue::Other(wit_types::Extension { kind: kind.into(), data: data.into() }),
+        })
+        .collect();
+        let view = view_from_wit(wit_vt::View { toolbar: vec![], body: wit_vt::Body::Form(fields), status: None });
+        let ViewBody::Form(fields) = view.body else { panic!("form") };
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].value, FieldValue::Label("Title \"quoted\"".into()));
+        assert_eq!(fields[1].value, FieldValue::ReadonlyText { text: "one\ntwo".into(), multiline: true });
+        assert_eq!(fields[2].value, FieldValue::ReadonlyText { text: "author".into(), multiline: false });
+    }
+
+    #[test]
+    fn table_row_events_leave_through_released_extension_case() {
+        for (event, kind) in [
+            (ViewEvent::TableSelect { row: 51 }, "table-select"),
+            (ViewEvent::TableActivate { row: 51 }, "table-activate"),
+        ] {
+            let wit_vt::ViewEvent::Other(extension) = event_to_wit_view(event) else { panic!("other") };
+            assert_eq!(extension.kind, kind);
+            assert_eq!(extension.data, r#"{"row":51}"#);
+        }
+    }
 
     #[cfg(windows)]
     #[test]
