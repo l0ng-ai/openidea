@@ -3,8 +3,9 @@
 
 use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
-use crate::{ChangeKind, ChangedFile, MergeSides, RebaseAction, RebaseEntry, Repo, ResetMode};
+use crate::{ChangeKind, ChangedFile, FileLineStats, MergeSides, RebaseAction, RebaseEntry, Repo, ResetMode};
 use ide_core::{CancellationToken, IdeError, IdeResult};
+use std::collections::HashSet;
 
 /// The in-progress operation git can continue / abort / skip.
 fn sequencer(r: &Repo) -> IdeResult<&'static str> {
@@ -57,7 +58,8 @@ pub(crate) fn merge_sides(r: &Repo) -> IdeResult<MergeSides> {
         Some("cherry-pick") => sides.commit = read("CHERRY_PICK_HEAD").map(short),
         Some("revert") => sides.commit = read("REVERT_HEAD").map(short),
         // Conflicts outside an operation come from restoring stashed changes (Smart
-        // Checkout, update with autostash): stage 2 is the new HEAD, stage 3 the user's.
+        // Checkout, local changes put aside for a merge or update): stage 2 is the new HEAD,
+        // stage 3 the user's.
         None if !crate::write::unmerged_paths(r)?.is_empty() => {
             sides.operation = Some("unstash".into());
             sides.reversed = true;
@@ -93,9 +95,9 @@ fn branch_at(r: &Repo, commit: &str) -> Option<String> {
     }
     ["refs/heads", "refs/remotes"].into_iter().find_map(|refs| {
         let out =
-            run(r.root(), &["for-each-ref", "--points-at", commit, "--format=%(refname:short)", refs], None).ok()?;
-        let names: Vec<String> =
-            out.stdout_str().lines().filter(|l| !l.is_empty() && !l.ends_with("/HEAD")).map(str::to_string).collect();
+            run(r.root(), &["for-each-ref", "--points-at", commit, crate::refs::DIRECT_BRANCH_FORMAT, refs], None)
+                .ok()?;
+        let names: Vec<String> = out.stdout_str().lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
         match names.as_slice() {
             [one] => Some(one.clone()),
             _ => None,
@@ -113,12 +115,37 @@ fn check_commits(commits: &[String]) -> IdeResult<()> {
     Ok(())
 }
 
+/// Why a rebase can't continue: tracked files changed while it was stopped, not staged.
+pub const UNSTAGED_CHANGES_PREVENT_REBASE: &str =
+    "There are unstaged changes in tracked files preventing rebase from continuing";
+
+fn changed_paths(r: &Repo, args: &[&str]) -> IdeResult<Vec<String>> {
+    let text = run(r.root(), args, None)?.stdout_str();
+    Ok(text.split('\0').filter(|p| !p.is_empty()).map(str::to_string).collect())
+}
+
 /// Concludes the operation in progress once every conflict is resolved (staged).
-pub(crate) fn continue_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
+/// `stage` first stages the changes of tracked files (Stage and Retry). Without it a
+/// rebase stages only edits of files already staged (made while resolving them) and
+/// otherwise fails with [`UNSTAGED_CHANGES_PREVENT_REBASE`].
+pub(crate) fn continue_op(r: &Repo, stage: bool, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
     let op = sequencer(r)?;
     let unresolved = unmerged_paths(r)?;
     if !unresolved.is_empty() {
         return Err(IdeError::invalid(format!("resolve all conflicts before continuing: {}", unresolved.join(", "))));
+    }
+    if stage {
+        run(r.root(), &["add", "-u"], None)?;
+    } else if op == "rebase" {
+        let unstaged = changed_paths(r, &["diff", "--name-only", "-z", "--no-ext-diff"])?;
+        if !unstaged.is_empty() {
+            let staged: HashSet<String> =
+                changed_paths(r, &["diff", "--cached", "--name-only", "-z", "--no-ext-diff"])?.into_iter().collect();
+            if !unstaged.iter().all(|p| staged.contains(p)) {
+                return Err(IdeError::invalid(UNSTAGED_CHANGES_PREVENT_REBASE));
+            }
+            cli::run_paths(r.root(), &["add", "-u"], &unstaged)?;
+        }
     }
     let args: &[&str] = match op {
         // `git merge --continue` commits with the prepared MERGE_MSG.
@@ -128,12 +155,16 @@ pub(crate) fn continue_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(Str
         "revert" => &["revert", "--continue"],
         _ => &["am", "--continue"],
     };
-    cli::run_streaming(r.root(), args, cancel, out)
+    let result = cli::run_streaming(r.root(), args, cancel, out);
+    let finished = finish_operation(r);
+    result.and(finished)
 }
 
 pub(crate) fn abort_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
     let op = sequencer(r)?;
-    cli::run_streaming(r.root(), &[op, "--abort"], cancel, out)
+    let result = cli::run_streaming(r.root(), &[op, "--abort"], cancel, out);
+    let finished = finish_operation(r);
+    result.and(finished)
 }
 
 pub(crate) fn skip_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
@@ -141,7 +172,9 @@ pub(crate) fn skip_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)
     if op == "merge" {
         return Err(IdeError::invalid("a merge cannot be skipped; abort it instead"));
     }
-    cli::run_streaming(r.root(), &[op, "--skip"], cancel, out)
+    let result = cli::run_streaming(r.root(), &[op, "--skip"], cancel, out);
+    let finished = finish_operation(r);
+    result.and(finished)
 }
 
 /// Merge commits need a mainline (`-m`), which IDEA doesn't offer for cherry-pick / revert.
@@ -157,18 +190,23 @@ fn reject_merges(r: &Repo, commits: &[String], verb: &str) -> IdeResult<()> {
     Ok(())
 }
 
-/// Applies `commits` on top of HEAD, in the given order (pass oldest first).
+/// Applies `commits` on top of HEAD, in the given order (pass oldest first);
+/// `record_origin` adds "(cherry picked from commit …)" to their messages.
 pub(crate) fn cherry_pick(
     r: &Repo,
     commits: &[String],
+    record_origin: bool,
     cancel: &CancellationToken,
     out: &dyn Fn(String),
 ) -> IdeResult<()> {
     check_commits(commits)?;
     reject_merges(r, commits, "cherry-pick")?;
     let mut args = vec!["cherry-pick"];
+    if record_origin {
+        args.push("-x");
+    }
     args.extend(commits.iter().map(String::as_str));
-    cli::run_streaming(r.root(), &args, cancel, out)
+    apply_skipping_empty(r, "cherry-pick", &args, cancel, out)
 }
 
 /// Creates commits undoing `commits`, in the given order (pass newest first).
@@ -177,7 +215,42 @@ pub(crate) fn revert(r: &Repo, commits: &[String], cancel: &CancellationToken, o
     reject_merges(r, commits, "revert")?;
     let mut args = vec!["revert", "--no-edit"];
     args.extend(commits.iter().map(String::as_str));
-    cli::run_streaming(r.root(), &args, cancel, out)
+    apply_skipping_empty(r, "revert", &args, cancel, out)
+}
+
+/// Runs a cherry-pick / revert sequence. A commit whose changes are already there leaves
+/// nothing to commit: it is skipped and the rest of the sequence goes on.
+fn apply_skipping_empty(
+    r: &Repo,
+    verb: &str,
+    args: &[&str],
+    cancel: &CancellationToken,
+    out: &dyn Fn(String),
+) -> IdeResult<()> {
+    let head_file = if verb == "revert" { "REVERT_HEAD" } else { "CHERRY_PICK_HEAD" };
+    let said_nothing = std::cell::Cell::new(false);
+    let watch = |line: String| {
+        // git runs with LC_ALL=C; a single commit with nothing left to apply stops here.
+        said_nothing.set(said_nothing.get() || line.contains("nothing to commit"));
+        out(line)
+    };
+    let mut result = cli::run_streaming(r.root(), args, cancel, &watch);
+    if result.is_err() && said_nothing.get() && r.branch_info()?.operation.is_none() {
+        out("Skipped: its changes are already applied".into());
+        return Ok(());
+    }
+    while result.is_err() && !cancel.is_cancelled() {
+        let Ok(stopped) = std::fs::read_to_string(r.git_dir.join(head_file)) else { break };
+        let empty = unmerged_paths(r)?.is_empty()
+            && cli::run_raw(r.root(), &["diff", "--cached", "--quiet", "HEAD", "--"], None)?.code == Some(0);
+        if !empty {
+            break;
+        }
+        let id = stopped.trim();
+        out(format!("{} skipped: its changes are already applied", &id[..id.len().min(8)]));
+        result = cli::run_streaming(r.root(), &[verb, "--skip"], cancel, out);
+    }
+    result
 }
 
 pub(crate) fn reset(
@@ -281,7 +354,7 @@ pub(crate) fn interactive_rebase(
             let file = work.join(format!("msg-{i}"));
             std::fs::write(&file, m)?;
             todo.push_str(&format!(
-                "exec git commit --amend --allow-empty --no-verify --quiet --cleanup=strip -F {}\n",
+                "exec git commit --amend --allow-empty --no-verify --quiet --cleanup=whitespace -F {}\n",
                 quote(&file)
             ));
         }
@@ -289,15 +362,26 @@ pub(crate) fn interactive_rebase(
     let todo_file = work.join("todo");
     std::fs::write(&todo_file, todo)?;
     let editor = format!("cp {}", quote(&todo_file));
-    let mut args = vec!["rebase", "--interactive", "--autostash", "--no-autosquash"];
+    // Local changes are put aside and restored when the rebase is over, staged ones as
+    // staged (git's --autostash would bring them all back unstaged).
+    crate::preserve::save(r, "Local changes saved before rebase")?;
+    let mut args = vec!["rebase", "--interactive", "--no-autosquash"];
     args.push(base.unwrap_or("--root"));
     let env = [("GIT_SEQUENCE_EDITOR", std::ffi::OsStr::new(&editor))];
-    cli::run_streaming_env(r.root(), &args, &env, cancel, out)?;
+    let result = cli::run_streaming_env(r.root(), &args, &env, cancel, out);
     // A stopped rebase still needs the message files for its remaining `exec` lines.
-    if r.branch_info()?.operation.is_none() {
-        let _ = std::fs::remove_dir_all(&work);
+    let finished = finish_operation(r);
+    result.and(finished)
+}
+
+/// Once a rebase / merge / cherry-pick / revert is over, brings back the local changes
+/// put aside for it; the plan files of [`interactive_rebase`] go once it is done.
+pub(crate) fn finish_operation(r: &Repo) -> IdeResult<()> {
+    if r.branch_info()?.operation.is_some() {
+        return Ok(());
     }
-    Ok(())
+    let _ = std::fs::remove_dir_all(r.git_dir.join("openidea-rebase"));
+    crate::preserve::restore(r)
 }
 
 /// Creates a tag on `commit`: annotated when `message` is non-empty, else lightweight.
@@ -323,6 +407,51 @@ pub(crate) fn create_tag(r: &Repo, name: &str, commit: &str, message: Option<&st
     }
     args.extend(["--", name, commit]);
     run(r.root(), &args, message.map(str::as_bytes)).map(|_| ())
+}
+
+fn tag_ref(name: &str) -> IdeResult<String> {
+    let name = name.trim();
+    if name.is_empty() || name.starts_with('-') || name.contains("..") || name.contains(':') {
+        return Err(IdeError::invalid(format!("'{name}' is not a valid tag name")));
+    }
+    Ok(format!("refs/tags/{name}"))
+}
+
+pub(crate) fn delete_tag(r: &Repo, name: &str) -> IdeResult<crate::DeletedTag> {
+    let tag = tag_ref(name)?;
+    let target = run(r.root(), &["rev-parse", "-q", "--verify", &tag], None)
+        .map_err(|_| IdeError::invalid(format!("Could not find tag {name}")))?
+        .stdout_str();
+    let target = target.trim().to_string();
+    run(r.root(), &["update-ref", "-d", &tag, &target], None)?;
+    Ok(crate::DeletedTag { name: name.trim().to_string(), target })
+}
+
+pub(crate) fn restore_tag(r: &Repo, deleted: &crate::DeletedTag) -> IdeResult<()> {
+    let tag = tag_ref(&deleted.name)?;
+    let target = deleted.target.trim();
+    if target.is_empty() || target.starts_with('-') {
+        return Err(IdeError::invalid("invalid tag target"));
+    }
+    // Only recreates it: a tag made with that name meanwhile stays.
+    run(r.root(), &["update-ref", &tag, target, ""], None).map(|_| ())
+}
+
+pub(crate) fn push_tag(
+    r: &Repo,
+    name: &str,
+    remote: &str,
+    delete: bool,
+    cancel: &CancellationToken,
+    on_output: &dyn Fn(String),
+) -> IdeResult<()> {
+    let tag = tag_ref(name)?;
+    let remote = remote.trim();
+    if remote.is_empty() || remote.starts_with('-') {
+        return Err(IdeError::invalid(format!("invalid remote '{remote}'")));
+    }
+    let spec = if delete { format!(":{tag}") } else { format!("{tag}:{tag}") };
+    cli::run_streaming(r.root(), &["push", "--progress", remote, &spec], cancel, on_output)
 }
 
 /// Tag names, sorted.
@@ -394,6 +523,44 @@ pub(crate) fn parse_numstat(text: &str) -> Vec<(String, u32, u32)> {
         .collect()
 }
 
+/// Added and deleted lines between two revisions. `paths` limits the diff (pass both names of
+/// a rename); an empty list, or one too long for the command line, diffs every file.
+pub(crate) fn diff_numstat(r: &Repo, from: &str, to: &str, paths: &[String]) -> IdeResult<Vec<FileLineStats>> {
+    check_commits(&[from.to_string(), to.to_string()])?;
+    let mut args = vec!["diff", "--numstat", "-z", "-M", "--no-ext-diff", "--no-textconv", from, to];
+    // Windows command lines are short; past this, the unfiltered diff still contains these paths.
+    let limited = !paths.is_empty() && paths.iter().map(|p| p.len() + 1).sum::<usize>() <= 16_000;
+    if limited {
+        args.push("--");
+        args.extend(paths.iter().filter(|p| !p.is_empty()).map(String::as_str));
+    }
+    let out = run(r.root(), &args, None)?;
+    Ok(parse_numstat_z(&out.stdout_str()))
+}
+
+/// `git diff --numstat -z -M`: `added\tremoved\tpath\0`, or `added\tremoved\0old\0new\0` for a rename.
+/// Binary files (`-`) count as 0.
+pub(crate) fn parse_numstat_z(text: &str) -> Vec<FileLineStats> {
+    let mut parts = text.split('\0').filter(|s| !s.is_empty());
+    let mut out = Vec::new();
+    while let Some(rec) = parts.next() {
+        let mut fields = rec.splitn(3, '\t');
+        let added = fields.next().unwrap_or("0").parse().unwrap_or(0);
+        let removed = fields.next().unwrap_or("0").parse().unwrap_or(0);
+        let (path, old_path) = if let Some(path) = fields.next().filter(|p| !p.is_empty()) {
+            (path.to_owned(), None)
+        } else {
+            let (Some(old), Some(new)) = (parts.next(), parts.next()) else { break };
+            (new.to_owned(), Some(old.to_owned()))
+        };
+        if !path.is_empty() {
+            out.push(FileLineStats { path, old_path, added, removed });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path).then(a.old_path.cmp(&b.old_path)));
+    out
+}
+
 /// Files that differ between two revisions (Update Project's "N files updated").
 pub(crate) fn diff_revisions(r: &Repo, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
     check_commits(&[from.to_string(), to.to_string()])?;
@@ -455,6 +622,19 @@ mod tests {
         assert_eq!(
             got,
             vec![("src/a.rs".to_owned(), 3, 1), ("img.png".to_owned(), 0, 0), ("dir/b c.txt".to_owned(), 0, 7)]
+        );
+    }
+
+    #[test]
+    fn numstat_z_parsing_counts_renames_and_binaries_as_zero() {
+        let text = "1\t0\timg.bin\u{0}2\t1\u{0}file.txt\u{0}renamed.txt\u{0}-\t-\tbin.dat\u{0}";
+        assert_eq!(
+            parse_numstat_z(text),
+            vec![
+                FileLineStats { path: "bin.dat".into(), old_path: None, added: 0, removed: 0 },
+                FileLineStats { path: "img.bin".into(), old_path: None, added: 1, removed: 0 },
+                FileLineStats { path: "renamed.txt".into(), old_path: Some("file.txt".into()), added: 2, removed: 1 },
+            ]
         );
     }
 }

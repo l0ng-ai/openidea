@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+futures.workspace = true
 tempfile.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
@@ -16,6 +17,7 @@ specta.workspace = true
 tokio = { workspace = true, features = ["net"] }
 parking_lot.workspace = true
 memchr = "2"
+portable-pty.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

@@ -34,7 +34,7 @@ import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platfo
 import { tx } from "@/platform/i18n";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
-import { changedLineGutters, diffWords, languageFor, viewerBase } from "./cm";
+import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -211,7 +211,20 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
-export function DiffEditor({ input, toolbarActions }: { input: EditorInput; toolbarActions?: ReactNode }) {
+export function DiffEditor({
+  input,
+  toolbarActions,
+  onNeighbour,
+}: {
+  input: EditorInput;
+  toolbarActions?: ReactNode;
+  /**
+   * Called to show another file of the chain instead of `openDiff` (which opens an
+   * editor tab): embedded hosts such as the Commit dialog's diff window swap their
+   * own content, as a modal dialog hides the editor area.
+   */
+  onNeighbour?: (data: DiffData) => void;
+}) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
   const [attached, setAttached] = useState<Attached | null>(null);
@@ -417,6 +430,8 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           extensions: [
             side(attached.a, editableA, "left"),
             colours,
+            // Aligned panes scroll together: one stripe, on the right (as IDEA's shared scrollbar).
+            panes ? diffOverview("split") : [],
             panes?.extension ?? [],
             focusTracker("a"),
             findWatch("a"),
@@ -428,6 +443,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
           extensions: [
             side(attached.b, editableB, "right"),
             colours,
+            diffOverview(panes ? "split" : "aligned"),
             panes?.extension ?? [],
             listener,
             focusTracker("b"),
@@ -473,6 +489,7 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
         parent: host,
         extensions: [
           side(attached.b, editableB, "right"),
+          diffOverview("unified"),
           listener,
           focusTracker("b"),
           findWatch("b"),
@@ -591,12 +608,14 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       navigation.current = request;
       try {
         const neighbour = await changedChainNeighbour(data, dir, opts.ignore);
-        if (navigation.current === request && neighbour) await openDiff(neighbour, { preview: true });
+        if (navigation.current !== request || !neighbour) return;
+        if (onNeighbour) onNeighbour(neighbour);
+        else await openDiff(neighbour, { preview: true });
       } finally {
         if (navigation.current === request) navigation.current = null;
       }
     },
-    [data, opts.ignore],
+    [data, opts.ignore, onNeighbour],
   );
   useEffect(() => {
     if (!navHint) return;

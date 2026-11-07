@@ -26,6 +26,7 @@
 
 use super::icon_extensions::{Choice, DARK_SUFFIX, Extensions, Group, IconDefinition, Pattern, check_icon_id};
 use super::icon_settings::{self, SettingsSection};
+use ide_extension::package::PluginIcon;
 use ide_extension::{Package, UiDecl, check_relative, decode, validate_item_id};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,8 +34,10 @@ use std::path::PathBuf;
 
 pub const POINT_ID: &str = "iconThemes";
 const MAX_ICONS: usize = 5000;
-const MAX_SVG: usize = 64 << 10;
+pub(super) const MAX_SVG: usize = 64 << 10;
 const MAX_MAPPINGS: usize = 20_000;
+/// A plugin's own icon is inline in every plugin listing and index entry.
+pub const MAX_PLUGIN_ICON: usize = 16 << 10;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -90,14 +93,22 @@ pub fn svg_prefix(theme: &str) -> String {
     format!("iconTheme/{theme}/svg/")
 }
 
-/// An SVG icon of the package, size-checked and sanitised.
-pub(super) fn read_icon(pkg: &Package, path: &std::path::Path) -> Result<String, String> {
+/// An SVG icon of the package, size-checked (`max` bytes) and sanitised.
+pub(super) fn read_icon(pkg: &Package, path: &std::path::Path, max: usize) -> Result<String, String> {
     check_relative(path, "icon")?;
     let svg = pkg.read_text(path)?;
-    if svg.len() > MAX_SVG {
-        return Err(format!("{}: larger than {} KiB", path.display(), MAX_SVG >> 10));
+    if svg.len() > max {
+        return Err(format!("{}: larger than {} KiB", path.display(), max >> 10));
     }
     sanitize_svg(&svg).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The manifest's `icon` / `icon-dark`, read and sanitised.
+pub fn plugin_icon(pkg: &Package) -> Result<Option<PluginIcon>, String> {
+    let read = |path: &std::path::Path| read_icon(pkg, path, MAX_PLUGIN_ICON);
+    let Some(light) = &pkg.manifest.icon else { return Ok(None) };
+    let dark = pkg.manifest.icon_dark.as_deref().map(read).transpose()?;
+    Ok(Some(PluginIcon { light: read(light)?, dark }))
 }
 
 pub(super) fn icon_theme(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
@@ -166,7 +177,7 @@ pub(super) fn icon_theme(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Str
     for (icon, def) in &theme.icon_definitions {
         let dark = def.dark().map(|path| (path, DARK_SUFFIX));
         for (path, suffix) in std::iter::once((def.light(), "")).chain(dark) {
-            let clean = read_icon(pkg, path)?;
+            let clean = read_icon(pkg, path, MAX_SVG)?;
             assets.push((format!("{}{icon}{suffix}", svg_prefix(&d.id)), clean));
             files.push(path.clone());
         }

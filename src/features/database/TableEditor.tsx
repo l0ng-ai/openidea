@@ -3,7 +3,7 @@
  * a WHERE filter, and pending cell edits / added / deleted rows submitted
  * together in one transaction. Tables without a primary key are read-only.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   call,
   commands,
@@ -16,7 +16,8 @@ import {
 import { Button, EmptyState, Icon, IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import { SqlFilterInput } from "./SqlFilterInput";
-import { DataView, ExtractorSelect, PanelToggle, exportMenu, type DataPanel } from "./DataView";
+import { ColumnsPopup } from "./ColumnsPopup";
+import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportFormat } from "./export";
 import {
   buildRowEdits,
@@ -30,6 +31,7 @@ import {
 import { openDialog, sourceById, withConnection } from "./store";
 import type { TableRef } from "./tableInput";
 import styles from "./Database.module.css";
+import { registerTableEditor, tableEditorChanged, type TableEditorHandle } from "./tableEditorFocus";
 import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 
@@ -179,9 +181,30 @@ export function TableEditor({ input }: { input: EditorInput }) {
     });
 
   const dirty = hasEdits(edits);
+  // Submit / Revert actions (⌘↩ / ⌥⌘Z) reach the latest state through the handle.
+  const viewRef = useRef<HTMLDivElement>(null);
+  const handle = useRef<TableEditorHandle>({
+    dirty: false,
+    submit: () => {},
+    revert: () => {},
+    showColumns: () => {},
+  }).current;
+  handle.dirty = editable && dirty;
+  handle.submit = () => {
+    if (editable && dirty) void submit();
+  };
+  handle.revert = () => setEdits(emptyEdits());
+  const [columnsAt, setColumnsAt] = useState<{ x: number; y: number } | null>(null);
+  const [revealColumn, setRevealColumn] = useState<{ col: number } | null>(null);
+  handle.showColumns = () => {
+    const r = viewRef.current?.getBoundingClientRect();
+    if (page && r) setColumnsAt({ x: r.left + r.width / 2, y: r.top + 48 });
+  };
+  useEffect(() => registerTableEditor(viewRef.current!, handle), [handle]);
+  useEffect(() => tableEditorChanged(handle), [handle, dirty, editable]);
   const orderInvalid = orderDraft !== null && !parseOrderBy(orderDraft, names);
   return (
-    <div className={styles.view}>
+    <div className={styles.view} ref={viewRef} data-db-table-editor="">
       <div className={styles.toolbar}>
         <IconButton icon="refresh" title="Reload Page" onClick={reload} disabled={loading} />
         <div className={styles.pager}>
@@ -328,9 +351,11 @@ export function TableEditor({ input }: { input: EditorInput }) {
             columns={gridColumns}
             rowCount={rowCount}
             fixedRows={loaded}
+            revealColumn={revealColumn}
             value={value}
             panel={panel}
             onPanelChange={setPanel}
+            copyFormat={copyFormatOf(extractor)}
             searchOpen={searchOpen}
             onSearchOpenChange={setSearchOpen}
             firstRowNumber={offset + 1}
@@ -354,6 +379,18 @@ export function TableEditor({ input }: { input: EditorInput }) {
             }
           />
         </div>
+      )}
+      {columnsAt && (
+        <ColumnsPopup
+          anchor={columnsAt}
+          table={ref.table}
+          columns={gridColumns}
+          onPick={(col) => {
+            setColumnsAt(null);
+            setRevealColumn({ col });
+          }}
+          onClose={() => setColumnsAt(null)}
+        />
       )}
     </div>
   );

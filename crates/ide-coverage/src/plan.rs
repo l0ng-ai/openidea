@@ -67,6 +67,7 @@ pub fn prepare(root: &Path, config: &RunConfig, out: &Path) -> CoveragePrepared 
         "gradle" | "gradlew" => gradle(config, &dir, out),
         "npm" | "pnpm" | "yarn" | "bun" => npm(root, config, &dir, out),
         "node" | "npx" | "tsx" | "ts-node" => c8(root, config, &dir, out),
+        "ruby" | "bundle" | "rake" | "rspec" | "rails" => ruby(root, config, &dir, out),
         "deno" => unsupported("Coverage of Deno tasks is not supported yet."),
         "java" => unsupported(
             "Coverage of Java applications needs the JaCoCo agent; run a Maven or Gradle test configuration with coverage.",
@@ -234,6 +235,65 @@ fn c8(root: &Path, config: &RunConfig, dir: &Path, out: &Path) -> CoveragePrepar
     ready("c8", config, path(&c8), args, report)
 }
 
+/// Loaded first (`ide_run::ruby_preload`) when the project never starts SimpleCov itself.
+const SIMPLECOV_PRELOAD: &str = r#"# Written by OpenIDEA for Run with Coverage.
+begin
+  require "simplecov"
+rescue LoadError
+  # `bundle exec` is a Ruby process too and loads this before Bundler puts the project's gems on
+  # the load path; the Ruby it starts loads bundler/setup first and finds SimpleCov.
+  return
+end
+SimpleCov.coverage_dir(ENV.fetch("OPENIDEA_COVERAGE_DIR"))
+SimpleCov.start do
+  add_filter %r{^/(test|spec|features)/}
+  enable_coverage :branch
+end
+"#;
+
+/// Files where a project conventionally starts SimpleCov.
+const SIMPLECOV_STARTERS: &[&str] =
+    &[".simplecov", "spec/spec_helper.rb", "spec/rails_helper.rb", "test/test_helper.rb", "test/minitest_helper.rb"];
+
+fn ruby(root: &Path, config: &RunConfig, dir: &Path, out: &Path) -> CoveragePrepared {
+    let bundled = [dir, root].iter().any(|d| d.join("Gemfile").is_file());
+    let mentions = |file: &str| {
+        [dir, root].iter().any(|d| std::fs::read_to_string(d.join(file)).is_ok_and(|t| t.contains("simplecov")))
+    };
+    if bundled && !mentions("Gemfile.lock") && !mentions("Gemfile") {
+        return missing(
+            "simplecov",
+            "Ruby coverage needs the simplecov gem in the project's Gemfile.",
+            Some((vec![s("bundle"), s("add"), s("simplecov"), s("--group"), s("test")], dir)),
+        );
+    }
+    let starts = |d: &Path| {
+        SIMPLECOV_STARTERS.iter().any(|f| {
+            std::fs::read_to_string(d.join(f))
+                .is_ok_and(|t| t.contains("SimpleCov.start") || f.starts_with(".simplecov"))
+        })
+    };
+    let mut config = config.clone();
+    let resultset = if [dir, root].iter().any(|d| starts(d)) {
+        // The project's own configuration decides where the report goes (default `coverage/`).
+        // Drop the previous run's data: SimpleCov merges into it.
+        let results = dir.join("coverage");
+        let _ = std::fs::remove_file(results.join(".resultset.json"));
+        results.join(".resultset.json")
+    } else {
+        let preload = out.join("openidea_simplecov.rb");
+        if let Err(e) = std::fs::write(&preload, SIMPLECOV_PRELOAD) {
+            return unsupported(format!("Cannot write the SimpleCov preload: {e}"));
+        }
+        config.env.insert(s("OPENIDEA_COVERAGE_DIR"), path(out));
+        // `out` lives under the IDE's data directory, which may have spaces (RUBYOPT cannot take them).
+        ide_run::ruby_preload::add(&mut config.env, out, "openidea_simplecov", true);
+        out.join(".resultset.json")
+    };
+    let report = CoverageReportSpec::SimpleCov { path: resultset.into(), base: dir.to_path_buf().into() };
+    ready("SimpleCov", &config, config.command.clone(), config.args.clone(), report)
+}
+
 fn python(config: &RunConfig, dir: &Path, out: &Path, py: wrap::PythonCommand) -> CoveragePrepared {
     if py.target.is_empty() {
         return unsupported("Coverage needs a Python script or module to run.");
@@ -396,6 +456,74 @@ mod tests {
             prepare(dir.path(), &cfg("cargo", "cargo", &["build"]), dir.path()),
             CoveragePrepared::Unsupported { .. }
         ));
+    }
+
+    /// `bundle exec` loads the preload before Bundler sets up the project's gems: without SimpleCov
+    /// on the load path it must step aside instead of failing the launcher.
+    #[test]
+    fn simplecov_preload_tolerates_a_ruby_without_the_gem() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out dir");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("openidea_simplecov.rb"), SIMPLECOV_PRELOAD).unwrap();
+        let status = std::process::Command::new("ruby")
+            .args(["-e", "exit 0"])
+            .env("RUBYLIB", &out)
+            .env("RUBYOPT", "-ropenidea_simplecov")
+            .env("OPENIDEA_COVERAGE_DIR", &out)
+            .env("GEM_HOME", dir.path().join("empty gems"))
+            .env("GEM_PATH", dir.path().join("empty gems"))
+            .status();
+        // No Ruby on this machine: nothing to check.
+        let Ok(status) = status else { return };
+        assert!(status.success());
+    }
+
+    #[test]
+    fn ruby_runs_get_simplecov() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // The IDE's data directory has spaces on macOS (`Application Support`).
+        let out = root.join("out dir");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(root.join("Gemfile"), "source 'https://rubygems.org'\n").unwrap();
+        let config = cfg("rspec", "bundle", &["exec", "rspec"]);
+        // Bundler project without the gem: install hint.
+        match prepare(root, &config, &out) {
+            CoveragePrepared::MissingTool { tool, install: Some(i), .. } => {
+                assert_eq!(tool, "simplecov");
+                assert_eq!(i.args, ["add", "simplecov", "--group", "test"]);
+            }
+            other => panic!("{other:?}"),
+        }
+        // Gem present, never started: preloaded through RUBYOPT, report in `out`.
+        std::fs::write(root.join("Gemfile"), "gem 'simplecov'\n").unwrap();
+        let p = prepare(root, &config, &out);
+        let (l, report) = launch(&p);
+        assert_eq!(
+            (l.command.as_str(), l.args.as_slice()),
+            ("bundle", ["exec".to_owned(), "rspec".to_owned()].as_slice())
+        );
+        assert!(l.env["RUBYOPT"].contains("-ropenidea_simplecov"));
+        assert!(std::env::split_paths(&l.env["RUBYLIB"]).any(|d| d == out));
+        assert_eq!(l.env["OPENIDEA_COVERAGE_DIR"], out.to_string_lossy());
+        assert!(out.join("openidea_simplecov.rb").is_file());
+        assert!(
+            matches!(report, CoverageReportSpec::SimpleCov { path, .. } if (path.as_ref() as &Path).starts_with(&out))
+        );
+        // Started by the project: untouched environment, stale data dropped, report in `coverage/`.
+        std::fs::create_dir_all(root.join("test")).unwrap();
+        std::fs::create_dir_all(root.join("coverage")).unwrap();
+        std::fs::write(root.join("coverage/.resultset.json"), "{}").unwrap();
+        std::fs::write(root.join("test/test_helper.rb"), "require 'simplecov'\nSimpleCov.start\n").unwrap();
+        let p = prepare(root, &cfg("ruby", "ruby", &["-Ilib", "test/a_test.rb"]), &out);
+        let (l, report) = launch(&p);
+        assert!(!l.env.contains_key("RUBYOPT"));
+        assert_eq!(l.args, ["-Ilib", "test/a_test.rb"]);
+        assert!(!root.join("coverage/.resultset.json").exists());
+        assert!(
+            matches!(report, CoverageReportSpec::SimpleCov { path, .. } if (path.as_ref() as &Path).ends_with("coverage/.resultset.json"))
+        );
     }
 
     #[test]

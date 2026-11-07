@@ -1,6 +1,6 @@
 /**
  * Coverage reports collected elsewhere: "Import a report collected in CI from
- * disk" (lcov, JaCoCo XML, Go cover profile) and "Manage Coverage Reports"
+ * disk" (lcov, JaCoCo XML, Go cover profile, SimpleCov) and "Manage Coverage Reports"
  * (choose the shown suite, delete suites and remembered imports).
  */
 import { useMemo, useState } from "react";
@@ -35,7 +35,7 @@ async function pickReport(): Promise<string | null> {
     filters: [
       {
         name: "Coverage reports (lcov, JaCoCo XML, Go cover profile)",
-        extensions: ["info", "lcov", "xml", "out", "txt", "cov", "coverprofile"],
+        extensions: ["info", "lcov", "xml", "out", "txt", "cov", "coverprofile", "json"],
       },
       { name: "All files", extensions: ["*"] },
     ],

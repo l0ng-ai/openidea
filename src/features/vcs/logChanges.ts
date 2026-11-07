@@ -4,7 +4,7 @@
  * context menu do with them.
  */
 import { create } from "zustand";
-import type { ChangedFile, Commit, RevisionChange } from "@/bindings";
+import type { ChangedFile, Commit, FileLineStats, RevisionChange } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
@@ -18,6 +18,9 @@ import { commitRepo } from "./multiRoot";
 import { repositoryPath } from "./repositoryPaths";
 import { confirmDialog } from "./dialogs";
 
+/** Git's empty tree: a file added in a root commit is diffed against this. */
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /** A file of the pane, with the revisions holding its content before and after the change. */
 export interface LogChange {
   /** Repository-relative path (after the change). */
@@ -29,10 +32,26 @@ export interface LogChange {
   before: string | null;
   /** `null`: the change deleted the file. */
   after: string | null;
+  /**
+   * Revisions whose diff holds this file's line counts. For one commit that is its
+   * first parent (or the empty tree) and the commit itself, added files included.
+   */
+  statsFrom: string;
+  statsTo: string;
+  added?: number;
+  removed?: number;
   diff: DiffData;
   readOnly?: boolean;
   group?: string;
   mergeParents?: Array<{ rev: string; path: string }>;
+}
+
+/** One `git diff --numstat` covering every file that shares its endpoints. */
+export interface LineStatRange {
+  repo: string | null;
+  from: string;
+  to: string;
+  paths: string[];
 }
 
 /** One commit's files (`commit` given) or several commits' combined changes. */
@@ -53,6 +72,8 @@ export function toLogChanges(
         kind: f.kind,
         before: f.kind === "added" ? null : parent,
         after: f.kind === "deleted" ? null : commit.id,
+        statsFrom: parent ?? EMPTY_TREE,
+        statsTo: commit.id,
         diff: commitFileDiffData({ ...commit, repo }, f),
       };
     }
@@ -65,9 +86,60 @@ export function toLogChanges(
       kind: r.kind,
       before: r.before,
       after: r.after,
+      statsFrom: r.before ?? EMPTY_TREE,
+      statsTo: r.after ?? EMPTY_TREE,
       diff: revisionChangeDiffData(r, repo),
     };
   });
+}
+
+/** Groups files that share a diff, so one numstat covers a commit's additions and edits. */
+export function lineStatRanges(files: readonly LogChange[]): LineStatRange[] {
+  const groups = new Map<string, LineStatRange>();
+  for (const f of files) {
+    if (!f.statsFrom || !f.statsTo || f.statsFrom === f.statsTo) continue;
+    const repo = f.repo ?? null;
+    const key = `${repo ?? ""}\0${f.statsFrom}\0${f.statsTo}`;
+    let group = groups.get(key);
+    if (!group) groups.set(key, (group = { repo, from: f.statsFrom, to: f.statsTo, paths: [] }));
+    if (!group.paths.includes(f.path)) group.paths.push(f.path);
+    if (f.oldPath && !group.paths.includes(f.oldPath)) group.paths.push(f.oldPath);
+  }
+  return [...groups.values()];
+}
+
+/** Writes numstat rows onto the files of the same revision pair, matching a rename by either name. */
+export function assignLineStats(
+  files: readonly LogChange[],
+  loaded: readonly (LineStatRange & { stats: readonly FileLineStats[] })[],
+): LogChange[] {
+  const byPath = new Map<string, FileLineStats>();
+  for (const range of loaded)
+    for (const stat of range.stats) {
+      const put = (path: string) => byPath.set(`${range.repo ?? ""}\0${range.from}\0${range.to}\0${path}`, stat);
+      put(stat.path);
+      if (stat.oldPath) put(stat.oldPath);
+    }
+  return files.map((f) => {
+    const repo = f.repo ?? "";
+    const stat =
+      byPath.get(`${repo}\0${f.statsFrom}\0${f.statsTo}\0${f.path}`) ??
+      (f.oldPath ? byPath.get(`${repo}\0${f.statsFrom}\0${f.statsTo}\0${f.oldPath}`) : undefined);
+    return stat ? { ...f, added: stat.added, removed: stat.removed } : f;
+  });
+}
+
+/** Fills `added` / `removed` from `git diff --numstat`. A failed diff leaves the files uncounted. */
+export async function withLineStats(files: LogChange[]): Promise<LogChange[]> {
+  const ranges = lineStatRanges(files);
+  if (!ranges.length) return files;
+  const loaded = await Promise.all(
+    ranges.map(async (range) => ({
+      ...range,
+      stats: await call(commands.vcsDiffNumstat(range.repo, range.from, range.to, range.paths)),
+    })),
+  );
+  return assignLineStats(files, loaded);
 }
 
 /** Files without directory grouping: by name, each node's path shown next to it. */

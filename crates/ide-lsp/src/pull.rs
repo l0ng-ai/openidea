@@ -5,7 +5,7 @@
 //! and shown together.
 
 use crate::server::{Running, Server};
-use crate::{LspManager, convert};
+use crate::{LspManager, convert, virtual_doc};
 use ide_core::{DocId, IdeEvent};
 use ide_jsonrpc::RpcError;
 use lsp_types as lsp;
@@ -43,6 +43,10 @@ impl LspManager {
         let targets: Vec<PullTarget> = {
             let docs = self.docs.lock();
             let Some(d) = docs.get(&doc) else { return };
+            // Decompiled C# is a source view, not compilable project code (e.g. Unity's older language version).
+            if virtual_doc::is_csharp_decompiled(d.uri.as_str()) {
+                return;
+            }
             d.servers
                 .iter()
                 .filter(|a| only.is_none_or(|s| s.id == a.server.id))

@@ -13,11 +13,11 @@ vi.mock("../dialogs", async (original) => ({
   confirmDialog: mocks.confirm,
 }));
 
-const { deletableUnversioned, nodeMenu } = await import("../CommitView");
-const { deleteUnversioned } = await import("../changeOps");
+const { deletableFiles, nodeMenu } = await import("../CommitView");
+const { deleteFiles } = await import("../changeOps");
 
-const file = (rel: string, unstaged: FileStatus["unstaged"]): ChangeNode => {
-  const f: FileStatus = { path: `/p/${rel}`, relPath: rel, staged: null, unstaged, renamedFrom: null };
+const file = (rel: string, unstaged: FileStatus["unstaged"], staged: FileStatus["staged"] = null): ChangeNode => {
+  const f: FileStatus = { path: `/p/${rel}`, relPath: rel, staged, unstaged, renamedFrom: null };
   return { key: f.path, type: "file", label: rel, group: "unversioned", files: [f], path: f.path };
 };
 const deleteItem = (menu: MenuItem[]) =>
@@ -29,30 +29,30 @@ beforeEach(() => {
   mocks.call.mockResolvedValue(null);
 });
 
-describe("Delete… for unversioned files", () => {
-  it("is offered only when every selected file is unversioned", () => {
+describe("Delete… in the Changes view", () => {
+  it("is offered when every selected file is still on disk", () => {
     expect(deleteItem(nodeMenu([file("a.txt", "untracked"), file("b.txt", "untracked")], ["/p"]))).toBeDefined();
-    expect(deleteItem(nodeMenu([file("a.txt", "untracked"), file("c.txt", "modified")], ["/p"]))).toBeUndefined();
-    expect(deleteItem(nodeMenu([file("c.txt", "modified")], ["/p"]))).toBeUndefined();
+    expect(deleteItem(nodeMenu([file("a.txt", "untracked"), file("c.txt", "modified")], ["/p"]))).toBeDefined();
+    expect(deleteItem(nodeMenu([file("c.txt", "modified")], ["/p"]))).toBeDefined();
+    expect(deleteItem(nodeMenu([file("d.txt", null, "added")], ["/p"]))).toBeDefined();
+    expect(deleteItem(nodeMenu([file("c.txt", "modified"), file("e.txt", "deleted")], ["/p"]))).toBeUndefined();
+    expect(deleteItem(nodeMenu([file("f.txt", null, "deleted")], ["/p"]))).toBeUndefined();
   });
 
   it("shows the Delete key and gives the key handler the same paths", () => {
     expect(deleteItem(nodeMenu([file("a.txt", "untracked")], ["/p"]))).toMatchObject({ shortcut: "⌫" });
-    expect(deletableUnversioned([file("a.txt", "untracked"), file("b.txt", "untracked")])).toEqual([
-      "/p/a.txt",
-      "/p/b.txt",
-    ]);
-    expect(deletableUnversioned([file("a.txt", "untracked"), file("c.txt", "modified")])).toEqual([]);
-    expect(deletableUnversioned([])).toEqual([]);
+    expect(deletableFiles([file("a.txt", "untracked"), file("c.txt", "modified")])).toEqual(["/p/a.txt", "/p/c.txt"]);
+    expect(deletableFiles([file("a.txt", "untracked"), file("e.txt", "deleted")])).toEqual([]);
+    expect(deletableFiles([])).toEqual([]);
   });
 
   it("asks first, then deletes each file", async () => {
     mocks.confirm.mockResolvedValueOnce(false);
-    await deleteUnversioned(["/p/a.txt"]);
+    await deleteFiles(["/p/a.txt"]);
     expect(mocks.fsDelete).not.toHaveBeenCalled();
 
     mocks.confirm.mockResolvedValueOnce(true);
-    await deleteUnversioned(["/p/a.txt", "/p/b.txt"]);
+    await deleteFiles(["/p/a.txt", "/p/b.txt"]);
     expect(mocks.fsDelete.mock.calls.map((c) => c[0])).toEqual(["/p/a.txt", "/p/b.txt"]);
   });
 });

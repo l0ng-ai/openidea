@@ -30,6 +30,8 @@ export interface AppearanceExtras {
   redGreenVision: boolean;
   differentToolWindowBackground: boolean;
   compactMode: boolean;
+  /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
+  smallTreeIndents: boolean;
   fullPathInTitle: boolean;
   projectColorsInToolbar: boolean;
   dndWithAltOnly: boolean;
@@ -50,8 +52,11 @@ export interface DateFormatValid {
   pretty: boolean;
 }
 
+export type UpdateSourceSetting = "auto" | "github" | "cnb";
+
 export interface GeneralExtras {
   openProjectIn: OpenProjectIn;
+  updateSource: UpdateSourceSetting;
   defaultProjectDirectory: string;
   saveOnIdle: boolean;
   idleSeconds: number;
@@ -85,6 +90,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   redGreenVision: false,
   differentToolWindowBackground: false,
   compactMode: false,
+  smallTreeIndents: false,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
   dndWithAltOnly: false,
@@ -100,6 +106,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
 
 export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   openProjectIn: "ask",
+  updateSource: "auto",
   defaultProjectDirectory: "",
   saveOnIdle: false,
   idleSeconds: 15,
@@ -140,6 +147,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     redGreenVision: b("redGreenVision"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
+    smallTreeIndents: b("smallTreeIndents"),
     fullPathInTitle: b("fullPathInTitle"),
     projectColorsInToolbar: b("projectColorsInToolbar"),
     dndWithAltOnly: b("dndWithAltOnly"),
@@ -160,6 +168,7 @@ export function validateGeneralExtras(raw: unknown): GeneralExtras {
   const df = obj(g.dateFormat);
   return {
     openProjectIn: oneOf(g.openProjectIn, ["ask", "new", "same", "attach"] as const, d.openProjectIn),
+    updateSource: oneOf(g.updateSource, ["auto", "github", "cnb"] as const, d.updateSource),
     defaultProjectDirectory: typeof g.defaultProjectDirectory === "string" ? g.defaultProjectDirectory : "",
     saveOnIdle: bool(g.saveOnIdle, d.saveOnIdle),
     idleSeconds: int(g.idleSeconds, d.idleSeconds, IDLE_LIMITS),

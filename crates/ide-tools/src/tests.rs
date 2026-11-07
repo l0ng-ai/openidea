@@ -58,16 +58,20 @@ fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads()
             fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             fs::write(&legacy, b"old official agent").unwrap();
             fs::write(env.root.join("lombok").join(MANIFEST), r#"{"version":"1.18.48"}"#).unwrap();
+            let previous = env.root.join("lombok/bin/lombok-1.18.48-openidea.2.jar");
+            fs::write(&previous, b"previous bundled agent").unwrap();
             let tools = Tools::with_paths(env.root.clone(), OsString::new(), Platform { os, arch });
             let info = tools.info("lombok", &[]).unwrap();
             let path = managed_bundle(env.root.parent().unwrap(), "lombok").unwrap();
             assert_eq!(info.status, ToolStatus::Installed);
-            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.2"));
+            assert_eq!(info.version.as_deref(), Some("1.18.48-openidea.3"));
             assert_eq!(info.path, Some(path.clone().into()));
-            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.2.jar");
+            assert_eq!(path.file_name().unwrap(), "lombok-1.18.48-openidea.3.jar");
             assert!(!info.can_install && !info.can_uninstall);
             assert_eq!(tools.unavailable_reason(registry::find("lombok").unwrap()), None);
             assert_eq!(fs::read(&legacy).unwrap(), b"old official agent", "other windows may still use it");
+            assert_ne!(path, previous, "new agent path must invalidate the JDT LS workspace");
+            assert_eq!(fs::read(&previous).unwrap(), b"previous bundled agent", "other windows may still use it");
         }
     }
 }
@@ -166,6 +170,10 @@ fn interchangeable_servers_list_their_alternatives() {
         assert_eq!(find(&list, name).alternatives, python);
     }
     assert_eq!(find(&list, "vtsls").alternatives, ["vtsls", "typescript-language-server"]);
+    for name in ["jdtls", "kmp-lsp"] {
+        assert_eq!(find(&list, name).alternatives, ["jdtls", "kmp-lsp"]);
+        assert_eq!(find(&list, name).languages, ["Java"]);
+    }
     // A regular server after a fallback starts no group with it.
     assert!(find(&list, "angular-language-server").alternatives.is_empty());
     assert!(find(&list, "ruff").alternatives.is_empty());
@@ -588,6 +596,51 @@ printf '#!/bin/sh\necho "$GEM_HOME"\n' > "$bin/solargraph"; /bin/chmod +x "$bin/
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), env.root.join("solargraph/gems").to_string_lossy());
+}
+
+#[cfg(unix)]
+#[test]
+fn ruby_lsp_installs_into_the_project_ruby_not_a_private_gem_home() {
+    let env = Env::new();
+    let project = env._tmp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let marker = env._tmp.path().join("installed");
+    // Homebrew's Ruby: the gem bindir is not on the search path; only the Ruby knows it.
+    let bindir = env._tmp.path().join("gems/bin");
+    fs::create_dir_all(&bindir).unwrap();
+    env.script(&env.sys, "ruby", &format!("echo '{}'", bindir.display()));
+    // `gem list --exact ruby-lsp` knows the gem once `gem install ruby-lsp` ran, in the cwd it was given.
+    env.script(
+        &env.sys,
+        "gem",
+        &format!(
+            r#"case "$1" in
+install) echo "$PWD $@" > '{m}'; printf '#!/bin/sh\n' > '{b}/ruby-lsp'; /bin/chmod +x '{b}/ruby-lsp' ;;
+list) [ -f '{m}' ] && echo "ruby-lsp (0.26.11)" ;;
+uninstall) /bin/rm -f '{m}' ;;
+esac"#,
+            m = marker.display(),
+            b = bindir.display()
+        ),
+    );
+    let tools = env.tools().with_work_dir(Some(project.clone()));
+    assert_eq!(find(&tools.list(&langs()), "ruby-lsp").status, ToolStatus::Missing);
+    let info = tools.install("ruby-lsp", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::OnPath);
+    assert_eq!(info.version.as_deref(), Some("0.26.11"));
+    // Found in the Ruby's own bindir, not reported as the `gem` command.
+    assert_eq!(info.path.as_deref(), Some(bindir.join("ruby-lsp").as_path()));
+    // Run in the project (so a version manager picks its Ruby), into the Ruby's own gem home.
+    let log = fs::read_to_string(&marker).unwrap();
+    assert!(log.starts_with(&*project.canonicalize().unwrap().to_string_lossy()), "{log}");
+    assert!(log.contains("install --no-document ruby-lsp") && !log.contains("--install-dir"), "{log}");
+    // No private gem home, no wrapper directory on the search path.
+    assert!(!env.root.join("ruby-lsp").exists());
+    // Uninstalling removes the gem, and an older managed copy.
+    fs::create_dir_all(env.root.join("ruby-lsp/gems")).unwrap();
+    let info = tools.uninstall("ruby-lsp", &langs()).unwrap();
+    assert_eq!(info.status, ToolStatus::Missing);
+    assert!(!env.root.join("ruby-lsp").exists());
 }
 
 #[cfg(unix)]

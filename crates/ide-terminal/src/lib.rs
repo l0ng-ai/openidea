@@ -120,6 +120,7 @@ impl TerminalManager {
         for (k, v) in env {
             cmd.env(k, v);
         }
+        apply_powershell_env(&shell, &mut cmd);
 
         let child = pair
             .slave
@@ -633,6 +634,18 @@ fn terminal_env(user: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     env
 }
 
+/// Older pwsh versions can crash while formatting a localized update banner
+/// (PowerShell/PowerShell#28131). Keep explicit preferences in the final environment.
+fn apply_powershell_env(shell: &str, cmd: &mut CommandBuilder) {
+    let name = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    if cfg!(windows)
+        && (name.eq_ignore_ascii_case("pwsh") || name.eq_ignore_ascii_case("pwsh.exe"))
+        && cmd.get_env("POWERSHELL_UPDATECHECK").is_none_or(|v| v.is_empty())
+    {
+        cmd.env("POWERSHELL_UPDATECHECK", "Off");
+    }
+}
+
 /// Git Bash's MSYSTEM profile on Windows, when nobody chose one. A bare
 /// `bash.exe` would run with the `MSYS` default, whose PATH leaves `git` and
 /// the mingw64 tools out unless `<Git>\cmd` happens to be inherited — the Git
@@ -937,6 +950,56 @@ mod tests {
 #[cfg(test)]
 mod shell_start_on_every_platform {
     use super::*;
+
+    #[test]
+    fn powershell_update_notifications_default_to_off_on_windows() {
+        for shell in ["pwsh", "pwsh.exe", "PWSH.EXE", "C:\\Program Files\\PowerShell\\7\\PwSh.ExE", "C:/pwsh/pwsh.exe"]
+        {
+            for value in [None, Some("")] {
+                let mut cmd = CommandBuilder::new(shell);
+                cmd.env_clear();
+                if let Some(value) = value {
+                    cmd.env("POWERSHELL_UPDATECHECK", value);
+                }
+                apply_powershell_env(shell, &mut cmd);
+                let want = if cfg!(windows) { Some("Off") } else { value };
+                assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), want.map(std::ffi::OsStr::new), "{shell}");
+            }
+        }
+    }
+
+    #[test]
+    fn powershell_update_notification_preferences_are_preserved() {
+        for value in ["Default", "LTS", "Off"] {
+            let mut cmd = CommandBuilder::new("pwsh.exe");
+            cmd.env_clear();
+            cmd.env("POWERSHELL_UPDATECHECK", value);
+            apply_powershell_env("pwsh.exe", &mut cmd);
+            assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), Some(std::ffi::OsStr::new(value)));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_update_notification_preferences_ignore_key_case() {
+        let mut cmd = CommandBuilder::new("pwsh.exe");
+        cmd.env_clear();
+        cmd.env("POWERSHELL_UPDATECHECK", "Off");
+        cmd.env("powershell_updatecheck", "Default");
+        apply_powershell_env("pwsh.exe", &mut cmd);
+        assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), Some(std::ffi::OsStr::new("Default")));
+        assert_eq!(cmd.iter_full_env_as_str().count(), 1);
+    }
+
+    #[test]
+    fn other_shells_keep_their_update_notification_environment() {
+        for shell in ["powershell.exe", "cmd.exe", "wsl.exe", "bash.exe", "C:\\pwsh.exe\\other.exe", "other-pwsh.exe"] {
+            let mut cmd = CommandBuilder::new(shell);
+            cmd.env_clear();
+            apply_powershell_env(shell, &mut cmd);
+            assert_eq!(cmd.get_env("POWERSHELL_UPDATECHECK"), None, "{shell}");
+        }
+    }
 
     #[test]
     fn posix_shells_start_as_login_shells_everywhere() {

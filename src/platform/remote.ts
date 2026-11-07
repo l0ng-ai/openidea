@@ -11,6 +11,7 @@ import { create } from "zustand";
 import {
   call,
   commands,
+  IpcError,
   isTauri,
   type ChannelFrame,
   type RemoteProgress,
@@ -156,14 +157,23 @@ export const useRemoteProgress = create<{ progress: RemoteProgress | null; locat
 /** Opens `path` of `target` (an SSH host or a WSL distribution) in this window. */
 export async function connectRemote(target: RemoteTarget, path: string) {
   useProject.setState({ opening: true });
+  const location = remoteLocation(target, path);
   const onProgress = new Channel<RemoteProgress>();
-  onProgress.onmessage = (progress) => useRemoteProgress.setState({ progress });
+  onProgress.onmessage = (progress) => {
+    if (useRemoteProgress.getState().location === location) {
+      useRemoteProgress.setState({ progress });
+    }
+  };
   useRemoteProgress.setState({
     progress: { stage: "connecting", fraction: null },
-    location: remoteLocation(target, path),
+    location,
   });
   try {
     const r = await call(commands.remoteConnect(target, path, onProgress));
+    if (useRemoteProgress.getState().location !== location) {
+      await commands.remoteDisconnect().catch(() => {});
+      throw new IpcError({ kind: "cancelled", message: "Remote connection cancelled" });
+    }
     enableRemote({ target: r.target, root: r.root, host: r.host, os: r.os, commands: r.commands });
     if (takeLegacyRemoteTrust(r.target, path, r.host)) {
       const status = await call(commands.projectTrustStatus(r.root));
@@ -189,8 +199,10 @@ export async function connectRemote(target: RemoteTarget, path: string) {
     });
     return r;
   } finally {
-    useProject.setState({ opening: false });
-    useRemoteProgress.setState({ progress: null, location: null });
+    if (useRemoteProgress.getState().location === location) {
+      useProject.setState({ opening: false });
+      useRemoteProgress.setState({ progress: null, location: null });
+    }
   }
 }
 

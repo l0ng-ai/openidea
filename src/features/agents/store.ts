@@ -625,6 +625,8 @@ export function addReferences(refs: Array<{ path: string; rel: string; mention: 
 
 /** Stops the task's turn, or with `subagent` only that subagent's work. */
 export const cancelTask = (task: string, subagent: string | null = null) => call(commands.agentCancel(task, subagent));
+export const stopBackgroundTask = (task: string, background: string) =>
+  call(commands.agentStopBackground(task, background));
 export const respond = (task: string, permission: number, option: string | null) =>
   call(commands.agentRespond(task, permission, option));
 export const unarchiveTask = (task: string) => call(commands.agentUnarchive(task));

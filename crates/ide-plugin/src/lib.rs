@@ -9,6 +9,7 @@
 //! host drops it. Each active plugin's runtime lives on its own [`Actor`] thread.
 
 mod actor;
+pub mod indexing;
 mod runtime;
 mod sandbox;
 mod types;

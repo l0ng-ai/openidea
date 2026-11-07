@@ -154,7 +154,11 @@ fn managed_bin_dir(root: &Path, spec: &ToolSpec, platform: Platform) -> Option<P
         Method::PipVenv { .. } => {
             Some(root.join(spec.name).join("venv").join(if platform.os == Os::Windows { "Scripts" } else { "bin" }))
         }
-        Method::Bundled { .. } | Method::Rustup { .. } | Method::PipUser { .. } | Method::PipTarget { .. } => None,
+        Method::Bundled { .. }
+        | Method::Rustup { .. }
+        | Method::PipUser { .. }
+        | Method::PipTarget { .. }
+        | Method::GemActive { .. } => None,
     }
 }
 
@@ -429,6 +433,9 @@ pub struct Tools {
     /// Executables found outside the search path (app bundles), by command.
     found: BTreeMap<String, PathBuf>,
     version_timeout: Duration,
+    /// The project the tools are used for: tools that install into "the active runtime" (gems) run here,
+    /// so a version manager picks the project's Ruby.
+    work_dir: Option<PathBuf>,
 }
 
 impl Tools {
@@ -450,6 +457,7 @@ impl Tools {
             custom: BTreeMap::new(),
             found: BTreeMap::new(),
             version_timeout: Duration::from_secs(4),
+            work_dir: None,
         }
     }
 
@@ -465,8 +473,23 @@ impl Tools {
         self
     }
 
+    /// Runs per-project installs (see [`registry::Method::GemActive`]) in `dir`.
+    pub fn with_work_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.work_dir = dir.filter(|d| d.is_dir());
+        self
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// [`Tools::command`] in the project directory.
+    fn command_in_project(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = self.command(program);
+        if let Some(dir) = &self.work_dir {
+            cmd.current_dir(dir);
+        }
+        cmd
     }
 
     fn which(&self, cmd: &str) -> Option<PathBuf> {
@@ -614,7 +637,9 @@ impl Tools {
                 "npm or pnpm is required: install Node.js (https://nodejs.org)",
             ),
             Method::Go { .. } => need(self.which("go").is_some(), "Go is required (https://go.dev/dl)"),
-            Method::Gem { .. } => need(self.which("gem").is_some(), "Ruby is required (https://www.ruby-lang.org)"),
+            Method::Gem { .. } | Method::GemActive { .. } => {
+                need(self.which("gem").is_some(), "Ruby is required (https://www.ruby-lang.org)")
+            }
             Method::DotnetTool { .. } => {
                 need(self.which("dotnet").is_some(), ".NET SDK is required (https://dotnet.microsoft.com/download)")
             }
@@ -772,6 +797,22 @@ impl Tools {
                     _ => (ToolStatus::Missing, None, None),
                 }
             }
+            Method::GemActive { gem } => {
+                // Installed for the Ruby active in the project, not merely a shim of some other version's.
+                let Some(gem_cmd) = self.which("gem") else { return (ToolStatus::Missing, None, None) };
+                let mut c = self.command_in_project(&gem_cmd);
+                c.args(["list", "--exact", gem]);
+                match run_quiet(c, Duration::from_secs(10)) {
+                    Some((true, out)) if out.contains(&format!("{gem} (")) => {
+                        // Homebrew's Ruby keeps its gem bindir off PATH: ask the Ruby where it is.
+                        match self.gem_executable(main) {
+                            Some(path) => (ToolStatus::OnPath, Some(path), parse_version(&out)),
+                            None => (ToolStatus::Missing, None, None),
+                        }
+                    }
+                    _ => (ToolStatus::Missing, None, None),
+                }
+            }
             _ => match self.which(main) {
                 Some(path) => {
                     let version = self.query_version(spec, &path);
@@ -868,6 +909,7 @@ impl Tools {
                 Method::Npm { packages } => self.install_npm(packages, cancel, emit)?,
                 Method::Go { module } => self.install_go(spec, module, cancel, emit)?,
                 Method::Gem { gem } => self.install_gem(spec, gem, cancel, emit)?,
+                Method::GemActive { gem } => self.install_gem_active(gem, cancel, emit)?,
                 Method::DotnetTool { package } => self.install_dotnet_tool(spec, package, cancel, emit)?,
                 Method::PipVenv { package } => self.install_venv(spec, package, cancel, emit)?,
                 Method::PipUser { package, .. } => self.install_pip_user(package, cancel, emit)?,
@@ -951,6 +993,41 @@ impl Tools {
             })
         });
         self.write_manifest(spec.name, &Manifest { version, source: Some(module.to_string()) })
+    }
+
+    /// Where the project's Ruby installs gem executables (`Gem.bindir`, `Gem.user_dir`'s `bin`).
+    fn gem_bin_dirs(&self) -> Vec<PathBuf> {
+        let Some(ruby) = self.which("ruby") else { return Vec::new() };
+        let mut c = self.command_in_project(ruby);
+        c.args(["-e", ide_core::tool_path::RUBY_GEM_BIN_SCRIPT]);
+        match run_quiet(c, Duration::from_secs(10)) {
+            Some((true, out)) => ide_core::tool_path::gem_bin_dirs(&out),
+            _ => Vec::new(),
+        }
+    }
+
+    /// An installed gem's executable: on the search path, else in one of the Ruby's gem bin directories.
+    fn gem_executable(&self, cmd: &str) -> Option<PathBuf> {
+        self.which(cmd).or_else(|| self.gem_bin_dirs().iter().find_map(|d| self.exe_in(d, cmd)))
+    }
+
+    /// `gem install` into the active Ruby, then makes version-manager shims see the new executable.
+    fn install_gem_active(&self, gem: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
+        let mut c = self.command_in_project(self.which("gem").expect("checked"));
+        c.args(["install", "--no-document", gem]);
+        run_streamed(c, cancel, emit)?;
+        // mise / asdf / rbenv list executables in shims written at install time; a gem installed
+        // afterwards has none until they are regenerated. Best effort: the tool may not be installed.
+        for (manager, args) in
+            [("mise", &["reshim"][..]), ("asdf", &["reshim", "ruby"][..]), ("rbenv", &["rehash"][..])]
+        {
+            if let Some(path) = self.which(manager) {
+                let mut c = self.command_in_project(path);
+                c.args(args);
+                let _ = run_quiet(c, Duration::from_secs(30));
+            }
+        }
+        Ok(())
     }
 
     fn install_gem(&self, spec: &ToolSpec, gem: &str, cancel: &CancellationToken, emit: Emit) -> IdeResult<()> {
@@ -1144,10 +1221,26 @@ impl Tools {
         cancel: &CancellationToken,
     ) -> IdeResult<sources::Download> {
         match source {
-            ReleaseSource::GitHub { repo } => {
-                let json = http.get_text(&sources::github_latest_url(repo), cancel)?;
-                sources::github_pick(&json, assets, self.platform)
-            }
+            ReleaseSource::GitHub { repo } => match http.get_text(&sources::github_latest_url(repo), cancel) {
+                Ok(json) => sources::github_pick(&json, assets, self.platform),
+                Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+                // Without a token the API allows 60 requests an hour per IP address, often used
+                // up behind a shared one (403/429); the release's web pages have no such limit.
+                Err(api) => self.resolve_github_web(http, repo, assets, cancel).map_err(|web| {
+                    if web.kind == ErrorKind::Cancelled {
+                        return web;
+                    }
+                    tracing::warn!("GitHub release lookup for {repo} failed: {api}; web pages: {web}");
+                    IdeError::new(
+                        api.kind,
+                        format!(
+                            "{}\nDownload it from {} and set its Path in Settings › Languages & Frameworks › Language Servers.",
+                            api.message,
+                            sources::github_latest_page(repo)
+                        ),
+                    )
+                }),
+            },
             ReleaseSource::HashiCorp { product } => {
                 let json = http.get_text(&sources::hashicorp_latest_url(product), cancel)?;
                 sources::hashicorp_pick(&json, assets, self.platform)
@@ -1171,6 +1264,27 @@ impl Tools {
                 let xml = http.get_text(&sources::maven_metadata_url(group, artifact), cancel)?;
                 sources::maven_pick(group, artifact, &xml)
             }
+        }
+    }
+
+    /// [`resolve_release`](Self::resolve_release) for a GitHub release, from its web pages.
+    fn resolve_github_web(
+        &self,
+        http: &Http,
+        repo: &str,
+        assets: &[platform::AssetRule],
+        cancel: &CancellationToken,
+    ) -> IdeResult<sources::Download> {
+        let page = http.effective_url(&sources::github_latest_page(repo), cancel)?;
+        let tag = sources::github_tag_from_url(&page)
+            .ok_or_else(|| IdeError::unavailable(format!("{repo} has no published release")))?;
+        let list = http.get_text(&sources::github_assets_page(repo, &tag), cancel)?;
+        match sources::github_pick_web(repo, &tag, &list, None, assets, self.platform) {
+            Err(e) if e.kind == ErrorKind::Unavailable => {
+                let notes = http.get_text(&sources::github_tag_page(repo, &tag), cancel)?;
+                sources::github_pick_web(repo, &tag, &list, Some(&notes), assets, self.platform)
+            }
+            result => result,
         }
     }
 
@@ -1308,6 +1422,18 @@ impl Tools {
                     }
                     c.current_dir(&self.root);
                     run_streamed(c, &cancel, &quiet)?;
+                }
+            }
+            Method::GemActive { gem } => {
+                if let Some(gem_cmd) = self.which("gem") {
+                    let mut c = self.command_in_project(&gem_cmd);
+                    c.args(["uninstall", "--all", "--executables", "--ignore-dependencies", gem]);
+                    run_streamed(c, &cancel, &quiet)?;
+                }
+                // A copy an older version installed under the tools directory.
+                let dir = self.root.join(spec.name);
+                if dir.exists() {
+                    std::fs::remove_dir_all(&dir)?;
                 }
             }
             Method::Go { .. }

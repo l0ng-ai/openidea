@@ -13,8 +13,9 @@
 //!
 //! The commands a window needs at run time (`plugin_run_command`,
 //! `plugin_post_events`, `plugin_event_kinds`, `plugin_status_items`,
-//! `plugin_cancel_task`, `plugin_set_active_file`, `plugin_line_markers`,
-//! `plugin_view_render`, `plugin_view_event`)
+//! `plugin_context_keys`, `plugin_cancel_task`, `plugin_answer_prompt`, `plugin_set_active_file`,
+//! `plugin_line_markers`, `plugin_view_render`, `plugin_view_event`, `plugin_service_detail`,
+//! `plugin_service_log`)
 //! carry the desktop commands' names and arguments, so a remote window's UI
 //! routes them here unchanged. Plugin results come back as `plugin`
 //! notifications ([`PluginEventMessage`]); secrets stay in the desktop's
@@ -107,6 +108,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
         event,
         PluginEvent::Notification { .. }
             | PluginEvent::StatusItemChanged { .. }
+            | PluginEvent::ContextChanged { .. }
             | PluginEvent::TaskStarted { .. }
             | PluginEvent::TaskProgress { .. }
             | PluginEvent::TaskEnded { .. }
@@ -117,6 +119,9 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::OpenLocation { .. }
             | PluginEvent::CopyToClipboard { .. }
             | PluginEvent::OpenUrl { .. }
+            | PluginEvent::PromptRequested { .. }
+            | PluginEvent::PromptClosed { .. }
+            | PluginEvent::RevealView { .. }
     )
 }
 
@@ -124,7 +129,7 @@ pub fn forwarded(event: &PluginEvent) -> bool {
 
 impl PluginHost {
     fn package_files(&self, plugin: &super::LoadedPlugin) -> IdeResult<Vec<PathBuf>> {
-        let set = self.registry.prepare(&plugin.pkg).map_err(IdeError::invalid)?;
+        let set = self.prepare(&plugin.pkg).map_err(IdeError::invalid)?;
         Ok(set.files.into_iter().chain(plugin.manifest().wasm.clone()).collect())
     }
 
@@ -367,10 +372,12 @@ impl RemotePlugins {
                 let command_id: String = c.arg("commandId")?;
                 let arg: Option<String> = c.arg("arg")?;
                 let editor: Option<PluginEditor> = c.arg("editor")?;
+                let paths: Option<Vec<PathBuf>> = c.arg("paths")?;
                 let invocation = Invocation {
                     client: Some(c.window.clone()),
                     workspace_root: c.host.project(&c.window).ok().map(|p| p.root.clone()),
                     editor: editor.map(PluginEditor::context),
+                    selected_paths: paths.unwrap_or_default(),
                 };
                 blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
             }
@@ -400,9 +407,19 @@ impl RemotePlugins {
             }
         });
         let h = host.clone();
+        d.add("plugin_context_keys", move |c| {
+            let h = h.clone();
+            async move { Ok(alive(&h)?.context_keys(Some(&c.window))) }
+        });
+        let h = host.clone();
         d.add("plugin_cancel_task", move |c| {
             let h = h.clone();
             async move { Ok(alive(&h)?.cancel_task(&c.arg::<String>("taskId")?)) }
+        });
+        let h = host.clone();
+        d.add("plugin_answer_prompt", move |c| {
+            let h = h.clone();
+            async move { Ok(alive(&h)?.answer_prompt(&c.arg::<String>("promptId")?, c.arg("answer")?)) }
         });
         let h = host.clone();
         d.add("plugin_set_active_file", move |c| {
@@ -446,6 +463,78 @@ impl RemotePlugins {
                     c.arg("editor")?,
                 )
                 .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_service_detail", move |c| {
+            let h = h.clone();
+            async move {
+                super::views::service_detail(
+                    &c.host,
+                    alive(&h)?,
+                    &c.window,
+                    c.arg("pluginId")?,
+                    c.arg("view")?,
+                    c.arg("key")?,
+                )
+                .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_service_log", move |c| {
+            let h = h.clone();
+            async move {
+                super::views::service_log(
+                    &c.host,
+                    alive(&h)?,
+                    &c.window,
+                    c.arg("pluginId")?,
+                    c.arg("view")?,
+                    c.arg("key")?,
+                    c.arg("tab")?,
+                    c.arg("on")?,
+                    c.arg("request")?,
+                    c.sender("onLine")?,
+                )
+                .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_navigation_files", move |c| {
+            let h = h.clone();
+            async move { super::index_ops::plugin_navigation_files(&c.host, alive(&h)?, &c.window).await }
+        });
+        let h = host.clone();
+        d.add("plugin_navigation_invalidate", move |c| { let h = h.clone(); async move {
+            super::index_ops::plugin_navigation_invalidate(&c.host, alive(&h)?, &c.window, c.arg("paths")?)
+        } });
+        let h = host.clone();
+        d.add("plugin_navigation_index", move |c| {
+            let h = h.clone();
+            async move {
+                super::index_ops::plugin_navigation_index(
+                    &c.host,
+                    alive(&h)?,
+                    &c.window,
+                    c.arg("paths")?,
+                    c.arg("request")?,
+                )
+                .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_navigation_goto", move |c| {
+            let h = h.clone();
+            async move {
+                super::index_ops::plugin_navigation_goto(&c.host, alive(&h)?, &c.window, c.arg("doc")?, c.arg("pos")?)
+                    .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_navigation_markers", move |c| {
+            let h = h.clone();
+            async move {
+                super::index_ops::plugin_navigation_markers(&c.host, alive(&h)?, &c.window, c.arg("paths")?).await
             }
         });
         d.add("plugin_line_markers", |c| async move {

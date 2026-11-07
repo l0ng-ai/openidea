@@ -73,7 +73,7 @@ fn dedupe_by_real_path(paths: Vec<(PathBuf, &'static str)>) -> Vec<(PathBuf, &'s
 /// Project-local virtualenv directories checked by auto-detection, in order.
 pub(crate) const PROJECT_VENVS: [&str; 4] = [".venv", "venv", "env", ".env"];
 
-/// `<root>/<venv>/bin/python` of the first project virtualenv.
+/// `<root>/<venv>/bin/python` of the first project virtualenv or pixi environment.
 pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
     PROJECT_VENVS
         .iter()
@@ -81,6 +81,11 @@ pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
         .filter(|v| v.join("pyvenv.cfg").is_file())
         .map(|v| v.join(bin_dir()).join(exe("python")))
         .find(|p| p.is_file())
+        .or_else(|| {
+            subdirs(&root.join(".pixi/envs")).iter().find_map(|env| {
+                [env.join(exe("python")), env.join("bin").join(exe("python"))].into_iter().find(|p| p.is_file())
+            })
+        })
 }
 
 /// `/usr/bin/python3` on macOS is a stub that opens an installer dialog when
@@ -108,6 +113,14 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
             let dir = root.join(v);
             if dir.join("pyvenv.cfg").is_file() {
                 found.push((dir.join(bin_dir()).join(exe("python")), "venv"));
+            }
+        }
+        // pixi environments (`.pixi/envs/<env>`), which are no virtualenvs.
+        for env in subdirs(&root.join(".pixi/envs")) {
+            let python =
+                [env.join(exe("python")), env.join("bin").join(exe("python"))].into_iter().find(|p| p.is_file());
+            if let Some(python) = python {
+                found.push((python, "pixi"));
             }
         }
     }
@@ -215,6 +228,10 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
                 .map(|n| n.to_string_lossy().into_owned());
             format!("Python {short} (conda: {})", env.unwrap_or_default())
         }
+        (None, "pixi") => {
+            let env = pixi_env_name(path).unwrap_or_default();
+            format!("Python {short} (pixi: {env})")
+        }
         (None, "pyenv") => format!("Python {short} (pyenv)"),
         (None, tool @ ("uv" | "mise" | "asdf")) => format!("Python {short} ({tool})"),
         _ => format!("Python {short}"),
@@ -224,9 +241,24 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
         name: label,
         version: Some(version),
         source: source.to_owned(),
-        home: venv.or_else(|| path.parent().and_then(Path::parent).map(Path::to_path_buf)).map(Into::into),
+        home: venv
+            .or_else(|| (source == "pixi").then(|| pixi_env_home(path)).flatten())
+            .or_else(|| path.parent().and_then(Path::parent).map(Path::to_path_buf))
+            .map(Into::into),
         extra: None,
     })
+}
+
+/// `.pixi/envs/<env>` of a pixi interpreter (`<env>/python`, `<env>/bin/python`).
+fn pixi_env_home(python: &Path) -> Option<PathBuf> {
+    let dir = python.parent()?;
+    let env = if dir.file_name().is_some_and(|n| n == "bin") { dir.parent()? } else { dir };
+    (env.parent()?.file_name()? == "envs" && env.parent()?.parent()?.file_name()? == ".pixi").then(|| env.to_path_buf())
+}
+
+/// The name of a pixi interpreter's environment (`<env>` of `.pixi/envs/<env>`).
+fn pixi_env_name(python: &Path) -> Option<String> {
+    pixi_env_home(python)?.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
 fn pyvenv_version(python: &Path) -> Option<String> {
@@ -282,8 +314,38 @@ pub(crate) fn php_source(path: &Path, home: Option<&Path>) -> &'static str {
     }
 }
 
-/// `php` CLIs: every one on `PATH`, Homebrew's versioned formulae, PHP version managers,
-/// Laravel Herd, and the usual Windows distributions (XAMPP, Laragon).
+/// A PHP CLI named with its version, as Debian / Ubuntu (`ppa:ondrej/php`) install them:
+/// `php8.1`, `php81`. Not `php-cgi8.1`, `phpize8.1` or `phpdbg8.1`.
+pub(crate) fn is_versioned_php_name(name: &str) -> bool {
+    let name = name.strip_suffix(".exe").unwrap_or(name);
+    let Some(version) = name.strip_prefix("php") else { return false };
+    let mut parts = version.splitn(2, '.');
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    parts.next().is_some_and(digits) && parts.next().is_none_or(digits)
+}
+
+/// The versioned PHP CLIs in `dirs`, in `PATH` order (sorted by name within a directory).
+pub(crate) fn versioned_php_in(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for dir in dirs {
+        if version_managers::is_shims_dir(&dir) {
+            continue;
+        }
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| is_versioned_php_name(n))
+            .collect();
+        names.sort();
+        found.extend(names.into_iter().map(|n| dir.join(n)).filter(|p| p.is_file()));
+    }
+    found
+}
+
+/// `php` CLIs: every one on `PATH` (also versioned ones, `php8.1`), Homebrew's versioned
+/// formulae, PHP version managers, Laravel Herd, and the usual Windows distributions (XAMPP, Laragon).
 fn php() -> Vec<Sdk> {
     let mut found: Vec<(PathBuf, &'static str)> = Vec::new();
     let home = home_dir();
@@ -291,6 +353,11 @@ fn php() -> Vec<Sdk> {
         if version_managers::is_shim(&p) {
             continue;
         }
+        let source = php_source(&p, home.as_deref());
+        found.push((p, source));
+    }
+    // After the plain `php`: deduplication keeps `/usr/bin/php` over the `php8.3` it links to.
+    for p in versioned_php_in(std::env::split_paths(&search_path())) {
         let source = php_source(&p, home.as_deref());
         found.push((p, source));
     }
@@ -332,7 +399,7 @@ fn php() -> Vec<Sdk> {
         }
     }
     let found = dedupe_by_real_path(found);
-    par_map(&found, |(path, source)| {
+    let mut sdks = par_map(&found, |(path, source)| {
         let version = query(path, &["-r", "echo PHP_VERSION;"], VERSION_TIMEOUT)?;
         let version = version.trim().to_owned();
         if version.is_empty() {
@@ -346,7 +413,16 @@ fn php() -> Vec<Sdk> {
             home: path.parent().and_then(Path::parent).map(Into::into),
             extra: None,
         })
-    })
+    });
+    newest_first(&mut sdks);
+    sdks
+}
+
+/// Newest version first, number by number (8.3.12 before 8.3.9); stable, so on equal
+/// versions the `PATH` install stays first.
+pub(crate) fn newest_first(sdks: &mut [Sdk]) {
+    let key = |s: &Sdk| ide_core::tool_path::version_key(s.version.as_deref().unwrap_or(""));
+    sdks.sort_by_key(|s| std::cmp::Reverse(key(s)));
 }
 
 fn node() -> Vec<Sdk> {
@@ -662,12 +738,20 @@ mod maven_path_tests {
     struct Subst {
         name: String,
         root: PathBuf,
+        _lock: std::fs::File,
     }
 
     impl Subst {
         fn new(target: &Path) -> Self {
-            // Tests run in parallel and may race for the same free letter; only a drive that
-            // shows this target's marker is ours.
+            // Drive letters are shared across nextest's test processes; hold the lock until unmapping.
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(std::env::temp_dir().join("openidea-sdk-subst.lock"))
+                .unwrap();
+            lock.lock().unwrap();
             let marker = format!("{}.subst", target.file_name().unwrap().to_string_lossy());
             std::fs::write(target.join(&marker), "").unwrap();
             for letter in (b'D'..=b'Z').rev() {
@@ -678,7 +762,7 @@ mod maven_path_tests {
                 }
                 let output = Command::new("subst").arg(&name).arg(target).output().unwrap();
                 if output.status.success() && root.join(&marker).exists() {
-                    return Self { name, root };
+                    return Self { name, root, _lock: lock };
                 }
             }
             panic!("no free drive for Maven path verification");
@@ -735,5 +819,36 @@ mod maven_path_tests {
         assert_eq!(launcher, dunce::canonicalize(real.path().join("bin/mvn.cmd")).unwrap());
         let home = launcher.parent().and_then(Path::parent).and_then(maven_home).unwrap();
         assert_eq!(home, dunce::canonicalize(real.path()).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod pixi_tests {
+    use super::*;
+
+    #[test]
+    fn a_pixi_env_is_a_project_python_and_an_sdk_home() {
+        let root = tempfile::tempdir().unwrap();
+        let env = root.path().join(".pixi/envs/default");
+        let bin = if cfg!(windows) { env.clone() } else { env.join("bin") };
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join(exe("python"));
+        std::fs::write(&python, "").unwrap();
+
+        assert_eq!(project_venv_python(root.path()), Some(python.clone()));
+        assert_eq!(pixi_env_home(&python), Some(env.clone()));
+        assert_eq!(pixi_env_name(&python).as_deref(), Some("default"));
+
+        // A second env sorts after; the first with a Python wins.
+        let other = root.path().join(".pixi/envs/aaa-empty");
+        std::fs::create_dir_all(&other).unwrap();
+        assert_eq!(project_venv_python(root.path()), Some(python));
+    }
+
+    #[test]
+    fn non_pixi_paths_have_no_pixi_home() {
+        assert_eq!(pixi_env_home(Path::new("/usr/bin/python3")), None);
+        assert_eq!(pixi_env_home(Path::new("/p/.venv/bin/python")), None);
+        assert_eq!(pixi_env_home(Path::new("/p/envs/x/bin/python")), None);
     }
 }

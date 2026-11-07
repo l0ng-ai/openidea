@@ -43,6 +43,7 @@ import {
 } from "./testing";
 import { GoTestOutput } from "./testing/go";
 import { moveToReportedClasses } from "./testing/jvm";
+import { RubyTestOutput } from "./testing/ruby";
 import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { recordTestStates } from "./testing/states";
@@ -51,6 +52,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { loadRunTemplates } from "./runTemplates";
 import { recordRun } from "./services";
 import { startedPort } from "./serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
@@ -87,7 +89,7 @@ interface SessionRuntime {
   console: ConsoleModel;
   tests: TestResults | null;
   parser: TestOutputParser | null;
-  /** Machine-readable stdout (`go test -json`, `--teamcity`): fed to the parser, shown decoded. */
+  /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
   queue: OutputChunk[];
   /**
@@ -201,7 +203,7 @@ export async function loadConfigs(): Promise<void> {
     return;
   }
   try {
-    const saved = await call(commands.runConfigs());
+    const [saved] = await Promise.all([call(commands.runConfigs()), loadRunTemplates()]);
     if (useProject.getState().project?.root !== root) return;
     // Temporary configs survive reloads (and restarts) until saved or evicted; a saved one wins.
     // They are kept without what settings derived: today's toolchains apply to them, as to the others.
@@ -588,13 +590,16 @@ function newRuntime(config: RunConfig): SessionRuntime {
     if (tests && parser) tests.apply(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
-  // PHPUnit `--teamcity` and Gradle's test init script report through service messages.
+  // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest through
+  // the IDE's own reporter (RSpec has none: its progress dots must show as they come).
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
       : framework === "phpunit" || framework === "jvm"
         ? new TeamcityOutput(feed)
-        : null;
+        : framework === "ruby" && config.kind !== "rspec"
+          ? new RubyTestOutput(feed)
+          : null;
   const runtime: SessionRuntime = {
     stdout,
     tests,
@@ -1028,7 +1033,7 @@ function notifyExit(sessionId: string, code: number | null) {
           toolWindowService().show("run", true);
         },
       },
-      { label: "Rerun", run: () => void startRun(session.config, sessionId) },
+      { label: "Rerun", run: () => void startRun(rerunConfig(session), sessionId, session.baseConfig) },
     ],
   });
 }
@@ -1088,9 +1093,35 @@ export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): 
   });
 }
 
+/**
+ * What rerunning a session launches: its configuration as saved now (edited since, as IDEA), or
+ * the one it ran with when that was deleted or never saved. A derived run (Rerun Failed Tests) keeps its tests.
+ */
+export function rerunConfig(session: Pick<RunSession, "config" | "baseConfig">): RunConfig {
+  if (session.baseConfig) return session.config;
+  return useRun.getState().configs.find((c) => c.id === session.config.id) ?? session.config;
+}
+
+/** The session's original configuration, as saved now (see {@link rerunConfig}). */
+function baseConfigOf(session: RunSession): RunConfig {
+  const base = session.baseConfig ?? session.config;
+  return useRun.getState().configs.find((c) => c.id === base.id) ?? base;
+}
+
+/** Ids of every configuration listed in this window, so a run of one deleted since can be told apart. */
+const listedConfigIds = new Set<string>();
+useRun.subscribe((s, prev) => {
+  if (s.configs !== prev.configs) for (const c of s.configs) listedConfigIds.add(c.id);
+});
+
+/** The configuration was saved or temporary in this window and has been removed since. */
+export function configRemoved(id: string): boolean {
+  return listedConfigIds.has(id) && !useRun.getState().configs.some((c) => c.id === id);
+}
+
 export function rerunSession(sessionId: string) {
   const session = getSession(sessionId);
-  if (session) void startRun(session.config, sessionId, session.baseConfig);
+  if (session) void startRun(rerunConfig(session), sessionId, session.baseConfig && baseConfigOf(session));
 }
 
 /**
@@ -1100,7 +1131,7 @@ export function rerunSession(sessionId: string) {
  */
 export function debugSession(sessionId: string) {
   const session = getSession(sessionId);
-  if (session) void executeAction("run.debugConfig", session.baseConfig ?? session.config);
+  if (session) void executeAction("run.debugConfig", baseConfigOf(session));
 }
 
 /** Paths of the failed tests of a session's last run. */
@@ -1113,7 +1144,7 @@ export function failedTests(sessionId: string): string[][] {
 export function rerunFailed(sessionId: string): boolean {
   const session = getSession(sessionId);
   if (!session || session.status === "running" || session.status === "starting") return false;
-  const base = session.baseConfig ?? session.config;
+  const base = baseConfigOf(session);
   const derived = rerunFailedConfig(base, failedTests(sessionId));
   if (!derived) return false;
   void startRun(derived, sessionId, base);
@@ -1134,7 +1165,7 @@ export async function runSelectedTests(
   if (!session || !tests) return false;
   const nodes = nodeIds.map((id) => tests.get(id)).filter((n) => !!n);
   const paths = leafTestPaths(nodes);
-  const base = session.baseConfig ?? session.config;
+  const base = baseConfigOf(session);
   const name = nodes.length === 1 ? nodes[0]!.name : `${paths.length} tests`;
   const derived = testsConfig(base, paths, name);
   if (!derived) return false;

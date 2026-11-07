@@ -76,13 +76,21 @@ export async function commitChanges(): Promise<string | undefined> {
   const id = await runOp(
     amend ? "Amend commit" : "Commit",
     async () => {
-      if (plan.unstage.length) await call(commands.vcsUnstage(plan.unstage));
+      // The commit is made from a copy of the index, so changes left out keep their
+      // staged state and the other repositories' indexes stay as they are.
       const stage = [...plan.stage, ...partial.whole];
-      if (stage.length) await call(commands.vcsStage(stage));
       let id = "";
       for (const repo of repos) {
-        const files = partial.files.filter((f) => (rootOf(f.path, roots) ?? null) === repo || repos.length === 1);
-        const options = { amend, signOff, author: author.trim() || null, runHooks, partial: files };
+        const inRepo = (path: string) => repos.length === 1 || (rootOf(path, roots) ?? null) === repo;
+        const options = {
+          amend,
+          signOff,
+          author: author.trim() || null,
+          runHooks,
+          partial: partial.files.filter((f) => inRepo(f.path)),
+          stage: stage.filter(inRepo),
+          exclude: plan.exclude.filter(inRepo),
+        };
         id = await call(commands.vcsCommit(repo, message.trim(), options));
       }
       return id;
@@ -153,7 +161,8 @@ async function partialCommitFiles(paths: readonly string[]): Promise<{ files: Pa
 }
 
 /** Delete… on unversioned files in the Changes view, as in IDEA: they move to the Trash. */
-export async function deleteUnversioned(paths: readonly string[]) {
+/** Delete… in the Changes view: moves the files to the Trash (a tracked file then shows as deleted). */
+export async function deleteFiles(paths: readonly string[]) {
   if (!paths.length) return;
   const question = paths.length === 1 ? tx`Delete '${baseName(paths[0]!)}'?` : tx`Delete ${paths.length} items?`;
   const ok = await confirmDialog({

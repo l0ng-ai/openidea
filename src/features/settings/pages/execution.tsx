@@ -144,7 +144,20 @@ export const EXECUTION_PAGES: PageSpec[] = [
     group: BUILD_GROUP,
     // IntelliJ IDEA: Build Tools › Maven, before Console / Debugger.
     order: 359,
-    keywords: ["maven home", "mvn", "mvnw", "wrapper", "settings.xml", "user settings", "local repository", "m2"],
+    keywords: [
+      "maven home",
+      "mvn",
+      "mvnw",
+      "wrapper",
+      "settings.xml",
+      "user settings",
+      "local repository",
+      "m2",
+      "thread count",
+      "threads",
+      "-T",
+      "parallel",
+    ],
     component: MavenPage,
   },
   {

@@ -6,6 +6,10 @@
     </delegateCommandHandler>
     <delegateCommandHandler class="ai.openidea.configuration.ConfigurationCommand">
       <command id="openidea.java.configuration"/>
+      <command id="openidea.java.configuration.warmup"/>
+    </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.implementations.ImplementationsCommand">
+      <command id="openidea.java.implementations"/>
     </delegateCommandHandler>
     <delegateCommandHandler class="ai.openidea.hierarchy.HierarchyCommand">
       <command id="openidea.java.hierarchy.members"/>

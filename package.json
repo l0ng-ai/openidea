@@ -2,7 +2,7 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "0.1.37",
+  "version": "0.1.38",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -22,13 +22,15 @@
     "gen:windows-icons": "node scripts/gen-windows-icons.ts",
     "gen:angular-grammar": "lezer-generator src/editor/core/cm/angular/angular.grammar --typeScript -o src/editor/core/cm/angular/parser.ts",
     "gen:jsp-grammar": "lezer-generator src/editor/core/cm/jsp/jsp.grammar --typeScript -o src/editor/core/cm/jsp/parser.ts",
+    "gen:astro-grammar": "lezer-generator src/editor/core/cm/astro/astro.grammar --typeScript -o src/editor/core/cm/astro/parser.ts",
     "gen:theme-docs": "node scripts/theme/gen-docs.ts",
     "theme:import-intellij": "node scripts/theme/import-intellij-theme.ts",
     "dev:app": "node scripts/tauri.ts dev --config src-tauri/tauri.dev.conf.json",
     "dev:status": "node scripts/dev-status.ts",
     "e2e": "playwright test",
     "perf": "node perf/run.ts",
-    "perf:rust": "node perf/rust.ts"
+    "perf:rust": "node perf/rust.ts",
+    "release:prepare": "node scripts/release-prepare.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"

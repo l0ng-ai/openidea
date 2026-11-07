@@ -1,7 +1,7 @@
 (header module: (module) @name) @outline.module
 (data_type name: (name) @name) @def.enum
 (newtype name: (name) @name) @def.struct
-(type_synomym name: (name) @name) @def.type
+(type_synonym name: (name) @name) @def.type
 (type_family name: (name) @name) @def.type
 (class name: (name) @name) @def.interface
 (instance name: (name) @name patterns: (_) @detail) @outline.namespace

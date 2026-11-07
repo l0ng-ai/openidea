@@ -29,6 +29,7 @@ import { importConfigs, importLabel } from "./importConfigs";
 import { targetName } from "./remote";
 import { saveEditedConfigs, selectConfig, useRun } from "./store";
 import { blankTemplate, COMPOUND, missingParams, newConfigOfType, templateId, typeFor } from "./types";
+import { cacheRunTemplates } from "./runTemplates";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -142,7 +143,11 @@ function EditConfigsDialog() {
     if (!isTauri()) return;
     let live = true;
     call(commands.runTemplates())
-      .then((t) => live && setTemplates(t))
+      .then((t) => {
+        if (!live) return;
+        setTemplates(t);
+        cacheRunTemplates(t);
+      })
       .catch(() => live && setTemplates([]));
     return () => {
       live = false;
@@ -305,7 +310,10 @@ function EditConfigsDialog() {
     setSaving(true);
     try {
       if (dirty) await saveEditedConfigs(draft, removedDetectedIds);
-      if (templatesDirty && templates) await call(commands.runSaveTemplates(templates));
+      if (templatesDirty && templates) {
+        await call(commands.runSaveTemplates(templates));
+        cacheRunTemplates(templates);
+      }
       setRemovedDetectedIds([]);
       setDirty(false);
       setTemplatesDirty(false);

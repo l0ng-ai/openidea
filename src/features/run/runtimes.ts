@@ -78,26 +78,39 @@ export async function locateTools(
   return out;
 }
 
-async function projectPython(): Promise<string | null> {
+async function projectPython(file: string | null): Promise<string | null> {
   try {
-    return await call(commands.sdkPythonEffective());
+    return await call(commands.sdkPythonEffective(file ? dirOf(file) : null));
   } catch {
     return null;
   }
 }
 
-async function rootMarkers(root: string | null): Promise<{ deno: boolean; bun: boolean }> {
-  if (!root) return { deno: false, bun: false };
+async function projectPhp(): Promise<string | null> {
   try {
-    const entries = await call(commands.fsReadDir(root));
-    const names = new Set(entries.map((e) => e.name));
-    return {
-      deno: names.has("deno.json") || names.has("deno.jsonc"),
-      bun: names.has("bun.lockb") || names.has("bun.lock"),
-    };
+    return await call(commands.sdkPhpEffective());
   } catch {
-    return { deno: false, bun: false };
+    return null;
   }
+}
+
+export async function rootMarkers(root: string | null, file: string | null): Promise<{ deno: boolean; bun: boolean }> {
+  if (!root) return { deno: false, bun: false };
+  let dir = file && file.startsWith(root + "/") ? dirOf(file) : root;
+  while (dir === root || dir.startsWith(root + "/")) {
+    try {
+      const entries = await call(commands.fsReadDir(dir));
+      const names = new Set(entries.map((e) => e.name));
+      const deno = names.has("deno.json") || names.has("deno.jsonc");
+      const bun = names.has("bun.lockb") || names.has("bun.lock");
+      if (deno || bun || names.has("package.json")) return { deno, bun };
+    } catch {
+      /* Unreadable ancestors contribute no runtime markers. */
+    }
+    if (dir === root) break;
+    dir = dirOf(dir);
+  }
+  return { deno: false, bun: false };
 }
 
 /** The tool environment for running `file` with any of `names`. */
@@ -106,17 +119,22 @@ export async function toolEnv(
   file: string | null,
   root: string | null,
   python: boolean,
+  php = false,
 ): Promise<ToolEnv> {
-  const [tools, py, markers] = await Promise.all([
+  const [tools, py, phpInterpreter, markers] = await Promise.all([
     locateTools(names, file),
-    python ? projectPython() : Promise.resolve(null),
-    names.includes("deno") || names.includes("bun") ? rootMarkers(root) : Promise.resolve({ deno: false, bun: false }),
+    python ? projectPython(file) : Promise.resolve(null),
+    php ? projectPhp() : Promise.resolve(null),
+    names.includes("deno") || names.includes("bun")
+      ? rootMarkers(root, file)
+      : Promise.resolve({ deno: false, bun: false }),
   ]);
   return {
     tool: (n) => tools.get(n),
     compileDir: compileDir ?? "/tmp/openidea-run",
     windows: isWindows(),
     python: py,
+    php: phpInterpreter,
     ...markers,
   };
 }

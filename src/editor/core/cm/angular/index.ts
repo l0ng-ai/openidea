@@ -22,10 +22,10 @@ import {
   type Tree,
   type TreeFragment,
 } from "@lezer/common";
+import { JS_TAGS } from "../jsTags";
 import { parser } from "./parser";
 
-// @lezer/javascript styles `.` as a deref operator, but not `?.`.
-const jsParser = javascriptLanguage.parser.configure({ props: [styleTags({ "?.": t.derefOperator })] });
+const jsParser = javascriptLanguage.parser.configure({ props: [styleTags(JS_TAGS)] });
 const exprParser = jsParser.configure({ top: "SingleExpression" });
 
 const baseParser = parser.configure({

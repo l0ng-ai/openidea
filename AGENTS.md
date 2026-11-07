@@ -79,6 +79,8 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
   `pnpm gen:bindings`.
 - `pnpm perf` (UI interaction latency / frames / leaks), `pnpm perf:rust` (criterion
   benches vs budgets). Budgets: `perf/budgets.json`.
+- `pnpm release:prepare <version>` — the release commit's changes: app version everywhere,
+  `Cargo.lock`, and the plugin API snapshot when `wit/` moved to a new version.
 
 ## Before opening a PR
 

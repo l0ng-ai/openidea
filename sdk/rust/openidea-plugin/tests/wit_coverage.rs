@@ -51,3 +51,32 @@ fn every_imported_function_has_an_sdk_wrapper() {
     assert!(checked > 30, "only {checked} functions found: is the world still called `plugin`?");
     assert!(missing.is_empty(), "plugin API functions without an SDK wrapper:\n  {}", missing.join("\n  "));
 }
+
+#[test]
+fn every_optional_export_can_be_registered() {
+    let mut resolve = Resolve::default();
+    let (pkg, _) = resolve.push_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("wit")).unwrap();
+    let source = sdk_source();
+    let base = &resolve.worlds[resolve.packages[pkg].worlds["plugin"]];
+    let mut missing = Vec::new();
+    let mut checked = 0;
+    for (name, &id) in &resolve.packages[pkg].worlds {
+        if !name.starts_with("plugin-") {
+            continue;
+        }
+        for (key, item) in &resolve.worlds[id].exports {
+            let WorldItem::Interface { id, .. } = item else { continue };
+            if base.exports.contains_key(key) {
+                continue;
+            }
+            let module = resolve.interfaces[*id].name.as_deref().unwrap().replace('-', "_");
+            let guest = format!("exports::openidea::plugin::{module}::Guest for");
+            checked += 1;
+            if !source.contains(&guest) {
+                missing.push(format!("{name}: {module}"));
+            }
+        }
+    }
+    assert!(checked >= 5, "only {checked} optional exports found");
+    assert!(missing.is_empty(), "optional exports register_plugin! can't export:\n  {}", missing.join("\n  "));
+}

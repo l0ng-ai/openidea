@@ -1,13 +1,13 @@
 /**
  * Result / table data grid: virtualised rows, resizable columns, rectangular
- * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV, `<null>`
- * rendering, sortable headers and in-place editing (table editor).
+ * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV / One-Row,
+ * `<null>` rendering, sortable headers and in-place editing (table editor).
  */
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
-import { parseDelimited, toCsv, toTsv, type Cell } from "./model";
+import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
@@ -29,11 +29,16 @@ export function isNumericColumn(type: string, sample: readonly Cell[]): boolean 
   return values.length > 0 && values.every((v) => NUMBER.test(v));
 }
 
+/** The grid's own copy formats (the extractor drop-down chooses one for plain ⌘C). */
+export type CopyFormat = "tsv" | "csv" | "onerow";
+
 export interface GridProps {
   columns: readonly GridColumn[];
   rowCount: number;
   /** Displayed value (pending edits applied). */
   value: (row: number, col: number) => Cell;
+  /** The format plain ⌘C copies in (the toolbar's extractor; TSV by default). */
+  copyFormat?: CopyFormat;
   rowState?: (row: number) => "deleted" | "inserted" | null;
   isModified?: (row: number, col: number) => boolean;
   editable?: boolean;
@@ -57,6 +62,8 @@ export interface GridProps {
   currentMatch?: { row: number; col: number } | null;
   /** ⌘F / Ctrl+F in the grid (opens the search bar). */
   onFind?: () => void;
+  /** Go to Column: a new object selects that column's cell in the current row, scrolls to it and focuses the grid. */
+  revealColumn?: { col: number } | null;
   "aria-label"?: string;
 }
 
@@ -115,7 +122,18 @@ function norm(s: Sel) {
 }
 
 export function Grid(props: GridProps) {
-  const { columns, rowCount, value, editable, onEdit, sort, onSort, rowMenu, firstRowNumber = 1 } = props;
+  const {
+    columns,
+    rowCount,
+    value,
+    editable,
+    onEdit,
+    sort,
+    onSort,
+    rowMenu,
+    firstRowNumber = 1,
+    copyFormat = "tsv",
+  } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<Sel | null>(null);
   const dragging = useRef(false);
@@ -160,15 +178,37 @@ export function Grid(props: GridProps) {
     estimateSize: () => ROW_H,
     overscan: 12,
   });
+  /** Scrolls sideways so column `c` is visible (the first one with the row numbers). */
+  const scrollColumnIntoView = (c: number) => {
+    const el = scrollRef.current;
+    if (!el || c < 0 || c >= widths.length) return;
+    const left = c ? NUM_W + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
+    const right = NUM_W + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
+    if (left < el.scrollLeft) el.scrollLeft = left;
+    else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = Math.min(left, right - el.clientWidth);
+  };
   const { currentMatch } = props;
   useEffect(() => {
     if (!currentMatch) return;
     const { row, col } = currentMatch;
     setSel({ r0: row, c0: col, r1: row, c1: col });
     virtualizer.scrollToIndex(row, { align: "auto" });
+    scrollColumnIntoView(col);
     // Follows the match only, not the virtualizer's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentMatch?.row, currentMatch?.col]);
+  const { revealColumn } = props;
+  useEffect(() => {
+    if (!revealColumn || !rowCount) return;
+    const { col } = revealColumn;
+    const row = sel ? Math.min(sel.r1, rowCount - 1) : 0;
+    setSel({ r0: row, c0: col, r1: row, c1: col });
+    virtualizer.scrollToIndex(row, { align: "auto" });
+    scrollColumnIntoView(col);
+    scrollRef.current?.focus({ preventScroll: true });
+    // Runs once per request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealColumn]);
   const totalWidth = useMemo(() => NUM_W + widths.reduce((a, b) => a + b, 0), [widths]);
   const template = `${NUM_W}px ${widths.map((w) => `${w}px`).join(" ")}`;
 
@@ -184,7 +224,7 @@ export function Grid(props: GridProps) {
     return Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
   };
 
-  const copy = (format: "tsv" | "csv", header: boolean, wholeRows = false) => {
+  const copy = (format: CopyFormat, header: boolean, wholeRows = false) => {
     if (!sel) return;
     const n = norm(sel);
     const cols = wholeRows
@@ -192,7 +232,12 @@ export function Grid(props: GridProps) {
       : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
     const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
     const head = header ? cols.map((c) => columns[c]!.name) : null;
-    const text = format === "tsv" ? toTsv(head, rows) : toCsv(head, rows);
+    const text =
+      format === "onerow"
+        ? toOneRow(rows, (c) => !!numeric[cols[c]!])
+        : format === "tsv"
+          ? toTsv(head, rows)
+          : toCsv(head, rows);
     void navigator.clipboard?.writeText(text);
   };
 
@@ -223,7 +268,7 @@ export function Grid(props: GridProps) {
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === "c") {
       e.preventDefault();
-      copy("tsv", false);
+      copy(copyFormat, false);
       return;
     }
     if (mod && e.key.toLowerCase() === "f" && props.onFind) {
@@ -255,6 +300,7 @@ export function Grid(props: GridProps) {
     const c = Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1]));
     setSel(e.shiftKey ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
     virtualizer.scrollToIndex(r, { align: "auto" });
+    scrollColumnIntoView(c);
   };
 
   const onCellMouseDown = (e: MouseEvent, r: number, c: number) => {
@@ -301,7 +347,15 @@ export function Grid(props: GridProps) {
     e.preventDefault();
     if (!sel) return;
     const items: MenuItem[] = [
-      { label: "Copy", shortcut: "⌘C", run: () => copy("tsv", false) },
+      { label: "Copy", shortcut: "⌘C", run: () => copy(copyFormat, false) },
+      {
+        label: "Copy as",
+        submenu: [
+          { label: "TSV", verbatim: true, run: () => copy("tsv", false) },
+          { label: "CSV", verbatim: true, run: () => copy("csv", false) },
+          { label: "One-Row", run: () => copy("onerow", false) },
+        ],
+      },
       { label: "Copy with Header", run: () => copy("tsv", true) },
       { label: "Copy Rows as TSV", run: () => copy("tsv", true, true) },
       { label: "Copy Rows as CSV", run: () => copy("csv", true, true) },

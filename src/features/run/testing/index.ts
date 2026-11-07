@@ -6,13 +6,14 @@ import { jsParser } from "./js";
 import { jvmParser } from "./jvm";
 import { phpunitParser, withTeamcity } from "./phpunit";
 import { pytestParser } from "./pytest";
+import { rubyParser } from "./ruby";
 import { unittestParser } from "./unittest";
 import type { TestEvent, TestOutputParser } from "./types";
 
 export type { TestEvent, TestOutputParser, TestStatus } from "./types";
 export { parseDuration } from "./types";
 export { TestResults, nodeStatus, type TestNode } from "./results";
-export { cargoParser, goParser, jsParser, jvmParser, phpunitParser, pytestParser, unittestParser };
+export { cargoParser, goParser, jsParser, jvmParser, phpunitParser, pytestParser, rubyParser, unittestParser };
 
 /** Runs several parsers side by side (unknown tool: e.g. `make test`). */
 export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
@@ -22,7 +23,7 @@ export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
   };
 }
 
-export type Framework = "cargo" | "js" | "pytest" | "unittest" | "phpunit" | "go" | "jvm" | "auto";
+export type Framework = "cargo" | "js" | "pytest" | "unittest" | "phpunit" | "go" | "jvm" | "ruby" | "auto";
 
 export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args">): Framework {
   const cmd = [config.command, ...config.args].join(" ");
@@ -47,6 +48,10 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
     case "gradle":
     case "maven":
       return "jvm";
+    case "ruby":
+    case "rake":
+    case "rspec":
+      return "ruby";
   }
   if (/\bcargo\b/.test(cmd)) return "cargo";
   if (/\b(jest|vitest|npm|pnpm|yarn|bun|npx|deno)\b/.test(cmd)) return "js";
@@ -56,6 +61,21 @@ export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args"
   if (/\bgo\s+test\b/.test(cmd)) return "go";
   if (/\b(gradlew?|mvnw?)\b/.test(cmd)) return "jvm";
   return "auto";
+}
+
+/** `TESTOPTS=-v` / a trailing `-v`: Minitest prints a line per test only when verbose. */
+function rubyVerbose<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T): T {
+  if (config.kind === "rspec") return config;
+  if (config.kind === "rake") {
+    const at = config.args.findIndex((a) => a.startsWith("TESTOPTS="));
+    if (at < 0) return { ...config, args: [...config.args, "TESTOPTS=-v"] };
+    // Options already given (`--name=Class#test_x`): add ours unless verbosity was chosen.
+    return /(^|\s)(-v|--verbose)(\s|$)/.test(config.args[at]!)
+      ? config
+      : { ...config, args: config.args.map((a, i) => (i === at ? `${a} -v` : a)) };
+  }
+  const chosen = config.args.some((a) => a === "-v" || a === "--verbose");
+  return chosen ? config : { ...config, args: [...config.args, "-v"] };
 }
 
 /**
@@ -79,6 +99,7 @@ export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" |
     const chosen = config.args.some((a) => /^(-v|--verbosity)(=?\d)?$/.test(a));
     return chosen ? config : { ...config, args: [...config.args, "-v", "2"] };
   }
+  if (frameworkFor(config) === "ruby") return rubyVerbose(config);
   if (frameworkFor(config) !== "pytest") return config;
   const cmd = [config.command, ...config.args];
   const pytestAt = cmd.findIndex((a) => /(^|[/\\])pytest(\.exe)?$/.test(a));
@@ -103,6 +124,8 @@ export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "a
       return goParser();
     case "jvm":
       return jvmParser();
+    case "ruby":
+      return rubyParser();
     default:
       return combinedParser([
         cargoParser(),
@@ -112,6 +135,7 @@ export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "a
         phpunitParser(),
         goParser(),
         jvmParser(),
+        rubyParser(),
       ]);
   }
 }

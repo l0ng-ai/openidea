@@ -26,7 +26,7 @@ describe("languages settings", () => {
         jdtlsVmArgs: " -Xmx2g ",
         jdk: 21,
         jdtlsJdk: " /opt/jdk-25 ",
-        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd " },
+        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd ", threads: " 2C " },
       },
     });
     expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
@@ -45,8 +45,10 @@ describe("languages settings", () => {
       linkedProjects: [],
       daemon: false,
       mvndHome: "/opt/mvnd",
+      threads: "2C",
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
   });
 
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
@@ -63,7 +65,12 @@ describe("languages settings", () => {
       languageLevel: "",
       includePaths: [],
       stubs: [],
+      phpstanConfig: "",
     });
+    expect(validateLanguages({ php: { phpstanConfig: " build/phpstan.neon " } }).php.phpstanConfig).toBe(
+      "build/phpstan.neon",
+    );
+    expect(validateLanguages({ php: { phpstanConfig: 3 } }).php.phpstanConfig).toBe("");
     const lists = validateLanguages({ php: { includePaths: [" ../platform ", "", 3, "../platform"], stubs: "redis" } });
     expect(lists.php.includePaths).toEqual(["../platform"]);
     expect(lists.php.stubs).toEqual([]);
@@ -73,7 +80,9 @@ describe("languages settings", () => {
     }
     expect(PHP_LANGUAGE_LEVELS[0]).toBe("");
     expect(PHP_LANGUAGE_LEVELS).toContain("5.6");
-    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("8.5");
+    // Newest first after Auto (#1557).
+    expect(PHP_LANGUAGE_LEVELS[1]).toBe("8.5");
+    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("5.6");
   });
 
   it("finds the PHP page by its language level", () => {
@@ -87,7 +96,13 @@ describe("languages settings", () => {
       validateLanguages({
         prettier: { path: " ./bin/prettier ", languages: ["markdown", 4, "markdown"], prefer: true, runOnSave: true },
       }).prettier,
-    ).toEqual({ path: "./bin/prettier", languages: ["markdown"], prefer: true, runOnSave: true });
+    ).toEqual({
+      path: "./bin/prettier",
+      configurationDirectory: "",
+      languages: ["markdown"],
+      prefer: true,
+      runOnSave: true,
+    });
     expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
   });
 
@@ -97,8 +112,41 @@ describe("languages settings", () => {
       prettier: { runOnSave: true },
       oxfmt: { path: " ./bin/oxfmt ", languages: ["typescript", null, "typescript"], prefer: true },
     });
-    expect(v.oxfmt).toEqual({ path: "./bin/oxfmt", languages: ["typescript"], prefer: true, runOnSave: false });
+    expect(v.oxfmt).toEqual({
+      path: "./bin/oxfmt",
+      configurationDirectory: "",
+      languages: ["typescript"],
+      prefer: true,
+      runOnSave: false,
+    });
     expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
+  });
+
+  it("enables Ruff for Python by default and keeps its settings separate", () => {
+    expect(validateLanguages({}).ruff).toMatchObject({
+      path: "",
+      configurationDirectory: "",
+      languages: ["python"],
+      prefer: false,
+      runOnSave: false,
+    });
+    const v = validateLanguages({
+      ruff: {
+        path: " ./bin/ruff ",
+        configurationDirectory: " ./config/ruff ",
+        languages: ["python", null, "python", "pyi"],
+        prefer: true,
+        runOnSave: true,
+      },
+    });
+    expect(v.ruff).toEqual({
+      path: "./bin/ruff",
+      configurationDirectory: "./config/ruff",
+      languages: ["python", "pyi"],
+      prefer: true,
+      runOnSave: true,
+    });
+    expect(v.prettier).toEqual(DEFAULT_LANGUAGES.prettier);
   });
 
   it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
@@ -138,6 +186,7 @@ describe("language pages", () => {
       "PHP",
       "Prettier",
       "oxfmt",
+      "Ruff",
       "Ruby",
       "Rust",
       "TypeScript",

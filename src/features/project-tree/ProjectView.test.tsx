@@ -664,10 +664,24 @@ describe("Show Members", () => {
   });
 });
 
-it("renders workspace member roots with their own paths, without the settings directory", async () => {
-  fs = new MemoryFs({ "/z/first.txt": "", "/a/second.txt": "", "/workspace/.openidea/workspace.json": "{}" });
+it("sorts workspace member roots by the folder names shown in the tree", async () => {
+  fs = new MemoryFs({
+    "/a/service10/ten.txt": "",
+    "/z/Service2/two.txt": "",
+    "/m/alpha/first.txt": "",
+    "/workspace/.openidea/workspace.json": "{}",
+  });
   setProjectFsForTests(fs, "/workspace");
-  initProjectTree("/workspace", "Workspace", ["/z", "/a"]);
+  initProjectTree("/workspace", "Workspace", ["/a/service10", "/z/Service2", "/m/alpha"]);
   const { rows } = setup();
-  await waitFor(() => expect(rows()).toEqual(["z/z", "first.txt", "a/a", "second.txt"]));
+  await waitFor(() =>
+    expect(rows()).toEqual([
+      "alpha/m/alpha",
+      "first.txt",
+      "Service2/z/Service2",
+      "two.txt",
+      "service10/a/service10",
+      "ten.txt",
+    ]),
+  );
 });

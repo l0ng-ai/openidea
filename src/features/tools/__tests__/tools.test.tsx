@@ -147,6 +147,25 @@ describe("missing language server prompt", () => {
     off();
   });
 
+  it("offers Ruff formatting even when another Python server is installed", async () => {
+    const installed = sampleTools().find((t) => t.name === "basedpyright")!;
+    backend.tools.push({
+      ...installed,
+      name: "ruff",
+      displayName: "Ruff",
+      command: "ruff",
+      installMethod: "uv (virtualenv)",
+      languages: ["Python"],
+      alternatives: [],
+    });
+    await promptInstall("ruff", true, new Set(), true);
+    expect(notes.at(-1)).toMatchObject({
+      title: "Ruff is not installed",
+      body: "Reformat Code needs Ruff. Install it via uv (virtualenv)?",
+      key: missingKey("ruff"),
+    });
+  });
+
   it("stays silent when an installed alternative serves the same languages", async () => {
     const off = installMissingServerPrompts();
     // typescript-language-server (on PATH) covers vtsls' languages.

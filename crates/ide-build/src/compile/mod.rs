@@ -234,7 +234,12 @@ pub fn plan(
     Ok(BuildPlan { system, title, steps })
 }
 
-fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<&Path>) -> IdeResult<Vec<BuildStep>> {
+pub(super) fn maven_steps(
+    root: &Path,
+    model: &BuildModel,
+    kind: BuildKind,
+    module: Option<&Path>,
+) -> IdeResult<Vec<BuildStep>> {
     let fallback;
     let m = match &model.maven {
         Some(m) => m,
@@ -383,18 +388,7 @@ fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
 
 /// `pnpm` / `yarn` / `bun` / `npm`, from the lock file next to `package.json` or above it.
 fn package_manager(dir: &Path) -> &'static str {
-    for d in dir.ancestors() {
-        if d.join("pnpm-lock.yaml").is_file() {
-            return "pnpm";
-        } else if d.join("yarn.lock").is_file() {
-            return "yarn";
-        } else if d.join("bun.lockb").is_file() || d.join("bun.lock").is_file() {
-            return "bun";
-        } else if d.join("package-lock.json").is_file() {
-            return "npm";
-        }
-    }
-    "npm"
+    ide_core::project_roots::package_manager(dir)
 }
 
 fn has_build_script(dir: &Path) -> bool {
@@ -882,7 +876,8 @@ mod tests {
         model.gradle[0].env.insert("JAVA_HOME".into(), "/external-jdk".into());
         let all = super::plan(&root, &model, super::BuildKind::Build, None, None).unwrap();
         assert_eq!(all.steps[0].cwd, external);
-        assert_eq!(all.steps[0].program, external.join(wrapper).to_string_lossy());
+        // Linked roots are saved with forward slashes, so on Windows the program mixes separators.
+        assert_eq!(std::path::Path::new(&all.steps[0].program), external.join(wrapper));
         let module = super::plan(&root, &model, super::BuildKind::Rebuild, Some(&source), None).unwrap();
         assert_eq!(module.steps[0].cwd, external);
         assert_eq!(module.steps[0].env["JAVA_HOME"], "/external-jdk");
