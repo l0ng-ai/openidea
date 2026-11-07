@@ -202,6 +202,16 @@ describe("delegation across independent builds", () => {
     expect(run!.args.at(-1)).toBe(":app:openideaRun");
   });
 
+  it("leaves the launch to the IDE when Build and run using is IDE", async () => {
+    useProject.setState({
+      project: { root: ROOT } as ProjectInfo,
+      settings: { languages: { java: { gradle: { runUsing: "ide" } } } } as never,
+    });
+    useBuildModel.setState({ root: ROOT, model: { maven: null, gradle: [gradle] } });
+    const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
+    expect(await gradleDelegation(app)).toBeNull();
+  });
+
   it("prefers the directly linked owner over a longer sibling composite root", async () => {
     const composite = {
       ...gradle,
