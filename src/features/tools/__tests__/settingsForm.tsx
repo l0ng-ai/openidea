@@ -44,6 +44,7 @@ export function TestSettingsForm({
   const form = useMemo<SettingsForm>(
     () => ({
       scope,
+      apply: async () => true,
       useExternal: () => {
         throw new Error("External settings are not supported by this stand-in");
       },

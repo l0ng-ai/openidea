@@ -6745,5 +6745,7 @@
   "Run Content Editor Action": "运行内容编辑器操作",
   "Before": "更改前",
   "After": "更改后",
-  "The plugin did not save the content": "插件未保存内容"
+  "The plugin did not save the content": "插件未保存内容",
+  "Running an action applies pending settings first.": "运行动作前会先应用待保存的设置。",
+  "Could not apply settings.": "无法应用设置。"
 }

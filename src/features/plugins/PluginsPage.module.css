@@ -351,19 +351,6 @@
   margin-bottom: 12px;
 }
 
-.settingsPage {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 560px;
-}
-
-.settingRow {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 .marketItem {
   list-style: none;
   padding: 4px 8px;
