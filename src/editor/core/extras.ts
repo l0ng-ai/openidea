@@ -5,7 +5,8 @@ import { structure } from "@/editor/structure";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
 import { executeAction } from "@/platform/actions";
-import { clipLabel, clipboardHistory, isLinewiseClipboardText, recordClipboard } from "./clipboardHistory";
+import { clipboardHistory, recordClipboard } from "./clipboardHistory";
+import { openPasteHistory } from "./view/PasteHistoryDialog";
 import { dispatchPaste } from "./cm/clipboard";
 import { unwrapOptions, type ChainNode, type UnwrapOption } from "./cm/unwrap";
 import type { EditorSlot } from "./model/slot";
@@ -25,29 +26,10 @@ export function pasteFromHistory(view: EditorView) {
     hint("Nothing to paste: the clipboard history is empty");
     return;
   }
-  openPopup({
-    kind: "list",
-    anchor: caretAnchor(view, view.state.selection.main.head),
-    title: "Choose Content to Paste",
-    items: items.map(({ text, linewise }, i) => {
-      const { label, detail } = clipLabel(text);
-      return {
-        id: `${i}`,
-        label,
-        detail,
-        preview:
-          text
-            .split(/\r\n?|\n/)
-            .slice(1, 4)
-            .join("  ⏎  ")
-            .trim() || undefined,
-        run: () => {
-          recordClipboard(text, linewise);
-          void navigator.clipboard?.writeText(text).catch(() => {});
-          pasteText(view, text);
-        },
-      };
-    }),
+  openPasteHistory(view, (text, linewise) => {
+    recordClipboard(text, linewise);
+    void navigator.clipboard?.writeText(text).catch(() => {});
+    pasteText(view, text);
   });
 }
 
@@ -125,7 +107,7 @@ export async function pasteAsPlainText(view: EditorView) {
     hint("Cannot read the clipboard");
     return;
   }
-  if (!text && !isLinewiseClipboardText(text)) return;
+  if (!text) return;
   dispatchPaste(view, text, "input.pastePlain");
   view.focus();
 }

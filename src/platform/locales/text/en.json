@@ -327,5 +327,11 @@
   "Copy Path with Line Number": "Copy Path with Line Number",
   "Reference": "Reference",
   "Resolving reference…": "Resolving reference…",
-  "Copied {text}": "Copied {text}"
+  "Copied {text}": "Copied {text}",
+  "Filter clipboard history": "Filter clipboard history",
+  "Clipboard history": "Clipboard history",
+  "Paste preview": "Paste preview",
+  "1 line": "1 line",
+  "(whitespace)": "(whitespace)",
+  "Nothing to paste: the clipboard history is empty": "Nothing to paste: the clipboard history is empty"
 }
