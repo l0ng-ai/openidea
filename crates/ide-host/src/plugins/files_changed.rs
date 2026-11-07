@@ -350,6 +350,76 @@ mod tests {
     }
 
     #[test]
+    fn files_changed_dropped_actor_job_releases_mailbox_before_restart() {
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host = files_changed_host(&root);
+        let plugin = host.get("files-events").unwrap();
+        let (actor, _) = host.ensure_active(&plugin, Some("main")).unwrap();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        actor.post(
+            move |_| {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+                Err::<(), _>(ide_plugin::CallError::Trap("test actor exit".into()))
+            },
+            |_| {},
+        );
+        waiting.recv_timeout(Duration::from_secs(10)).unwrap();
+        host.post_events(Some("main"), vec![delta(0, &to_ipc(&root.join("dropped.rs")))]);
+        host.flush_events();
+        assert_eq!(plugin.batches.lock().pending, 1);
+        release.send(()).unwrap();
+        actor.stop(true);
+        assert_eq!(plugin.batches.lock().pending, 0, "dropped closures must release their batch ticket");
+        assert!(plugin.batches.lock().files_pending.is_empty());
+        host.set_enabled("files-events", false).unwrap();
+        host.set_enabled("files-events", true).unwrap();
+        host.post_events(Some("main"), vec![delta(0, &to_ipc(&root.join("fresh.rs")))]);
+        host.flush_events();
+        assert!(host.wait_events(Duration::from_secs(10)));
+        let data = host.run_command("files-events", "events", None, Default::default()).unwrap().unwrap();
+        let batches: Vec<FilesChanged> = serde_json::from_str(&data).unwrap();
+        assert_eq!(batches, [FilesChanged { created: vec![to_ipc(&root.join("fresh.rs"))], ..Default::default() }]);
+    }
+
+    #[test]
+    fn files_changed_old_ticket_cannot_clear_successor_mailbox_or_running_state() {
+        use super::super::{BatchTicket, Batches, PendingFiles};
+        let batches = Arc::new(parking_lot::Mutex::new(Batches::default()));
+        let key = (Some("main".into()), Some(PathBuf::from("/project")));
+        let old = Arc::new(());
+        let new = Arc::new(());
+        let ticket = BatchTicket { batches: batches.clone(), files_key: Some(key.clone()), token: old };
+        {
+            let mut state = batches.lock();
+            state.pending = 2;
+            state.running = Some([ide_plugin::EventKind::FilesChanged].into());
+            state.running_token = Some(new.clone());
+            state.files_pending.insert(
+                key.clone(),
+                PendingFiles {
+                    queue: super::super::EventQueue {
+                        since: std::time::Instant::now(),
+                        events: vec![delta(0, "/project/new")],
+                        files_source: None,
+                    },
+                    actor: std::sync::Weak::new(),
+                    token: new.clone(),
+                },
+            );
+        }
+        drop(ticket);
+        let state = batches.lock();
+        assert_eq!(state.pending, 1);
+        assert!(Arc::ptr_eq(&state.files_pending[&key].token, &new));
+        assert!(Arc::ptr_eq(state.running_token.as_ref().unwrap(), &new));
+        assert!(state.running.is_some());
+    }
+
+    #[test]
     fn every_runtime_event_has_a_matching_manifest_activation() {
         for kind in ide_plugin::EventKind::ALL {
             if kind != ide_plugin::EventKind::Scheduled {
