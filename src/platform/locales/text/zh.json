@@ -6696,5 +6696,9 @@
   "Paste preview": "粘贴预览",
   "1 line": "1 行",
   "(whitespace)": "（空白）",
-  "Nothing to paste: the clipboard history is empty": "没有可粘贴的内容：剪贴板历史为空"
+  "Nothing to paste: the clipboard history is empty": "没有可粘贴的内容：剪贴板历史为空",
+  "Insert imports on paste": "粘贴时插入导入",
+  "Add Imports on Paste": "粘贴时添加导入",
+  "Add Imports": "添加导入",
+  "Select imports to add to the pasted code:": "选择要为粘贴的代码添加的导入："
 }

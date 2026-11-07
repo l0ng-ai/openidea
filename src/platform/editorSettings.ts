@@ -122,7 +122,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     parameterInfo: true,
     parameterInfoDelay: 1000,
   },
-  autoImport: { addUnambiguous: false, optimizeOnTheFly: false },
+  autoImport: { addUnambiguous: false, optimizeOnTheFly: false, importsOnPaste: "ask" as "ask" | "always" | "never" },
   folding: { showOutline: true, fileHeader: true, imports: true, docComments: false },
   tabs: {
     placement: "top",
@@ -251,6 +251,7 @@ export function fontWeightVars(main: unknown, bold: unknown): Record<"--fw-code"
 
 export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
   out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);
   return out;

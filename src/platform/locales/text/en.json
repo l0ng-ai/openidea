@@ -334,5 +334,12 @@
   "Paste preview": "Paste preview",
   "1 line": "1 line",
   "(whitespace)": "(whitespace)",
-  "Nothing to paste: the clipboard history is empty": "Nothing to paste: the clipboard history is empty"
+  "Nothing to paste: the clipboard history is empty": "Nothing to paste: the clipboard history is empty",
+  "Insert imports on paste": "Insert imports on paste",
+  "Add Imports on Paste": "Add Imports on Paste",
+  "Add Imports": "Add Imports",
+  "Select imports to add to the pasted code:": "Select imports to add to the pasted code:",
+  "Always": "Always",
+  "Ask": "Ask",
+  "Never": "Never"
 }

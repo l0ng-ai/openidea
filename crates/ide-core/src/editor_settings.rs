@@ -166,6 +166,16 @@ impl Default for CompletionSettings {
 pub struct AutoImportSettings {
     pub add_unambiguous: bool,
     pub optimize_on_the_fly: bool,
+    pub imports_on_paste: ImportsOnPaste,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportsOnPaste {
+    #[default]
+    Ask,
+    Always,
+    Never,
 }
 
 /// Editor › General › Code Folding.
@@ -463,6 +473,27 @@ impl Default for EncodingSettings {
             properties: "iso-8859-1".into(),
             native_to_ascii: false,
             utf8_bom: "never".into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod auto_import_tests {
+    use super::{AutoImportSettings, ImportsOnPaste};
+
+    #[test]
+    fn imports_on_paste_defaults_to_ask_for_existing_settings() {
+        let settings: AutoImportSettings = serde_json::from_str(r#"{"addUnambiguous":true}"#).unwrap();
+        assert!(settings.add_unambiguous);
+        assert_eq!(settings.imports_on_paste, ImportsOnPaste::Ask);
+    }
+
+    #[test]
+    fn imports_on_paste_modes_round_trip() {
+        for mode in ["ask", "always", "never"] {
+            let json = serde_json::json!({ "importsOnPaste": mode });
+            let settings: AutoImportSettings = serde_json::from_value(json).unwrap();
+            assert_eq!(serde_json::to_value(settings).unwrap()["importsOnPaste"], mode);
         }
     }
 }
