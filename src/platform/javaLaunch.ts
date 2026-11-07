@@ -185,6 +185,8 @@ export interface JavaPreparation {
   report?: (text: string, kind?: "system" | "stderr") => void;
   /** Before launch build; unset reads the run configuration (default: automatic/incremental). */
   policy?: BuildPolicy;
+  /** Saves open documents first, as IDEA's Before launch does. */
+  saveAll?: () => Promise<void>;
 }
 
 /** The build the launch would do: the configuration's policy, else incremental. */
@@ -201,6 +203,7 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   signal.throwIfAborted();
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);
+  await preparation.saveAll?.();
   report?.(tx`Building and resolving the classpath of ${parsed.mainClass}…` + "\n");
   const started = performance.now();
   const module = await resolveJavaModule(config);

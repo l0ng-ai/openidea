@@ -15,7 +15,7 @@ import {
   prepareJavaLaunch,
   type JavaPreparation,
 } from "@/platform/javaLaunch";
-import { notifications } from "@/workbench/contributions";
+import { maybeEditorService, notifications } from "@/workbench/contributions";
 
 export const JAVA_ADAPTER = "java-debug";
 export const KOTLIN_ADAPTER = "kotlin-debug-adapter";
@@ -119,6 +119,9 @@ export async function javaLaunchConfig(
     preparation ?? {
       request: nextRequestId(),
       signal: new AbortController().signal,
+      saveAll: async () => {
+        await maybeEditorService()?.saveAll();
+      },
     },
   );
   if (info.errorCount > 0 && !preparation?.report)
