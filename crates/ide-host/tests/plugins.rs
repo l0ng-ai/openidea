@@ -4836,7 +4836,13 @@ fn files_changed_wakes_idle_once_and_keeps_every_delta() {
     assert!(f.host.wait_events(Duration::from_secs(10)));
     let batches: Vec<ide_plugin::FilesChanged> =
         serde_json::from_str(&f.run("files-events", "events", None).unwrap().unwrap()).unwrap();
-    assert_eq!(batches.len(), 4, "later deltas must not cancel earlier batches");
+    let mut later: Vec<_> = batches[1..].iter().flat_map(|b| b.modified.iter().cloned()).collect();
+    later.sort();
+    assert_eq!(
+        later,
+        (0..3).map(|i| to_ipc(&f.project.join(format!("delta-{i}.rs")))).collect::<Vec<_>>(),
+        "later deltas must not cancel earlier batches"
+    );
 }
 
 #[test]
