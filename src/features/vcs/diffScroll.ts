@@ -173,6 +173,7 @@ export class UnalignedPanes {
     this.sync = opts.sync;
     this.extension = [gapMarks, changedLineGutters, EditorView.updateListener.of(() => this.schedule())];
     this.divider.className = "cm-diffDivider";
+    this.divider.setAttribute("data-wheel-scroll", "");
     this.svg.setAttribute("aria-hidden", "true");
     this.svg.appendChild(this.bandLayer);
     this.divider.appendChild(this.svg);
