@@ -5,8 +5,9 @@ fn is_blank(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\x0c')
 }
 
-/// Parses the `java.util.Properties.store` text format. Malformed escapes are kept literally
-/// rather than rejected: the JVM, not the user, produced this text.
+/// Parses the `java.util.Properties.store` text format. A malformed `\u` escape is read like
+/// any other unknown escape, its characters kept without the backslash, rather than rejected:
+/// the JVM, not the user, produced this text.
 pub fn parse_properties(text: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut lines = text.lines();
@@ -94,10 +95,13 @@ fn hex4(chars: &mut Chars) -> Option<u16> {
 
 /// `store` writes supplementary characters as two `\uXXXX` surrogate escapes.
 fn push_unicode_escape(chars: &mut Chars, out: &mut String) {
-    let Some(unit) = hex4(chars) else {
-        out.push_str("\\u");
+    // Parsed on a copy, so the digits of a malformed escape are still read as text.
+    let mut digits = chars.clone();
+    let Some(unit) = hex4(&mut digits) else {
+        out.push('u');
         return;
     };
+    *chars = digits;
     let mut units = vec![unit];
     if (0xD800..0xDC00).contains(&unit) {
         let mut ahead = chars.clone();
@@ -135,6 +139,14 @@ mod tests {
         assert_eq!(props["d"], "\u{1F600}");
         assert_eq!(props["e"], "\t\n\r\x0c");
         assert_eq!(props["f"], "");
+    }
+
+    #[test]
+    fn malformed_unicode_escape_keeps_its_characters() {
+        let props = parse_properties("a=\\u00zz\nb=\\u12\nc=x\\u");
+        assert_eq!(props["a"], "u00zz");
+        assert_eq!(props["b"], "u12");
+        assert_eq!(props["c"], "xu");
     }
 
     #[test]
