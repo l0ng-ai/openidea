@@ -411,6 +411,32 @@ export function adoptTemporary(config: RunConfig): RunConfig {
   return config;
 }
 
+/**
+ * A file removed (or moved away) takes the temporary context configurations its
+ * path produced (`context:file:` and the compiled `context:build:` partner), like
+ * IDEA deleting the context configuration with the file. Saved and detected
+ * configurations the user made stay.
+ */
+export function dropStaleContextConfigs(removed: readonly string[]) {
+  const { configs, temporary, selectedId } = useRun.getState();
+  const root = useProject.getState().project?.root;
+  if (!root || !removed.length || !temporary.length) return;
+  // Temporary ids carry the project-relative path (the full path outside the root).
+  const gone = new Set(removed.map((p) => (p.startsWith(`${root}/`) ? p.slice(root.length + 1) : p)));
+  const stale = (id: string) => {
+    const m = /^context:(?:file|build):(.+?)(?:#.+)?$/.exec(id);
+    return !!m && gone.has(m[1]!);
+  };
+  const dropped = temporary.filter(stale);
+  if (!dropped.length) return;
+  useRun.setState({
+    configs: configs.filter((c) => !dropped.includes(c.id)),
+    temporary: temporary.filter((id) => !stale(id)),
+  });
+  persistTemporary();
+  if (selectedId && dropped.includes(selectedId)) selectConfig(null);
+}
+
 /** "Save Configuration": a temporary configuration becomes a user configuration. */
 export async function saveTemporary(id: string): Promise<void> {
   const { configs, temporary } = useRun.getState();

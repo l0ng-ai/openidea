@@ -1,18 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { findLanguageDescription, loadSupport } from "../core/cm/languages";
+import { findLanguageDescription, loadSupport } from "../../core/cm/languages";
 import type { SemanticTokens } from "@/platform/ipc";
 import type { EditorDocContext } from "@/editor/api";
-import { lspDoc } from "./lsp";
-import { semanticExtension } from "./semantic";
+import { lspDoc } from "../lsp";
+import { semanticExtension } from "./index";
 
 const requests = vi.hoisted(() => [] as Array<(tokens: SemanticTokens) => void>);
-vi.mock("./lsp", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./lsp")>()),
+vi.mock("../lsp", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lsp")>()),
   lspRequest: () => new Promise<SemanticTokens>((resolve) => requests.push(resolve)),
 }));
-vi.mock("./availability", () => ({
+vi.mock("../availability", () => ({
   featureBackoff: () => ({ active: () => false, mark: () => {} }),
   onLspRefresh: () => () => {},
 }));
