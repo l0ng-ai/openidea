@@ -244,6 +244,24 @@ describe("WebView", () => {
       view.unmount();
     }
   });
+
+  it("refuses pty-spawn messages when process:<program> capability is not granted", async () => {
+    const { view, events } = setup(true);
+    const { posted, send } = await frameOf(view.container);
+    send({ text: JSON.stringify({ op: "pty-spawn", sessionId: "s1", program: "sh", args: ["-i"] }) });
+    await waitFor(() =>
+      expect(
+        posted.some(
+          (m) =>
+            typeof m.text === "string" &&
+            m.text.includes('"op":"pty-data"') &&
+            m.text.includes("process:sh capability not granted"),
+        ),
+      ).toBe(true),
+    );
+    expect(events).toEqual([]);
+    view.unmount();
+  });
 });
 
 describe("contributed file icons and templates", () => {
