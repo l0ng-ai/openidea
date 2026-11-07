@@ -24,3 +24,5 @@ pub async fn status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
 
 mod commands;
 pub use commands::*;
+mod ai;
+pub use ai::*;

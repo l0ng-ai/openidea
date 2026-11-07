@@ -64,6 +64,10 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
+        vcs::vcs_commit_ai_settings,
+        vcs::vcs_commit_ai_read_text,
+        vcs::vcs_commit_ai_save_settings,
+        vcs::vcs_generate_commit_message,
         app::app_info,
         android::android_devices,
         android::android_logcat,

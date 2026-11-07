@@ -19,6 +19,7 @@ import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import { registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
+import { installCommitAi } from "./commitAi";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
@@ -163,13 +164,24 @@ export function activateDiffViewer(): () => void {
 }
 
 export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
+  const log = registerSettingsPage({
     id: "vcs.log",
     title: "Log",
     order: 6,
     keywords: ["git log", "references", "tags", "columns", "commit time"],
     component: lazyComponent(() => import("./LogSettingsPage").then((m) => m.LogSettingsPage)),
   });
+  const ai = registerSettingsPage({
+    id: "vcs.commit.ai",
+    title: "AI Commit Message",
+    order: 0,
+    keywords: ["AI", "commit message", "baseUrl", "apiKey", "model", "OpenAI"],
+    component: lazyComponent(() => import("./CommitAiSettingsPage").then((m) => m.CommitAiSettingsPage)),
+  });
+  return () => {
+    ai();
+    log();
+  };
 }
 
 export function activate(): () => void {
@@ -212,6 +224,7 @@ export function activate(): () => void {
 
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
+    installCommitAi(),
     installVcsStore(),
     installGitLog(),
     installDiagnosticsTracking(),

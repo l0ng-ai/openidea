@@ -25,6 +25,7 @@ import {
   showUnstashDialog,
 } from "./changeOps";
 import { setAmend, useCommit } from "./commitStore";
+import { cancelCommitMessage, generateCommitMessage } from "./commitAi";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { openDiff, withChain, workingDiffData } from "./diffInput";
@@ -188,6 +189,22 @@ export function registerVcsActions(): () => void {
         const id = await commitChanges();
         if (id !== undefined) await pushAfterCommit();
       },
+    },
+    {
+      id: "vcs.generateCommitMessage",
+      title: "Generate Commit Message with AI",
+      category: "Git",
+      icon: "diff-magic-toolbar",
+      when: VCS,
+      run: generateCommitMessage,
+    },
+    {
+      id: "vcs.cancelCommitMessage",
+      title: "Cancel Commit Message Generation",
+      category: "Git",
+      icon: "stop",
+      when: VCS,
+      run: cancelCommitMessage,
     },
     {
       id: "vcs.toggleAmend",

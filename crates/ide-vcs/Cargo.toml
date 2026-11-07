@@ -20,9 +20,12 @@ blake3.workspace = true
 tempfile.workspace = true
 which = "8"
 regex-lite = "0.1"
+reqwest.workspace = true
+tokio.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+rustls.workspace = true

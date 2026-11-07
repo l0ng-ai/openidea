@@ -11,6 +11,7 @@ import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } 
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
+import { useCommitAi } from "./commitAi";
 import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
@@ -28,6 +29,7 @@ export function firstLine(message: string): string {
 
 /** Stages the included changes and commits them. Returns the new commit id. */
 export async function commitChanges(): Promise<string | undefined> {
+  if (useCommitAi.getState().generation) return undefined;
   const { message, amend } = useCommit.getState();
   if (!message.trim() && !amend) {
     notifications().notify({ group: "vcs", level: "warning", title: "Commit message is empty" });

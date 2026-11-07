@@ -7,6 +7,10 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 
 /** Commands */
 export const commands = {
+	vcsCommitAiSettings: () => typedError<CommitAiSettings, IdeError>(__TAURI_INVOKE("vcs_commit_ai_settings")),
+	vcsCommitAiReadText: (path: string, revision: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_commit_ai_read_text", { path, revision })),
+	vcsCommitAiSaveSettings: (config: CommitAiConfig, apiKey: string | null) => typedError<CommitAiSettings, IdeError>(__TAURI_INVOKE("vcs_commit_ai_save_settings", { config, apiKey })),
+	vcsGenerateCommitMessage: (request: RequestId, diff: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_generate_commit_message", { request, diff })),
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	/**  Devices `adb` knows about, online ones first. */
 	androidDevices: () => typedError<AndroidDevice[], IdeError>(__TAURI_INVOKE("android_devices")),
@@ -2329,6 +2333,16 @@ export type CommandForm = {
 };
 
 export type Commit = Commit_Serialize | Commit_Deserialize;
+
+export type CommitAiConfig = {
+	baseUrl?: string,
+	model?: string,
+};
+
+export type CommitAiSettings = {
+	config: CommitAiConfig,
+	hasApiKey: boolean,
+};
 
 /**  A window's answer to a [`CommitRequest`]. */
 export type CommitAnswer = 

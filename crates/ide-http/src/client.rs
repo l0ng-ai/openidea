@@ -26,6 +26,14 @@ pub fn with_proxy(builder: reqwest::ClientBuilder, proxy: &ProxySettings) -> req
 
 /// A client for `proxy`.
 pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
+    build_with_redirect_policy(proxy, reqwest::redirect::Policy::default())
+}
+
+/// Requests carrying source code or credentials may reject redirects entirely.
+pub fn build_with_redirect_policy(
+    proxy: &ProxySettings,
+    redirects: reqwest::redirect::Policy,
+) -> IdeResult<reqwest::Client> {
     use rustls_platform_verifier::BuilderVerifierExt;
     let fail = |e: String| IdeError::internal(format!("HTTP client: {e}"));
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -43,6 +51,7 @@ pub fn build(proxy: &ProxySettings) -> IdeResult<reqwest::Client> {
         std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0)),
     ];
     let builder = reqwest::Client::builder()
+        .redirect(redirects)
         .tls_backend_preconfigured(tls)
         .resolve_to_addrs("localhost", &loopback)
         .connect_timeout(Duration::from_secs(30))

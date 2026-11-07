@@ -68,6 +68,7 @@ import {
   type CommitTab,
 } from "./commitStore";
 import { pushAfterCommit } from "./commitUi";
+import { useCommitAi } from "./commitAi";
 import { rebaseAfterFixup } from "./rebase";
 import { stashTabOf, stashTabs, type ContentTab } from "./gitTabs";
 import { diffInput, openDiff, withChain, workingDiffData } from "./diffInput";
@@ -835,12 +836,13 @@ export interface CommitRunner {
  * shared pipeline (`commitChanges`), then the push. `onCommitted` runs after a commit.
  */
 export function useCommitRunner(included: number, onCommitted?: () => void): CommitRunner {
+  const generating = useCommitAi((s) => !!s.generation);
   const amend = useCommit((s) => s.amend);
   const merging = useVcs((s) => s.branch?.operation === "merge");
   const [emptyError, setEmptyError] = useState(false);
   const [busy, setBusy] = useState(false);
   const run = async (push: boolean, rebaseFixup = false) => {
-    if (busy) return;
+    if (busy || useCommitAi.getState().generation) return;
     // IDEA keeps Commit enabled and reports an empty message at the field.
     if (!useCommit.getState().message.trim() && !useCommit.getState().amend) {
       setEmptyError(true);
@@ -863,13 +865,15 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
     busy,
     emptyError,
     clearEmptyError: () => setEmptyError(false),
-    canCommit: (included > 0 || amend || merging) && !busy,
+    canCommit: (included > 0 || amend || merging) && !busy && !generating,
     run,
   };
 }
 
 /** Amend, message history and the message field with its inspections and failed checks. */
 export function CommitMessageField({ included, runner }: { included: number; runner: CommitRunner }) {
+  const generating = useCommitAi((s) => !!s.generation);
+  const aiError = useCommitAi((s) => s.error);
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
@@ -878,7 +882,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
-  const { emptyError } = runner;
+  const emptyError = runner.emptyError && !message.trim();
 
   // The failed checks concern what was about to be committed: editing it dismisses them.
   useEffect(() => {
@@ -934,12 +938,28 @@ export function CommitMessageField({ included, runner }: { included: number; run
         />
         <CommitMessageActions />
         <span className={styles.grow} />
+        <IconButton
+          action={generating ? "vcs.cancelCommitMessage" : "vcs.generateCommitMessage"}
+          icon={generating ? "stop" : "diff-magic-toolbar"}
+          size="small"
+          disabled={runner.busy || (!generating && !included)}
+        />
         {tooLong && (
           <span className={clsx(styles.lineLen, styles.lineLenWarn)} title={tx("Subject line length")}>
             {first.length}/{cfg.subjectLimit}
           </span>
         )}
       </div>
+      {generating && (
+        <div className={styles.inspections} role="status">
+          <T>Generating commit message…</T>
+        </div>
+      )}
+      {aiError && (
+        <div className={clsx(styles.inspections, styles.inspectionError)} role="alert">
+          {aiError}
+        </div>
+      )}
       <textarea
         ref={ref}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
