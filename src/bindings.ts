@@ -6282,8 +6282,11 @@ export type ProjectStructureSettings = {
 	excludeFiles?: string,
 };
 
-/**  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`). */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
+/**
+ *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+ *  `ui.input-multiline`, `ui.confirm`).
+ */
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string };
 
 export type ProxyKind = "http" | "socks";
 

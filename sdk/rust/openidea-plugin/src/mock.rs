@@ -481,6 +481,10 @@ pub mod current {
         Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
     }
 
+    pub fn input_multiline(_prompt: &str, _value: Option<&str>) -> Result<Option<String>, Error> {
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
     pub fn confirm(_title: &str, _body: &str) -> Result<bool, Error> {
         Ok(with(|s| s.answers.pop_front().flatten()).is_some())
     }
@@ -927,6 +931,10 @@ mod tests {
         assert!(matches!(host::pick_many("Pick", &items), Err(Error::Invalid(_))));
         mock.answer_next_prompt(Some(&["x.txt"]));
         assert_eq!(host::input("Name", Some("a.txt")).unwrap().as_deref(), Some("x.txt"));
+        mock.answer_next_prompt(Some(&["a\nb"]));
+        assert_eq!(host::input_multiline("Notes", None).unwrap().as_deref(), Some("a\nb"));
+        mock.answer_next_prompt(None);
+        assert_eq!(host::input_multiline("Notes", None).unwrap(), None);
         mock.answer_next_prompt(Some(&[]));
         assert!(host::confirm("Sure?", "Really").unwrap());
         mock.answer_next_prompt(None);

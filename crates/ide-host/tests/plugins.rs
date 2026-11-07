@@ -2273,8 +2273,13 @@ fn commands_ask_the_user_and_reveal_their_views() {
 
     let (result, prompt) = run_and_answer(&f, "input", Some("Main"), Some(&["Other"]), none);
     assert_eq!(result.unwrap().as_deref(), Some("Other"));
-    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()) });
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("Main".into()), multiline: false });
     assert_eq!(run_and_answer(&f, "input", None, None, none).0.unwrap().as_deref(), Some("none"));
+
+    let (result, prompt) = run_and_answer(&f, "input-multiline", Some("one\ntwo"), Some(&["a\nb"]), none);
+    assert_eq!(result.unwrap().as_deref(), Some("a\nb"));
+    assert_eq!(prompt, Prompt::Input { prompt: "Name".into(), value: Some("one\ntwo".into()), multiline: true });
+    assert_eq!(run_and_answer(&f, "input-multiline", None, None, none).0.unwrap().as_deref(), Some("none"));
 
     let (result, prompt) = run_and_answer(&f, "confirm", None, Some(&[]), none);
     assert_eq!(result.unwrap().as_deref(), Some("true"));
@@ -2294,7 +2299,7 @@ fn commands_ask_the_user_and_reveal_their_views() {
     // Without a window there is nothing to attach the dialog to.
     f.take_events();
     let no_window = Invocation { client: None, ..f.inv() };
-    for cmd in ["pick", "input", "confirm"] {
+    for cmd in ["pick", "input", "input-multiline", "confirm"] {
         let err = f.host.run_command("jobs", cmd, None, no_window.clone()).unwrap_err().message;
         assert!(err.contains("from a command the user invoked"), "{cmd}: {err}");
     }
