@@ -78,8 +78,9 @@ describe("IDEA keymap parity", () => {
     ["toolwindow.closeContent", ["Meta+W", "Ctrl+Shift+F4"], ["Ctrl+F4", "Ctrl+Shift+F4"]],
     ["layout.restoreDefault", ["Shift+F12"], ["Shift+F12"]],
     ["workbench.stopBackgroundProcesses", ["Meta+Shift+F2"], ["Ctrl+Shift+F2"]],
-    ["navigate.back", ["Meta+[", "Meta+Alt+Left", "Button4"], ["Ctrl+Alt+Left", "Button4"]],
-    ["navigate.forward", ["Meta+]", "Meta+Alt+Right", "Button5"], ["Ctrl+Alt+Right", "Button5"]],
+    ["navigate.back", ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"], ["Ctrl+Alt+Left", "Button4"]],
+    ["navigate.forward", ["Meta+]", "Meta+Alt+Right", "Button5", "SwipeLeft"], ["Ctrl+Alt+Right", "Button5"]],
+    ["file.projectStructure", ["Meta+;"], ["Ctrl+Alt+Shift+S"]],
   ])("%s", (id, mac, win) => {
     expect(intellijMacos[id]).toEqual(mac);
     expect(intellijWindows[id]).toEqual(win);

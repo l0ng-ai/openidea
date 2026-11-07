@@ -376,6 +376,7 @@ fn cmake_steps(dir: &Path, kind: BuildKind, profile: Option<&CMakeProfile>) -> V
 
 fn go_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
     if dir.join("go.work").is_file() {
+        let work_file = dunce::canonicalize(dir.join("go.work"))?;
         let modules = ide_core::go::work_modules(&std::fs::read_to_string(dir.join("go.work"))?);
         if modules.is_empty() {
             return Err(IdeError::invalid("The Go workspace contains no modules"));
@@ -386,7 +387,11 @@ fn go_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
             if !module.join("go.mod").is_file() {
                 return Err(IdeError::not_found(format!("Go workspace module has no go.mod: {}", module.display())));
             }
-            steps.extend(go_module_steps(&module, kind));
+            let mut module_steps = go_module_steps(&module, kind);
+            for step in &mut module_steps {
+                step.env.insert("GOWORK".into(), work_file.to_string_lossy().into_owned());
+            }
+            steps.extend(module_steps);
         }
         return Ok(steps);
     }
@@ -838,15 +843,23 @@ mod tests {
             return;
         };
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(root, "go.work", "go 1.22\nuse (\n ./app\n ./lib\n)\n");
+        let root = &tmp.path().join("workspace");
+        write(root, "go.work", "go 1.22\nuse (\n ./app\n ./lib\n ../external\n)\n");
         write(root, "lib/go.mod", "module example.com/lib\ngo 1.22\n");
         write(root, "lib/lib.go", "package lib\nfunc Value() int { return 1 }\n");
         write(root, "app/go.mod", "module example.com/app\ngo 1.22\nrequire example.com/lib v0.0.0\n");
         write(root, "app/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        write(root, "../external/go.mod", "module example.com/external\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "../external/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
         let plan = plan(root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
         for step in plan.steps {
-            let result = std::process::Command::new(&go).args(&step.args).current_dir(&step.cwd).output().unwrap();
+            let result = std::process::Command::new(&go)
+                .args(&step.args)
+                .envs(&step.env)
+                .env("GOPROXY", "off")
+                .current_dir(&step.cwd)
+                .output()
+                .unwrap();
             assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
         }
     }

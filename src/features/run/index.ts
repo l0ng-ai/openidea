@@ -5,7 +5,7 @@
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
-import { onIdeEvent, type RunConfig } from "@/platform/ipc";
+import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
@@ -46,7 +46,8 @@ import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
-import { remoteDebugBlocked } from "./remote";
+import { containerDebuggable, remoteDebugBlocked } from "./remote";
+import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
@@ -106,40 +107,45 @@ async function runSelected() {
   await startRun(config);
 }
 
-async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
+async function debugConfig(config: RunConfig, chain: readonly string[] = [], show?: boolean) {
   if (config.kind === "compound") {
-    if (!(await prepareLaunch(config, chain))) return;
+    if (!(await prepareLaunch(config, chain, show))) return;
     const children = compoundChildren(config, useRun.getState().configs);
-    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id])));
+    await Promise.all(children.map((c) => debugConfig(c, [...chain, config.id], show)));
     return;
   }
   if (remoteDebugBlocked(config)) return;
-  if (!(await prepareLaunch(config, chain))) return;
+  if (!(await prepareLaunch(config, chain, show))) return;
   recordRun(config.id);
+  // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
+  if (containerDebuggable(config) && getAction("debug.attach")) {
+    await debugInContainer(config);
+    return;
+  }
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
   if (isDebugOnly(config) && getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
   // A single compiled file (rustc / clang): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true);
+    await launchProduced(compiled, true, show);
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.
   const delegated = getAction("debug.attach") ? await gradleDelegation(config) : null;
   if (delegated) {
-    await debugWithAgent(delegated);
+    await debugWithAgent(delegated, show);
     return;
   }
   // Maven / Gradle: the build tool starts the JVM with a debug agent, the debugger attaches.
   if (jdwpLaunch(config) && getAction("debug.attach")) {
-    await debugWithAgent(config);
+    await debugWithAgent(config, show);
     return;
   }
   if (getAction("debug.startConfig")) {
-    await executeAction("debug.startConfig", config);
+    await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
   notifications().notify({
@@ -149,7 +155,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = []) {
     body: tx`Running '${config.name}' without the debugger.`,
     key: "run-no-debugger",
   });
-  await startRun(config, undefined, undefined, { prepared: true });
+  await startRun(config, undefined, undefined, { prepared: true, show });
 }
 
 async function debugSelected() {
@@ -439,6 +445,18 @@ export function activate(): () => void {
         run: ({ arg }) => stopAction(arg),
       },
       {
+        id: "run.stopProcess",
+        title: "Stop",
+        category: "Run",
+        hidden: true,
+        run: async ({ arg }) => {
+          if (typeof arg !== "number") return;
+          const session = useRun.getState().sessions.find((s) => s.runId === arg);
+          if (session) await stopSession(session.id);
+          else await call(commands.runStop(arg));
+        },
+      },
+      {
         id: "run.rerun",
         title: "Rerun",
         category: "Run",
@@ -519,7 +537,8 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await debugConfig(config);
+          const show = arg && typeof arg === "object" && "show" in arg ? (arg as { show?: boolean }).show : undefined;
+          if (config) await debugConfig(config, [], show);
         },
       },
       {

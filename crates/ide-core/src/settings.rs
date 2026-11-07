@@ -850,6 +850,8 @@ pub struct JavaSettings {
     /// Project JDK home; empty = per module, the installed JDK matching the
     /// Java version it targets.
     pub jdk: String,
+    /// Project Java language level (`8`, `11`, `17`, `21`, `25`); empty = SDK default.
+    pub language_level: String,
     /// JDK home the Java language server (jdtls) runs on, apart from the project
     /// JDK (IDEA's "JDK for importer"); empty = the project JDK when new enough,
     /// else the first installed one that is.
@@ -903,6 +905,8 @@ pub enum GradleDistribution {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MavenSettings {
+    /// JDK home used to run Maven; empty = Project JDK, else the POM's Java version.
+    pub runner_jre: String,
     /// Project-relative root POMs removed from the Maven project model.
     pub unlinked_projects: Vec<String>,
     /// Project-relative POMs outside the root reactor added as independent top-level projects.
@@ -953,6 +957,98 @@ impl Default for TypeScriptSettings {
     }
 }
 
+/// Dependency scope for a module dependency or project library (IDEA's Modules › Dependencies).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DependencyScope {
+    #[default]
+    Compile,
+    Test,
+    Runtime,
+    Provided,
+}
+
+/// A project-level library (Project Structure › Libraries).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProjectLibrary {
+    pub name: String,
+    /// Class archives (`.jar`) or class directories.
+    pub classes: Vec<String>,
+    /// Source archives (`-sources.jar`, `.zip`) or source directories.
+    pub sources: Vec<String>,
+    /// Documentation archives (`-javadoc.jar`) or directories.
+    pub javadocs: Vec<String>,
+    pub scope: DependencyScope,
+}
+
+/// Dependency entry of a module (Project Structure › Modules › Dependencies).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModuleDependency {
+    /// `"library"` (references a `ProjectLibrary` by name or path) or `"module"` (references another module).
+    pub kind: String,
+    pub target: String,
+    pub scope: DependencyScope,
+    pub exported: bool,
+}
+
+/// Per-module Project Structure overrides (SDK, language level, output paths, dependencies).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModuleStructureSettings {
+    /// Module SDK home override; empty = inherit Project SDK.
+    pub jdk: String,
+    /// Module language level override; empty = inherit Project language level.
+    pub language_level: String,
+    /// Module compiler output directory override; empty = inherit Project compiler output.
+    pub compiler_output: String,
+    /// Module test compiler output directory override; empty = default.
+    pub test_compiler_output: String,
+    /// Additional module dependencies.
+    pub dependencies: Vec<ModuleDependency>,
+}
+
+/// Framework facet attached to a module (Project Structure › Facets).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FacetConfig {
+    /// `"web"` | `"spring"` | `"jpa"`.
+    pub kind: String,
+    /// Module relative path (`"."` for root module).
+    pub module: String,
+    /// Deployment descriptor path (e.g. `src/main/webapp/WEB-INF/web.xml`, `src/main/resources/META-INF/persistence.xml`).
+    pub descriptor: String,
+    /// Web resource root directory for Web facets (e.g. `src/main/webapp`).
+    pub web_root: String,
+}
+
+/// Packaging type of a Project Structure artifact.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ArtifactKind {
+    #[default]
+    Jar,
+    War,
+    WarExploded,
+}
+
+/// Packaging artifact definition (Project Structure › Artifacts).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ArtifactConfig {
+    pub name: String,
+    pub kind: ArtifactKind,
+    /// Module relative path (`"."` for root module).
+    pub module: String,
+    /// Output directory (relative to project root or absolute).
+    pub output_directory: String,
+    /// Main class for executable JAR artifacts.
+    pub main_class: String,
+    /// Project library names included in the packaged artifact (`WEB-INF/lib` or JAR manifest).
+    pub include_libraries: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProjectStructureSettings {
@@ -969,9 +1065,28 @@ pub struct ProjectStructureSettings {
     pub content_roots: Vec<String>,
     /// "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth.
     pub exclude_files: String,
+    /// Project compiler output directory (relative to project root or absolute; empty = default).
+    pub compiler_output: String,
+    /// Per-module SDK, language level, output paths and dependency overrides, keyed by module relative path (`"."` for root).
+    pub modules: BTreeMap<String, ModuleStructureSettings>,
+    /// Project-level libraries (`JAR`s / class folders / source archives).
+    pub libraries: Vec<ProjectLibrary>,
+    /// Module framework facets (`web`, `spring`, `jpa`).
+    pub facets: Vec<FacetConfig>,
+    /// Packaging artifacts (`jar`, `war`, `warExploded`).
+    pub artifacts: Vec<ArtifactConfig>,
 }
 
 impl ProjectStructureSettings {
+    /// Overrides belong to the module's full path, never just its directory name.
+    pub fn module_settings(
+        &self,
+        root: &std::path::Path,
+        module: &std::path::Path,
+    ) -> Option<&ModuleStructureSettings> {
+        self.modules.iter().find_map(|(key, settings)| (root.join(key) == module).then_some(settings))
+    }
+
     /// The "Exclude files" name patterns.
     pub fn exclude_file_patterns(&self) -> Vec<String> {
         self.exclude_files.split(';').map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect()
@@ -1152,11 +1267,80 @@ mod tests {
         assert_eq!(s.file_excludes(), vec!["*.log", "tmp*"]);
         assert!(Settings::default().files.file_types.is_empty());
     }
+
+    #[test]
+    fn project_structure_modules_libraries_facets_and_artifacts_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"projectStructure":{"sourceRoots":["src"]}}"#).unwrap();
+        assert!(old.project_structure.compiler_output.is_empty());
+        assert!(old.project_structure.modules.is_empty());
+        assert!(old.project_structure.libraries.is_empty());
+        assert!(old.project_structure.facets.is_empty());
+        assert!(old.project_structure.artifacts.is_empty());
+        assert!(old.languages.java.language_level.is_empty());
+
+        let mut settings = Settings::default();
+        settings.languages.java.language_level = "21".into();
+        settings.project_structure.compiler_output = "out/production".into();
+        settings.project_structure.modules.insert(
+            "backend".into(),
+            ModuleStructureSettings {
+                jdk: "/opt/jdk-21".into(),
+                language_level: "21".into(),
+                compiler_output: "backend/target/classes".into(),
+                test_compiler_output: "backend/target/test-classes".into(),
+                dependencies: vec![ModuleDependency {
+                    kind: "library".into(),
+                    target: "custom-lib".into(),
+                    scope: DependencyScope::Compile,
+                    exported: true,
+                }],
+            },
+        );
+        settings.project_structure.libraries.push(ProjectLibrary {
+            name: "custom-lib".into(),
+            classes: vec!["lib/custom.jar".into()],
+            sources: vec!["lib/custom-sources.jar".into()],
+            javadocs: Vec::new(),
+            scope: DependencyScope::Compile,
+        });
+        settings.project_structure.facets.push(FacetConfig {
+            kind: "web".into(),
+            module: "backend".into(),
+            descriptor: "src/main/webapp/WEB-INF/web.xml".into(),
+            web_root: "src/main/webapp".into(),
+        });
+        settings.project_structure.artifacts.push(ArtifactConfig {
+            name: "backend:war exploded".into(),
+            kind: ArtifactKind::WarExploded,
+            module: "backend".into(),
+            output_directory: "out/artifacts/backend_war_exploded".into(),
+            main_class: String::new(),
+            include_libraries: vec!["custom-lib".into()],
+        });
+
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["languages"]["java"]["languageLevel"], "21");
+        assert_eq!(value["projectStructure"]["compilerOutput"], "out/production");
+        assert_eq!(value["projectStructure"]["artifacts"][0]["kind"], "warExploded");
+        let restored: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(restored, settings);
+    }
 }
 
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn maven_runner_jre_defaults_and_round_trips() {
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(old.runner_jre.is_empty());
+        assert!(MavenSettings::default().runner_jre.is_empty());
+        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains(r#""runnerJre":"/opt/jdk-21""#));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
 
     #[test]
     fn maven_linkage_defaults_and_round_trips() {

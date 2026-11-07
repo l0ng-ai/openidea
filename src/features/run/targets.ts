@@ -530,13 +530,14 @@ export function targetConfig(
         ...withoutGoSelection(parts.flags),
         ...parts.targets,
         ...selection,
-        ...parts.program,
+        ...withoutGoSelection(parts.program),
       ]);
       if (file.params?.goKind)
         result.params = {
           ...file.params,
           pattern: benchmark ? "^$" : pattern,
           toolArgs: formatArgs([...withoutGoSelection(parts.flags), ...(benchmark ? ["-bench", pattern] : [])]),
+          programArgs: formatArgs(withoutGoSelection(parts.program).slice(1)),
         };
       return result;
     }
