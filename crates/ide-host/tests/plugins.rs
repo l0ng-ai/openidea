@@ -3863,3 +3863,26 @@ fn project_lookup_works_in_commands_and_provider_calls_without_an_invocation_pro
     f.host.set_capability("test.path-events", "events", false).unwrap();
     assert!(f.run("test.path-events", "filter", Some("*")).unwrap_err().contains("events"));
 }
+
+#[test]
+fn view_messages_accept_multi_megabyte_snapshots_and_cap_at_8_mib() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    let two_mib = "x".repeat(2 << 20);
+    f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: two_mib.clone() }, f.inv()).unwrap();
+    let echoed = f
+        .take_events()
+        .into_iter()
+        .find_map(|(_, e)| match e {
+            PluginEvent::ViewMessage { view, message, .. } if view == "jobs" => Some(message),
+            _ => None,
+        })
+        .expect("2 MiB view message round-trips");
+    assert_eq!(echoed.len(), 2 << 20);
+
+    let too_large = "x".repeat((8 << 20) + 1);
+    let err =
+        f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Message { text: too_large }, f.inv()).unwrap_err();
+    assert!(err.message.contains("limited to"), "{}", err.message);
+}

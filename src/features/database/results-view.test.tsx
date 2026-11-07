@@ -269,8 +269,9 @@ describe("read-only results with a reason", () => {
     expect(backend.details).not.toHaveBeenCalled();
   });
 
-  it("does not mistake a differently cased quoted column for the PostgreSQL primary key", async () => {
-    show('SELECT "ID", name FROM users', [{ name: "ID" }, { name: "name" }], [["1", "Ann"]]);
+  it.each(["postgres", "sqlServer"] as const)("matches case-sensitive key columns exactly for %s", async (driver) => {
+    backend.driver = driver;
+    show('SELECT "ID", name FROM public.users', [{ name: "ID" }, { name: "name" }], [["1", "Ann"]]);
     await act(async () => render(<ResultsView />));
     expect(await screen.findByRole("note")).toHaveTextContent(
       "Read-only: the result has no primary key of public.users.",

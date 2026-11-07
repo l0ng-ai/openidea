@@ -1127,7 +1127,7 @@ fn too_much_to_write(path: &str) -> wit::Error {
 }
 
 /// Largest message between a plugin and its view's frame.
-const MAX_VIEW_MESSAGE: usize = 1 << 20;
+const MAX_VIEW_MESSAGE: usize = 8 << 20;
 
 pub(crate) mod indexing_bindings {
     wasmtime::component::bindgen!({

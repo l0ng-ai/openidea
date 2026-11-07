@@ -98,6 +98,9 @@ describe("resultEditability", () => {
     "SELECT id, (row_number() OVER ()) FROM users",
     "SELECT * FROM db.public.users",
     "SELECT * FROM users WHERE id > 0; SELECT * FROM logs",
+    "SELECT id FROM ONLY users",
+    "SELECT id /* outer /* inner */ FROM wrong WHERE 1=1 */ FROM users",
+    String.raw`SELECT id, E'ignored\' FROM wrong WHERE 1=1 --' FROM users`,
   ])("refuses ambiguous provenance: %s", (sql) => {
     expect(resultEditability(sql, "postgres").kind).toBe("readonly");
   });

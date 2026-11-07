@@ -114,9 +114,11 @@ const selectItemOf = (item: readonly Token[], driver: DbDriver): SelectItem => {
  */
 export function resultEditability(text: string, driver: DbDriver): ResultEditability {
   const lexed = lex(text, driver);
+  if (lexed.comments.some((c) => text.slice(c.from + 2, c.to).includes("/*"))) return readonly("plain");
   if (driver === "mysql" && lexed.comments.some((c) => /^\/\*(?:!|M!)/i.test(text.slice(c.from, c.to))))
     return readonly("plain");
   const all = lexed.tokens;
+  if (driver === "postgres" && all.some((t) => t.kind === "string" && t.text.includes("\\"))) return readonly("plain");
   if (all.some((t) => t.kind === "word" && SET_OPS.has(t.upper))) return readonly("setOp");
   if (all.at(-1)?.text === ";") all.pop();
   if (
@@ -189,6 +191,7 @@ export function resultEditability(text: string, driver: DbDriver): ResultEditabi
     }
   }
   const item = rest.slice(0, end);
+  if (item[0]?.kind === "word" && item[0].upper === "ONLY") return readonly("plain");
   // A statement's trailing `;` is not part of the FROM item.
   while (item.at(-1)?.kind === "punct" && item.at(-1)!.text === ";") item.pop();
   if (!item.length || item[0]!.kind === "punct") return readonly("plain"); // a derived table or a parenthesized join
