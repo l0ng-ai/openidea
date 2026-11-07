@@ -561,7 +561,8 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
         file_action: r.file,
     };
     let plugin = r.plugin.clone();
-    let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending)).await?;
+    let invocation = ide_plugin::Invocation { client: Some(window.to_owned()), ..Default::default() };
+    let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending, invocation)).await?;
     let root = host.project(window)?.root.clone();
     Ok(plugin_code_action(&r.plugin, &root, ide_plugin::CodeAction { data: None, ..resolved }))
 }
