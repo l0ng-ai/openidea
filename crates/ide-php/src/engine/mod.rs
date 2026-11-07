@@ -151,6 +151,9 @@ struct Shared {
     indexing: AtomicBool,
     documents: Mutex<HashMap<DocId, OpenDocument>>,
     parses: ParseCache,
+    /// The summary of each open document's latest version: declarations
+    /// are looked up in open buffers for every name an inspection resolves.
+    open_summaries: Mutex<HashMap<DocId, (u32, Arc<FileSummary>)>>,
     /// Resolved declaration types, dropped when `modification` moves.
     types: TypeCache,
     /// The stub filter and the stub set built for it (on first use).
@@ -188,6 +191,7 @@ impl PhpEngine {
             indexing: AtomicBool::new(false),
             documents: Mutex::new(HashMap::new()),
             parses: ParseCache::new(),
+            open_summaries: Mutex::new(HashMap::new()),
             types: TypeCache::new(),
             stubs: Mutex::new((config.stubs, None)),
             inspection_set: RwLock::new(Inspections::builtin()),
@@ -401,6 +405,7 @@ impl PhpEngine {
         if self.shared.documents.lock().remove(&doc).is_some() {
             self.shared.inspections.closed(doc, &self.shared.sink);
             self.shared.parses.remove(doc);
+            self.shared.open_summaries.lock().remove(&doc);
             self.shared.modification.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -451,13 +456,41 @@ impl PhpEngine {
     /// index otherwise.
     pub fn summary(&self, path: &Path) -> IdeResult<Option<FileSummary>> {
         if let Some(document) = self.open_document(path) {
-            let parsed = self.shared.parses.get_or_parse(document.doc, document.version, || document.text.clone());
-            return Ok(Some(FileSummary::extract(&parsed)));
+            return Ok(Some(FileSummary::clone(&self.open_summary(&document))));
         }
         match self.index() {
             Some(index) => index.summary(path),
             None => Ok(None),
         }
+    }
+
+    /// [`summary`](Self::summary), shared: an open document's comes from
+    /// the cache without a copy.
+    pub(crate) fn shared_summary(&self, path: &Path) -> IdeResult<Option<Arc<FileSummary>>> {
+        if let Some(document) = self.open_document(path) {
+            return Ok(Some(self.open_summary(&document)));
+        }
+        match self.index() {
+            Some(index) => Ok(index.summary(path)?.map(Arc::new)),
+            None => Ok(None),
+        }
+    }
+
+    /// The summary of an open document's current version, extracted once.
+    pub(crate) fn open_summary(&self, document: &OpenDocument) -> Arc<FileSummary> {
+        if let Some((version, summary)) = self.shared.open_summaries.lock().get(&document.doc)
+            && *version == document.version
+        {
+            return summary.clone();
+        }
+        let parsed = self.parse_open(document);
+        let summary = Arc::new(FileSummary::extract(&parsed));
+        let mut cache = self.shared.open_summaries.lock();
+        // A document closed meanwhile isn't cached again.
+        if self.shared.documents.lock().get(&document.doc).is_some_and(|d| d.version == document.version) {
+            cache.insert(document.doc, (document.version, summary.clone()));
+        }
+        summary
     }
 
     // -------------------------------------------------------------- types
@@ -501,7 +534,7 @@ impl PhpEngine {
     fn project_declaration<T>(&self, kind: NameKind, fqn: &str, pick: impl Fn(&FileSummary) -> Option<T>) -> Option<T> {
         let indexed = self.index().and_then(|index| {
             let decls = index.declarations(kind, fqn).ok()?;
-            decls.into_iter().find_map(|decl| pick(&self.summary(&decl.path()).ok()??))
+            decls.into_iter().find_map(|decl| pick(&*self.shared_summary(&decl.path()).ok()??))
         });
         indexed.or_else(|| self.open_declaration(fqn, &pick))
     }
@@ -542,22 +575,13 @@ impl PhpEngine {
     }
 
     /// A declaration only an open buffer has (a new file, or one outside
-    /// the indexed folders). Buffers that don't mention the short name are
-    /// skipped without being summarised.
+    /// the indexed folders), from the buffers' cached summaries.
     fn open_declaration<T>(&self, fqn: &str, pick: &impl Fn(&FileSummary) -> Option<T>) -> Option<T> {
-        let short = fqn.rsplit('\\').next().unwrap_or(fqn).as_bytes();
-        if short.is_empty() {
+        if fqn.rsplit('\\').next().unwrap_or(fqn).is_empty() {
             return None;
         }
         let documents: Vec<OpenDocument> = self.shared.documents.lock().values().cloned().collect();
-        documents.into_iter().find_map(|document| {
-            let mentions = document.text.as_bytes().windows(short.len()).any(|w| w.eq_ignore_ascii_case(short));
-            if !mentions {
-                return None;
-            }
-            let parsed = self.shared.parses.get_or_parse(document.doc, document.version, || document.text.clone());
-            pick(&FileSummary::extract(&parsed))
-        })
+        documents.into_iter().find_map(|document| pick(&self.open_summary(&document)))
     }
 }
 
@@ -580,7 +604,7 @@ impl Declarations for PhpEngine {
             .and_then(|index| index.declarations(NameKind::Function, fqn).ok())
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|decl| self.summary(&decl.path()).ok()??.function(fqn).cloned())
+            .filter_map(|decl| self.shared_summary(&decl.path()).ok()??.function(fqn).cloned())
             .collect();
         let rank = |f: &FunctionDecl| {
             let returns = f.return_type.is_some() || f.doc.as_ref().is_some_and(|doc| doc.return_type.is_some());
@@ -615,7 +639,8 @@ impl Declarations for PhpEngine {
                 paths.push(path);
             }
         }
-        let summaries: Vec<FileSummary> = paths.iter().filter_map(|path| self.summary(path).ok().flatten()).collect();
+        let summaries: Vec<Arc<FileSummary>> =
+            paths.iter().filter_map(|path| self.shared_summary(path).ok().flatten()).collect();
         PhpStormMeta::merge(summaries.iter().map(|summary| &summary.meta))
     }
 }

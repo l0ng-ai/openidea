@@ -4490,6 +4490,7 @@ name = "ide-php"
 version = "0.1.36"
 dependencies = [
  "blake3",
+ "criterion",
  "dunce",
  "ide-core",
  "ide-language",

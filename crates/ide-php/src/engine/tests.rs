@@ -245,6 +245,30 @@ fn open_documents_override_the_disk() {
 }
 
 #[test]
+fn declarations_only_an_open_buffer_has_follow_its_edits() {
+    let f = Fixture::new();
+    f.write("src/Foo.php", &class("App\\Foo"));
+    let engine = f.open();
+    let fresh = f.root.join("src/Fresh.php");
+    let doc = DocId::next();
+    engine.document_opened(doc, &fresh, 1, &class("App\\Fresh"));
+    assert!(engine.class_like("App\\Fresh").is_some(), "a new, unsaved file");
+    assert!(engine.class_like("App\\Renamed").is_none());
+
+    // The buffer's summary is extracted once per version.
+    let document = engine.open_document(&fresh).unwrap();
+    assert!(Arc::ptr_eq(&engine.open_summary(&document), &engine.open_summary(&document)));
+
+    engine.document_changed(doc, 2, &class("App\\Renamed"));
+    assert!(engine.class_like("App\\Fresh").is_none(), "the old version's summary isn't used");
+    assert!(engine.class_like("App\\Renamed").is_some());
+
+    engine.document_closed(doc);
+    assert!(engine.class_like("App\\Renamed").is_none());
+    assert!(engine.class_like("App\\Foo").is_some());
+}
+
+#[test]
 fn restart_reuses_the_persistent_index() {
     let f = Fixture::new();
     f.write("src/Foo.php", &class("App\\Foo"));

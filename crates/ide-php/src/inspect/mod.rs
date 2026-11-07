@@ -73,7 +73,7 @@ use crate::imports::{ImportAction, QUICKFIX, REWRITE, file_edit, wanted};
 use crate::names::FileNames;
 use crate::summary::FileSummary;
 use crate::syntax::{DIAGNOSTIC_SOURCE, ParsedFile};
-use crate::types::{Resolver, Type};
+use crate::types::{ExprTypes, Resolver, Type};
 
 pub use calls::TypeCheckMode;
 pub use suppress::Suppressions;
@@ -348,8 +348,9 @@ pub struct InspectionContext<'a> {
     /// The document's path (normalized).
     pub path: &'a Path,
     pub cancel: &'a CancellationToken,
-    names: OnceLock<FileNames>,
-    summary: OnceLock<FileSummary>,
+    /// The file's expression types and flows, shared by all inspections
+    /// (with the names and summary they were built on).
+    types: &'a ExprTypes<'a, 'a>,
     members: OnceLock<Vec<members::Found>>,
     variables: OnceLock<Vec<variables::Found>>,
     calls: OnceLock<Vec<calls::Found>>,
@@ -358,14 +359,19 @@ pub struct InspectionContext<'a> {
 }
 
 impl<'a> InspectionContext<'a> {
-    pub fn new(engine: &'a PhpEngine, parsed: &'a ParsedFile, path: &'a Path, cancel: &'a CancellationToken) -> Self {
+    pub fn new(
+        engine: &'a PhpEngine,
+        parsed: &'a ParsedFile,
+        path: &'a Path,
+        cancel: &'a CancellationToken,
+        types: &'a ExprTypes<'a, 'a>,
+    ) -> Self {
         Self {
             engine,
             parsed,
             path,
             cancel,
-            names: OnceLock::new(),
-            summary: OnceLock::new(),
+            types,
             members: OnceLock::new(),
             variables: OnceLock::new(),
             calls: OnceLock::new(),
@@ -375,13 +381,19 @@ impl<'a> InspectionContext<'a> {
     }
 
     /// The file's resolved names (computed once for all inspections).
-    pub fn names(&self) -> &FileNames {
-        self.names.get_or_init(|| FileNames::resolve(self.parsed))
+    pub fn names(&self) -> &'a FileNames {
+        self.types.names()
     }
 
     /// The file's declarations (computed once for all inspections).
-    pub fn summary(&self) -> &FileSummary {
-        self.summary.get_or_init(|| FileSummary::extract(self.parsed))
+    pub fn summary(&self) -> &'a FileSummary {
+        self.types.summary()
+    }
+
+    /// The file's expression types, with the flow graph of each
+    /// function-like built once for all inspections.
+    pub fn types(&self) -> &'a ExprTypes<'a, 'a> {
+        self.types
     }
 
     /// The file's undefined members (computed once for the three member
@@ -420,7 +432,8 @@ impl<'a> InspectionContext<'a> {
 
     /// The type of the innermost expression at byte `offset`.
     pub fn type_at(&self, offset: u32) -> Option<Type> {
-        crate::types::type_at(self.parsed, &self.engine.resolver(), offset)
+        let (expr, frames) = self.types.find(offset)?;
+        Some(self.types.type_of(expr, &frames).widen())
     }
 
     pub fn text(&self) -> &str {
@@ -512,7 +525,13 @@ impl PhpEngine {
         cancel: &CancellationToken,
     ) -> Option<(Vec<Diagnostic>, Vec<Problem>)> {
         let inspections = self.inspections();
-        let cx = InspectionContext::new(self, parsed, path, cancel);
+        // One set of names, declarations and flow graphs for every
+        // inspection, rather than one per inspection family.
+        let names = FileNames::resolve(parsed);
+        let summary = FileSummary::extract(parsed);
+        let resolver = self.resolver();
+        let types = ExprTypes::new(parsed, &names, &summary, &resolver);
+        let cx = InspectionContext::new(self, parsed, path, cancel, &types);
         let mut problems = Problems::new(parsed);
         for inspection in inspections.iter() {
             if cancel.is_cancelled() {

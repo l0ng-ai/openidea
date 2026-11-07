@@ -182,10 +182,10 @@ pub(crate) fn find(cx: &InspectionContext<'_>) -> Vec<Found> {
         return Vec::new();
     }
     let resolver = cx.resolver();
-    let types = ExprTypes::new(cx.parsed, cx.names(), cx.summary(), &resolver);
+    let types = cx.types();
     let mut scan = Scan {
         cx,
-        types: &types,
+        types,
         resolver: &resolver,
         frames: Vec::new(),
         strict_types: declares_strict_types(cx),

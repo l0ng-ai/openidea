@@ -1,5 +1,5 @@
 {
-  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust` (`plugins/…`: the plugin runtime budgets).",
+  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust` (`plugins/…`: the plugin runtime budgets; `php_…`: the native PHP engine, `php_laravel/…` only with the corpora from `scripts/php-corpus.sh`).",
   "regressionTolerance": 0.2,
   "regressionFloor": 1,
   "ui": {
@@ -90,6 +90,18 @@
 
     "plugins/load_50": 20000,
     "plugins/cold_activation": 30000,
-    "plugins/syntax_highlights_2k_lines": 50000
+    "plugins/syntax_highlights_2k_lines": 50000,
+
+    "php_fixture/cold_index": 500000,
+    "php_fixture/warm_start": 200000,
+    "php_fixture/hover_after_keystroke": 50000,
+    "php_fixture/completion_after_keystroke": 50000,
+    "php_fixture/diagnostics_after_edit": 300000,
+
+    "php_laravel/cold_index": 30000000,
+    "php_laravel/warm_start": 2000000,
+    "php_laravel/hover_after_keystroke": 50000,
+    "php_laravel/completion_after_keystroke": 50000,
+    "php_laravel/diagnostics_after_edit": 300000
   }
 }

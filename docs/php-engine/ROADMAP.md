@@ -413,7 +413,7 @@ The design:
 
   Rerun the corpora with the same seed and update `docs/php-engine/differential.md` until hover also reaches 98%. Test each fix with unit tests.
 
-- [ ] Phase 6.3: Performance budgets
+- [x] Phase 6.3: Performance budgets
       Criterion benches for:
   - cold index of laravel/framework under 30 s
   - warm start under 2 s

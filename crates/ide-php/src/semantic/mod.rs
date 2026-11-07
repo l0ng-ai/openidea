@@ -107,24 +107,26 @@ impl PhpEngine {
         let parsed = self.parsed_document(doc)?;
         let names = FileNames::resolve(&parsed);
         let here = FileSummary::extract(&parsed);
-        Some(finish(&parsed, self.semantic_spans(&parsed, &names, &here)))
+        let resolver = self.resolver();
+        let types = ExprTypes::new(&parsed, &names, &here, &resolver);
+        Some(finish(&parsed, self.semantic_spans(&parsed, &types)))
     }
 
     /// The semantic tokens of a parsed file by start byte: end byte, type
-    /// and [`modifier`] bits (the deprecation inspection reads them too).
-    pub(crate) fn semantic_spans(
+    /// and [`modifier`] bits (the deprecation inspection reads them too,
+    /// sharing the flows of `types` with the other inspections).
+    pub(crate) fn semantic_spans<'a>(
         &self,
-        parsed: &ParsedFile,
-        names: &FileNames,
-        here: &FileSummary,
+        parsed: &'a ParsedFile,
+        types: &ExprTypes<'a, '_>,
     ) -> BTreeMap<u32, (u32, TokenType, u32)> {
         let resolver = self.resolver();
-        let types = ExprTypes::new(parsed, names, here, &resolver);
+        let names = types.names();
         let mut tokens = Tokens {
             engine: self,
-            here,
+            here: types.summary(),
             resolver: &resolver,
-            types: &types,
+            types,
             frames: Vec::new(),
             found: BTreeMap::new(),
             builtin: RefCell::new(HashMap::new()),

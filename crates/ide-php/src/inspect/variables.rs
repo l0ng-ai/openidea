@@ -45,7 +45,7 @@
 //! The ids follow PhpStorm's documented inspections ("Undefined variable",
 //! "Unused local variable"); the rules are our own.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ide_core::Severity;
 use mago_span::HasSpan;
@@ -155,17 +155,17 @@ pub(crate) fn find(cx: &InspectionContext<'_>) -> Vec<Found> {
     if cx.engine.status().state != EngineState::Ready || is_meta_path(cx.path) || !cx.text().contains('$') {
         return Vec::new();
     }
-    let resolver = cx.resolver();
-    let types = ExprTypes::new(cx.parsed, cx.names(), cx.summary(), &resolver);
+    let types = cx.types();
     let mut scan = Scan {
         cx,
-        types: &types,
+        types,
         summary: cx.summary(),
         frames: Vec::new(),
         scopes: Vec::new(),
         quiet: Vec::new(),
         found: Vec::new(),
         subtypes: None,
+        overridden: HashMap::new(),
     };
     ScanWalker.walk_program(cx.parsed.program(), &mut scan);
     if cx.is_cancelled() {
@@ -211,6 +211,10 @@ struct Scan<'a, 'r> {
     found: Vec<Found>,
     /// The subtype finder, made for the first method checked.
     subtypes: Option<Subtypes>,
+    /// By lower-case class FQN: the lower-case names of the methods its
+    /// subtypes declare (`None` when they couldn't be listed), found once
+    /// for all the class's methods.
+    overridden: HashMap<String, Option<HashSet<String>>>,
 }
 
 /// A parameter whose use is checked.
@@ -566,11 +570,13 @@ impl Scan<'_, '_> {
             return true;
         }
         let engine = self.cx.engine;
+        let cancel = self.cx.cancel;
         let subtypes = self.subtypes.get_or_insert_with(|| Subtypes::new(engine));
-        match subtypes.all(engine, &fqn, self.cx.cancel) {
-            Ok(found) => !found.iter().any(|s| s.class.methods.iter().any(|m| m.name.eq_ignore_ascii_case(&name))),
-            Err(_) => false,
-        }
+        let overridden = self.overridden.entry(fqn.to_ascii_lowercase()).or_insert_with(|| {
+            let found = subtypes.all(engine, &fqn, cancel).ok()?;
+            Some(found.iter().flat_map(|s| s.class.methods.iter().map(|m| m.name.to_ascii_lowercase())).collect())
+        });
+        overridden.as_ref().is_some_and(|names| !names.contains(&name.to_ascii_lowercase()))
     }
 }
 

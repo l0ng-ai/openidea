@@ -103,7 +103,7 @@ impl Inspection for Deprecation {
         if is_meta_path(cx.path) {
             return;
         }
-        let tokens = cx.engine.semantic_spans(cx.parsed, cx.names(), cx.summary());
+        let tokens = cx.engine.semantic_spans(cx.parsed, cx.types());
         let text = cx.text();
         for (start, (end, ty, modifiers)) in tokens {
             if modifiers & modifier::DEPRECATED == 0 || modifiers & modifier::DECLARATION != 0 {

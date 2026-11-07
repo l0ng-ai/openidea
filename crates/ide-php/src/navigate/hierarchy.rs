@@ -23,6 +23,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, Pos, Range, SymbolKind};
 use mago_span::HasSpan;
@@ -83,16 +84,16 @@ pub(crate) struct Subtype {
 /// Direct subtypes from the index and the open buffers (which override the
 /// index for their files).
 pub(crate) struct Subtypes {
-    open: Vec<(PathBuf, FileSummary)>,
+    open: Vec<(PathBuf, Arc<FileSummary>)>,
     open_keys: HashSet<String>,
 }
 
 impl Subtypes {
     pub(crate) fn new(engine: &PhpEngine) -> Self {
-        let open: Vec<(PathBuf, FileSummary)> = engine
+        let open: Vec<(PathBuf, Arc<FileSummary>)> = engine
             .open_documents()
             .iter()
-            .map(|document| (document.path.clone(), FileSummary::extract(&engine.parse_open(document))))
+            .map(|document| (document.path.clone(), engine.open_summary(document)))
             .collect();
         let open_keys = open.iter().map(|(path, _)| path_key(path)).collect();
         Self { open, open_keys }
@@ -108,7 +109,7 @@ impl Subtypes {
                     continue;
                 }
                 let path = decl.path();
-                let Some(summary) = engine.summary(&path)? else { continue };
+                let Some(summary) = engine.shared_summary(&path)? else { continue };
                 let class = summary
                     .class_likes
                     .get(decl.index as usize)

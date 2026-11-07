@@ -188,6 +188,16 @@ impl<'a, 'r> ExprTypes<'a, 'r> {
         flow
     }
 
+    /// The file's resolved names.
+    pub fn names(&self) -> &'a FileNames {
+        self.names
+    }
+
+    /// The file's declarations.
+    pub fn summary(&self) -> &'a FileSummary {
+        self.summary
+    }
+
     fn program(&self) -> &'a Program<'a> {
         self.file.program()
     }

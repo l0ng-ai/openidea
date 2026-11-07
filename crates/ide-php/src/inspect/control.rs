@@ -172,10 +172,8 @@ pub(crate) fn find(cx: &InspectionContext<'_>) -> Vec<Found> {
     if cx.engine.status().state != EngineState::Ready || is_meta_path(cx.path) {
         return Vec::new();
     }
-    let resolver = cx.resolver();
-    let types = ExprTypes::new(cx.parsed, cx.names(), cx.summary(), &resolver);
-    let mut scan =
-        Scan { cx, types: &types, summary: cx.summary(), frames: Vec::new(), scopes: Vec::new(), found: Vec::new() };
+    let types = cx.types();
+    let mut scan = Scan { cx, types, summary: cx.summary(), frames: Vec::new(), scopes: Vec::new(), found: Vec::new() };
     // The top level.
     let flow = types.flow(&[]);
     scan.unreachable(&flow);
