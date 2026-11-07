@@ -1,4 +1,11 @@
 {
+  "OpenIDEA could not start": "OpenIDEA 无法启动",
+  "Copy the details below and include them in a GitHub issue.": "请复制下方详情，并附在 GitHub 问题中。",
+  "Report an issue": "报告问题",
+  "Copy details": "复制详情",
+  "Could not copy. Select the details below and copy them.": "无法复制。请选择下方详情并手动复制。",
+  "Startup error details": "启动错误详情",
+  "Startup did not finish within 30 seconds.": "启动未在 30 秒内完成。",
   "this data source does not list databases": "此数据源不支持列出数据库",
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",
   "connect_timeout must be greater than zero": "connect_timeout 必须大于零",
