@@ -426,6 +426,12 @@ pub struct SemanticToken {
     pub modifiers: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginHover {
+    pub markdown: String,
+    pub range: Option<ide_core::Range>,
+}
+
 // ---- declarative views (wit/views.wit) ---------------------------------------
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
