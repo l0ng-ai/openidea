@@ -369,5 +369,11 @@
   "Absolute Path": "Absolute Path",
   "Nothing to paste: the clipboard history is empty": "Nothing to paste: the clipboard history is empty",
   "Filter clipboard history": "Filter clipboard history",
-  "Ask": "Ask"
+  "Ask": "Ask",
+  "You": "You",
+  "Jump to Latest": "Jump to Latest",
+  "Retract Message": "Retract Message",
+  "Retract": "Retract",
+  "Couldn't retract the message": "Couldn't retract the message",
+  "The agent is still stopping. Try again once it has stopped.": "The agent is still stopping. Try again once it has stopped."
 }

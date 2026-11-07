@@ -4725,7 +4725,6 @@
   "Find in Conversation": "在对话中查找",
   "Find in conversation": "在对话中查找",
   "0 results": "0 个结果",
-  "Time the agent took to answer": "智能体回答所用的时间",
   "Time the agent spent on this task": "智能体在此任务上花费的时间",
   "Send Again": "再次发送",
   "Customize IDE appearance and behavior: change themes and font size, configure system settings and notifications.": "自定义 IDE 的外观和行为：更改主题和字号，配置系统设置和通知。",
@@ -6724,5 +6723,11 @@
   "Copy Path From Source Root": "复制相对于源根的路径",
   "Copied {text}": "已复制 {text}",
   "Reference": "引用",
-  "Insert imports on paste": "粘贴时插入导入"
+  "Insert imports on paste": "粘贴时插入导入",
+  "You": "你",
+  "Jump to Latest": "跳转到最新位置",
+  "Retract Message": "撤回消息",
+  "Retract": "撤回",
+  "Couldn't retract the message": "无法撤回消息",
+  "The agent is still stopping. Try again once it has stopped.": "智能体仍在停止中。请在停止后重试。"
 }
