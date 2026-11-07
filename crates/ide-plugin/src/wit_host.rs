@@ -130,6 +130,13 @@ pub struct ProjectRes {
 /// handle ends it if it still runs.
 pub struct ChildRes {
     id: u64,
+    host: std::sync::Arc<dyn crate::HostApi>,
+}
+
+impl Drop for ChildRes {
+    fn drop(&mut self) {
+        self.host.release_process(self.id);
+    }
 }
 
 /// The invoking window's focused editor.
@@ -989,7 +996,10 @@ impl process::Host for StoreData {
         cwd: Option<Resource<ProjectRes>>,
         stdin: Option<String>,
     ) -> Fallible<process::Output> {
-        let cmd = self.command(process::Command { program, args, env: Vec::new() })?;
+        let cmd = match self.command(process::Command { program, args, env: Vec::new() }) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
         let timeout = self.remaining();
@@ -1002,7 +1012,10 @@ impl process::Host for StoreData {
         cwd: Option<Resource<ProjectRes>>,
         stdin: Option<String>,
     ) -> Fallible<process::Output> {
-        let cmd = self.command(cmd)?;
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
         let cwd = self.cwd_of(cwd)?;
         let token = self.cancel.token();
         let timeout = self.remaining();
@@ -1010,13 +1023,16 @@ impl process::Host for StoreData {
     }
 
     fn start(&mut self, cmd: process::Command, cwd: Option<Resource<ProjectRes>>) -> Fallible<Resource<ChildRes>> {
-        let cmd = self.command(cmd)?;
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
         let cwd = self.cwd_of(cwd)?;
-        let id = match self.host.start_process(cmd, cwd.as_deref()) {
+        let id = match self.host.start_process(cmd, cwd.as_deref(), self.invocation.client.as_deref()) {
             Ok(id) => id,
             Err(e) => return Ok(Err(to_wit(e))),
         };
-        self.push(ChildRes { id }).map(Ok)
+        self.push(ChildRes { id, host: self.host.clone() }).map(Ok)
     }
 }
 
@@ -1039,7 +1055,7 @@ impl process::HostChild for StoreData {
             return Ok(Err(wit::Error::Invalid(format!("at most {MAX_STDIN_BYTES} bytes at a time"))));
         }
         let id = self.table.get(&this)?.id;
-        Ok(self.host.write_process(id, &text).map_err(to_wit))
+        Ok(self.host.write_process(id, &text, &self.cancel.token(), self.remaining()).map_err(to_wit))
     }
 
     fn close_stdin(&mut self, this: Resource<ChildRes>) -> Fallible<()> {
@@ -1053,9 +1069,7 @@ impl process::HostChild for StoreData {
     }
 
     fn drop(&mut self, rep: Resource<ChildRes>) -> wasmtime::Result<()> {
-        let child = self.table.delete(rep)?;
-        // Dropping the handle is how a plugin ends a run it no longer needs.
-        let _ = self.host.kill_process(child.id);
+        self.table.delete(rep)?;
         Ok(())
     }
 }

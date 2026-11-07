@@ -184,17 +184,25 @@ pub trait HostApi: Send + Sync {
     fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
-    fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>) -> Result<u64, HostError>;
+    fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
     /// What process `id` printed since the last call, each stream at most
     /// `max` bytes (the rest waits for the next call), and its status once it
     /// ended.
     fn poll_process(&self, id: u64, max: usize) -> Result<ProcessChunk, HostError>;
     /// Writes `text` to the stdin of process `id`.
-    fn write_process(&self, id: u64, text: &str) -> Result<(), HostError>;
+    fn write_process(
+        &self,
+        id: u64,
+        text: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError>;
     /// Closes the stdin of process `id`.
     fn close_process_stdin(&self, id: u64) -> Result<(), HostError>;
     /// Ends process `id`; not an error if it already ended.
     fn kill_process(&self, id: u64) -> Result<(), HostError>;
+    /// Forgets the handle and ends its process if it still runs.
+    fn release_process(&self, id: u64);
     /// Waits up to `timeout` for process `id` to end (`ZERO` only checks) and
     /// returns what it printed meanwhile with its status once it ended.
     fn wait_process(

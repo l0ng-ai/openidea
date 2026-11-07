@@ -91,10 +91,11 @@ interface process {
         stderr: string,
     }
 
-    /// What to run. `env` is added to the inherited environment: a name
-    /// there replaces the inherited one, `PATH` included (which is why the
-    /// approved file, not the name, is what runs). At most 64 entries, names
-    /// at most 256 bytes, values at most 4 KiB, neither with a NUL.
+    /// What to run (API 1.3). `env` only adds variables: an existing name in
+    /// the prepared child environment (including the login-shell PATH) is an
+    /// error naming that key; nothing is replaced or removed. Names compare
+    /// case-insensitively on Windows. At most 64 entries, nonempty names of
+    /// at most 256 bytes without '=' or NUL, values at most 4 KiB without NUL.
     record command {
         program: string,
         args: list<string>,
@@ -104,8 +105,9 @@ interface process {
     /// What a kept-running program printed since the last call, and its exit
     /// code once it ended (`none` while it still runs).
     record chunk {
-        /// At most `max-bytes` (the rest waits for the next call; `max-bytes`
-        /// of 0 still hands over one byte, so a polling loop makes progress).
+        /// Up to 1 MiB per stream; unpolled output keeps the last 1 MiB.
+        /// `poll` takes up to `max-bytes`, or one whole character when that
+        /// limit is smaller. Incomplete characters wait for the next read.
         stdout: string,
         stderr: string,
         status: option<s32>,
@@ -123,6 +125,7 @@ interface process {
         wait: func(timeout-ms: u32) -> result<chunk, error>;
         /// Writes to its stdin; fails once it ended or stdin was closed.
         write: func(text: string) -> result<_, error>;
+        /// Closes stdin; fails once the program ended.
         close-stdin: func() -> result<_, error>;
         /// Kills it and reaps it, so its status is available afterwards.
         kill: func() -> result<_, error>;
@@ -133,10 +136,11 @@ interface process {
     /// a task for anything slow.
     run: func(program: string, args: list<string>, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
 
-    /// The same as `run`, with an environment.
+    /// The same as `run`, with append-only environment variables (API 1.3).
     run-command: func(cmd: command, cwd: option<borrow<project>>, stdin: option<string>) -> result<output, error>;
 
     /// Starts `cmd` with piped stdin and stdout/stderr, and returns the
-    /// handle to it without waiting.
+    /// handle to it without waiting (API 1.3). Closing the invoking window
+    /// also ends its processes.
     start: func(cmd: command, cwd: option<borrow<project>>) -> result<child, error>;
 }

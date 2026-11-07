@@ -558,6 +558,12 @@ fn fs_write_reaches_only_the_granted_paths() {
 fn a_plugin_keeps_a_process_running_behind_a_handle() {
     let f = fixture(Limits::default());
     f.install(&misbehave_pkg());
+    f.host.set_capability("misbehave", "process:git", false).unwrap();
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap_err().contains("process:git"));
+    for command in ["envrun", "envstart", "child"] {
+        let err = f.run("misbehave", command, None).unwrap_err();
+        assert!(err.contains("process:git"), "{command}: {err}");
+    }
     // The fixture declares `process:git` as optional: it needs a program that
     // reads stdin and reports its environment. Machines running these tests have
     // git; without one, there is nothing to run and nothing to check.
@@ -571,11 +577,75 @@ fn a_plugin_keeps_a_process_running_behind_a_handle() {
     assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{out}");
     assert_eq!(status, "Some(0)", "it ended by itself: {out}");
 
+    assert!(f.run("misbehave", "envrun", Some("legacy")).unwrap().unwrap().starts_with("git version"));
     let ident = f.run("misbehave", "envrun", None).expect("a run with extra environment").expect("a result");
-    assert!(ident.starts_with("Openidea Bot <bot@example.com>"), "the run's own variables are used: {ident}");
+    assert_eq!(ident.trim(), "added by the plugin");
+    assert_eq!(f.run("misbehave", "envstart", None).unwrap().unwrap().trim(), "added by the plugin");
+    for command in ["envdeny-run", "envdeny-start"] {
+        let inherited = std::env::vars().find(|(key, _)| key != "PATH" && !key.contains('=')).unwrap().0;
+        for key in ["PATH", inherited.as_str(), "", "BAD=KEY", "BAD\0KEY"] {
+            let err = f.run("misbehave", command, Some(key)).unwrap_err();
+            assert!(err.contains("environment variable"), "{command} {key:?}: {err}");
+        }
+    }
+    // Dropping a resource returns the slot; the limit is simultaneous handles.
+    for _ in 0..10 {
+        f.run("misbehave", "childkeep", None).unwrap();
+        assert_eq!(f.run("misbehave", "childpoll", None).unwrap().as_deref(), Some("None"));
+        f.run("misbehave", "childdrop", None).unwrap();
+    }
+    for _ in 0..8 {
+        f.run("misbehave", "childkeep", None).unwrap();
+    }
+    assert!(f.run("misbehave", "childkeep", None).unwrap_err().contains("at most 8"));
+    f.run("misbehave", "childdrop", None).unwrap();
+    f.run("misbehave", "childkeep", None).unwrap();
+    f.host.forget_client("main");
+    assert!(f.run("misbehave", "childpoll", None).unwrap_err().contains("no process"));
+    assert!(f.run("misbehave", "childkeep", None).is_err(), "late starts are cancelled");
+    f.host.reopen_client("main");
+    f.run("misbehave", "childdrop", None).unwrap();
 
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_processes_end_with_their_owner() {
+    for mode in ["disable", "unload", "shutdown", "reclaim", "trap", "window"] {
+        let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+        f.install(&misbehave_pkg());
+        f.host.set_capability("misbehave", "process:git", true).unwrap();
+        let marker = format!("--path={}/process-{mode}", f.project.display());
+        let alive = || {
+            let ps = std::process::Command::new("ps").args(["-axo", "command="]).output().unwrap();
+            assert!(ps.status.success());
+            String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
+        };
+        f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        assert!(alive(), "{mode}: the process started");
+        match mode {
+            "disable" => f.host.set_enabled("misbehave", false).unwrap(),
+            "unload" => f.host.uninstall("misbehave").unwrap(),
+            "shutdown" => f.host.shutdown(),
+            "reclaim" => {
+                std::thread::sleep(Duration::from_millis(75));
+                f.host.tick();
+                assert_eq!(f.host.instances(), 0);
+            }
+            "trap" => {
+                assert!(f.run("misbehave", "panic", None).is_err());
+            }
+            "window" => f.host.forget_client("main"),
+            _ => unreachable!(),
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!alive(), "{mode}: the process must end with its owner");
+    }
 }
 
 /// A missing capability is an error the plugin can handle, not a trap.
@@ -854,7 +924,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 16, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 23, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 

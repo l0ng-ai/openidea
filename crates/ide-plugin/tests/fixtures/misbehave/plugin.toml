@@ -73,3 +73,31 @@ title = "child"
 [[contributes.commands]]
 id = "envrun"
 title = "envrun"
+
+[[contributes.commands]]
+id = "envstart"
+title = "envstart"
+
+[[contributes.commands]]
+id = "envdeny-run"
+title = "envdeny-run"
+
+[[contributes.commands]]
+id = "envdeny-start"
+title = "envdeny-start"
+
+[[contributes.commands]]
+id = "childkeep"
+title = "childkeep"
+
+[[contributes.commands]]
+id = "childpoll"
+title = "childpoll"
+
+[[contributes.commands]]
+id = "childdrop"
+title = "childdrop"
+
+[[contributes.commands]]
+id = "childtrap"
+title = "childtrap"

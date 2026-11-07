@@ -1769,6 +1769,7 @@ impl PluginHost {
         for a in actors {
             a.stop(true);
         }
+        self.shared.finish_process_shutdowns();
     }
 
     /// Periodic upkeep (every few seconds): reports crashes nobody waited

@@ -1223,7 +1223,38 @@ pub mod current {
         })
     }
 
-    pub type ChildRes = u64;
+    pub struct ChildRes {
+        id: u64,
+        owner: Rc<RefCell<State>>,
+    }
+
+    impl Drop for ChildRes {
+        fn drop(&mut self) {
+            self.owner.borrow_mut().children.remove(&self.id);
+        }
+    }
+
+    fn command_env(cmd: &crate::host::Command) -> Result<(), Error> {
+        if cmd.env.len() > 64 {
+            return Err(Error::Invalid("at most 64 environment variables".into()));
+        }
+        let mut names: Vec<&str> = Vec::new();
+        for (key, value) in &cmd.env {
+            if key.is_empty()
+                || key.len() > 256
+                || key.contains(['=', '\0'])
+                || value.len() > 4096
+                || value.contains('\0')
+            {
+                return Err(Error::Invalid(format!("invalid environment variable {key:?}")));
+            }
+            if names.iter().any(|name| if cfg!(windows) { name.eq_ignore_ascii_case(key) } else { *name == key }) {
+                return Err(Error::Invalid(format!("environment variable {key:?} already exists")));
+            }
+            names.push(key);
+        }
+        Ok(())
+    }
 
     /// Runs a [`Command`]: like `run_process`, with its environment in front of
     /// what the program printed (the mock machine has none of its own, so this
@@ -1235,6 +1266,7 @@ pub mod current {
     ) -> Result<ProcessOutput, Error> {
         with(|s| {
             require(s, &format!("process:{}", cmd.program))?;
+            command_env(cmd)?;
             s.runs.push(ProcessRun {
                 program: cmd.program.clone(),
                 args: cmd.args.clone(),
@@ -1255,6 +1287,7 @@ pub mod current {
     pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
         with(|s| {
             require(s, &format!("process:{}", cmd.program))?;
+            command_env(cmd)?;
             if s.children.len() >= MAX_CHILDREN {
                 return Err(Error::Invalid(format!(
                     "{}: too many processes (at most {MAX_CHILDREN} at a time)",
@@ -1275,7 +1308,8 @@ pub mod current {
                 status: None,
             };
             s.children.insert(id, child);
-            Ok(id)
+            let owner = CURRENT.with(|c| c.borrow().as_ref().unwrap().clone());
+            Ok(ChildRes { id, owner })
         })
     }
 
@@ -1285,27 +1319,30 @@ pub mod current {
 
     /// Up to `max` bytes from the front of `buf`, cut at a character boundary.
     fn take(buf: &mut String, max: u32) -> String {
-        let mut cut = (max as usize).min(buf.len());
+        let mut cut = (max.max(1) as usize).min(1 << 20).min(buf.len());
         while !buf.is_char_boundary(cut) {
             cut -= 1;
+        }
+        if cut == 0 && !buf.is_empty() {
+            cut = buf.chars().next().unwrap().len_utf8();
         }
         buf.drain(..cut).collect()
     }
 
     pub fn child_poll(child: &ChildRes, max_bytes: u32) -> Result<crate::host::Chunk, Error> {
-        let id = *child;
+        let id = child.id;
         with(|s| {
             let c = child_at(s, id)?;
             Ok(crate::host::Chunk {
-                stdout: take(&mut c.stdout, max_bytes as u32),
-                stderr: take(&mut c.stderr, max_bytes as u32),
+                stdout: take(&mut c.stdout, max_bytes),
+                stderr: take(&mut c.stderr, max_bytes),
                 status: c.status,
             })
         })
     }
 
     pub fn child_write(child: &ChildRes, text: &str) -> Result<(), Error> {
-        let id = *child;
+        let id = child.id;
         with(|s| {
             let c = child_at(s, id)?;
             if c.status.is_some() {
@@ -1321,7 +1358,7 @@ pub mod current {
     }
 
     pub fn child_close_stdin(child: &ChildRes) -> Result<(), Error> {
-        let id = *child;
+        let id = child.id;
         with(|s| {
             child_at(s, id)?.stdin_closed = true;
             Ok(())
@@ -1329,7 +1366,7 @@ pub mod current {
     }
 
     pub fn child_kill(child: &ChildRes) -> Result<(), Error> {
-        let id = *child;
+        let id = child.id;
         with(|s| {
             let c = child_at(s, id)?;
             if c.status.is_none() {
@@ -1339,11 +1376,11 @@ pub mod current {
         })
     }
 
-    pub fn child_wait(child: &ChildRes, _timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
-        let id = *child;
+    pub fn child_wait(child: &ChildRes, timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
+        let id = child.id;
         with(|s| {
             let c = child_at(s, id)?;
-            if c.status.is_none() {
+            if timeout_ms > 0 && c.status.is_none() {
                 c.status = Some(0);
             }
             Ok(crate::host::Chunk {
@@ -1569,6 +1606,25 @@ mod tests {
         assert_eq!(host::subscribe(EventKind::ActionPerformed), Err(Error::Denied("events.input".into())));
         assert_eq!(mock.invocation().project().unwrap().vcs_remotes(), Err(Error::Denied("vcs.read".into())));
         assert_eq!(host::copy_to_clipboard("x"), Err(Error::Denied("clipboard".into())));
+    }
+
+    #[test]
+    fn child_resources_return_slots_and_zero_timeout_only_checks() {
+        let _mock = MockHost::install().with_capabilities(&["process:git"]);
+        let command = host::Command::new("git").env("NEW_KEY", "new");
+        for _ in 0..10 {
+            let child = host::start(&command, None).unwrap();
+            assert_eq!(child.wait(0).unwrap().status, None);
+            child.write("中").unwrap();
+            assert_eq!(child.poll(0).unwrap().stdout, "e");
+            child.kill().unwrap();
+            assert_eq!(child.poll(100).unwrap().status, Some(-1));
+        }
+        let children: Vec<_> = (0..8).map(|_| host::start(&command, None).unwrap()).collect();
+        assert!(matches!(host::start(&command, None), Err(Error::Invalid(_))));
+        drop(children);
+        assert!(host::start(&command, None).is_ok());
+        assert!(matches!(host::start(&command.clone().env("NEW_KEY", "override"), None), Err(Error::Invalid(_))));
     }
 
     #[test]

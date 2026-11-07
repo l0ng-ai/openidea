@@ -468,23 +468,23 @@ mod imp {
     }
 
     pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
-        wit::process::Child::poll(child, max).map(chunk_in).map_err(error)
+        child.poll(max).map(chunk_in).map_err(error)
     }
 
     pub fn child_write(child: &ChildRes, text: &str) -> Result<(), Error> {
-        wit::process::Child::write(child, text).map_err(error)
+        child.write(text).map_err(error)
     }
 
     pub fn child_close_stdin(child: &ChildRes) -> Result<(), Error> {
-        wit::process::Child::close_stdin(child).map_err(error)
+        child.close_stdin().map_err(error)
     }
 
     pub fn child_kill(child: &ChildRes) -> Result<(), Error> {
-        wit::process::Child::kill(child).map_err(error)
+        child.kill().map_err(error)
     }
 
     pub fn child_wait(child: &ChildRes, timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
-        wit::process::Child::wait(child, timeout_ms).map(chunk_in).map_err(error)
+        child.wait(timeout_ms).map(chunk_in).map_err(error)
     }
 
     fn chunk_in(c: wit::process::Chunk) -> crate::host::Chunk {
@@ -712,20 +712,26 @@ pub struct Command {
     pub program: String,
     pub args: Vec<String>,
     /// Variables added to the inherited environment: at most 64, names at most
-    /// 256 bytes, values at most 4 KiB. They never remove or replace an inherited one.
+    /// 256 bytes, values at most 4 KiB, no NUL or '=' in names, no NUL in values.
+    /// Existing names in the prepared child environment (including login-shell
+    /// PATH) fail with an error naming the key. Windows names compare without
+    /// case. Variables are never replaced or removed.
     pub env: Vec<(String, String)>,
 }
 
 impl Command {
+    /// Selects the program approved by a `process:<program>` grant.
     pub fn new(program: &str) -> Self {
         Self { program: program.to_owned(), args: Vec::new(), env: Vec::new() }
     }
 
+    /// Appends one argument.
     pub fn arg(mut self, arg: &str) -> Self {
         self.args.push(arg.to_owned());
         self
     }
 
+    /// Appends arguments in order.
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -735,6 +741,7 @@ impl Command {
         self
     }
 
+    /// Adds a variable; an inherited or duplicate name is an error at spawn.
     pub fn env(mut self, name: &str, value: &str) -> Self {
         self.env.push((name.to_owned(), value.to_owned()));
         self
@@ -757,7 +764,8 @@ pub struct Child {
 }
 
 impl Child {
-    /// What it printed since the last read, each stream at most `max_bytes`;
+    /// What it printed since the last read, up to 1 MiB per stream, or one
+    /// whole character when `max_bytes` is smaller;
     /// `status` is `Some` once it ended.
     pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
         imp::child_poll(&self.inner, max_bytes)
@@ -784,20 +792,14 @@ impl Child {
     }
 }
 
-impl Drop for Child {
-    fn drop(&mut self) {
-        // The host ends a program whose handle is dropped.
-        let _ = imp::child_kill(&self.inner);
-    }
-}
-
-/// Runs a [`Command`] to its end, adding its environment to the inherited one.
+/// Runs a [`Command`] to its end (API 1.3). Its environment only adds new
+/// variables; an existing key fails with an error naming it.
 pub fn run_command(cmd: &Command, project: Option<&Project>, stdin: Option<&str>) -> Result<ProcessOutput, Error> {
     imp::run_command(cmd, project.map(|p| &p.inner), stdin)
 }
 
 /// Starts a [`Command`] and keeps it running behind a [`Child`] (at most 8 per
-/// plugin instance).
+/// plugin instance, API 1.3). Closing the invoking window ends its processes.
 pub fn start(cmd: &Command, project: Option<&Project>) -> Result<Child, Error> {
     imp::start(cmd, project.map(|p| &p.inner)).map(|inner| Child { inner })
 }
