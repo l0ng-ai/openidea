@@ -229,7 +229,17 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
     throw error;
   });
   signal.throwIfAborted();
-  console.info("Java launch preparation", { module, moduleMs, resolveMs: performance.now() - started - moduleMs });
+  console.info("Java launch preparation", {
+    module,
+    policy,
+    build: info.build ?? "none",
+    classpathEntries: info.classPaths.length,
+    modulePathEntries: info.modulePaths.length,
+    javaExec: info.javaExec ?? "java",
+    moduleMs,
+    resolveMs: performance.now() - started - moduleMs,
+    totalMs: performance.now() - started,
+  });
   const errors = formatCompileErrors(info);
   if (errors) report?.(errors, "stderr");
   // IDEA's default: a failed build (or one with compile errors) does not start the program;

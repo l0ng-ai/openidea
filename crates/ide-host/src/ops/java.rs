@@ -132,6 +132,13 @@ async fn resolve_launch(
             return Err(IdeError::cancelled());
         }
         tracing::info!(
+            module = %module.display(),
+            test,
+            policy = ?policy,
+            build = ?info.build,
+            classpath_entries = info.class_paths.len(),
+            module_path_entries = info.module_paths.len(),
+            java_exec = info.java_exec.as_deref().unwrap_or("java"),
             lsp_ms,
             compile_ms,
             jdk_ms = started.elapsed().as_millis() - lsp_ms - compile_ms,
