@@ -429,6 +429,7 @@ impl PluginHost {
                                 level: ide_plugin::NotificationLevel::Warning,
                                 title: format!("{} was disabled", plugin.manifest().name),
                                 body: format!("The marketplace revoked this plugin: {reason}"),
+                                actions: Vec::new(),
                             },
                         );
                     }

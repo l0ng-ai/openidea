@@ -1,4 +1,7 @@
 {
+  "Run `{command}` in a terminal.": "Run `{command}` in a terminal.",
+  "Run `{command}` in a terminal and sign in.": "Run `{command}` in a terminal and sign in.",
+  "{name} needs you to sign in. {hint}": "{name} needs you to sign in. {hint}",
   "OpenIDEA or JetBrains settings": "OpenIDEA or JetBrains settings",
   "Import JetBrains Settings": "Import JetBrains Settings",
   "These settings will be imported:": "These settings will be imported:",
@@ -183,5 +186,8 @@
   "Per-module language levels and compiler output overrides are not supported yet. Configure them in Maven or Gradle.": "Per-module language levels and compiler output overrides are not supported yet. Configure them in Maven or Gradle.",
   "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.": "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.",
   "Remove Module Overrides": "Remove Module Overrides",
-  "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}"
+  "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}",
+  "Cannot choose a directory": "Cannot choose a directory",
+  "Open in HTTP Client": "Open in HTTP Client",
+  "Cannot generate the HTTP request": "Cannot generate the HTTP request"
 }

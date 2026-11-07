@@ -19,6 +19,7 @@ type Events = Arc<Mutex<Vec<(Option<String>, PluginEvent)>>>;
 /// What plugins see of the test project: real `Documents`, as in the IDE.
 struct TestWorkspace {
     root: PathBuf,
+    other_roots: Mutex<Vec<PathBuf>>,
     documents: Arc<ide_workspace::Documents>,
     trusted: bool,
     /// (producer, path) → published diagnostics.
@@ -35,6 +36,7 @@ impl TestWorkspace {
         );
         Arc::new(Self {
             root: root.to_path_buf(),
+            other_roots: Mutex::default(),
             documents: Arc::new(documents),
             trusted: true,
             diagnostics: Mutex::default(),
@@ -67,7 +69,7 @@ impl TestWorkspace {
 
 impl PluginWorkspace for TestWorkspace {
     fn projects(&self) -> Vec<PathBuf> {
-        vec![self.root.clone()]
+        std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
     fn buffer_text(&self, path: &Path) -> Option<String> {
         self.documents.text_of(path)
@@ -1724,6 +1726,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     f.install(&official("git-toolbox"));
     let untrusted = Arc::new(TestWorkspace {
         root: f.project.clone(),
+        other_roots: Mutex::default(),
         documents: f.workspace.documents.clone(),
         trusted: false,
         diagnostics: Mutex::default(),
@@ -3022,6 +3025,30 @@ fn completion_quick_fixes_problems_and_event_kinds_of_api_1() {
     let foreign = ide_plugin::CodeAction { data: Some("other".into()), ..action };
     assert!(f.host.resolve_code_action(&plugin, &doc("lazy"), foreign).is_err());
 
+    // File operations come from the `file-actions` export, next to the providers' own.
+    let mut actions = f.host.provide_code_actions(&doc("files"), ide_core::Range::default()).into_iter();
+    let (_, action) = actions.next().expect("offered");
+    let (plugin, later) = actions.next().expect("a lazy one too");
+    let dir = f.project.clone();
+    assert_eq!(action.title, "Reorganise");
+    assert_eq!(
+        action.operations,
+        vec![
+            ide_plugin::FileOperation::Create { path: dir.join("created.txt"), text: "hello".into(), overwrite: false },
+            ide_plugin::FileOperation::Rename { from: dir.join("old.txt"), to: dir.join("renamed.txt") },
+            ide_plugin::FileOperation::Delete { path: dir.join("gone.txt") },
+        ]
+    );
+    assert_eq!(action.open, Some(dir.join("created.txt")));
+    // Listed with `data` only: `resolve` on the same export computes its operations.
+    assert!(later.file_action && later.operations.is_empty() && later.data.is_some());
+    let resolved = f.host.resolve_code_action(&plugin, &doc("files"), later).unwrap();
+    assert_eq!(
+        resolved.operations,
+        vec![ide_plugin::FileOperation::Create { path: dir.join("later.txt"), text: "later".into(), overwrite: false }]
+    );
+    assert!(f.host.provide_code_actions(&doc("rich"), ide_core::Range::default()).is_empty());
+
     // A kind this IDE doesn't know is refused, not a trap.
     let err = f.host.run_command("misbehave", "subscribe", Some("file-deleted"), f.inv()).unwrap_err();
     assert!(err.message.contains("no event kind"), "{}", err.message);
@@ -3398,4 +3425,335 @@ fn invalid_plugin_icons_refuse_the_package() {
         let err = f.host.preview_install(&pkg).map(|_| ()).unwrap_err().message;
         assert!(err.contains(expected), "{id}: {err}");
     }
+}
+
+#[test]
+fn endpoint_exports_refresh_matching_files_and_follow_plugin_lifecycle() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+    let routes = f.project.join("routes.txt");
+    std::fs::write(&routes, "/users/{id}\n").unwrap();
+    f.install(&sample("endpoints"));
+    let id = "test.endpoints";
+    let paths = || f.host.endpoints(id, &f.project).unwrap().iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+    let first = f.host.endpoints(id, &f.project).unwrap();
+    assert_eq!(first[0].path, "/users/{id}");
+    assert!(first[0].method.is_none(), "any method is preserved");
+    assert_eq!(first[0].location.path, ide_core::IpcPath::from(to_ipc(&routes)));
+    std::thread::sleep(Duration::from_millis(70));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert_eq!(paths(), ["/users/{id}"]);
+    assert_eq!(f.host.instances(), 0, "a cached list doesn't wake the plugin");
+    let changed = |f: &Fixture| {
+        f.take_events()
+            .iter()
+            .any(|(_, e)| matches!(e, PluginEvent::EndpointsChanged { plugin_id, .. } if plugin_id == id))
+    };
+    std::fs::write(&routes, "/updated\n").unwrap();
+    f.take_events();
+    f.host.invalidate_endpoints(&f.project, &[f.project.join("unrelated.txt")]);
+    assert!(!changed(&f));
+    assert_eq!(paths(), ["/users/{id}"]);
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert!(changed(&f), "windows are told to ask again");
+    assert_eq!(paths(), ["/updated"]);
+    std::fs::write(&routes, "not-a-path\n").unwrap();
+    f.host.invalidate_endpoints(&f.project, std::slice::from_ref(&routes));
+    assert_eq!(paths(), ["/updated"], "an invalid list doesn't replace the last valid one");
+    f.host.set_enabled(id, false).unwrap();
+    assert!(paths().is_empty());
+    std::fs::write(&routes, "/enabled\n").unwrap();
+    f.host.set_enabled(id, true).unwrap();
+    assert_eq!(paths(), ["/enabled"]);
+    f.take_events();
+    assert!(f.run(id, "crash", None).is_err());
+    assert!(changed(&f), "a crash withdraws the routes");
+    f.host.uninstall(id).unwrap();
+    assert!(f.host.endpoints(id, &f.project).is_err());
+}
+
+struct EndpointWorkspace {
+    reads: std::sync::atomic::AtomicUsize,
+    inner: Arc<TestWorkspace>,
+    roots: Mutex<Vec<PathBuf>>,
+    entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl PluginWorkspace for EndpointWorkspace {
+    fn projects(&self) -> Vec<PathBuf> {
+        self.roots.lock().clone()
+    }
+    fn buffer_text(&self, path: &Path) -> Option<String> {
+        if self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0
+            && let Some(entered) = self.entered.lock().take()
+        {
+            entered.send(()).unwrap();
+            self.release.lock().recv().unwrap();
+        }
+        self.inner.buffer_text(path)
+    }
+    fn document(&self, path: &Path) -> Option<(u64, String)> {
+        self.inner.document(path)
+    }
+    fn trusted(&self, root: &Path) -> bool {
+        self.roots.lock().iter().any(|r| r == root)
+    }
+    fn project_of(&self, _: &str) -> Option<PathBuf> {
+        self.roots.lock().first().cloned()
+    }
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[ide_core::TextEdit]) -> Result<u64, HostError> {
+        self.inner.apply_edits(path, version, edits)
+    }
+    fn publish_diagnostics(
+        &self,
+        source: &str,
+        path: &Path,
+        items: Vec<ide_core::Diagnostic>,
+    ) -> Result<(), HostError> {
+        self.inner.publish_diagnostics(source, path, items)
+    }
+}
+
+#[test]
+fn late_endpoint_results_cannot_restore_a_disabled_plugin_or_closed_project() {
+    for close_project in [false, true] {
+        let f = fixture(Limits::default());
+        std::fs::write(f.project.join("routes.txt"), "/late\n").unwrap();
+        f.install(&sample("endpoints"));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let workspace = Arc::new(EndpointWorkspace {
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            inner: f.workspace.clone(),
+            roots: Mutex::new(vec![f.project.clone()]),
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(release_rx),
+        });
+        f.host.set_workspace(Some(workspace.clone()));
+        let late = std::thread::scope(|scope| {
+            // The plugin reads the file, then the host's check reads it again and waits here.
+            let query = scope.spawn(|| f.host.endpoints("test.endpoints", &f.project).unwrap());
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if close_project {
+                workspace.roots.lock().clear();
+            } else {
+                f.host.set_enabled("test.endpoints", false).unwrap();
+            }
+            release_tx.send(()).unwrap();
+            query.join().unwrap()
+        });
+        assert!(late.is_empty());
+        assert!(f.host.endpoints("test.endpoints", &f.project).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn endpoint_results_are_isolated_per_root_and_withdraw_closed_roots() {
+    let f = fixture(Limits::default());
+    let other = f.project.parent().unwrap().join("other");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(f.project.join("routes.txt"), "/first\n").unwrap();
+    std::fs::write(other.join("routes.txt"), "/second\n").unwrap();
+    let (_, release_rx) = std::sync::mpsc::channel();
+    let workspace = Arc::new(EndpointWorkspace {
+        reads: std::sync::atomic::AtomicUsize::new(0),
+        inner: f.workspace.clone(),
+        roots: Mutex::new(vec![f.project.clone(), other.clone()]),
+        entered: Mutex::new(None),
+        release: Mutex::new(release_rx),
+    });
+    f.host.set_workspace(Some(workspace.clone()));
+    f.install(&sample("endpoints"));
+    for (root, route) in [(&f.project, "/first"), (&other, "/second")] {
+        let list = f.host.endpoints("test.endpoints", root).unwrap();
+        assert_eq!(list.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [route]);
+    }
+    workspace.roots.lock().retain(|r| r != &other);
+    assert!(f.host.endpoints("test.endpoints", &other).unwrap().is_empty(), "a closed project has no routes");
+    assert_eq!(f.host.endpoints("test.endpoints", &f.project).unwrap()[0].path, "/first");
+}
+
+#[test]
+fn notification_actions_keep_commands_and_window_scope() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.take_events();
+    f.host
+        .run_command("jobs", "notify-actions", None, Invocation { client: Some("second".into()), ..f.inv() })
+        .unwrap();
+    let notifications = f
+        .take_events()
+        .into_iter()
+        .filter_map(|(client, event)| match event {
+            PluginEvent::Notification { plugin_id, actions, .. } => Some((client, plugin_id, actions)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].0.as_deref(), Some("second"));
+    assert_eq!(notifications[0].1, "jobs");
+    assert_eq!(notifications[0].2.len(), 3);
+    assert_eq!(notifications[0].2[0].command, "context");
+    assert_eq!(notifications[0].2[0].argument.as_deref(), Some("notification-action=1\nvalue"));
+    for invalid in ["four", "unknown"] {
+        let error = f.run("jobs", "notify-actions", Some(invalid)).unwrap_err();
+        assert!(error.contains(if invalid == "four" { "at most 3" } else { "declares no command" }), "{error}");
+        assert!(f.take_events().iter().all(|(_, e)| !matches!(e, PluginEvent::Notification { .. })));
+    }
+    assert_eq!(f.status("jobs"), PluginStatus::Active, "a refused notification leaves the plugin running");
+}
+
+#[test]
+fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
+    use ide_plugin::Prompt;
+    let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    let (result, prompt) =
+        run_and_answer(&f, "pick-directory", Some("C:/work"), Some(&["C:/work/repo"]), Duration::from_millis(700));
+    assert_eq!(result.unwrap().as_deref(), Some("C:/work/repo"));
+    assert_eq!(prompt, Prompt::PickDirectory { title: "Clone target".into(), initial: Some("C:/work".into()) });
+    assert_eq!(run_and_answer(&f, "pick-directory", None, None, Duration::ZERO).0.unwrap().as_deref(), Some("none"));
+    assert!(run_and_answer(&f, "pick-directory", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.run("jobs", "pick-directory", Some("relative")).is_err());
+    for (cmd, new_window) in [("open-project", false), ("open-project-new", true)] {
+        f.take_events();
+        let inv = Invocation { client: Some("second".into()), ..f.inv() };
+        f.host.run_command("jobs", cmd, Some("C:/work/repo"), inv).unwrap();
+        let requests = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenProject { plugin_id, path, new_window } => Some((client, plugin_id, path, new_window)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(requests, vec![(Some("second".into()), "jobs".into(), "C:/work/repo".into(), new_window)]);
+        let error = f.host.run_command("jobs", cmd, Some("/work/repo"), Invocation::default()).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{error:?}");
+    }
+    assert!(f.host.run_command("jobs", "pick-directory", None, Invocation::default()).is_err());
+    for path in ["relative", "/bad\npath", ""] {
+        f.take_events();
+        assert!(f.run("jobs", "open-project", Some(path)).is_err());
+        assert!(!f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::OpenProject { .. })));
+    }
+}
+
+#[test]
+fn plugin_readonly_fields_and_table_row_extensions_round_trip() {
+    let f = fixture(Limits::default());
+    f.install(&sample("tables"));
+    let view = f.host.render_view("tables", "fields", None, f.inv()).unwrap();
+    let ide_plugin::ViewBody::Form(fields) = view.body else { panic!("form") };
+    assert_eq!(fields[0].value, ide_plugin::FieldValue::Label("Merge request #42".into()));
+    assert_eq!(fields[1].value, ide_plugin::FieldValue::ReadonlyText { text: "Ada Lovelace".into(), multiline: false });
+    assert_eq!(
+        fields[2].value,
+        ide_plugin::FieldValue::ReadonlyText { text: "Ready for review\nAll checks passed".into(), multiline: true }
+    );
+    assert!(matches!(fields[3].value, ide_plugin::FieldValue::Text(_)));
+    for (event, status) in [
+        (ide_plugin::ViewEvent::TableSelect { row: 2 }, "select:2"),
+        (ide_plugin::ViewEvent::TableActivate { row: 2 }, "activate:2"),
+    ] {
+        f.take_events();
+        f.host.view_event("tables", "tables", event, f.inv()).unwrap();
+        assert!(f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::ViewChanged { plugin_id, view } if plugin_id == "tables" && view == "tables")));
+        assert_eq!(f.host.render_view("tables", "tables", None, f.inv()).unwrap().status.as_deref(), Some(status));
+    }
+}
+
+#[test]
+fn path_filtered_events_do_not_wake_idle_plugins_and_recheck_queued_filters() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    f.install(&sample("path-events"));
+    f.run("test.path-events", "count", None).unwrap();
+    let matched = to_ipc(&f.project.join("config/app.yaml"));
+    let other = to_ipc(&f.project.join("src/main.rs"));
+    let deliver = |events| {
+        f.host.post_events(Some("main"), events);
+        f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+    };
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.status("test.path-events"), PluginStatus::Inactive);
+    let activations = f.host.info_of("test.path-events").unwrap().stats.activations;
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone()), WorkbenchEvent::FileSaved(other.clone())]);
+    assert_eq!(f.host.info_of("test.path-events").unwrap().stats.activations, activations);
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone()), WorkbenchEvent::FileSaved(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("2"));
+    assert!(f.run("test.path-events", "filter", Some("../*")).is_err());
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "invalid filter preserves previous one"
+    );
+
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    f.run("test.path-events", "filter", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "queued event uses current filter"
+    );
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("3"));
+    f.run("test.path-events", "all", None).unwrap();
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(other.clone())]);
+    f.run("test.path-events", "off", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    deliver(vec![WorkbenchEvent::FileOpened(other)]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+
+    f.host.set_enabled("test.path-events", false).unwrap();
+    assert!(!f.host.event_kinds().contains(&WorkbenchEvent::FileOpened(String::new()).kind()));
+}
+
+#[test]
+fn project_lookup_works_in_commands_and_provider_calls_without_an_invocation_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("path-events"));
+    let path = f.project.join("src/notes.txt");
+    assert_eq!(f.run("test.path-events", "project", Some(&to_ipc(&path))).unwrap(), Some(to_ipc(&f.project)));
+    assert_eq!(f.run("test.path-events", "project", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&f.project.with_extension("other").join("a")))).unwrap(),
+        None
+    );
+    let doc = ide_plugin::ProviderDocument { path, language: "text".into(), version: 1, text: "one".into() };
+    let hovers = f.host.provide_hover(&doc, ide_core::Pos::new(0, 0));
+    assert_eq!(hovers.len(), 1);
+    assert_eq!(hovers[0].markdown, to_ipc(&f.project));
+    let nested = f.project.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    f.workspace.other_roots.lock().push(nested.clone());
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&nested.join("new.txt")))).unwrap(),
+        Some(to_ipc(&nested))
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&nested, f.project.join("alias")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("alias/new.txt")))).unwrap(),
+            Some(to_ipc(&nested))
+        );
+        std::os::unix::fs::symlink(f._tmp.path(), f.project.join("outside")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("outside/new.txt")))).unwrap(),
+            None
+        );
+    }
+    f.host.set_capability("test.path-events", "project.read", false).unwrap();
+    assert!(f.run("test.path-events", "project", Some(&to_ipc(&doc.path))).unwrap_err().contains("project.read"));
+    f.host.set_capability("test.path-events", "events", false).unwrap();
+    assert!(f.run("test.path-events", "filter", Some("*")).unwrap_err().contains("events"));
 }

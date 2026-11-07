@@ -19,6 +19,9 @@ const FRAME_SETTLE_AFTER_MOVE: Duration = Duration::from_millis(100);
 /// Longest wait for a closed host's fullscreen Space to go before the next tab takes the screen.
 #[cfg(target_os = "macos")]
 const SPACE_TEARDOWN: Duration = Duration::from_millis(1500);
+/// Longest wait for the tab taking over from a closing host to enter its own fullscreen Space.
+#[cfg(target_os = "macos")]
+const SPACE_HANDOVER: Duration = Duration::from_millis(2000);
 /// Coalesces the move/resize events a drag emits.
 static FRAME_SYNC_GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -327,6 +330,13 @@ pub fn toggle_fullscreen(window: &WebviewWindow) -> IdeResult<bool> {
 /// Makes `host` the fullscreen window of its group, or of its own Space when ungrouped.
 #[cfg(target_os = "macos")]
 fn host_fullscreen(app: &AppHandle, host: &WebviewWindow) -> IdeResult<()> {
+    prepare_host(app, host)?;
+    crate::macos::native_toggle_fullscreen(host).map_err(|e| IdeError::internal(e.to_string()))
+}
+
+/// `host` and the other members of its group, ready for `host` to enter fullscreen.
+#[cfg(target_os = "macos")]
+fn prepare_host(app: &AppHandle, host: &WebviewWindow) -> IdeResult<()> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     let members = app.state::<WindowsState>().groups.lock().group(host.label()).map(|g| g.members.clone());
     crate::macos::set_fullscreen_auxiliary(host, None).map_err(err)?;
@@ -338,8 +348,29 @@ fn host_fullscreen(app: &AppHandle, host: &WebviewWindow) -> IdeResult<()> {
     if members.is_some() {
         watch_host(app, host)?;
     }
-    host.show().map_err(err)?;
-    crate::macos::native_toggle_fullscreen(host).map_err(err)
+    host.show().map_err(err)
+}
+
+/// A fullscreen group's host is about to close, past its prompts. The tab that takes over leaves
+/// for a Space of its own first, so the screen moves straight to it; were the host closed first,
+/// its Space would end and show the desktop until the next one opened.
+#[cfg(target_os = "macos")]
+pub async fn before_close(app: &AppHandle, caller: &str) -> IdeResult<()> {
+    let state = app.state::<WindowsState>();
+    let Some(members) = state.groups.lock().group(caller).map(|g| g.members.clone()) else { return Ok(()) };
+    if state.quitting() || fullscreen_host(app, &members).is_none_or(|host| host.label() != caller) {
+        return Ok(());
+    }
+    // Detached now, the closing host leaves nothing for `destroyed` to hand over.
+    let next = state.groups.lock().detach(caller);
+    changed(app);
+    let Some(next) = next.and_then(|label| app.get_webview_window(&label)) else { return Ok(()) };
+    prepare_host(app, &next)?;
+    crate::macos::enter_fullscreen_and_wait(&next, SPACE_HANDOVER)
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+    windows::focus(&next);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]

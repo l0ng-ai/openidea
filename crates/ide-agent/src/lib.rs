@@ -221,6 +221,7 @@ struct TaskState {
 /// A running agent and its session.
 #[derive(Clone)]
 struct Live {
+    sign_in_message: String,
     peer: acp::Conn,
     session: String,
     capabilities: AgentCapabilities,
@@ -1301,11 +1302,7 @@ impl Task {
         match e {
             // Signed out, or the account was refused (Claude Code: "API Error: 403").
             RpcError::Server { message, .. } if message.to_lowercase().contains("auth") => {
-                let provider = self.state.lock().task.provider.clone();
-                Failure::from(match self.shared.spec(&provider) {
-                    Some(spec) => format!("{} needs you to sign in. {}", spec.name, spec.login_hint),
-                    None => message,
-                })
+                Failure::from(self.live.lock().as_ref().map(|live| live.sign_in_message.clone()).unwrap_or(message))
             }
             e => Failure::from(self.describe(e)),
         }
@@ -1323,6 +1320,11 @@ impl Task {
             (s.task.provider.clone(), s.task.cwd.0.clone(), s.session_id.clone())
         };
         let spec = self.shared.spec(&provider_id).ok_or_else(|| format!("unknown agent {provider_id}"))?;
+        let launch_cwd = cwd.clone();
+        let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
+            .await
+            .map_err(|e| e.to_string())?;
+        let sign_in_message = spec.sign_in_message();
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);
@@ -1368,7 +1370,7 @@ impl Task {
                     .await
                     .map_err(|e| match e {
                         RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {
-                            format!("{} needs you to sign in. {}", spec.name, spec.login_hint)
+                            sign_in_message.clone()
                         }
                         e => self.describe(e),
                     })?;
@@ -1440,7 +1442,7 @@ impl Task {
         }
         self.persist();
         self.emit_task();
-        let live = Live { peer, session: session_id, capabilities, embedded, resumable: can_load };
+        let live = Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }

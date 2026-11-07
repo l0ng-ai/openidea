@@ -5,7 +5,7 @@
 //! editor with a versioned document, and enforces the capabilities you give
 //! it like the real host (a missing one returns [`Error::Denied`]).
 
-use crate::host::{Invocation, PathKind};
+use crate::host::Invocation;
 use crate::types::*;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -17,6 +17,13 @@ pub struct Notification {
     pub level: NotificationLevel,
     pub title: String,
     pub body: String,
+}
+
+/// A notification with command buttons, recorded by the mock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionNotification {
+    pub notification: Notification,
+    pub actions: Vec<NotificationAction>,
 }
 
 /// A task the plugin began.
@@ -62,11 +69,13 @@ struct State {
     editor: Option<Editor>,
     selected_paths: Vec<String>,
     notifications: Vec<Notification>,
+    action_notifications: Vec<ActionNotification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
+    path_subscriptions: BTreeMap<String, Vec<String>>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
     remotes: Vec<(String, String)>,
@@ -75,6 +84,7 @@ struct State {
     fetch_error: Option<Error>,
     clipboard: Option<String>,
     opened_urls: Vec<String>,
+    opened_projects: Vec<(String, bool)>,
     answers: VecDeque<Option<Vec<String>>>,
     revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
@@ -133,6 +143,11 @@ impl MockHost {
         Self { state }
     }
 
+    /// Project-open requests, in order: (UI path, new window).
+    pub fn opened_projects(&self) -> Vec<(String, bool)> {
+        self.state.borrow().opened_projects.clone()
+    }
+
     /// Grants exactly these capabilities.
     pub fn with_capabilities(self, caps: &[&str]) -> Self {
         self.state.borrow_mut().capabilities = caps.iter().map(|s| (*s).to_owned()).collect();
@@ -165,7 +180,7 @@ impl MockHost {
         self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
     }
 
-    /// A file outside every project, for [`crate::host::fs_read_text`]: it is
+    /// A file outside every project, for [`crate::host::fs::read_file`]: it is
     /// readable once an `fs.read:<a directory above it>` capability is granted.
     /// Directories are inferred from the paths it holds.
     pub fn add_external_file(&self, path: &str, text: &str) {
@@ -205,6 +220,11 @@ impl MockHost {
         self.state.borrow().notifications.clone()
     }
 
+    /// Notifications that carried command buttons, in publication order.
+    pub fn notifications_with_actions(&self) -> Vec<ActionNotification> {
+        self.state.borrow().action_notifications.clone()
+    }
+
     pub fn logs(&self) -> Vec<(LogLevel, String)> {
         self.state.borrow().logs.clone()
     }
@@ -219,6 +239,10 @@ impl MockHost {
 
     pub fn storage(&self) -> BTreeMap<String, String> {
         self.state.borrow().storage.clone()
+    }
+
+    pub fn path_subscriptions(&self) -> BTreeMap<String, Vec<String>> {
+        self.state.borrow().path_subscriptions.clone()
     }
 
     pub fn subscriptions(&self) -> BTreeSet<EventKind> {
@@ -477,6 +501,32 @@ pub mod current {
         with(|s| s.notifications.push(Notification { level, title: title.into(), body: body.into() }))
     }
 
+    /// The host's checks, except that the commands are declared (the mock has no manifest).
+    pub fn notify_with_actions(
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        if actions.len() > 3 {
+            return Err(Error::Invalid("a notification has at most 3 actions".into()));
+        }
+        for a in actions {
+            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+                return Err(Error::Invalid(format!("invalid action label {:?}", a.label)));
+            }
+            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                return Err(Error::Invalid("an action argument is limited to 64 KiB".into()));
+            }
+        }
+        with(|s| {
+            let notification = Notification { level, title: title.into(), body: body.into() };
+            s.notifications.push(notification.clone());
+            s.action_notifications.push(ActionNotification { notification, actions: actions.to_vec() });
+        });
+        Ok(())
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         with(|s| s.status.insert(id.to_owned(), item.clone()));
     }
@@ -515,6 +565,33 @@ pub mod current {
             s.opened_urls.push(trimmed.to_owned());
             Ok(())
         })
+    }
+
+    pub fn pick_directory(_title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+        if let Some(path) = initial {
+            ui_path(path)?;
+        }
+        Ok(with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next()))
+    }
+
+    pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+        ui_path(path)?;
+        with(|s| s.opened_projects.push((path.to_owned(), new_window)));
+        Ok(())
+    }
+
+    /// The host's check: an absolute path on the UI machine, whatever its OS.
+    fn ui_path(path: &str) -> Result<(), Error> {
+        let b = path.as_bytes();
+        let absolute = path.starts_with('/')
+            || path.starts_with("\\\\")
+            || (b.first().is_some_and(u8::is_ascii_alphabetic)
+                && b.get(1) == Some(&b':')
+                && matches!(b.get(2), Some(b'/' | b'\\')));
+        if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
+            return Err(Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
+        }
+        Ok(())
     }
 
     pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
@@ -588,6 +665,27 @@ pub mod current {
         })
     }
 
+    pub fn project_of(path: &str) -> Option<ProjectRes> {
+        let path = path.replace('\\', "/");
+        let absolute =
+            path.starts_with('/') || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'/'));
+        if !absolute || path.split('/').any(|part| part == "..") {
+            return None;
+        }
+        with(|s| {
+            s.root
+                .iter()
+                .chain(&s.other_projects)
+                .filter(|root| {
+                    let root = root.replace('\\', "/");
+                    path == root
+                        || path.strip_prefix(root.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))
+                })
+                .max_by_key(|root| root.replace('\\', "/").split('/').count())
+                .map(|root| MockProject { root: root.clone() })
+        })
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         with(|s| {
             require(s, "project.read")?;
@@ -655,7 +753,7 @@ pub mod current {
         })
     }
 
-    pub fn fs_read_text(path: &str) -> Result<String, Error> {
+    pub fn fs_read_file(path: &str) -> Result<String, Error> {
         with(|s| {
             check_external(s, path)?;
             // Unsaved editor contents win, as on the real host.
@@ -674,27 +772,31 @@ pub mod current {
         })
     }
 
-    pub fn fs_path_kind(path: &str) -> Result<PathKind, Error> {
+    pub fn fs_stat(path: &str) -> Result<FileStat, Error> {
         with(|s| {
             check_external(s, path)?;
-            if s.external.contains_key(path) {
-                return Ok(PathKind::File);
+            if let Some(text) = s.external.get(path) {
+                return Ok(FileStat { kind: FileKind::File, size: text.len() as u64, modified: None });
             }
             // A directory is a prefix of the files the mock holds.
             let holds_files = s.external.keys().any(
                 |file| matches!(file.strip_prefix(path), Some(rest) if rest.starts_with('/') || rest.starts_with('\\')),
             );
-            if holds_files { Ok(PathKind::Directory) } else { Err(Error::NotFound(path.into())) }
+            if holds_files {
+                Ok(FileStat { kind: FileKind::Directory, size: 0, modified: None })
+            } else {
+                Err(Error::NotFound(path.into()))
+            }
         })
     }
 
-    pub fn fs_list(path: &str) -> Result<Vec<crate::host::DirEntry>, Error> {
+    pub fn fs_read_dir(path: &str) -> Result<Vec<crate::host::fs::DirEntry>, Error> {
         with(|s| {
             check_external(s, path)?;
             if s.external.contains_key(path) {
                 return Err(Error::Invalid(format!("{path}: not a directory")));
             }
-            let mut entries: BTreeMap<String, PathKind> = BTreeMap::new();
+            let mut entries: BTreeMap<String, FileKind> = BTreeMap::new();
             for file in s.external.keys() {
                 let rest = match file.strip_prefix(path) {
                     Some(rest) if rest.starts_with('/') || rest.starts_with('\\') => &rest[1..],
@@ -703,9 +805,9 @@ pub mod current {
                 match rest.split(['/', '\\']).next() {
                     Some(name) if !name.is_empty() => {
                         let kind = if rest.contains('/') || rest.contains('\\') {
-                            PathKind::Directory
+                            FileKind::Directory
                         } else {
-                            PathKind::File
+                            FileKind::File
                         };
                         entries.insert(name.to_owned(), kind);
                     }
@@ -715,7 +817,7 @@ pub mod current {
             if entries.is_empty() {
                 return Err(Error::NotFound(path.into()));
             }
-            Ok(entries.into_iter().map(|(name, kind)| crate::host::DirEntry { name, kind }).collect())
+            Ok(entries.into_iter().map(|(name, kind)| crate::host::fs::DirEntry { name, kind }).collect())
         })
     }
 
@@ -836,6 +938,38 @@ pub mod current {
         })
     }
 
+    pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "events")?;
+            if !matches!(kind, "file-opened" | "file-saved")
+                || globs.len() > 64
+                || globs.iter().any(|g| {
+                    let relative = g.trim_start_matches("./");
+                    relative.is_empty()
+                        || g.len() > 1024
+                        || relative.starts_with('/')
+                        || g.contains('\\')
+                        || g.contains(':')
+                        || g.chars().any(char::is_control)
+                        || g.split('/').any(|p| p == "..")
+                })
+            {
+                return Err(Error::Invalid("invalid event path filter".into()));
+            }
+            match kind {
+                "file-opened" => {
+                    s.subscriptions.insert(EventKind::FileOpened);
+                }
+                "file-saved" => {
+                    s.subscriptions.insert(EventKind::FileSaved);
+                }
+                _ => {}
+            }
+            s.path_subscriptions.insert(kind.to_owned(), globs.iter().map(|g| (*g).to_owned()).collect());
+            Ok(())
+        })
+    }
+
     pub fn subscribe(kind: EventKind) -> Result<(), Error> {
         with(|s| {
             let cap = match kind {
@@ -846,13 +980,17 @@ pub mod current {
             if let Some(cap) = cap {
                 require(s, cap)?;
             }
+            s.path_subscriptions.remove(kind.name());
             s.subscriptions.insert(kind);
             Ok(())
         })
     }
 
     pub fn unsubscribe(kind: EventKind) {
-        with(|s| s.subscriptions.remove(&kind));
+        with(|s| {
+            s.path_subscriptions.remove(kind.name());
+            s.subscriptions.remove(&kind);
+        });
     }
 
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
@@ -1005,6 +1143,38 @@ mod tests {
     use crate::host;
 
     #[test]
+    fn path_subscriptions_replace_pause_and_restore() {
+        let mock = MockHost::install();
+        host::subscribe_paths("file-opened", &["config/*.yaml"]).unwrap();
+        assert_eq!(mock.path_subscriptions()["file-opened"], ["config/*.yaml"]);
+        host::subscribe_paths("file-opened", &[]).unwrap();
+        assert!(mock.path_subscriptions()["file-opened"].is_empty());
+        assert!(host::subscribe_paths("file-opened", &["../secret"]).is_err());
+        host::subscribe(EventKind::FileOpened).unwrap();
+        assert!(mock.path_subscriptions().is_empty());
+        host::subscribe_paths("file-saved", &["**/*.rs"]).unwrap();
+        host::unsubscribe(EventKind::FileSaved);
+        assert!(mock.path_subscriptions().is_empty());
+        let _denied = MockHost::install().with_capabilities(&[]);
+        assert!(matches!(host::subscribe_paths("file-opened", &[]), Err(Error::Denied(_))));
+    }
+
+    #[test]
+    fn project_lookup_uses_deepest_root_without_granting_read_access() {
+        let mock = MockHost::install();
+        mock.add_project("/project/nested");
+        assert_eq!(host::project_of("/project/nested/new.txt").unwrap().root().unwrap(), "/project/nested");
+        assert!(host::project_of("/project-other/file").is_none());
+        assert!(host::project_of("relative/file").is_none());
+        mock.add_project("C:/workspace");
+        assert_eq!(host::project_of(r"C:\workspace\file.txt").unwrap().root().unwrap(), "C:/workspace");
+        mock.add_project("//server/share");
+        assert_eq!(host::project_of(r"\\server\share\file.txt").unwrap().root().unwrap(), "//server/share");
+        let _denied = MockHost::install().with_capabilities(&[]);
+        assert!(matches!(host::project_of("/project/file").unwrap().root(), Err(Error::Denied(_))));
+    }
+
+    #[test]
     fn invocations_carry_selected_paths() {
         let host = MockHost::install();
         assert!(host.invocation().selected_paths().is_empty());
@@ -1116,6 +1286,32 @@ mod tests {
     }
 
     #[test]
+    fn notification_buttons_are_recorded_and_bounded() {
+        let mock = MockHost::install();
+        let action = NotificationAction::new("Open", "open").argument("first\nsecond");
+        host::notify_with_actions(NotificationLevel::Info, "Done", "", std::slice::from_ref(&action)).unwrap();
+        assert_eq!(mock.notifications_with_actions()[0].actions, vec![action.clone()]);
+        let too_many: [_; 4] = std::array::from_fn(|_| action.clone());
+        assert!(host::notify_with_actions(NotificationLevel::Info, "Done", "", &too_many).is_err());
+        assert_eq!(mock.notifications().len(), 1);
+    }
+
+    #[test]
+    fn files_outside_the_project_need_an_fs_read_grant() {
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/tool"]);
+        mock.add_external_file("/opt/tool/conf/app.yaml", "port: 8080");
+        mock.add_external_file("/opt/tool/README", "hi");
+        mock.add_external_file("/opt/other/secret", "no");
+        assert_eq!(host::fs::read_file("/opt/tool/conf/app.yaml").unwrap(), "port: 8080");
+        assert_eq!(host::fs::read_bytes("/opt/tool/README").unwrap(), b"hi");
+        assert_eq!(host::fs::stat("/opt/tool/conf").unwrap().kind, FileKind::Directory);
+        let names: Vec<_> = host::fs::read_dir("/opt/tool").unwrap().into_iter().map(|e| (e.name, e.kind)).collect();
+        assert_eq!(names, [("README".into(), FileKind::File), ("conf".into(), FileKind::Directory)]);
+        assert!(matches!(host::fs::read_file("/opt/other/secret"), Err(Error::Denied(_))));
+        assert!(matches!(host::fs::read_file("relative"), Err(Error::Invalid(_))));
+    }
+
+    #[test]
     fn missing_capabilities_are_denied() {
         let mock = MockHost::install().with_capabilities(&["project.read"]);
         mock.open_editor("/project/a.txt", "text", "x", &[]);
@@ -1154,5 +1350,24 @@ mod tests {
         host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
             .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod project_ui_tests {
+    use super::MockHost;
+    use crate::host;
+    #[test]
+    fn folder_choices_and_project_requests_need_no_capability() {
+        let mock = MockHost::install().with_capabilities(&[]);
+        mock.answer_next_prompt(Some(&["C:/work/repo"]));
+        assert_eq!(host::pick_directory("Target", Some("C:/work")).unwrap().as_deref(), Some("C:/work/repo"));
+        assert_eq!(host::pick_directory("Target", None).unwrap(), None);
+        host::open_project("C:/work/repo", true).unwrap();
+        host::open_project("/home/user/repo", false).unwrap();
+        assert_eq!(mock.opened_projects(), vec![("C:/work/repo".into(), true), ("/home/user/repo".into(), false)]);
+        for path in ["relative", "C:relative", "/bad\npath", ""] {
+            assert!(host::open_project(path, false).is_err());
+        }
     }
 }
