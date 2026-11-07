@@ -6,8 +6,15 @@ use crate::catalog::{SourceCheck, classify_source, op_role};
 use ide_syntax::SyntaxTree;
 use tree_sitter::Node;
 
-const METHOD_SCOPES: &[&str] =
-    &["method_declaration", "constructor_declaration", "compact_constructor_declaration", "static_initializer"];
+const METHOD_SCOPES: &[&str] = &[
+    "method_declaration",
+    "constructor_declaration",
+    "compact_constructor_declaration",
+    "static_initializer",
+    // Field initialisers run in `<init>` / `<clinit>`.
+    "field_declaration",
+    "constant_declaration",
+];
 pub(super) const TYPE_BODIES: &[&str] =
     &["class_body", "interface_body", "enum_body", "enum_body_declarations", "annotation_type_body"];
 pub(super) const TYPE_DECLARATIONS: &[&str] = &[
@@ -37,6 +44,10 @@ fn is_scope(n: Node) -> bool {
     n.kind() == "lambda_expression" || is_method_scope(n)
 }
 
+fn is_intermediate(name: &str) -> bool {
+    matches!(op_role(name), Some(OpRole::Step { .. } | OpRole::Modifier))
+}
+
 pub(super) fn object_of<'t>(call: Node<'t>) -> Option<Node<'t>> {
     call.child_by_field_name("object")
 }
@@ -49,9 +60,16 @@ fn called_on<'t>(n: Node<'t>) -> Option<Node<'t>> {
 /// The pieces of a chain that passed the structural checks.
 struct Parts<'t> {
     terminal: Node<'t>,
-    root: Node<'t>,
-    check: SourceCheck,
+    /// The root first, then sources nested in its receiver (`r.lines().collect(..).stream()`).
+    sources: Vec<(Node<'t>, SourceCheck)>,
     ops: Vec<Node<'t>>,
+}
+
+/// Calls met walking `object` links down to a stream's source.
+struct Descent<'t> {
+    /// Calls above the source, nearest to the start first.
+    above: Vec<Node<'t>>,
+    source: Option<(Node<'t>, SourceCheck)>,
 }
 
 pub(super) struct Finder<'a, 't> {
@@ -85,7 +103,7 @@ impl<'t> Finder<'_, 't> {
             let mut calls = Vec::new();
             collect_calls(scope, &mut calls);
             let mut any = false;
-            for call in calls.into_iter().filter(|&c| self.is_candidate(c, scope)) {
+            for call in calls.into_iter().filter(|&c| self.covers(self.anchor(c, scope))) {
                 any |= self.judge(call, scope, &mut search);
             }
             if any {
@@ -134,33 +152,30 @@ impl<'t> Finder<'_, 't> {
         }
     }
 
-    fn is_candidate(&self, call: Node<'t>, scope: Node<'t>) -> bool {
-        self.is_terminal(call) && self.top_terminal(call) == Some(call) && self.covers(self.anchor(call, scope))
-    }
-
-    /// The outermost terminal-named call of the call chain through `call`, so
-    /// `s.collect(..).stream().count()` yields `count`, not `collect`.
-    fn top_terminal(&self, call: Node<'t>) -> Option<Node<'t>> {
-        let mut top = self.is_terminal(call).then_some(call);
-        let mut cur = call;
-        while let Some(up) = called_on(cur) {
-            if self.is_terminal(up) {
-                top = Some(up);
+    /// The first terminal-named call at or above `call` along `object` links.
+    fn nearest_terminal(&self, call: Node<'t>) -> Option<Node<'t>> {
+        let mut cur = Some(call);
+        while let Some(c) = cur {
+            if self.is_terminal(c) {
+                return Some(c);
             }
-            cur = up;
+            cur = called_on(c);
         }
-        top
+        None
     }
 
     /// The statement the line must fall in: the simple statement holding the
-    /// call, an expression lambda's body, or the call itself when it sits in
-    /// a compound statement's header (`if (s.anyMatch(..)) {`).
+    /// call, an expression lambda's body, a field declaration, or the call
+    /// itself when it sits in a compound statement's header (`if (s.anyMatch(..)) {`).
     fn anchor(&self, call: Node<'t>, scope: Node<'t>) -> Node<'t> {
         let mut cur = call;
         while let Some(p) = cur.parent() {
             if p == scope {
-                let lambda_body = scope.child_by_field_name("body").filter(|_| scope.kind() == "lambda_expression");
-                return lambda_body.unwrap_or(call);
+                return match scope.kind() {
+                    "lambda_expression" => scope.child_by_field_name("body").unwrap_or(call),
+                    "field_declaration" | "constant_declaration" => scope,
+                    _ => call,
+                };
             }
             if SIMPLE_STATEMENTS.contains(&p.kind()) {
                 return p;
@@ -173,12 +188,18 @@ impl<'t> Finder<'_, 't> {
         call
     }
 
-    /// Records the verdict on one candidate; `false` when it is no chain at all.
-    fn judge(&self, terminal: Node<'t>, scope: Node<'t>, search: &mut ChainSearch) -> bool {
-        let Some(shape) = self.shape(terminal) else { return false };
-        let reject =
-            |reason| RejectedChain { range: self.t.range(&terminal), text: self.text(terminal).into(), reason };
-        if self.anchor(terminal, scope).has_error() {
+    /// Records the verdict on one call around the line; `false` when it is no chain at all.
+    fn judge(&self, call: Node<'t>, scope: Node<'t>, search: &mut ChainSearch) -> bool {
+        let shape = if self.is_terminal(call) {
+            self.shape(call)
+        } else if self.is_unterminated(call) {
+            Some(Err(Rejection::NoTerminal))
+        } else {
+            None
+        };
+        let Some(shape) = shape else { return false };
+        let reject = |reason| RejectedChain { range: self.t.range(&call), text: self.text(call).into(), reason };
+        if self.anchor(call, scope).has_error() {
             search.rejected.push(reject(Rejection::SyntaxError));
             return true;
         }
@@ -190,33 +211,60 @@ impl<'t> Finder<'_, 't> {
         true
     }
 
-    /// `None`: the call only shares a terminal's name (`Collectors.toList()`).
-    fn shape(&self, terminal: Node<'t>) -> Option<Result<Parts<'t>, Rejection>> {
-        let mut below = Vec::new();
-        let mut cur = object_of(terminal);
+    /// Walks `object` links down from `from`. `None` when a terminal-named
+    /// call comes first: what is above it works on a collection, not a stream.
+    fn descend(&self, from: Option<Node<'t>>) -> Option<Descent<'t>> {
+        let mut above = Vec::new();
+        let mut cur = from;
         while let Some(call) = cur.filter(|n| n.kind() == "method_invocation") {
-            below.push(call);
+            if let Some(check) = self.source_check(call) {
+                return Some(Descent { above, source: Some((call, check)) });
+            }
+            if self.is_terminal(call) {
+                return None;
+            }
+            above.push(call);
             cur = object_of(call);
         }
-        let Some((at, check)) = below.iter().enumerate().find_map(|(i, c)| Some((i, self.source_check(*c)?))) else {
-            let intermediate = |c: &&Node| {
-                object_of(**c).is_some()
-                    && matches!(op_role(self.name(**c)), Some(OpRole::Step { .. } | OpRole::Modifier))
-            };
-            let lowest = below.iter().rev().find(intermediate)?;
+        Some(Descent { above, source: None })
+    }
+
+    /// `None`: the call only shares a terminal's name (`Collectors.toList()`),
+    /// or works on what an earlier terminal returned (`s.toList().forEach(..)`).
+    fn shape(&self, terminal: Node<'t>) -> Option<Result<Parts<'t>, Rejection>> {
+        let Descent { above, source } = self.descend(object_of(terminal))?;
+        let Some(root) = source else {
+            let lowest = above.iter().rev().find(|c| object_of(**c).is_some() && is_intermediate(self.name(**c)))?;
             let root = object_of(*lowest).map_or("", |o| self.text(o)).to_string();
             return Some(Err(Rejection::RootNotNewStream { root }));
         };
-        let ops: Vec<_> = below[..at].iter().rev().copied().collect();
-        if let Some(op) =
-            ops.iter().find(|c| !matches!(op_role(self.name(**c)), Some(OpRole::Step { .. } | OpRole::Modifier)))
-        {
+        let ops: Vec<_> = above.into_iter().rev().collect();
+        if let Some(op) = ops.iter().find(|c| !is_intermediate(self.name(**c))) {
             return Some(Err(Rejection::UnknownOperation { op: self.name(*op).into() }));
         }
         if op_role(self.name(terminal)) == Some(OpRole::LazyTerminal) {
             return Some(Err(Rejection::LazyTerminal { op: self.name(terminal).into() }));
         }
-        Some(Ok(Parts { terminal, root: below[at], check, ops }))
+        let mut sources = vec![root];
+        let mut cur = object_of(root.0);
+        while let Some(call) = cur.filter(|n| n.kind() == "method_invocation") {
+            sources.extend(self.source_check(call).map(|check| (call, check)));
+            cur = object_of(call);
+        }
+        Some(Ok(Parts { terminal, sources, ops }))
+    }
+
+    /// A new stream with intermediate operations but no terminal, standing
+    /// on its own (`var s = xs.stream().map(f);`); a stream passed as an
+    /// argument or returned from a lambda is someone else's to finish.
+    fn is_unterminated(&self, call: Node<'t>) -> bool {
+        let standalone = called_on(call).is_none()
+            && call.parent().is_some_and(|p| !matches!(p.kind(), "argument_list" | "lambda_expression"));
+        if !standalone || object_of(call).is_none() || !is_intermediate(self.name(call)) {
+            return false;
+        }
+        self.descend(Some(call))
+            .is_some_and(|d| d.source.is_some() && d.above.iter().all(|c| is_intermediate(self.name(*c))))
     }
 
     fn source_check(&self, call: Node) -> Option<SourceCheck> {
@@ -226,7 +274,8 @@ impl<'t> Finder<'_, 't> {
     }
 
     fn chain(&self, parts: Parts<'t>, frame: FrameShape) -> StreamChain {
-        let Parts { terminal, root, check, ops } = parts;
+        let Parts { terminal, sources, ops } = parts;
+        let root = sources[0].0;
         let start = terminal.start_byte();
         let op = |call: Node| {
             let mut cursor = call.walk();
@@ -246,7 +295,7 @@ impl<'t> Finder<'_, 't> {
             ops: ops.iter().map(|c| op(*c)).collect(),
             terminal: op(terminal),
             frame,
-            warnings: self.warnings(root, check, &ops),
+            warnings: self.warnings(&sources, &ops),
             facts: ChainFacts::default(),
         }
     }
@@ -257,10 +306,10 @@ impl<'t> Finder<'_, 't> {
         let mut cur = lambda.parent();
         while let Some(n) = cur.filter(|n| !is_scope(*n) && !TYPE_BODIES.contains(&n.kind())) {
             if n.kind() == "method_invocation"
-                && let Some(top) = self.top_terminal(n)
-                && self.shape(top).is_some()
+                && let Some(end) = self.nearest_terminal(n)
+                && self.shape(end).is_some()
             {
-                return Some(top);
+                return Some(end);
             }
             cur = n.parent();
         }

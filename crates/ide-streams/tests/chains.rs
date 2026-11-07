@@ -118,6 +118,11 @@ fn iterate_with_outside_state_warns_stateful() {
     let capture = only_chain("C_ITERATE_CAPTURE");
     assert_eq!(capture.warnings, [ChainWarning::StatefulSource { call: "Stream.iterate(1, x -> x + step)".into() }]);
     assert!(only_chain("C_ITERATE_PURE").warnings.is_empty());
+    assert!(only_chain("C_ITERATE_BLOCK_LOCAL").warnings.is_empty());
+    for marker in ["C_ITERATE_THIS_FIELD", "C_ITERATE_THIS_CALL"] {
+        let chain = only_chain(marker);
+        assert!(matches!(chain.warnings.as_slice(), [ChainWarning::StatefulSource { .. }]), "{marker}");
+    }
 }
 
 #[test]
@@ -168,9 +173,72 @@ fn for_each_is_a_void_terminal() {
 }
 
 #[test]
-fn chain_without_terminal_is_not_reported() {
-    let found = search("C_NO_TERMINAL", false);
+fn chain_without_terminal_is_rejected() {
+    assert_eq!(only_rejection("C_NO_TERMINAL", false), Rejection::NoTerminal);
+}
+
+#[test]
+fn terminal_on_a_collected_result_keeps_the_stream_chain() {
+    for (marker, terminal) in
+        [("C_COLLECT_FOREACH", "collect"), ("C_TOLIST_FOREACH", "toList"), ("C_GROUPING_FOREACH", "collect")]
+    {
+        let chain = only_chain(marker);
+        assert_eq!(chain.terminal.name, terminal, "{marker}");
+        assert!(chain.text.starts_with("nums.stream()"), "{marker}: {}", chain.text);
+    }
+}
+
+#[test]
+fn lambda_of_a_collection_call_is_not_inside_a_chain() {
+    let found = search("C_LIST_FOREACH_BODY", true);
     assert!(found.chains.is_empty() && found.rejected.is_empty(), "{found:?}");
+
+    let grouping = search("C_GROUPING_FOREACH", true);
+    assert!(grouping.chains.is_empty(), "{:?}", grouping.chains);
+    let reasons: Vec<_> = grouping.rejected.iter().map(|r| (&r.reason, r.text.as_str())).collect();
+    let chain = "nums.stream().collect(Collectors.groupingBy(x -> x % 2))";
+    assert_eq!(reasons, [(&Rejection::InsideChainLambda, chain)]);
+}
+
+#[test]
+fn sources_nested_in_the_root_warn_too() {
+    let reader = search("C_REOPEN_READER", false);
+    assert!(reader.rejected.is_empty());
+    let texts: Vec<_> = reader.chains.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        ["reader.lines().collect(Collectors.toList())", "reader.lines().collect(Collectors.toList()).stream().count()"]
+    );
+    let rereads = [ChainWarning::RereadsResource { call: "reader.lines()".into() }];
+    assert_eq!(reader.chains[0].warnings, rereads);
+    assert_eq!(reader.chains[1].warnings, rereads);
+
+    let generate = search("C_REOPEN_GENERATE", false);
+    let reopened = generate.chains.last().expect("chains");
+    assert_eq!(reopened.terminal.name, "count");
+    assert_eq!(reopened.warnings, [ChainWarning::StatefulSource { call: "Stream.generate(Math::random)".into() }]);
+}
+
+#[test]
+fn outermost_stream_terminal_is_the_chain_end() {
+    assert_eq!(only_chain("C_FIND_FIRST").terminal.name, "findFirst");
+    assert_eq!(only_chain("C_COLLECT_SIZE").terminal.name, "collect");
+}
+
+#[test]
+fn chain_in_a_statement_header_is_found_only_from_the_header() {
+    assert_eq!(only_chain("C_IF_HEADER").terminal.name, "anyMatch");
+    let body = search("C_IF_BODY", false);
+    assert!(body.chains.is_empty() && body.rejected.is_empty(), "{body:?}");
+}
+
+#[test]
+fn initializers_are_frames() {
+    for marker in ["C_STATIC_INIT", "C_INSTANCE_INIT", "C_FIELD_INIT", "C_INSTANCE_FIELD"] {
+        let chain = only_chain(marker);
+        assert!(chain.text.starts_with("NUMS.stream()"), "{marker}: {}", chain.text);
+    }
+    assert_eq!(only_rejection("C_FIELD_INIT", true), Rejection::InsideChainLambda);
 }
 
 #[test]
@@ -181,9 +249,12 @@ fn syntax_error_rejects_only_the_broken_chain() {
 
 #[test]
 fn chains_in_unsupported_frames_are_rejected() {
-    for (marker, frame) in
-        [("C_ANON", FrameKind::Anonymous), ("C_LOCAL", FrameKind::Local), ("C_SECONDARY", FrameKind::SecondaryTopLevel)]
-    {
+    for (marker, frame) in [
+        ("C_ANON", FrameKind::Anonymous),
+        ("C_ENUM_BODY", FrameKind::Anonymous),
+        ("C_LOCAL", FrameKind::Local),
+        ("C_SECONDARY", FrameKind::SecondaryTopLevel),
+    ] {
         assert_eq!(only_rejection(marker, false), Rejection::UnsupportedFrame { frame }, "{marker}");
     }
 }

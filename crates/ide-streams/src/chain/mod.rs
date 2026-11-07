@@ -112,6 +112,8 @@ pub enum Rejection {
     LazyTerminal {
         op: String,
     },
+    /// A new stream with operations but no terminal, so nothing would run.
+    NoTerminal,
     UnknownOperation {
         op: String,
     },
@@ -143,7 +145,8 @@ pub enum Rejection {
 #[serde(rename_all = "camelCase")]
 pub struct ChainFacts {}
 
-/// Calls that only share a terminal's name (`Collectors.toList()`) appear in neither list.
+/// Calls that only share a terminal's name (`Collectors.toList()`, the
+/// `forEach` in `s.toList().forEach(..)`) appear in neither list.
 pub fn find_chains(
     service: &StructureService,
     snap: &Snapshot,
