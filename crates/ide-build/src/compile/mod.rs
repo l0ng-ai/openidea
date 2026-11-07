@@ -67,6 +67,11 @@ impl BuildStep {
         }
     }
 
+    /// A CMake configure/build invocation, parsed as compiler output in the Build view.
+    pub fn cmake(program: &str, args: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> Self {
+        Self { program: program.into(), args, cwd, env, format: Format::Gcc }
+    }
+
     /// The command line as echoed in the console.
     pub fn display(&self) -> String {
         let program = Path::new(&self.program).file_name().map_or(self.program.clone(), |n| n.to_string_lossy().into());

@@ -656,6 +656,33 @@ fn plugin_processes_end_with_their_owner() {
     }
 }
 
+/// A task that keeps reporting progress is still working: each report renews
+/// the background budget, so the call outlives the 400 ms it began with. A task
+/// that goes quiet is still cut off (see `tasks_that_stop_reporting_are_cut_off`).
+#[test]
+fn a_reporting_task_outlives_its_background_budget() {
+    let f = fixture(Limits {
+        timeout: Duration::from_millis(1_000),
+        background: Duration::from_millis(2_000),
+        ..Limits::default()
+    });
+    f.install(&misbehave_pkg());
+    if f.host.set_capability("misbehave", "process:git", true).is_err() {
+        return;
+    }
+
+    // Twenty-five waits of 100 ms: 2.5 s of wall time, more than the
+    // budget, spent inside the host rather than the plugin.
+    let started = std::time::Instant::now();
+    let out = f.run("misbehave", "patient", None).expect("a patient task").expect("a result");
+    let took = started.elapsed();
+    assert_eq!(out, "still here");
+    assert!(took >= Duration::from_millis(2_500), "it really ran the waits: {took:?}");
+
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
 /// A missing capability is an error the plugin can handle, not a trap.
 #[test]
 fn ungranted_capabilities_are_denied_not_trapped() {
@@ -932,7 +959,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 23, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 24, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 

@@ -572,7 +572,7 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
     assert!(h.root.path().join("build/.cmake/api/v1/query/client-openidea/codemodel-v2").exists());
     let root = h.root.path().canonicalize().unwrap();
     let configs = ide_run::detect(&root);
-    let target = configs.iter().find(|c| c.kind == "native").expect("File API executable");
+    let target = configs.iter().find(|c| c.kind == "cmake-application").expect("File API executable");
     assert_eq!(target.debug_adapter.as_deref(), Some("lldb-dap"));
     let sources = &target.extras.params["cmakeSources"];
     assert!(sources.lines().any(|s| s.ends_with("/main.cpp")));
