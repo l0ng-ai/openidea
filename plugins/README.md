@@ -442,12 +442,24 @@ then run `openidea-plugin check`.
 | `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
 | `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
 | `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |
+| `host::run_command(cmd, project, stdin)` → `{code, stdout, stderr}`      | `process.run-command`            | API 1.3: same limits as `run_process`, with append-only environment variables; needs the pinned `process:<program>` grant.                                                                                           |
+| `host::start(cmd, project)` → `Child`                                    | `process.start`                  | API 1.3: `poll(max_bytes)`, `write(text)`, `close_stdin()`, `wait(timeout_ms)`, `kill()`; at most 8 handles; dropping one kills its process.                                                                         |
 | `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
 | `host::reveal_view(view)`                                                | `views.reveal`                   | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                              |
 | `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
 | `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
 | `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
 | `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
+
+Both process APIs only add environment variables. A key already in the prepared child
+environment (including the login-shell `PATH`) fails with an error naming the key;
+variables are never replaced or removed. Names compare case-insensitively on Windows.
+At most 64 entries are allowed: nonempty names up to 256 bytes without `=` or NUL,
+and values up to 4 KiB without NUL. The approved file still decides what runs.
+
+Unpolled child output keeps the last 1 MiB per stream; each read is capped at 1 MiB
+and preserves complete characters. Disabling, unloading, reclaiming or stopping a
+plugin ends its children, as does closing the window that started them.
 
 `run-command` receives an optional string argument: `executeAction("plugin.<plugin id>.<command id>", "arg")`
 from another feature, or nothing when run from Search Everywhere / a shortcut. `ctx.selected_paths()` lists the files and folders a Project view or editor tab menu ran the command on (the argument is the first of them); it is empty otherwise. No capability is needed.

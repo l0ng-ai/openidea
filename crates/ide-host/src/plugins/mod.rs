@@ -1769,6 +1769,7 @@ impl PluginHost {
         for a in actors {
             a.stop(true);
         }
+        self.shared.finish_process_shutdowns();
     }
 
     /// Periodic upkeep (every few seconds): reports crashes nobody waited
@@ -2165,6 +2166,8 @@ impl PluginHost {
             *runtime = None;
         }
         actor.stop(false);
+        // Its handles go with its instance; an idle reclaim is one.
+        self.shared.kill_processes(plugin.id());
         let mut meta = plugin.meta.lock();
         if meta.status == PluginStatus::Active {
             meta.status = PluginStatus::Inactive;
