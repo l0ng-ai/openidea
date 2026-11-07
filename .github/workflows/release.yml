@@ -189,6 +189,61 @@ jobs:
           "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
           gh release upload $env:TAG $asset "$asset.sha256" --clobber
 
+      # The raw desktop binary is useful on Linux systems that install tools
+      # with mise. Keep the archive separate from the Tauri installers and
+      # stage it for the isolated packslip signing job below.
+      - name: Portable Linux archive
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: scripts/package-linux-desktop.sh "$TARGET" "target/$TARGET/release/openidea" .
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Linux'
+        with:
+          name: openidea-linux-${{ matrix.target }}
+          path: |
+            openidea-linux-*.tar.gz
+            openidea-linux-*.tar.gz.sha256
+          if-no-files-found: error
+
+  # Sign only the two raw Linux desktop archives. This job cannot modify the
+  # GitHub release; the publish job attaches the verified bundle afterwards.
+  packslip:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: "${{ env.TAG }}"
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: openidea-linux-*
+          path: dist
+          merge-multiple: true
+      - id: source
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - uses: jdx/packslip@44e50e5f64551234b4a382d991bd7f7f7d021d06 # v1.11.3
+        id: packslip
+        with:
+          manifest: release.toml
+          artifacts: dist/*.tar.gz
+          tag: ${{ env.TAG }}
+          version: ${{ steps.source.outputs.version }}
+          commit: ${{ steps.source.outputs.commit }}
+          upload: false
+      - uses: actions/upload-artifact@v7
+        with:
+          name: openidea-packslip
+          path: ${{ steps.packslip.outputs.bundle }}
+          if-no-files-found: error
+
   # The remote development server, per host platform it can run on. The desktop
   # app downloads the one for the host (ide-tools `server`) and installs it over SSH.
   # Linux builds are static (musl), so they run whatever the host's glibc.
@@ -366,9 +421,25 @@ jobs:
             core.info(`latest.json: ${Object.keys(platforms).sort().join(", ")}`);
 
   publish:
-    needs: [create-release, build, server, plugins, updater-manifest]
+    needs: [create-release, build, server, plugins, updater-manifest, packslip]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: openidea-linux-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: openidea-packslip
+          path: packslip
+      - name: Upload portable Linux assets and signed bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/*.tar.gz dist/*.tar.gz.sha256 packslip/packslip.sigstore.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
       - uses: actions/github-script@v8
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}

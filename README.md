@@ -29,6 +29,25 @@ for 60+ languages. Builds for macOS, Windows and Linux. On Windows, if you'd
 rather skip the installer, each release also ships a portable zip — unpack it
 and run `openidea.exe`.
 
+Starting with the next release, Linux releases will also include compressed
+archives with raw desktop binaries for x86_64 and aarch64. To install the
+latest binary with [mise](https://mise.jdx.dev/), run:
+
+```sh
+mise use -g packslip:github.com/l0ng-ai/openidea
+openidea
+```
+
+The archive contains only the `openidea` executable, not a self-contained
+AppImage. It requires a glibc 2.35+ Linux system and the Tauri desktop runtime
+libraries, including WebKitGTK 4.1, GTK 3, libayatana-appindicator, librsvg,
+and libxdo. For example, on Ubuntu/Debian install
+`libwebkit2gtk-4.1-0`, `libgtk-3-0`, `libayatana-appindicator3-1`,
+`librsvg2-2`, and `libxdo3` before running it. Packslip/mise covers
+these desktop binaries only; the remote-development server and
+`openidea-plugin` remain separate release assets and are not installed by this
+command.
+
 ## Benchmark
 
 Opening [freqtrade](https://github.com/freqtrade/freqtrade) (Python, ~770 files)

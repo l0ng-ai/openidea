@@ -1,0 +1,10 @@
+project = "github.com/l0ng-ai/openidea"
+bin = ["openidea"]
+
+[[artifact]]
+path = "dist/openidea-linux-x86_64.tar.gz"
+requires = { glibc_min = "2.35" }
+
+[[artifact]]
+path = "dist/openidea-linux-aarch64.tar.gz"
+requires = { glibc_min = "2.35" }
