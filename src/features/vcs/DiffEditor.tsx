@@ -211,7 +211,20 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
-export function DiffEditor({ input, toolbarActions }: { input: EditorInput; toolbarActions?: ReactNode }) {
+export function DiffEditor({
+  input,
+  toolbarActions,
+  onNeighbour,
+}: {
+  input: EditorInput;
+  toolbarActions?: ReactNode;
+  /**
+   * Called to show another file of the chain instead of `openDiff` (which opens an
+   * editor tab): embedded hosts such as the Commit dialog's diff window swap their
+   * own content, as a modal dialog hides the editor area.
+   */
+  onNeighbour?: (data: DiffData) => void;
+}) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
   const [attached, setAttached] = useState<Attached | null>(null);
@@ -595,12 +608,14 @@ export function DiffEditor({ input, toolbarActions }: { input: EditorInput; tool
       navigation.current = request;
       try {
         const neighbour = await changedChainNeighbour(data, dir, opts.ignore);
-        if (navigation.current === request && neighbour) await openDiff(neighbour, { preview: true });
+        if (navigation.current !== request || !neighbour) return;
+        if (onNeighbour) onNeighbour(neighbour);
+        else await openDiff(neighbour, { preview: true });
       } finally {
         if (navigation.current === request) navigation.current = null;
       }
     },
-    [data, opts.ignore],
+    [data, opts.ignore, onNeighbour],
   );
   useEffect(() => {
     if (!navHint) return;

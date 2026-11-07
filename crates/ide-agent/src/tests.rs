@@ -11,9 +11,24 @@ struct FakeAgent {
     calls: Mutex<Vec<String>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
+    auth_on_new: bool,
+    empty_config: AtomicBool,
+    /// Config options `session/new` reports after the model one (per-model efforts, say).
+    extra_options: Mutex<Vec<Value>>,
+    model_options: Mutex<HashMap<String, Vec<Value>>>,
 }
 
 impl FakeAgent {
+    fn options_for(&self, model: &str) -> Vec<Value> {
+        let mut options = vec![json!({"id": "model", "category": "model", "type": "select",
+            "currentValue": model,
+            "options": [{"value": "big", "name": "Big"}, {"value": "small", "name": "Small"},
+                {"value": "plain", "name": "Plain"}, {"value": "unknown", "name": "Unknown"}]})];
+        options
+            .extend(self.model_options.lock().get(model).cloned().unwrap_or_else(|| self.extra_options.lock().clone()));
+        options
+    }
+
     /// The connection opened last: the agent restarted, or a fork's.
     fn latest(&self) -> Peer {
         self.servers.lock().last().cloned().expect("a connection")
@@ -85,6 +100,11 @@ impl Handler for FakeAgent {
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         self.calls.lock().push(method.to_owned());
+        if (method == "session/new" && self.auth_on_new)
+            || (method == "session/prompt" && params.pointer("/prompt/0/text") == Some(&json!("auth")))
+        {
+            return Err((codes::INTERNAL_ERROR, "Authentication required".into()));
+        }
         let session = params.get("sessionId").and_then(Value::as_str).unwrap_or("s1").to_owned();
         match method {
             "initialize" => {
@@ -92,13 +112,22 @@ impl Handler for FakeAgent {
                     self.calls.lock().push("subagents".into());
                 }
                 Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !self.no_load,
-                    "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true}}}}))
+                    "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true, "backgroundTasks": true}}}}))
             }
-            "session/new" => Ok(json!({"sessionId": "s1",
+            "session/new" => {
+                if self.empty_config.load(Ordering::Acquire) {
+                    return Ok(json!({"sessionId": "s1"}));
+                }
+                let options = self.options_for("big");
+                Ok(json!({"sessionId": "s1",
                 "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
-                "configOptions": [{"id": "model", "category": "model", "type": "select", "currentValue": "big",
-                    "options": [{"value": "big", "name": "Big"}, {"value": "small", "name": "Small"}]}]})),
+                "configOptions": options}))
+            }
             "session/fork" => Ok(json!({"sessionId": "s2"})),
+            "_openidea/stop_task" => {
+                self.calls.lock().push(format!("{method} {}", params["taskId"]));
+                Ok(json!({}))
+            }
             "_openidea/rollback" | "_openidea/steer" => {
                 let detail = params.get("turns").cloned().unwrap_or_else(|| params["prompt"][0]["text"].clone());
                 self.calls.lock().push(format!("{method} {detail}"));
@@ -110,12 +139,25 @@ impl Handler for FakeAgent {
             }
             "session/set_config_option" | "session/set_mode" => {
                 self.calls.lock().push(format!("{method} {}", params.get("value").or(params.get("modeId")).unwrap()));
+                if params["configId"] == "model" && !self.model_options.lock().is_empty() {
+                    return Ok(json!({"configOptions": self.options_for(params["value"].as_str().unwrap())}));
+                }
                 Ok(json!({}))
             }
             "session/prompt" => {
                 let text = params.pointer("/prompt/0/text").and_then(Value::as_str).unwrap_or_default().to_owned();
                 if text == "again" {
                     self.say(&session, "second turn");
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "background" {
+                    // A command that outlives the turn, as the agent reports it.
+                    self.update(
+                        &session,
+                        json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE,
+                        "tasks": [{"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"}]}),
+                    );
+                    self.say(&session, "running it in the background");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "delegate" {
@@ -133,6 +175,24 @@ impl Handler for FakeAgent {
                              "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]}]}),
                     );
                     self.say(&session, "ok");
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "ask" {
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session,
+                                "toolCall": {"toolCallId": "q1", "title": "AskUserQuestion", "_meta": {"questions": [
+                                    {"question": "Which layout?", "options": [{"label": "List"}, {"label": "Grid"}]},
+                                    {"question": "Which checks?", "multiSelect": true,
+                                     "options": [{"label": "Disk"}, {"label": "GPU temps"}]}]}},
+                                "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    self.say(&session, &format!("answered {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "wait" {
@@ -209,6 +269,49 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
         tokio::runtime::Handle::current(),
         connector,
     )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn authentication_failures_name_the_session_executable_at_start_and_during_prompts() {
+    for auth_on_new in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent { auth_on_new, ..Default::default() });
+        let mgr = manager(tmp.path(), agent);
+        let program = tmp.path().join("Agent Tools").join("renamed-cursor.cmd");
+        mgr.shared.providers.write().iter_mut().find(|s| s.id == "cursor").unwrap().command =
+            program.to_string_lossy().into_owned();
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("again"),
+                provider: "cursor".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        if !auth_on_new {
+            wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+            // A settings change must not redirect guidance for the already running process.
+            mgr.shared.providers.write().iter_mut().find(|s| s.id == "cursor").unwrap().command =
+                "different-cursor".into();
+            mgr.prompt(&task.id, text("auth"), false).await.unwrap();
+        }
+        wait_for(&mgr, &task.id, AgentStatus::Failed).await;
+        let entries = mgr.entries(&task.id, None).unwrap();
+        let error = entries
+            .iter()
+            .find_map(|e| match e {
+                AgentEntry::Error { message, .. } => Some(message),
+                _ => None,
+            })
+            .expect("authentication error");
+        assert!(error.starts_with("Cursor needs you to sign in. Run `"), "{error}");
+        assert!(error.contains(&*program.to_string_lossy()), "{error}");
+        assert!(error.ends_with(" login` in a terminal."), "{error}");
+        mgr.shutdown();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -589,6 +692,44 @@ fn prompts_become_acp_content_blocks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn answered_questions_close_the_question_with_every_picked_label() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("ask"),
+            provider: "codex".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let question = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let reply = json!({"Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"]}).to_string();
+    mgr.respond(&task.id, question, Some(reply)).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == "List; Disk, GPU temps")),
+        "{entries:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cancelling_resolves_the_open_permission_and_delete_forgets_the_task() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
@@ -786,6 +927,230 @@ async fn usage_limits_and_late_settings() {
     assert!(agent.calls.lock().iter().any(|c| c == "session/set_config_option \"high\""));
     let config = mgr.task(&task.id).unwrap().state.lock().task.config.clone();
     assert_eq!(config.iter().find(|o| o.id == "effort").unwrap().current.as_deref(), Some("high"));
+    for _ in 0..100 {
+        if mgr
+            .shared
+            .known
+            .lock()
+            .get("claude")
+            .and_then(|k| k.thought_levels.get("big"))
+            .and_then(|levels| levels.first())
+            .and_then(|o| o.current.as_deref())
+            == Some("high")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["big"][0].current.as_deref(), Some("high"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn remembered_settings_drop_per_model_choices_for_the_next_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    // The effort list depends on the model: what the last session ran means nothing once
+    // the user picks another model, so provider-wide defaults never include it.
+    *agent.extra_options.lock() = vec![json!({"id": "effort", "category": "thought_level",
+        "type": "select", "currentValue": "high",
+        "options": [{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}]})];
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let provider = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+    assert!(provider.config.iter().all(|o| o.id != "effort"), "a per-model option isn't offered stale");
+    let model = provider.config.iter().find(|o| o.id == "model").unwrap();
+    assert_eq!(model.current.as_deref(), Some("big"), "the model choice survives");
+}
+
+fn effort_options(levels: &[&str], current: &str) -> Vec<Value> {
+    vec![json!({"id": "effort", "category": "thought_level", "type": "select", "currentValue": current,
+        "options": levels.iter().map(|v| json!({"value": v, "name": v})).collect::<Vec<_>>()})]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn thinking_levels_are_remembered_per_provider_and_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.model_options.lock() = HashMap::from([
+        ("big".into(), effort_options(&["low", "high"], "high")),
+        ("small".into(), effort_options(&["minimal", "medium"], "minimal")),
+        ("plain".into(), vec![]),
+    ]);
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.set_config(&task.id, "model", "small".into()).await.unwrap();
+    mgr.set_config(&task.id, "effort", "medium".into()).await.unwrap();
+    mgr.set_config(&task.id, "model", "plain".into()).await.unwrap();
+    let p = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+    let big = &p.thought_levels["big"][0];
+    assert_eq!(big.current.as_deref(), Some("high"));
+    assert_eq!(big.values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["low", "high"]);
+    let small = &p.thought_levels["small"][0];
+    assert_eq!(small.current.as_deref(), Some("medium"));
+    assert_eq!(small.values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["minimal", "medium"]);
+    assert!(p.thought_levels["plain"].is_empty());
+    assert!(!p.thought_levels.contains_key("unknown"));
+    assert!(mgr.providers().iter().find(|p| p.id == "codex").unwrap().thought_levels.is_empty());
+    let saved: HashMap<String, Known> =
+        serde_json::from_slice(&std::fs::read(&mgr.shared.paths.models_file).unwrap()).unwrap();
+    assert_eq!(saved["claude"].thought_levels, p.thought_levels);
+    mgr.shutdown();
+    let restored = manager(tmp.path(), agent);
+    assert_eq!(restored.providers().into_iter().find(|p| p.id == "claude").unwrap().thought_levels, p.thought_levels);
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn upfront_effort_is_validated_after_changing_model_before_the_prompt() {
+    for (effort, applied) in [("medium", true), ("high", false)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent::default());
+        *agent.model_options.lock() = HashMap::from([
+            ("big".into(), effort_options(&["low", "high"], "low")),
+            ("small".into(), effort_options(&["minimal", "medium"], "minimal")),
+        ]);
+        let mgr = manager(tmp.path(), agent.clone());
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("again"),
+                provider: "claude".into(),
+                // Reversed on purpose: model must be set before validating effort.
+                config: vec![
+                    AgentConfigChoice { id: "effort".into(), value: effort.into() },
+                    AgentConfigChoice { id: "model".into(), value: "small".into() },
+                ],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        let calls = agent.calls.lock();
+        let model = calls.iter().position(|c| c == "session/set_config_option \"small\"").unwrap();
+        let effort_call = calls.iter().position(|c| c == &format!("session/set_config_option \"{effort}\""));
+        assert_eq!(effort_call.is_some(), applied);
+        if let Some(effort_call) = effort_call {
+            let prompt = calls.iter().position(|c| c == "session/prompt").unwrap();
+            assert!(model < effort_call && effort_call < prompt);
+        }
+        drop(calls);
+        mgr.shutdown();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unreported_model_switch_does_not_cache_the_previous_models_levels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.extra_options.lock() = effort_options(&["low", "high"], "high");
+    let mgr = manager(tmp.path(), agent);
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.set_config(&task.id, "model", "small".into()).await.unwrap();
+    let p = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+    assert!(!p.thought_levels.contains_key("small"));
+    assert_eq!(p.thought_levels["big"][0].current.as_deref(), Some("high"));
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cached_effort_is_not_sent_without_real_session_options() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.extra_options.lock() = effort_options(&["low", "high"], "low");
+    let mgr = manager(tmp.path(), agent.clone());
+    let new = |config| NewAgentTask {
+        project_root: None,
+        prompt: text("again"),
+        provider: "claude".into(),
+        config,
+        isolation: Isolation::Local,
+        base: None,
+    };
+    let warm = mgr.create(new(vec![])).await.unwrap();
+    wait_for(&mgr, &warm.id, AgentStatus::Ready).await;
+    agent.calls.lock().clear();
+    agent.empty_config.store(true, Ordering::Release);
+    let task = mgr
+        .create(new(vec![
+            AgentConfigChoice { id: "model".into(), value: "big".into() },
+            AgentConfigChoice { id: "effort".into(), value: "high".into() },
+        ]))
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(!agent.calls.lock().iter().any(|c| c == "session/set_config_option \"high\""));
+    assert!(
+        mgr.task(&task.id).unwrap().state.lock().task.config.iter().any(|o| o.id == "effort"),
+        "remembered session settings remain visible until the agent refreshes them"
+    );
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reported_levels_refresh_even_without_a_model_option() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.extra_options.lock() = effort_options(&["low", "high"], "high");
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    for levels in [effort_options(&["minimal", "medium"], "medium"), vec![]] {
+        agent.update("s1", json!({"sessionUpdate": "config_option_update", "configOptions": levels}));
+        let expected = config::parse_options(&json!(levels));
+        for _ in 0..100 {
+            if mgr.shared.known.lock()["claude"].thought_levels["big"] == expected {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["big"], expected);
+    }
+    mgr.shutdown();
 }
 
 #[test]
@@ -1107,6 +1472,114 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(live(&mgr, &task.id));
+    mgr.shutdown();
+}
+
+/// A turn's background tasks outlive it: an idle agent stops only once its last one is
+/// done, and the usual delay runs from that report.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_agent_waits_for_its_background_tasks_before_it_stops() {
+    let live =
+        |mgr: &AgentManager, id: &str| mgr.task(id).unwrap().live.lock().as_ref().is_some_and(|l| !l.peer.is_closed());
+    let new = || NewAgentTask {
+        project_root: None,
+        prompt: text("background"),
+        provider: "claude".into(),
+        config: Vec::new(),
+        isolation: Isolation::Local,
+        base: None,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // The task runs long past the idle delay: the agent stays up for it.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(live(&mgr, &task.id));
+    // It is done: the delay starts over from this report, then the agent stops.
+    agent.update("s1", json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": []}));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(live(&mgr, &task.id), "the delay runs from when the last task is done");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id));
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready, "not an error");
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_task_shows_what_runs_in_the_background() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("background"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let shown = || mgr.task(&task.id).unwrap().state.lock().task.background.clone();
+    let first = shown();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        (first[0].id.as_str(), first[0].kind.as_str(), first[0].description.as_str()),
+        ("bsh1", "local_bash", "sleep 900")
+    );
+
+    agent.update(
+        "s1",
+        json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": [
+            {"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"},
+            {"task_id": "mon1", "task_type": "monitor", "description": "Watch the deploy"},
+        ]}),
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while shown().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(shown()[0].started_ms, first[0].started_ms, "a task keeps when it was first seen");
+
+    agent.update("s1", json!({"sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": []}));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !shown().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_task_is_stopped_on_its_own() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.stop_background(&task.id, "b1").await.unwrap();
+    assert!(agent.calls.lock().contains(&"_openidea/stop_task \"b1\"".to_owned()));
     mgr.shutdown();
 }
 

@@ -147,7 +147,7 @@ describe("directory comparison", () => {
     expect(screen.getByText("−1")).toBeInTheDocument();
     expect(screen.queryByTestId("diff")).toBeNull();
     fireEvent.mouseDown(screen.getByText("app.ts"), { button: 0 });
-    expect(screen.getByTestId("diff")).toHaveTextContent('"rev":"aaa"');
+    expect(await screen.findByTestId("diff")).toHaveTextContent('"rev":"aaa"');
     expect(screen.getByTestId("diff")).toHaveTextContent("/workspace/client/src/app.ts");
   });
 

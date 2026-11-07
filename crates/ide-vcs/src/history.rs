@@ -80,17 +80,45 @@ fn git_select(
             args.push("--first-parent".into());
         }
         args.extend(filter.iter().cloned());
+        // Past this many bytes of paths the command line risks Windows' ~32K limit.
+        let stdin = (paths.iter().map(|p| p.len() + 12).sum::<usize>() > 8 * 1024).then(|| paths_stdin(paths));
+        if stdin.is_some() {
+            args.push("--stdin".into());
+        }
         args.push("--end-of-options".into());
         args.extend(scope.split_whitespace().map(str::to_string));
-        args.push("--".into());
-        args.extend(paths.iter().map(|p| format!(":(literal){p}")));
-        let output =
-            crate::cli::run_cancellable(r.root(), &args.iter().map(String::as_str).collect::<Vec<_>>(), cancel)?;
+        if stdin.is_none() {
+            args.push("--".into());
+            args.extend(paths.iter().map(|p| format!(":(literal){p}")));
+        }
+        let output = run_log(r, args, stdin.as_deref(), cancel)?;
         for line in output.stdout_str().lines() {
             ids.insert(ObjectId::from_hex(line.as_bytes()).map_err(gx)?);
         }
     }
     Ok(ids)
+}
+
+/// Stdin for `git log --stdin` that limits the walk to `paths`, however many there are.
+fn paths_stdin(paths: &[String]) -> String {
+    let mut text = String::from("--\n");
+    for p in paths {
+        text.push_str(&format!(":(literal){p}\n"));
+    }
+    text
+}
+
+fn run_log(
+    r: &Repo,
+    args: Vec<String>,
+    stdin: Option<&str>,
+    cancel: &CancellationToken,
+) -> IdeResult<crate::cli::Output> {
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    match stdin {
+        Some(text) => crate::cli::run_cancellable_stdin(r.root(), &argv, text.as_bytes(), cancel),
+        None => crate::cli::run_cancellable(r.root(), &argv, cancel),
+    }
 }
 
 /// The commits of a file's history and the path it had in each. The commits that changed
@@ -114,21 +142,27 @@ fn file_history(
         if !started.insert((revs.clone(), path.clone())) {
             continue;
         }
-        let mut args: Vec<String> =
+        let mut opts: Vec<String> =
             ["log", "--format=%x00%H", "--name-status", "-z", "--full-history", "--simplify-merges", "--no-follow"]
                 .map(String::from)
                 .into();
         if first_parent {
-            args.push("--first-parent".into());
+            opts.push("--first-parent".into());
         }
-        args.push("--end-of-options".into());
-        args.extend(revs);
         let pathspec = ["--".to_string(), format!(":(literal){path}")];
-        let run = |args: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
-            let argv: Vec<&str> = args.iter().chain(&pathspec).map(String::as_str).collect();
-            Ok(parse_name_status_log(&crate::cli::run_cancellable(r.root(), &argv, cancel)?.stdout_str()))
+        // `excluded` can name a revision per created file, so it goes through stdin.
+        let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
+            let mut args = opts.clone();
+            if !excluded.is_empty() {
+                args.push("--stdin".into());
+            }
+            args.push("--end-of-options".into());
+            args.extend(revs.iter().cloned());
+            args.extend(pathspec.iter().cloned());
+            let stdin = (!excluded.is_empty()).then(|| excluded.join("\n") + "\n");
+            Ok(parse_name_status_log(&run_log(r, args, stdin.as_deref(), cancel)?.stdout_str()))
         };
-        let records = run(&args)?;
+        let records = run(&[])?;
         // Where the file appears its history ends: what is behind that is another file of
         // the same name (a rename continues the history below). The commits of the history
         // are those not behind a creation; the statuses come from the full listing (with
@@ -137,8 +171,8 @@ fn file_history(
         let kept: Option<HashSet<ObjectId>> = if created.is_empty() {
             None
         } else {
-            args.extend(created.iter().map(|id| format!("^{id}^@")));
-            Some(run(&args)?.into_iter().map(|(id, _)| id).collect())
+            let excluded: Vec<String> = created.iter().map(|id| format!("^{id}^@")).collect();
+            Some(run(&excluded)?.into_iter().map(|(id, _)| id).collect())
         };
         let mut created = Vec::new();
         for (id, first_status) in records {
@@ -354,7 +388,9 @@ fn log_indexed(
     let mut history_paths = HashMap::new();
     let path_ids = if paths.is_empty() {
         None
-    } else if q.follow && paths.len() == 1 {
+    } else if q.follow && paths.len() == 1 && !r.root().join(&paths[0]).is_dir() {
+        // Following renames is for a file: a directory gains files all the time, and each
+        // creation would cut its history short.
         let (ids, at) = file_history(r, &scopes, &paths[0], q.first_parent, cancel)?;
         history_paths = at;
         Some(ids)

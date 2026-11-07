@@ -17,6 +17,8 @@ export interface IdeNotification {
   actions?: Array<{ label: string; run: () => void }>;
   time: number;
   read: boolean;
+  /** Text shown as written (see `NotificationService.notify`). */
+  verbatim?: boolean;
   /** Currently shown as a balloon. */
   balloon: boolean;
   sticky: boolean;
@@ -138,6 +140,7 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     title: n.title,
     body: n.body,
     actions: n.actions,
+    verbatim: n.verbatim,
     time: Date.now(),
     read: false,
     balloon,

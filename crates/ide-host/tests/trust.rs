@@ -367,6 +367,29 @@ fn trusted_locations_use_canonical_directory_boundaries() {
     assert_eq!(trust.status(&alias).unwrap().root.as_ref(), dunce::canonicalize(&other).unwrap());
 }
 
+#[test]
+fn add_location_trusts_every_project_under_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let location = tmp.path().join("projects");
+    let inside = location.join("nested/deep/app");
+    let outside = tmp.path().join("projects-other/app");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let file = tmp.path().join("not-a-dir");
+    std::fs::write(&file, "x").unwrap();
+    let trust = TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
+    trust.add_location(&location).unwrap();
+    assert!(trust.trusted(&inside).unwrap());
+    assert!(!trust.trusted(&outside).unwrap());
+    assert_eq!(trust.decisions().unwrap().locations.len(), 1);
+    trust.add_location(&location).unwrap();
+    assert_eq!(trust.decisions().unwrap().locations.len(), 1, "re-adding is a no-op");
+    assert!(trust.add_location(&file).is_err(), "a file is not a location");
+    assert!(trust.add_location(&tmp.path().join("missing")).is_err(), "a missing path is not a location");
+    let reloaded = TrustStore::load(&tmp.path().join("config"), &tmp.path().join("data"));
+    assert!(reloaded.trusted(&inside).unwrap());
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_git_views_ignore_project_executables_and_mutations_cannot_run_hooks() {

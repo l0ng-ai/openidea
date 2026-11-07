@@ -220,9 +220,6 @@
   border-radius: var(--radius-small);
   cursor: pointer;
 }
-.runMarker:hover {
-  background: var(--bg-hover);
-}
 
 /* Query result and variables: JSON in the editor's syntax colours. */
 .output :global(.tok-propertyName),

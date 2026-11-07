@@ -92,6 +92,21 @@ impl TrustStore {
         Ok(())
     }
 
+    pub fn add_location(&self, path: &Path) -> IdeResult<()> {
+        let root = dunce::canonicalize(path)?;
+        if !root.is_dir() {
+            return Err(IdeError::invalid("trusted location must be an existing directory"));
+        }
+        let mut state = self.state.lock();
+        let mut next = state.clone()?;
+        if !next.locations.contains(&root) {
+            next.locations.push(root);
+            persist(&self.file, &next)?;
+            *state = Ok(next);
+        }
+        Ok(())
+    }
+
     pub fn remove_location(&self, path: &Path) -> IdeResult<()> {
         let mut state = self.state.lock();
         let mut next = state.clone()?;
@@ -287,6 +302,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "agent_commands"
             | "agent_unqueue"
             | "agent_cancel"
+            | "agent_stop_background"
             | "agent_archive"
             | "agent_unarchive"
             | "agent_registry_list"
@@ -302,6 +318,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_set_theme_frame"
             | "plugin_catalog"
             | "plugin_assets"
+            | "plugin_set_ui_locale"
             | "plugin_market"
             | "plugin_market_url"
             | "plugin_set_market_url"
