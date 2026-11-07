@@ -6470,7 +6470,8 @@
   "The project is mounted here; paths and the working directory are mapped into it.": "项目挂载在此处；路径和工作目录会映射到其中。",
   "Published ports": "发布的端口",
   "Run as the image's user, not the project folder's owner (Linux)": "以镜像的用户运行，而不是项目文件夹的所有者（Linux）",
-  "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine.": "Docker 连接来自“服务”工具窗口。每次运行都会使用一个新容器，运行结束后删除；调试、覆盖率和性能分析仍在本机进行。",
+  "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine.": "Docker 连接来自“服务”工具窗口。每次运行都会使用一个新容器，运行结束后删除。Python 配置可以在容器中调试；覆盖率和性能分析仍在本机进行。",
+  "Only Python can be debugged in containers": "容器中只能调试 Python",
   "Service name, e.g. ORCLPDB1": "服务名，例如 ORCLPDB1",
   "Current schema:": "当前模式：",
   "HR (ALTER SESSION SET CURRENT_SCHEMA)": "HR（ALTER SESSION SET CURRENT_SCHEMA）",
@@ -6567,6 +6568,9 @@
   "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}",
   "Cannot choose a directory": "无法选择目录",
   "Open in HTTP Client": "在 HTTP 客户端中打开",
+  "Cannot start container debugging": "无法启动容器调试",
+  "The container exited before debugpy was ready. Check the Run console for errors.": "容器在 debugpy 就绪前已退出。请检查运行控制台中的错误。",
+  "debugpy did not become ready within 120 seconds. Check the Run console and the container's Python interpreter.": "debugpy 未在 120 秒内就绪。请检查运行控制台和容器的 Python 解释器。",
   "Use Project JDK": "使用项目 SDK",
   "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "用于 Maven 同步、构建、目标和测试的 JDK。运行配置中显式设置的 JAVA_HOME 优先。"
 }

@@ -553,7 +553,7 @@ function RunTargetsEditor() {
         </T>{" "}
         <T>
           {
-            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends; debugging, coverage and profiling stay on this machine."
+            "Docker connections come from the Services tool window. Each run gets a new container, removed when it ends. Python configurations can be debugged there; coverage and profiling stay on this machine."
           }
         </T>
       </div>

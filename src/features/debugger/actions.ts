@@ -31,7 +31,14 @@ import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { reloadChangedClasses } from "./hotswap";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
-import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
+import {
+  isPythonAttachTarget,
+  isRemoteConfig,
+  pythonAttachConfig,
+  REMOTE_JVM,
+  remoteAttachConfig,
+  remoteJvmTarget,
+} from "./remote";
 import {
   activeSession,
   resumeExecution,
@@ -45,6 +52,7 @@ import {
   startSession,
   startPreparedSession,
   stopSession,
+  stopAssociatedProcess,
   useDebug,
   type DebugSession,
 } from "./state";
@@ -384,6 +392,8 @@ export function registerDebugActions(): () => void {
       title: "Attach Debugger",
       category: "Debug",
       hidden: true,
+      // Also debugpy to a Python program in a run target's container
+      // (arg: { name, adapter: "debugpy", hostName, port, remoteRoot, process }).
       description:
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
@@ -391,13 +401,18 @@ export function registerDebugActions(): () => void {
           tx("Cannot attach the debugger"),
           (async () => {
             const root = useProject.getState().project?.root;
-            if (!root || !isJavaAttachTarget(arg)) return;
-            const launch = await javaAttachConfig(arg, root);
-            await startSession(launch, {
+            if (!root) return;
+            let launch: LaunchConfig;
+            if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
+            else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
+            else return;
+            const session = await startSession(launch, {
               process: (arg.process ?? null) as RunId | null,
               runConfig: arg.runConfig,
               rerunnable: false,
             });
+            if (session == null && isPythonAttachTarget(arg) && arg.process != null)
+              await stopAssociatedProcess(arg.process);
           })(),
         ),
     },
