@@ -95,6 +95,15 @@ const launchInfo = (build: "succeeded" | "failed" | "withErrors") => ({
   hints: [],
 });
 
+it("resolves an explicit classpath without building for NoBuild", async () => {
+  await startRun({ ...config, module: "app", buildPolicy: "noBuild", args: ["-cp", "lib/*", "a.Main"] });
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "noBuild", expect.any(Number));
+  expect(ipc.runStart).toHaveBeenCalledWith(
+    expect.objectContaining({ args: ["-cp", "lib/*", "a.Main"] }),
+    expect.anything(),
+  );
+});
+
 it.each(["noBuild", "rebuild"] as const)("passes the %s build policy to the resolver", async (buildPolicy) => {
   await startRun({ ...config, module: "app", buildPolicy });
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, buildPolicy, expect.any(Number));

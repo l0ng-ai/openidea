@@ -395,5 +395,19 @@ mod tests {
         fs::write(settings, "<settings><activeProfiles><activeProfile>dev</activeProfile></activeProfiles></settings>")
             .unwrap();
         assert_ne!(parent, get());
+
+        // An explicitly selected toolchains file and its contents are inputs too.
+        let toolchains = dir.path().join("toolchains.xml");
+        fs::write(&toolchains, "<toolchains/>").unwrap();
+        model.maven.as_mut().unwrap().projects[0].options =
+            vec!["-t".into(), toolchains.to_string_lossy().into_owned()];
+        let with_toolchains =
+            launch_fingerprint(&root, &model, &root, false, Some(repo.clone()), &CancellationToken::new()).unwrap();
+        assert_ne!(parent, with_toolchains);
+        fs::write(&toolchains, "<toolchains><!-- changed --></toolchains>").unwrap();
+        assert_ne!(
+            with_toolchains,
+            launch_fingerprint(&root, &model, &root, false, Some(repo.clone()), &CancellationToken::new()).unwrap()
+        );
     }
 }
