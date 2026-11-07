@@ -87,17 +87,31 @@ describe("restoring forwarded ports", () => {
   });
 });
 
-it("doesn't forward ports of a dev container yet", async () => {
+it("forwards and remembers ports of a dev container, per folder and configuration", async () => {
+  const { useRemote } = await import("@/platform/remote");
+  const { savedPorts } = await import("./ports");
+  const container = (config: string) => ({
+    target: { kind: "devContainer" as const, folder: "/w/app", config },
+    root: "/workspaces/app",
+    host: "app",
+    os: "linux",
+    commands: [],
+  });
+  ipc.remoteForwardPort.mockClear();
+  useRemote.setState({ session: container("") });
+  expect(await forwardPort(8000)).toEqual({ remotePort: 8000, localPort: 8000 });
+  expect(ipc.remoteForwardPort).toHaveBeenCalledWith(8000);
+  expect(savedPorts()).toEqual([8000]);
+  useRemote.setState({ session: container(".devcontainer/other/devcontainer.json") });
+  expect(savedPorts()).toEqual([]);
+  useRemote.setState({ session: null });
+});
+
+it("doesn't forward ports of a WSL project yet", async () => {
   const { useRemote } = await import("@/platform/remote");
   ipc.remoteForwardPort.mockClear();
   useRemote.setState({
-    session: {
-      target: { kind: "devContainer", folder: "/w/app", config: "" },
-      root: "/workspaces/app",
-      host: "app",
-      os: "linux",
-      commands: [],
-    },
+    session: { target: { kind: "wsl", distro: "u" }, root: "/home/u", host: "u", os: "linux", commands: [] },
   });
   expect(await forwardPort(8080)).toBeNull();
   expect(ipc.remoteForwardPort).not.toHaveBeenCalled();

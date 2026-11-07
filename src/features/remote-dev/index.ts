@@ -15,7 +15,7 @@ import { RemoteStatus } from "./RemoteStatus";
 import { closeConnectDialog, openConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
 
-/** SSH tunnels are available while this window is connected to an SSH host. */
+/** Forwarded ports are available while this window is connected to an SSH host or a dev container. */
 function trackPortsWindow(): () => void {
   let off: (() => void) | null = null;
   const sync = (connected: boolean) => {
@@ -36,8 +36,9 @@ function trackPortsWindow(): () => void {
       usePorts.setState({ ports: [] });
     }
   };
-  sync(useRemote.getState().session?.target.kind === "ssh");
-  const unsubscribe = useRemote.subscribe((s) => sync(s.session?.target.kind === "ssh"));
+  const forwards = (kind: string | undefined) => kind === "ssh" || kind === "devContainer";
+  sync(forwards(useRemote.getState().session?.target.kind));
+  const unsubscribe = useRemote.subscribe((s) => sync(forwards(s.session?.target.kind)));
   return () => {
     unsubscribe();
     off?.();

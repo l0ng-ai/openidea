@@ -4,6 +4,10 @@
 //!
 //! The container id, user and folder come from the CLI's output, are checked, and only ever
 //! reach `docker exec` as separate arguments; only fixed scripts reach `sh -c`.
+//!
+//! A forwarded port is a local listener whose every connection runs
+//! `openidea-server --connect localhost <port>` in the container and pipes through it: the
+//! container's own network is reached the same way on every Docker setup.
 
 use crate::remote_dev::{Progress, RemoteStage, SERVER_BIN};
 use crate::remote_wsl::{Probe, Tail, install_script, parse_probe, probe_script, upload, version_dir};
@@ -14,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncBufReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 /// Building an image (and its features) can take a while on a first open.
 const UP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -171,8 +175,93 @@ fn server_args(up: &Up, bin: &str) -> Vec<String> {
     args
 }
 
+/// How to run the installed server in a started container (forwarded connections).
+pub(crate) struct Exec {
+    docker: PathBuf,
+    up: Up,
+    bin: String,
+}
+
+impl Exec {
+    /// The arguments of `docker` for one connection to `localhost:<port>` in the container.
+    fn connect_args(&self, port: u16) -> Vec<String> {
+        let port = port.to_string();
+        ["exec", "-i", "-u", &self.up.user, &self.up.container, &self.bin, "--connect", "localhost", &port]
+            .map(str::to_owned)
+            .into()
+    }
+}
+
+/// A forwarded port of the container; dropping it stops listening (open connections finish).
+pub(crate) struct Tunnel {
+    port: u16,
+    accept: tokio::task::JoinHandle<()>,
+}
+
+impl Tunnel {
+    /// Listens on local port `preferred` when it is free, else on any free one, and forwards
+    /// each connection to `localhost:<port>` in the container. Nothing needs to listen there yet.
+    pub(crate) async fn listen(exec: Arc<Exec>, preferred: u16, port: u16) -> IdeResult<Tunnel> {
+        let listener = match tokio::net::TcpListener::bind(("127.0.0.1", preferred)).await {
+            Ok(l) => l,
+            Err(_) => tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?,
+        };
+        let local = listener.local_addr()?.port();
+        let accept = tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else { return };
+                tokio::spawn(forward(exec.clone(), socket, port));
+            }
+        });
+        Ok(Tunnel { port: local, accept })
+    }
+
+    /// The local port to connect to.
+    pub(crate) fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        self.accept.abort();
+    }
+}
+
+async fn forward(exec: Arc<Exec>, mut socket: tokio::net::TcpStream, port: u16) {
+    let mut cmd = tokio::process::Command::new(&exec.docker);
+    ide_core::process::prepare(cmd.as_std_mut());
+    cmd.args(exec.connect_args(port))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return tracing::warn!("forwarding port {port}: cannot start docker: {e}"),
+    };
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else { return };
+    let (mut from_client, mut to_client) = socket.split();
+    // The client closing its side closes the server's stdin (`ChildStdin` has no shutdown).
+    let upstream = async move {
+        let _ = tokio::io::copy(&mut from_client, &mut stdin).await;
+    };
+    let downstream = async {
+        let _ = tokio::io::copy(&mut stdout, &mut to_client).await;
+        let _ = to_client.shutdown().await;
+    };
+    tokio::join!(upstream, downstream);
+    if let Ok(out) = child.wait_with_output().await
+        && !out.status.success()
+    {
+        let why = String::from_utf8_lossy(&out.stderr);
+        tracing::warn!("forwarding port {port}: {}", why.trim());
+    }
+}
+
 /// Opens the dev container of local `folder`: starts it with the CLI, installs and starts the
-/// server in it. Returns the connection and the project folder in the container.
+/// server in it. Returns the connection, the project folder in the container and how to run the
+/// server there.
 pub(crate) async fn connect(
     state: &crate::state::AppState,
     folder: &str,
@@ -180,7 +269,7 @@ pub(crate) async fn connect(
     handler: Arc<dyn Handler>,
     tail: &Tail,
     progress: &Arc<Progress>,
-) -> IdeResult<(Peer, String)> {
+) -> IdeResult<(Peer, String, Exec)> {
     let local = PathBuf::from(folder);
     // `devcontainer up` runs the project's code on this machine (`initializeCommand`, the build).
     if !state.host.trust.trusted(&local).unwrap_or(false) {
@@ -210,7 +299,8 @@ pub(crate) async fn connect(
     let bin = ensure_server(state, &docker, &up, progress).await?;
     progress(RemoteStage::Starting, None);
     let peer = spawn(&docker, &up, &bin, handler, tail)?;
-    Ok((peer, up.folder))
+    let folder = up.folder.clone();
+    Ok((peer, folder, Exec { docker, up, bin }))
 }
 
 fn spawn(docker: &Path, up: &Up, bin: &str, handler: Arc<dyn Handler>, tail: &Tail) -> IdeResult<Peer> {
@@ -248,6 +338,43 @@ mod tests {
                 "--stdio",
             ]
         );
+    }
+
+    #[test]
+    fn a_forwarded_connection_runs_the_server_as_a_relay() {
+        let up = Up { container: ID.into(), user: "vscode".into(), folder: "/w".into() };
+        let exec = Exec { docker: "docker".into(), up, bin: "/s/openidea-server".into() };
+        assert_eq!(
+            exec.connect_args(8000),
+            ["exec", "-i", "-u", "vscode", ID, "/s/openidea-server", "--connect", "localhost", "8000"]
+        );
+    }
+
+    /// A stand-in for `docker` that answers with its arguments, then echoes the connection.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_tunnel_pipes_each_connection_through_docker_exec() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let docker = dir.path().join("docker");
+        std::fs::write(&docker, "#!/bin/sh\necho \"$*\"\nexec cat\n").unwrap();
+        std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let up = Up { container: ID.into(), user: "root".into(), folder: "/w".into() };
+        let exec = Arc::new(Exec { docker, up, bin: "/s/openidea-server".into() });
+        let tunnel = Tunnel::listen(exec, 0, 8000).await.unwrap();
+        for _ in 0..2 {
+            let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
+            socket.write_all(b"ping").await.unwrap();
+            socket.shutdown().await.unwrap();
+            let mut reply = String::new();
+            tokio::time::timeout(Duration::from_secs(10), socket.read_to_string(&mut reply)).await.unwrap().unwrap();
+            assert_eq!(reply, format!("exec -i -u root {ID} /s/openidea-server --connect localhost 8000\nping"));
+        }
+        let port = tunnel.port();
+        drop(tunnel);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_err(), "a dropped tunnel stops listening");
     }
 
     /// A stand-in for the Dev Containers CLI that checks its arguments and answers like the real one.
@@ -375,6 +502,33 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
         assert!(files.to_string().contains("main.py"), "the project is the local folder: {files}");
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert_eq!(docker_sh(&docker, &up.container, "wc -l < /tmp/post-start"), "1", "postStartCommand ran once");
+        // A port only the container's own network reaches (perl is in every Debian image).
+        let listen = "perl -MIO::Socket::INET -e '$s = IO::Socket::INET->new(LocalAddr => \"127.0.0.1:8000\", \
+            Listen => 5, ReuseAddr => 1) or die; while ($c = $s->accept) { print $c \"from the container\\n\"; close $c }'";
+        let started = std::process::Command::new(&docker)
+            .args(["exec", "-d", &up.container, "sh", "-c", listen])
+            .status()
+            .unwrap();
+        assert!(started.success());
+        let exec = Arc::new(Exec {
+            docker: docker.clone(),
+            up: Up { container: up.container.clone(), user: up.user.clone(), folder: up.folder.clone() },
+            bin: bin.clone(),
+        });
+        let tunnel = Tunnel::listen(exec, 0, 8000).await.unwrap();
+        let mut reply = String::new();
+        for _ in 0..50 {
+            use tokio::io::AsyncReadExt;
+            let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
+            reply.clear();
+            let _ = socket.read_to_string(&mut reply).await;
+            if !reply.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert_eq!(reply, "from the container\n");
+        drop(tunnel);
         drop(peer);
         let removed = std::process::Command::new(&docker).args(["rm", "-f", &up.container]).output().unwrap();
         assert!(removed.status.success());

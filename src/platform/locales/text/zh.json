@@ -6688,7 +6688,6 @@
   "Read-only: the result has no primary key of {tableLabel}.": "只读：结果中没有 {tableLabel} 的主键。",
   "Starting the dev container…": "正在启动开发容器…",
   "Command-line tool": "命令行工具",
-  "Forwarding ports is not supported in a dev container yet": "开发容器暂不支持端口转发",
   "Could not reopen the project in a container": "无法在容器中重新打开项目",
   "Reopen in Container": "在容器中重新打开",
   "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.": "使用 Dev Containers CLI 构建或启动项目的开发容器（devcontainer.json），并在其中打开项目。",

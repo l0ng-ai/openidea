@@ -1,4 +1,7 @@
-/** Remote ports forwarded to this machine, remembered per host and folder and forwarded again on reconnect. */
+/**
+ * Remote ports forwarded to this machine, remembered per host (or dev container) and folder and
+ * forwarded again on reconnect. A dev container also forwards its `forwardPorts` on its own.
+ */
 import { create } from "zustand";
 import type { ForwardedPort } from "@/bindings";
 import { tx } from "@/platform/i18n";
@@ -10,7 +13,14 @@ const SAVED_KEY = "openidea.remote.ports:";
 
 function savedKey(): string | null {
   const session = useRemote.getState().session;
-  return session?.target.kind === "ssh" ? `${SAVED_KEY}${session.target.config}:${session.root}` : null;
+  switch (session?.target.kind) {
+    case "ssh":
+      return `${SAVED_KEY}${session.target.config}:${session.root}`;
+    case "devContainer":
+      return `${SAVED_KEY}devcontainer:${JSON.stringify([session.target.folder, session.target.config])}:${session.root}`;
+    default:
+      return null;
+  }
 }
 
 export function savedPorts(): number[] {
@@ -53,15 +63,11 @@ export function parsePort(text: string): number | null {
 }
 
 export async function forwardPort(port: number): Promise<ForwardedPort | null> {
-  const kind = useRemote.getState().session?.target.kind;
-  if (kind === "wsl" || kind === "devContainer") {
+  if (useRemote.getState().session?.target.kind === "wsl") {
     notifications().notify({
       group: "remote",
       level: "error",
-      title:
-        kind === "wsl"
-          ? tx("Forwarding ports is not supported in a WSL project yet")
-          : tx("Forwarding ports is not supported in a dev container yet"),
+      title: tx("Forwarding ports is not supported in a WSL project yet"),
     });
     return null;
   }

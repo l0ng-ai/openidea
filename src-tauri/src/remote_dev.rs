@@ -71,8 +71,25 @@ pub struct Connection {
     next_channel: std::sync::atomic::AtomicU64,
     /// Keeps the SSH connection alive; `None` for WSL and dev containers.
     session: Option<Arc<ide_ssh::Session>>,
+    /// How to reach a dev container's ports; `None` for SSH and WSL.
+    exec: Option<Arc<crate::remote_container::Exec>>,
     /// Remote ports forwarded to this machine (Ports tool window), by remote port.
-    forwards: Mutex<Vec<(u16, ide_ssh::Tunnel)>>,
+    forwards: Mutex<Vec<(u16, Forward)>>,
+}
+
+/// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
+enum Forward {
+    Ssh(ide_ssh::Tunnel),
+    Container(crate::remote_container::Tunnel),
+}
+
+impl Forward {
+    fn port(&self) -> u16 {
+        match self {
+            Self::Ssh(t) => t.port(),
+            Self::Container(t) => t.port(),
+        }
+    }
 }
 
 type Channels = Arc<Mutex<HashMap<u64, (Channel<ChannelFrame>, u64)>>>;
@@ -433,6 +450,7 @@ pub async fn remote_connect(
     let handler =
         Arc::new(ClientHandler { app: window.app_handle().clone(), window: label.clone(), channels: channels.clone() });
     let tail = crate::remote_wsl::Tail::default();
+    let mut exec = None;
     let (peer, session, host, title_tag) = match &target {
         RemoteTarget::Ssh { config: id } => {
             let config = state.ssh.config(id)?;
@@ -453,9 +471,10 @@ pub async fn remote_connect(
             (peer, None, distro.clone(), format!("WSL: {distro}"))
         }
         RemoteTarget::DevContainer { folder, config } => {
-            let (peer, root) =
+            let (peer, root, run) =
                 crate::remote_container::connect(&state, folder, config, handler, &tail, &progress).await?;
             path = root;
+            exec = Some(Arc::new(run));
             let name = std::path::Path::new(folder)
                 .file_name()
                 .map_or_else(|| folder.clone(), |n| n.to_string_lossy().into_owned());
@@ -506,7 +525,11 @@ pub async fn remote_connect(
         next_channel: std::sync::atomic::AtomicU64::new(1),
         session,
         forwards: Mutex::new(Vec::new()),
+        exec,
     });
+    if let RemoteTarget::DevContainer { folder, config } = &target {
+        forward_configured_ports(&connection, folder, config).await;
+    }
     state.remote_dev.disconnect(&label);
     state.host.close_project(&label);
     state.remote_dev.0.lock().insert(label.clone(), connection.clone());
@@ -659,11 +682,7 @@ pub async fn remote_forward_port(
     if let Some(p) = forwarded(&c).into_iter().find(|p| p.remote_port == remote_port) {
         return Ok(p);
     }
-    let session = c
-        .session
-        .clone()
-        .ok_or_else(|| IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))?;
-    let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
+    let tunnel = open_forward(&c, remote_port).await?;
     let port = ForwardedPort { remote_port, local_port: tunnel.port() };
     let mut forwards = c.forwards.lock();
     if let Some(existing) = forwards.iter().find(|(remote, _)| *remote == remote_port) {
@@ -671,6 +690,41 @@ pub async fn remote_forward_port(
     }
     forwards.push((remote_port, tunnel));
     Ok(port)
+}
+
+/// Forwards `remote_port` to the same local port when it is free, else to a free one.
+async fn open_forward(c: &Connection, remote_port: u16) -> IdeResult<Forward> {
+    if let Some(session) = c.session.clone() {
+        let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
+        return Ok(Forward::Ssh(tunnel));
+    }
+    if let Some(exec) = c.exec.clone() {
+        return Ok(Forward::Container(crate::remote_container::Tunnel::listen(exec, remote_port, remote_port).await?));
+    }
+    Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
+}
+
+/// Forwards the `forwardPorts` of the dev container's configuration (the local folder's).
+async fn forward_configured_ports(c: &Connection, folder: &str, config: &str) {
+    let local = std::path::PathBuf::from(folder);
+    let path = match config.trim() {
+        "" => ide_workspace::devcontainer::find(&local),
+        config => Some(local.join(config)),
+    };
+    let Some(path) = path else { return };
+    let ports = match ide_workspace::devcontainer::load_file(&path) {
+        Ok(c) => c.forward_ports,
+        Err(e) => return tracing::warn!("{}: forwardPorts: {e}", c.host),
+    };
+    for remote_port in ports {
+        if c.forwards.lock().iter().any(|(remote, _)| *remote == remote_port) {
+            continue;
+        }
+        match open_forward(c, remote_port).await {
+            Ok(tunnel) => c.forwards.lock().push((remote_port, tunnel)),
+            Err(e) => tracing::warn!("{}: cannot forward port {remote_port}: {e}", c.host),
+        }
+    }
 }
 
 /// Stops forwarding `remote_port`.
