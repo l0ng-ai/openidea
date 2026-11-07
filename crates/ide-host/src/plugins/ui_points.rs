@@ -5,7 +5,7 @@
 //!
 //! ```toml
 //! [[contributes.menus]]
-//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context
+//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context, commit.message
 //! command = "check"
 //! when = "editorLang == java"
 //! # view = "<view id>"             # required for (only allowed on) viewItem.context
@@ -26,7 +26,7 @@
 //! id = "jobs"
 //! title = "Jobs"
 //! icon = "server"
-//! location = "right"               # left, right, bottom
+//! location = "right"               # left, right, bottom, services (nodes of the Services tool window)
 //!
 //! [[contributes.customEditors]]
 //! id = "table"
@@ -42,6 +42,10 @@
 //! icon = "icons/drawing.svg"
 //! iconDark = "icons/drawing_dark.svg"
 //!
+//! [[contributes.commitChecks]]
+//! id = "conventional"
+//! title = "Conventional Commits"   # Commit Options › Before Commit; `commit-checker.check` runs it
+//!
 //! [[contributes.fileTemplates]]
 //! id = "drawing"
 //! name = "Excalidraw Drawing"
@@ -49,12 +53,15 @@
 //! path = "templates/drawing.excalidraw"
 //! ```
 
-use ide_extension::{Package, UiDecl, decode, validate_item_id, validate_when};
+use ide_extension::{LOCALES_DIR, Package, UiDecl, decode, validate_item_id, validate_when};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
+/// A view whose tree shows in the Services tool window; the plugin's
+/// `detail-provider` renders the selected node's pane.
+pub const SERVICES_LOCATION: &str = "services";
 pub const MENUS: &str = "menus";
 pub const KEYMAPS: &str = "keymaps";
 pub const STATUS_BAR: &str = "statusBar";
@@ -63,9 +70,13 @@ pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
 pub const FILE_ICONS: &str = "fileIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
+pub const COMMIT_CHECKS: &str = "commitChecks";
 
 const VIEW_ITEM_MENU: &str = "viewItem.context";
-const MENU_IDS: [&str; 5] = ["editor.context", "projectView.context", "editorTab.context", "tools", VIEW_ITEM_MENU];
+/// The toolbar above the commit message (Commit tool window and dialog).
+const COMMIT_MESSAGE_MENU: &str = "commit.message";
+const MENU_IDS: [&str; 6] =
+    ["editor.context", "projectView.context", "editorTab.context", "tools", VIEW_ITEM_MENU, COMMIT_MESSAGE_MENU];
 const MAX_TITLE: usize = 256;
 const MAX_SETTINGS: usize = 200;
 const MAX_PATTERNS: usize = 16;
@@ -111,6 +122,10 @@ struct MenuDecl {
     when: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     view: Option<String>,
+    /// Groups the plugin's entries of one context menu that name the same
+    /// submenu under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    submenu: Option<String>,
 }
 
 pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
@@ -119,8 +134,18 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         return Err(format!("contributes.menus: unknown menu {:?} (one of {})", d.menu, MENU_IDS.join(", ")));
     }
     declared_command(pkg, MENUS, &d.command)?;
+    if d.menu == COMMIT_MESSAGE_MENU {
+        pkg.manifest.needs_api(&format!("contributes.menus: {COMMIT_MESSAGE_MENU}"), 3)?;
+    }
     if let Some(w) = &d.when {
         validate_when(w).map_err(|e| format!("contributes.menus: {e}"))?;
+    }
+    if let Some(submenu) = &d.submenu {
+        if !d.menu.ends_with(".context") {
+            return Err(format!("contributes.menus: `submenu` is only for context menus, not {:?}", d.menu));
+        }
+        title(MENUS, submenu)?;
+        pkg.manifest.needs_api("contributes.menus: submenu", 3)?;
     }
     let key = match (d.menu == VIEW_ITEM_MENU, &d.view) {
         (true, None) => return Err(format!("contributes.menus: {VIEW_ITEM_MENU} needs `view`")),
@@ -395,8 +420,14 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     validate_item_id(&d.id, "view id")?;
     title(VIEWS, &d.title)?;
     let files = web_or_code(pkg, d.web.as_deref(), &format!("view {:?}", d.id))?;
-    if !["left", "right", "bottom"].contains(&d.location.as_str()) {
-        return Err(format!("view {:?}: `location` is left, right or bottom", d.id));
+    if !["left", "right", "bottom", SERVICES_LOCATION].contains(&d.location.as_str()) {
+        return Err(format!("view {:?}: `location` is left, right, bottom or services", d.id));
+    }
+    if d.location == SERVICES_LOCATION {
+        pkg.manifest.needs_api(&format!("view {:?}: `location = \"services\"`", d.id), 3)?;
+        if d.web.is_some() {
+            return Err(format!("view {:?}: a services view is rendered by the plugin's code (no `web`)", d.id));
+        }
     }
     if d.icon.as_ref().is_some_and(|i| i.len() > 64) {
         return Err(format!("view {:?}: icon names are up to 64 bytes", d.id));
@@ -545,6 +576,80 @@ pub(super) fn file_template(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
     Ok(out)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CommitCheckDecl {
+    id: String,
+    title: String,
+}
+
+/// `[[contributes.commitChecks]]`: a before-commit check run by the plugin's
+/// `commit-checker` export, listed in Commit Options.
+pub(super) fn commit_check(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: CommitCheckDecl = decode(COMMIT_CHECKS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{COMMIT_CHECKS}"), 3)?;
+    validate_item_id(&d.id, "commit check id")?;
+    title(COMMIT_CHECKS, &d.title)?;
+    if pkg.manifest.wasm.is_none() {
+        return Err(format!("contributes.{COMMIT_CHECKS}: needs `wasm` (the checks run in the plugin's code)"));
+    }
+    if !pkg.manifest.capabilities.all().any(|c| *c == ide_extension::Capability::VcsRead) {
+        return Err(format!("contributes.{COMMIT_CHECKS}: needs the `vcs.read` capability (checks read the commit)"));
+    }
+    Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
+}
+
+const MAX_CATALOG_ENTRIES: usize = 20_000;
+
+pub fn locale_asset(tag: &str) -> String {
+    format!("locale/{tag}")
+}
+
+fn locale_tag_ok(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let language = parts.next().unwrap_or_default();
+    (2..=3).contains(&language.len())
+        && language.chars().all(|c| c.is_ascii_alphabetic())
+        && parts.all(|p| (1..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// `locales/<tag>.json`: English source text → translation, for the plugin's own strings.
+pub(super) fn locales(pkg: &Package, _decl: toml::Value) -> Result<UiDecl, String> {
+    let dir = Path::new(LOCALES_DIR);
+    let mut names: Vec<String> = std::fs::read_dir(pkg.dir.join(dir))
+        .map_err(|e| format!("{LOCALES_DIR}: {e}"))?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    let mut tags = Vec::new();
+    let mut files = Vec::new();
+    let mut assets = Vec::new();
+    for name in names {
+        let tag = name.trim_end_matches(".json");
+        if !locale_tag_ok(tag) {
+            return Err(format!("{LOCALES_DIR}/{name}: the file name must be a language tag such as fr or zh-CN"));
+        }
+        let file = dir.join(&name);
+        let text = pkg.read_text(&file)?;
+        let catalog: BTreeMap<String, Value> = serde_json::from_str(&text)
+            .map_err(|e| format!("{}: not a JSON object of strings ({e})", file.display()))?;
+        if catalog.len() > MAX_CATALOG_ENTRIES {
+            return Err(format!("{}: more than {MAX_CATALOG_ENTRIES} entries", file.display()));
+        }
+        if let Some((key, _)) = catalog.iter().find(|(_, v)| !v.is_string()) {
+            return Err(format!("{}: the value of {key:?} is not a string", file.display()));
+        }
+        assets.push((locale_asset(tag), text));
+        tags.push(tag.to_owned());
+        files.push(file);
+    }
+    let mut out = UiDecl::new("locales", tags.join(", "), serde_json::json!({ "tags": tags }));
+    out.files = files;
+    out.assets = assets;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +680,42 @@ mod tests {
         assert!(!s.iter().find(|x| x.key == "mode").unwrap().accepts(&Value::from("c")));
         assert!(parse_settings_schema(r#"{"properties": {"x": {"type": "string", "default": 3}}}"#).is_err());
         assert!(parse_settings_schema(r#"{"properties": {"x": {"type": "object"}}}"#).is_err());
+    }
+
+    fn package_with_catalogs(files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(LOCALES_DIR)).unwrap();
+        for (name, text) in files {
+            std::fs::write(dir.path().join(LOCALES_DIR).join(name), text).unwrap();
+        }
+        let src = "id = \"p\"\nname = \"P\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"";
+        let pkg = Package::new(ide_extension::Manifest::parse(src).unwrap(), dir.path().to_path_buf());
+        (dir, pkg)
+    }
+
+    #[test]
+    fn catalogs_become_assets_by_language_tag() {
+        let (_dir, pkg) = package_with_catalogs(&[
+            ("fr.json", r#"{"Refresh": "Actualiser"}"#),
+            ("zh-CN.json", r#"{"Refresh": "刷新"}"#),
+            ("notes.txt", "ignored"),
+        ]);
+        let decl = locales(&pkg, toml::Value::Table(Default::default())).unwrap();
+        assert_eq!(decl.json["tags"], serde_json::json!(["fr", "zh-CN"]));
+        assert_eq!(decl.assets.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["locale/fr", "locale/zh-CN"]);
+    }
+
+    #[test]
+    fn invalid_catalogs_are_refused() {
+        for (name, text) in [
+            ("fr.json", "{"),
+            ("fr.json", r#"["Refresh"]"#),
+            ("fr.json", r#"{"Refresh": 3}"#),
+            ("fr.json", r#"{"Refresh": {"a": "b"}}"#),
+            ("french!.json", "{}"),
+        ] {
+            let (_dir, pkg) = package_with_catalogs(&[(name, text)]);
+            assert!(locales(&pkg, toml::Value::Table(Default::default())).is_err(), "{name}: {text}");
+        }
     }
 }

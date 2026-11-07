@@ -259,6 +259,14 @@ pub async fn plugin_assets(
     blocking(move || host.assets(&plugin_id, &prefix)).await
 }
 
+/// The UI language (BCP 47) that plugin code reads with `ui.locale()`.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_set_ui_locale(state: State<'_, AppState>, tag: String) -> IdeResult<()> {
+    state.plugins.set_ui_locale(&tag);
+    Ok(())
+}
+
 /// An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`.
 #[tauri::command]
 #[specta::specta]
@@ -393,6 +401,33 @@ pub fn plugin_answer_prompt(state: State<'_, AppState>, prompt_id: String, answe
     state.plugins.answer_prompt(&prompt_id, answer)
 }
 
+/// A window's answer to a plugin's `commitRequested`; false when the call no
+/// longer waits.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_answer_commit(
+    state: State<'_, AppState>,
+    request_id: String,
+    answer: ide_host::plugins::CommitAnswer,
+) -> bool {
+    state.plugins.answer_commit(&request_id, answer)
+}
+
+/// Runs plugins' before-commit checks on what `selection` commits, until
+/// `request` is cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_commit_checks(
+    window: Window,
+    state: State<'_, AppState>,
+    selection: ide_host::plugins::CommitSelection,
+    checks: Vec<ide_host::plugins::PluginCommitCheckRef>,
+    request: ide_core::RequestId,
+) -> IdeResult<Vec<ide_host::plugins::PluginCommitCheckResult>> {
+    let plugins = state.plugins.clone();
+    ide_host::plugins::commit::commit_checks(&state.host, plugins, window.label(), selection, checks, request).await
+}
+
 /// Gutter markers of plugin `line-markers` providers for an open document.
 #[tauri::command]
 #[specta::specta]
@@ -435,6 +470,54 @@ pub async fn plugin_view_event(
 ) -> IdeResult<()> {
     let plugins = state.plugins.clone();
     ide_host::plugins::views::event(&state.host, plugins, window.label(), plugin_id, view, event, doc, editor).await
+}
+
+/// The Services pane of node `key` of a plugin's `location = "services"` view.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_service_detail(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    view: String,
+    key: String,
+) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
+    let plugins = state.plugins.clone();
+    ide_host::plugins::views::service_detail(&state.host, plugins, window.label(), plugin_id, view, key).await
+}
+
+/// Runs the program of the log tab `tab` of node `key`'s Services pane (with
+/// the toggles in `on`), streaming its output until it exits or `request` is
+/// cancelled; returns the exit code.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn plugin_service_log(
+    window: Window,
+    state: State<'_, AppState>,
+    request: ide_core::RequestId,
+    plugin_id: String,
+    view: String,
+    key: String,
+    tab: String,
+    on: Vec<String>,
+    on_line: Channel<ide_host::plugins::PluginOutputLine>,
+) -> IdeResult<Option<i32>> {
+    let plugins = state.plugins.clone();
+    let on_line = super::sender(on_line);
+    ide_host::plugins::views::service_log(
+        &state.host,
+        plugins,
+        window.label(),
+        plugin_id,
+        view,
+        key,
+        tab,
+        on,
+        request,
+        on_line,
+    )
+    .await
 }
 
 /// The page of a plugin's web view or custom editor (`web = …`).

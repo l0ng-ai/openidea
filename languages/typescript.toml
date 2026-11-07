@@ -8,6 +8,10 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "TypeScript"
 tree-sitter = "typescript"
 
+[[framework-ui-modes]]
+ui-mode = "Angular TypeScript"
+root-markers = ["angular.json", "node_modules/@angular/core"]
+
 [[language-servers]]
 name = "vtsls"
 tsserver-project = true

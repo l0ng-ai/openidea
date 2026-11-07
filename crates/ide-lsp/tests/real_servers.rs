@@ -64,6 +64,55 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires kmp-lsp on PATH (or OPENIDEA_TEST_KMP_LSP)"]
+async fn kmp_lsp_java_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("Sample.java");
+    let source = "class Sample {\n    static String greet() { return \"Hello\"; }\n    void run() { greet(); }\n}\n";
+    std::fs::write(&path, source).unwrap();
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "kmp-lsp");
+    assert_eq!(java.language_servers.len(), 1);
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_KMP_LSP") {
+        java.language_servers[0].command = bin;
+    }
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
+    retry("kmp-lsp ready", Duration::from_secs(30), || {
+        let status = last_status(&events, "kmp-lsp");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("kmp-lsp failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    let hover = retry("Java hover", Duration::from_secs(30), || async {
+        mgr.hover(doc, Pos::new(2, 18), Default::default()).await.ok().flatten()
+    })
+    .await;
+    assert!(hover.contents.value.contains("greet"), "{}", hover.contents.value);
+    let defs = retry("Java definition", Duration::from_secs(30), || async {
+        mgr.goto(doc, Pos::new(2, 18), GotoKind::Definition).await.ok().filter(|d| !d.is_empty())
+    })
+    .await;
+    assert_eq!(defs[0].path, path);
+    assert_eq!(defs[0].range.start.line, 1);
+    retry("Java completion", Duration::from_secs(30), || async {
+        let list = mgr.completion(doc, Pos::new(2, 20), None, Default::default()).await.ok()?;
+        list.items.iter().any(|i| i.label.starts_with("greet")).then_some(())
+    })
+    .await;
+    let tokens = mgr.semantic_tokens(doc).await.unwrap().unwrap();
+    assert!(!tokens.data.is_empty() && tokens.data.len() % 5 == 0);
+    let error = mgr.java_debug_server(&path).await.unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(error.message.contains("jdtls"));
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires jdtls on PATH and a compatible JDK"]
 async fn intellij_java_formatter_preserves_manual_breaks_and_wraps_long_lines() {
     let dir = tempfile::tempdir().unwrap();

@@ -30,13 +30,6 @@
   width: auto;
 }
 
-/* The conversation hugs its content; spare space stays below the composer
-   instead of inside the chat. */
-.streamArea,
-.stream {
-  flex: 0 1 auto;
-}
-
 .header {
   display: flex;
   align-items: center;
@@ -149,33 +142,43 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 14px 16px 8px;
+  padding: calc(var(--space-3) * 2) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: calc(var(--space-3) * 2);
+}
+/* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
+.stream > * {
+  flex: none;
+  width: 100%;
+  max-width: var(--agent-conversation-width);
+  margin-inline: auto;
+  box-sizing: border-box;
 }
 .stream:focus {
   outline: none;
 }
-/*
- * Skip off-screen output layout; editable messages must repaint immediately when focus/content changes.
- * Thinking and tool output sit in a <div>: on <details> itself WebKit wouldn't expand them.
- */
-.stream > :not(.message):not(details) {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 80px;
-}
-
 /* Your message with its actions, shown on hover. */
 .message {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
 .messageMeta {
+  position: absolute;
+  top: 100%;
+  left: 0;
   display: flex;
   align-items: center;
   min-height: 20px;
-  padding-left: 12px;
+  max-width: 100%;
+  padding-top: 2px;
   font-size: var(--fs-small);
+  white-space: nowrap;
+  opacity: 0;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .messageActions {
   display: inline-flex;
@@ -187,9 +190,46 @@
   user-select: none;
 }
 .message:hover .messageActions,
+.message:hover .messageMeta,
+.reply:hover .messageActions,
+.message:focus-within .messageActions,
+.message:focus-within .messageMeta,
+.reply:focus-within .messageActions,
+.messageActions[data-copied],
 .messageActions:focus-within {
   opacity: 1;
   pointer-events: auto;
+}
+
+.reply {
+  position: relative;
+}
+.replyFooter {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  display: flex;
+  min-height: 20px;
+  padding-top: 2px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.replyActions {
+  margin-left: 0;
+}
+
+@media (hover: none) {
+  .messageActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .messageMeta,
+  .replyFooter {
+    position: static;
+    margin-top: 4px;
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .findBar {
@@ -218,9 +258,13 @@
 }
 
 .user {
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--accent);
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-popup);
+  background: var(--bg-elev);
   color: var(--fg-strong);
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -277,11 +321,16 @@
   overflow: auto;
 }
 .markdown :global(pre code) {
+  display: block;
   padding: 0;
   background: none;
 }
-.markdown :global(pre) {
+.codeBlock {
   position: relative;
+  margin: 0 0 8px;
+}
+.codeBlock > :global(pre) {
+  margin: 0;
 }
 .codeCopy {
   position: absolute;
@@ -299,8 +348,10 @@
   color: var(--fg-secondary);
   cursor: pointer;
   opacity: 0;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.markdown :global(pre:hover) .codeCopy,
+.codeBlock:hover > .codeCopy,
 .markdown :global([data-mermaid]:hover) .codeCopy,
 .codeCopy:focus-visible {
   opacity: 1;
@@ -418,8 +469,27 @@
   display: none;
 }
 .thought summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
   color: var(--fg-muted);
   font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.thought summary:hover {
+  color: var(--fg);
+}
+.thoughtChevron {
+  flex: none;
+}
+.thought[open] .thoughtChevron {
+  transform: rotate(90deg);
+}
+.thoughtBody {
+  margin-top: var(--space-2);
+  color: var(--fg-secondary);
 }
 .thoughtText {
   margin-top: 4px;
@@ -563,7 +633,11 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 12px 12px;
+  align-self: center;
+  width: 100%;
+  max-width: calc(var(--agent-conversation-width) + var(--space-4) * 2);
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-4) var(--space-4);
 }
 
 .background {

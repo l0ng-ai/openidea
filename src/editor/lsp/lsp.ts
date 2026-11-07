@@ -3,6 +3,7 @@ import { Facet } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { whenAllSynced, type EditorDocContext } from "@/editor/api";
 import { IpcError, call, isCancelled, isTauri, unavailableText } from "@/platform/ipc";
+import { hasInvokeRoute } from "@/platform/tauriCore";
 import { tx } from "@/platform/i18n";
 import type { IdeError, ReferencesIncomplete } from "@/bindings";
 import { showHint } from "./hint";
@@ -25,7 +26,8 @@ type Result<T> = { status: "ok"; data: T } | { status: "error"; error: IdeError 
  * meanwhile is not sent (the backend ignores cancelling an id it hasn't seen).
  */
 export async function lspRequest<T>(run: () => Promise<Result<T>>, wanted?: () => boolean): Promise<T> {
-  if (!isTauri()) throw new IpcError({ kind: "unavailable", message: "No language server available" });
+  if (!isTauri() && !hasInvokeRoute())
+    throw new IpcError({ kind: "unavailable", message: "No language server available" });
   try {
     // Edits typed just before (⌘B right after typing) must reach the server first.
     await whenAllSynced();

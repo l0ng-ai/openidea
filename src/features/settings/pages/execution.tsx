@@ -314,7 +314,7 @@ export const EXECUTION_PAGES: PageSpec[] = [
             integer: true,
             step: 500,
             unit: "ms",
-            hint: "After Stop, the process gets this long to exit after the interrupt before it is killed.",
+            hint: "After a configuration's stop command, the process gets this long to exit before it is interrupted. Press Stop again to kill a process that doesn't exit.",
           },
         ],
       },

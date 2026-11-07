@@ -67,7 +67,6 @@ beforeEach(() => {
     logTabs: [],
     filters: emptyFilters(),
     commits: [],
-    rows: [],
     selection: [],
     selected: null,
     done: false,

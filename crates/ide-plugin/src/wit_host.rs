@@ -42,6 +42,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -69,6 +70,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -96,6 +98,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
@@ -109,8 +112,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks, types as wit, ui,
-    vcs, views, workspace,
+    commit, diagnostics, editor, events, invocation, log, net, process, secrets, settings, storage, tasks,
+    types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -148,6 +151,14 @@ pub(crate) fn to_wit(e: HostError) -> wit::Error {
         HostError::Invalid(m) => wit::Error::Invalid(m),
         HostError::Cancelled => wit::Error::Cancelled,
         HostError::Failed(m) => wit::Error::Failed(m),
+    }
+}
+
+fn notification_level(level: wit::NotificationLevel) -> NotificationLevel {
+    match level {
+        wit::NotificationLevel::Info => NotificationLevel::Info,
+        wit::NotificationLevel::Warning => NotificationLevel::Warning,
+        wit::NotificationLevel::Error => NotificationLevel::Error,
     }
 }
 
@@ -263,19 +274,40 @@ impl StoreData {
 }
 
 impl ui::Host for StoreData {
+    fn notify(
+        &mut self,
+        level: wit::NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ui::NotificationAction>,
+    ) -> Fallible<()> {
+        const MAX_ACTIONS: usize = 3;
+        if actions.len() > MAX_ACTIONS {
+            return Ok(Err(wit::Error::Invalid(format!("a notification has at most {MAX_ACTIONS} actions"))));
+        }
+        let mut checked = Vec::with_capacity(actions.len());
+        for a in actions {
+            if a.label.trim().is_empty() || a.label.len() > 256 || a.label.chars().any(char::is_control) {
+                return Ok(Err(wit::Error::Invalid(format!("invalid action label {:?}", a.label))));
+            }
+            if a.argument.as_ref().is_some_and(|arg| arg.len() > 64 << 10) {
+                return Ok(Err(wit::Error::Invalid("an action argument is limited to 64 KiB".into())));
+            }
+            checked.push(crate::NotificationAction { label: a.label, command: a.command, argument: a.argument });
+        }
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        Ok(self.host.notify(self.client(), notification_level(level), title, body, checked).map_err(to_wit))
+    }
+
     fn show_notification(
         &mut self,
         level: wit::NotificationLevel,
         title: String,
         body: String,
     ) -> wasmtime::Result<()> {
-        let level = match level {
-            wit::NotificationLevel::Info => NotificationLevel::Info,
-            wit::NotificationLevel::Warning => NotificationLevel::Warning,
-            wit::NotificationLevel::Error => NotificationLevel::Error,
-        };
-        let max = crate::runtime::MAX_TITLE;
-        self.host.notify(self.client(), level, clip(title, max), clip(body, 16 << 10));
+        let (title, body) = (clip(title, MAX_TITLE), clip(body, 16 << 10));
+        // A plain notification has nothing the host could refuse.
+        let _ = self.host.notify(self.client(), notification_level(level), title, body, Vec::new());
         Ok(())
     }
 
@@ -347,18 +379,45 @@ impl ui::Host for StoreData {
         Ok(answer.map(|keys| keys.and_then(|keys| keys.into_iter().next())))
     }
 
+    fn pick_directory(&mut self, title: String, initial: Option<String>) -> Fallible<Option<String>> {
+        if let Some(path) = &initial
+            && let Err(error) = validate_ui_path(path)
+        {
+            return Ok(Err(error));
+        }
+        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
         Ok(self.pick_prompt(title, items, true))
     }
 
     fn input(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
-        let prompt = Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)) };
+        let prompt =
+            Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)), multiline: false };
+        Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
+    }
+
+    fn input_multiline(&mut self, prompt: String, value: Option<String>) -> Fallible<Option<String>> {
+        let prompt =
+            Prompt::Input { prompt: clip(prompt, MAX_TITLE), value: value.map(|v| clip(v, 4096)), multiline: true };
         Ok(self.ask(prompt).map(|answer| answer.and_then(|text| text.into_iter().next())))
     }
 
     fn confirm(&mut self, title: String, body: String) -> Fallible<bool> {
         let prompt = Prompt::Confirm { title: clip(title, MAX_TITLE), message: clip(body, 16 << 10) };
         Ok(self.ask(prompt).map(|answer| answer.is_some()))
+    }
+
+    fn locale(&mut self) -> wasmtime::Result<String> {
+        Ok(self.host.locale())
     }
 }
 
@@ -393,6 +452,14 @@ impl storage::Host for StoreData {
 }
 
 impl workspace::Host for StoreData {
+    fn open_project(&mut self, path: String, new_window: bool) -> Fallible<()> {
+        if let Err(error) = self.require_interactive().and_then(|_| validate_ui_path(&path)) {
+            return Ok(Err(error));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.open_project(client.as_deref(), path, new_window).map_err(to_wit))
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -421,12 +488,66 @@ impl workspace::HostProject for StoreData {
         let root = self.table.get(&this)?.root.clone();
         let real = match sandbox::resolve_in_root(&root, &path) {
             Ok(real) => real,
-            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
         };
         if let Some(text) = self.host.buffer_text(&real) {
             return Ok(Ok(text));
         }
         Ok(sandbox::read_text(&real).map_err(wit::Error::Failed))
+    }
+
+    fn exists(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<bool> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        match sandbox::inside_root(&root, &path) {
+            Err(e) => Ok(Err(wit::Error::Invalid(e))),
+            Ok(false) => {
+                Ok(Err(wit::Error::Invalid(format!("{path}: access outside the project root is not allowed"))))
+            }
+            Ok(true) => {
+                let requested = Path::new(&path);
+                let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+                Ok(Ok(joined.exists()))
+            }
+        }
+    }
+
+    fn stat(&mut self, this: Resource<ProjectRes>, path: String) -> Fallible<workspace::FileStat> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        let real = match sandbox::resolve_in_root(&root, &path) {
+            Ok(real) => real,
+            Err(e) => {
+                let e = if e.ends_with("no such file") { wit::Error::NotFound(e) } else { wit::Error::Invalid(e) };
+                return Ok(Err(e));
+            }
+        };
+        let meta = match std::fs::symlink_metadata(&real) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Err(wit::Error::NotFound(format!("{path}: no such file"))));
+            }
+            Err(e) => return Ok(Err(wit::Error::Failed(e.to_string()))),
+        };
+        let kind = if meta.is_file() {
+            workspace::FileKind::File
+        } else if meta.is_dir() {
+            workspace::FileKind::Directory
+        } else if meta.is_symlink() {
+            workspace::FileKind::Symlink
+        } else {
+            workspace::FileKind::Other
+        };
+        let modified =
+            meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs());
+        Ok(Ok(workspace::FileStat { kind, size: meta.len(), modified }))
     }
 
     fn find_files(&mut self, this: Resource<ProjectRes>, glob: String, limit: u32) -> Fallible<Vec<String>> {
@@ -568,6 +689,62 @@ impl vcs::Host for StoreData {
         }
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
+    }
+}
+
+impl commit::Host for StoreData {
+    fn pending_commit(&mut self) -> Fallible<Option<commit::CommitDraft>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        // Waiting for the window (saving, diffing) doesn't count against the call's budget.
+        let client = self.invocation.client.clone();
+        let started = Instant::now();
+        let draft = self.host.pending_commit(client.as_deref(), &self.cancel.token());
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        Ok(draft.map(|d| d.map(commit_draft_to_wit)).map_err(to_wit))
+    }
+
+    fn set_commit_message(&mut self, revision: u64, message: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::VcsWrite) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_interactive() {
+            return Ok(Err(e));
+        }
+        if message.len() > MAX_COMMIT_MESSAGE {
+            return Ok(Err(wit::Error::Invalid(format!("a commit message is at most {MAX_COMMIT_MESSAGE} bytes"))));
+        }
+        let client = self.invocation.client.clone();
+        Ok(self.host.set_commit_message(client.as_deref(), revision, message).map_err(to_wit))
+    }
+}
+
+/// Longest commit message a plugin may set.
+const MAX_COMMIT_MESSAGE: usize = 64 << 10;
+
+pub(crate) fn commit_draft_to_wit(d: crate::types::CommitDraft) -> commit::CommitDraft {
+    commit::CommitDraft {
+        revision: d.revision,
+        message: d.message,
+        amend: d.amend,
+        changes: d
+            .changes
+            .into_iter()
+            .map(|c| commit::CommitChange {
+                repository: c.repository,
+                path: c.path,
+                old_path: c.old_path,
+                status: c.status,
+                diff: c.diff,
+                truncated: c.truncated,
+            })
+            .collect(),
     }
 }
 
@@ -815,9 +992,87 @@ pub(crate) mod indexing_bindings {
     });
 }
 
+/// The optional `detail-provider` export.
+pub(crate) mod details_bindings {
+    wasmtime::component::bindgen!({
+        world: "details", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+
+/// The optional `commit-checker` export.
+pub(crate) mod commit_checks_bindings {
+    wasmtime::component::bindgen!({
+        world: "commit-checks", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+        },
+    });
+}
+
 pub(crate) mod semantic_bindings {
     wasmtime::component::bindgen!({
         world: "semantic-tokens", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
     });
+}
+
+pub(crate) mod hover_bindings {
+    wasmtime::component::bindgen!({
+        world: "hover", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+pub(crate) mod inlay_bindings {
+    wasmtime::component::bindgen!({
+        world: "inlay-hints", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+/// The optional `file-actions` export.
+pub(crate) mod file_actions_bindings {
+    wasmtime::component::bindgen!({
+        world: "file-actions-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+/// Paths belong to the UI machine, which can have a different OS than the plugin host.
+fn validate_ui_path(path: &str) -> Result<(), wit::Error> {
+    let b = path.as_bytes();
+    let absolute = path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (b.first().is_some_and(u8::is_ascii_alphabetic)
+            && b.get(1) == Some(&b':')
+            && matches!(b.get(2), Some(b'/' | b'\\')));
+    if !absolute || path.len() > 8192 || path.chars().any(char::is_control) {
+        return Err(wit::Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod project_ui_tests {
+    use super::validate_ui_path;
+    #[test]
+    fn validates_ui_paths_without_using_the_plugin_hosts_os() {
+        for path in ["/work/repo", "C:/work/repo", r"C:\work\repo", r"\\server\share\repo"] {
+            assert!(validate_ui_path(path).is_ok(), "{path:?}");
+        }
+        for path in ["repo", "C:repo", "/bad\npath", ""] {
+            assert!(validate_ui_path(path).is_err(), "{path:?}");
+        }
+        assert!(validate_ui_path(&format!("/{}", "x".repeat(8192))).is_err());
+    }
 }

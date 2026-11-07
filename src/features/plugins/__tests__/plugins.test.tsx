@@ -488,12 +488,41 @@ describe("bridge events", () => {
     expect(useTasks.getState().tasks.find((t) => t.id === "plugin:7")?.done).toBe(true);
   });
 
+  it("runs notification buttons as commands of the publishing plugin with their arguments", async () => {
+    const runCommand = vi.fn().mockResolvedValue(null);
+    setPluginsBackend({ ...backend, runCommand });
+    handlePluginEvent({
+      type: "notification",
+      pluginId: "hello",
+      level: "info",
+      title: "Done",
+      body: "Pick an action",
+      actions: [
+        { label: "Open", command: "insert-date", argument: "first\nsecond" },
+        { label: "Refresh", command: "word-count", argument: null },
+        { label: "Undo", command: "insert-date", argument: "undo" },
+      ],
+    });
+    expect(notes[0]?.actions?.map((a) => a.label)).toEqual(["Open", "Refresh", "Undo"]);
+    notes[0]!.actions![0]!.run();
+    await waitFor(() => expect(runCommand).toHaveBeenCalledWith("hello", "insert-date", "first\nsecond", null, []));
+  });
+
   it("shows plugin notifications, copies to clipboard, opens URLs and tracks theme changes", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
-    handlePluginEvent({ type: "notification", pluginId: "p", level: "info", title: "Done", body: "3 words" });
-    expect(notes).toEqual([{ group: "plugins", level: "info", title: "Done", body: "3 words" }]);
+    handlePluginEvent({
+      type: "notification",
+      pluginId: "p",
+      level: "info",
+      title: "Done",
+      body: "3 words",
+      actions: [],
+    });
+    expect(notes).toEqual([
+      { group: "plugins", level: "info", title: "Done", body: "3 words", verbatim: true, actions: [] },
+    ]);
     handlePluginEvent({ type: "copyToClipboard", pluginId: "p", text: "https://github.com/o/r" });
     expect(writeText).toHaveBeenCalledWith("https://github.com/o/r");
     handlePluginEvent({ type: "openUrl", pluginId: "p", url: "https://github.com/o/r/blob/main/a.rs" });
@@ -536,11 +565,31 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "2",
-        prompt: { kind: "input", prompt: "Name", value: "Main" },
+        prompt: { kind: "input", prompt: "Name", value: "Main", multiline: false },
       });
     });
     await user.click(await screen.findByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("2", null));
+  });
+
+  it("asks multi-line text and confirms on Ctrl+Enter", async () => {
+    const user = userEvent.setup();
+    const answerPrompt = vi.fn().mockResolvedValue(undefined);
+    setPluginsBackend({ ...createMemoryPluginsBackend(), answerPrompt });
+    render(<InputDialogsHost />);
+    act(() => {
+      handlePluginEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: "5",
+        prompt: { kind: "input", prompt: "Notes", value: "one", multiline: true },
+      });
+    });
+    const area = await screen.findByRole("textbox");
+    expect(area.tagName).toBe("TEXTAREA");
+    await user.clear(area);
+    await user.type(area, "a{Enter}b{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("5", ["a\nb"]));
   });
 
   it("returns the typed text untrimmed", async () => {
@@ -553,7 +602,7 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "4",
-        prompt: { kind: "input", prompt: "Name", value: "  Main  " },
+        prompt: { kind: "input", prompt: "Name", value: "  Main  ", multiline: false },
       });
     });
     await user.click(await screen.findByRole("button", { name: "OK" }));
@@ -569,7 +618,7 @@ describe("plugin prompts", () => {
         type: "promptRequested",
         pluginId: "p",
         promptId: "3",
-        prompt: { kind: "input", prompt: "Name", value: null },
+        prompt: { kind: "input", prompt: "Name", value: null, multiline: false },
       });
     });
     await screen.findByRole("dialog");

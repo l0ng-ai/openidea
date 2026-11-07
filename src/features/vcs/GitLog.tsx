@@ -6,6 +6,7 @@ import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } f
 import { IssueText } from "./issueLinks";
 import { BranchFilterPopup } from "./BranchFilterPopup";
 import {
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -43,7 +44,9 @@ import {
   type TreeHandle,
   T,
   copyText,
+  hideNativeScrollbar,
   lazyComponent,
+  Scrollbar,
 } from "@/ui";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
@@ -77,6 +80,7 @@ import {
   toggleRepository,
   updateLogOptions,
   useGitLog,
+  PAGE,
 } from "./logStore";
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
 import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
@@ -1121,7 +1125,9 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
-  const head = (commitRepo(c) ? useVcs.getState().heads[commitRepo(c)!]?.head : useVcs.getState().branch?.head) ?? null;
+  const repo = commitRepo(c);
+  const vcs = useVcs.getState();
+  const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
   const pushed = (x: Commit) =>
     commitRepo(x) === undefined ? !!outgoing && !outgoing.has(x.id) : isPushed(commitKey(x));
@@ -1148,6 +1154,22 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     ((commitRepo(c) === undefined ? !!outgoing : useGitLog.getState().tracked.has(commitRepo(c) ?? ""))
       ? !!outgoing?.has(commitKey(c))
       : true);
+  const branches = ((c as RepoCommit).refBranches ?? []).filter((branch) => !branch.current);
+  const branchActions: MenuItem[] = branches.map((branch) => {
+    const menu = branchMenu(branch, head);
+    return {
+      label: tx`Branch '${branch.name}'`,
+      submenu: repo ? inRepo(repo, menu) : menu,
+    };
+  });
+  if (!branchActions.length)
+    branchActions.push({
+      kind: "action",
+      action: "vcs.log.rebaseOntoCommit",
+      arg: c,
+      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
+      disabled: !head,
+    });
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: c },
     {
@@ -1173,13 +1195,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "action", action: "vcs.log.interactiveRebase", arg: c, disabled: pushedCommit },
     { kind: "action", action: "vcs.log.pushUpToHere", arg: c, disabled: !canPushHere },
     { kind: "separator" },
-    {
-      kind: "action",
-      action: "vcs.log.rebaseOntoCommit",
-      arg: c,
-      label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
-      disabled: !head,
-    },
+    ...(branchActions.length > 2 ? [{ label: "Branches", submenu: branchActions }] : branchActions),
     { kind: "action", action: "vcs.log.newBranch", arg: c },
     { kind: "action", action: "vcs.log.newTag", arg: c },
     { kind: "separator" },
@@ -1385,17 +1401,22 @@ function CommitList() {
     count: commits.length + (finished ? 0 : 1),
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW,
-    overscan: 20,
+    overscan: 8,
     scrollMargin: ROW,
   });
   const items = virtualizer.getVirtualItems();
   const last = items[items.length - 1];
 
+  // The next page is requested while a page of rows is still ahead, so scrolling
+  // quickly doesn't reach the end before `git log` answers.
   useEffect(() => {
-    if (!finished && !loading && last && last.index >= commits.length - 40) void loadMore(scope ?? undefined);
+    if (!finished && !loading && last && last.index >= commits.length - PAGE) void loadMore(scope ?? undefined);
   }, [last, commits.length, finished, loading, active, scope]);
 
-  const selectedIndex = selected ? commits.findIndex((c) => commitKey(c) === selected) : -1;
+  const selectedIndex = useMemo(
+    () => (selected ? commits.findIndex((c) => commitKey(c) === selected) : -1),
+    [commits, selected],
+  );
   useLayoutEffect(() => {
     if (selectedIndex >= 0) virtualizer.scrollToIndex(selectedIndex, { align: "center" });
     // Only on explicit reveal requests.
@@ -1412,6 +1433,28 @@ function CommitList() {
     else if (e.metaKey || e.ctrlKey) toggleCommitSelection(id);
     else selectCommit(id);
   }, []);
+  // CommitRow is memoized: rows get handlers that stay the same across renders and
+  // call this render's (assigned before rendering).
+  const rowEvents = useRef<RowEvents | null>(null);
+  const rowHandlers = useMemo<RowEvents>(
+    () => ({
+      onHover: (edge) => rowEvents.current?.onHover(edge),
+      onFragment: (from, target, expand) => rowEvents.current?.onFragment(from, target, expand),
+      onNavigate: (index, key) => rowEvents.current?.onNavigate(index, key),
+    }),
+    [],
+  );
+  // Called while a row renders its graph, so it changes with what it reads.
+  const targetTitle = useCallback(
+    (index: number, key?: string) => {
+      const target = commits[index];
+      return target
+        ? `${target.shortId} ${target.summary} — ${target.author}`
+        : (key && boundaryTitles.get(key)) ||
+            `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
+    },
+    [commits, boundaryTitles],
+  );
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key.length === 1 || e.key === "Backspace" || e.key === "Escape")) {
@@ -1583,6 +1626,38 @@ function CommitList() {
     }
   };
 
+  rowEvents.current = {
+    onHover: (edge) => {
+      setHoverColor(edge);
+      if (!edge) return;
+      const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
+      const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
+      if (!source || !target || commits.some((c) => commitKey(c) === target) || boundaryRequests.current.has(target))
+        return;
+      const original = all.find((c) => commitKey(c) === source.id);
+      if (!original) return;
+      boundaryRequests.current.add(target);
+      const split = target.lastIndexOf("\0"),
+        id = target.slice(split + 1);
+      void loadLogDetails({ ...original, id })
+        .then((details) =>
+          setBoundaryTitles((current) =>
+            new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
+          ),
+        )
+        .catch(() => undefined);
+    },
+    onFragment: fragment,
+    onNavigate: (index, key) => {
+      const target = commits[index];
+      if (target) selectCommit(commitKey(target), true);
+      else if (key) {
+        const split = key.lastIndexOf("\0");
+        void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
+      }
+    },
+  };
+
   return (
     <div className={styles.listWrap}>
       {earlier && (
@@ -1600,9 +1675,10 @@ function CommitList() {
           {error}
         </div>
       )}
+      <Scrollbar target={scrollRef} contentHeight={virtualizer.getTotalSize()} />
       <div
         ref={scrollRef}
-        className={styles.list}
+        className={clsx(styles.list, hideNativeScrollbar)}
         role="listbox"
         aria-label={tx("Commits")}
         aria-multiselectable
@@ -1661,7 +1737,9 @@ function CommitList() {
               );
             return (
               <CommitRow
-                key={commitKey(c)}
+                // Keyed by slot, not commit: a scrollbar drag that jumps past every mounted
+                // row then updates the same DOM nodes instead of rebuilding them.
+                key={v.index % items.length}
                 id={`commit-${scope ?? "log"}-${v.index}`}
                 commit={c}
                 graph={rows[v.index]}
@@ -1671,54 +1749,18 @@ function CommitList() {
                 mine={opts.highlightMine && isMine(c, user)}
                 onBranch={!!onBranch?.has(commitKey(c))}
                 opts={opts}
-                remoteNames={new Set((c as RepoCommit).remoteNames ?? remoteNames)}
+                remoteNames={rowRemoteNames((c as RepoCommit).remoteNames, remoteNames)}
                 onPick={pick}
                 hoverColor={hoverColor}
                 highlighted={highlighted}
                 highlightedNodes={highlightedNodes}
-                onHover={(edge) => {
-                  setHoverColor(edge);
-                  if (!edge) return;
-                  const source = displayedGraph.find((c) => c.parents.some((p) => `${c.id}\0${p}` === edge));
-                  const target = source?.parents.find((p) => `${source.id}\0${p}` === edge);
-                  if (
-                    !source ||
-                    !target ||
-                    commits.some((c) => commitKey(c) === target) ||
-                    boundaryRequests.current.has(target)
-                  )
-                    return;
-                  const original = all.find((c) => commitKey(c) === source.id);
-                  if (!original) return;
-                  boundaryRequests.current.add(target);
-                  const split = target.lastIndexOf("\0"),
-                    id = target.slice(split + 1);
-                  void loadLogDetails({ ...original, id })
-                    .then((details) =>
-                      setBoundaryTitles((current) =>
-                        new Map(current).set(target, `${id.slice(0, 8)} ${details.message.split("\n")[0]}`),
-                      ),
-                    )
-                    .catch(() => undefined);
-                }}
-                onFragment={fragment}
-                onNavigate={(index, key) => {
-                  const target = commits[index];
-                  if (target) selectCommit(commitKey(target), true);
-                  else if (key) {
-                    const split = key.lastIndexOf("\0");
-                    void goToRef(key.slice(split + 1), split >= 0 ? key.slice(0, split) : currentRepo());
-                  }
-                }}
-                targetTitle={(index, key) => {
-                  const target = commits[index];
-                  return target
-                    ? `${target.shortId} ${target.summary} — ${target.author}`
-                    : (key && boundaryTitles.get(key)) ||
-                        `${tx("Commit is outside the loaded history")} · ${key?.split("\0").at(-1)?.slice(0, 8) ?? ""}`;
-                }}
+                onHover={rowHandlers.onHover}
+                onFragment={rowHandlers.onFragment}
+                onNavigate={rowHandlers.onNavigate}
+                targetTitle={targetTitle}
                 columns={columns}
                 bookmarked={!!bookmarks[commitKey(c)]}
+                interactive={!virtualizer.isScrolling}
               />
             );
           })}
@@ -1828,7 +1870,23 @@ function LogColumnHeader({
   );
 }
 
-const CommitRow = memo(function CommitRow({
+type RowEvents = {
+  onHover: (edge: string | null) => void;
+  onFragment: (from: string, target: string, expand: boolean) => void;
+  onNavigate: (index: number, key?: string) => void;
+};
+
+const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
+
+/** A commit's own remote names (multi-root logs) as one set per array, else the shared one. */
+function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<string>): ReadonlySet<string> {
+  if (!own) return shared;
+  let set = remoteNameSets.get(own);
+  if (!set) remoteNameSets.set(own, (set = new Set(own)));
+  return set;
+}
+
+function CommitRowView({
   id,
   commit: c,
   graph,
@@ -1849,6 +1907,7 @@ const CommitRow = memo(function CommitRow({
   targetTitle,
   columns,
   bookmarked,
+  interactive,
 }: {
   id: string;
   commit: Commit;
@@ -1870,6 +1929,8 @@ const CommitRow = memo(function CommitRow({
   targetTitle: (index: number, key?: string) => string;
   columns: LogColumn[];
   bookmarked: boolean;
+  /** False for rows rendered mid-scroll: their graph is drawn without hit targets. */
+  interactive: boolean;
 }) {
   const merge = opts.highlightMerges && c.parents.length > 1;
   const subjectRef = useRef<HTMLSpanElement>(null);
@@ -1933,6 +1994,7 @@ const CommitRow = memo(function CommitRow({
             targetTitle={targetTitle}
             onFragment={(target, expand, source) => onFragment(source ?? commitKey(c), target, expand)}
             onNode={() => onFragment(commitKey(c), commitKey(c), false)}
+            interactive={interactive}
           />
         )}
         {bookmarked && <Icon name="bookmark" size={12} />}
@@ -1981,6 +2043,16 @@ const CommitRow = memo(function CommitRow({
       ))}
     </div>
   );
+}
+
+// A row that is already interactive stays so when scrolling starts; only rows
+// whose content changes mid-scroll are drawn without hit targets.
+const CommitRow = memo(CommitRowView, (prev, next) => {
+  for (const key in next) {
+    const k = key as keyof typeof next;
+    if (prev[k] !== next[k] && !(k === "interactive" && prev.interactive)) return false;
+  }
+  return true;
 });
 
 function x(lane: number) {
@@ -2003,6 +2075,7 @@ export function GraphCell({
   onFragment,
   targetTitle,
   onNode,
+  interactive = true,
 }: {
   row: GraphRow;
   head?: boolean;
@@ -2014,9 +2087,27 @@ export function GraphCell({
   onFragment?: (target: string, expand: boolean, source?: string) => void;
   targetTitle?: (index: number, key?: string) => string;
   onNode?: () => void;
+  interactive?: boolean;
 }) {
   const cy = ROW / 2;
   const draw = (s: GraphSegment, i: number, up: boolean) => {
+    const fromX = x(s.fromX ?? s.from);
+    const toX = x(s.toX ?? s.to);
+    const path =
+      seg(fromX, up ? 0 : cy, toX, up ? cy : ROW) +
+      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : ROW, up ? -1 : 1) : "");
+    const line = (
+      <path
+        key={interactive ? undefined : `${up ? "u" : "d"}${i}`}
+        d={path}
+        stroke={laneColor(s.color)}
+        strokeWidth={s.edge != null && (activeColor === s.edge || highlighted?.has(s.edge)) ? 2.8 : 1.4}
+        pointerEvents="none"
+        strokeLinecap={s.dashed ? "butt" : "square"}
+        strokeDasharray={s.dashed ? "2 2" : undefined}
+      />
+    );
+    if (!interactive) return line;
     const target = (up ? row.upTargets : row.downTargets)?.[i];
     const canFragment =
       !!target &&
@@ -2038,50 +2129,34 @@ export function GraphCell({
       if (canNavigate) onNavigate?.(s.targetRow!, target);
       else if (canFragment) onFragment?.(target!, !!s.dashed, s.source);
     };
-    const fromX = x(s.fromX ?? s.from);
-    const toX = x(s.toX ?? s.to);
-    const path =
-      seg(fromX, up ? 0 : cy, toX, up ? cy : ROW) +
-      (s.arrow ? arrowHead(up ? fromX : toX, up ? 0 : ROW, up ? -1 : 1) : "");
     return (
-      <g
-        key={`${up ? "u" : "d"}${i}`}
-        role={actionable ? "button" : undefined}
-        tabIndex={actionable ? 0 : undefined}
-        aria-label={actionable ? label : undefined}
-        onMouseEnter={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
-        onMouseDown={(e) => e.stopPropagation()}
-        onClick={(e) => {
-          e.stopPropagation();
-          activate();
-        }}
-        onKeyDown={(e) => {
-          if (actionable && (e.key === "Enter" || e.key === " ")) {
-            e.preventDefault();
-            e.stopPropagation();
-            activate();
-          }
-        }}
-      >
-        <title>{label}</title>
-        <rect
-          x={Math.min(fromX, toX) - 5}
-          y={up ? 0 : cy}
-          width={Math.max(10, Math.abs(fromX - toX) + 10)}
-          height={cy}
-          fill="transparent"
-          pointerEvents="none"
-        />
-        <path d={path} stroke="transparent" strokeWidth={10} style={{ pointerEvents: "stroke" }} />
+      <Fragment key={`${up ? "u" : "d"}${i}`}>
         <path
           d={path}
-          stroke={laneColor(s.color)}
-          strokeWidth={s.edge != null && (activeColor === s.edge || highlighted?.has(s.edge)) ? 2.8 : 1.4}
-          pointerEvents="none"
-          strokeLinecap={s.dashed ? "butt" : "square"}
-          strokeDasharray={s.dashed ? "2 2" : undefined}
-        />
-      </g>
+          stroke="transparent"
+          strokeWidth={10}
+          style={{ pointerEvents: "stroke" }}
+          role={actionable ? "button" : undefined}
+          tabIndex={actionable ? 0 : undefined}
+          aria-label={actionable ? label : undefined}
+          onMouseEnter={() => onHover?.(s.edge ?? `${s.source ?? ""}\0${target ?? ""}`)}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            activate();
+          }}
+          onKeyDown={(e) => {
+            if (actionable && (e.key === "Enter" || e.key === " ")) {
+              e.preventDefault();
+              e.stopPropagation();
+              activate();
+            }
+          }}
+        >
+          <title>{label}</title>
+        </path>
+        {line}
+      </Fragment>
     );
   };
   return (

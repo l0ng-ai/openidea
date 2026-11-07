@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { Icon, Tree, fileIconName } from "@/ui";
-import { DiffEditor } from "./DiffEditor";
+import { Icon, Tree, fileIconName, lazyComponent } from "@/ui";
 import { diffInput, openDiff, type DiffData } from "./diffInput";
 import { dirKeys, type FileTreeNode } from "./fileTree";
 import styles from "./common.module.css";
+
+const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
 
 /** Shared changes tree and on-demand diff surface for revisions and disk folders. */
 export function ComparisonTree<F>({

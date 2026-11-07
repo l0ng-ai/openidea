@@ -300,6 +300,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "plugin_set_theme_frame"
             | "plugin_catalog"
             | "plugin_assets"
+            | "plugin_set_ui_locale"
             | "plugin_market"
             | "plugin_market_url"
             | "plugin_set_market_url"

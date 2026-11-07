@@ -42,6 +42,11 @@ export const commands = {
 	windowGroupCloseTabs: (keep: string, labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_close_tabs", { keep, labels })),
 	/**  This window kept its project open (unsaved-changes prompt cancelled); stops a batch close. */
 	windowGroupCancelClose: () => __TAURI_INVOKE<void>("window_group_cancel_close"),
+	/**
+	 *  This window closes next (its prompts passed): a fullscreen group's host first hands its Space
+	 *  to the tab that takes over.
+	 */
+	windowGroupBeforeClose: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_before_close")),
 	windowGroupReorder: (labels: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("window_group_reorder", { labels })),
 	windowGroupRestore: () => typedError<null, IdeError>(__TAURI_INVOKE("window_group_restore")),
 	/**
@@ -81,6 +86,8 @@ export const commands = {
 	settingsExport: (path: string, storage: { [key in string]: string }) => typedError<null, IdeError>(__TAURI_INVOKE("settings_export", { path, storage })),
 	/**  Import Settings…: replaces the global settings with the file's; every window re-reads them. */
 	settingsImport: (path: string) => typedError<SettingsImport_Serialize, IdeError>(__TAURI_INVOKE("settings_import", { path })),
+	/**  Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it. */
+	settingsReadJetbrains: (path: string) => typedError<JetBrainsSettings, IdeError>(__TAURI_INVOKE("settings_read_jetbrains", { path })),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
 	 *  projects); an empty `name` restores the folder name. Stored in the project's settings.
@@ -534,7 +541,7 @@ export const commands = {
 	/**  "Restore" of the tag-deleted notification. */
 	vcsRestoreTag: (repo: string | null, deleted: DeletedTag) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_tag", { repo, deleted })),
 	/**  New Branch: creates `name` at `start` (HEAD when absent), optionally checking it out. */
-	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout })),
+	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean, overwrite: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout, overwrite })),
 	/**
 	 *  Undo Commit: moves HEAD back to the commit's parent, keeping its changes staged.
 	 *  Returns the undone commit's message.
@@ -1041,6 +1048,8 @@ export const commands = {
 	pluginUnlink: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_unlink", { id })),
 	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
 	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
+	/**  The UI language (BCP 47) that plugin code reads with `ui.locale()`. */
+	pluginSetUiLocale: (tag: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_ui_locale", { tag })),
 	/**  An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`. */
 	pluginActivationEvent: (kind: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_activation_event", { kind, value })),
 	/**
@@ -1073,6 +1082,16 @@ export const commands = {
 	 */
 	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
 	/**
+	 *  A window's answer to a plugin's `commitRequested`; false when the call no
+	 *  longer waits.
+	 */
+	pluginAnswerCommit: (requestId: string, answer: CommitAnswer) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
+	/**
+	 *  Runs plugins' before-commit checks on what `selection` commits, until
+	 *  `request` is cancelled.
+	 */
+	pluginCommitChecks: (selection: CommitSelection, checks: PluginCommitCheckRef[], request: RequestId) => typedError<PluginCommitCheckResult[], IdeError>(__TAURI_INVOKE("plugin_commit_checks", { selection, checks, request })),
+	/**
 	 *  Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
 	 *  a tool window, the window's active editor, as commands get it).
 	 */
@@ -1090,6 +1109,14 @@ export const commands = {
 	language: string,
 	selections: Range[],
 } | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_view_event", { pluginId, view, event, doc, editor })),
+	/**  The Services pane of node `key` of a plugin's `location = "services"` view. */
+	pluginServiceDetail: (pluginId: string, view: string, key: string) => typedError<ServiceTab[], IdeError>(__TAURI_INVOKE("plugin_service_detail", { pluginId, view, key })),
+	/**
+	 *  Runs the program of the log tab `tab` of node `key`'s Services pane (with
+	 *  the toggles in `on`), streaming its output until it exits or `request` is
+	 *  cancelled; returns the exit code.
+	 */
+	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
 	/**  The page of a plugin's web view or custom editor (`web = …`). */
 	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
 	/**
@@ -1845,11 +1872,28 @@ export type ApplyOutcome = {
 	conflicts: string[],
 };
 
+/**  Packaging artifact definition (Project Structure › Artifacts). */
+export type ArtifactConfig = {
+	name?: string,
+	kind?: ArtifactKind,
+	/**  Module relative path (`"."` for root module). */
+	module?: string,
+	/**  Output directory (relative to project root or absolute). */
+	outputDirectory?: string,
+	/**  Main class for executable JAR artifacts. */
+	mainClass?: string,
+	/**  Project library names included in the packaged artifact (`WEB-INF/lib` or JAR manifest). */
+	includeLibraries?: string[],
+};
+
 /**  `groupId:artifactId` of a dependency. */
 export type ArtifactKey = {
 	groupId: string,
 	artifactId: string,
 };
+
+/**  Packaging type of a Project Structure artifact. */
+export type ArtifactKind = "jar" | "war" | "warExploded";
 
 /**  What an askpass prompt asks for. */
 export type AskpassKind = 
@@ -2312,6 +2356,15 @@ export type CommandForm = {
 
 export type Commit = Commit_Serialize | Commit_Deserialize;
 
+/**  A window's answer to a [`CommitRequest`]. */
+export type CommitAnswer = 
+/**  The window's project has no repository. */
+{ kind: "noRepository" } | { kind: "selection"; selection: CommitSelection } | 
+/**  The message was replaced. */
+{ kind: "done" } | 
+/**  The draft is no longer at the revision. */
+{ kind: "stale" };
+
 /**  Commit Options (IDEA's commit options popup). */
 export type CommitOptions = {
 	amend: boolean,
@@ -2330,6 +2383,41 @@ export type CommitOptions = {
 	stage?: IpcPath[],
 	/**  Staged files left out of the commit; they stay staged afterwards. */
 	exclude?: IpcPath[],
+};
+
+/**  A problem a plugin's before-commit check reported (WIT `commit-checker.commit-problem`). */
+export type CommitProblem = {
+	message: string,
+	/**  Absolute path of the file it is in, if any (IPC form). */
+	path: string | null,
+	range: Range | null,
+};
+
+/**  What a plugin asks of a window's Commit view. */
+export type CommitRequest = 
+/**
+ *  What Commit would commit now ([`CommitAnswer::Selection`]); unsaved
+ *  editors of the included files are saved first.
+ */
+{ kind: "selection" } | 
+/**  Replace the message if the draft is still at `revision`. */
+{ kind: "setMessage"; revision: number; message: string };
+
+/**
+ *  What a window's Commit view would commit: per repository, the options
+ *  `vcs_commit` would get.
+ */
+export type CommitSelection = {
+	/**  Changes whenever the message, the included changes or Amend do. */
+	revision: number,
+	message: string,
+	amend: boolean,
+	repositories: CommitSelectionRepo[],
+};
+
+export type CommitSelectionRepo = {
+	root: IpcPath,
+	options: CommitOptions,
 };
 
 /**  Version Control › Commit: commit checks and commit-message inspections. */
@@ -2353,6 +2441,8 @@ export type CommitSettings = {
 	bodyLimit?: number,
 	showRightMargin?: boolean,
 	wrapAtMargin?: boolean,
+	/**  Plugin before-commit checks turned off (`<plugin id>/<check id>`); the rest run. */
+	disabledPluginChecks?: string[],
 };
 
 export type Commit_Deserialize = {
@@ -3033,6 +3123,9 @@ export type DeletedTag = {
 	target: string,
 };
 
+/**  Dependency scope for a module dependency or project library (IDEA's Modules › Dependencies). */
+export type DependencyScope = "compile" | "test" | "runtime" | "provided";
+
 export type DependencyUpdate = {
 	latest: string,
 	replacement: string,
@@ -3679,6 +3772,18 @@ export type ExternalTool = {
 	workingDirectory?: string,
 	synchronizeAfter?: boolean,
 	openConsole?: boolean,
+};
+
+/**  Framework facet attached to a module (Project Structure › Facets). */
+export type FacetConfig = {
+	/**  `"web"` | `"spring"` | `"jpa"`. */
+	kind?: string,
+	/**  Module relative path (`"."` for root module). */
+	module?: string,
+	/**  Deployment descriptor path (e.g. `src/main/webapp/WEB-INF/web.xml`, `src/main/resources/META-INF/persistence.xml`). */
+	descriptor?: string,
+	/**  Web resource root directory for Web facets (e.g. `src/main/webapp`). */
+	webRoot?: string,
 };
 
 export type FieldValue = { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
@@ -4786,6 +4891,8 @@ export type JavaSettings = {
 	 *  Java version it targets.
 	 */
 	jdk?: string,
+	/**  Project Java language level (`8`, `11`, `17`, `21`, `25`); empty = SDK default. */
+	languageLevel?: string,
 	/**
 	 *  JDK home the Java language server (jdtls) runs on, apart from the project
 	 *  JDK (IDEA's "JDK for importer"); empty = the project JDK when new enough,
@@ -4817,6 +4924,16 @@ export type JdkReleases = {
 export type JdkVendor = {
 	id: string,
 	name: string,
+};
+
+/**
+ *  A JetBrains IDE's File › Manage IDE Settings › Export Settings… archive: every
+ *  entry name, and the text of the entries OpenIDEA maps (the frontend does the mapping).
+ */
+export type JetBrainsSettings = {
+	entries: string[],
+	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
+	files: { [key in string]: string },
 };
 
 export type JvmFilePresentation = {
@@ -5501,6 +5618,29 @@ export type MethodStat = {
 	total: number | null,
 };
 
+/**  Dependency entry of a module (Project Structure › Modules › Dependencies). */
+export type ModuleDependency = {
+	/**  `"library"` (references a `ProjectLibrary` by name or path) or `"module"` (references another module). */
+	kind?: string,
+	target?: string,
+	scope?: DependencyScope,
+	exported?: boolean,
+};
+
+/**  Per-module Project Structure overrides (SDK, language level, output paths, dependencies). */
+export type ModuleStructureSettings = {
+	/**  Module SDK home override; empty = inherit Project SDK. */
+	jdk?: string,
+	/**  Module language level override; empty = inherit Project language level. */
+	languageLevel?: string,
+	/**  Module compiler output directory override; empty = inherit Project compiler output. */
+	compilerOutput?: string,
+	/**  Module test compiler output directory override; empty = default. */
+	testCompilerOutput?: string,
+	/**  Additional module dependencies. */
+	dependencies?: ModuleDependency[],
+};
+
 export type NavigationFiles = {
 	paths: IpcPath[],
 	indexing: boolean,
@@ -5588,6 +5728,13 @@ export type NotebookSnapshot = {
 	nbformatMinor: number,
 	metadata: unknown,
 	cells: NotebookCell[],
+};
+
+/**  A notification button that runs one of the publishing plugin's commands. */
+export type NotificationAction = {
+	label: string,
+	command: string,
+	argument: string | null,
 };
 
 export type NotificationGroupSettings = {
@@ -5763,6 +5910,23 @@ export type PickItem = {
 	description: string | null,
 };
 
+/**  A plugin's before-commit check to run (`[[contributes.commitChecks]]`). */
+export type PluginCommitCheckRef = {
+	pluginId: string,
+	check: string,
+};
+
+/**  What a plugin's before-commit check found. */
+export type PluginCommitCheckResult = {
+	pluginId: string,
+	check: string,
+	/**  The check's declared title. */
+	title: string,
+	problems: CommitProblem[],
+	/**  The check could not run (the plugin failed, timed out or lacks `vcs.read`). */
+	error: string | null,
+};
+
 /**  A plugin's context key for `when` clauses (`value` is JSON text). */
 export type PluginContextKey = {
 	pluginId: string,
@@ -5787,7 +5951,9 @@ export type PluginEvent =
  *  The marketplace offers newer versions of installed plugins (announced
  *  once per set of versions).
  */
-{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string } | 
+{ type: "updatesAvailable"; updates: PluginUpdate[] } | { type: "notification"; pluginId: string; level: NotificationLevel; title: string; body: string; 
+/**  Buttons running the plugin's own commands (`ui.notify`). */
+actions: NotificationAction[] } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**
@@ -5822,6 +5988,8 @@ export type PluginEvent =
 { type: "copyToClipboard"; pluginId: string; text: string } | 
 /**  Open `url` (`http(s)://`) in the system browser. */
 { type: "openUrl"; pluginId: string; url: string } | 
+/**  A window command/event requests the normal File > Open flow. */
+{ type: "openProject"; pluginId: string; path: string; newWindow: boolean } | 
 /**
  *  A command waits for the user's answer: show `prompt`, then report it with
  *  `plugin_answer_prompt(prompt_id, …)`.
@@ -5830,7 +5998,12 @@ export type PluginEvent =
 /**  The call that asked gave up (cancelled, or its plugin stopped): close the prompt. */
 { type: "promptClosed"; promptId: string } | 
 /**  Bring the tool window of the plugin's view `view` to the front. */
-{ type: "revealView"; pluginId: string; view: string };
+{ type: "revealView"; pluginId: string; view: string } | 
+/**
+ *  A command needs the window's Commit view: answer with
+ *  `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
+ */
+{ type: "commitRequested"; pluginId: string; requestId: string; request: CommitRequest };
 
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
@@ -5868,6 +6041,12 @@ export type PluginInfo = {
 	publisher: string | null,
 	/**  The version an update replaced, to roll back to. */
 	previousVersion: string | null,
+};
+
+/**  A line a view's `process` body printed. */
+export type PluginOutputLine = {
+	stderr: boolean,
+	text: string,
 };
 
 /**  A secret a plugin declares, and whether the user stored it. */
@@ -6167,6 +6346,18 @@ export type ProjectInfo_Serialize = {
 	unity?: UnityProjectInfo | null,
 };
 
+/**  A project-level library (Project Structure › Libraries). */
+export type ProjectLibrary = {
+	name?: string,
+	/**  Class archives (`.jar`) or class directories. */
+	classes?: string[],
+	/**  Source archives (`-sources.jar`, `.zip`) or source directories. */
+	sources?: string[],
+	/**  Documentation archives (`-javadoc.jar`) or directories. */
+	javadocs?: string[],
+	scope?: DependencyScope,
+};
+
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */
 	roots: SourceFolder[],
@@ -6188,10 +6379,23 @@ export type ProjectStructureSettings = {
 	contentRoots?: string[],
 	/**  "Exclude files": `;`-separated name patterns (`*.log;tmp*`) excluded at any depth. */
 	excludeFiles?: string,
+	/**  Project compiler output directory (relative to project root or absolute; empty = default). */
+	compilerOutput?: string,
+	/**  Per-module SDK, language level, output paths and dependency overrides, keyed by module relative path (`"."` for root). */
+	modules?: { [key in string]: ModuleStructureSettings },
+	/**  Project-level libraries (`JAR`s / class folders / source archives). */
+	libraries?: ProjectLibrary[],
+	/**  Module framework facets (`web`, `spring`, `jpa`). */
+	facets?: FacetConfig[],
+	/**  Packaging artifacts (`jar`, `war`, `warExploded`). */
+	artifacts?: ArtifactConfig[],
 };
 
-/**  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`, `ui.confirm`). */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null } | { kind: "confirm"; title: string; message: string };
+/**
+ *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
+ *  `ui.input-multiline`, `ui.confirm`).
+ */
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null };
 
 export type ProxyKind = "http" | "socks";
 
@@ -6956,6 +7160,32 @@ export type ServerStatus = "starting" | "ready" | "busy" | "crashed" | "stopped"
  */
 "misconfigured";
 
+export type ServiceLog = {
+	program: string,
+	args: string[],
+	toggles: ServiceLogToggle[],
+};
+
+/**  A switch above the log; when on, `args` are appended and the program restarts. */
+export type ServiceLogToggle = {
+	id: string,
+	label: string,
+	args: string[],
+};
+
+export type ServicePane = { kind: "message"; value: string } | 
+/**  Read-only text that can be selected and copied. */
+{ kind: "text"; value: string } | 
+/**  A program the IDE runs (with the plugin's `process:` grant), followed in a log. */
+{ kind: "log"; value: ServiceLog };
+
+/**  A tab of the Services pane of a plugin's node (`detail-provider.detail`). */
+export type ServiceTab = {
+	id: string,
+	label: string,
+	body: ServicePane,
+};
+
 /**  Exception filters of one session (see [`DebugManager::exception_filters`]). */
 export type SessionExceptionFilters = {
 	session: DebugSessionId,
@@ -7506,6 +7736,12 @@ export type SyntaxNode = {
 	hasError: boolean,
 };
 
+/**  A sortable table's order: the column and the direction. */
+export type TableSort = {
+	column: number,
+	descending: boolean,
+};
+
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
@@ -7865,7 +8101,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean };
 
 export type ViewField = {
 	key: string,
@@ -7886,6 +8122,10 @@ export type ViewTable = {
 	firstRow: number,
 	rows: string[][],
 	editable: boolean,
+	/**  The plugin opted its headers in to click-to-sort (a `table` body through `other`). */
+	sortable: boolean,
+	/**  The sort the plugin orders by (none: no arrow yet). */
+	sort: TableSort | null,
 };
 
 export type ViewTreeItem = {

@@ -101,6 +101,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     l?.go?.goroot,
     l?.go?.gopath,
     l?.go?.modules,
+    s.settings?.projectStructure?.libraries,
   ]);
 };
 
