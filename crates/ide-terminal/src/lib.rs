@@ -558,13 +558,15 @@ pub fn available_shells() -> Vec<String> {
 /// argument-less) POSIX shell is started as a login shell, like Terminal.app,
 /// the Git Bash shortcut and IDEA: login start-up is what loads the completions
 /// and prompts users expect (`/etc/profile`, Git for Windows' git-completion).
+/// `OPENIDEA_SKIP_SHELL_ENV` disables the implicit login argument; explicit
+/// arguments still take precedence, and interactive startup files still run.
 pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
     let shell = shell.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(default_shell);
     if !args.is_empty() {
         return (shell, args.to_vec());
     }
-    let login =
-        matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
+    let login = std::env::var_os("OPENIDEA_SKIP_SHELL_ENV").is_none()
+        && matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
     let args = if login { vec!["-l".to_owned()] } else { Vec::new() };
     (shell, args)
 }

@@ -16,8 +16,8 @@ use crate::types::{
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, commit_checks_bindings, details_bindings, file_actions_bindings, hover_bindings, indexing_bindings,
-    inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
+    indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
@@ -37,6 +37,7 @@ use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
 use details_bindings::openidea::plugin::detail_types as wit_dt;
+use endpoints_bindings::exports::openidea::plugin::endpoints_provider as wit_endpoints;
 use file_actions_bindings::exports::openidea::plugin::file_actions as wit_fa;
 use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
@@ -60,7 +61,15 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
+    /// Shows a notification; `actions` name commands the plugin declares.
+    fn notify(
+        &self,
+        client: Option<&str>,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<crate::NotificationAction>,
+    ) -> Result<(), HostError>;
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
         let _ = (client, text);
         Ok(())
@@ -68,6 +77,10 @@ pub trait HostApi: Send + Sync {
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let _ = (client, url);
         Ok(())
+    }
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let _ = (client, path, new_window);
+        Err(HostError::Invalid("opening projects is unavailable".into()))
     }
     /// Shows `prompt` in `client`'s window and waits for the answer until the
     /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
@@ -551,6 +564,7 @@ struct Exports {
     hover: Option<wit_hover::Guest>,
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
+    endpoints: Option<wit_endpoints::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -636,6 +650,7 @@ impl Runtime {
         let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
+        let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -678,6 +693,10 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let endpoints = match endpoint_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         Ok(Self {
             store,
             exports: Exports {
@@ -691,6 +710,7 @@ impl Runtime {
                 hover,
                 commit_checks,
                 inlay,
+                endpoints,
                 file_actions,
             },
             limits: setup.limits,
@@ -1095,6 +1115,37 @@ impl Runtime {
             Ok(v) => Ok(view_from_wit(v)),
             Err(e) => Err(CallError::Guest(e.into())),
         }
+    }
+
+    /// Project routes, with an explicit project invocation and background budget.
+    pub fn endpoints(&mut self, invocation: Invocation, timeout: Duration) -> Result<Vec<crate::Endpoint>, CallError> {
+        if self.exports.endpoints.is_none() {
+            return Err(CallError::missing_export("endpoints-provider"));
+        }
+        let result = self.call(invocation, timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let r = e
+                .endpoints
+                .as_ref()
+                .expect("checked")
+                .call_endpoints(&mut *store, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        let entries = result.map_err(|e| CallError::Guest(e.into()))?;
+        if entries.len() > MAX_PROVIDER_ITEMS {
+            return Err(CallError::Guest(GuestError::Invalid("too many endpoints".into())));
+        }
+        Ok(entries
+            .into_iter()
+            .map(|e| crate::Endpoint {
+                method: e.method,
+                path: e.path,
+                framework: e.framework,
+                handler: e.handler,
+                location: location_from_wit(e.location),
+            })
+            .collect())
     }
 
     /// The Services pane of node `key` of the plugin's services view `view`.
@@ -1638,6 +1689,7 @@ mod tests {
                 operations: Vec::new(),
                 open: None,
                 data: None,
+                file_action: false,
             };
             assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
         }

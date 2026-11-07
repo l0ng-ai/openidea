@@ -17,6 +17,7 @@
 
 mod api;
 pub mod commit;
+pub mod endpoints;
 mod hover;
 mod icon_extensions;
 mod icon_patterns;
@@ -323,6 +324,7 @@ pub struct PluginHost {
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
+    endpoints: Mutex<endpoints::Endpoints>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
     ledger: Mutex<Ledger>,
@@ -412,6 +414,7 @@ impl PluginHost {
             run_detectors,
             providers,
             navigation: Mutex::default(),
+            endpoints: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -913,6 +916,7 @@ impl PluginHost {
                 level: ide_plugin::NotificationLevel::Warning,
                 title: format!("{name} update rolled back"),
                 body: message.clone(),
+                actions: Vec::new(),
             },
         );
         self.changed();
@@ -2084,6 +2088,7 @@ impl PluginHost {
         }
         let Some(error) = actor.take_crash() else { return };
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         if error.starts_with(CANCELLED) {
             // Cancelled on request: restart on next use, no backoff.
             let mut meta = plugin.meta.lock();
@@ -2129,6 +2134,7 @@ impl PluginHost {
                     level: NotificationLevel::Warning,
                     title: format!("Plugin \u{201c}{}\u{201d} crashed", plugin.manifest().name),
                     body: format!("{error}\nIt restarts the next time it is needed."),
+                    actions: Vec::new(),
                 },
             );
         }
@@ -2156,6 +2162,7 @@ impl PluginHost {
 
     fn stop(&self, plugin: &LoadedPlugin) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         // A call waiting on the user would keep the join below waiting.
         self.shared.block_prompts(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
@@ -2168,6 +2175,7 @@ impl PluginHost {
 
     fn set_failed(&self, plugin: &LoadedPlugin, error: String) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
         let mut meta = plugin.meta.lock();
@@ -2177,6 +2185,7 @@ impl PluginHost {
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
         self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "disabled after failure: {error}");
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(false);
@@ -2190,6 +2199,7 @@ impl PluginHost {
                 level: NotificationLevel::Error,
                 title: format!("Plugin \u{201c}{}\u{201d} was disabled", plugin.manifest().name),
                 body: error.to_owned(),
+                actions: Vec::new(),
             },
         );
         self.changed();

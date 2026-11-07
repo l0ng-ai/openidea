@@ -3,6 +3,7 @@
  * declaration is projected onto the workbench, and how its items appear on
  * the plugin details page. One `defineUiPoint` per contribution type.
  */
+import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
 import type { PluginInfo, ThemeDef } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
@@ -14,6 +15,7 @@ import { addIconTheme, iconThemeKey, selectIconTheme, useSelectedIconTheme } fro
 import { defineUiPoint, type UiItem } from "./projection";
 import { SecretsDetails, type SecretDecl } from "./secrets";
 import { defineViewUiPoints, pluginSettingsPageId } from "./uiPoints";
+import { pluginsBackend } from "./backend";
 import { isLive, runPluginCommand } from "./store";
 import styles from "./PluginsPage.module.css";
 
@@ -141,9 +143,45 @@ function IconThemesDetails({ plugin, items }: { plugin: PluginInfo; items: UiIte
   );
 }
 
+const endpointPlugins = new Map<string, { declarations: number; dispose: () => void }>();
+
+/** One endpoint provider per plugin, however many `[[contributes.endpoints]]` it declares. */
+function providePluginEndpoints(pluginId: string): () => void {
+  let entry = endpointPlugins.get(pluginId);
+  if (!entry) {
+    const dispose = registerEndpointProvider({
+      id: `plugin:${pluginId}`,
+      endpoints: async (root): Promise<EndpointEntry[]> =>
+        (await pluginsBackend().endpoints(pluginId)).map((e) => ({
+          method: e.method ?? "*",
+          url: e.path,
+          framework: e.framework,
+          handler: e.handler ?? undefined,
+          controller: e.framework,
+          methodName: e.handler ?? "",
+          pluginId,
+          path: e.location.path,
+          rel: e.location.path.startsWith(`${root}/`) ? e.location.path.slice(root.length + 1) : e.location.path,
+          line: e.location.range.start.line,
+          col: e.location.range.start.col,
+        })),
+    });
+    entry = { declarations: 0, dispose };
+    endpointPlugins.set(pluginId, entry);
+  }
+  const held = entry;
+  held.declarations++;
+  return () => {
+    if (--held.declarations > 0) return;
+    held.dispose();
+    endpointPlugins.delete(pluginId);
+  };
+}
+
 /** Registers the client side of every first-party UI point. */
 export function defineBuiltinUiPoints(): () => void {
   const disposers = [
+    defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",
       project: ({ pluginId, decl }, { plugin }) =>

@@ -715,10 +715,23 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String) {
-        self.shared
-            .sink
-            .emit(client, PluginEvent::Notification { plugin_id: self.id().to_owned(), level, title, body });
+    fn notify(
+        &self,
+        client: Option<&str>,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<ide_plugin::NotificationAction>,
+    ) -> Result<(), HostError> {
+        if !actions.is_empty() {
+            let commands = self.shared.ui.items("commands", Some(self.id()));
+            if let Some(a) = actions.iter().find(|a| !commands.iter().any(|c| c.key == a.command)) {
+                return Err(HostError::NotFound(format!("the plugin declares no command {:?}", a.command)));
+            }
+        }
+        let plugin_id = self.id().to_owned();
+        self.shared.sink.emit(client, PluginEvent::Notification { plugin_id, level, title, body, actions });
+        Ok(())
     }
 
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
@@ -730,6 +743,14 @@ impl HostApi for PluginApi {
     fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
         let client = from_window(client, "open a URL")?;
         self.shared.sink.emit(Some(client), PluginEvent::OpenUrl { plugin_id: self.id().to_owned(), url });
+        Ok(())
+    }
+
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
+        let client = from_window(client, "open a project")?;
+        self.shared
+            .sink
+            .emit(Some(client), PluginEvent::OpenProject { plugin_id: self.id().to_owned(), path, new_window });
         Ok(())
     }
 
@@ -1419,6 +1440,27 @@ mod tests {
         api.storage_set(key, Some("small".into())).unwrap();
         api.storage_set("other", Some("value".into())).unwrap();
         assert_eq!(api.storage_get("other").unwrap().as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn notification_actions_run_the_plugins_own_commands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let _command = api.shared.ui.insert(ide_extension::UiContribution {
+            plugin_id: api.id().into(),
+            point: "commands".into(),
+            key: "run".into(),
+            decl: serde_json::json!({}),
+        });
+        let action = |command: &str| ide_plugin::NotificationAction {
+            label: "Run".into(),
+            command: command.into(),
+            argument: Some("a\nb".into()),
+        };
+        let notify = |actions| api.notify(Some("main"), NotificationLevel::Info, "Done".into(), "".into(), actions);
+        notify(vec![]).unwrap();
+        notify(vec![action("run")]).unwrap();
+        assert!(matches!(notify(vec![action("run"), action("other.command")]), Err(HostError::NotFound(_))));
     }
 
     #[test]

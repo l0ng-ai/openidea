@@ -88,6 +88,8 @@ pub enum Prompt {
     Input { prompt: String, value: Option<String>, multiline: bool },
     #[serde(rename_all = "camelCase")]
     Confirm { title: String, message: String },
+    #[serde(rename_all = "camelCase")]
+    PickDirectory { title: String, initial: Option<String> },
 }
 
 /// Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`).
@@ -642,4 +644,23 @@ pub enum ViewEvent {
     // A sortable table's header click: the column and the direction (leaves
     // as an `other` view-event, kind `sort`). See `TableSort`.
     Sort { column: u32, descending: bool },
+}
+
+/// A plugin's HTTP route declaration in a project.
+#[derive(Clone, Debug)]
+pub struct Endpoint {
+    pub method: Option<String>,
+    pub path: String,
+    pub framework: String,
+    pub handler: Option<String>,
+    pub location: Location,
+}
+
+/// A notification button that runs one of the publishing plugin's commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
 }

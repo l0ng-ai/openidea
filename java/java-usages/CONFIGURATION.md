@@ -91,7 +91,13 @@ changes; a fingerprint of working copies with unsaved changes covers edits befor
 they are saved. Opening or closing an editor, reconciling, building, and non-Java
 resource changes (configuration files are parsed by the client; metadata files are
 checked by timestamp) keep it. This is **snapshot invalidation**, not a fully
-incremental Java semantic index.
+incremental Java semantic index. A rebuild reuses each dependency JAR's metadata
+associations (up to 100,000 in all) while the JAR's timestamp and size and the project's
+classpath are unchanged: resolving a Spring Boot JAR's thousands of properties to library
+members takes seconds, and a source change cannot affect them.
+
+Find Usages shows the Java usages as soon as they are found, then adds the configuration
+ones when a rebuild of the snapshot takes longer.
 
 In YAML/properties, ⌘/Ctrl-hover underlines the whole key, hyphens and dots
 included, and doesn't open the documentation popup. Hover and Go to Definition share

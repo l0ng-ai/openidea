@@ -111,6 +111,10 @@ export class SeController {
     private readonly onChange: (s: SeSnapshot) => void,
   ) {}
 
+  invalidateEndpoints() {
+    this.signatures.delete("endpoints");
+  }
+
   run(req: SeRequest) {
     const gen = ++this.gen;
     this.disposed = false;
