@@ -393,6 +393,33 @@ pub fn plugin_answer_prompt(state: State<'_, AppState>, prompt_id: String, answe
     state.plugins.answer_prompt(&prompt_id, answer)
 }
 
+/// A window's answer to a plugin's `commitRequested`; false when the call no
+/// longer waits.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_answer_commit(
+    state: State<'_, AppState>,
+    request_id: String,
+    answer: ide_host::plugins::CommitAnswer,
+) -> bool {
+    state.plugins.answer_commit(&request_id, answer)
+}
+
+/// Runs plugins' before-commit checks on what `selection` commits, until
+/// `request` is cancelled.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_commit_checks(
+    window: Window,
+    state: State<'_, AppState>,
+    selection: ide_host::plugins::CommitSelection,
+    checks: Vec<ide_host::plugins::PluginCommitCheckRef>,
+    request: ide_core::RequestId,
+) -> IdeResult<Vec<ide_host::plugins::PluginCommitCheckResult>> {
+    let plugins = state.plugins.clone();
+    ide_host::plugins::commit::commit_checks(&state.host, plugins, window.label(), selection, checks, request).await
+}
+
 /// Gutter markers of plugin `line-markers` providers for an open document.
 #[tauri::command]
 #[specta::specta]

@@ -30,6 +30,7 @@ import { fuzzyMatch } from "./match";
 import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
+import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { useTreeDirectoryContext } from "./treeDirectoryContext";
@@ -116,6 +117,8 @@ export interface TreeProps<T> {
   rowClassName?: (node: T) => string | undefined;
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
+  /** Context key set while the tree itself has keyboard focus. */
+  focusContext?: string;
   empty?: ReactNode;
   /** Rows wider than the pane scroll horizontally instead of clipping. */
   horizontalScroll?: boolean;
@@ -591,6 +594,31 @@ export function Tree<T>(props: TreeProps<T>) {
     !!props.getDirectory && !emptyState,
   );
   const noMatch = !!query && matchMap.size === 0;
+
+  const { focusContext } = props;
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!focusContext || !element) return;
+    let focused = false;
+    const focus = () => {
+      focused = true;
+      setContext(focusContext, true);
+    };
+    const blur = () => {
+      if (!focused) return;
+      focused = false;
+      setContext(focusContext, false);
+    };
+    element.addEventListener("focus", focus);
+    element.addEventListener("blur", blur);
+    if (element.ownerDocument.activeElement === element) focus();
+    return () => {
+      element.removeEventListener("focus", focus);
+      element.removeEventListener("blur", blur);
+      // Removing a focused tree can skip blur, leaving its shortcuts active.
+      blur();
+    };
+  }, [emptyState, focusContext]);
 
   if (emptyState) return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
 

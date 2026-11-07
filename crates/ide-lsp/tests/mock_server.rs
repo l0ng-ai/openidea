@@ -1235,6 +1235,61 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
 }
 
+/// The whole workspace root deleted: the server can never start again
+/// (its cwd is gone), so the crash drops the entry instead of restarting.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_crash_below_a_deleted_workspace_root_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // A crash on a root that still exists restarts; removing it changes that.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    eventually(|| s.launches.load(Ordering::SeqCst) == 2).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    s.peer().kill();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 2, "no restart with a dead working directory");
+}
+
+/// The root deleted while a crash backoff is still sleeping: the pending
+/// restart must drop the server rather than leave a permanently "Crashed" row.
+#[tokio::test(flavor = "multi_thread")]
+async fn root_deleted_during_crash_backoff_drops_the_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+
+    // Crash with the root alive: "Crashed" is published before the backoff
+    // sleep, so removing the root here lands inside that window.
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    std::fs::remove_dir_all(&h.root).unwrap();
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1, "no restart with a dead working directory");
+}
+
+/// A manual restart with the root gone fails instead of spawning into a dead cwd.
+#[tokio::test(flavor = "multi_thread")]
+async fn restarting_below_a_deleted_workspace_root_fails() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let id = h.mgr.servers()[0].id;
+
+    std::fs::remove_dir_all(&h.root).unwrap();
+    let err = h.mgr.restart(id).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.message.contains("workspace root"), "{err:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn missing_server_reports_once() {
     let h = harness(&[("ghost", json!({}))]);
