@@ -841,7 +841,7 @@ export const commands = {
 	 *  SDK / library source folders shown under "External Libraries" in the Project view,
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
-	sdkProjectLibraries: () => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries")),
+	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
 	/**  Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path. */
 	sdkLocateTools: (names: string[], near: string | null) => typedError<LocatedTools, IdeError>(__TAURI_INVOKE("sdk_locate_tools", { names, near })),
 	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
@@ -947,12 +947,15 @@ export const commands = {
 	/**  A window vetoed the quit (user cancelled its unsaved-changes prompt). */
 	appCancelQuit: () => __TAURI_INVOKE<void>("app_cancel_quit"),
 	/**
-	 *  Sets the menu's labels / shortcut text and rebuilds it when they changed.
-	 *  Focusing another project window re-pushes the same shared menu; an identical
-	 *  config must not call `set_menu`, which redraws the macOS menu bar.
+	 *  Sets the menu's labels / shortcut text and updates the menu when the visible
+	 *  items changed. Shortcuts for actions that are not on the menu must not call
+	 *  `set_menu`, which redraws the macOS menu bar.
 	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
-	/**  Rebuilds the menu (e.g. after the recent-projects list changed). */
+	/**
+	 *  Updates the menu after the recent-projects list changed. Only the Open Recent
+	 *  submenu is rewritten when the rest of the menu is unchanged.
+	 */
 	menuRefresh: () => __TAURI_INVOKE<void>("menu_refresh"),
 	/**  The menu bar for a title bar drawn by the frontend (Windows). */
 	menuModel: () => __TAURI_INVOKE<MenuNode[]>("menu_model"),
@@ -3792,7 +3795,10 @@ export type FacetConfig = {
 	webRoot?: string,
 };
 
-export type FieldValue = { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
+export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyText"; value: {
+	text: string,
+	multiline: boolean,
+} } | { kind: "text"; value: string } | { kind: "multiline"; value: string } | { kind: "checkbox"; value: boolean } | { kind: "choice"; value: {
 	options: string[],
 	selected: string,
 } };
@@ -5516,6 +5522,8 @@ export type MavenProject = {
 
 /**  Build Tools › Maven. */
 export type MavenSettings = {
+	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
+	runnerJre?: string,
 	/**  Project-relative root POMs removed from the Maven project model. */
 	unlinkedProjects?: string[],
 	/**  Project-relative POMs outside the root reactor added as independent top-level projects. */
@@ -8127,7 +8135,7 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean };
+export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number };
 
 export type ViewField = {
 	key: string,

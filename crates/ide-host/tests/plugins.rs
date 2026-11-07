@@ -19,6 +19,7 @@ type Events = Arc<Mutex<Vec<(Option<String>, PluginEvent)>>>;
 /// What plugins see of the test project: real `Documents`, as in the IDE.
 struct TestWorkspace {
     root: PathBuf,
+    other_roots: Mutex<Vec<PathBuf>>,
     documents: Arc<ide_workspace::Documents>,
     trusted: bool,
     /// (producer, path) → published diagnostics.
@@ -35,6 +36,7 @@ impl TestWorkspace {
         );
         Arc::new(Self {
             root: root.to_path_buf(),
+            other_roots: Mutex::default(),
             documents: Arc::new(documents),
             trusted: true,
             diagnostics: Mutex::default(),
@@ -67,10 +69,13 @@ impl TestWorkspace {
 
 impl PluginWorkspace for TestWorkspace {
     fn projects(&self) -> Vec<PathBuf> {
-        vec![self.root.clone()]
+        std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
     fn buffer_text(&self, path: &Path) -> Option<String> {
         self.documents.text_of(path)
+    }
+    fn buffer_dirty(&self, path: &Path) -> bool {
+        self.documents.by_path(path).is_some_and(|doc| self.documents.is_dirty(doc).unwrap_or(false))
     }
     fn document(&self, path: &Path) -> Option<(u64, String)> {
         let snap = self.documents.snapshot(self.documents.by_path(path)?).ok()?;
@@ -122,6 +127,33 @@ fn theme_template() -> PathBuf {
 
 fn misbehave_pkg() -> PathBuf {
     repo().join("crates/ide-plugin/tests/fixtures/misbehave")
+}
+
+/// `misbehave` with `fs.read:<granted>` added to its capabilities.
+fn misbehave_granted(dir: &Path, granted: &Path) -> PathBuf {
+    let pkg = dir.join("misbehave-granted");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let path = granted.to_string_lossy().replace('\\', "/");
+    let required = format!("required = [\"project.read\", \"fs.read:{path}\"]");
+    let text = text.replace("required = [\"project.read\"]", &required);
+    std::fs::write(&manifest, text).unwrap();
+    pkg
+}
+
+/// `misbehave` requiring `capability` too, which is new in API 1.3.
+fn misbehave_with(dir: &Path, name: &str, capability: &str) -> PathBuf {
+    let pkg = dir.join(name);
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let required = format!("required = [\"project.read\", \"{capability}\"]");
+    let text = text
+        .replace("required = [\"project.read\"]", &required)
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"");
+    std::fs::write(&manifest, text).unwrap();
+    pkg
 }
 
 /// Whether `f` holds within 5 s. A call a slow runner keeps waiting behind
@@ -370,6 +402,153 @@ fn read_file_is_confined_to_the_project() {
     assert!(err.contains("no project is open"), "{err}");
     assert_eq!(f.run("misbehave", "root", None).unwrap().unwrap(), to_ipc(&f.project));
     assert_eq!(f.status("misbehave"), PluginStatus::Active);
+}
+
+/// `fs.read` reaches the granted paths and nothing else, through the real
+/// component: the same checks the runtime makes, against a real file system.
+#[test]
+fn fs_read_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "outside the project\n").unwrap();
+    // A sibling whose name starts with the grant's: not covered by it.
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    assert_eq!(f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap().unwrap(), "outside the project\n");
+    let err = f.run("misbehave", "fsread", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "the refusal names what to grant: {err}");
+    let err = f.run("misbehave", "fsread", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fsread", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let err = f.run("misbehave", "fsread", Some(shared.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a file"), "{err}");
+    let missing = shared.join("gone.txt");
+    let err = f.run("misbehave", "fsread", Some(missing.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("no such file"), "{err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.read-dir` lists a granted directory, sorted, and refuses the rest.
+#[test]
+fn fs_read_dir_lists_a_granted_directory() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(shared.join("zeta")).unwrap();
+    std::fs::write(shared.join("beta.txt"), "b").unwrap();
+    std::fs::write(shared.join("alpha.txt"), "a").unwrap();
+    f.install(&misbehave_granted(f._tmp.path(), &shared));
+
+    let listing = f.run("misbehave", "read-dir", Some(shared.to_str().unwrap())).unwrap().unwrap();
+    let lines: Vec<&str> = listing.lines().collect();
+    assert_eq!(lines, vec!["file alpha.txt", "file beta.txt", "dir zeta"], "{listing}");
+
+    // A file is not a directory, and a path outside the grant is refused.
+    let file = shared.join("alpha.txt");
+    let err = f.run("misbehave", "read-dir", Some(file.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("not a directory"), "{err}");
+    let err = f.run("misbehave", "read-dir", Some(f._tmp.path().to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "{err}");
+}
+
+/// `project.write` creates and replaces files under the project root, and never
+/// leaves it, through the real component.
+#[test]
+fn project_write_stays_inside_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-project-writer", "project.write"));
+
+    // A Run configuration: neither the file nor `.openidea/` exists yet.
+    assert_eq!(f.run("misbehave", "projwrite", Some(".openidea/run.toml")).unwrap(), None);
+    let conf = f.project.join(".openidea").join("run.toml");
+    assert_eq!(std::fs::read_to_string(&conf).unwrap(), "written inside the project\n");
+    // What it wrote reads back through the project.
+    assert_eq!(
+        f.run("misbehave", "read", Some(".openidea/run.toml")).unwrap().as_deref(),
+        Some("written inside the project\n")
+    );
+    // An absolute path inside the root lands in the same place.
+    let fresh = f.project.join("build").join("patch.txt");
+    assert_eq!(f.run("misbehave", "projwrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written inside the project\n");
+    // Replacing an existing file rewrites it whole.
+    assert_eq!(f.run("misbehave", "projwrite", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(f.project.join("src/notes.txt")).unwrap(), "written inside the project\n");
+    // Unsaved changes in an editor are not overwritten.
+    f.workspace.open("src/notes.txt", &[]);
+    f.workspace.type_text("src/notes.txt", "typed ");
+    let err = f.run("misbehave", "projwrite", Some("src/notes.txt")).unwrap_err();
+    assert!(err.contains("unsaved changes"), "{err}");
+    // Leaving the root is refused, and nothing is written.
+    let err = f.run("misbehave", "projwrite", Some("../escape.txt")).unwrap_err();
+    assert!(err.contains("outside the project root"), "{err}");
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
+}
+
+/// `fs.write` replaces files the grant covers and nothing else, through the
+/// real component.
+#[test]
+fn fs_write_reaches_only_the_granted_paths() {
+    let f = fixture(Limits::default());
+    let shared = f._tmp.path().join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    let notes = shared.join("notes.txt");
+    std::fs::write(&notes, "old\n").unwrap();
+    let bommed = shared.join("bom.txt");
+    std::fs::write(&bommed, b"\xef\xbb\xbfold").unwrap();
+    let sibling = f._tmp.path().join("shared-other");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let other = sibling.join("notes.txt");
+    std::fs::write(&other, "not the same directory\n").unwrap();
+    let secret = f._tmp.path().join("secret.txt");
+    std::fs::write(&secret, "keep me\n").unwrap();
+    let grant = format!("fs.write:{}", shared.to_string_lossy().replace('\\', "/"));
+    f.install(&misbehave_with(f._tmp.path(), "misbehave-writable", &grant));
+
+    // An existing file is replaced…
+    assert_eq!(f.run("misbehave", "fswrite", Some(notes.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "written by the plugin\n");
+    // …a new one is created…
+    let fresh = shared.join("fresh.txt");
+    assert_eq!(f.run("misbehave", "fswrite", Some(fresh.to_str().unwrap())).unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "written by the plugin\n");
+    // …and a file's encoding and BOM survive the write.
+    assert_eq!(f.run("misbehave", "fswrite", Some(bommed.to_str().unwrap())).unwrap(), None);
+    let bytes = std::fs::read(&bommed).unwrap();
+    assert!(bytes.starts_with(b"\xef\xbb\xbf"), "the BOM stays: {bytes:?}");
+    assert_eq!(String::from_utf8(bytes[3..].to_vec()).unwrap(), "written by the plugin\n");
+
+    // Outside the grant nothing changes.
+    let err = f.run("misbehave", "fswrite", Some(secret.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "the refusal names what to grant: {err}");
+    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "keep me\n");
+    let err = f.run("misbehave", "fswrite", Some(other.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.write:"), "a name prefix grants nothing: {err}");
+    let err = f.run("misbehave", "fswrite", Some("notes.txt")).unwrap_err();
+    assert!(err.contains("absolute"), "{err}");
+    let missing_parent = shared.join("conf").join("web.xml");
+    let err = f.run("misbehave", "fswrite", Some(missing_parent.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("directory does not exist"), "{err}");
+    // Writing a directory fails rather than replacing it.
+    assert!(f.run("misbehave", "fswrite", Some(shared.to_str().unwrap())).is_err(), "a directory is not a file");
+    assert!(shared.is_dir(), "the directory is still there");
+
+    // `fs.write` does not carry `fs.read`.
+    let err = f.run("misbehave", "fsread", Some(notes.to_str().unwrap())).unwrap_err();
+    assert!(err.contains("fs.read:"), "write does not imply read: {err}");
+    // A refusal is the plugin's to handle, like any other error it gets.
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes, info.stats.errors), (PluginStatus::Active, 0, 0), "{info:?}");
 }
 
 /// A missing capability is an error the plugin can handle, not a trap.
@@ -648,7 +827,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 10, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 14, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -1653,6 +1832,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     f.install(&official("git-toolbox"));
     let untrusted = Arc::new(TestWorkspace {
         root: f.project.clone(),
+        other_roots: Mutex::default(),
         documents: f.workspace.documents.clone(),
         trusted: false,
         diagnostics: Mutex::default(),
@@ -3564,4 +3744,122 @@ fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capab
         assert!(f.run("jobs", "open-project", Some(path)).is_err());
         assert!(!f.take_events().iter().any(|(_, event)| matches!(event, PluginEvent::OpenProject { .. })));
     }
+}
+
+#[test]
+fn plugin_readonly_fields_and_table_row_extensions_round_trip() {
+    let f = fixture(Limits::default());
+    f.install(&sample("tables"));
+    let view = f.host.render_view("tables", "fields", None, f.inv()).unwrap();
+    let ide_plugin::ViewBody::Form(fields) = view.body else { panic!("form") };
+    assert_eq!(fields[0].value, ide_plugin::FieldValue::Label("Merge request #42".into()));
+    assert_eq!(fields[1].value, ide_plugin::FieldValue::ReadonlyText { text: "Ada Lovelace".into(), multiline: false });
+    assert_eq!(
+        fields[2].value,
+        ide_plugin::FieldValue::ReadonlyText { text: "Ready for review\nAll checks passed".into(), multiline: true }
+    );
+    assert!(matches!(fields[3].value, ide_plugin::FieldValue::Text(_)));
+    for (event, status) in [
+        (ide_plugin::ViewEvent::TableSelect { row: 2 }, "select:2"),
+        (ide_plugin::ViewEvent::TableActivate { row: 2 }, "activate:2"),
+    ] {
+        f.take_events();
+        f.host.view_event("tables", "tables", event, f.inv()).unwrap();
+        assert!(f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::ViewChanged { plugin_id, view } if plugin_id == "tables" && view == "tables")));
+        assert_eq!(f.host.render_view("tables", "tables", None, f.inv()).unwrap().status.as_deref(), Some(status));
+    }
+}
+
+#[test]
+fn path_filtered_events_do_not_wake_idle_plugins_and_recheck_queued_filters() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(100)), ..Limits::default() });
+    f.install(&sample("path-events"));
+    f.run("test.path-events", "count", None).unwrap();
+    let matched = to_ipc(&f.project.join("config/app.yaml"));
+    let other = to_ipc(&f.project.join("src/main.rs"));
+    let deliver = |events| {
+        f.host.post_events(Some("main"), events);
+        f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+        assert!(f.host.wait_events(Duration::from_secs(10)));
+    };
+    std::thread::sleep(Duration::from_millis(150));
+    f.host.tick();
+    assert_eq!(f.status("test.path-events"), PluginStatus::Inactive);
+    let activations = f.host.info_of("test.path-events").unwrap().stats.activations;
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone()), WorkbenchEvent::FileSaved(other.clone())]);
+    assert_eq!(f.host.info_of("test.path-events").unwrap().stats.activations, activations);
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone()), WorkbenchEvent::FileSaved(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("2"));
+    assert!(f.run("test.path-events", "filter", Some("../*")).is_err());
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "invalid filter preserves previous one"
+    );
+
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    f.run("test.path-events", "filter", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    assert_eq!(
+        f.run("test.path-events", "count", None).unwrap().as_deref(),
+        Some("3"),
+        "queued event uses current filter"
+    );
+    deliver(vec![WorkbenchEvent::FileOpened(matched.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("3"));
+    f.run("test.path-events", "all", None).unwrap();
+    deliver(vec![WorkbenchEvent::FileOpened(other.clone())]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::FileOpened(other.clone())]);
+    f.run("test.path-events", "off", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(f.host.wait_events(Duration::from_secs(10)));
+    deliver(vec![WorkbenchEvent::FileOpened(other)]);
+    assert_eq!(f.run("test.path-events", "count", None).unwrap().as_deref(), Some("4"));
+
+    f.host.set_enabled("test.path-events", false).unwrap();
+    assert!(!f.host.event_kinds().contains(&WorkbenchEvent::FileOpened(String::new()).kind()));
+}
+
+#[test]
+fn project_lookup_works_in_commands_and_provider_calls_without_an_invocation_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("path-events"));
+    let path = f.project.join("src/notes.txt");
+    assert_eq!(f.run("test.path-events", "project", Some(&to_ipc(&path))).unwrap(), Some(to_ipc(&f.project)));
+    assert_eq!(f.run("test.path-events", "project", Some("src/notes.txt")).unwrap(), None);
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&f.project.with_extension("other").join("a")))).unwrap(),
+        None
+    );
+    let doc = ide_plugin::ProviderDocument { path, language: "text".into(), version: 1, text: "one".into() };
+    let hovers = f.host.provide_hover(&doc, ide_core::Pos::new(0, 0));
+    assert_eq!(hovers.len(), 1);
+    assert_eq!(hovers[0].markdown, to_ipc(&f.project));
+    let nested = f.project.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    f.workspace.other_roots.lock().push(nested.clone());
+    assert_eq!(
+        f.run("test.path-events", "project", Some(&to_ipc(&nested.join("new.txt")))).unwrap(),
+        Some(to_ipc(&nested))
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&nested, f.project.join("alias")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("alias/new.txt")))).unwrap(),
+            Some(to_ipc(&nested))
+        );
+        std::os::unix::fs::symlink(f._tmp.path(), f.project.join("outside")).unwrap();
+        assert_eq!(
+            f.run("test.path-events", "project", Some(&to_ipc(&f.project.join("outside/new.txt")))).unwrap(),
+            None
+        );
+    }
+    f.host.set_capability("test.path-events", "project.read", false).unwrap();
+    assert!(f.run("test.path-events", "project", Some(&to_ipc(&doc.path))).unwrap_err().contains("project.read"));
+    f.host.set_capability("test.path-events", "events", false).unwrap();
+    assert!(f.run("test.path-events", "filter", Some("*")).unwrap_err().contains("events"));
 }

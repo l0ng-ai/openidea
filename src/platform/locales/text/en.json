@@ -189,5 +189,7 @@
   "Java compiler output must be inside its module: {output}": "Java compiler output must be inside its module: {output}",
   "Cannot choose a directory": "Cannot choose a directory",
   "Open in HTTP Client": "Open in HTTP Client",
-  "Cannot generate the HTTP request": "Cannot generate the HTTP request"
+  "Cannot generate the HTTP request": "Cannot generate the HTTP request",
+  "Use Project JDK": "Use Project JDK",
+  "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence.": "JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
 }
