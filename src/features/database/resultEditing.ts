@@ -81,13 +81,10 @@ const aggregatesOf = (driver: DbDriver) =>
 
 /** Length of the identifier chain (`a`, `a.b`, `a.b.c`…, dots included) the tokens start with. */
 const chainLength = (tokens: readonly Token[]): number => {
-  let n = 0;
-  for (;;) {
-    if (!isIdent(tokens[n])) return n;
-    n++;
-    if (tokens[n]?.kind === "punct" && tokens[n]!.text === "." && isIdent(tokens[n + 1])) n += 2;
-    else return n;
-  }
+  if (!isIdent(tokens[0])) return 0;
+  let n = 1;
+  while (tokens[n]?.kind === "punct" && tokens[n]!.text === "." && isIdent(tokens[n + 1])) n += 2;
+  return n;
 };
 
 /** One select list item: an identifier chain, plain or ending in `.*`, or an expression. */

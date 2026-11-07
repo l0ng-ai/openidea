@@ -48,6 +48,16 @@ describe("resultEditability", () => {
     expect(editable("SELECT id FROM users").items).toEqual([{ kind: "column", qualifier: null, name: "id" }]);
   });
 
+  it("separates an implicit alias from a schema-qualified table", () => {
+    expect(editable("SELECT u.id, u.name FROM public.users u")).toMatchObject({
+      schema: "public",
+      table: "users",
+      alias: "u",
+    });
+    expect(readonly("SELECT a.id FROM s1.users a JOIN s2.users b USING (id)")).toBe("joined");
+    expect(readonly("SELECT a.id FROM s1.users a, s2.users b")).toBe("joined");
+  });
+
   it("keeps a quoted identifier a column reference", () => {
     expect(editable('SELECT "name", "user id" FROM "my table"', "sqlite").items).toEqual([
       { kind: "column", qualifier: null, name: "name" },
