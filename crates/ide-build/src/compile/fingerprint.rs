@@ -175,12 +175,16 @@ pub fn launch_fingerprint(
     let parameters =
         serde_json::to_string(&(root, module, test, steps, environment, inherited_hash.finish(), projects))
             .map_err(|e| IdeError::internal(e.to_string()))?;
-    let mut files = BTreeMap::new();
+    let started = std::time::Instant::now();
+    let mut files: BTreeMap<PathBuf, Option<Stamp>> = BTreeMap::new();
     for path in inputs {
         scan(root, &path, &mut files, &mut HashSet::new(), cancel)?;
     }
+    let bytes: u64 = files.values().flatten().map(|(len, _, _)| *len).sum();
     // Store project inputs relative to the project, including each file's relative path.
-    let files = files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect();
+    let files: BTreeMap<PathBuf, Option<Stamp>> =
+        files.into_iter().map(|(p, stamp)| (p.strip_prefix(root).unwrap_or(&p).to_path_buf(), stamp)).collect();
+    tracing::debug!(files = files.len(), bytes, elapsed_ms = started.elapsed().as_millis(), "Launch fingerprint");
     Ok(Some(LaunchFingerprint { version: 2, parameters, files }))
 }
 
