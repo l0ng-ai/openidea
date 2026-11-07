@@ -395,6 +395,11 @@ fn canonical_path(path: &Path) -> IdeResult<PathBuf> {
     let mut resolved = PathBuf::new();
     for component in std::path::absolute(path)?.components() {
         match component {
+            std::path::Component::Prefix(_) => {
+                // A Windows prefix alone (e.g. \\?\C:) is not the volume's root directory.
+                resolved.push(component);
+                continue;
+            }
             std::path::Component::ParentDir => {
                 resolved.pop();
             }
@@ -1409,6 +1414,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = PathBuf::from(format!(r"\\?\{}", dunce::canonicalize(tmp.path()).unwrap().display()));
         check_prepared_paths(&root);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn resolves_windows_roots_before_existing_and_missing_ancestors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plain = dunce::canonicalize(tmp.path()).unwrap();
+        let verbatim = fs::canonicalize(tmp.path()).unwrap();
+        fs::create_dir(plain.join("source")).unwrap();
+        for root in [&plain, &verbatim] {
+            for relative in ["source", "cache/tomcat/runtime", "source/../cache/tomcat/runtime"] {
+                let expected =
+                    if relative == "source" { plain.join("source") } else { plain.join("cache/tomcat/runtime") };
+                assert_eq!(canonical_path(&root.join(relative)).unwrap(), expected);
+            }
+            let anchor: PathBuf = root.components().take(2).collect();
+            assert_eq!(canonical_path(&anchor).unwrap(), dunce::canonicalize(anchor).unwrap());
+        }
+        assert!(!plain.join("cache").exists());
     }
     #[test]
     fn requires_existing_optional_connectors_and_keeps_http_separate_from_tls() {
