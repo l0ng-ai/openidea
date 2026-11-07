@@ -221,7 +221,11 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
                   <ItemIcon item={item} />
                   <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />
-                  {item.preview && <span className={styles.preview}>{item.preview}</span>}
+                  {item.preview && (
+                    <span className={styles.preview} title={item.preview}>
+                      {item.preview}
+                    </span>
+                  )}
                   <span className={styles.spacer} />
                   {item.detail && <span className={styles.detail}>{item.detail}</span>}
                   {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}

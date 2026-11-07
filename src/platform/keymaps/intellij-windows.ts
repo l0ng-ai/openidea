@@ -196,7 +196,8 @@ export const intellijWindows: Record<string, string[]> = {
   "window.previous": ["Ctrl+Alt+["],
   "file.reloadFromDisk": ["Ctrl+Alt+Y"],
   // Before the project view's Ctrl+Shift+C (Copy Absolute Path), which wins there.
-  "editor.copyPath": ["Ctrl+Shift+C"],
+  "editor.copyPath": [],
+  "editor.copyPathReference": ["Ctrl+Shift+C"],
 
   // Project view (when: projectViewFocus)
   "project.newFile": ["Alt+Insert"],

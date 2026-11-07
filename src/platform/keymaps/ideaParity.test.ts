@@ -26,7 +26,7 @@ describe("IDEA keymap parity", () => {
     ["refactor.inline", ["Meta+Alt+N"], ["Ctrl+Alt+N"]],
     ["debug.resume", ["Meta+Alt+R", "F9"], ["F9"]],
     ["code.quickDefinition", ["Alt+Space", "Meta+Y"], ["Ctrl+Shift+I"]],
-    ["editor.copyPath", ["Meta+Shift+C"], ["Ctrl+Shift+C"]],
+    ["editor.copyPathReference", ["Meta+Shift+C"], ["Ctrl+Shift+C"]],
     ["project.open", ["F4", "Meta+Down"], ["F4"]],
     ["project.delete", ["Delete", "Backspace", "Meta+Backspace"], ["Delete"]],
     ["file.reloadFromDisk", ["Meta+Alt+Y"], ["Ctrl+Alt+Y"]],
@@ -95,7 +95,7 @@ describe("IDEA keymap parity", () => {
   it.each([intellijMacos, intellijWindows])("lets scoped actions win shared keys", (km) => {
     order(km, "code.splitLine", "http.runRequest");
     order(km, "code.splitLine", "db.execute");
-    order(km, "editor.copyPath", "project.copyAbsolutePath");
+    order(km, "editor.copyPathReference", "project.copyAbsolutePath");
     order(km, "file.reloadFromDisk", "project.reloadFromDisk");
     order(km, "code.unfold", "project.expandAll");
     order(km, "code.fold", "project.collapseAll");

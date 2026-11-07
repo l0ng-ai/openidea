@@ -6563,5 +6563,12 @@
   "JDK used by Run/Debug for this module. Maven and Gradle manage their own compiler JDK.": "此模块运行和调试使用的 JDK。编译 JDK 由 Maven 和 Gradle 管理。",
   "Remove Module Overrides": "移除模块覆盖设置",
   "Java compiler output must be inside its module: {output}": "Java 编译输出必须位于所属模块目录内：{output}",
-  "Cannot choose a directory": "无法选择目录"
+  "Cannot choose a directory": "无法选择目录",
+  "Path From Source Root": "相对于源根的路径",
+  "Copy Path From Source Root": "复制相对于源根的路径",
+  "Path with line number": "带行号的路径",
+  "Copy Path with Line Number": "复制带行号的路径",
+  "Reference": "引用",
+  "Resolving reference…": "正在解析引用…",
+  "Copied {text}": "已复制 {text}"
 }
