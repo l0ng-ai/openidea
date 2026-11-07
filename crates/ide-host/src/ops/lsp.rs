@@ -587,7 +587,7 @@ pub async fn lsp_code_action_query(
     Ok(result)
 }
 
-/// Resolves a code action's edit without applying it (intention preview).
+/// Resolves a code action's edit without applying it.
 pub async fn lsp_resolve_code_action(
     host: &Host,
     window: &str,

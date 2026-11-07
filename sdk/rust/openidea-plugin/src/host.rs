@@ -797,11 +797,11 @@ pub fn open_url(url: &str) -> Result<(), Error> {
     imp::open_url(url)
 }
 
-/// Shows a list in the window the current command or event came from and
-/// waits for the key of the chosen item, or `None` when the user dismisses
-/// it. Needs no capability; [`Error::Invalid`] outside a command or event of a
-/// window (and in editor providers). The wait doesn't count against the
-/// call's time budget, but the plugin handles nothing else meanwhile.
+/// Shows a list and waits for the chosen key, or `None` when dismissed.
+/// Works in a command/event of a window, or while resolving a selected code
+/// or file action in its editor's window; [`Error::Invalid`] otherwise.
+/// Needs no capability. Waiting doesn't count against the call's budget,
+/// but the plugin handles nothing else meanwhile.
 pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
     imp::pick(title, items)
 }
@@ -818,7 +818,8 @@ pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error>
 }
 
 /// Asks for text over several lines, pre-filled with `value`; `None` when
-/// dismissed. Same rules as [`input`]; the dialog confirms on Cmd/Ctrl+Enter.
+/// dismissed. Only from a command or event of a window; the dialog confirms
+/// on Cmd/Ctrl+Enter.
 pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
     imp::input_multiline(prompt, value)
 }
@@ -949,7 +950,7 @@ pub mod storage {
 pub use imp::{event as __event, range_from as __range_from, range_to as __range_to};
 
 /// Chooses a directory on the UI machine. `None` when dismissed; no capability.
-/// Same window/command/event rules as [`pick`].
+/// Only from a command or event of a window; waiting is excluded from the budget.
 pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
     imp::pick_directory(title, initial)
 }
