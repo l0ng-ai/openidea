@@ -182,6 +182,10 @@ mod imp {
         wit::workspace::projects().map_err(error)
     }
 
+    pub fn project_of(path: &str) -> Option<ProjectRes> {
+        wit::workspace::project_of(path)
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         p.root().map_err(error)
     }
@@ -276,6 +280,10 @@ mod imp {
                 })
                 .collect(),
         }
+    }
+
+    pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+        wit::events::subscribe_paths(kind, &globs.iter().map(|g| (*g).to_owned()).collect::<Vec<_>>()).map_err(error)
     }
 
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
@@ -621,6 +629,12 @@ pub fn projects() -> Result<Vec<Project>, Error> {
     Ok(imp::projects()?.into_iter().map(|inner| Project { inner }).collect())
 }
 
+/// The deepest open project containing an absolute document path, including in providers.
+/// Obtaining the handle needs no capability; reading it still needs `project.read`.
+pub fn project_of(path: &str) -> Option<Project> {
+    imp::project_of(path).map(|inner| Project { inner })
+}
+
 /// A file open in an editor.
 pub struct TextEditor {
     inner: imp::EditorRes,
@@ -788,6 +802,13 @@ pub fn reveal_view(view: &str) -> Result<(), Error> {
 /// a change of language.
 pub fn locale() -> String {
     imp::locale()
+}
+
+/// Subscribe to project-relative path globs for file-opened or file-saved.
+/// Replaces the previous filter. Empty globs pause delivery; `subscribe` restores all paths.
+/// Requires `events`. Register during activation before the events you want to observe.
+pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+    imp::subscribe_paths(kind, globs)
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
