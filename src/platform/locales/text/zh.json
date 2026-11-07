@@ -448,6 +448,8 @@
   "Checkout Tag or Revision": "签出标签或修订",
   "Checkout Tag or Revision…": "签出标签或修订…",
   "Checkout branch": "签出分支",
+  "Overwrite existing branch": "覆盖现有分支",
+  "Branch '{n}' already exists": "分支 '{n}' 已存在",
   "Checks out the selected pull request, a number given as argument, or asks for one.": "签出所选拉取请求或参数指定编号的拉取请求，否则询问编号。",
   "Cherry-Pick": "拣选",
   "Children": "子项",

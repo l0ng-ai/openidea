@@ -268,8 +268,9 @@ pub async fn vcs_create_branch(
     name: String,
     start: Option<String>,
     checkout: bool,
+    overwrite: Option<bool>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_create_branch(&state.host, window.label(), repo, name, start, checkout).await
+    ide_host::ops::vcs::vcs_create_branch(&state.host, window.label(), repo, name, start, checkout, overwrite).await
 }
 
 /// Undo Commit: moves HEAD back to the commit's parent, keeping its changes staged.
