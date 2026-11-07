@@ -692,8 +692,9 @@ export async function startRun(
     await stopSession(session.id);
     stopping.push(session.id);
   }
-  // The new process starts once the old one is gone (it may still hold a port or a lock).
-  await waitForExit(stopping);
+  // The new process starts once the old one is gone (it may still hold a port or a lock). As in
+  // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
+  await waitForExit(stopping, null);
   session ??= state.sessions.find((s) => s.config.id === config.id && !busy(s));
 
   try {
@@ -1061,8 +1062,8 @@ export async function stopSession(sessionId: string): Promise<void> {
   }
 }
 
-/** Resolves once the given sessions' processes exited (or after `timeoutMs`). */
-export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): Promise<void> {
+/** Resolves once the given sessions' processes exited (or after `timeoutMs`, unless `null`). */
+export function waitForExit(sessionIds: readonly string[], timeoutMs: number | null = 10_000): Promise<void> {
   const live = () =>
     sessionIds.some((id) => {
       const s = getSession(id);
@@ -1075,7 +1076,7 @@ export function waitForExit(sessionIds: readonly string[], timeoutMs = 10_000): 
       unsubscribe();
       resolve();
     };
-    const timer = setTimeout(done, timeoutMs);
+    const timer = timeoutMs === null ? undefined : setTimeout(done, timeoutMs);
     const unsubscribe = useRun.subscribe(() => {
       if (!live()) done();
     });

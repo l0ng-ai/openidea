@@ -142,13 +142,13 @@ export function RunWidget() {
         )}
         {count > 0 &&
           (stopping ? (
-            // Between Stop and the exit: a spinner says the click landed and the process is
-            // shutting down; a click again still kills it.
+            // Between Stop and the exit: a spinner says the process is shutting down, and the
+            // button kills it on the next click (IDEA's Stop turns into Kill process).
             <button
               type="button"
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop, styles.widgetStopping)}
-              title={tx`Stopping '${stopName ?? ""}'…`}
-              aria-label={tx`Stopping '${stopName ?? ""}'`}
+              title={tx`Kill process`}
+              aria-label={tx`Kill process`}
               onClick={() => void executeAction("run.stop", "widget")}
             >
               <Spinner size={14} />

@@ -78,7 +78,7 @@ export async function updateApplication(session: UpdateSession, mode: string): P
         await executeAction("run.debugConfig", config);
       } else if (debugging) {
         await stopSession(session.id);
-        await waitForExit([session.id]);
+        await waitForExit([session.id], null);
         await executeAction("run.debugConfig", config);
       } else await startRun(config, session.id);
       return;

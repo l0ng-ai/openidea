@@ -640,8 +640,8 @@ impl ProcessManager {
         let entry = self.entry(id)?;
         let already_stopping = entry.stopping.swap(true, Ordering::AcqRel);
         let Some(pid) = *entry.pid.lock() else { return Ok(()) };
-        // "Exited" is reported while a group that ignored its interrupt may still be alive
-        // (the waiter gives up after its own bound): a Stop must still be able to kill it.
+        // A run that ended by itself can leave members of its group behind: a Stop must
+        // still be able to reach them.
         if entry.exited.load(Ordering::Acquire) && !group_alive(pid, &entry) {
             return Ok(());
         }
@@ -1069,14 +1069,11 @@ fn spawn_pump(
         // A stopped run is over when the whole process group is gone, not when the child we
         // spawned exits: a shell or `mvn` can end while the application it started keeps its
         // port, and reporting "finished" then would let Run start into an occupied port.
-        // `stop_with_grace` kills the group after its grace period, so this is bounded.
+        // A second Stop kills the group, which ends this wait.
         #[cfg(unix)]
         if entry.stopping.load(Ordering::Acquire)
             && let Some(pid) = *entry.pid.lock()
         {
-            // The session is over only when the whole group is gone: a child that exited
-            // early can leave the program it started holding the port. A second Stop kills
-            // the group, which ends this wait.
             while group_alive(pid, &entry) {
                 std::thread::sleep(Duration::from_millis(50));
             }

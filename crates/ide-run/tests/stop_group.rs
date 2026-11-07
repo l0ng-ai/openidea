@@ -87,8 +87,8 @@ fn a_first_stop_does_not_kill_a_program_that_is_still_shutting_down() {
     let tmp = tempfile::tempdir().unwrap();
     let (sink, events) = channel_sink();
     let pm = ProcessManager::new();
-    // Ignores SIGINT, then exits by itself after 2 s: a Spring Boot shutdown that outlives
-    // the old 3 s "grace" would have been SIGKILLed (exit code 137) under the old logic.
+    // Ignores SIGINT, then exits by itself after 2 s, like a slow Spring Boot shutdown: a first
+    // Stop waits for it instead of killing it (exit code 137).
     let script = tmp.path().join("slow.py");
     std::fs::write(
         &script,
