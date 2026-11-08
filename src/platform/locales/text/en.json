@@ -502,5 +502,11 @@
   "Choose the projects to link to this workspace.": "Choose the projects to link to this workspace.",
   "Already linked": "Already linked",
   "Searching for projects…": "Searching for projects…",
-  "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.": "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again."
+  "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.": "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.",
+  "Toolchains file": "Toolchains file",
+  "Passed as -t; selects the JDKs Maven compiles with.": "Passed as -t; selects the JDKs Maven compiles with.",
+  "Select Maven toolchains.xml": "Select Maven toolchains.xml",
+  "dev,integration": "dev,integration",
+  "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.": "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.",
+  "Active profiles": "Active profiles"
 }

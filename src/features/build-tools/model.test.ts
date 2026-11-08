@@ -184,6 +184,19 @@ describe("Maven tree", () => {
 describe("Maven runs", () => {
   const core = maven.projects[1]!;
 
+  it.each([["-P", "prod"], ["-Pprod"], ["--activate-profiles", "prod"], ["--activate-profiles=prod"]])(
+    "keeps explicit Maven profiles %j",
+    (...profiles) => {
+      const goals = ["test", ...profiles];
+      const config = mavenGoalConfig(core, goals, maven, {
+        offline: false,
+        skipTests: false,
+        profiles: { ci: true, dev: false },
+      });
+      expect(config.args).toEqual(goals);
+    },
+  );
+
   it("passes goals, offline, skip tests and changed profiles", () => {
     expect(profilesArg(maven.profiles, {})).toBeNull();
     expect(profilesArg(maven.profiles, { ci: true, dev: false })).toBe("!dev,ci");

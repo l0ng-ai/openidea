@@ -546,7 +546,7 @@ export function MavenPage() {
         <Row
           label="Active profiles"
           htmlFor={`${id}-profiles`}
-          hint="Comma-separated Maven profiles passed as -P; empty uses the POM/settings defaults."
+          hint="Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles."
         >
           <Input
             id={`${id}-profiles`}
@@ -554,7 +554,7 @@ export function MavenPage() {
             className={styles.pathInput}
             value={activeProfiles}
             placeholder="dev,integration"
-            onChange={(e) => setActiveProfiles(e.target.value.trim())}
+            onChange={(e) => setActiveProfiles(e.target.value)}
             aria-label="Active profiles"
           />
         </Row>

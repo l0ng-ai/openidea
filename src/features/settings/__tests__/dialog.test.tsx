@@ -134,6 +134,22 @@ describe("Settings dialog", () => {
     );
   });
 
+  it("persists Maven toolchains and profiles in project settings", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Toolchains file"), {
+      target: { value: "config files/toolchains.xml" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Active profiles"), { target: { value: "a, b,!c" } });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["project", "languages.java.maven.toolchains", '"config files/toolchains.xml"'],
+        ["project", "languages.java.maven.activeProfiles", '"a, b,!c"'],
+      ]),
+    );
+  });
+
   it("finds the Maven active profiles setting", async () => {
     useProject.setState({ project: { root: "/project" } as never });
     const dialog = await openDialog("build.maven");

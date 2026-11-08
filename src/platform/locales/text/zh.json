@@ -6847,6 +6847,6 @@
   "Toolchains file": "Toolchains 文件",
   "Passed as -t; selects the JDKs Maven compiles with.": "以 -t 传入，用于选择 Maven 编译使用的 JDK。",
   "Select Maven toolchains.xml": "选择 Maven toolchains.xml",
-  "Comma-separated Maven profiles passed as -P; empty uses the POM/settings defaults.": "以逗号分隔的 Maven profiles，通过 -P 传入；留空使用 POM/settings 默认值。",
-  "dev,integration": "开发,集成"
+  "dev,integration": "开发,集成",
+  "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.": "以逗号分隔的 profiles（-P），与 Maven 工具窗口中的选择合并；!id 排除指定 profile。运行配置自身的 -P 会替代这些 profiles。"
 }

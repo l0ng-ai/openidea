@@ -477,6 +477,101 @@ fn maven_options_carry_active_profiles_into_the_command_line() {
 }
 
 #[test]
+fn maven_profile_and_toolchain_overrides_accept_every_option_form() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.active_profiles = "a".into();
+    s.languages.java.maven.toolchains = "config files/toolchains.xml".into();
+    let toolchains = tmp.path().join("config files/toolchains.xml").to_string_lossy().into_owned();
+    assert_eq!(maven_options(tmp.path(), &s), ["-t", &toolchains, "-P", "a"]);
+    for own in [
+        vec!["-P", "b,!c", "-t", "own file.xml"],
+        vec!["-Pb,!c", "-town file.xml"],
+        vec!["--activate-profiles", "b,!c", "--toolchains", "own file.xml"],
+        vec!["--activate-profiles=b,!c", "--toolchains=own file.xml"],
+    ] {
+        let mut args = own.clone();
+        args.push("test");
+        let mut config = run("maven", "mvn", &args);
+        config.detected = false;
+        for _ in 0..3 {
+            apply_to_run_configs(std::slice::from_mut(&mut config), tmp.path(), &s);
+            assert_eq!(config.args, args, "configuration options win: {own:?}");
+        }
+    }
+}
+
+#[test]
+fn maven_goal_profiles_combine_settings_and_checkboxes_but_keep_explicit_overrides() {
+    use crate::apply::prepare_maven_run;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.active_profiles = "a".into();
+    s.languages.java.maven.toolchains = "config files/toolchains.xml".into();
+    let mut config = run("maven", "mvn", &["test", "-Pb,!c"]);
+    config.id = "maven:goal:pom.xml:test".into();
+    config.detected = false;
+    let mut expected = maven_options(tmp.path(), &s);
+    expected.extend(["test".into(), "-Pb,!c".into()]);
+    for _ in 0..3 {
+        prepare_maven_run(&mut config, tmp.path(), &s);
+        assert_eq!(config.args, expected);
+        apply_to_run_configs(std::slice::from_mut(&mut config), tmp.path(), &s);
+        assert_eq!(config.args, expected);
+    }
+    s.languages.java.maven.active_profiles = "new".into();
+    prepare_maven_run(&mut config, tmp.path(), &s);
+    assert_eq!(&config.args[2..], ["-P", "new", "test", "-Pb,!c"]);
+
+    for own in
+        [vec!["-P", "prod"], vec!["-Pprod"], vec!["--activate-profiles", "prod"], vec!["--activate-profiles=prod"]]
+    {
+        let mut args = vec!["test"];
+        args.extend(own);
+        let mut config = run("maven", "mvn", &args);
+        config.id = format!("maven:goal:pom.xml:{}", args.join(" "));
+        config.detected = false;
+        for _ in 0..3 {
+            prepare_maven_run(&mut config, tmp.path(), &s);
+            assert_eq!(&config.args[2..], args);
+        }
+    }
+}
+
+#[test]
+fn maven_launch_refreshes_attached_and_long_settings_prefixes() {
+    use crate::apply::prepare_maven_run;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("pom.xml"), "<project/>").unwrap();
+    let mut s = Settings::default();
+    s.languages.java.maven.active_profiles = "new".into();
+    s.languages.java.maven.toolchains = "new toolchains.xml".into();
+    for prefix in [
+        vec!["-told file.xml", "-Pa"],
+        vec!["--toolchains", "old file.xml", "--activate-profiles", "a"],
+        vec!["--toolchains=old file.xml", "--activate-profiles=a"],
+    ] {
+        for id in
+            ["maven:goal:pom.xml:test", "maven:test", "context:maven:test:ExampleTest", "workspace:abc:maven:test"]
+        {
+            let mut args = prefix.clone();
+            args.push("test");
+            let mut config = run("maven", "mvn", &args);
+            config.id = id.into();
+            config.detected = !id.starts_with("maven:goal:");
+            let mut expected = maven_options(tmp.path(), &s);
+            expected.push("test".into());
+            for _ in 0..3 {
+                prepare_maven_run(&mut config, tmp.path(), &s);
+                assert_eq!(config.args, expected, "{id}: {prefix:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn maven_options_carry_the_thread_count_into_the_command_line() {
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();

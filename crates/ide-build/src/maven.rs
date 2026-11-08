@@ -1063,7 +1063,7 @@ pub fn load(root: &Path) -> MavenModel {
 
 /// [`load`] with the POMs `settings` link (Add Maven Projects).
 pub fn load_linked(root: &Path, settings: &ide_core::settings::MavenSettings) -> MavenModel {
-    load_with_linked(root, default_local_repo(), &[], &settings.linked_projects)
+    load_with_linked(root, default_local_repo(), &settings.profiles(&[]), &settings.linked_projects)
 }
 
 pub(crate) fn load_with_repo(root: &Path, local_repo: Option<PathBuf>) -> MavenModel {
