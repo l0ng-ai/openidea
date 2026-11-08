@@ -1,4 +1,6 @@
 {
+  "Input queue is full (4 MiB or 1024 writes); input was not sent.": "Input queue is full (4 MiB or 1024 writes); input was not sent.",
+  "Cannot write to terminal": "Cannot write to terminal",
   "Docker": "Docker",
   "Shell": "Shell",
   "C/C++": "C/C++",

@@ -554,6 +554,22 @@ async fn run_in_terminal_program_reads_typed_input() {
     assert!(h.manager.send_input(session, "x\n").is_err());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn blocked_program_input_does_not_hold_up_shutdown() {
+    let h = harness(Script {
+        run_in_terminal: Some(vec!["sh".into(), "-c".into(), "stty raw -echo; printf READY; exec sleep 60".into()]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("READY"))).await;
+    let started = std::time::Instant::now();
+    h.manager.send_input(session, &"x".repeat(512 * 1024)).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(250));
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "later").is_err());
+}
+
 #[test]
 fn launch_arguments_merge_and_defaults() {
     let mut c = config();

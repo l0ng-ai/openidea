@@ -51,7 +51,7 @@ struct Entry {
     config_id: String,
     name: String,
     pid: Mutex<Option<u32>>,
-    stdin: Mutex<Option<Box<dyn Write + Send>>>,
+    stdin: Mutex<Option<ide_core::input::InputWriter>>,
     /// The PTY master of a terminal-emulated run (resize; dropped on exit).
     pty: Option<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     stop: Option<StopCommand>,
@@ -422,10 +422,23 @@ impl ProcessManager {
         })?;
 
         let id = RunId::next();
-        let stdin: Option<Box<dyn Write + Send>> = match child.stdin.take() {
-            Some(pipe) if !redirected => Some(Box::new(pipe)),
-            _ => None,
-        };
+        let stdin = (|| -> std::io::Result<_> {
+            Ok(match child.stdin.take() {
+                Some(pipe) if !redirected => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::fd::AsRawFd;
+                        ide_core::input::nonblocking(pipe.as_raw_fd())?;
+                    }
+                    Some(input_writer(id, Box::new(pipe))?)
+                }
+                _ => None,
+            })
+        })()
+        .inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+        })?;
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
@@ -524,6 +537,10 @@ impl ProcessManager {
         for (k, v) in &env.vars {
             cmd.env(k, v);
         }
+        #[cfg(unix)]
+        if let Some(fd) = pair.master.as_raw_fd() {
+            ide_core::input::nonblocking(fd)?;
+        }
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
             let text = e.to_string();
             if text.contains("No such file") || text.contains("not found") {
@@ -538,6 +555,10 @@ impl ProcessManager {
         let writer = pair.master.take_writer().map_err(|e| IdeError::internal(format!("pty writer: {e}")))?;
 
         let id = RunId::next();
+        let writer = input_writer(id, writer).inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+        })?;
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
@@ -609,16 +630,9 @@ impl ProcessManager {
         if entry.exited.load(Ordering::Acquire) {
             return Err(IdeError::invalid("process has exited"));
         }
-        let mut stdin = entry.stdin.lock();
-        let pipe = stdin.as_mut().ok_or_else(|| IdeError::invalid("stdin is closed"))?;
-        let res = pipe.write_all(data.as_bytes()).and_then(|_| pipe.flush());
-        if let Err(e) = res {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                *stdin = None;
-            }
-            return Err(e.into());
-        }
-        Ok(())
+        let stdin = entry.stdin.lock();
+        let pipe = stdin.as_ref().ok_or_else(|| IdeError::invalid("stdin is closed"))?;
+        pipe.write(data.as_bytes()).map_err(Into::into)
     }
 
     /// Closes the process's stdin (sends EOF; on a terminal, types ^D).
@@ -627,7 +641,9 @@ impl ProcessManager {
         if entry.pty.is_some() {
             return self.write_stdin(id, "\u{4}");
         }
-        entry.stdin.lock().take();
+        if let Some(stdin) = entry.stdin.lock().as_ref() {
+            stdin.finish();
+        }
         Ok(())
     }
 
@@ -769,7 +785,23 @@ fn run_followup(
     (entry.output)(OutputChunk::System { text: format!("{}\n", inv.display) });
     let mut child = cmd.spawn()?;
     *pid = Some(child.id());
-    *entry.stdin.lock() = child.stdin.take().map(|p| Box::new(p) as Box<dyn Write + Send>);
+    *entry.stdin.lock() = (|| -> std::io::Result<_> {
+        Ok(match child.stdin.take() {
+            Some(pipe) => {
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsRawFd;
+                    ide_core::input::nonblocking(pipe.as_raw_fd())?;
+                }
+                Some(input_writer(entry.id, Box::new(pipe))?)
+            }
+            None => None,
+        })
+    })()
+    .inspect_err(|_| {
+        let _ = child.kill();
+        let _ = child.wait();
+    })?;
     drop(pid);
     let readers = (|| {
         if let Some(out) = child.stdout.take() {
@@ -963,7 +995,13 @@ fn spawn_reader(
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(BATCH_INTERVAL),
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                Err(e) => {
+                    tracing::warn!(%id, "run read: {e}");
+                    break;
+                }
             }
         }
     })?;
@@ -1178,6 +1216,12 @@ fn signal_number(description: &str) -> Option<i32> {
 #[cfg(not(unix))]
 fn signal_number(_description: &str) -> Option<i32> {
     None
+}
+
+fn input_writer(id: RunId, writer: Box<dyn std::io::Write + Send>) -> std::io::Result<ide_core::input::InputWriter> {
+    ide_core::input::InputWriter::new(format!("openidea-run-input-{}", id.0), writer, move |e| {
+        tracing::warn!(%id, "run input: {e}");
+    })
 }
 
 #[cfg(test)]

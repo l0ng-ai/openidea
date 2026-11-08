@@ -9,6 +9,7 @@ import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
 import { installTerminalDrop } from "./drop";
@@ -658,14 +659,20 @@ export class TerminalSession {
       this.pendingInput += data;
       return;
     }
-    void commands.termWrite(this.ptyId, data);
+    void call(commands.termWrite(this.ptyId, data)).catch((error) => {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot write to terminal"),
+        body: error instanceof Error ? tx(error.message) : String(error),
+      });
+    });
   }
 
   /** Sends keystrokes buffered while the PTY was starting. */
   private flushPendingInput() {
     const queued = this.pendingInput;
     this.pendingInput = "";
-    if (queued && this.ptyId !== null) void commands.termWrite(this.ptyId, queued);
+    if (queued && this.ptyId !== null) this.input(queued);
   }
 
   /** Writes input immediately (shortcuts translated outside xterm). */
