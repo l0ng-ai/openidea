@@ -45,6 +45,7 @@ ide-host = { path = "crates/ide-host" }
 ide-notebook = { path = "crates/ide-notebook" }
 ide-extension = { path = "crates/ide-extension" }
 ide-plugin = { path = "crates/ide-plugin" }
+ide-cli = { path = "crates/ide-cli" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }

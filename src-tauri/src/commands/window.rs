@@ -315,6 +315,27 @@ pub fn app_log_location() -> IdeResult<LogLocation> {
 
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct CliInstallation {
+    pub path: ide_core::IpcPath,
+    pub path_directory: Option<ide_core::IpcPath>,
+}
+
+/// Installs the `openidea` command for this user.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_cli_install() -> IdeResult<CliInstallation> {
+    tauri::async_runtime::spawn_blocking(crate::cli::install).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Removes the installed `openidea` command; returns the links removed.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_cli_uninstall() -> IdeResult<Vec<ide_core::IpcPath>> {
+    tauri::async_runtime::spawn_blocking(crate::cli::uninstall).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
     pub version: String,
     /// Build id from CI (`OPENIDEA_BUILD` at compile time), else `dev`.
