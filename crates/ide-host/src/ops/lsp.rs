@@ -592,10 +592,11 @@ fn validate_indexed_symbol(
         let stale = || {
             ide_core::IdeError::new(ErrorKind::OutOfSync, "indexed document changed; wait for indexing and try again")
         };
-        if ide_plugin::resolve_in_root(&project.root, &file.path.to_string_lossy()).ok().as_ref() != Some(&file.path) {
+        let path = dunce::simplified(&file.path);
+        if ide_plugin::resolve_in_root(&project.root, &path.to_string_lossy()).ok().as_deref() != Some(path) {
             return Err(stale());
         }
-        let text = if let Some(doc) = project.documents.by_path(&file.path) {
+        let text = if let Some(doc) = project.documents.by_path(path) {
             let snapshot = project.documents.text_snapshot(doc)?;
             if snapshot.large || file.version.is_some_and(|v| v != snapshot.version) {
                 return Err(stale());
@@ -604,7 +605,7 @@ fn validate_indexed_symbol(
         } else {
             let loaded = project
                 .documents
-                .load_file_bounded(&file.path, crate::plugins::navigation::MAX_DOCUMENT_BYTES)
+                .load_file_bounded(path, crate::plugins::navigation::MAX_DOCUMENT_BYTES)
                 .map_err(|_| stale())?;
             if loaded.binary || loaded.large {
                 return Err(stale());
@@ -1683,11 +1684,13 @@ mod tests {
         use crate::plugins::navigation::{IndexedAnchors, IndexedSymbol};
         use ide_core::{FileEdit, LanguageId};
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let shared = root.join("shared.idx");
         let native = root.join("native.txt");
         std::fs::write(&shared, "old old").unwrap();
         std::fs::write(&native, "old").unwrap();
+        // Exercise legacy verbatim index paths alongside ordinary native URI paths.
+        let shared = std::fs::canonicalize(shared).unwrap();
         let range = Range::new(Pos::new(0, 0), Pos::new(0, 3));
         let other = Range::new(Pos::new(0, 4), Pos::new(0, 7));
         let symbol = IndexedSymbol {
@@ -1699,8 +1702,6 @@ mod tests {
                 ranges: vec![range, other],
             }],
         };
-        // Native file URIs have ordinary Windows paths; index snapshots retain
-        // canonical verbatim paths. Both identify the same file and edit batch.
         let server_shared = dunce::simplified(&shared).to_path_buf();
         let server_native = dunce::simplified(&native).to_path_buf();
         #[cfg(windows)]
@@ -2024,7 +2025,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("proj");
         std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
+        let root = dunce::canonicalize(&root).unwrap();
         let action = |operations: Vec<FileOperation>| ide_plugin::CodeAction {
             title: "Create view".into(),
             kind: Some("quickfix".into()),

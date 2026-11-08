@@ -197,6 +197,7 @@ impl PluginHost {
     /// navigation_at. Call off the UI thread, in small cancellable batches.
     pub fn index_navigation(&self, root: &Path, snapshot: Snapshot<'_>, invocation: Invocation) -> IdeResult<()> {
         let Snapshot { path, version, text, symbols, scope } = snapshot;
+        let path = dunce::simplified(path);
         if !(self.project_policy.read())(root) {
             return Err(IdeError::unavailable("project is not trusted"));
         }

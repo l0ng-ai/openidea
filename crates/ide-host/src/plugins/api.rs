@@ -2630,7 +2630,7 @@ impl HostApi for PluginApi {
         ide_vfs::create_private_dir(&data).map_err(failed)?;
         let files = data.join("files");
         ide_vfs::create_private_dir(&files).map_err(failed)?;
-        files.canonicalize().map_err(failed)
+        dunce::canonicalize(files).map_err(failed)
     }
 
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
@@ -3069,6 +3069,22 @@ mod tests {
         PluginApi { pkg: Package::new(manifest, dir.to_path_buf()), shared }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn private_directory_matches_resolved_write_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let api = api(tmp.path(), Arc::default());
+        let dir = api.plugin_dir().unwrap();
+        let verbatim = std::fs::canonicalize(&dir).unwrap();
+        for root in [&dir, &verbatim] {
+            let path = ide_plugin::resolve_new_in_root(root, "state.txt").unwrap();
+            assert!(path.starts_with(&dir), "private writes must use the private-directory branch");
+            api.write_text_file(&path, "text").unwrap();
+            api.write_bytes_file(&path, b"bytes").unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"bytes");
+        }
+    }
+
     #[test]
     fn storage_moves_an_older_storage_json_to_one_file_per_key() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3145,7 +3161,7 @@ mod tests {
     fn repository_and_search_paths_match_ipc_events() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(std::process::Command::new("git").args(["init", "-q"]).arg(tmp.path()).status().unwrap().success());
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         std::fs::create_dir(root.join("src")).unwrap();
         let file = root.join("src/Example.java");
         std::fs::write(&file, "class Example {}\n").unwrap();
@@ -3188,7 +3204,7 @@ mod tests {
     #[test]
     fn find_files_uses_the_project_index_when_there_is_one() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
         let api = api(&root, Arc::default());
         *api.shared.workspace.write() = Some(Arc::new(Indexed(
             root.clone(),
