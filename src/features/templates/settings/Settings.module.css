@@ -81,6 +81,8 @@
   color: var(--fg-emphasis);
 }
 .itemDetail {
+  min-width: 0;
+  white-space: nowrap;
   color: var(--fg-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
