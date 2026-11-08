@@ -140,6 +140,9 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
+    /// once, so its members ask together.
+    close_requests: Mutex<Vec<String>>,
     /// Project tabs closing one by one (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
@@ -149,6 +152,21 @@ pub struct WindowsState {
 }
 
 impl WindowsState {
+    pub fn close_requested(&self, label: &str) {
+        let mut requests = self.close_requests.lock();
+        if !requests.iter().any(|l| l == label) {
+            requests.push(label.to_owned());
+        }
+    }
+
+    pub fn close_settled(&self, label: &str) {
+        self.close_requests.lock().retain(|l| l != label);
+    }
+
+    pub fn pending_closes(&self) -> Vec<String> {
+        self.close_requests.lock().clone()
+    }
+
     pub fn set_launch(&self, label: &str, launch: Launch) {
         self.launches.lock().insert(label.to_owned(), launch);
     }
@@ -187,6 +205,7 @@ impl WindowsState {
     }
 
     pub fn forget(&self, label: &str) {
+        self.close_settled(label);
         self.launches.lock().remove(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
