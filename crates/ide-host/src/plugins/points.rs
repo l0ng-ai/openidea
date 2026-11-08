@@ -81,6 +81,7 @@ pub fn register_builtin_points(
         super::execution::configurations_declaration,
     )))?;
     registry.register(Arc::new(UiPoint::new("snippets", ui.clone(), super::snippets::declaration)))?;
+    registry.register(Arc::new(UiPoint::new(super::mcp::POINT, ui.clone(), super::mcp::declaration)))?;
     use super::ui_points as p;
     registry.register(Arc::new(UiPoint::new(p::MENUS, ui.clone(), p::menu)))?;
     registry.register(Arc::new(UiPoint::new(p::KEYMAPS, ui.clone(), p::keymap)))?;

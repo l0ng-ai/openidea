@@ -150,6 +150,10 @@ struct State {
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
+    database_sources: BTreeMap<(String, String), PluginDataSource>,
+    database_credentials: BTreeSet<(String, String)>,
+    database_connections: Vec<(String, String)>,
+    mcp_stdio: Option<Vec<String>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTarget>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
@@ -190,6 +194,7 @@ pub struct MockHost {
 /// Every capability a plugin can hold, except `process:`/`net:`/`fs.read:`.
 const ALL: &[&str] = &[
     "ide.commands",
+    "database.sources",
     "project.read",
     "editor.read",
     "editor.write",
@@ -494,6 +499,14 @@ impl MockHost {
         self.state.borrow().run_targets.clone()
     }
     /// Configurations available to start_run in native tests.
+    /// Run launches recorded as (operation id, configuration id, appended args, debug).
+    pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
+        self.state.borrow().configuration_runs.clone()
+    }
+    /// Configures only argv discovery; the mock has no token or URL.
+    pub fn set_mcp_stdio_command(&self, command: Option<Vec<String>>) {
+        self.state.borrow_mut().mcp_stdio = command;
+    }
     pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
         self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
     }
@@ -1767,6 +1780,74 @@ pub mod current {
     pub fn post_view_message(view: &str, message: &str) -> Result<(), Error> {
         with(|s| s.view_messages.push((view.into(), message.into())));
         Ok(())
+    }
+
+    pub fn database_upsert(project: &ProjectRes, source: &PluginDataSource) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            if source.id.is_empty() || source.id.len() > 128 || source.name.trim().is_empty() {
+                return Err(Error::Invalid("invalid data source".into()));
+            }
+            s.database_sources.insert((project.root.clone(), source.id.clone()), source.clone());
+            Ok(())
+        })
+    }
+    pub fn database_sources(project: &ProjectRes) -> Result<Vec<String>, Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            Ok(s.database_sources.keys().filter(|(r, _)| r == &project.root).map(|(_, id)| id.clone()).collect())
+        })
+    }
+    pub fn database_remove(project: &ProjectRes, id: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let key = (project.root.clone(), id.into());
+            s.database_sources
+                .remove(&key)
+                .ok_or_else(|| Error::NotFound("no owned data source with this id".into()))?;
+            s.database_credentials.remove(&key);
+            Ok(())
+        })
+    }
+    pub fn database_credential(project: &ProjectRes, id: &str, _password: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let key = (project.root.clone(), id.into());
+            if !s.database_sources.contains_key(&key) {
+                return Err(Error::NotFound("no owned data source with this id".into()));
+            }
+            s.database_credentials.insert(key);
+            Ok(())
+        })
+    }
+    pub fn database_connect(project: &ProjectRes, id: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "database.sources")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let key = (project.root.clone(), id.into());
+            if !s.database_sources.contains_key(&key) {
+                return Err(Error::NotFound("no owned data source with this id".into()));
+            }
+            s.database_connections.push(key);
+            Ok(())
+        })
+    }
+    pub fn mcp_stdio_command() -> Option<Vec<String>> {
+        with(|s| s.mcp_stdio.clone())
     }
 
     pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {

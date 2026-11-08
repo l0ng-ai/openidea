@@ -18,6 +18,7 @@
 mod api;
 mod auth;
 pub mod commit;
+mod database;
 pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
@@ -36,6 +37,7 @@ pub mod intellij;
 mod ipc;
 pub mod language_features;
 mod market;
+mod mcp;
 pub mod navigation;
 mod points;
 mod providers;
@@ -1226,6 +1228,7 @@ impl PluginHost {
         }
         self.stop(&plugin);
         let cleanup = || -> std::io::Result<()> {
+            self.remove_database_sources(id).map_err(|e| std::io::Error::other(e.message))?;
             install::check_cleanup_parent(&self.plugins_dir, &self.shared.data_dir.join(id))?;
             install::check_cleanup_parent(&self.plugins_dir, plugin.dir())?;
             install::check_not_symlink(&self.shared.data_dir.join(id))?;
@@ -1418,6 +1421,17 @@ impl PluginHost {
         what: &str,
         f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> IdeResult<R> {
+        self.code_call_cancellable(id, invocation, what, None, f)
+    }
+
+    fn code_call_cancellable<R: Send + 'static>(
+        &self,
+        id: &str,
+        invocation: Invocation,
+        what: &str,
+        cancel: Option<&ide_core::CancellationToken>,
+        f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> IdeResult<R> {
         let plugin = self.get(id)?;
         let client = invocation.client.clone();
         {
@@ -1458,7 +1472,14 @@ impl PluginHost {
             }
             let started = Instant::now();
             let (call, inv) = (f.clone(), invocation.clone());
-            let result = actor.call(None, move |rt| call(rt, inv));
+            let result = match cancel {
+                Some(cancel) => actor.call_cancellable(cancel, Duration::from_millis(50), move |rt| call(rt, inv)),
+                None => actor.call(None, move |rt| call(rt, inv)),
+            };
+            if matches!(result, Err(ActorError::Cancelled)) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::cancelled());
+            }
             if !matches!(result, Err(ActorError::Stopped | ActorError::SoftTimeout | ActorError::Cancelled)) {
                 let crashed = matches!(result, Err(ActorError::Call(CallError::Trap(_))));
                 // Cancelling or a missing grant is not the plugin failing.

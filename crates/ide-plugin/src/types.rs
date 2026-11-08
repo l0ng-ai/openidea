@@ -840,3 +840,18 @@ pub struct BlameLine {
     pub date: i64,
     pub summary: String,
 }
+
+/// Non-secret settings of a plugin-owned project database source (API 1.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDataSource {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub url: Option<String>,
+    pub options: Vec<(String, String)>,
+}

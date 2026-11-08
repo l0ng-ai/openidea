@@ -652,8 +652,8 @@ mod imp {
             id: v.id.clone(),
             label: v.label.clone(),
             icon: v.icon.clone(),
-            primary: v.primary.clone(),
-            save: v.save.clone(),
+            primary: v.primary,
+            save: v.save,
         }
     }
 
@@ -664,7 +664,7 @@ mod imp {
             file_name: v.file_name.clone(),
             language: v.language.clone(),
             content: v.content.clone(),
-            read_only: v.read_only.clone(),
+            read_only: v.read_only,
             actions: v.actions.iter().map(content_action_to).collect(),
         }
     }
@@ -682,12 +682,45 @@ mod imp {
     fn content_tab_reply_to(v: &crate::ContentTabReply) -> wit::views::ContentTabReply {
         wit::views::ContentTabReply {
             content: v.content.clone(),
-            saved: v.saved.clone(),
-            read_only: v.read_only.clone(),
+            saved: v.saved,
+            read_only: v.read_only,
             status: v.status.clone(),
             error: v.error.clone(),
             diff: v.diff.as_ref().map(content_diff_to),
         }
+    }
+
+    pub fn database_upsert(project: &ProjectRes, source: &PluginDataSource) -> Result<(), Error> {
+        wit::database::upsert_source(
+            project,
+            &wit::database::DataSource {
+                id: source.id.clone(),
+                name: source.name.clone(),
+                driver: source.driver.clone(),
+                host: source.host.clone(),
+                port: source.port,
+                database: source.database.clone(),
+                user: source.user.clone(),
+                url: source.url.clone(),
+                options: source.options.clone(),
+            },
+        )
+        .map_err(error)
+    }
+    pub fn database_remove(project: &ProjectRes, id: &str) -> Result<(), Error> {
+        wit::database::remove_source(project, id).map_err(error)
+    }
+    pub fn database_sources(project: &ProjectRes) -> Result<Vec<String>, Error> {
+        wit::database::sources(project).map_err(error)
+    }
+    pub fn database_credential(project: &ProjectRes, id: &str, password: &str) -> Result<(), Error> {
+        wit::database::set_credential(project, id, password).map_err(error)
+    }
+    pub fn database_connect(project: &ProjectRes, id: &str) -> Result<(), Error> {
+        wit::database::connect(project, id).map_err(error)
+    }
+    pub fn mcp_stdio_command() -> Option<Vec<String>> {
+        wit::mcp::stdio_command()
     }
 
     pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {
@@ -867,6 +900,27 @@ pub struct Project {
 }
 
 impl Project {
+    /// Creates/replaces only this plugin's source. Requires database.sources and trust.
+    pub fn upsert_data_source(&self, source: &PluginDataSource) -> Result<(), Error> {
+        imp::database_upsert(&self.inner, source)
+    }
+    /// Removes an owned source and its credentials; other ids are not-found.
+    pub fn remove_data_source(&self, id: &str) -> Result<(), Error> {
+        imp::database_remove(&self.inner, id)
+    }
+    /// Lists only this plugin's private source ids.
+    pub fn data_sources(&self) -> Result<Vec<String>, Error> {
+        imp::database_sources(&self.inner)
+    }
+    /// Writes directly to the Database secure store, without a read API.
+    pub fn set_data_source_credential(&self, id: &str, password: &str) -> Result<(), Error> {
+        imp::database_credential(&self.inner, id, password)
+    }
+    /// Normal Database connection/introspection in this project's invoking command/event window.
+    pub fn connect_data_source(&self, id: &str) -> Result<(), Error> {
+        imp::database_connect(&self.inner, id)
+    }
+
     /// Find in Files with unsaved text, project excludes, cancellation and a 10,000 match cap.
     /// Requires project.read; locations use zero-based lines and UTF-16 columns.
     pub fn search_text(&self, query: &TextQuery, limit: u32) -> Result<TextSearch, Error> {
@@ -1625,4 +1679,9 @@ pub fn register_run_target(project: &Project, target: &crate::PluginRunTarget) -
 /// Withdraws a target owned by this plugin.
 pub fn unregister_run_target(project: &Project, id: &str) {
     imp::unregister_run_target(&project.inner, id);
+}
+
+/// Stdio bridge argv for the invoking project, none while the built-in MCP server is off.
+pub fn mcp_stdio_command() -> Option<Vec<String>> {
+    imp::mcp_stdio_command()
 }

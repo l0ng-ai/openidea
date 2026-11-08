@@ -1331,8 +1331,8 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
-	dbSources: () => typedError<DataSource[], IdeError>(__TAURI_INVOKE("db_sources")),
-	dbSaveSources: (sources: DataSource[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
+	dbSources: () => typedError<DataSource_Serialize[], IdeError>(__TAURI_INVOKE("db_sources")),
+	dbSaveSources: (sources: DataSource_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	dbSetPassword: (id: string, password: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_password", { id, password, save })),
 	dbSetSshSecret: (id: string, secret: string | null, save: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_set_ssh_secret", { id, secret, save })),
 	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
@@ -1430,7 +1430,7 @@ export const commands = {
 	 *  (and the project's `remoteEnv` on a remote host); running ones keep theirs.
 	 */
 	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
-	dbTest: (source: DataSource, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
@@ -2908,7 +2908,9 @@ export type DataBreakpointInfo = {
 	accessTypes: string[],
 };
 
-export type DataSource = {
+export type DataSource = DataSource_Serialize | DataSource_Deserialize;
+
+export type DataSource_Deserialize = {
 	id?: string,
 	name?: string,
 	driver?: DbDriver,
@@ -2944,6 +2946,52 @@ export type DataSource = {
 	 *  so not written to it.
 	 */
 	global?: boolean,
+	/**  Plugin id owning this source; absent for user-managed sources. */
+	pluginOwner?: string | null,
+	/**  Id private to the owner, never used as a connection target. */
+	pluginSourceId?: string | null,
+};
+
+export type DataSource_Serialize = {
+	id: string,
+	name: string,
+	driver: DbDriver,
+	host: string,
+	port: number | null,
+	database: string,
+	user: string,
+	/**  SQLite database file (absolute, or relative to the project root). */
+	file: IpcPath | null,
+	ssl: DbSslMode,
+	/**  Keep the password in the saved passwords. */
+	savePassword: boolean,
+	/**  Refuse statements other than queries (enforced by the database session where possible). */
+	readOnly: boolean,
+	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
+	ssh: DbSsh | null,
+	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
+	vendor: string,
+	color: DbColor | null,
+	comment: string,
+	/**  Connect with [`DataSource::url`] instead of the host / port / database fields. */
+	urlOnly: boolean,
+	url: string,
+	/**  PEM files; `~/` is the home directory. */
+	sslCaFile: string,
+	sslCertFile: string,
+	sslKeyFile: string,
+	options: DbOptions,
+	introspection: DbIntrospection,
+	properties: DbProperty[],
+	/**
+	 *  Stored app-wide and listed in every project. Implied by the file it is read from,
+	 *  so not written to it.
+	 */
+	global: boolean,
+	/**  Plugin id owning this source; absent for user-managed sources. */
+	pluginOwner?: string | null,
+	/**  Id private to the owner, never used as a connection target. */
+	pluginSourceId?: string | null,
 };
 
 /**  System Settings › Date Formats (Git log, Local History, blame). */
@@ -4715,7 +4763,9 @@ export type IdeError = {
 	data?: ErrorData | null,
 };
 
-export type IdeEvent = { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
+export type IdeEvent = 
+/**  Project data source settings changed; reload the Database tree. */
+{ type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
@@ -8851,13 +8901,17 @@ export type WindowRequest = WindowRequest_Serialize | WindowRequest_Deserialize;
 
 /**  A request that the invoking window acknowledges through plugin_answer_command. */
 export type WindowRequest_Deserialize = 
+/**  Connect and introspect using the normal Database action in this window. */
+({ kind: "databaseConnect"; id: string }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; key?: never; operation?: never; program?: never; tab?: never; title?: never } | 
 /**  Open and acknowledge validation by the shared content editor. */
-({ kind: "contentTab"; tab: ContentTab }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; key?: never; operation?: never; program?: never; title?: never } | ({ kind: "run"; operation: string; config: RunConfig_Deserialize; debug: boolean }) & { args?: never; cwd?: never; env?: never; key?: never; program?: never; tab?: never; title?: never } | ({ kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath }) & { config?: never; debug?: never; tab?: never };
+({ kind: "contentTab"; tab: ContentTab }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; id?: never; key?: never; operation?: never; program?: never; title?: never } | ({ kind: "run"; operation: string; config: RunConfig_Deserialize; debug: boolean }) & { args?: never; cwd?: never; env?: never; id?: never; key?: never; program?: never; tab?: never; title?: never } | ({ kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath }) & { config?: never; debug?: never; id?: never; tab?: never };
 
 /**  A request that the invoking window acknowledges through plugin_answer_command. */
 export type WindowRequest_Serialize = 
+/**  Connect and introspect using the normal Database action in this window. */
+({ kind: "databaseConnect"; id: string }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; key?: never; operation?: never; program?: never; tab?: never; title?: never } | 
 /**  Open and acknowledge validation by the shared content editor. */
-({ kind: "contentTab"; tab: ContentTab }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; key?: never; operation?: never; program?: never; title?: never } | ({ kind: "run"; operation: string; config: RunConfig_Serialize; debug: boolean }) & { args?: never; cwd?: never; env?: never; key?: never; program?: never; tab?: never; title?: never } | ({ kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath }) & { config?: never; debug?: never; tab?: never };
+({ kind: "contentTab"; tab: ContentTab }) & { args?: never; config?: never; cwd?: never; debug?: never; env?: never; id?: never; key?: never; operation?: never; program?: never; title?: never } | ({ kind: "run"; operation: string; config: RunConfig_Serialize; debug: boolean }) & { args?: never; cwd?: never; env?: never; id?: never; key?: never; program?: never; tab?: never; title?: never } | ({ kind: "terminal"; operation: string; key: string; title: string; program: IpcPath; args: string[]; env: { [key in string]: string }; cwd: IpcPath }) & { config?: never; debug?: never; id?: never; tab?: never };
 
 export type WindowTab = {
 	label: string,

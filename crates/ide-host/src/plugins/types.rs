@@ -445,6 +445,8 @@ pub struct DecorationSet {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum WindowRequest {
+    /// Connect and introspect using the normal Database action in this window.
+    DatabaseConnect { id: String },
     /// Open and acknowledge validation by the shared content editor.
     ContentTab { tab: ide_plugin::ContentTab },
     #[serde(rename_all = "camelCase")]

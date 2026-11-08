@@ -20,6 +20,8 @@ pub enum McpUiRequest {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    /// Project data source settings changed; reload the Database tree.
+    DbSourcesChanged,
     McpRequest {
         id: u32,
         request: McpUiRequest,

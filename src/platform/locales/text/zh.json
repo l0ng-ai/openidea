@@ -6937,5 +6937,11 @@
   "Invalid plugin command": "无效的插件命令",
   "Plugin host unavailable": "插件宿主不可用",
   "The plugin did not declare this command": "插件未声明此命令",
-  "Invalid color range": "无效的颜色范围"
+  "Invalid color range": "无效的颜色范围",
+  "Manage its own database sources and store their passwords in trusted projects": "在受信任项目中管理其自己的数据库数据源并保存密码",
+  "Connect Plugin Data Source": "连接插件数据源",
+  "Invalid data source id": "数据源标识无效",
+  "Database connection failed": "数据库连接失败",
+  "Database service unavailable": "数据库服务不可用",
+  "Trust this project to connect plugin data sources": "信任此项目后才能连接插件数据源"
 }

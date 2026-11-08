@@ -62,6 +62,8 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
         },
     });
 }
@@ -97,6 +99,8 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
         },
     });
 }
@@ -132,6 +136,8 @@ pub(crate) mod views_bindings {
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
         },
     });
 }
@@ -2174,5 +2180,91 @@ pub(crate) mod language_features_bindings {
 pub(crate) mod injections_bindings {
     wasmtime::component::bindgen!({ world: "language-injections", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+
+impl bindings::openidea::plugin::database::Host for StoreData {
+    fn upsert_source(
+        &mut self,
+        project: Resource<ProjectRes>,
+        source: bindings::openidea::plugin::database::DataSource,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::DatabaseSources) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .database_upsert(
+                &root,
+                crate::PluginDataSource {
+                    id: source.id,
+                    name: source.name,
+                    driver: source.driver,
+                    host: source.host,
+                    port: source.port,
+                    database: source.database,
+                    user: source.user,
+                    url: source.url,
+                    options: source.options,
+                },
+            )
+            .map_err(to_wit))
+    }
+    fn remove_source(&mut self, project: Resource<ProjectRes>, id: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::DatabaseSources) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.database_remove(&root, &id).map_err(to_wit))
+    }
+    fn sources(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<String>> {
+        if let Err(e) = self.require(Capability::DatabaseSources) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.database_sources(&root).map_err(to_wit))
+    }
+    fn set_credential(&mut self, project: Resource<ProjectRes>, id: String, password: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::DatabaseSources) {
+            return Ok(Err(e));
+        }
+        if password.len() > 64 << 10 {
+            return Ok(Err(wit::Error::Invalid("credential exceeds 64 KiB".into())));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self.host.database_credential(&root, &id, password).map_err(to_wit))
+    }
+    fn connect(&mut self, project: Resource<ProjectRes>, id: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::DatabaseSources).and_then(|_| self.require_window()) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let started = Instant::now();
+        let result = self.host.database_connect(
+            &root,
+            self.client().unwrap(),
+            &id,
+            &self.cancel.token(),
+            Duration::from_secs(180),
+        );
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        Ok(result.map_err(to_wit))
+    }
+}
+impl bindings::openidea::plugin::mcp::Host for StoreData {
+    fn stdio_command(&mut self) -> wasmtime::Result<Option<Vec<String>>> {
+        Ok(self.client().and_then(|client| self.host.mcp_stdio_command(client)))
+    }
+}
+
+pub(crate) mod mcp_bindings {
+    wasmtime::component::bindgen!({ world: "mcp-tools", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+        },
     });
 }

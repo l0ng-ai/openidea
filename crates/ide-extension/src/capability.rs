@@ -22,6 +22,8 @@ pub enum Capability {
     ProjectWrite,
     /// Run arbitrary IDE actions and other plugins' commands.
     IdeCommands,
+    /// Manage only its own project database sources and write their credentials.
+    DatabaseSources,
     VcsRead,
     VcsWrite,
     /// The plugin's own key-value store and data directory.
@@ -66,6 +68,7 @@ impl Capability {
             Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead => Risk::Low,
             Self::EditorWrite
             | Self::ProjectWrite
+            | Self::DatabaseSources
             | Self::VcsWrite
             | Self::Net(_)
             | Self::NetHttp(_)
@@ -89,6 +92,7 @@ impl Capability {
             Self::EditorRead => "Read the focused editor's file and selection".into(),
             Self::EditorWrite => "Change text in the editor".into(),
             Self::ProjectWrite => "Create and change files in the open project".into(),
+            Self::DatabaseSources => "Manage its own database sources and store their passwords in trusted projects".into(),
             Self::IdeCommands => "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing".into(),
             Self::VcsRead => "Read version control state".into(),
             Self::VcsWrite => "Change version control state (commit, fetch, checkout)".into(),
@@ -217,6 +221,7 @@ impl fmt::Display for Capability {
             Self::EditorWrite => f.write_str("editor.write"),
             Self::ProjectWrite => f.write_str("project.write"),
             Self::IdeCommands => f.write_str("ide.commands"),
+            Self::DatabaseSources => f.write_str("database.sources"),
             Self::VcsRead => f.write_str("vcs.read"),
             Self::VcsWrite => f.write_str("vcs.write"),
             Self::Storage => f.write_str("storage"),
@@ -289,6 +294,7 @@ impl FromStr for Capability {
             "editor.write" | "editor-write" => Self::EditorWrite,
             "project.write" => Self::ProjectWrite,
             "ide.commands" => Self::IdeCommands,
+            "database.sources" => Self::DatabaseSources,
             "vcs.read" => Self::VcsRead,
             "vcs.write" => Self::VcsWrite,
             "storage" => Self::Storage,
@@ -442,5 +448,26 @@ mod command_tests {
         assert!(!cap.auto_migrates());
         assert!(!Capability::VcsWrite.covers(&cap));
         assert!(!Capability::Process("git".into()).covers(&cap));
+    }
+}
+
+#[cfg(test)]
+mod database_tests {
+    use super::*;
+    #[test]
+    fn database_sources_is_a_medium_risk_exact_grant_requiring_api4() {
+        let cap: Capability = "database.sources".parse().unwrap();
+        assert_eq!(cap, Capability::DatabaseSources);
+        assert_eq!(cap.to_string(), "database.sources");
+        assert_eq!(cap.risk(), Risk::Medium);
+        assert!(!cap.auto_migrates());
+        assert!(!Capability::ProjectRead.covers(&cap));
+        assert!(!Capability::ProjectWrite.covers(&cap));
+        for (api, valid) in [("^1.3", false), ("^1.4", true)] {
+            let text = format!(
+                "id='db-test'\nname='DB'\nversion='1.0.0'\nengines.openidea='{api}'\n[capabilities]\nrequired=['database.sources']"
+            );
+            assert_eq!(crate::Manifest::parse(&text).is_ok(), valid);
+        }
     }
 }

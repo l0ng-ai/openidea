@@ -38,6 +38,11 @@ type ContextKey = (Option<String>, String, String);
 /// What plugins see of the open projects; provided by the app
 /// ([`super::PluginHost::set_workspace`]), over [`crate::Host`] on the desktop.
 pub trait PluginWorkspace: Send + Sync {
+    /// Execution host of the Database subsystem; absent on unsupported hosts.
+    fn database_host(&self) -> Option<Arc<crate::Host>> {
+        None
+    }
+
     /// A freshly resolved configuration owned by this plugin in the invoking project.
     fn run_configuration(&self, _client: &str, _plugin: &str, _config: &str) -> Result<ide_run::RunConfig, HostError> {
         Err(HostError::NotFound("run configuration unavailable".into()))
@@ -1251,6 +1256,58 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
+    fn database_upsert(&self, root: &Path, source: ide_plugin::PluginDataSource) -> Result<(), HostError> {
+        let (host, db) = self.database_host(root)?;
+        let id = source.id.clone();
+        let source = super::database::settings(source)?;
+        self.remember_database_project(root, &id)?;
+        host.runtime.block_on(db.upsert_plugin_source(self.pkg.id(), &id, source)).map_err(super::database::error)?;
+        let internal = ide_db::plugin::source_id(self.pkg.id(), &id);
+        for project in host.projects().into_iter().filter(|p| p.root == root) {
+            host.runtime.block_on(project.db.disconnect_source(&internal));
+        }
+        super::database::changed(&host, root);
+        Ok(())
+    }
+    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError> {
+        let (host, db) = self.database_host(root)?;
+        host.runtime.block_on(db.remove_plugin_source(self.pkg.id(), id)).map_err(super::database::error)?;
+        let internal = ide_db::plugin::source_id(self.pkg.id(), id);
+        for project in host.projects().into_iter().filter(|p| p.root == root) {
+            host.runtime.block_on(project.db.forget_plugin_source(&internal));
+        }
+        super::database::changed(&host, root);
+        Ok(())
+    }
+    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError> {
+        let (_, db) = self.database_host(root)?;
+        db.plugin_sources(self.pkg.id()).map_err(super::database::error)
+    }
+    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError> {
+        let (host, db) = self.database_host(root)?;
+        let source = db.plugin_source(self.pkg.id(), id).map_err(super::database::error)?;
+        self.remember_database_project(root, id)?;
+        for project in host.projects().into_iter().filter(|p| p.root == root) {
+            host.runtime.block_on(project.db.set_password(&source.id, Some(password.clone()), true)).map_err(failed)?;
+        }
+        Ok(())
+    }
+    fn database_connect(
+        &self,
+        root: &Path,
+        client: &str,
+        id: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        self.connect_database(root, client, id, cancel, timeout)
+    }
+    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
+        let host = self.shared.workspace()?.database_host()?;
+        let root = host.project(client).ok()?.root.clone();
+        host.mcp_executable.read().as_ref().map(|exe| ide_mcp::stdio_command(exe, &root))
+    }
+
     fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
         self.register_target(root, target)
     }
@@ -2683,6 +2740,9 @@ impl HostWorkspace {
 }
 
 impl PluginWorkspace for HostWorkspace {
+    fn database_host(&self) -> Option<Arc<crate::Host>> {
+        self.0.upgrade()
+    }
     fn run_configuration(&self, client: &str, plugin: &str, config: &str) -> Result<ide_run::RunConfig, HostError> {
         let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
         let prefix = format!("{}{}:", ide_run::EXTERNAL_PREFIX, plugin);

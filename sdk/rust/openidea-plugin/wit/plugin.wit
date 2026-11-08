@@ -34,6 +34,8 @@ world plugin {
     import views;
     import run;
     import run-targets;
+    import database;
+    import mcp;
     import settings;
 
     export lifecycle;
@@ -193,3 +195,8 @@ world editor-language-features { export language-features; }
 world plugin-injections { include plugin; export injections; }
 /// Export-only injections, composed with the base plugin world.
 world language-injections { export injections; }
+
+/// A plugin contributing tools to the built-in MCP server.
+world plugin-mcp { include plugin; export mcp-provider; }
+/// Export-only MCP tools, composed with the base plugin world.
+world mcp-tools { export mcp-provider; }

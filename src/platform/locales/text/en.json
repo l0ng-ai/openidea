@@ -595,5 +595,11 @@
   "Invalid plugin command": "Invalid plugin command",
   "Plugin host unavailable": "Plugin host unavailable",
   "The plugin did not declare this command": "The plugin did not declare this command",
-  "Invalid color range": "Invalid color range"
+  "Invalid color range": "Invalid color range",
+  "Manage its own database sources and store their passwords in trusted projects": "Manage its own database sources and store their passwords in trusted projects",
+  "Connect Plugin Data Source": "Connect Plugin Data Source",
+  "Invalid data source id": "Invalid data source id",
+  "Database connection failed": "Database connection failed",
+  "Database service unavailable": "Database service unavailable",
+  "Trust this project to connect plugin data sources": "Trust this project to connect plugin data sources"
 }

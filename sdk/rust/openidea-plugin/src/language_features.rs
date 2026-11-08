@@ -234,7 +234,7 @@ pub mod wasm {
     ) -> Result<Vec<b::TextEdit>, b::Error> {
         let doc = Document { path: d.path, language: d.language, version: d.version, text: d.text };
         let result = crate::__rt::with::<T, _>(|p| {
-            p.format(&doc, range.map(|v| crate::host::__range_from(v)), format_options_from(options))
+            p.format(&doc, range.map(crate::host::__range_from), format_options_from(options))
         });
         result
             .map(|result| {
@@ -289,7 +289,7 @@ pub mod wasm {
         let result = crate::__rt::with::<T, _>(|p| {
             p.selection_ranges(&doc, Position { line: at.line, character: at.character })
         });
-        result.into_iter().map(|v| crate::host::__range_to(v)).collect()
+        result.into_iter().map(crate::host::__range_to).collect()
     }
     pub fn folding<T: crate::Plugin + LanguageFeatures + Default>(d: w::Document) -> Vec<w::FoldRange> {
         let doc = Document { path: d.path, language: d.language, version: d.version, text: d.text };

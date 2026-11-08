@@ -190,6 +190,7 @@ function providePluginEndpoints(pluginId: string): () => void {
 /** Registers the client side of every first-party UI point. */
 export function defineBuiltinUiPoints(): () => void {
   const disposers = [
+    defineUiPoint("mcpTools", {}),
     defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",

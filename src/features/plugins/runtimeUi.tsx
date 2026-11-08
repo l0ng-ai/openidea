@@ -649,6 +649,12 @@ export function startRuntimeUi(): () => void {
 async function handleWindowRequest(e: Extract<PluginEvent, { type: "windowRequest" }>) {
   const r = e.request;
   try {
+    if (r.kind === "databaseConnect") {
+      if (!getAction("db.pluginConnect")) throw new Error(tx("Database service unavailable"));
+      await executeActionOrThrow("db.pluginConnect", r.id);
+      await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+      return;
+    }
     if (r.kind === "contentTab") {
       const raw = JSON.parse(JSON.stringify(r.tab), (_k, v: unknown) => (v === null ? undefined : v)) as object;
       const data = contentTabData(e.pluginId, WASM_CONTENT_VIEW, raw, JSON.stringify(raw).length);

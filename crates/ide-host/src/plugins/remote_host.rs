@@ -85,6 +85,13 @@ pub struct RemotePackage {
     pub digest: String,
     /// Capabilities the user granted on the desktop.
     pub granted: Vec<String>,
+    /// Disabled packages remain installed so their persistent project data survives.
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 /// One file of a package (`path` relative to the package, `data` base64).
@@ -178,12 +185,16 @@ impl PluginHost {
         plugins
             .iter()
             .filter(|p| p.dev_root.is_none() && !p.invalid && p.manifest().wasm.is_some())
-            .filter(|p| matches!(p.status(), super::PluginStatus::Active | super::PluginStatus::Inactive))
             .filter_map(|p| {
                 let files = self.package_files(p).ok()?;
                 let digest = package_digest(p.dir(), &files).ok()?;
                 let granted = p.meta.lock().granted.iter().map(ToString::to_string).collect();
-                Some(RemotePackage { id: p.id().to_owned(), digest, granted })
+                Some(RemotePackage {
+                    id: p.id().to_owned(),
+                    digest,
+                    granted,
+                    enabled: matches!(p.status(), super::PluginStatus::Active | super::PluginStatus::Inactive),
+                })
             })
             .collect()
     }
@@ -332,6 +343,14 @@ impl RemotePlugins {
                 report.failed.push(format!("{}: invalid plugin id", pkg.id));
                 continue;
             }
+            if !pkg.enabled {
+                if self.host.info_of(&pkg.id).is_ok()
+                    && let Err(e) = self.host.set_enabled(&pkg.id, false)
+                {
+                    report.failed.push(format!("{}: {e}", pkg.id));
+                }
+                continue;
+            }
             // The desktop asked the user, change of signer included.
             let consent = Consent { optional: pkg.granted.clone(), signer_change: true };
             if self.current_digest(&pkg.id).as_deref() == Some(pkg.digest.as_str()) {
@@ -366,6 +385,9 @@ impl RemotePlugins {
         let want: BTreeSet<&str> = pkg.granted.iter().map(String::as_str).collect();
         if have != want || info.status == super::PluginStatus::NeedsConsent {
             self.host.grant(&pkg.id, consent)?;
+        }
+        if info.status == super::PluginStatus::Disabled {
+            self.host.set_enabled(&pkg.id, true)?;
         }
         Ok(())
     }

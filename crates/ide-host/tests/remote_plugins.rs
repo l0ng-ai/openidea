@@ -221,11 +221,11 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     })
     .await;
 
-    // Disabled on the desktop: gone from the server.
+    // Disabled on the desktop: retained but stopped on the server.
     desktop.set_enabled("openidea.checkstyle", false).unwrap();
     let removed = sync(&peer, &desktop, &[]).await;
-    assert_eq!(removed.removed, ["openidea.checkstyle"]);
-    assert!(plugins.host().info_of("openidea.checkstyle").is_err());
+    assert!(removed.removed.is_empty());
+    assert_eq!(plugins.host().info_of("openidea.checkstyle").unwrap().status, PluginStatus::Disabled);
     plugins.host().shutdown();
 }
 
@@ -692,5 +692,116 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     assert_eq!(data["id"], operation);
     assert_eq!(data["status"], 0);
     assert_eq!(data["killed"], false);
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_server() {
+    ide_ssh::secrets::testing::use_memory_store();
+    let tmp = tempfile::tempdir().unwrap();
+    let id = "test.data-tools";
+    let desktop =
+        PluginHost::new(tmp.path().join("desktop/plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default())
+            .unwrap();
+    desktop.install_from_dir(&fixture("data-tools"), &Consent::all()).unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let project = project.canonicalize().unwrap();
+    std::fs::write(project.join("data.sqlite"), "").unwrap();
+    let base = tmp.path().join("server");
+    let slot = Arc::new(OnceLock::new());
+    let sink = slot.clone();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(move |w| rpc::event_sink(sink.clone(), Some(w.into()))),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let plugins = RemotePlugins::start(&base.join("data"), &host, slot.clone()).unwrap();
+    let mut dispatcher = Dispatcher::standard();
+    plugins.register(&mut dispatcher);
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host.clone(), dispatcher, slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let client = Arc::new(Client::default());
+    let peer = Peer::connect(cr, cw, client.clone());
+    let _: Value = peer.request("initialize", json!({"version":rpc::PROTOCOL_VERSION}), None).await.unwrap();
+    invoke(&peer, "open_project", json!({"path":project})).await.unwrap();
+    invoke(&peer, "project_trust_set", json!({"path":project,"trusted":true,"folder":false})).await.unwrap();
+    assert!(sync(&peer, &desktop, &[id]).await.failed.is_empty());
+    let source =
+        json!({"id":"local","name":"Remote local","driver":"sqlite","database":"data.sqlite","options":[]}).to_string();
+    invoke(&peer, "plugin_run_command", json!({"pluginId":id,"commandId":"upsert","arg":source,"editor":null}))
+        .await
+        .unwrap();
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":id,"commandId":"credential","arg":"server-only-secret","editor":null}),
+    )
+    .await
+    .unwrap();
+    let sources = invoke(&peer, "db_sources", json!({})).await.unwrap();
+    assert_eq!(sources[0]["pluginOwner"], id);
+    let internal = sources[0]["id"].as_str().unwrap();
+    let store = ide_db::secrets::SecretStore::new(base.join("data/db-passwords.json"), &project);
+    assert_eq!(store.get(internal).as_deref(), Some("server-only-secret"));
+    until("database source change", 5, || {
+        client.events.lock().iter().any(|m| matches!(m.event, IdeEvent::DbSourcesChanged))
+    })
+    .await;
+    desktop.set_enabled(id, false).unwrap();
+    let report = sync(&peer, &desktop, &[]).await;
+    assert!(report.removed.is_empty());
+    assert!(!invoke(&peer, "db_sources", json!({})).await.unwrap().as_array().unwrap().is_empty());
+    desktop.set_enabled(id, true).unwrap();
+    assert!(sync(&peer, &desktop, &[]).await.failed.is_empty());
+    let runner = peer.clone();
+    let connection = tokio::spawn(async move {
+        invoke(
+            &runner,
+            "plugin_run_command",
+            json!({"pluginId":"test.data-tools","commandId":"connect","arg":null,"editor":null}),
+        )
+        .await
+    });
+    until("database connect request", 5, || {
+        client.plugin_events.lock().iter().any(|m| {
+            matches!(
+                m.event,
+                PluginEvent::WindowRequest { request: ide_host::plugins::WindowRequest::DatabaseConnect { .. }, .. }
+            )
+        })
+    })
+    .await;
+    let request = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            PluginEvent::WindowRequest {
+                request_id,
+                request: ide_host::plugins::WindowRequest::DatabaseConnect { .. },
+                ..
+            } => Some(request_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    invoke(&peer, "db_connect", json!({"id":internal})).await.unwrap();
+    invoke(&peer, "plugin_answer_command", json!({"requestId":request,"answer":{"kind":"value","value":null}}))
+        .await
+        .unwrap();
+    connection.await.unwrap().unwrap();
+    assert!(project.join("data.sqlite").exists());
+    desktop.uninstall(id).unwrap();
+    assert_eq!(sync(&peer, &desktop, &[]).await.removed, [id]);
+    assert!(invoke(&peer, "db_sources", json!({})).await.unwrap().as_array().unwrap().is_empty());
+    assert!(store.get(internal).is_none());
     plugins.host().shutdown();
 }

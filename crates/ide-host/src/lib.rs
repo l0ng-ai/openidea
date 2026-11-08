@@ -55,6 +55,7 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
@@ -125,6 +126,7 @@ impl Host {
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
+            mcp_executable: RwLock::default(),
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
@@ -177,6 +179,11 @@ impl Host {
     }
 
     /// Associates the plugin runtime that executes this host's project operations.
+    /// Publishes only the executable of the running built-in MCP service.
+    pub fn set_mcp_executable(&self, executable: Option<PathBuf>) {
+        *self.mcp_executable.write() = executable;
+    }
+
     pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
         *self.plugin_host.write() = Arc::downgrade(plugins);
     }

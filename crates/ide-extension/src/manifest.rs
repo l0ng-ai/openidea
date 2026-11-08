@@ -329,7 +329,10 @@ impl Manifest {
             check_relative(icon, "icon")?;
         }
         for cap in self.capabilities.required.iter().chain(&self.capabilities.optional) {
-            if matches!(cap, Capability::IdeCommands | Capability::NetHttp(_) | Capability::Ipc(_)) {
+            if matches!(
+                cap,
+                Capability::IdeCommands | Capability::DatabaseSources | Capability::NetHttp(_) | Capability::Ipc(_)
+            ) {
                 self.needs_api(&format!("capability `{cap}`"), 4)?;
             }
             if matches!(cap, Capability::ProjectWrite | Capability::FsWrite(_)) {

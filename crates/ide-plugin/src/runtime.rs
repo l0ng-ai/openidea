@@ -66,6 +66,44 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
+    /// Creates/replaces this plugin's non-secret project connection settings.
+    fn database_upsert(&self, root: &Path, source: crate::PluginDataSource) -> Result<(), HostError> {
+        let _ = (root, source);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Removes only an owned data source and its credentials.
+    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError> {
+        let _ = (root, id);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Private ids of only this plugin's sources.
+    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError> {
+        let _ = root;
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Writes a password to the Database credential store, without a read path.
+    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError> {
+        let _ = (root, id, password);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Requests normal connection/introspection in the invoking project's window.
+    fn database_connect(
+        &self,
+        root: &Path,
+        client: &str,
+        id: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (root, client, id, cancel, timeout);
+        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Stdio argv only; no URL or bearer token.
+    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
+        let _ = client;
+        None
+    }
+
     /// Registers a project-scoped wrapper after validating its process grant and pin.
     fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
         let _ = (root, target);
@@ -891,6 +929,7 @@ struct Exports {
     endpoints: Option<wit_endpoints::Guest>,
     run_configurations: Option<wit_configs::Guest>,
     test_results: Option<wit_tests::Guest>,
+    mcp: Option<crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -1012,7 +1051,10 @@ impl Runtime {
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
         let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
+        let mcp_indices =
+            crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
+        let mcp = mcp_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let run_configurations =
             configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
@@ -1086,6 +1128,7 @@ impl Runtime {
                 endpoints,
                 run_configurations,
                 test_results,
+                mcp,
                 file_actions,
             },
             limits: setup.limits,
@@ -2500,6 +2543,31 @@ impl Runtime {
                 language: clip(i.language, 64),
             })
             .collect())
+    }
+}
+
+impl Runtime {
+    /// Optional MCP export, with the same wall-clock and fuel budgets as commands.
+    pub fn mcp_call(&mut self, tool: &str, arguments: &str, invocation: Invocation) -> Result<String, CallError> {
+        if self.exports.mcp.is_none() {
+            return Err(CallError::missing_export("mcp-provider"));
+        }
+        let result = self.call(invocation, self.limits.timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let result = e.mcp.as_ref().unwrap().call_call(
+                &mut *store,
+                tool,
+                arguments,
+                wasmtime::component::Resource::new_borrow(ctx.rep()),
+            );
+            store.data_mut().drop_invocation(ctx);
+            result
+        })?;
+        let result = result.map_err(|e| CallError::Guest(e.into()))?;
+        if result.len() > 4 << 20 {
+            return Err(CallError::Guest(GuestError::Invalid("MCP result exceeds 4 MiB".into())));
+        }
+        Ok(result)
     }
 }
 

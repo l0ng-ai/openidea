@@ -6,6 +6,8 @@
  */
 import { lazyComponent, lazyWhen } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
+import { tx } from "@/platform/i18n";
+import { onIdeEvent } from "@/platform/ipc";
 import { registerActions } from "@/platform/actions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
@@ -27,6 +29,11 @@ import {
   consoleSource,
   consoleTints,
   loadSources,
+  connect,
+  loadSchemas,
+  loadDatabases,
+  listsDatabases,
+  sourceById,
   openConsole,
   openHistory,
   openSourceDialog,
@@ -38,6 +45,9 @@ const useDialogOpen = () => useDatabase((s) => !!s.dialog);
 
 export function activate(): () => void {
   const disposers = [
+    onIdeEvent("dbSourcesChanged", () => {
+      void loadSources();
+    }),
     registerToolWindow({
       id: DB_TOOL_WINDOW,
       title: "Database",
@@ -109,6 +119,23 @@ export function activate(): () => void {
     installTableEditorFocus(),
     registerDatabaseTreeActions(),
     registerActions([
+      {
+        id: "db.pluginConnect",
+        title: "Connect Plugin Data Source",
+        category: "Tools",
+        when: "projectOpen",
+        run: async (e) => {
+          if (!useProject.getState().project?.trusted)
+            throw new Error(tx("Trust this project to connect plugin data sources"));
+          const id = e.arg;
+          if (typeof id !== "string") throw new Error(tx("Invalid data source id"));
+          await loadSources();
+          toolWindowService().show(DB_TOOL_WINDOW, true);
+          if (!(await connect(id))) throw new Error(tx("Database connection failed"));
+          if (listsDatabases(sourceById(id))) await loadDatabases(id);
+          else await loadSchemas(id);
+        },
+      },
       {
         id: "db.showToolWindow",
         title: "Database",

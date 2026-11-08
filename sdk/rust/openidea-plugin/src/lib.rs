@@ -288,6 +288,7 @@ macro_rules! register_plugin {
 macro_rules! __optional_exports {
     (injections, $plugin:ty, $component:ident) => { $crate::__injections_exports!($plugin, $component); };
     (language_features, $plugin:ty, $component:ident) => { $crate::__language_features_exports!($plugin, $component); };
+    (mcp, $plugin:ty, $component:ident) => { $crate::__mcp_exports!($plugin, $component); };
     (run_configurations, $plugin:ty, $component:ident) => { $crate::__run_configurations_exports!($plugin, $component); };
     (test_results, $plugin:ty, $component:ident) => { $crate::__test_results_exports!($plugin, $component); };
 
@@ -1074,6 +1075,15 @@ pub mod __rt {
         with::<T, _>(|p| p.render(&view, viewport, &ctx)).map(view_out).map_err(error_out)
     }
 
+    pub fn mcp_call<T: Plugin + crate::McpProvider + Default>(
+        tool: &str,
+        arguments: &str,
+        ctx: &b::invocation::Invocation,
+    ) -> Result<String, b::types::Error> {
+        let ctx = Invocation::__new(ctx);
+        with::<T, _>(|p| p.call(tool, arguments, &ctx)).map_err(error_out)
+    }
+
     pub fn configurations<T: Plugin + crate::RunConfigurations + Default>(
         root: &str,
     ) -> Vec<crate::run_configurations_bindings::exports::openidea::plugin::run_configurations::RunConfiguration> {
@@ -1373,4 +1383,32 @@ fn injections(doc: $crate::injections_bindings::exports::openidea::plugin::injec
 /// Embedded-language range providers (API 1.4).
 pub mod injections {
     pub use crate::language_features::{Document, Injection, Injections};
+}
+
+/// Implements tools declared in contributes.mcpTools. Arguments/results are JSON/text.
+pub trait McpProvider {
+    fn call(&mut self, tool: &str, arguments: &str, ctx: &Invocation) -> Result<String, Error>;
+}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod mcp_bindings {
+    wit_bindgen::generate!({ world: "mcp-tools", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_mcp_world", default_bindings_module: "openidea_plugin::mcp_bindings",
+        with: {
+            "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types,
+            "openidea:plugin/invocation@1.4.0": crate::bindings::openidea::plugin::invocation,
+        },
+    });
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __mcp_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::mcp_bindings::exports::openidea::plugin::mcp_provider::Guest for $component {
+            fn call(tool: String, arguments: String, ctx: &$crate::bindings::openidea::plugin::invocation::Invocation) -> Result<String, $crate::bindings::openidea::plugin::types::Error> {
+                $crate::__rt::mcp_call::<$plugin>(&tool, &arguments, ctx)
+            }
+        }
+        $crate::mcp_bindings::__export_mcp_world!($component with_types_in $crate::mcp_bindings);
+    };
 }
