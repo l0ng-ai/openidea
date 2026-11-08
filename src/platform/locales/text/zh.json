@@ -6784,5 +6784,7 @@
   "Always allowed": "已设为始终允许",
   "Declined": "已拒绝",
   "Always declined": "已设为始终拒绝",
-  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "分支 '{name}' 被位于 {path} 的工作树签出。\n删除该工作树和分支？其文件夹将被删除。"
+  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "分支 '{name}' 被位于 {path} 的工作树签出。\n删除该工作树和分支？其文件夹将被删除。",
+  "Maven Goals": "Maven 目标",
+  "Gradle Tasks": "Gradle 任务"
 }
