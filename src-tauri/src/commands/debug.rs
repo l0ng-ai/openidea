@@ -320,37 +320,40 @@ pub async fn debug_jvm_memory_classes(
     ide_host::ops::debug::debug_jvm_memory_classes(&state.host, "", session).await
 }
 
-/// Up to `limit` live instances of `class_name` in the stopped JVM.
+/// Up to `limit` live instances of the class in the stopped JVM.
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_jvm_memory_instances(
+    window: Window,
     state: State<'_, AppState>,
     session: DebugSessionId,
     class_name: String,
     limit: u32,
 ) -> IdeResult<JvmInstancesResult> {
-    ide_host::ops::debug::debug_jvm_memory_instances(&state.host, "", session, class_name, limit).await
+    ide_host::ops::debug::debug_jvm_memory_instances(&state.host, window.label(), session, class_name, limit).await
 }
 
 /// The fields (or array elements) of an instance in the stopped JVM.
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_jvm_memory_fields(
+    window: Window,
     state: State<'_, AppState>,
     session: DebugSessionId,
     object: JvmObjectRef,
 ) -> IdeResult<JvmFieldsResult> {
-    ide_host::ops::debug::debug_jvm_memory_fields(&state.host, "", session, object).await
+    ide_host::ops::debug::debug_jvm_memory_fields(&state.host, window.label(), session, object).await
 }
 
 /// The objects that hold a reference to `object`; `limit` 0 selects the default.
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_jvm_memory_referrers(
+    window: Window,
     state: State<'_, AppState>,
     session: DebugSessionId,
     object: JvmObjectRef,
     limit: u32,
 ) -> IdeResult<JvmReferrersResult> {
-    ide_host::ops::debug::debug_jvm_memory_referrers(&state.host, "", session, object, limit).await
+    ide_host::ops::debug::debug_jvm_memory_referrers(&state.host, window.label(), session, object, limit).await
 }

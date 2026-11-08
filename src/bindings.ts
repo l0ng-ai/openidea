@@ -996,7 +996,7 @@ export const commands = {
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
 	/**  The debuggee JVM's loaded classes (instances and shallow bytes), or why they cannot be read. */
 	debugJvmMemoryClasses: (session: DebugSessionId) => typedError<JvmMemoryResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_classes", { session })),
-	/**  Up to `limit` live instances of `class_name` in the stopped JVM. */
+	/**  Up to `limit` live instances of the class in the stopped JVM. */
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The fields (or array elements) of an instance in the stopped JVM. */
 	debugJvmMemoryFields: (session: DebugSessionId, object: JvmObjectRef) => typedError<JvmFieldsResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_fields", { session, object })),

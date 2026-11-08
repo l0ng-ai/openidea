@@ -423,7 +423,7 @@ pub async fn debug_jvm_memory_classes(
     host.debugger.jvm_memory_classes(session).await
 }
 
-/// Up to `limit` live instances of `class_name` in the stopped JVM.
+/// Up to `limit` live instances of the class in the stopped JVM.
 pub async fn debug_jvm_memory_instances(
     host: &Host,
     window: &str,
