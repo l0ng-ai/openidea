@@ -44,8 +44,27 @@ type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutpu
 pub struct ProcessRun {
     pub program: String,
     pub args: Vec<String>,
+    /// Variables added to the inherited environment.
+    pub env: Vec<(String, String)>,
     /// The project root it ran in (`None`: the data directory).
     pub cwd: Option<String>,
+}
+
+/// A program a plugin started and keeps running behind a handle.
+#[derive(Debug)]
+#[allow(dead_code)] // recorded so a test can see what a handle was started with
+struct ChildState {
+    program: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    cwd: Option<String>,
+    /// What `write` put into its stdin.
+    stdin: String,
+    stdin_closed: bool,
+    /// What it printed and the plugin has not read yet.
+    stdout: String,
+    stderr: String,
+    status: Option<i32>,
 }
 
 struct Editor {
@@ -61,7 +80,13 @@ struct State {
     capabilities: Vec<String>,
     root: Option<String>,
     other_projects: Vec<String>,
+    symbols: BTreeMap<String, Vec<SymbolInfo>>,
     files: BTreeMap<String, String>,
+
+    /// Files outside every project, for `fs.read` (absolute paths).
+    external: BTreeMap<String, String>,
+    /// The same, for what `fs::write_bytes` put there.
+    external_bytes: BTreeMap<String, Vec<u8>>,
     dirs: BTreeSet<String>,
     editor: Option<Editor>,
     selected_paths: Vec<String>,
@@ -85,14 +110,19 @@ struct State {
     answers: VecDeque<Option<Vec<String>>>,
     revealed_views: Vec<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
+    provider_diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
     processes: BTreeMap<String, ProcessHandler>,
     runs: Vec<ProcessRun>,
+    /// The programs `start`ed, by handle id.
+    children: BTreeMap<u64, ChildState>,
+    next_child: u64,
     refreshed: Vec<String>,
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
+    log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
     locale: Option<String>,
@@ -105,6 +135,17 @@ pub struct MockTerminal {
     pub program: String,
     pub args: Vec<String>,
 }
+
+/// A log tab the plugin opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockLogTab {
+    pub key: String,
+    pub title: String,
+    pub log: crate::details::ProcessLog,
+}
+
+/// At most 8 programs a plugin may keep running, as the host allows.
+const MAX_CHILDREN: usize = 8;
 
 thread_local! {
     static CURRENT: RefCell<Option<Rc<RefCell<State>>>> = const { RefCell::new(None) };
@@ -161,6 +202,12 @@ impl MockHost {
         self.state.borrow_mut().other_projects.push(root.to_owned());
     }
 
+    /// Replaces a project's indexed symbols. Filtering in the mock is a
+    /// case-insensitive substring; the real index also supports fuzzy matching.
+    pub fn set_symbols(&self, root: &str, symbols: Vec<SymbolInfo>) {
+        self.state.borrow_mut().symbols.insert(root.into(), symbols);
+    }
+
     /// A project file `read_file` can return (project-relative or absolute path).
     pub fn add_file(&self, path: &str, text: &str) {
         self.state.borrow_mut().files.insert(path.to_owned(), text.to_owned());
@@ -175,6 +222,13 @@ impl MockHost {
     /// Sets the paths invocations report as selected.
     pub fn select_paths(&self, paths: &[&str]) {
         self.state.borrow_mut().selected_paths = paths.iter().map(|p| (*p).to_owned()).collect();
+    }
+
+    /// A file outside every project, for [`crate::host::fs`]: it is readable
+    /// once an `fs.read:<a directory above it>` capability is granted, writable
+    /// with `fs.write:`. Directories are inferred from the paths it holds.
+    pub fn add_external_file(&self, path: &str, text: &str) {
+        self.state.borrow_mut().external.insert(path.to_owned(), text.to_owned());
     }
 
     /// Focuses an editor on `text` with selections `(line, col, line, col)`.
@@ -318,6 +372,31 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Runs a diagnostics provider against the current mock editor snapshot.
+    /// This explicit call replaces the real host's debounce; it needs no capability.
+    pub fn refresh_diagnostics(&self, provider: &mut impl crate::diagnostics::DiagnosticsProvider) {
+        let document = self.state.borrow().editor.as_ref().map(|e| crate::diagnostics::Document {
+            path: e.path.clone(),
+            language: e.language.clone(),
+            version: e.version,
+            text: e.text.clone(),
+        });
+        if let Some(document) = document {
+            let items = provider.diagnostics(&document);
+            let mut state = self.state.borrow_mut();
+            if items.is_empty() {
+                state.provider_diagnostics.remove(&document.path);
+            } else {
+                state.provider_diagnostics.insert(document.path, items);
+            }
+        }
+    }
+
+    /// Diagnostics returned by the provider, separate from manual publishing.
+    pub fn provider_diagnostics(&self) -> BTreeMap<String, Vec<Diagnostic>> {
+        self.state.borrow().provider_diagnostics.clone()
+    }
+
     /// Views the plugin asked to refresh, in order.
     pub fn refreshed_views(&self) -> Vec<String> {
         self.state.borrow().refreshed.clone()
@@ -335,6 +414,11 @@ impl MockHost {
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
+    }
+
+    /// Log tabs the plugin opened, the latest of each key last.
+    pub fn log_tabs(&self) -> Vec<MockLogTab> {
+        self.state.borrow().log_tabs.clone()
     }
 
     /// The value of one of the plugin's settings, as JSON (`true`, `"text"`).
@@ -444,6 +528,101 @@ pub mod current {
 
     fn require(s: &State, cap: &str) -> Result<(), Error> {
         if s.capabilities.iter().any(|c| c == cap) { Ok(()) } else { Err(Error::Denied(cap.to_owned())) }
+    }
+
+    /// `fs.read:<base>` (or `fs.write:<base>`) covers `<base>` itself and what is
+    /// under it: `/a` covers `/a/b` but not `/ab`.
+    const PLUGIN_DIR: &str = "/openidea/plugin-data/mock/files";
+
+    fn is_private_path(path: &str) -> bool {
+        (path == PLUGIN_DIR || path.starts_with(&format!("{PLUGIN_DIR}/")))
+            && !path.split(['/', '\\']).any(|part| part == "..")
+    }
+
+    fn require_fs(s: &State, kind: &str, path: &str) -> Result<(), Error> {
+        if path.split(['/', '\\']).any(|part| part == "..") {
+            return Err(Error::Denied(format!("{kind}:{path}")));
+        }
+        if is_private_path(path) {
+            return Ok(());
+        }
+        let prefix = format!("{kind}:");
+        let covered = s.capabilities.iter().any(|c| match c.strip_prefix(&prefix) {
+            Some(base) => {
+                let base = base.trim_end_matches(['/', '\\']);
+                !base.is_empty()
+                    && (path == base
+                        || matches!(path.strip_prefix(base), Some(rest) if rest.starts_with('/') || rest.starts_with('\\')))
+            }
+            None => false,
+        });
+        if covered { Ok(()) } else { Err(Error::Denied(format!("{prefix}{path}"))) }
+    }
+
+    /// The paths `fs` takes are absolute; `~/…` is the user's home on the real
+    /// host, and the mock resolves nothing, so add it to the mock as it is.
+    fn check_absolute(path: &str) -> Result<(), Error> {
+        let bytes = path.as_bytes();
+        let drive = bytes.len() > 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'/' || bytes[2] == b'\\');
+        if path.starts_with('/') || drive {
+            Ok(())
+        } else {
+            Err(Error::Invalid(format!("{path}: use an absolute path (or ~/…)")))
+        }
+    }
+
+    /// `fs` checks what the real host checks, minus canonicalisation: absolute
+    /// path, then a grant covering it.
+    fn check_external(s: &State, kind: &str, path: &str) -> Result<(), Error> {
+        check_absolute(path)?;
+        require_fs(s, kind, path)
+    }
+
+    /// The directory `path` lives in: `/a/b` → `/a`, `/a` → `/`, `C:\a` → `C:\`.
+    fn parent_dir(path: &str) -> Option<&str> {
+        let cut = path.rfind(['/', '\\'])?;
+        let root = cut == 0 || (cut == 2 && path.as_bytes()[1] == b':');
+        Some(&path[..if root { cut + 1 } else { cut }])
+    }
+
+    /// Files the mock holds under `dir`.
+    fn has_children(s: &State, dir: &str) -> bool {
+        let under =
+            |p: &String| matches!(p.strip_prefix(dir), Some(rest) if rest.starts_with('/') || rest.starts_with('\\'));
+        s.external.keys().any(under) || s.external_bytes.keys().any(under)
+    }
+
+    /// The mock holds no file system, so a directory exists when a grant names
+    /// it or a registered file lives under it — plus the root of a volume.
+    fn dir_exists(s: &State, dir: &str) -> bool {
+        let dir = dir.trim_end_matches(['/', '\\']);
+        if dir.is_empty() || dir.ends_with(':') {
+            return true;
+        }
+        let granted = ["fs.read:", "fs.write:"].iter().any(|kind| {
+            s.capabilities
+                .iter()
+                .filter_map(|c| c.strip_prefix(kind))
+                .any(|base| base.trim_end_matches(['/', '\\']) == dir)
+        });
+        dir == PLUGIN_DIR || granted || has_children(s, dir)
+    }
+
+    /// What a write has to get past: an `fs.write` grant, a path that is not a
+    /// directory, and a parent directory that exists.
+    fn check_writable(s: &State, path: &str) -> Result<(), Error> {
+        check_external(s, "fs.write", path)?;
+        if has_children(s, path) {
+            return Err(Error::Invalid(format!("{path}: is a directory")));
+        }
+        match parent_dir(path) {
+            Some(dir) if dir_exists(s, dir) => Ok(()),
+            Some(dir) => Err(Error::Invalid(format!("{dir}: no such directory"))),
+            None => Err(Error::Invalid(format!("{path}: expected a file path"))),
+        }
     }
 
     pub fn log(level: LogLevel, message: &str) {
@@ -679,11 +858,52 @@ pub mod current {
         })
     }
 
+    pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.write")?;
+            let rel = rel_in_root(p, path)?;
+            if s.editor.as_ref().is_some_and(|e| e.path == path || e.path == format!("{}/{rel}", p.root)) {
+                return Err(Error::Invalid(format!("{path}: the editor has unsaved changes; save it first")));
+            }
+            s.files.insert(rel.to_string(), text.to_owned());
+            Ok(())
+        })
+    }
+
     pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
         with(|s| {
             require(s, "project.read")?;
             let rel = rel_in_root(p, path)?;
             Ok(rel.is_empty() || path_known(s, p, path, rel))
+        })
+    }
+
+    pub fn project_symbols(p: &ProjectRes, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if query.len() > 256 {
+                return Err(Error::Invalid("symbol query exceeds 256 UTF-8 bytes".into()));
+            }
+            if !s.root.iter().chain(&s.other_projects).any(|root| *root == p.root) {
+                return Err(Error::NotFound("the project is no longer open".into()));
+            }
+            let query = query.trim().to_lowercase();
+            Ok(s.symbols
+                .get(&p.root)
+                .into_iter()
+                .flatten()
+                .filter(|symbol| {
+                    !query.is_empty()
+                        && symbol.name.to_lowercase().contains(&query)
+                        && symbol
+                            .location
+                            .path
+                            .strip_prefix(p.root.trim_end_matches('/'))
+                            .is_some_and(|rest| rest.starts_with('/'))
+                })
+                .take(limit.min(1000) as usize)
+                .cloned()
+                .collect())
         })
     }
 
@@ -703,6 +923,106 @@ pub mod current {
             let kind = if file.is_some() || open.is_some() { FileKind::File } else { FileKind::Directory };
             let size = file.or_else(|| open.map(|e| &e.text)).map_or(0, |t| t.len() as u64);
             Ok(FileStat { kind, size, modified: None })
+        })
+    }
+
+    pub fn fs_plugin_dir() -> Result<String, Error> {
+        Ok(PLUGIN_DIR.to_owned())
+    }
+
+    pub fn fs_read_file(path: &str) -> Result<String, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            // Unsaved editor contents win, as on the real host.
+            if let Some(e) = s.editor.as_ref().filter(|e| e.path == path) {
+                return Ok(e.text.clone());
+            }
+            if let Some(text) = s.external.get(path) {
+                return Ok(text.clone());
+            }
+            match s.external_bytes.get(path) {
+                Some(bytes) => String::from_utf8(bytes.clone())
+                    .map_err(|_| Error::Invalid(format!("{path}: not valid UTF-8 text"))),
+                None => Err(Error::NotFound(path.into())),
+            }
+        })
+    }
+
+    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            if let Some(bytes) = s.external_bytes.get(path) {
+                return Ok(bytes.clone());
+            }
+            let text = s.external.get(path).ok_or_else(|| Error::NotFound(path.into()))?;
+            Ok(text.clone().into_bytes())
+        })
+    }
+
+    pub fn fs_stat(path: &str) -> Result<FileStat, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            if let Some(text) = s.external.get(path) {
+                return Ok(FileStat { kind: FileKind::File, size: text.len() as u64, modified: None });
+            }
+            if let Some(bytes) = s.external_bytes.get(path) {
+                return Ok(FileStat { kind: FileKind::File, size: bytes.len() as u64, modified: None });
+            }
+            // A directory is a prefix of the files the mock holds.
+            if path == PLUGIN_DIR || has_children(s, path) {
+                Ok(FileStat { kind: FileKind::Directory, size: 0, modified: None })
+            } else {
+                Err(Error::NotFound(path.into()))
+            }
+        })
+    }
+
+    pub fn fs_write_file(path: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            check_writable(s, path)?;
+            s.external_bytes.remove(path);
+            s.external.insert(path.to_owned(), text.to_owned());
+            Ok(())
+        })
+    }
+
+    pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        with(|s| {
+            check_writable(s, path)?;
+            s.external.remove(path);
+            s.external_bytes.insert(path.to_owned(), bytes.to_vec());
+            Ok(())
+        })
+    }
+
+    pub fn fs_read_dir(path: &str) -> Result<Vec<crate::host::fs::DirEntry>, Error> {
+        with(|s| {
+            check_external(s, "fs.read", path)?;
+            if s.external.contains_key(path) || s.external_bytes.contains_key(path) {
+                return Err(Error::Invalid(format!("{path}: not a directory")));
+            }
+            let mut entries: BTreeMap<String, FileKind> = BTreeMap::new();
+            for file in s.external.keys().chain(s.external_bytes.keys()) {
+                let rest = match file.strip_prefix(path) {
+                    Some(rest) if rest.starts_with('/') || rest.starts_with('\\') => &rest[1..],
+                    _ => continue,
+                };
+                match rest.split(['/', '\\']).next() {
+                    Some(name) if !name.is_empty() => {
+                        let kind = if rest.contains('/') || rest.contains('\\') {
+                            FileKind::Directory
+                        } else {
+                            FileKind::File
+                        };
+                        entries.insert(name.to_owned(), kind);
+                    }
+                    _ => {}
+                }
+            }
+            if entries.is_empty() && path != PLUGIN_DIR {
+                return Err(Error::NotFound(path.into()));
+            }
+            Ok(entries.into_iter().map(|(name, kind)| crate::host::fs::DirEntry { name, kind }).collect())
         })
     }
 
@@ -826,7 +1146,7 @@ pub mod current {
     pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
         with(|s| {
             require(s, "events")?;
-            if !matches!(kind, "file-opened" | "file-saved")
+            if !matches!(kind, "file-opened" | "file-saved" | "files-changed")
                 || globs.len() > 64
                 || globs.iter().any(|g| {
                     let relative = g.trim_start_matches("./");
@@ -847,6 +1167,9 @@ pub mod current {
                 }
                 "file-saved" => {
                     s.subscriptions.insert(EventKind::FileSaved);
+                }
+                "files-changed" => {
+                    s.subscriptions.insert(EventKind::FilesChanged);
                 }
                 _ => {}
             }
@@ -963,9 +1286,25 @@ pub mod current {
         })
     }
 
+    pub fn open_log_tab(key: &str, title: &str, log: &crate::details::ProcessLog) -> Result<(), Error> {
+        with(|s| {
+            require(s, &format!("process:{}", log.program))?;
+            let line =
+                |t: &str, max: usize| !t.is_empty() && t.chars().count() <= max && !t.contains(['\0', '\r', '\n']);
+            if !line(key, 128) || !line(title, 256) || log.toggles.len() > 32 {
+                return Err(Error::Invalid("a log tab's key, title or toggles are over the limits".into()));
+            }
+            s.log_tabs.retain(|t| t.key != key);
+            s.log_tabs.push(MockLogTab { key: key.into(), title: title.into(), log: log.clone() });
+            Ok(())
+        })
+    }
+
     pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
         with(|s| {
-            require(s, "project.read")?;
+            if !is_private_path(path) {
+                require(s, "project.read")?;
+            }
             s.locations.push((path.into(), line, column));
             Ok(())
         })
@@ -983,11 +1322,184 @@ pub mod current {
     ) -> Result<ProcessOutput, Error> {
         with(|s| {
             require(s, &format!("process:{program}"))?;
-            s.runs.push(ProcessRun { program: program.into(), args: args.to_vec(), cwd: cwd.map(|p| p.root.clone()) });
+            s.runs.push(ProcessRun {
+                program: program.into(),
+                args: args.to_vec(),
+                env: Vec::new(),
+                cwd: cwd.map(|p| p.root.clone()),
+            });
             match s.processes.get(program) {
                 Some(handler) => handler(args, stdin),
                 None => Err(Error::NotFound(format!("{program} (MockHost::on_process)"))),
             }
+        })
+    }
+
+    pub struct ChildRes {
+        id: u64,
+        owner: Rc<RefCell<State>>,
+    }
+
+    impl Drop for ChildRes {
+        fn drop(&mut self) {
+            self.owner.borrow_mut().children.remove(&self.id);
+        }
+    }
+
+    fn command_env(cmd: &crate::host::Command) -> Result<(), Error> {
+        if cmd.env.len() > 64 {
+            return Err(Error::Invalid("at most 64 environment variables".into()));
+        }
+        let mut names: Vec<&str> = Vec::new();
+        for (key, value) in &cmd.env {
+            if key.is_empty()
+                || key.len() > 256
+                || key.contains(['=', '\0'])
+                || value.len() > 4096
+                || value.contains('\0')
+            {
+                return Err(Error::Invalid(format!("invalid environment variable {key:?}")));
+            }
+            if names.iter().any(|name| if cfg!(windows) { name.eq_ignore_ascii_case(key) } else { *name == key }) {
+                return Err(Error::Invalid(format!("environment variable {key:?} already exists")));
+            }
+            names.push(key);
+        }
+        Ok(())
+    }
+
+    /// Runs a [`Command`]: like `run_process`, with its environment in front of
+    /// what the program printed (the mock machine has none of its own, so this
+    /// is how a test sees the variables arrived).
+    pub fn run_command(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+    ) -> Result<ProcessOutput, Error> {
+        with(|s| {
+            require(s, &format!("process:{}", cmd.program))?;
+            command_env(cmd)?;
+            s.runs.push(ProcessRun {
+                program: cmd.program.clone(),
+                args: cmd.args.clone(),
+                env: cmd.env.clone(),
+                cwd: cwd.map(|p| p.root.clone()),
+            });
+            let Some(handler) = s.processes.get(&cmd.program) else {
+                return Err(Error::NotFound(format!("{} (MockHost::on_process)", cmd.program)));
+            };
+            let mut out = handler(&cmd.args, stdin)?;
+            let env: String = cmd.env.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
+            out.stdout.insert_str(0, &env);
+            Ok(out)
+        })
+    }
+
+    /// Starts a [`Command`] and returns its handle (at most 8, as the host allows).
+    pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
+        with(|s| {
+            require(s, &format!("process:{}", cmd.program))?;
+            command_env(cmd)?;
+            if s.children.len() >= MAX_CHILDREN {
+                return Err(Error::Invalid(format!(
+                    "{}: too many processes (at most {MAX_CHILDREN} at a time)",
+                    cmd.program
+                )));
+            }
+            s.next_child += 1;
+            let id = s.next_child;
+            let child = ChildState {
+                program: cmd.program.clone(),
+                args: cmd.args.clone(),
+                env: cmd.env.clone(),
+                cwd: cwd.map(|p| p.root.clone()),
+                stdin: String::new(),
+                stdin_closed: false,
+                stdout: format!("started: {}\n", cmd.program),
+                stderr: String::new(),
+                status: None,
+            };
+            s.children.insert(id, child);
+            let owner = CURRENT.with(|c| c.borrow().as_ref().unwrap().clone());
+            Ok(ChildRes { id, owner })
+        })
+    }
+
+    fn child_at(s: &mut State, id: u64) -> Result<&mut ChildState, Error> {
+        s.children.get_mut(&id).ok_or_else(|| Error::NotFound(format!("{id} (no such process handle)")))
+    }
+
+    /// Up to `max` bytes from the front of `buf`, cut at a character boundary.
+    fn take(buf: &mut String, max: u32) -> String {
+        let mut cut = (max.max(1) as usize).min(1 << 20).min(buf.len());
+        while !buf.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if cut == 0 && !buf.is_empty() {
+            cut = buf.chars().next().unwrap().len_utf8();
+        }
+        buf.drain(..cut).collect()
+    }
+
+    pub fn child_poll(child: &ChildRes, max_bytes: u32) -> Result<crate::host::Chunk, Error> {
+        let id = child.id;
+        with(|s| {
+            let c = child_at(s, id)?;
+            Ok(crate::host::Chunk {
+                stdout: take(&mut c.stdout, max_bytes),
+                stderr: take(&mut c.stderr, max_bytes),
+                status: c.status,
+            })
+        })
+    }
+
+    pub fn child_write(child: &ChildRes, text: &str) -> Result<(), Error> {
+        let id = child.id;
+        with(|s| {
+            let c = child_at(s, id)?;
+            if c.status.is_some() {
+                return Err(Error::Invalid(format!("{id}: the process has ended")));
+            }
+            if c.stdin_closed {
+                return Err(Error::Invalid(format!("{id}: the input is closed")));
+            }
+            c.stdin.push_str(text);
+            c.stdout.push_str(&format!("echo: {text}"));
+            Ok(())
+        })
+    }
+
+    pub fn child_close_stdin(child: &ChildRes) -> Result<(), Error> {
+        let id = child.id;
+        with(|s| {
+            child_at(s, id)?.stdin_closed = true;
+            Ok(())
+        })
+    }
+
+    pub fn child_kill(child: &ChildRes) -> Result<(), Error> {
+        let id = child.id;
+        with(|s| {
+            let c = child_at(s, id)?;
+            if c.status.is_none() {
+                c.status = Some(-1);
+            }
+            Ok(())
+        })
+    }
+
+    pub fn child_wait(child: &ChildRes, timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
+        let id = child.id;
+        with(|s| {
+            let c = child_at(s, id)?;
+            if timeout_ms > 0 && c.status.is_none() {
+                c.status = Some(0);
+            }
+            Ok(crate::host::Chunk {
+                stdout: std::mem::take(&mut c.stdout),
+                stderr: std::mem::take(&mut c.stderr),
+                status: c.status,
+            })
         })
     }
 
@@ -1159,6 +1671,39 @@ mod tests {
     }
 
     #[test]
+    fn indexed_symbols_are_bounded_scoped_and_capability_checked() {
+        let mock = MockHost::install();
+        let symbol = SymbolInfo {
+            name: "OrderController".into(),
+            kind: "class".into(),
+            container: Some("App".into()),
+            location: Location {
+                path: "/project/Order.php".into(),
+                range: Range::new(Position::new(0, 2), Position::new(0, 17)),
+            },
+        };
+        let mut symbols = vec![symbol.clone(); 1001];
+        let mut outside = symbol.clone();
+        outside.location.path = "/project-other/Order.php".into();
+        symbols.insert(0, outside);
+        mock.set_symbols("/project", symbols);
+        mock.add_project("/other");
+        let project = mock.invocation().project().unwrap();
+        assert_eq!(project.symbols("order", u32::MAX).unwrap().len(), 1000);
+        assert_eq!(project.symbols("order", 1).unwrap(), [symbol]);
+        assert!(project.symbols("", 1).unwrap().is_empty());
+        assert!(project.symbols("order", 0).unwrap().is_empty());
+        assert!(matches!(project.symbols(&"é".repeat(129), 1), Err(Error::Invalid(_))));
+        assert!(host::projects().unwrap()[1].symbols("order", 1).unwrap().is_empty());
+        mock.set_symbols("/project", Vec::new());
+        assert!(project.symbols("order", 1).unwrap().is_empty());
+        mock.set_project_root(None);
+        assert!(matches!(project.symbols("order", 1), Err(Error::NotFound(_))));
+        let _mock = mock.with_capabilities(&[]);
+        assert_eq!(project.symbols("order", 1), Err(Error::Denied("project.read".into())));
+    }
+
+    #[test]
     fn versioned_edits() {
         let mock = MockHost::install();
         mock.open_editor("/project/a.txt", "text", "one two", &[(0, 0, 0, 3), (0, 4, 0, 7)]);
@@ -1182,6 +1727,21 @@ mod tests {
     }
 
     #[test]
+    fn files_outside_the_project_need_an_fs_read_grant() {
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/tool"]);
+        mock.add_external_file("/opt/tool/conf/app.yaml", "port: 8080");
+        mock.add_external_file("/opt/tool/README", "hi");
+        mock.add_external_file("/opt/other/secret", "no");
+        assert_eq!(host::fs::read_file("/opt/tool/conf/app.yaml").unwrap(), "port: 8080");
+        assert_eq!(host::fs::read_bytes("/opt/tool/README").unwrap(), b"hi");
+        assert_eq!(host::fs::stat("/opt/tool/conf").unwrap().kind, FileKind::Directory);
+        let names: Vec<_> = host::fs::read_dir("/opt/tool").unwrap().into_iter().map(|e| (e.name, e.kind)).collect();
+        assert_eq!(names, [("README".into(), FileKind::File), ("conf".into(), FileKind::Directory)]);
+        assert!(matches!(host::fs::read_file("/opt/other/secret"), Err(Error::Denied(_))));
+        assert!(matches!(host::fs::read_file("relative"), Err(Error::Invalid(_))));
+    }
+
+    #[test]
     fn missing_capabilities_are_denied() {
         let mock = MockHost::install().with_capabilities(&["project.read"]);
         mock.open_editor("/project/a.txt", "text", "x", &[]);
@@ -1191,6 +1751,25 @@ mod tests {
         assert_eq!(host::subscribe(EventKind::ActionPerformed), Err(Error::Denied("events.input".into())));
         assert_eq!(mock.invocation().project().unwrap().vcs_remotes(), Err(Error::Denied("vcs.read".into())));
         assert_eq!(host::copy_to_clipboard("x"), Err(Error::Denied("clipboard".into())));
+    }
+
+    #[test]
+    fn child_resources_return_slots_and_zero_timeout_only_checks() {
+        let _mock = MockHost::install().with_capabilities(&["process:git"]);
+        let command = host::Command::new("git").env("NEW_KEY", "new");
+        for _ in 0..10 {
+            let child = host::start(&command, None).unwrap();
+            assert_eq!(child.wait(0).unwrap().status, None);
+            child.write("中").unwrap();
+            assert_eq!(child.poll(0).unwrap().stdout, "e");
+            child.kill().unwrap();
+            assert_eq!(child.poll(100).unwrap().status, Some(-1));
+        }
+        let children: Vec<_> = (0..8).map(|_| host::start(&command, None).unwrap()).collect();
+        assert!(matches!(host::start(&command, None), Err(Error::Invalid(_))));
+        drop(children);
+        assert!(host::start(&command, None).is_ok());
+        assert!(matches!(host::start(&command.clone().env("NEW_KEY", "override"), None), Err(Error::Invalid(_))));
     }
 
     #[test]
@@ -1220,6 +1799,115 @@ mod tests {
         host::publish_diagnostics("/project/a.java", &[Diagnostic::new(Range::default(), Severity::Warning, "m")])
             .unwrap();
         assert_eq!(mock.diagnostics()["/project/a.java"].len(), 1);
+    }
+
+    #[test]
+    fn private_directory_needs_no_filesystem_grants() {
+        let _mock = MockHost::install().with_capabilities(&[]);
+        let dir = host::fs::plugin_dir().unwrap();
+        assert_eq!(host::fs::stat(&dir).unwrap().kind, FileKind::Directory);
+        assert!(host::fs::read_dir(&dir).unwrap().is_empty());
+        let file = format!("{dir}/fake.txt");
+        host::fs::write_file(&file, "fake text").unwrap();
+        assert_eq!(host::fs::read_file(&file).unwrap(), "fake text");
+        host::fs::write_bytes(&file, b"fake bytes").unwrap();
+        assert_eq!(host::fs::read_bytes(&file).unwrap(), b"fake bytes");
+        assert_eq!(host::fs::read_dir(&dir).unwrap()[0].name, "fake.txt");
+        for path in [format!("{dir}-other/file"), format!("{dir}/../other/file")] {
+            assert!(matches!(host::fs::read_file(&path), Err(Error::Denied(_))));
+            assert!(matches!(host::fs::write_file(&path, "x"), Err(Error::Denied(_))));
+        }
+    }
+
+    #[test]
+    fn private_directory_boundary_and_traversal_ignore_explicit_grants() {
+        let dir = host::fs::plugin_dir().unwrap();
+        let adjacent = format!("{dir}-other");
+        let traversal = format!("{dir}/../other");
+        let mock = MockHost::install().with_capabilities(&[
+            &format!("fs.read:{adjacent}"),
+            &format!("fs.write:{adjacent}"),
+            &format!("fs.read:{dir}"),
+            &format!("fs.write:{dir}"),
+        ]);
+        let file = format!("{adjacent}/fake.txt");
+        mock.add_external_file(&file, "adjacent");
+        assert_eq!(host::fs::read_file(&file).unwrap(), "adjacent");
+        host::fs::write_file(&file, "updated").unwrap();
+        assert!(host::fs::stat(&file).is_ok());
+        assert!(host::fs::read_dir(&adjacent).is_ok());
+        assert_eq!(host::open_location(&file, 0, 0), Err(Error::Denied("project.read".into())));
+        for path in [dir.clone(), format!("{dir}/fake.txt")] {
+            host::open_location(&path, 0, 0).unwrap();
+        }
+        let file = format!("{traversal}/fake.txt");
+        mock.add_external_file(&file, "escaped");
+        assert!(host::fs::read_file(&file).is_err());
+        assert!(host::fs::read_bytes(&file).is_err());
+        assert!(host::fs::write_file(&file, "x").is_err());
+        assert!(host::fs::write_bytes(&file, b"x").is_err());
+        assert!(host::fs::stat(&file).is_err());
+        assert!(host::fs::read_dir(&traversal).is_err());
+        assert!(host::open_location(&file, 0, 0).is_err());
+        assert_eq!(mock.opened_locations().len(), 2);
+    }
+
+    #[test]
+    fn log_tabs_need_the_program_grant() {
+        let log = crate::details::ProcessLog::new("kubectl", &["logs", "-f", "api"]).toggle(
+            "previous",
+            "Previous",
+            &["--previous"],
+        );
+        let _mock = MockHost::install();
+        assert_eq!(host::open_log_tab("api", "api logs", &log), Err(Error::Denied("process:kubectl".into())));
+
+        let mock = MockHost::install().with_capabilities(&["process:kubectl"]);
+        host::open_log_tab("api", "api logs", &log).unwrap();
+        // Reopening a key replaces that tab.
+        host::open_log_tab("api", "api logs again", &log).unwrap();
+        assert_eq!(mock.log_tabs().len(), 1);
+        assert_eq!((mock.log_tabs()[0].title.as_str(), &mock.log_tabs()[0].log), ("api logs again", &log));
+        assert!(matches!(host::open_log_tab("", "api logs", &log), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn fs_write_needs_a_grant_of_its_own() {
+        // `fs.read` does not let a plugin write.
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/seeyon"]);
+        mock.add_external_file("/opt/seeyon/app.properties", "name=YonBIP\n");
+        assert_eq!(
+            host::fs::write_file("/opt/seeyon/app.properties", "name=YonBIP2\n"),
+            Err(Error::Denied("fs.write:/opt/seeyon/app.properties".into()))
+        );
+        assert_eq!(host::fs::read_file("/opt/seeyon/app.properties").unwrap(), "name=YonBIP\n");
+
+        // Nor does `fs.write` imply reading.
+        let mock = MockHost::install().with_capabilities(&["fs.write:/opt/seeyon"]);
+        mock.add_external_file("/opt/seeyon/app.properties", "name=YonBIP\n");
+        host::fs::write_file("/opt/seeyon/app.properties", "name=YonBIP2\n").unwrap();
+        assert_eq!(
+            host::fs::read_file("/opt/seeyon/app.properties"),
+            Err(Error::Denied("fs.read:/opt/seeyon/app.properties".into()))
+        );
+
+        let mock = MockHost::install().with_capabilities(&["fs.read:/opt/seeyon", "fs.write:/opt/seeyon"]);
+        mock.add_external_file("/opt/seeyon/app.properties", "name=YonBIP\n");
+        mock.add_external_file("/opt/seeyon/conf/licence.xml", "<licence/>");
+        host::fs::write_file("/opt/seeyon/app.properties", "name=YonBIP2\n").unwrap();
+        assert_eq!(host::fs::read_file("/opt/seeyon/app.properties").unwrap(), "name=YonBIP2\n");
+        assert_eq!(host::fs::read_bytes("/opt/seeyon/app.properties").unwrap(), b"name=YonBIP2\n".to_vec());
+        // A file that was not there is created; bytes stay bytes.
+        host::fs::write_bytes("/opt/seeyon/blob.bin", &[0xff, 0x00, 0x7f]).unwrap();
+        assert_eq!(host::fs::read_bytes("/opt/seeyon/blob.bin").unwrap(), [0xff, 0x00, 0x7f]);
+        assert_eq!(host::fs::stat("/opt/seeyon/blob.bin").unwrap().size, 3);
+        assert!(matches!(host::fs::read_file("/opt/seeyon/blob.bin"), Err(Error::Invalid(_))));
+
+        // Relative paths are path errors, a directory is not a file, and a
+        // missing parent directory is not created.
+        assert!(matches!(host::fs::write_file("opt/seeyon/app.properties", "x"), Err(Error::Invalid(_))));
+        assert!(matches!(host::fs::write_file("/opt/seeyon/conf", "x"), Err(Error::Invalid(_))));
+        assert!(matches!(host::fs::write_bytes("/opt/seeyon/no/dir/x.bin", &[1]), Err(Error::Invalid(_))));
     }
 }
 

@@ -112,7 +112,7 @@ pub struct FilePosition {
     pub column: u32,
 }
 
-/// A project folder on an SSH host or in a WSL distribution.
+/// A project folder on an SSH host, in a WSL distribution or in a dev container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteLaunch {
@@ -140,6 +140,9 @@ pub struct WindowsState {
     last_focused: Mutex<Option<String>>,
     /// Set by Quit while windows close one by one.
     quitting: AtomicBool,
+    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
+    /// once, so its members ask together.
+    close_requests: Mutex<Vec<String>>,
     /// Project tabs closing one by one (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
@@ -149,6 +152,21 @@ pub struct WindowsState {
 }
 
 impl WindowsState {
+    pub fn close_requested(&self, label: &str) {
+        let mut requests = self.close_requests.lock();
+        if !requests.iter().any(|l| l == label) {
+            requests.push(label.to_owned());
+        }
+    }
+
+    pub fn close_settled(&self, label: &str) {
+        self.close_requests.lock().retain(|l| l != label);
+    }
+
+    pub fn pending_closes(&self) -> Vec<String> {
+        self.close_requests.lock().clone()
+    }
+
     pub fn set_launch(&self, label: &str, launch: Launch) {
         self.launches.lock().insert(label.to_owned(), launch);
     }
@@ -187,6 +205,7 @@ impl WindowsState {
     }
 
     pub fn forget(&self, label: &str) {
+        self.close_settled(label);
         self.launches.lock().remove(label);
         let mut last = self.last_focused.lock();
         if last.as_deref() == Some(label) {
@@ -285,6 +304,9 @@ pub fn auxiliary_parent(label: &str) -> Option<&str> {
 pub fn settings_label(parent: &str) -> String {
     format!("{}-{parent}", AuxKind::Settings.name())
 }
+
+/// Held from choosing a project window's label until the window exists.
+static CREATING: Mutex<()> = Mutex::new(());
 
 /// Windows being built to join a window group, which takes their frame from the group.
 #[cfg(target_os = "macos")]
@@ -569,6 +591,8 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);
@@ -663,6 +687,8 @@ fn create_window_for(
 ) -> IdeResult<WebviewWindow> {
     #[cfg(target_os = "macos")]
     let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
+    // The label is free only until the window exists, so concurrent opens take turns.
+    let creating = CREATING.lock();
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -689,6 +715,7 @@ fn create_window_for(
         config.visible = false;
     }
     let window = build_project_window(app, config);
+    drop(creating);
     // Plugins hear of the window from the main thread's queue; forget it after them.
     #[cfg(target_os = "macos")]
     if tab_target.is_some() {
@@ -696,8 +723,6 @@ fn create_window_for(
         let _ = app.run_on_main_thread(move || JOINING_GROUP.lock().retain(|l| *l != joined));
     }
     let window = window?;
-    #[cfg(target_os = "macos")]
-    crate::macos::intercept_toggle_fullscreen(&window);
     #[cfg(target_os = "macos")]
     if let Some(target) = tab_target {
         crate::window_groups::join(app, target.label(), window.label())?;
@@ -817,7 +842,7 @@ pub enum Holds {
         distro: String,
         path: String,
     },
-    /// An SSH remote project.
+    /// An SSH or dev container remote project.
     Other,
 }
 
@@ -825,7 +850,7 @@ impl Holds {
     fn of_remote(remote: &RemoteLaunch) -> Self {
         match &remote.target {
             RemoteTarget::Wsl { distro } => Holds::Wsl { distro: distro.clone(), path: remote.path.clone() },
-            RemoteTarget::Ssh { .. } => Holds::Other,
+            RemoteTarget::Ssh { .. } | RemoteTarget::DevContainer { .. } => Holds::Other,
         }
     }
 
@@ -1261,6 +1286,8 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
+    #[cfg(target_os = "macos")]
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window);

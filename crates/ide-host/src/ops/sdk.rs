@@ -45,6 +45,15 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
     .map_err(join_err)
 }
 
+/// An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run.
+pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<Sdk>> {
+    host.require_trust(window)?;
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    tokio::task::spawn_blocking(move || Ok(ide_sdk::python_interpreter_sdk(&path, root.as_deref())))
+        .await
+        .map_err(join_err)?
+}
+
 /// The interpreter the project uses: the configured one, else its virtualenv.
 pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) -> IdeResult<Option<ide_core::IpcPath>> {
     host.require_trust(window)?;
@@ -149,25 +158,56 @@ pub async fn sdk_php_composer_install(
 
 /// SDK / library source folders shown under "External Libraries" in the Project view,
 /// with the Maven / Gradle dependency jars of the build model.
-pub async fn sdk_project_libraries(host: &Host, window: &str) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
+pub async fn sdk_project_libraries(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    on_groups: Channel<Vec<ide_sdk::libraries::LibraryGroup>>,
+) -> IdeResult<Vec<ide_sdk::libraries::LibraryGroup>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    tokio::task::spawn_blocking(move || {
-        let model = crate::ops::build::load(&root, &cache, &settings);
-        let deps: Vec<ide_sdk::libraries::BuildDependency> = ide_build::dependency_coordinates(&root, &model)
-            .into_iter()
-            .map(|c| ide_sdk::libraries::BuildDependency {
-                gradle: c.gradle,
-                group: c.group_id,
-                artifact: c.artifact_id,
-                version: c.version,
+    let cancel = host.begin_project_request(window, request);
+    let libraries = {
+        let (root, settings, cancel, on_groups) = (root.clone(), settings.clone(), cancel.clone(), on_groups.clone());
+        tokio::task::spawn_blocking(move || {
+            ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
+                let _ = on_groups.send(groups);
             })
-            .collect();
-        ide_sdk::libraries::project_libraries(&root, &settings, &deps)
-    })
-    .await
-    .map_err(join_err)
+        })
+    };
+    let dependencies = {
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let model = crate::ops::build::load(&root, &cache, &settings);
+            let deps: Vec<ide_sdk::libraries::BuildDependency> = ide_build::dependency_coordinates(&root, &model)
+                .into_iter()
+                .map(|c| ide_sdk::libraries::BuildDependency {
+                    gradle: c.gradle,
+                    group: c.group_id,
+                    artifact: c.artifact_id,
+                    version: c.version,
+                })
+                .collect();
+            if cancel.is_cancelled() {
+                return Vec::new();
+            }
+            let groups = ide_sdk::libraries::dependency_groups(&root, &settings, &deps);
+            if !cancel.is_cancelled() {
+                let _ = on_groups.send(groups.clone());
+            }
+            groups
+        })
+    };
+    let (libraries, dependencies) = tokio::join!(libraries, dependencies);
+    host.end_request(request);
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    Ok(ide_sdk::libraries::merge_groups([libraries.map_err(join_err)?, dependencies.map_err(join_err)?].concat()))
 }
 
 /// Looks up `names` (bare command names): `node_modules/.bin` above `near`, then the search path.
@@ -257,6 +297,10 @@ pub async fn sdk_python_pip(
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
+    d.add(
+        "sdk_python_interpreter",
+        |c| async move { sdk_python_interpreter(&c.host, &c.window, c.arg("path")?).await },
+    );
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
     d.add("sdk_php_xdebug", |c| async move { sdk_php_xdebug(&c.host, &c.window, c.arg("php")?, c.arg("cwd")?).await });
@@ -268,7 +312,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "sdk_php_composer_install",
         |c| async move { sdk_php_composer_install(&c.host, &c.window, c.arg("path")?).await },
     );
-    d.add("sdk_project_libraries", |c| async move { sdk_project_libraries(&c.host, &c.window).await });
+    d.add("sdk_project_libraries", |c| async move {
+        sdk_project_libraries(&c.host, &c.window, c.arg("request")?, c.sender("onGroups")?).await
+    });
     d.add("sdk_locate_tools", |c| async move {
         sdk_locate_tools(&c.host, &c.window, c.arg("names")?, c.arg("near")?).await
     });
@@ -300,4 +346,70 @@ pub(crate) fn register(d: &mut Dispatcher) {
         )
         .await
     });
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::HostConfig;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn fake_venv(root: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let venv = root.join(name);
+        std::fs::create_dir_all(venv.join("bin")).unwrap();
+        std::fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin\nversion = 3.12.1\n").unwrap();
+        let python = venv.join("bin/python");
+        std::fs::write(&python, "#!/bin/sh\necho 3.12.1\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        python
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hand_picked_venv_is_resolved_like_a_detected_interpreter() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        host.trust.decide(&root, true, false).unwrap();
+        host.open_project("main", &root).unwrap();
+
+        let sdk = sdk_python_interpreter(&host, "main", fake_venv(&root, ".venv")).await.unwrap().unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (project)", "venv"));
+        let python = fake_venv(&base, "erp19py3.12");
+        let sdk = sdk_python_interpreter(&host, "main", python.parent().unwrap().parent().unwrap().into())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (erp19py3.12)", "venv"));
+        assert_eq!(&*sdk.path, python.as_path());
+        host.project("main")
+            .unwrap()
+            .settings
+            .set(
+                ide_workspace::SettingsScope::Project,
+                "languages.python.interpreter",
+                serde_json::to_value(&sdk.path).unwrap(),
+            )
+            .unwrap();
+        host.close_project("main");
+        host.open_project("main", &root).unwrap();
+        let detected = sdk_detect(&host, "main", SdkKind::Python).await.unwrap();
+        assert!(detected.iter().any(|s| s.path == sdk.path && s.name == sdk.name));
+        assert_eq!(sdk_python_effective(&host, "main", None).unwrap(), Some(sdk.path));
+        assert!(sdk_python_interpreter(&host, "main", root.join("README.md")).await.unwrap().is_none());
+        host.close_project("main");
+    }
 }

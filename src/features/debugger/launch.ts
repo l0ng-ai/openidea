@@ -219,7 +219,7 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
       dlvCwd: module,
       ...(p.scope === "file" ? { __goFiles: target.split("|").map((f) => join(module, f.trim())) } : {}),
       __goToolArgs: toolArgs,
-      __goUseTags: p.useTags === "true",
+      __goUseTags: p.useTags !== "false",
       ...(p.outputDir ? { output: join(root, `${p.outputDir}/go-debug`) } : {}),
     });
     return out;
@@ -276,6 +276,8 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
   out.extraJson = JSON.stringify({
     mode: test ? "test" : "debug",
     ...(flags.length ? { buildFlags: formatArgs(flags) } : {}),
+    __goToolArgs: flags,
+    __goUseTags: rc.params?.useTags !== "false",
   });
   return out;
 }

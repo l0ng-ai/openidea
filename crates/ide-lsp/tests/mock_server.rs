@@ -422,7 +422,8 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.open("a.mk", "x");
     h.wait_status("mock", ServerStatus::Ready).await;
     let s = h.launcher.state("mock");
-    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("a.mk"), h.root.join("old.mk"));
+    // `a.mk` is open on the server: its changes reach it through document sync, not here.
+    let (created, modified, removed) = (h.root.join("new.mk"), h.root.join("changed.mk"), h.root.join("old.mk"));
     // Other languages and files outside the server's root are left out.
     let other = h.root.join("notes.txt");
     let outside = tempfile::tempdir().unwrap().path().join("far.mk");
@@ -445,6 +446,197 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// An external change to a document open on the server's current instance reaches it only
+/// through the reload's `didChange`: a watched-file change for it too would make a server
+/// that re-reads the file on one (csharp-ls) apply the reload and then the diff computed
+/// against the pre-reload copy, so it would keep analysing stale content (#1780). A closed
+/// file's change is watched as before, and the file is watched again once its document closes.
+#[tokio::test(flavor = "multi_thread")]
+async fn documents_open_on_a_server_are_left_out_of_watched_file_changes() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    eventually(|| !s.notified("textDocument/didOpen").is_empty()).await;
+
+    // The open document and a closed file changed outside the editor.
+    let closed = h.root.join("b.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&closed), "type": 2 }])
+    );
+
+    // The editor reloads the open buffer from disk; the server hears the new text.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 3), "new")], &|| "new".to_owned());
+    eventually(|| s.docs.lock().get(uri_of(&path).as_str()).map(String::as_str) == Some("new")).await;
+
+    // Once the document closes, the file is watched again.
+    h.mgr.did_close(doc);
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+    eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
+        json!([{ "uri": uri_of(&path), "type": 2 }])
+    );
+    h.mgr.shutdown_all().await;
+}
+
+async fn watch_all(s: &MockState) {
+    s.peer()
+        .request::<_, Value>(
+            "client/registerCapability",
+            json!({ "registrations": [{ "id": "all", "method": "workspace/didChangeWatchedFiles",
+                "registerOptions": { "watchers": [{ "globPattern": "**/*" }] } }] }),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_keep_deletions_and_renames() {
+    for registered in [false, true] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (_, path) = h.open("a.mk", "old");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        if registered {
+            watch_all(&s).await;
+        }
+        let closed = h.root.join("closed.mk");
+        // An atomic replacement is reported as created and still uses document sync.
+        h.mgr.watched_files_changed(std::slice::from_ref(&path), &[path.clone(), closed.clone()], &[], &[]);
+        eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+        assert_eq!(
+            s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+            json!([{ "uri": uri_of(&closed), "type": 2 }])
+        );
+
+        let renamed = h.root.join("renamed.mk");
+        std::fs::rename(&path, &renamed).unwrap();
+        h.mgr.watched_files_changed(std::slice::from_ref(&renamed), &[], std::slice::from_ref(&path), &[]);
+        eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
+        assert_eq!(
+            s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
+            json!([
+                { "uri": uri_of(&renamed), "type": 1 },
+                { "uri": uri_of(&path), "type": 3 }
+            ])
+        );
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_resolve_path_aliases() {
+    for registered in [false, true] {
+        let h = harness(&[("mock", incremental_caps())]);
+        let (_, path) = h.open("Mixed.mk", "old");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        let s = h.launcher.state("mock");
+        if registered {
+            watch_all(&s).await;
+        }
+        let mut aliases = vec![path.clone()];
+        let case_alias = h.root.join("mixed.mk");
+        if dunce::canonicalize(&case_alias).ok() == Some(path.clone()) {
+            aliases.push(case_alias);
+        }
+        #[cfg(unix)]
+        {
+            let link = h.root.join("alias.mk");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            aliases.push(link);
+        }
+        let closed = h.root.join("closed.mk");
+        aliases.push(closed.clone());
+        h.mgr.watched_files_changed(&[], &aliases, &[], &[]);
+        eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+        assert_eq!(
+            s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+            json!([{ "uri": uri_of(&closed), "type": 2 }])
+        );
+        h.mgr.shutdown_all().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_are_scoped_to_the_attached_server() {
+    let h = harness(&[("mock", incremental_caps()), ("other", incremental_caps())]);
+    h.mgr.set_servers_hook(Box::new(|_, configs| configs.iter().filter(|c| c.name == "mock").cloned().collect()));
+    let (_, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.mgr.set_servers_hook(Box::new(|_, configs| configs.iter().filter(|c| c.name == "other").cloned().collect()));
+    h.open("b.mk", "other");
+    h.wait_status("other", ServerStatus::Ready).await;
+    let first = h.launcher.state("mock");
+    let second = h.launcher.state("other");
+    watch_all(&first).await;
+    watch_all(&second).await;
+    let closed = h.root.join("closed.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| {
+        !first.notified("workspace/didChangeWatchedFiles").is_empty()
+            && !second.notified("workspace/didChangeWatchedFiles").is_empty()
+    })
+    .await;
+    assert_eq!(
+        first.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&closed), "type": 2 }])
+    );
+    assert_eq!(
+        second.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([
+            { "uri": uri_of(&path), "type": 2 }, { "uri": uri_of(&closed), "type": 2 }
+        ])
+    );
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_document_watches_resume_on_a_restart_without_open_documents() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    let closed = h.root.join("closed.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&closed), "type": 2 }])
+    );
+    h.mgr.did_close(doc);
+    h.mgr.restart(id).await.unwrap();
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&path), &[], &[]);
+    eventually(|| s.notified("workspace/didChangeWatchedFiles").len() == 2).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[1]["changes"],
+        json!([{ "uri": uri_of(&path), "type": 2 }])
+    );
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn servers_without_document_sync_keep_open_document_watches() {
+    let h = harness(&[("mock", json!({ "textDocumentSync": 0 }))]);
+    let (_, path) = h.open("a.mk", "old");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let closed = h.root.join("closed.mk");
+    h.mgr.watched_files_changed(&[], &[path.clone(), closed.clone()], &[], &[]);
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles")[0]["changes"],
+        json!([{ "uri": uri_of(&path), "type": 2 }, { "uri": uri_of(&closed), "type": 2 }])
+    );
     h.mgr.shutdown_all().await;
 }
 
@@ -2931,6 +3123,112 @@ fn scope_harness() -> (Harness, Arc<MockState>) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn indexed_sources_are_not_widened_but_outside_callers_are() {
+    for classified in [false, true] {
+        for outside in [false, true] {
+            let mut caps = incremental_caps();
+            caps["executeCommandProvider"]["commands"] = if classified {
+                json!(["openidea.workspace.coveredFiles", "openidea.java.usages"])
+            } else {
+                json!(["openidea.workspace.coveredFiles"])
+            };
+            let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+            let s = h.launcher.state("jdtls");
+            let caller = h.root.join("Caller.java");
+            let decoy = h.root.join("Unrelated.java");
+            let extra = h.root.join("Outside.java");
+            std::fs::write(&caller, "target();").unwrap();
+            std::fs::write(&decoy, "target").unwrap();
+            if outside {
+                std::fs::write(&extra, "target();").unwrap();
+            }
+            let covered = vec![uri_of(&caller), uri_of(&decoy)];
+            let indexed = uri_of(&caller);
+            *s.responder.lock() = Some(Arc::new(move |s, method, params| {
+                if method == "workspace/executeCommand" && params["command"] == "openidea.workspace.coveredFiles" {
+                    return Some(json!(covered));
+                }
+                let model = MockState::default();
+                *model.docs.lock() = s.docs.lock().clone();
+                model.docs.lock().insert(indexed.clone(), "target();".into());
+                let responder = open_files_only(vec![]);
+                if method == "workspace/executeCommand" && params["command"] == "openidea.java.usages" {
+                    let refs = responder(&model, "textDocument/references", params).unwrap();
+                    return Some(Value::Array(
+                        refs.as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|location| json!({ "location": location, "kind": "unknown", "access": "read" }))
+                            .collect(),
+                    ));
+                }
+                responder(&model, method, params)
+            }));
+            grep_candidates(&h);
+            let (doc, _) = h.open("Target.java", "def target\n");
+            h.wait_status("jdtls", ServerStatus::Ready).await;
+            let refs = h
+                .mgr
+                .references_streaming(doc, Pos::new(0, 5), true, true, false, Default::default(), None)
+                .await
+                .unwrap();
+            assert!(refs.locations.iter().any(|l| l.path == caller));
+            assert_eq!(refs.locations.iter().any(|l| l.path == extra), outside);
+            assert_eq!(refs.incomplete, None);
+            let calls = h
+                .mgr
+                .call_hierarchy(doc, Pos::new(0, 5), HierarchyDirection::Incoming, Default::default())
+                .await
+                .unwrap();
+            assert!(calls.items.iter().any(|i| i.path == caller));
+            assert_eq!(calls.items.iter().any(|i| i.path == extra), outside);
+            assert_eq!(calls.incomplete, None);
+            let rounds = if outside { 2 } else { 1 };
+            assert_eq!(s.requested("callHierarchy/incomingCalls").len(), rounds);
+            if classified {
+                assert_eq!(
+                    s.requested("workspace/executeCommand")
+                        .iter()
+                        .filter(|p| p["command"] == "openidea.java.usages")
+                        .count(),
+                    rounds
+                );
+                assert_eq!(refs.classified.len(), refs.locations.len());
+            } else {
+                assert_eq!(s.requested("textDocument/references").len(), rounds);
+            }
+            eventually(|| s.docs.lock().len() == 1).await;
+            let opened = uris(&s.notified("textDocument/didOpen"));
+            assert!(!opened.contains(&uri_of(&caller)));
+            assert!(!opened.contains(&uri_of(&decoy)));
+            assert_eq!(opened.contains(&uri_of(&extra)), outside);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unavailable_scope_capability_keeps_widening_and_incomplete_signals() {
+    for response in [json!(null), json!([false]), json!([])] {
+        let mut caps = incremental_caps();
+        caps["executeCommandProvider"]["commands"] = json!(["openidea.workspace.coveredFiles"]);
+        let h = harness(&[("mock", caps)]);
+        let s = h.launcher.state("mock");
+        *s.responder.lock() = Some(open_files_only(vec![]));
+        s.respond("workspace/executeCommand", response);
+        h.mgr.set_candidates_hook(Box::new(|q, _| ide_lsp::CandidateFiles {
+            files: vec![q.root.join("b.mk")],
+            limit_hit: true,
+        }));
+        std::fs::write(h.root.join("b.mk"), "target\n").unwrap();
+        let (doc, _) = h.open("a.mk", "def target\n");
+        h.wait_status("mock", ServerStatus::Ready).await;
+        expect_all(incomplete_reports(&h, doc).await, Some(ReferencesIncomplete::TooManyFiles));
+        assert_eq!(s.requested("textDocument/references").len(), 2);
+        assert_eq!(s.requested("callHierarchy/incomingCalls").len(), 2);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn references_open_unopened_files_that_mention_the_name() {
     let (h, s) = scope_harness();
     let seen = grep_candidates(&h);
@@ -4193,6 +4491,198 @@ async fn configuration_extension_failure_preserves_native_java_navigation() {
     assert_eq!(result.len(), 1);
     assert_eq!(s.requested("workspace/executeCommand").len(), 1);
     assert_eq!(s.requested("textDocument/definition").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_lands_in_spring_xml_and_properties() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let resources = h.root.join("src/main/resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    std::fs::write(
+        resources.join("context.xml"),
+        r#"<beans><util:properties id="db"><prop key="db.user">sa</prop></util:properties></beans>"#,
+    )
+    .unwrap();
+    std::fs::write(h.root.join("db.properties"), "db.user=root\n").unwrap();
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // The Java extension is not needed: the declarations come from the XML
+    // wiring and the properties file, and the open YAML never matches itself.
+    assert_eq!(locations.len(), 2, "{locations:?}");
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == resources.join("context.xml")));
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("db.properties")));
+    assert!(s.requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholders_use_java_module_roots_and_utf16_columns() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(
+        h.root.join("pom.xml"),
+        "<project><packaging>pom</packaging><modules><module>child</module></modules></project>",
+    )
+    .unwrap();
+    let child = h.root.join("child");
+    let resources = child.join("src/main/resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    std::fs::write(child.join("pom.xml"), "<project/>").unwrap();
+    let definition = resources.join("application.properties");
+    std::fs::write(&definition, "db.user=sa\n").unwrap();
+    let sibling = h.root.join("sibling");
+    std::fs::create_dir(&sibling).unwrap();
+    std::fs::write(sibling.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(sibling.join("application.properties"), "db.user=wrong\n").unwrap();
+    h.launcher.state("jdtls").respond("workspace/executeCommand", json!({
+        "locations": [], "keys": [], "roots": [uri_of(&h.root), uri_of(&child), uri_of(&child.join("src/main/java"))]
+    }));
+    for (file, language, text) in [
+        ("references.properties", "properties", "message=你好😀 ${db.user}"),
+        ("references.yml", "yaml", "message: 你好😀 ${db.user}"),
+        ("context.xml", "xml", "<bean value=\"你好😀 ${db.user}\"/>"),
+    ] {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &h.root.join(file), &LanguageId::new(language), 1, text);
+        let col = text[..text.find("db.user").unwrap()].encode_utf16().count() as u32;
+        let locations = h.mgr.goto(doc, Pos::new(0, col + 2), GotoKind::Definition).await.unwrap();
+        assert_eq!(locations.len(), 1, "{file}: {locations:?}");
+        assert_eq!(locations[0].path.to_path_buf(), definition);
+        assert_eq!(locations[0].range.start, Pos::new(0, 0));
+        assert_eq!(locations[0].range.end, Pos::new(0, 7));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_file_list_refreshes_on_watched_changes_and_renames() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let child = h.root.join("child");
+    std::fs::create_dir(&child).unwrap();
+    std::fs::write(child.join("pom.xml"), "<project/>").unwrap();
+    let file = child.join("application.properties");
+    std::fs::write(&file, "db.user=sa\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &child.join("reference.yml"), &LanguageId::new("yaml"), 1, "message: ${db.user}");
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+    let profile = child.join("application-dev.properties");
+    std::fs::write(&profile, "db.user=dev\n").unwrap();
+    // No notification yet: the existing file list is reused.
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+    h.mgr.watched_files_changed(std::slice::from_ref(&profile), &[], &[], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 2);
+    std::fs::write(&profile, "db.user=development\n").unwrap();
+    h.mgr.watched_files_changed(&[], std::slice::from_ref(&profile), &[], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 2);
+    let renamed = child.join("application-test.properties");
+    std::fs::rename(&profile, &renamed).unwrap();
+    h.mgr.did_rename_files(&[(profile, renamed.clone())]);
+    let locations = h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap();
+    assert_eq!(locations.len(), 2);
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == renamed));
+    std::fs::remove_file(&renamed).unwrap();
+    h.mgr.watched_files_changed(&[], &[], &[renamed], &[]);
+    assert_eq!(h.mgr.goto(doc, Pos::new(0, 13), GotoKind::Definition).await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_merges_java_members_with_xml_declarations() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="db.user">sa</prop></beans>"#).unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Db.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 8}}}],
+            "keys": [{"name": "db.user", "relaxed": true}], "roots": []
+        }),
+    );
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // A bound Java member and the XML declaration are both candidates.
+    assert_eq!(locations.len(), 2, "{locations:?}");
+    assert!(locations.iter().any(|l| l.range.start == Pos::new(1, 4)));
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("context.xml")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_placeholder_definition_survives_a_failing_java_extension() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="db.user">sa</prop></beans>"#).unwrap();
+    let s = h.launcher.state("jdtls");
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "old server".into()));
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: ${db.user}\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 16), GotoKind::Definition).await.unwrap();
+    // The XML declaration still answers when the Java extension fails.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert!(locations.iter().any(|l| l.path.to_path_buf() == h.root.join("context.xml")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_key_definition_stays_java_only() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    std::fs::write(h.root.join("context.xml"), r#"<beans><prop key="spring.datasource.username">sa</prop></beans>"#)
+        .unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Settings.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 11}}}],
+            "keys": [{"name": "spring.datasource.username", "relaxed": true}], "roots": []
+        }),
+    );
+    let config = h.root.join("application.yml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &config, &LanguageId::new("yaml"), 1, "spring:\n  datasource:\n    username: sa\n");
+    let locations = h.mgr.goto(doc, Pos::new(2, 6), GotoKind::Definition).await.unwrap();
+    // A key keeps the Java-only definition path; the XML declaration is not a candidate.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert_eq!(locations[0].range.start, Pos::new(2, 4));
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "spring.datasource.username");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_definition_on_an_xml_property_asks_java() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.configuration"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    std::fs::write(h.root.join("pom.xml"), "<project/>").unwrap();
+    let s = h.launcher.state("jdtls");
+    let target = uri_of(&h.root.join("Db.java"));
+    s.respond(
+        "workspace/executeCommand",
+        json!({
+            "locations": [{"uri": target, "range": {"start": {"line": 1, "character": 4}, "end": {"line": 1, "character": 8}}}],
+            "keys": [{"name": "db.user", "relaxed": true}], "roots": []
+        }),
+    );
+    let xml = h.root.join("context.xml");
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &xml, &LanguageId::new("xml"), 1, "<beans><prop key=\"db.user\">sa</prop></beans>\n");
+    let locations = h.mgr.goto(doc, Pos::new(0, 19), GotoKind::Definition).await.unwrap();
+    // A Spring XML declaration is a configuration site: it navigates to the
+    // binding member through the Java index.
+    assert_eq!(locations.len(), 1, "{locations:?}");
+    assert_eq!(s.requested("workspace/executeCommand")[0]["arguments"][1], "db.user");
 }
 
 #[tokio::test(flavor = "multi_thread")]

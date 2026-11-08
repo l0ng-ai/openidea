@@ -67,7 +67,12 @@ impl Plugin for Jobs {
                             .argument(format!("notification-action={}\nvalue", i + 1))
                     })
                     .collect::<Vec<_>>();
-                host::notify_with_actions(NotificationLevel::Info, "Choose an action", "A plugin notification", &actions)?;
+                host::notify_with_actions(
+                    NotificationLevel::Info,
+                    "Choose an action",
+                    "A plugin notification",
+                    &actions,
+                )?;
                 Ok(None)
             }
             "copy" => {
@@ -136,6 +141,7 @@ impl Views for Jobs {
             ViewEvent::Button(b) if b == "follow" => return self.follow(),
             ViewEvent::Button(b) if b == "log" => return host::open_location("jobs.log", 2, 4),
             ViewEvent::Button(b) if b == "outside" => return host::open_location("../outside.log", 0, 0),
+            ViewEvent::Message(msg) => return host::post_view_message(VIEW, &msg),
             _ => return Ok(()),
         }
         host::refresh_view(VIEW);

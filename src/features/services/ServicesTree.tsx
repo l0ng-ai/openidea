@@ -205,8 +205,8 @@ export function ServicesTreeView() {
           </button>
         </div>
       ) : (
-        <SplitGroup orientation="horizontal" className={styles.split}>
-          <SplitPanel defaultSize="40%" minSize="160px">
+        <SplitGroup orientation="horizontal" className={styles.split} storageKey="openidea.services.detailSplit">
+          <SplitPanel id="services-items" defaultSize="40%" minSize="160px">
             <div className={styles.tree}>
               <Tree<ServiceTreeItem>
                 key={location}
@@ -258,7 +258,7 @@ export function ServicesTreeView() {
             </div>
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel minSize="200px">
+          <SplitPanel id="services-detail" minSize="200px">
             {selected && Detail && shown ? (
               <Detail key={selected.item.key} item={selected.item} />
             ) : (

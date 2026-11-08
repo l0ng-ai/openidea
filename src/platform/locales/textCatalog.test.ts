@@ -97,6 +97,10 @@ const UNTRANSLATED = new Set<string>([
   "GitHub",
   "PHPStan",
   "Xdebug",
+  "Chrome",
+  "Safari",
+  "Firefox",
+  "JaCoCo",
   // Docker run target placeholder values
   "compose.yaml",
   "python:3.12",
@@ -193,6 +197,7 @@ const UNTRANSLATED = new Set<string>([
   "Fixup",
   "Fixup…",
   "IDE",
+  "localhost",
   "mod tests",
   "Windows (\\r\\n)",
   // Terms, keywords and acronyms kept in English
@@ -206,6 +211,7 @@ const UNTRANSLATED = new Set<string>([
   "JDK 1.4.x",
   "JDK 5 - 8",
   "JPA",
+  "JRE",
   "LTS",
   "NULL",
   "ORDER BY",

@@ -1,5 +1,45 @@
 import { expect, test } from "./fixtures";
 
+test("Add Python Interpreter keeps environment labels and fields inside their rows", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settings.getByRole("textbox", { name: "Search settings" }).fill("Python Interpreter");
+  await settings
+    .getByRole("tree", { name: "Settings pages" })
+    .getByRole("treeitem", { name: "Python Interpreter", exact: true })
+    .click();
+  await settings.getByRole("button", { name: "Add Interpreter…", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add Python Interpreter", exact: true });
+  await expect(dialog).toBeVisible();
+
+  for (const width of [1000, 800, 520]) {
+    await page.setViewportSize({ width, height: 760 });
+    await expect(async () => {
+      const labelsFit = await dialog.getByRole("list", { name: "Interpreter type" }).evaluate((list) =>
+        [...list.querySelectorAll("button")].every((button) => {
+          const box = button.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(button);
+          return [...range.getClientRects()].every(
+            (r) => r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.right <= box.right + 1,
+          );
+        }),
+      );
+      expect(labelsFit).toBe(true);
+    }).toPass({ timeout: 3000 });
+
+    const location = dialog.getByRole("textbox", { name: "Location:", exact: true });
+    const fieldSpacing = await location.evaluate((input) => ({
+      rowHeight: input.parentElement!.getBoundingClientRect().height,
+      fieldHeight: input.getBoundingClientRect().height,
+    }));
+    expect(fieldSpacing.rowHeight).toBeLessThanOrEqual(fieldSpacing.fieldHeight + 1);
+    const base = await dialog.getByRole("button", { name: "Base interpreter", exact: true }).boundingBox();
+    const loc = await location.boundingBox();
+    expect(base!.y - loc!.y - loc!.height).toBeLessThan(50);
+  }
+});
+
 test("Project Structure keeps edits across repeated shortcuts and applies them", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+;");
   const dialog = page.getByRole("dialog", { name: "Project Structure", exact: true });

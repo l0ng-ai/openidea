@@ -1,0 +1,16 @@
+/* Equal negative margins preserve native textarea wrapping and caret positions. */
+.tag {
+  padding: 1px 3px;
+  margin: 0 -3px;
+  border-radius: var(--radius-selection);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 20%, transparent);
+}
+.accent {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { completedSyntaxTree } from "@/test/syntax";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import { findLanguageDescription, loadSupport, loadedSupport } from "./languages";
 
@@ -9,9 +9,8 @@ async function tokens(mode: string, source: string) {
   const support = await loadSupport(desc);
   expect(loadedSupport(desc)).toBe(support);
   const state = EditorState.create({ doc: source, extensions: [support!] });
-  ensureSyntaxTree(state, source.length, 1000);
   const result: { text: string; style: string; from: number; to: number }[] = [];
-  highlightTree(syntaxTree(state), classHighlighter, (from, to, style) =>
+  highlightTree(completedSyntaxTree(state), classHighlighter, (from, to, style) =>
     result.push({ text: source.slice(from, to), style, from, to }),
   );
   return result;

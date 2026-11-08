@@ -144,7 +144,8 @@ impl ActivationEvent {
 
 /// Workbench event kinds (`on-event:<kind>`, WIT `events.event-kind`).
 /// `scheduled` comes from `on-schedule` instead.
-pub const EVENT_KINDS: &[&str] = &["file-opened", "file-saved", "editor-focused", "action-performed", "vcs-changed"];
+pub const EVENT_KINDS: &[&str] =
+    &["file-opened", "file-saved", "files-changed", "editor-focused", "action-performed", "vcs-changed"];
 
 impl std::fmt::Display for ActivationEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -315,6 +316,11 @@ impl Manifest {
             self.needs_api("`icon`", 2)?;
             check_relative(icon, "icon")?;
         }
+        for cap in self.capabilities.required.iter().chain(&self.capabilities.optional) {
+            if matches!(cap, Capability::ProjectWrite | Capability::FsWrite(_)) {
+                self.needs_api(&format!("capability `{cap}`"), 3)?;
+            }
+        }
         if let Some(dark) = &self.icon_dark {
             if self.icon.is_none() {
                 return Err("`icon-dark` needs `icon`".into());
@@ -326,6 +332,9 @@ impl Manifest {
         }
         let mut seen = BTreeSet::new();
         for event in &self.activation {
+            if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
+                self.needs_api("`on-event:files-changed`", 3)?;
+            }
             if !seen.insert(event) {
                 return Err(format!("duplicate activation event {event}"));
             }
@@ -490,6 +499,10 @@ mod tests {
     fn event_activation() {
         assert_eq!(ActivationEvent::parse("on-event:file-saved"), Ok(ActivationEvent::Event("file-saved".into())));
         assert_eq!(ActivationEvent::Event("vcs-changed".into()).to_string(), "on-event:vcs-changed");
+        assert_eq!(
+            ActivationEvent::parse("on-event:files-changed"),
+            Ok(ActivationEvent::Event("files-changed".into()))
+        );
         let err = ActivationEvent::parse("on-event:keystroke").unwrap_err();
         assert!(err.contains("unknown event kind") && err.contains("action-performed"), "{err}");
         assert!(ActivationEvent::parse("on-event:scheduled").is_err(), "declared with on-schedule");
@@ -582,6 +595,29 @@ mod tests {
     }
 
     const BASE: &str = "id = \"ok\"\nname = \"N\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.2\"\n";
+
+    #[test]
+    fn files_changed_activation_needs_api_1_3() {
+        let activation = "wasm = \"plugin.wasm\"\nactivation = [\"on-event:files-changed\"]\n";
+        for engine in ["^1.0", "^1.2", ">=1.1, <2"] {
+            let base = BASE.replace("^1.2", engine);
+            assert!(err(&format!("{base}{activation}")).contains("new in plugin API 1.3"), "{engine}");
+        }
+        for engine in ["^1.3", ">=1.3, <2"] {
+            Manifest::parse(&format!("{}{activation}", BASE.replace("^1.2", engine))).unwrap();
+        }
+        Manifest::parse(&format!("{BASE}{}", activation.replace("files-changed", "file-saved"))).unwrap();
+    }
+
+    #[test]
+    fn write_capabilities_need_api_1_3() {
+        for cap in ["project.write", "fs.write:~/tool"] {
+            let caps = format!("[capabilities]\noptional = [\"{cap}\"]\n");
+            assert!(err(&format!("{BASE}{caps}")).contains("new in plugin API 1.3"), "{cap}");
+            let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.3"))).unwrap();
+            assert_eq!(m.capabilities.optional[0].to_string(), cap);
+        }
+    }
 
     #[test]
     fn parses_icons() {

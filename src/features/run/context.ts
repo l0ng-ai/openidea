@@ -11,6 +11,7 @@ import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
 import { typeFor } from "./types";
 import { runTemplate } from "./runTemplates";
+import { appendScriptArgs } from "./scriptArgs";
 
 export type FileRole = "test" | "main" | "script" | null;
 
@@ -216,8 +217,7 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
   switch (base.kind) {
     case "npm":
     case "bun": {
-      // `npm run test -- file` works for npm, pnpm, yarn and bun.
-      const args = base.args.includes("--") ? [...base.args, file] : [...base.args, "--", file];
+      const args = appendScriptArgs(base.command, base.args, [file]);
       return derived(base, relPath, { args });
     }
     case "deno":
