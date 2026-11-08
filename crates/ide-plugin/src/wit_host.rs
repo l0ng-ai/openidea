@@ -117,8 +117,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, diagnostics, editor, events, fs, invocation, log, net, process, secrets, settings, storage, tasks,
-    types as wit, ui, vcs, views, workspace,
+    commit, detail_types, diagnostics, editor, events, fs, invocation, log, net, process, secrets, settings, storage,
+    tasks, types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -661,6 +661,8 @@ impl workspace::HostProject for StoreData {
 
 impl editor::Host for StoreData {}
 
+impl detail_types::Host for StoreData {}
+
 impl editor::HostTextEditor for StoreData {
     fn path(&mut self, this: Resource<EditorRes>) -> wasmtime::Result<String> {
         Ok(to_ipc(&self.table.get(&this)?.ctx.path))
@@ -1151,6 +1153,29 @@ impl views::Host for StoreData {
         Ok(self.host.open_terminal(client.as_deref(), title, &program, args, cwd.as_deref()).map_err(to_wit))
     }
 
+    fn open_log_tab(&mut self, key: String, title: String, log: views::ProcessLog) -> Fallible<()> {
+        if let Err(e) = self.require_interactive().and_then(|()| self.require(Capability::Process(log.program.clone())))
+        {
+            return Ok(Err(e));
+        }
+        if let Err(message) = check_log_tab(&key, &title, &log) {
+            return Ok(Err(wit::Error::Invalid(message)));
+        }
+        let Some(client) = self.invocation.client.clone() else {
+            return Ok(Err(wit::Error::Invalid("a log tab opens from a command or event of a window".into())));
+        };
+        let log = crate::ServiceLog {
+            program: log.program,
+            args: log.args,
+            toggles: log
+                .toggles
+                .into_iter()
+                .map(|t| crate::ServiceLogToggle { id: t.id, label: t.label, args: t.args })
+                .collect(),
+        };
+        Ok(self.host.open_log_tab(&client, key, title, log).map_err(to_wit))
+    }
+
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
         if let Ok(dir) = self.host.plugin_dir()
             && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], &path)
@@ -1298,6 +1323,27 @@ impl fs::Host for StoreData {
             return Ok(Err(too_much_to_write(&path)));
         }
         Ok(self.writable_file(&path).and_then(|real| self.host.write_bytes_file(&real, &bytes).map_err(to_wit)))
+    }
+}
+
+/// The limits of a log tab, the same a web view's `open-log-tab` has.
+fn check_log_tab(key: &str, title: &str, log: &views::ProcessLog) -> Result<(), String> {
+    let line = |s: &str, max: usize| !s.is_empty() && s.chars().count() <= max && !s.contains(['\0', '\r', '\n']);
+    let args = |a: &[String]| a.iter().all(|a| a.len() <= 4096 && !a.contains('\0'));
+    let total = log.args.len() + log.toggles.iter().map(|t| t.args.len()).sum::<usize>();
+    let mut ids = std::collections::BTreeSet::new();
+    if !line(key, 128) || !line(title, 256) {
+        Err("a log tab's key (at most 128 characters) and title (256) are one nonempty line".into())
+    } else if !line(&log.program, 256) || log.program.trim() != log.program {
+        Err(format!("{:?} is not a program name", log.program))
+    } else if log.toggles.len() > 32
+        || log.toggles.iter().any(|t| !line(&t.id, 64) || !line(&t.label, 128) || !ids.insert(t.id.as_str()))
+    {
+        Err("at most 32 toggles, with unique ids (at most 64 characters) and labels (128)".into())
+    } else if total > 256 || !args(&log.args) || log.toggles.iter().any(|t| !args(&t.args)) {
+        Err("at most 256 arguments in all, of at most 4096 bytes each".into())
+    } else {
+        Ok(())
     }
 }
 

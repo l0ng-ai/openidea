@@ -245,6 +245,9 @@ pub trait HostApi: Send + Sync {
         cwd: Option<&Path>,
     ) -> Result<(), HostError>;
     fn open_location(&self, client: Option<&str>, path: &Path, line: u32, column: u32) -> Result<(), HostError>;
+    /// Opens a log tab `key` in `client`'s window following `log` (already
+    /// checked against the plugin's grants and limits).
+    fn open_log_tab(&self, client: &str, key: String, title: String, log: ServiceLog) -> Result<(), HostError>;
     /// The IDE's UI language as a BCP 47 tag.
     fn locale(&self) -> String;
     /// A setting of the plugin as JSON (project over global over the schema default).

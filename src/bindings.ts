@@ -1151,6 +1151,11 @@ export const commands = {
 	pluginWebPage: (pluginId: string, view: string) => typedError<WebPage, IdeError>(__TAURI_INVOKE("plugin_web_page", { pluginId, view })),
 	pluginWebPtySpawn: (pluginId: string, view: string, command: WebPtyCommand, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_web_pty_spawn", { pluginId, view, command, onOutput })),
 	/**
+	 *  Starts the program of a log tab the plugin's code opened in this window,
+	 *  with the toggles in `on`.
+	 */
+	pluginLogTabSpawn: (pluginId: string, key: string, on: string[], cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_log_tab_spawn", { pluginId, key, on, cols, rows, onOutput })),
+	/**
 	 *  Writes what a web view saves (`openidea.saveFile`) to the path the user
 	 *  chose in the save dialog, on this machine.
 	 */
@@ -6052,6 +6057,11 @@ actions: NotificationAction[] } |
 { type: "viewMessage"; pluginId: string; view: string; message: string } | 
 /**  Open a terminal running `program` (already approved and verified). */
 { type: "openTerminal"; pluginId: string; title: string; program: IpcPath; args: string[]; cwd: IpcPath } | { type: "openLocation"; pluginId: string; path: IpcPath; line: number; column: number } | 
+/**
+ *  Open (or focus) the log tab `key` following `log` (`views.open-log-tab`);
+ *  it starts the program with `plugin_log_tab_spawn`.
+ */
+{ type: "openLogTab"; pluginId: string; key: string; title: string; log: ServiceLog } | 
 /**
  *  Plugin languages, or the servers they may start, changed: re-fetch
  *  `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).

@@ -5016,6 +5016,59 @@ fn web_log_tabs_use_the_web_pty_permission_boundary() {
     }
 }
 
+/// `views.open-log-tab` from the plugin's code: the host remembers what the tab
+/// may run, and the tab starts it by key, through the same PTY checks.
+#[test]
+fn log_tabs_opened_by_code_run_only_what_the_host_approved() {
+    let f = fixture(Limits::default());
+    f.host.install_from_dir(&sample("web-log"), &Consent::default()).unwrap();
+    let err = f.run("web-log", "code", None).unwrap_err();
+    assert!(err.contains("process:bash"), "{err}");
+    let options = |key: &str, window: &str, on: &[&str]| {
+        let on: Vec<String> = on.iter().map(|s| s.to_string()).collect();
+        f.host.log_tab_pty_options("web-log", key, window, &on, (240, 40))
+    };
+    assert_eq!(options("code", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+    #[cfg(unix)]
+    {
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        f.take_events();
+        assert_eq!(f.run("web-log", "code", None).unwrap(), None);
+        let events = f.take_events();
+        let (client, log) = events
+            .iter()
+            .find_map(|(client, event)| match event {
+                PluginEvent::OpenLogTab { plugin_id, key, title, log }
+                    if plugin_id == "web-log" && key == "code" && title == "Probe logs (code)" =>
+                {
+                    Some((client.clone(), log.clone()))
+                }
+                _ => None,
+            })
+            .expect("an OpenLogTab event");
+        assert_eq!(client.as_deref(), Some("main"));
+        assert_eq!((log.program.as_str(), log.toggles[0].id.as_str()), ("bash", "verbose"));
+
+        let got = options("code", "main", &[]).unwrap();
+        assert_eq!(got.shell.as_deref(), f.host.program_for("web-log", "bash").unwrap().to_str());
+        assert_eq!(got.args, log.args);
+        assert_eq!(got.cwd.0, f.project);
+        assert!(got.env.is_empty() && !got.shell_integration);
+        // Toggles append their arguments; unknown ones add nothing.
+        let verbose = options("code", "main", &["verbose", "bogus"]).unwrap();
+        assert_eq!(verbose.args.last().map(String::as_str), Some("--verbose"));
+        assert_eq!(verbose.args.len(), log.args.len() + 1);
+        // Only the window it was opened in, and only that key.
+        assert_eq!(options("code", "other", &[]).unwrap_err().kind, ErrorKind::NotFound);
+        assert_eq!(options("probe", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+        // A revoked grant stops it starting, and forgets the tab.
+        f.host.set_capability("web-log", "process:bash", false).unwrap();
+        assert!(options("code", "main", &[]).is_err());
+        f.host.set_capability("web-log", "process:bash", true).unwrap();
+        assert_eq!(options("code", "main", &[]).unwrap_err().kind, ErrorKind::NotFound);
+    }
+}
+
 #[test]
 fn web_ptys_require_a_current_exact_program_grant_and_project() {
     use ide_host::plugins::web::WebPtyCommand;

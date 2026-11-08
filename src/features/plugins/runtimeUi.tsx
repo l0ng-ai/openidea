@@ -31,6 +31,8 @@ import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { pluginsBackend } from "./backend";
 import { usePluginT } from "./pluginText";
+import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
+import type { PluginLogEditorData } from "./views/logTab";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
 import { revealWindowView } from "./views/viewWindows";
 import { runPluginCommand, usePlugins } from "./store";
@@ -419,6 +421,22 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
+      return true;
+    case "openLogTab":
+      void maybeEditorService()?.openInput({
+        kind: PLUGIN_LOG_EDITOR_KIND,
+        key: `pluginLog:${JSON.stringify([e.pluginId, "", e.key])}`,
+        data: {
+          pluginId: e.pluginId,
+          view: "",
+          key: e.key,
+          title: e.title,
+          program: e.log.program,
+          args: e.log.args,
+          toggles: e.log.toggles,
+          origin: "code",
+        } satisfies PluginLogEditorData,
+      });
       return true;
     case "openLocation":
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });

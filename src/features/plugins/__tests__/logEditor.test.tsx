@@ -9,11 +9,11 @@ import { usePlugins } from "../store";
 import { startViewUi } from "../uiPoints";
 import { registerLogActions } from "../views/logActions";
 import { PluginLogEditor } from "../views/logEditor";
-import { boundedLog, logTabData } from "../views/logTab";
-import { webPtyBackend } from "../views/ptyBackend";
+import { boundedLog, logTabData, type PluginLogEditorData } from "../views/logTab";
+import { logTabPtyBackend, webPtyBackend } from "../views/ptyBackend";
 import type { PtyBackend } from "../views/ptyBridge";
 
-vi.mock("../views/ptyBackend", () => ({ webPtyBackend: vi.fn() }));
+vi.mock("../views/ptyBackend", () => ({ webPtyBackend: vi.fn(), logTabPtyBackend: vi.fn() }));
 
 const plugin = { id: "probe", enabled: true, capabilities: [{ id: "process:bash", granted: true }] } as PluginInfo;
 const spec = {
@@ -36,7 +36,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup() {
+function setup(extra: Partial<PluginLogEditorData> = {}) {
   usePlugins.setState({ plugins: [plugin] });
   let output: (text: string) => void = () => {};
   let exit: Parameters<PtyBackend["onExit"]>[0] = () => {};
@@ -54,7 +54,8 @@ function setup() {
     },
   };
   vi.mocked(webPtyBackend).mockReturnValue(backend);
-  const data = logTabData("probe", "logs", spec, 100);
+  vi.mocked(logTabPtyBackend).mockReturnValue(backend);
+  const data = { ...logTabData("probe", "logs", spec, 100), ...extra };
   const input = { kind: "pluginLog", key: "test-log", data };
   const rendered = render(<PluginLogEditor input={input} />);
   const content = () => rendered.container.querySelector(".cm-content")!;
@@ -120,6 +121,16 @@ describe("plugin streaming log tabs", () => {
     expect(f.view().contentDOM.classList.contains("cm-lineWrapping")).toBe(!wasWrapped);
     fireEvent.click(screen.getByRole("button", { name: "Find in Logs" }));
     expect(screen.getByRole("textbox", { name: "Find" })).toBeTruthy();
+  });
+
+  it("starts a tab opened by plugin code by its key, with the toggles that are on", async () => {
+    const f = setup({ view: "", key: "code", origin: "code" });
+    expect(webPtyBackend).not.toHaveBeenCalled();
+    expect(logTabPtyBackend).toHaveBeenLastCalledWith("probe", "code", []);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("switch", { name: "Verbose" }));
+    await waitFor(() => expect(f.backend.kill).toHaveBeenCalledWith(42));
+    expect(logTabPtyBackend).toHaveBeenLastCalledWith("probe", "code", ["verbose"]);
   });
 
   it("kills the previous process on toggle and every lifecycle boundary", async () => {

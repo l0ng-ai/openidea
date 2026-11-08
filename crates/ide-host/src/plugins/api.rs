@@ -437,7 +437,17 @@ pub(super) struct Shared {
     pub ui: Arc<ide_extension::UiStore>,
     /// The UI language the windows report (BCP 47).
     pub locale: RwLock<String>,
+    /// (plugin, window) → the log tabs its code opened there, oldest first:
+    /// what a tab may run when it starts.
+    log_tabs: Mutex<HashMap<(String, String), LogTabs>>,
 }
+
+/// A window's log tabs of one plugin: key → what it runs, oldest first.
+type LogTabs = Vec<(String, ide_plugin::ServiceLog)>;
+
+/// Log tabs a plugin's code may have open in one window; opening more forgets
+/// the oldest (that tab can no longer start its program).
+const MAX_LOG_TABS: usize = 32;
 
 impl Shared {
     pub fn new(
@@ -467,6 +477,7 @@ impl Shared {
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
+            log_tabs: Mutex::default(),
         })
     }
 
@@ -563,6 +574,20 @@ impl Shared {
     /// A window labelled `client` is being created (labels are reused after a close).
     pub fn reopen_client(&self, client: &str) {
         self.closed_clients.lock().remove(client);
+    }
+
+    /// What the log tab `key` that `plugin`'s code opened in `window` runs.
+    pub fn log_tab(&self, plugin: &str, window: &str, key: &str) -> Option<ide_plugin::ServiceLog> {
+        let tabs = self.log_tabs.lock();
+        let tabs = tabs.get(&(plugin.to_owned(), window.to_owned()))?;
+        tabs.iter().find(|(k, _)| k == key).map(|(_, log)| log.clone())
+    }
+
+    /// Forgets the log tabs of a closed window, or of a stopped plugin.
+    pub fn forget_log_tabs(&self, plugin: Option<&str>, window: Option<&str>) {
+        self.log_tabs
+            .lock()
+            .retain(|(p, w), _| plugin.is_some_and(|plugin| plugin != p) || window.is_some_and(|window| window != w));
     }
 
     pub fn client_closed(&self, client: &str) -> bool {
@@ -1774,6 +1799,29 @@ impl HostApi for PluginApi {
             column,
         };
         self.shared.sink.emit(client, event);
+        Ok(())
+    }
+
+    fn open_log_tab(
+        &self,
+        client: &str,
+        key: String,
+        title: String,
+        log: ide_plugin::ServiceLog,
+    ) -> Result<(), HostError> {
+        // Fails now, rather than in the tab, when the approved file is gone or changed.
+        self.approved_program(&log.program)?;
+        {
+            let mut all = self.shared.log_tabs.lock();
+            let tabs = all.entry((self.id().to_owned(), client.to_owned())).or_default();
+            tabs.retain(|(k, _)| *k != key);
+            tabs.push((key.clone(), log.clone()));
+            if tabs.len() > MAX_LOG_TABS {
+                tabs.remove(0);
+            }
+        }
+        let event = PluginEvent::OpenLogTab { plugin_id: self.id().to_owned(), key, title, log };
+        self.shared.sink.emit(Some(client), event);
         Ok(())
     }
 

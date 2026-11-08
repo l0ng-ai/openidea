@@ -23,7 +23,7 @@ import type { EditorInput } from "@/workbench/contributions";
 import { usePlugins } from "../store";
 import { bindLogControls } from "./logActions";
 import { boundedLog, type PluginLogEditorData } from "./logTab";
-import { webPtyBackend } from "./ptyBackend";
+import { logTabPtyBackend, webPtyBackend } from "./ptyBackend";
 import { ptyBridge } from "./ptyBridge";
 
 export const PLUGIN_LOG_EDITOR_KIND = "pluginLog";
@@ -371,7 +371,11 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
       sequence = undefined;
       bridge.handle(JSON.stringify({ op: "pty-ack", sessionId: "log", sequence: consumed }));
     };
-    const bridge = ptyBridge(data.pluginId, webPtyBackend(data.pluginId, data.view), (message) => {
+    const backend =
+      data.origin === "code"
+        ? logTabPtyBackend(data.pluginId, data.key ?? "", [...on])
+        : webPtyBackend(data.pluginId, data.view);
+    const bridge = ptyBridge(data.pluginId, backend, (message) => {
       const m = message as Record<string, unknown>;
       if (stopped) return;
       if (m.op === "pty-data") {
