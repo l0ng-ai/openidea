@@ -146,14 +146,21 @@ mod tests {
 
     #[test]
     fn positions_split_only_when_the_whole_arg_is_missing() {
-        let files = ["/work/a.rs", "/work/b:2"];
+        let files = ["/work/a.rs"];
         assert_eq!(parse_in(&["a.rs:12"], &files), Ok(Command::Open(vec![at("/work/a.rs", Some(12), None)])));
         assert_eq!(parse_in(&["a.rs:12:5"], &files), Ok(Command::Open(vec![at("/work/a.rs", Some(12), Some(5))])));
-        assert_eq!(parse_in(&["b:2"], &files), Ok(Command::Open(vec![at("/work/b:2", None, None)])));
-        assert_eq!(parse_in(&["b:2:7"], &files), Ok(Command::Open(vec![at("/work/b:2", Some(7), None)])));
         assert!(parse_in(&["a.rs:0"], &files).is_err());
         assert!(parse_in(&["a.rs:x"], &files).is_err());
         assert!(parse_in(&["missing.rs:3"], &files).is_err());
+    }
+
+    // Windows file names cannot contain `:`, and `b:2` reads as a path on drive B.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_name_with_a_colon_wins_over_a_position() {
+        let files = ["/work/b:2"];
+        assert_eq!(parse_in(&["b:2"], &files), Ok(Command::Open(vec![at("/work/b:2", None, None)])));
+        assert_eq!(parse_in(&["b:2:7"], &files), Ok(Command::Open(vec![at("/work/b:2", Some(7), None)])));
     }
 
     #[test]
