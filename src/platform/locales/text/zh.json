@@ -3322,7 +3322,7 @@
   "e.g. -Xmx1g -Dkey=value --add-opens java.base/java.lang=ALL-UNNAMED": "例如 -Xmx1g -Dkey=value --add-opens java.base/java.lang=ALL-UNNAMED",
   "Main class": "主类",
   "e.g. com.example.Application": "例如 com.example.Application",
-  "Active profiles": "活动配置文件",
+  "Active profiles": "活动 profiles",
   "e.g. dev,local": "例如 dev,local",
   "Comma separated; passed as --spring.profiles.active": "以逗号分隔；作为 --spring.profiles.active 传递",
   "Comma separated; passed as -Dspring-boot.run.profiles": "以逗号分隔；作为 -Dspring-boot.run.profiles 传递",
@@ -6858,5 +6858,10 @@
   "Rebuild": "重新构建",
   "No build": "不构建",
   "Build, no error check": "构建，不检查错误",
-  "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式"
+  "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式",
+  "Toolchains file": "Toolchains 文件",
+  "Passed as -t; selects the JDKs Maven compiles with.": "以 -t 传入，用于选择 Maven 编译使用的 JDK。",
+  "Select Maven toolchains.xml": "选择 Maven toolchains.xml",
+  "dev,integration": "开发,集成",
+  "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.": "以逗号分隔的 profiles（-P），与 Maven 工具窗口中的选择合并；!id 排除指定 profile。运行配置自身的 -P 会替代这些 profiles。"
 }

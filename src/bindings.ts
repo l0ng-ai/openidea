@@ -5626,6 +5626,8 @@ export type MavenSettings = {
 	home?: string,
 	/**  User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`. */
 	userSettings?: string,
+	/**  Toolchains file (`-t`); empty = `~/.m2/toolchains.xml`. */
+	toolchains?: string,
 	/**  Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`. */
 	localRepository?: string,
 	/**
@@ -5643,6 +5645,8 @@ export type MavenSettings = {
 	 *  multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
 	 */
 	threads?: string,
+	/**  Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings. */
+	activeProfiles?: string,
 };
 
 /**  Tools › MCP Server: agents use the IDE's built-in tools. */
