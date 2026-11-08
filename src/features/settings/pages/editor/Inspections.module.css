@@ -14,6 +14,10 @@
 .profileSelect {
   min-width: 220px;
 }
+.profileRow > span {
+  flex: none;
+  white-space: nowrap;
+}
 .toolbar {
   display: flex;
   align-items: center;
