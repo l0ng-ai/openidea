@@ -6463,5 +6463,6 @@
   "JDK {v} cannot report memory while suspended. Resume the program, then refresh.": "JDK {v} 在暂停时无法报告内存。请继续运行程序后再刷新。",
   "This JDK cannot report memory while suspended. Resume the program, then refresh.": "此 JDK 在暂停时无法报告内存。请继续运行程序后再刷新。",
   "The program has exited.": "程序已退出。",
-  "The JVM did not answer within 10 seconds.": "JVM 在 10 秒内没有响应。"
+  "The JVM did not answer within 10 seconds.": "JVM 在 10 秒内没有响应。",
+  "String ({chars} chars)": "String（{chars} 个字符）"
 }

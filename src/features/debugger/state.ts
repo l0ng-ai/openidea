@@ -16,6 +16,7 @@ import {
   type DebugCapabilities,
   type DebugEvent,
   type DebugSessionId,
+  type JvmBackendState,
   type LaunchConfig,
   type RunId,
   type RunConfig,
@@ -67,6 +68,8 @@ export interface DebugSession {
   exitCode: number | null;
   /** What the adapter supports (fetched after start). */
   caps: DebugCapabilities | null;
+  /** State of the backend that reads a JVM's objects; absent until the backend reports one. */
+  jvmBackend?: JvmBackendState;
 }
 
 export interface ConsoleLine {
@@ -1108,6 +1111,12 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "terminated":
       markTerminated(id);
+      break;
+    case "capabilities":
+      void loadCapabilities(id);
+      break;
+    case "jvmBackend":
+      patch(id, { jvmBackend: event.state });
       break;
   }
 }

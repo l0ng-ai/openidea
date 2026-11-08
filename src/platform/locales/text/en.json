@@ -88,5 +88,6 @@
   "JDK {v} cannot report memory while suspended. Resume the program, then refresh.": "JDK {v} cannot report memory while suspended. Resume the program, then refresh.",
   "This JDK cannot report memory while suspended. Resume the program, then refresh.": "This JDK cannot report memory while suspended. Resume the program, then refresh.",
   "The program has exited.": "The program has exited.",
-  "The JVM did not answer within 10 seconds.": "The JVM did not answer within 10 seconds."
+  "The JVM did not answer within 10 seconds.": "The JVM did not answer within 10 seconds.",
+  "String ({chars} chars)": "String ({chars} chars)"
 }
