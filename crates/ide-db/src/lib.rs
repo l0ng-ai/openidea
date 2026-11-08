@@ -296,7 +296,7 @@ fn through_tunnel(e: IdeError, source: &DataSource, via: Option<&str>) -> IdeErr
 
 /// Options › Run keep-alive query: pings the pool until it is closed or dropped
 /// (a dropped SSH tunnel or an idle-killing proxy stays alive meanwhile).
-fn keep_alive(pool: &Arc<Pool>, every: Duration) {
+pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
     let pool = Arc::downgrade(pool);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);
