@@ -1496,10 +1496,13 @@ export type AgentCommand = {
 	description: string,
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
+	source?: AgentCommandSource,
 };
 
 /**  Why the executable cannot be changed in built-in agent settings. */
 export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
+
+export type AgentCommandSource = "command" | "skill";
 
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
