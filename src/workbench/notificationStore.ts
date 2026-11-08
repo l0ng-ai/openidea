@@ -129,7 +129,8 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
   const id = ++seq;
   const group = groupOf(n);
   const prefs = notificationPrefs(group);
-  const balloon = prefs.balloons && prefs.display !== "none";
+  // The answer to a command the user ran is not a notification they opted out of.
+  const balloon = n.userInitiated === true || (prefs.balloons && prefs.display !== "none");
   const sticky = prefs.display === "sticky" || (n.sticky ?? BALLOON_TIMEOUT[n.level] === null);
   // Neither shown nor listed: dropped, as IDEA's "No popup" + no log.
   if (!balloon && !prefs.log) return id;
