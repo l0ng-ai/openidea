@@ -1,4 +1,5 @@
 {
+  "Contents differ only in line separators": "Contents differ only in line separators",
   "Cannot remove a worktree containing the open project.": "Cannot remove a worktree containing the open project.",
   "Delete Remote Branches": "Delete Remote Branches",
   "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.": "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.",
@@ -432,5 +433,7 @@
   "Declined": "Declined",
   "Always declined": "Always declined",
   "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.",
-  "Starting…": "Starting…"
+  "Starting…": "Starting…",
+  "Maven Goals": "Maven Goals",
+  "Gradle Tasks": "Gradle Tasks"
 }
