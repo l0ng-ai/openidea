@@ -226,7 +226,7 @@ export function AddInterpreterDialog({
               <label htmlFor={ids.existing}>
                 <T>Interpreter:</T>
               </label>
-              <div className={`${styles.pathRow} ${styles.existingPathRow}`}>
+              <div className={styles.pathRow}>
                 <Select
                   id={ids.existing}
                   className={styles.pathInput}

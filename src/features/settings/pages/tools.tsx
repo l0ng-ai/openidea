@@ -480,8 +480,12 @@ function ExternalToolsEditor() {
                 checked={t.enabled}
                 onChange={(on) => setTools(tools.map((x) => (x.id === t.id ? { ...x, enabled: on } : x)))}
               />
-              <span>{t.name}</span>
-              <span className={styles.toolGroup}>{t.group}</span>
+              <span className={styles.toolName} title={t.name}>
+                {t.name}
+              </span>
+              <span className={styles.toolGroup} title={t.group}>
+                {t.group}
+              </span>
             </div>
           ))}
         </div>

@@ -9,20 +9,24 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-width: 0;
+  min-width: 180px;
   flex: 1;
   max-width: 560px;
 }
 .sdkSelect {
   flex: 1;
-  min-width: 260px;
+  min-width: 0;
 }
 
 .interpreterRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: var(--h-row);
+}
+.interpreterRow > .sdkField {
+  flex-basis: 260px;
 }
 .interpreterLabel {
   white-space: nowrap;
@@ -152,7 +156,7 @@
 /* Add Python Interpreter dialog */
 .dialogBody {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: minmax(150px, max-content) minmax(0, 1fr);
   min-height: 300px;
 }
 .kinds {
@@ -174,6 +178,7 @@
   color: var(--fg);
   font: inherit;
   text-align: left;
+  white-space: nowrap;
 }
 .kindOn {
   background: var(--bg-list-selected);
@@ -187,12 +192,14 @@
 }
 .radios {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 6px 16px;
 }
 .radio {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 .pathRow {
   display: flex;
@@ -201,7 +208,7 @@
   flex: 1;
   min-width: 0;
 }
-.existingPathRow {
+.form > .pathRow {
   flex: none;
 }
 .pathInput {
@@ -212,7 +219,7 @@
 /* Project Structure */
 .structure {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
+  grid-template-columns: minmax(240px, 1fr) 220px;
   gap: 10px;
   min-height: 420px;
 }
@@ -418,7 +425,7 @@
 }
 .splitLayout {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-columns: 268px minmax(300px, 1fr);
   gap: 12px;
   min-height: 360px;
 }
