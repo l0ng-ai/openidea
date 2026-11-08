@@ -89,7 +89,7 @@ for ((i = 1; i <= MAX_ITER; i++)); do
         # The previous run was interrupted mid-phase: let the first session carry on from its work.
         say "resuming: the working tree holds unfinished work for this phase"
         git status --short | tee -a "$LIVE"
-        prompt="$PROMPT The working tree already holds uncommitted work for this phase from an interrupted session (see git status and git diff). Review it, keep what is right, finish the phase from there, and include it in the one commit."
+        prompt="$PROMPT The working tree already holds uncommitted work for this phase from an interrupted session (see git status and git diff). Review it, keep what is right, finish the phase from there, and include it in the one commit. If git diff shows a phase ticked in docs/php-engine/ROADMAP.md that has no commit yet, that phase is the one to finish, not the next open one."
     fi
     head_before=$(git rev-parse HEAD)
     log=$(printf '%s/session-%s-%03d.log' "$LOGS" "$(date +%Y%m%d-%H%M%S)" "$i")
