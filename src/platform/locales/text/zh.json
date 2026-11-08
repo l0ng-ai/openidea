@@ -1,4 +1,5 @@
 {
+  "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.": "语言服务器的 Java 可执行文件（{path}）无法在此机器上运行。请在 {setting} 中选择可正常运行的 JDK，或设为自动。",
   "Input queue is full (4 MiB or 1024 writes); input was not sent.": "输入队列已满（4 MiB 或 1024 次写入）；本次输入未发送。",
   "Cannot write to terminal": "无法写入终端",
   "Docker": "Docker",
