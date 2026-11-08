@@ -16,11 +16,14 @@ vi.mock("../DiffEditor", () => ({
 
 import type { Settings } from "@/bindings";
 import { useProject } from "@/platform/project";
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { provideEditorService } from "@/workbench/contributions";
 import { ChangesTree, nodeMenu } from "../CommitView";
 import type { ChangeNode } from "../changes";
 import { VcsDialogHost } from "../dialogs";
 import { useVcs } from "../store";
+import { openDiffDialog } from "../diffDialog";
 
 const modified = (path: string) => ({
   path,
@@ -125,6 +128,37 @@ describe("Commit dialog diff window (#1863)", () => {
     act(() => editor.mock.calls.at(-1)?.[0].onJumpToSource());
     expect(screen.queryByRole("dialog", { name: /\(HEAD ↔ Your version\)/ })).toBeNull();
     expect(screen.getByRole("tree", { name: "Changes" })).toBeTruthy();
+  });
+
+  it.each(["body", "footer", "titlebar"])("owns the close shortcut with %s focus", (location) => {
+    const closeTab = vi.fn();
+    const unregister = registerAction({ id: "editor.closeTab", title: "Close Tab", run: closeTab });
+    const keymap = useKeymap.getState();
+    useKeymap.setState({ overrides: { "editor.closeTab": ["Meta+W"], "toolwindow.closeContent": ["Meta+W"] } });
+    const uninstall = installKeyboardDispatcher(window);
+    render(<VcsDialogHost />);
+    let close: () => void;
+    try {
+      act(() => {
+        close = openDiffDialog({ path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
+      });
+      const dialog = screen.getByRole("dialog", { name: /\(HEAD ↔ Your version\)/ });
+      const target = dialog.querySelector(
+        location === "body"
+          ? "[data-testid='diff-view']"
+          : location === "footer"
+            ? "[data-dialog-footer] button"
+            : "[data-dialog-titlebar] button",
+      )!;
+      fireEvent.keyDown(target, { key: "w", code: "KeyW", metaKey: true });
+      expect(closeTab).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog", { name: /\(HEAD ↔ Your version\)/ })).toBeNull();
+    } finally {
+      act(() => close?.());
+      uninstall();
+      unregister();
+      useKeymap.setState(keymap);
+    }
   });
 });
 

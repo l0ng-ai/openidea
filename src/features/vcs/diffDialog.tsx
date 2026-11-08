@@ -6,20 +6,14 @@
  * close-tab chord return to it. F7 / Shift+F7 and the diff navigation actions move
  * along the file's change chain by swapping this dialog's content.
  */
-import { useState, type KeyboardEvent, type ReactNode } from "react";
-import { bindingsFor, normalizeBinding, strokeOf } from "@/platform/keymap";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { bindingsFor, normalizeBinding, registerKeyClaim } from "@/platform/keymap";
 import { Dialog } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { DiffEditor } from "./DiffEditor";
 import { diffInput, diffTitle, type DiffData } from "./diffInput";
 import { openDialog } from "./dialogs";
 import { GitMergeDiff } from "./GitMergeDiff";
-
-/** Whether `e` is one of the strokes bound to `actionId`. */
-function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
-  const stroke = strokeOf(e.nativeEvent);
-  return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
-}
 
 /** The open diff dialog's close function (one diff window at a time, as in IDEA). */
 let shown: (() => void) | null = null;
@@ -57,6 +51,20 @@ export function openMergeDiffDialog(input: EditorInput): () => void {
 }
 
 function FrontWindow({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(
+    () =>
+      registerKeyClaim((e, stroke) => {
+        const dialog = body.current?.closest('[role="dialog"]');
+        if (!dialog || !(e.target instanceof Element) || e.target.closest('[role="dialog"]') !== dialog) return false;
+        if (!bindingsFor("toolwindow.closeContent").some((b) => normalizeBinding(b) === stroke)) return false;
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+        return true;
+      }),
+    [onClose],
+  );
   return (
     <Dialog
       open
@@ -70,16 +78,9 @@ function FrontWindow({ title, onClose, children }: { title: string; onClose: () 
       buttons={[{ label: "Close", role: "cancel" }]}
     >
       <div
+        ref={body}
         className="vcsDiffDialogBody"
         style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
-        onKeyDown={(e) => {
-          // The "close tab" chord would otherwise close an editor tab behind the modal.
-          if (isStrokeOf(e, "toolwindow.closeContent")) {
-            e.preventDefault();
-            e.stopPropagation();
-            onClose();
-          }
-        }}
       >
         {children}
       </div>
