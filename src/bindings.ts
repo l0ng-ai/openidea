@@ -42,6 +42,7 @@ export const commands = {
 	projectTrustAddLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_add_location", { path })),
 	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	workspaceCreate: (path: string, name: string, projects: string[]) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_create", { path, name, projects })),
+	workspaceDiscoverProjects: (request: RequestId, folders: string[]) => typedError<ProjectDiscovery, IdeError>(__TAURI_INVOKE("workspace_discover_projects", { request, folders })),
 	workspaceAttach: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("workspace_attach", { path })),
 	workspaceUpdate: (name: string, projects: string[]) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("workspace_update", { name, projects })),
 	windowGroupCurrent: () => typedError<WindowTab[], IdeError>(__TAURI_INVOKE("window_group_current")),
@@ -1495,10 +1496,13 @@ export type AgentCommand = {
 	description: string,
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
+	source?: AgentCommandSource,
 };
 
 /**  Why the executable cannot be changed in built-in agent settings. */
 export type AgentCommandReadOnlyReason = "packageRunner" | "registry" | "customAgent";
+
+export type AgentCommandSource = "command" | "skill";
 
 /**  A setting chosen for a new task, by [`AgentConfigOption::id`]. */
 export type AgentConfigChoice = {
@@ -3327,6 +3331,12 @@ export type DirectoryHistory = {
 	entries: HistoryEntry[],
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
+};
+
+export type DiscoveredProject = {
+	path: IpcPath,
+	root: IpcPath,
+	relative_path: string,
 };
 
 /**  Checking out remote `origin/x` while local `x` has commits `origin/x` lacks. */
@@ -6461,6 +6471,13 @@ export type ProfilerInstall = {
 	command: string,
 	args: string[],
 	cwd: IpcPath | null,
+};
+
+export type ProjectDiscovery = {
+	/**  Selected projects and folders with no discovered projects retain the direct-add behaviour. */
+	direct: IpcPath[],
+	projects: DiscoveredProject[],
+	truncated: boolean,
 };
 
 export type ProjectFileSet = 

@@ -85,6 +85,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::project_trust_add_location,
         app::project_trust_remove_location,
         workspace::workspace_create,
+        workspace::workspace_discover_projects,
         workspace::workspace_attach,
         workspace::workspace_update,
         window_group::window_group_current,

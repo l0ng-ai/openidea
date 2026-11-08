@@ -8,6 +8,7 @@ import { usePlatform } from "@/platform/platformInfo";
 const terminal = vi.hoisted(() => ({
   selection: "selected run output",
   handler: (_e: KeyboardEvent): boolean => true,
+  input: vi.fn(),
 }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
@@ -25,6 +26,9 @@ vi.mock("@xterm/xterm", () => ({
       terminal.handler = handler;
     }
     loadAddon() {}
+    input(data: string) {
+      terminal.input(data);
+    }
     open(host: HTMLElement) {
       this.textarea = document.createElement("textarea");
       host.append(this.textarea);
@@ -120,4 +124,23 @@ it("delivers input-method commits to the owner on macOS as the terminal sessions
   textarea.dispatchEvent(input);
   expect(onData).toHaveBeenCalledWith("1");
   term.dispose();
+});
+
+it("sends Shift+Enter in embedded Run terminals as Esc+Return", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const onData = vi.fn();
+  const term = createEmbeddedTerminal(host, { onData, onResize: vi.fn() });
+  try {
+    const shiftEnter = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", shiftKey: true, cancelable: true });
+    expect(terminal.handler(shiftEnter)).toBe(false);
+    expect(shiftEnter.defaultPrevented).toBe(true);
+    expect(terminal.handler(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", shiftKey: true }))).toBe(false);
+    expect(terminal.input).toHaveBeenCalledExactlyOnceWith("\x1b\r");
+    for (const init of [{}, { altKey: true }, { ctrlKey: true, shiftKey: true }, { shiftKey: true, isComposing: true }])
+      expect(terminal.handler(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", ...init }))).toBe(true);
+    expect(terminal.input).toHaveBeenCalledOnce();
+  } finally {
+    term.dispose();
+  }
 });
