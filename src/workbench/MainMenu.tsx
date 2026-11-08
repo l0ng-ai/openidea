@@ -161,8 +161,12 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
       else close();
     });
   };
-  useEffect(() =>
-    onLoneAlt(window, () => {
+  // IDEA `ide.windows.main.menu.focus.on.alt`: when off, a lone Alt press does
+  // nothing instead of opening or focusing the menu.
+  const altMenu = useProject((s) => s.settings?.appearance?.mainMenuAlt !== false);
+  useEffect(() => {
+    if (!altMenu) return;
+    return onLoneAlt(window, () => {
       if (open !== null || expanded) {
         close();
         if (persistent) focusTitle(focused);
@@ -173,8 +177,8 @@ function MainMenuBar({ merged, onExpandedChange }: MainMenuProps & { merged: boo
           focusTitle(0);
         }
       } else void expand();
-    }),
-  );
+    });
+  });
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       if (!menus.length) return;
