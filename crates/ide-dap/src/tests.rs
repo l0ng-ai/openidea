@@ -33,6 +33,12 @@ struct Script {
     supports_terminate: bool,
     /// Answer `setBreakpoints` only once this many are waiting (a client that waits for each never gets one).
     hold_set_breakpoints: usize,
+    initialized_delay: Duration,
+    launch_delay: Duration,
+    /// Leave startup pending before `initialized` (false) or after configuration (true).
+    pending_startup: Option<bool>,
+    startup_error: Option<&'static str>,
+    close_during_startup: bool,
 }
 
 impl Default for Script {
@@ -47,6 +53,11 @@ impl Default for Script {
             output_after_terminate: false,
             supports_terminate: true,
             hold_set_breakpoints: 0,
+            initialized_delay: Duration::ZERO,
+            launch_delay: Duration::ZERO,
+            pending_startup: None,
+            startup_error: None,
+            close_during_startup: false,
         }
     }
 }
@@ -120,6 +131,15 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 })
             ),
             "launch" | "attach" => {
+                if script.close_during_startup {
+                    return;
+                }
+                if let Some(message) = script.startup_error {
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": msg["command"], "success": false, "message": message})
+                    );
+                    continue;
+                }
                 pending_launch = msg["seq"].as_i64();
                 if let Some(args) = &script.run_in_terminal {
                     send!(
@@ -131,7 +151,10 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                         json!({"type": "request", "command": "startDebugging", "arguments": {"request": "launch", "configuration": {"name": "child", "isChild": true}}})
                     );
                 }
-                send!(json!({"type": "event", "event": "initialized"}));
+                if script.pending_startup != Some(false) {
+                    tokio::time::sleep(script.initialized_delay).await;
+                    send!(json!({"type": "event", "event": "initialized"}));
+                }
             }
             "setBreakpoints" => {
                 held.push(msg);
@@ -182,6 +205,10 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 if !script.ignore_configuration_done {
                     ok!(msg, Value::Null);
                 }
+                if script.pending_startup == Some(true) {
+                    continue;
+                }
+                tokio::time::sleep(script.launch_delay).await;
                 if let Some(l) = pending_launch.take() {
                     send!(json!({"type": "response", "request_seq": l, "command": "launch", "success": true}));
                 }
@@ -349,6 +376,66 @@ fn config() -> LaunchConfig {
 
 fn bp(line: u32) -> Breakpoint {
     Breakpoint { line, condition: None, hit_condition: None, log_message: None, enabled: true }
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_launch_and_attach_follow_adapter_startup() {
+    for request in ["launch", "attach"] {
+        for before_initialized in [true, false] {
+            let delay = Duration::from_secs(125);
+            let h = harness(Script {
+                initialized_delay: if before_initialized { delay } else { Duration::ZERO },
+                launch_delay: if before_initialized { Duration::ZERO } else { delay },
+                ..Script::default()
+            });
+            let config = LaunchConfig { request: request.into(), ..config() };
+            let id = h.start(config).await.expect("a slow adapter can finish starting");
+            h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+            assert!(!h.commands().iter().any(|c| c == "terminate" || c == "disconnect"));
+            h.manager.stop(id).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn stop_cancels_pending_launch_and_attach() {
+    for request in ["launch", "attach"] {
+        for configured in [false, true] {
+            let h = harness(Script { pending_startup: Some(configured), ..Script::default() });
+            let config = LaunchConfig { request: request.into(), ..config() };
+            let start = h.start(config);
+            tokio::pin!(start);
+            let stop = async {
+                loop {
+                    let command = if configured { "configurationDone" } else { request };
+                    if h.commands().iter().any(|c| c == command) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let id = h.manager.sessions(None)[0].id;
+                h.manager.stop(id).await.unwrap();
+            };
+            let (result, ()) = tokio::join!(&mut start, stop);
+            assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
+            assert!(h.manager.sessions(None).is_empty());
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_still_reports_adapter_failure_and_connection_closure() {
+    for request in ["launch", "attach"] {
+        let h = harness(Script { startup_error: Some("interpreter could not start"), ..Script::default() });
+        let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
+        assert_eq!(error.message, format!("{request} failed: interpreter could not start"));
+        assert!(h.manager.sessions(None).is_empty());
+
+        let h = harness(Script { close_during_startup: true, ..Script::default() });
+        let error = h.start(LaunchConfig { request: request.into(), ..config() }).await.unwrap_err();
+        assert!(error.message.contains("debug adapter `debugpy` exited during startup"), "{error}");
+        assert!(h.manager.sessions(None).is_empty());
+    }
 }
 
 #[tokio::test]

@@ -282,7 +282,6 @@ impl SessionOwner {
 }
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(20);
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Redefining many classes in a large JVM can take a while.
@@ -883,7 +882,12 @@ impl DebugManager {
         });
         tokio::spawn(session::event_loop(self.me.clone(), session.clone(), incoming));
 
-        match self.configure(&session, arguments).await {
+        let configured = tokio::select! {
+            biased;
+            _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
+            result = self.configure(&session, arguments) => result,
+        };
+        match configured {
             Ok(()) => Ok(id),
             Err(e) => {
                 let e = if session.conn.is_closed() {
@@ -971,7 +975,9 @@ impl DebugManager {
             arguments["hostName"] = json!("127.0.0.1");
             arguments["port"] = json!(port);
         }
-        // Many adapters answer `launch` only after `configurationDone`, so don't wait for it yet.
+        // Launch/attach may wait for a slow runtime or a remote target. Let the adapter report
+        // failure; Stop cancels configuration and a closed connection fails the pending reply.
+        // Many adapters answer only after `configurationDone`, so don't wait for the reply yet.
         let launch = s.conn.send_request(request, arguments)?;
         let mut launch = Box::pin(async move { launch.await.unwrap_or(Err(DapError::Closed)) });
         let mut initialized = s.initialized.subscribe();
@@ -983,7 +989,6 @@ impl DebugManager {
                 launch_result = Some(());
                 false
             }
-            _ = tokio::time::sleep(LAUNCH_TIMEOUT) => return Err(DapError::Timeout(s.request.clone()).into()),
         };
         if !got_initialized {
             // Launched before `initialized`; give the adapter a moment to send it.
@@ -1041,12 +1046,7 @@ impl DebugManager {
         }
         s.configured.store(true, Ordering::Release);
         if launch_result.is_none() {
-            match tokio::time::timeout(LAUNCH_TIMEOUT, launch).await {
-                Ok(r) => {
-                    r?;
-                }
-                Err(_) => return Err(DapError::Timeout(s.request.clone()).into()),
-            }
+            launch.await?;
         }
         if let Some(relay) = s.kotlin_relay.lock().as_mut() {
             relay.release();
@@ -1730,9 +1730,11 @@ impl DebugManager {
     }
 
     async fn stop_tree(&self, session: Arc<Session>) -> IdeResult<()> {
+        session.startup_cancel.cancel();
         let children: Vec<Arc<Session>> =
             self.live_sessions().into_iter().filter(|c| c.parent == Some(session.id)).collect();
         for child in children {
+            child.startup_cancel.cancel();
             self.shutdown(&child, true).await;
         }
         self.shutdown(&session, true).await;
