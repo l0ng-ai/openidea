@@ -339,8 +339,12 @@ function SshConfigsEditor() {
               className={clsx(styles.toolRow, c.id === selected && styles.toolRowSelected)}
               onMouseDown={() => setSelected(c.id)}
             >
-              <span>{c.name.trim() || sshLabel(c) || c.id}</span>
-              <span className={styles.toolGroup}>{sshLabel(c)}</span>
+              <span className={styles.toolName} title={c.name.trim() || sshLabel(c) || c.id}>
+                {c.name.trim() || sshLabel(c) || c.id}
+              </span>
+              <span className={styles.toolGroup} title={sshLabel(c)}>
+                {sshLabel(c)}
+              </span>
             </div>
           ))}
         </div>

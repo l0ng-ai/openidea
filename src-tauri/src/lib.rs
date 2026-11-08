@@ -190,6 +190,10 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            macos::prepare_window_tabbing(mtm);
+        }
+        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
         if let Some(paths) = setup_opens.lock().take() {
@@ -201,8 +205,13 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
-        #[cfg(target_os = "linux")]
-        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
+        tauri::WindowEvent::CloseRequested { .. } => {
+            #[cfg(target_os = "linux")]
+            linux_window_state::save_before_close(window.app_handle());
+            if let Some(w) = window.try_state::<WindowsState>() {
+                w.close_requested(window.label());
+            }
+        }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {

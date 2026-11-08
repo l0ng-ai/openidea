@@ -197,7 +197,6 @@
   "window.caption.minimize": "最小化",
   "window.caption.maximize": "最大化",
   "window.caption.restore": "向下还原",
-  "window.caption.exitFullScreen": "退出全屏",
   "window.caption.close": "关闭",
   "menu.help.keymapReference": "快捷键参考",
   "menu.help.showLog": "{os, select, macos {在访达中显示日志} windows {在资源管理器中显示日志} other {在文件管理器中显示日志}}",

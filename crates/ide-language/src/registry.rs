@@ -693,6 +693,27 @@ mod tests {
     }
 
     #[test]
+    fn laravel_lsp_serves_php_files_only_below_artisan() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("php")).unwrap();
+        let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
+        // After the fallback: hover, rename and symbols stay with Intelephense.
+        assert_eq!(names, ["intelephense", "phpactor", "laravel-lsp"]);
+        let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
+        assert_eq!(lsp.command.as_str(), "laravel-lsp");
+        assert!(lsp.require_root_marker && !lsp.fallback);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["shop", "lib"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("shop/artisan"), "").unwrap();
+        let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &lsp.root_markers);
+        assert_eq!(served("shop/app/Models/Order.php"), Some(root.join("shop")));
+        assert_eq!(served("lib/src/Parser.php"), None);
+    }
+
+    #[test]
     fn ruff_serves_python_files_only_below_its_config() {
         let reg = reg();
         let cfg = reg.get(&LanguageId::new("python")).unwrap();
