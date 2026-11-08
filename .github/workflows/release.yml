@@ -85,28 +85,15 @@ jobs:
     name: Build (${{ matrix.name }})
     env:
       OPENIDEA_OFFICIAL_PLUGIN_KEYS: ${{ needs.create-release.outputs.official_plugin_keys }}
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: macOS arm64
-            os: macos-latest
-            target: aarch64-apple-darwin
-          - name: macOS x64
-            os: macos-latest
-            target: x86_64-apple-darwin
-          - name: Linux x64
-            os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
           - name: Linux arm64
             os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-          - name: Windows arm64
-            os: windows-11-arm
-            target: aarch64-pc-windows-msvc
-          - name: Windows x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -194,6 +181,7 @@ jobs:
   # Linux builds are static (musl), so they run whatever the host's glibc.
   server:
     needs: create-release
+    if: false
     name: Server (${{ matrix.os }}-${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -241,6 +229,7 @@ jobs:
   # checks run.
   plugins:
     needs: create-release
+    if: false
     name: Official plugins
     runs-on: ubuntu-22.04
     env:
@@ -366,7 +355,7 @@ jobs:
             core.info(`latest.json: ${Object.keys(platforms).sort().join(", ")}`);
 
   publish:
-    needs: [create-release, build, server, plugins, updater-manifest]
+    needs: [create-release, build, updater-manifest]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v8
