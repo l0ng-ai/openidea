@@ -80,7 +80,11 @@ const UNCHECKED_FILES = new Set([
 ]);
 
 /** Entries for text the code assembles from parts, which no literal spells out. */
-const BUILT_AT_RUNTIME = new Set<string>([]);
+const BUILT_AT_RUNTIME = new Set<string>([
+  // Errors raised by the Rust Tomcat runner and surfaced through the run console.
+  "Context path must start with / and contain only letters, digits, /, - or _",
+  "IDE-managed Tomcat runtime directory must not overlap Tomcat home or base directory",
+]);
 
 /** Text that stays as written in every locale: names, code, formats, shortcuts. */
 const UNTRANSLATED = new Set<string>([
