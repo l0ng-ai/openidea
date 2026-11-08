@@ -491,7 +491,7 @@ The design:
 
 Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADMAP.md): it holds the design (the Laravel project model, the string-reference framework, the reused OpenIDEA pieces, the `fixtures/laravel-app` fixture) and the clean-room rules for this plan. The feature list comes only from Laravel Idea's public documentation; never decompile or copy from Laravel Idea, PhpStorm or any closed-source product, and call the feature "Laravel support" in the product.
 
-- [ ] Phase 8.1: Laravel fixture app
+- [x] Phase 8.1: Laravel fixture app
       Create `fixtures/laravel-app` as described in the design, with a short README listing what each file exercises. Add `crates/ide-php/tests/laravel_app.rs`, which opens it with the engine and checks it indexes with no diagnostics except deliberate ones. Add a `laravel` case to `language_smoke` (ignored like the PHP one) that checks hover and completion on a model attribute. Tests: the new integration test.
 
 - [ ] Phase 8.2: Laravel project model

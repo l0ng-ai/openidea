@@ -35,6 +35,9 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 ```
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
+`laravel-app/` is the test fixture of the PHP engine's Laravel support; see its
+README (it has no `vendor/` and borrows the stubs in `laravel-stubs/`).
+
 For `ts-app` / `polyglot/web` run `pnpm install` first; for `php-app` run
 `composer install`; for `python-app` create a
 venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`).

@@ -1272,3 +1272,46 @@ async fn php_native() {
     // checklist (last: its rename and file move edit the fixture).
     smoke.run(&PHP_NATIVE).await;
 }
+
+/// The Laravel fixture (`fixtures/laravel-app`) on the native engine, with the minimal
+/// laravel/framework stand-ins of `fixtures/laravel-stubs` as its `vendor/`. Only what Laravel
+/// support adds: hover and completion of a model attribute (a column of the posts migration).
+const LARAVEL: Checks = Checks {
+    fixture: "laravel-app",
+    files: &[
+        ("vendor/composer/installed.json", include_str!("../../../fixtures/laravel-stubs/composer/installed.json")),
+        (
+            "vendor/laravel/framework/helpers.php",
+            include_str!("../../../fixtures/laravel-stubs/laravel/framework/helpers.php"),
+        ),
+        (
+            "vendor/laravel/framework/src/framework.php",
+            include_str!("../../../fixtures/laravel-stubs/laravel/framework/src/framework.php"),
+        ),
+    ],
+    hover: (
+        at("app/Console/Commands/PublishScheduledPosts.php", "$this->line($post->title);", "title"),
+        "Column `title` of table `posts`",
+    ),
+    completion: (
+        typed("app/Http/Controllers/PostController.php", "$published = $post->published_at;", "        $post->"),
+        "comments_count",
+    ),
+    ..PHP_NATIVE
+};
+
+/// Laravel support on the native engine. Ignored like the PHP case:
+/// `cargo test -p ide-host --test language_smoke -- --ignored --exact laravel`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: run with the other languages"]
+async fn laravel() {
+    let smoke = Smoke::start("laravel", &LARAVEL).await;
+    let project = smoke.host.project(WINDOW).unwrap();
+    let engine =
+        smoke.retry("native engine", smoke.warm_up, || async { project.php.engine().ok_or("not started") }).await;
+    assert!(engine.wait_idle(smoke.warm_up), "the native engine finishes indexing");
+    smoke.hover(LARAVEL.hover.0, LARAVEL.hover.1).await;
+    smoke.completion(LARAVEL.completion.0, LARAVEL.completion.1).await;
+    let shutdown = project.lsp.clone();
+    let _ = tokio::time::timeout(Duration::from_secs(20), shutdown.shutdown_all()).await;
+}

@@ -1,0 +1,17 @@
+{
+    "packages": [
+        {
+            "name": "laravel/framework",
+            "version": "v11.31.0",
+            "version_normalized": "11.31.0.0",
+            "type": "library",
+            "autoload": {
+                "classmap": ["src/"],
+                "files": ["helpers.php"]
+            },
+            "install-path": "../laravel/framework"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}
