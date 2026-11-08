@@ -21,6 +21,7 @@ const SERVER: &str = "jdtls";
 pub(crate) mod configuration;
 mod formatter;
 mod hierarchy;
+pub(crate) mod jvm_inspect;
 pub(crate) mod reserved_names;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
@@ -747,7 +748,15 @@ impl LspManager {
         {
             tracing::debug!("vscode.java.updateDebugSettings: {e}");
         }
-        parse_port(&v).ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))
+        let port = parse_port(&v)
+            .ok_or_else(|| IdeError::new(ErrorKind::Protocol, format!("unexpected debug server port: {v}")))?;
+        self.debug_servers.lock().insert(port, path.to_path_buf());
+        Ok(port)
+    }
+
+    /// The module path whose jdtls started the debug server on `port`.
+    pub fn java_debug_server_module(&self, port: u16) -> Option<PathBuf> {
+        self.debug_servers.lock().get(&port).cloned()
     }
 }
 

@@ -1196,41 +1196,61 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.7.0.jar");
-    let bytes = include_bytes!("../../../java/java-usages/openidea-java-usages.jar");
+    install_bundle(
+        data_dir,
+        "java-usages",
+        "1.7.0",
+        include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
+    )
+}
+
+/// Installs the app-owned JDT LS bundle that inspects java-debug's JVMs.
+pub fn jvm_inspect_bundle(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(
+        data_dir,
+        "jvm-inspect",
+        "1.0.0",
+        include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"),
+    )
+}
+
+/// `version` must match the jar's `Bundle-Version`: jdtls (OSGi) caches bundles by it.
+fn install_bundle(data_dir: &Path, stem: &str, version: &str, bytes: &'static [u8]) -> Option<PathBuf> {
+    let extension = data_dir.join(format!("{stem}-{version}.jar"));
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
-        clean_usages_bundles(data_dir, &extension);
+        clean_bundles(data_dir, stem, &extension);
         return Some(extension);
     }
     // Write then rename: another window must never read a partially written jar.
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    let temporary = data_dir.join(format!("java-usages-{}-{nonce}.tmp", std::process::id()));
+    let temporary = data_dir.join(format!("{stem}-{}-{nonce}.tmp", std::process::id()));
     let result = std::fs::create_dir_all(data_dir)
         .and_then(|_| std::fs::write(&temporary, bytes))
         .and_then(|_| std::fs::rename(&temporary, &extension));
     match result {
         Ok(()) => {
-            clean_usages_bundles(data_dir, &extension);
+            clean_bundles(data_dir, stem, &extension);
             Some(extension)
         }
         Err(e) => {
             let _ = std::fs::remove_file(&temporary);
             if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
-                clean_usages_bundles(data_dir, &extension);
+                clean_bundles(data_dir, stem, &extension);
                 return Some(extension);
             }
-            tracing::warn!("Java usages extension unavailable; using standard references: {e}");
+            tracing::warn!("JDT LS extension {stem} unavailable: {e}");
             None
         }
     }
 }
 
-fn clean_usages_bundles(data_dir: &Path, current: &Path) {
+fn clean_bundles(data_dir: &Path, stem: &str, current: &Path) {
     let Ok(entries) = std::fs::read_dir(data_dir) else { return };
+    let prefix = format!("{stem}-");
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-        let Some(suffix) = name.strip_prefix("java-usages-") else { continue };
+        let Some(suffix) = name.strip_prefix(prefix.as_str()) else { continue };
         let numeric = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
         let old_jar = suffix.strip_suffix(".jar").is_some_and(|v| {
             let parts: Vec<_> = v.split('.').collect();
@@ -1276,6 +1296,19 @@ mod usages_bundle_tests {
             assert!(!stale.exists(), "reuse={reuse}");
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 5);
         }
+    }
+
+    #[test]
+    fn jvm_inspect_bundle_installs_and_cleans_old_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["jvm-inspect-0.9.0.jar", "java-usages-1.7.0.jar"] {
+            std::fs::write(dir.path().join(name), b"old").unwrap();
+        }
+        let jar = super::jvm_inspect_bundle(dir.path()).unwrap();
+        assert_eq!(jar, dir.path().join("jvm-inspect-1.0.0.jar"));
+        assert_eq!(std::fs::read(&jar).unwrap(), include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"));
+        assert!(!dir.path().join("jvm-inspect-0.9.0.jar").exists());
+        assert_eq!(std::fs::read(dir.path().join("java-usages-1.7.0.jar")).unwrap(), b"old");
     }
 
     #[test]

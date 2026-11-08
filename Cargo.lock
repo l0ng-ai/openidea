@@ -4534,6 +4534,7 @@ dependencies = [
  "globset",
  "ide-core",
  "ide-jsonrpc",
+ "ide-jvm-inspect",
  "ide-language",
  "ide-text",
  "ide-vfs",
