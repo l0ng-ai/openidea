@@ -12,12 +12,10 @@ use self::classes::{ClassTable, IdHash};
 use self::link::Linker;
 use crate::column::{Column, Store};
 use crate::error::HeapError;
+use crate::files::{OFFSETS_FILE, TYPES_FILE};
 use crate::hprof::{BasicType, HeapRecord, HeapRootKind, Record, parse_header, scan, scan_segment};
 use crate::ids::{IdMap, IdMapBuilder};
 use crate::progress::{CHECK_EVERY, HeapPhase, Progress};
-
-const TYPES_FILE: &str = "types.u32";
-const OFFSETS_FILE: &str = "offsets.u64";
 
 /// Number of primitive array type slots, one per non-object [`BasicType`].
 pub const PRIM_SLOTS: u32 = 8;

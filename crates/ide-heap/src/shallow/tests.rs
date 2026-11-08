@@ -31,7 +31,7 @@ fn entry(name: &str, instances: u64, bytes: u64) -> HistogramEntry {
 }
 
 fn flags(flags: &str, java_major: u32) -> VmLayout {
-    VmLayout::from_vm_flags(flags, java_major)
+    VmLayout::from_vm_flags(flags, Some(java_major))
 }
 
 const SHAPES: [&str; 9] = ["A", "B", "C", "D", "E", "F", "G", "H", "Node"];
@@ -99,6 +99,19 @@ fn heaps_too_big_for_compressed_oops_print_no_flag() {
     assert_eq!(flags(J21_25_40G, 21), jvm(21, VmLayout { legacy_array_base: true, ..wide }));
     assert_eq!(flags(J21_25_40G, 25), jvm(25, wide));
     assert_eq!(flags(J21_40G_OFF, 21), flags(J21_25_40G, 21));
+}
+
+#[test]
+fn flags_of_an_unknown_jdk_follow_the_jdk_15_class_pointer_rule() {
+    let unknown = |f: &str| VmLayout::from_vm_flags(f, None);
+    assert_eq!(unknown(J21_25_1G), VmLayout::DEFAULT);
+    assert_eq!(unknown(J8_11_40G), VmLayout { ref_size: 8, ..VmLayout::DEFAULT });
+    let no_ccp = unknown("-XX:+UseCompressedOops -XX:-UseCompressedClassPointers");
+    assert_eq!((no_ccp.header, no_ccp.length_offset, no_ccp.java_major), (16, 16, None));
+    assert_eq!(unknown(J25_COMPACT).header, 8);
+    // The mirror table has no row for an unknown JDK.
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    assert_eq!(mirror_sizes(&g, &addrs, unknown(J21_25_1G), None), expected_mirrors(&MIRROR_STATICS, 32));
 }
 
 #[test]

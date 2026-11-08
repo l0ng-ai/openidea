@@ -33,18 +33,19 @@ impl VmLayout {
     /// `flags` is the output of `VM.flags`, which lists the flags set on this run. Compressed oops
     /// are off by default and only switched on by ergonomics, so `-XX:+UseCompressedOops` is
     /// printed exactly when references take 4 bytes; a heap too big for them prints no such flag.
-    /// Before JDK 15 compressed class pointers follow the same rule. Flags without any `-XX:`
-    /// option (an external dump) give [`Self::DEFAULT`] with the array base of `java_major` and an
-    /// unknown JDK, since the reference size is a guess.
+    /// Before JDK 15 compressed class pointers follow the same rule; with `java_major: None` (JDK
+    /// unknown) they follow the JDK 15+ rule and the array base that of the newest JDKs. Flags
+    /// without any `-XX:` option (an external dump) give [`Self::DEFAULT`] with the array base of
+    /// `java_major` and an unknown JDK, since the reference size is a guess.
     /// An `ObjectAlignmentInBytes` that is not a power of two in `8..=256` is ignored.
-    pub fn from_vm_flags(flags: &str, java_major: u32) -> Self {
-        let legacy_array_base = java_major <= 21;
+    pub fn from_vm_flags(flags: &str, java_major: Option<u32>) -> Self {
+        let legacy_array_base = java_major.map_or(Self::DEFAULT.legacy_array_base, |major| major <= 21);
         let flags = parse_flags(flags);
         if flags.is_empty() {
             return VmLayout { legacy_array_base, ..Self::DEFAULT };
         }
         let on = |name: &str| flags.get(name) == Some(&"true");
-        let compressed_classes = if java_major >= 15 {
+        let compressed_classes = if java_major.is_none_or(|major| major >= 15) {
             flags.get("UseCompressedClassPointers") != Some(&"false")
         } else {
             on("UseCompressedClassPointers")
@@ -67,7 +68,7 @@ impl VmLayout {
             length_offset,
             legacy_array_base,
             alignment,
-            java_major: Some(java_major),
+            java_major,
         }
     }
 

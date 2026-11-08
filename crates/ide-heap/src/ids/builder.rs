@@ -9,6 +9,7 @@ use ide_core::CancellationToken;
 use super::{CHUNK_SLOT_BITS, IdMap, Repr, SLOT_SHIFT, WORD_BITS, WORDS_PER_CHUNK};
 use crate::column::{NONE, Store};
 use crate::error::HeapError;
+use crate::files::{IDS_BITS_FILE, IDS_CHUNKS_FILE, IDS_SORTED_FILE, IDS_TABLE_FILE, IDS_WRANK_FILE};
 
 /// Widest chunk range the dense table covers (256 MiB of table at most).
 const MAX_CHUNK_SPAN: u64 = 1 << 26;
@@ -28,12 +29,6 @@ const BITMAP_BYTES_PER_ID: u64 = 32;
 
 /// Longest stretch of work between two looks at the cancellation token.
 const CHECK_EVERY: usize = 1 << 20;
-
-const BITS_FILE: &str = "ids.bits.u64";
-const WRANK_FILE: &str = "ids.wrank.u32";
-const TABLE_FILE: &str = "ids.table.u32";
-const CHUNKS_FILE: &str = "ids.chunks.u32";
-const SORTED_FILE: &str = "ids.sorted.u64";
 
 /// Chunk numbers are already well spread by a multiplicative hash; SipHash would dominate the
 /// per-insert cost on a 100M-object heap. The product keeps the low zero bits of its input, so
@@ -213,7 +208,7 @@ fn check(cancel: &CancellationToken) -> Result<(), HeapError> {
 }
 
 fn sorted_map(store: &Store, ids: &[u64]) -> Result<IdMap, HeapError> {
-    let mut column = store.column(SORTED_FILE, ids.len(), 0u64)?;
+    let mut column = store.column(IDS_SORTED_FILE, ids.len(), 0u64)?;
     column.copy_from_slice(ids);
     Ok(IdMap { repr: Repr::Sorted(column) })
 }
@@ -224,10 +219,10 @@ fn bit_map(bits: &BitChunks, store: &Store, max_ids: u64, cancel: &CancellationT
     }
     let chunks = bits.sorted_chunks();
     let span = (bits.max - bits.min + 1) as usize;
-    let mut words = store.column(BITS_FILE, chunks.len() * WORDS_PER_CHUNK, 0u64)?;
-    let mut wrank = store.column(WRANK_FILE, chunks.len() * WORDS_PER_CHUNK, 0u32)?;
-    let mut table = store.column(TABLE_FILE, span, NONE)?;
-    let mut chunk_offsets = store.column(CHUNKS_FILE, chunks.len(), 0u32)?;
+    let mut words = store.column(IDS_BITS_FILE, chunks.len() * WORDS_PER_CHUNK, 0u64)?;
+    let mut wrank = store.column(IDS_WRANK_FILE, chunks.len() * WORDS_PER_CHUNK, 0u32)?;
+    let mut table = store.column(IDS_TABLE_FILE, span, NONE)?;
+    let mut chunk_offsets = store.column(IDS_CHUNKS_FILE, chunks.len(), 0u32)?;
     let mut before = 0u32;
     for (ordinal, &(chunk, at)) in chunks.iter().enumerate() {
         check(cancel)?;
@@ -305,7 +300,7 @@ fn merged_map(
         count += 1;
     }
 
-    let mut column = store.column(SORTED_FILE, count, 0u64)?;
+    let mut column = store.column(IDS_SORTED_FILE, count, 0u64)?;
     for (to, from) in column.chunks_mut(CHECK_EVERY).zip(merged[..count].chunks(CHECK_EVERY)) {
         check(cancel)?;
         to.copy_from_slice(from);

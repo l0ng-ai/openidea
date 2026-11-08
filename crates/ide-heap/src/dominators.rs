@@ -9,10 +9,10 @@ use ide_core::CancellationToken;
 
 use crate::column::{Column, NONE, Store};
 use crate::error::HeapError;
+use crate::files::IDOM_FILE;
 use crate::graph::accumulate;
 use crate::progress::{CHECK_EVERY, HeapPhase, Progress};
 
-const IDOM_FILE: &str = "idom.u32";
 const PHASE: HeapPhase = HeapPhase::Dominators;
 
 pub struct Dominators {

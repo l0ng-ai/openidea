@@ -36,6 +36,15 @@ impl<'a> Progress<'a> {
 
     pub(crate) fn report(&self, phase: HeapPhase, done: u64, total: u64) -> Result<(), HeapError> {
         (self.report)(phase, done, total)?;
+        self.check()
+    }
+
+    pub(crate) fn token(&self) -> &'a CancellationToken {
+        self.cancel
+    }
+
+    /// Looks at the token without reporting.
+    pub(crate) fn check(&self) -> Result<(), HeapError> {
         if self.cancel.is_cancelled() { Err(HeapError::Cancelled) } else { Ok(()) }
     }
 
@@ -43,7 +52,7 @@ impl<'a> Progress<'a> {
     /// not report: a loop starts right after its phase's own report.
     pub(crate) fn step(&self, step: u64, phase: HeapPhase, done: u64, total: u64) -> Result<(), HeapError> {
         if step == 0 {
-            if self.cancel.is_cancelled() { Err(HeapError::Cancelled) } else { Ok(()) }
+            self.check()
         } else if step.is_multiple_of(CHECK_EVERY) {
             self.report(phase, done, total)
         } else {
