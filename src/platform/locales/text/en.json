@@ -613,5 +613,6 @@
   "Heap dump": "Heap dump",
   "Cannot open the heap dump": "Cannot open the heap dump",
   "Cannot save the heap dump": "Cannot save the heap dump",
-  "Path truncated: {count} steps not shown": "Path truncated: {count} steps not shown"
+  "Path truncated: {count} steps not shown": "Path truncated: {count} steps not shown",
+  "This debugger lists instances only when the program stops at a breakpoint or after a step, not after Pause.": "This debugger lists instances only when the program stops at a breakpoint or after a step, not after Pause."
 }

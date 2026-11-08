@@ -192,7 +192,6 @@ describe("InstancesPane", () => {
   it.each<[JvmInspectUnavailable, string]>([
     [{ kind: "noBackend" }, "This debugger cannot list instances."],
     [{ kind: "unsupported", detail: "no VM" }, "The debugger cannot list instances: no VM"],
-    [{ kind: "notSuspended" }, "Pause the program to see instances."],
     [{ kind: "stale" }, "These values are from before the last stop. Show the instances again to update them."],
     [{ kind: "collected" }, "The object has been garbage collected."],
     [{ kind: "classNotLoaded" }, "The class is not loaded in the JVM."],
@@ -203,6 +202,22 @@ describe("InstancesPane", () => {
     await open(unavailable(reason));
     expect(screen.getByText(text)).toBeTruthy();
     expect(screen.queryByRole("tree")).toBeNull();
+  });
+
+  it("asks to pause a running program for its instances", async () => {
+    const running = { ...session, status: "running" } as DebugSession;
+    await open(unavailable({ kind: "notSuspended" }), running);
+    expect(screen.getByText("Pause the program to see instances.")).toBeTruthy();
+  });
+
+  it("says instances need a breakpoint or step stop when the debugger finds no stop after Pause", async () => {
+    await open(unavailable({ kind: "notSuspended" }));
+    expect(
+      screen.getByText(
+        "This debugger lists instances only when the program stops at a breakpoint or after a step, not after Pause.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Pause the program to see instances.")).toBeNull();
   });
 
   it("retries a list that timed out", async () => {

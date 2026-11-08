@@ -72,7 +72,12 @@ export function InstancesPane({ session }: { session: DebugSession }) {
       )}
       {result?.status === "unavailable" && (
         <div className={styles.note}>
-          {inspectUnavailableText(result.reason, tx)}
+          {result.reason.kind === "notSuspended" && session.status === "paused"
+            ? // kotlin-lsp suspends the JVM for Pause without a stop event the instance reader can use.
+              tx(
+                "This debugger lists instances only when the program stops at a breakpoint or after a step, not after Pause.",
+              )
+            : inspectUnavailableText(result.reason, tx)}
           {result.reason.kind === "timedOut" && (
             <Button size="small" className={styles.retry} onClick={() => void showInstances(id, name)}>
               Retry
