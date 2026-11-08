@@ -8,6 +8,7 @@ import { Tag, tags as t } from "@lezer/highlight";
 
 /** Log warnings: the UI warning colour, since no syntax token reads as one in every scheme. */
 export const logWarning = Tag.define("logWarning");
+export const parameter = Tag.define(t.variableName);
 
 function token(
   tag: Tag | Tag[],
@@ -72,6 +73,7 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token(t.labelName, "constant"),
   token([t.variableName, t.definition(t.variableName), t.local(t.variableName)], "variable"),
   token([t.propertyName, t.definition(t.propertyName)], "property"),
+  token(parameter, "param"),
   token(t.attributeName, "attribute"),
   token(t.special(t.brace), "decorator"),
   token([t.tagName, t.angleBracket], "tag"),
