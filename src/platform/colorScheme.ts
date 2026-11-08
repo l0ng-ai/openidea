@@ -137,7 +137,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("string", "String › String text", [LD], "string"),
   syn("escape", "String › Valid escape sequence", [LD], "escape"),
   syn("lineComment", "Comments › Line comment", [LD], "comment"),
-  syn("docComment", "Comments › Doc comment", [LD], "doc-comment", { defaultItalic: true }),
+  syn("docComment", "Comments › Doc comment › Text", [LD], "doc-comment", { defaultItalic: true }),
   syn("docCommentTag", "Comments › Doc comment › Tag", [LD], "doc-comment-tag"),
   syn("docCommentTagValue", "Comments › Doc comment › Tag value", [LD], "doc-comment-tag-value"),
   { ...syn("docCommentMarkup", "Comments › Doc comment › Markup", [LD], "doc-markup"), bg: "--syn-doc-markup-bg" },

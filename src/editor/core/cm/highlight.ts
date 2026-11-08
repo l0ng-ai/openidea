@@ -70,9 +70,9 @@ export const openideaHighlightStyle = HighlightStyle.define([
   ),
   token([t.comment, t.lineComment, t.blockComment], "comment", { italic: "var(--syn-comment-style)" }),
   token(t.docComment, "doc-comment", { italic: "italic" }),
-  token(docCommentTag, "doc-comment-tag"),
-  token(docCommentTagValue, "doc-comment-tag-value"),
-  token(docCommentMarkup, "doc-markup"),
+  token(docCommentTag, "doc-comment-tag", { italic: "normal", bold: "var(--fw-code, 400)" }),
+  token(docCommentTagValue, "doc-comment-tag-value", { italic: "normal", bold: "var(--fw-code, 400)" }),
+  token(docCommentMarkup, "doc-markup", { italic: "normal", bold: "var(--fw-code, 400)" }),
   token([t.meta, t.annotation, t.macroName], "decorator"),
   // `<!doctype>` is a sub-tag of `meta`; PyCharm leaves the XML prologue as plain text.
   { tag: t.documentMeta, color: "var(--fg-editor)" },

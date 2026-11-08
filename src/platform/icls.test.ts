@@ -49,6 +49,17 @@ describe(".icls schemes", () => {
     const css = schemeCss("custom-docs", undefined, null, { "custom-docs": scheme });
     expect(css).toContain("--syn-doc-comment-tag: #67a37c !important");
     expect(css).toContain("--syn-doc-markup-bg: #e2ffe2 !important");
+    const imported = parseIcls(exportIcls("custom-docs", { "custom-docs": scheme })).scheme;
+    for (const id of [
+      "docCommentTag",
+      "docCommentTagValue",
+      "docCommentMarkup",
+      "java.docCommentTag",
+      "kotlin.docCommentTagValue",
+      "php.docCommentTag",
+      "php.docCommentTagValue",
+    ])
+      expect(imported.attributes[id]).toMatchObject(scheme.attributes[id]!);
   });
 
   it("preserves PHP colours and regular styles separately from Java and language defaults", () => {

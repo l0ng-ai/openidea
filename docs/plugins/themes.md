@@ -291,7 +291,6 @@ from `type`, then map:
 | `--syn-number` | `constant.numeric` |
 | `--syn-constant` | `constant.language`, `variable.other.constant` |
 | `--syn-comment`, `--syn-doc-comment` | `comment`, `comment.block.documentation` |
-| `--syn-doc-comment-tag`, `--syn-doc-comment-tag-value` | `storage.type.class.jsdoc`, `variable.other.jsdoc` |
 | `--syn-function`, `--syn-function-call` | `entity.name.function`, `meta.function-call` |
 | `--syn-type` | `entity.name.type`, `entity.name.class`, `support.class` |
 | `--syn-variable`, `--syn-param` | `variable`, `variable.parameter` |

@@ -73,30 +73,8 @@ const LINK = /\[[^[\]\n]+\](?![([])/g;
 // Known HTML elements only, so generics such as `List<String>` stay text.
 const MARKUP =
   /<\/?(?:a|abbr|b|big|blockquote|br|caption|cite|code|dd|del|details|div|dl|dt|em|h[1-6]|hr|i|img|ins|kbd|li|ol|p|pre|q|s|samp|section|small|span|strong|sub|summary|sup|table|tbody|td|th|thead|tr|tt|u|ul|var)\b[^<>]*>/gi;
-/** How far up a comment split into one node per line is followed to its opener. */
-const MAX_OPENER_LINES = 1000;
-
 /** `/**` opens a doc comment; `/**\/` is an empty block comment. */
 const opensDoc = (head: string) => head.startsWith("/**") && !head.startsWith("/**/");
-
-/**
- * Whether the block comment around `pos` is a doc comment, for stream modes (Kotlin) that give
- * each line of a comment its own node: the nearest comment line above that starts with `/*`.
- */
-function continuesDoc(state: EditorState, pos: number): boolean {
-  const tree = syntaxTree(state);
-  let line = state.doc.lineAt(pos);
-  for (let n = 0; n < MAX_OPENER_LINES && line.number > 1; n++) {
-    line = state.doc.line(line.number - 1);
-    const indent = line.text.length - line.text.trimStart().length;
-    if (indent === line.length) continue;
-    const node = tree.resolveInner(line.from + indent, 1);
-    if (!COMMENT.test(node.name)) return false;
-    if (state.sliceDoc(node.from, node.from + 2) === "/*")
-      return opensDoc(state.sliceDoc(node.from, node.from + 4)) && !state.sliceDoc(node.from, pos).includes("*/");
-  }
-  return false;
-}
 
 function scanComment(
   state: EditorState,
@@ -142,21 +120,16 @@ export function docCommentTagRanges(
   from: number,
   to: number,
 ): DocCommentTagRange[] {
-  const dialect = DIALECTS[language];
+  const dialect = Object.hasOwn(DIALECTS, language) ? DIALECTS[language] : undefined;
   if (!dialect) return [];
   const found: DocCommentTagRange[] = [];
-  // Doc or not, for a block comment whose lines are separate nodes and that is still open.
-  let open: boolean | null = null;
   syntaxTree(state).iterate({
     from,
     to,
     enter: (node) => {
       if (!COMMENT.test(node.name)) return;
-      const head = state.sliceDoc(node.from, node.from + 4);
-      const opener = open === null && head.startsWith("/*");
-      const doc = open ?? (opener ? opensDoc(head) : !head.startsWith("//") && continuesDoc(state, node.from));
-      if (open !== null || opener || doc)
-        open = state.sliceDoc(node.from, node.to).trimEnd().endsWith("*/") ? null : doc;
+      const doc =
+        language === "Kotlin" ? node.name === "docComment" : opensDoc(state.sliceDoc(node.from, node.from + 4));
       if (doc) scanComment(state, dialect, node, { from, to }, found);
       return false;
     },
@@ -191,7 +164,7 @@ function decorations(view: EditorView, language: string): DecorationSet {
 
 /** Doc comment tag highlighting for a CodeMirror language (by name); none where IntelliJ has none. */
 export function docCommentTags(language: string): Extension {
-  if (!DIALECTS[language]) return [];
+  if (!Object.hasOwn(DIALECTS, language)) return [];
   // Above the syntax highlighters (Lezer and tree-sitter), so the marks nest inside the comment's and win.
   const plugin = ViewPlugin.fromClass(
     class {
@@ -200,7 +173,12 @@ export function docCommentTags(language: string): Extension {
         this.decorations = decorations(view, language);
       }
       update(u: ViewUpdate) {
-        if (u.docChanged || u.viewportChanged || syntaxTree(u.state) !== syntaxTree(u.startState))
+        if (
+          u.docChanged ||
+          u.viewportChanged ||
+          u.transactions.some((t) => t.reconfigured) ||
+          syntaxTree(u.state) !== syntaxTree(u.startState)
+        )
           this.decorations = decorations(u.view, language);
       }
     },

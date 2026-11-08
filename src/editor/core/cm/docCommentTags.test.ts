@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
-import { codeFolding, foldEffect, highlightingFor, syntaxHighlighting } from "@codemirror/language";
+import { Compartment, EditorState, Prec } from "@codemirror/state";
+import { Decoration, EditorView } from "@codemirror/view";
+import { codeFolding, foldEffect, HighlightStyle, highlightingFor, syntaxHighlighting } from "@codemirror/language";
 import { completedSyntaxState } from "@/test/syntax";
 import { docCommentMarkup, docCommentTag, docCommentTagValue, openideaHighlightStyle } from "./highlight";
 import { findLanguageDescription, loadSupport } from "./languages";
@@ -75,7 +75,7 @@ describe("doc comment tags", () => {
       ["IllegalStateException", "value"],
       ["@return", "tag"],
     ]);
-    // The Kotlin lexer gives each comment line its own node: the opener is found above the range.
+    // The stream parser retains the doc-comment flag when the opener is above the range.
     expect(ranges(s, "Kotlin", doc.indexOf(" * @throws"))).toEqual([
       ["@throws", "tag"],
       ["IllegalStateException", "value"],
@@ -137,10 +137,124 @@ describe("doc comment tags", () => {
     ]);
   });
 
+  it.each(["Java", "Kotlin", "TypeScript", "PHP"])("rejects non-doc lookalikes in %s", async (language) => {
+    const path = { Java: "A.java", Kotlin: "a.kt", TypeScript: "a.ts", PHP: "a.php" }[language]!;
+    const s = await state(
+      language,
+      path,
+      [
+        language === "PHP" ? "<?php" : "",
+        "@Override class A {}",
+        "// @Override {@link X}",
+        "/* @Override {@link X} */",
+        "/* plain",
+        " * @param falsePositive",
+        " */",
+        'const s = "/** @param string */";',
+        "/**/",
+        "/** dev@example.com",
+        " * @return unfinished",
+      ].join("\n"),
+    );
+    // Java and PHP do not expose unterminated block comments as comment syntax nodes.
+    expect(ranges(s, language)).toEqual(language === "Java" || language === "PHP" ? [] : [["@return", "tag"]]);
+  });
+
+  it.each(["Java", "Kotlin"])("keeps tags deep inside a long %s doc comment", async (language) => {
+    const doc = ["/**", ...Array.from({ length: 19997 }, () => " * @param item description"), " */", ""].join("\n");
+    const s = await state(language, language === "Java" ? "A.java" : "a.kt", doc);
+    expect(
+      docCommentTagRanges(s, language, s.doc.line(19000).from, s.doc.line(19001).to).filter((r) => r.kind === "tag"),
+    ).toHaveLength(2);
+  });
+
+  it("keeps Kotlin nested comments in their outer comment's dialect", async () => {
+    const doc = "/* plain\n/** @param hidden */\n * @return hidden\n */\n/** docs\n/* nested */\n * @return shown\n */";
+    const s = await state("Kotlin", "a.kt", doc);
+    expect(ranges(s, "Kotlin")).toEqual([["@return", "tag"]]);
+  });
+
+  it("rebuilds decorations when the highlighter is reconfigured", async () => {
+    const support = await loadSupport(findLanguageDescription("Java", "A.java")!);
+    const theme = new Compartment();
+    const view = new EditorView({
+      parent: document.body,
+      state: completedSyntaxState(
+        EditorState.create({
+          doc: "/** @return result */",
+          extensions: [support!, theme.of(syntaxHighlighting(openideaHighlightStyle))],
+        }),
+      ),
+    });
+    views.push(view);
+    const replacement = HighlightStyle.define([{ tag: docCommentTag, color: "red" }]);
+    view.dispatch({ effects: theme.reconfigure(syntaxHighlighting(replacement)) });
+    const cls = highlightingFor(view.state, [docCommentTag])!;
+    expect(view.contentDOM.querySelector(`.${cls}`)?.textContent).toBe("@return");
+    view.dispatch({ changes: { from: 2, to: 3, insert: "" } });
+    expect(view.contentDOM.querySelector(`.${cls}`)).toBeNull();
+  });
+
+  it("removes decorations when switching to an unsupported language", async () => {
+    const language = new Compartment();
+    const support = await loadSupport(findLanguageDescription("Java", "A.java")!);
+    const view = new EditorView({
+      parent: document.body,
+      state: completedSyntaxState(
+        EditorState.create({
+          doc: "/** @return result */",
+          extensions: [language.of(support!), syntaxHighlighting(openideaHighlightStyle)],
+        }),
+      ),
+    });
+    views.push(view);
+    const cls = highlightingFor(view.state, [docCommentTag])!;
+    expect(view.contentDOM.querySelector(`.${cls}`)?.textContent).toBe("@return");
+    view.dispatch({ effects: language.reconfigure([]) });
+    expect(view.contentDOM.querySelector(`.${cls}`)).toBeNull();
+  });
+
+  it("keeps tag marks inside backend syntax and semantic comment marks", async () => {
+    const support = await loadSupport(findLanguageDescription("Java", "A.java")!);
+    const doc = "/** @return result */";
+    const view = new EditorView({
+      parent: document.body,
+      state: completedSyntaxState(
+        EditorState.create({
+          doc,
+          extensions: [
+            support!,
+            syntaxHighlighting(openideaHighlightStyle),
+            Prec.high(
+              EditorView.decorations.of(
+                Decoration.set(Decoration.mark({ class: "backend-comment" }).range(0, doc.length)),
+              ),
+            ),
+            Prec.highest(
+              EditorView.decorations.of(
+                Decoration.set(Decoration.mark({ class: "cm-sem-comment" }).range(0, doc.length)),
+              ),
+            ),
+          ],
+        }),
+      ),
+    });
+    views.push(view);
+    const cls = highlightingFor(view.state, [docCommentTag])!;
+    const tag = view.contentDOM.querySelector(`.${cls}`)!;
+    expect(tag.textContent).toBe("@return");
+    expect(tag.closest(".backend-comment")).not.toBeNull();
+    expect(tag.closest(".cm-sem-comment")).not.toBeNull();
+    expect(tag.children.length).toBe(0);
+  });
+
   it("gives other languages nothing", async () => {
     const s = await state("Rust", "/p/a.rs", "/** @param x */\nfn f() {}");
     expect(ranges(s, "Rust")).toEqual([]);
-    expect(docCommentTags("Rust")).toEqual([]);
+    for (const language of ["Rust", "PluginLanguage", "constructor", "toString"]) {
+      expect(ranges(s, language)).toEqual([]);
+      expect(docCommentTags(language)).toEqual([]);
+    }
   });
 
   it("styles the tags with the highlight style's classes, inside the comment's own", async () => {

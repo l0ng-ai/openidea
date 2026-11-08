@@ -10,7 +10,15 @@ type Literal = {
   multiline: boolean;
   braces: number;
 };
-type Frame<S> = { code: S; literal?: Literal; depth: number; name?: boolean; close?: string };
+type Frame<S> = {
+  code: S;
+  literal?: Literal;
+  depth: number;
+  name?: boolean;
+  close?: string;
+  doc?: boolean;
+  commentDepth?: number;
+};
 type State<S> = { frames: Frame<S>[]; indentUnit: number };
 
 /** Preserve the stock code tokenizer while suspending strings around embedded code. */
@@ -129,7 +137,18 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
         if (text[0] === "}") frame.depth--;
       }
       stream.pos = from;
-      return base.token(stream, frame.code);
+      const result = base.token(stream, frame.code);
+      if (dialect === "Kotlin" && result === "comment" && (frame.commentDepth || text.startsWith("/*"))) {
+        // Keep the doc flag in the incremental parser state, including through nested comments.
+        const doc = frame.commentDepth ? frame.doc : text.startsWith("/**") && !text.startsWith("/**/");
+        let depth = frame.commentDepth ?? 0;
+        for (const delimiter of stream.string.slice(from, stream.pos).matchAll(/\/\*|\*\//g))
+          depth += delimiter[0] === "/*" ? 1 : -1;
+        frame.commentDepth = depth;
+        frame.doc = depth > 0 && doc;
+        return doc ? "docComment" : result;
+      }
+      return result;
     },
   };
 }
