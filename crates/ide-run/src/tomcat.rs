@@ -945,6 +945,8 @@ pub fn patch_catalina_properties(props: &str, extra_jars: &[String]) -> String {
 }
 
 pub fn prepare(root: &Path, cache: &Path, config: &mut RunConfig) -> IdeResult<()> {
+    // A verbatim root (Tauri can hand one over) must not leak into `JAVA_HOME`/`CATALINA_*`.
+    let root = dunce::simplified(root);
     // Batch scripts and their environment variables require ordinary Windows paths.
     let home = dunce::canonicalize(root.join(
         config.extras.params.get("tomcatHome").ok_or_else(|| invalid("Choose a Tomcat installation directory"))?,
