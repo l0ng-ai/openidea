@@ -964,6 +964,20 @@ mod tests {
     }
 
     #[test]
+    fn go_enables_semantic_tokens_when_the_server_initializes() {
+        let reg = reg();
+        let go = reg.get(&LanguageId::new("go")).unwrap();
+        assert_eq!(
+            go.language_servers[0]
+                .initialization_options
+                .as_ref()
+                .and_then(|options| options.get("semanticTokens"))
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn astro_server_reads_the_project_typescript() {
         let reg = reg();
         let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];

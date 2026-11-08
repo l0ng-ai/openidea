@@ -181,7 +181,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
 ];
 
-const SCHEME_LANGUAGES = { java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+const SCHEME_LANGUAGES = { go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
 
 export const ATTRIBUTES: readonly AttributeDef[] = [
   ...BASE_ATTRIBUTES,

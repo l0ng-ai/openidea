@@ -28,6 +28,7 @@ export { languageSemantics } from "./languages";
 // Registers each language's semantics (highlighting hooks, construct docs).
 import "./python";
 import "./php";
+import "./go";
 
 const semanticBackoff = featureBackoff();
 
