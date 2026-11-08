@@ -1,4 +1,5 @@
 {
+  "Add or Remove Caret": "Add or Remove Caret",
   "Select Python Environment Folder": "Select Python Environment Folder",
   "Checking interpreter": "Checking interpreter",
   "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.",

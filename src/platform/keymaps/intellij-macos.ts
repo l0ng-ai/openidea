@@ -3,6 +3,7 @@
  * contract between features (which register actions) and keymaps.
  */
 export const intellijMacos: Record<string, string[]> = {
+  "editor.addOrRemoveCaret": ["Alt+Shift+Button1"],
   // Navigate
   "navigate.searchEverywhere": ["Shift Shift"],
   "navigate.gotoClass": ["Meta+O"],
