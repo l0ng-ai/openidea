@@ -30,6 +30,14 @@ pub async fn java_resolve_launch(
     result
 }
 
+/// Whether a failed build may be ignored by "Build, no error check": only a compiler
+/// failure, never a missing tool, cancelled request or infrastructure error.
+fn continue_after_build_error(policy: BuildPolicy, cancel: &CancellationToken, error: &IdeError) -> bool {
+    policy == BuildPolicy::MakeAndContinueOnErrors
+        && !cancel.is_cancelled()
+        && error.message.starts_with("Build failed:")
+}
+
 async fn resolve_launch(
     host: &Host,
     window: &str,
@@ -83,7 +91,7 @@ async fn resolve_launch(
                 Ok(outputs) => outputs,
                 // "Build, no error check": keep the last usable classpath instead of
                 // turning a compile failure into a failed launch.
-                Err(_) if policy == BuildPolicy::MakeAndContinueOnErrors && !cancel.is_cancelled() => {
+                Err(e) if continue_after_build_error(policy, &cancel, &e) => {
                     info.build = Some(JavaBuildStatus::Failed);
                     return Ok(info);
                 }
@@ -97,7 +105,7 @@ async fn resolve_launch(
         } else if external {
             match compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel) {
                 Ok(paths) => paths,
-                Err(_) if policy == BuildPolicy::MakeAndContinueOnErrors && !cancel.is_cancelled() => {
+                Err(e) if continue_after_build_error(policy, &cancel, &e) => {
                     info.build = Some(JavaBuildStatus::Failed);
                     Vec::new()
                 }
