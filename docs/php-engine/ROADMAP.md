@@ -595,7 +595,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: caret fixtures and refactoring tests.
 
-- [ ] Phase 8.10: Eloquent completions everywhere
+- [x] Phase 8.10: Eloquent completions everywhere
       Use the model schema (casts, migrations, accessors, relations) in these places:
   - column names in `where('…')`, `orderBy`, `select`, `pluck`, `whereIn`, `update([...])`, `create([...])` and `firstOrCreate`
   - nested relations in `with('…')`, `has`, `whereHas('…', fn($q) => …)` and `load`, where the closure's `$q` is typed with the related model, and dotted chains (`posts.comments`)

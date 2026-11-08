@@ -14,10 +14,13 @@
 //! `viteAsset` ([`vite_asset`]), `routeName` ([`route_name`]),
 //! `controllerAction` and `resourceAction` ([`controller_action`]),
 //! `middleware` ([`middleware`]), `viewName` ([`view_name`]), and
-//! `validationRule` and `requestField` ([`validation_rule`]).
+//! `validationRule` and `requestField` ([`validation_rule`]), and
+//! `eloquentField` and `eloquentRelation` ([`eloquent`]).
 //!
 //! A place may also be the value a method returns
-//! ([`CalleePattern::Return`]: what a Form Request's `rules()` returns).
+//! ([`CalleePattern::Return`]: what a Form Request's `rules()` returns), or
+//! the default value of a property ([`CalleePattern::Property`]: a model's
+//! `$fillable`).
 //!
 //! A kind may describe a usage for hover ([`ReferenceKind::hover`]) and say
 //! what is wrong with one that names nothing ([`ReferenceKind::undefined`]),
@@ -45,6 +48,7 @@
 
 pub mod config_key;
 pub mod controller_action;
+pub mod eloquent;
 pub mod env_key;
 pub mod middleware;
 pub mod route_name;
@@ -83,6 +87,7 @@ use crate::types::{ExprTypes, Resolver, Type};
 
 pub use config_key::ConfigKey;
 pub use controller_action::{ControllerAction, ResourceAction};
+pub use eloquent::{EloquentField, EloquentRelation};
 pub use env_key::EnvKey;
 pub use middleware::Middleware;
 pub use route_name::RouteName;
@@ -105,6 +110,10 @@ pub enum CalleePattern {
     /// subclass, returns (`rules()` of a Form Request). The returned value
     /// is the argument at index 0.
     Return { classes: &'static [&'static str], names: &'static [&'static str] },
+    /// The default value of one of the properties `names` (without `$`) of
+    /// one of `classes` or of a subclass (a model's `$fillable`). The value
+    /// is the argument at index 0.
+    Property { classes: &'static [&'static str], names: &'static [&'static str] },
 }
 
 /// Where in the argument the string sits.
@@ -154,7 +163,9 @@ impl PlacePattern {
     fn names(&self) -> Vec<&'static str> {
         match self.callee {
             CalleePattern::Function(fqn) => vec![fqn.rsplit('\\').next().unwrap_or(fqn)],
-            CalleePattern::Method { names, .. } | CalleePattern::Return { names, .. } => names.to_vec(),
+            CalleePattern::Method { names, .. }
+            | CalleePattern::Return { names, .. }
+            | CalleePattern::Property { names, .. } => names.to_vec(),
         }
     }
 
@@ -186,7 +197,7 @@ impl PlacePattern {
             (CalleePattern::Function(wanted), CallTarget::Function(candidates)) => {
                 candidates.iter().any(|fqn| fqn_eq(NameKind::Function, fqn.trim_start_matches('\\'), wanted))
             }
-            (CalleePattern::Method { classes, names }, CallTarget::Method { classes: receivers, name }) => {
+            (CalleePattern::Method { classes, names }, CallTarget::Method { classes: receivers, name, .. }) => {
                 names.iter().any(|wanted| wanted.eq_ignore_ascii_case(name))
                     && receivers.iter().any(|receiver| {
                         classes.iter().any(|class| fqn_eq(NameKind::ClassLike, receiver, class))
@@ -195,7 +206,8 @@ impl PlacePattern {
                             })
                     })
             }
-            (CalleePattern::Return { classes, names }, CallTarget::Return { class, method }) => {
+            (CalleePattern::Return { classes, names }, CallTarget::Return { class, method })
+            | (CalleePattern::Property { classes, names }, CallTarget::Property { class, name: method }) => {
                 names.iter().any(|wanted| wanted.eq_ignore_ascii_case(method))
                     && (classes.iter().any(|wanted| fqn_eq(NameKind::ClassLike, class, wanted))
                         || resolver.class_model(class).is_some_and(|model| {
@@ -215,11 +227,15 @@ pub enum CallTarget {
     /// A function: the FQNs the name may mean (the namespaced one, then
     /// the global one for an unqualified name).
     Function(Vec<String>),
-    /// A method of the receiver's classes (FQNs).
-    Method { classes: Vec<String>, name: String },
+    /// A method of the receiver's classes (FQNs); `models` are the models
+    /// the receiver's generic arguments name (`Builder<Post>`).
+    Method { classes: Vec<String>, name: String, models: Vec<String> },
     /// The value a method returns: the class declaring it (FQN) and its
     /// name.
     Return { class: String, method: String },
+    /// The default value of a property: the class declaring it (FQN) and
+    /// its name without `$`.
+    Property { class: String, name: String },
 }
 
 /// One step from an argument into the arrays around the string.
@@ -274,13 +290,20 @@ enum SiteCall<'a> {
         method: String,
         at: u32,
     },
+    /// The class (as above), the property (without `$`) and the offset of
+    /// its variable.
+    Property {
+        class: (String, u32),
+        name: String,
+        at: u32,
+    },
 }
 
 impl SiteCall<'_> {
     fn start(&self) -> u32 {
         match self {
             SiteCall::Call(call) => call.span().start.offset,
-            SiteCall::Return { at, .. } => *at,
+            SiteCall::Return { at, .. } | SiteCall::Property { at, .. } => *at,
         }
     }
 }
@@ -486,6 +509,20 @@ impl<'a> Walker<'a, 'a, Collect<'a, '_>> for SiteWalker {
         cx.strings(&call, value, (Some(0), None), &mut Vec::new(), None);
     }
 
+    fn walk_in_property_concrete_item(
+        &self,
+        item: &'a mago_syntax::cst::PropertyConcreteItem<'a>,
+        cx: &mut Collect<'a, '_>,
+    ) {
+        let [.., Frame::Class(Some(class))] = cx.frames.as_slice() else { return };
+        let name = lossy(item.variable.name.strip_prefix(b"$").unwrap_or(item.variable.name));
+        if !cx.names.contains(&name.to_ascii_lowercase()) {
+            return;
+        }
+        let call = SiteCall::Property { class: class.clone(), name, at: item.variable.span.start.offset };
+        cx.strings(&call, item.value, (Some(0), None), &mut Vec::new(), None);
+    }
+
     fn walk_in_expression(&self, expr: &'a Expression<'a>, cx: &mut Collect<'a, '_>) {
         let Some((name, list)) = call_parts(expr) else { return };
         if !cx.names.contains(&name.to_ascii_lowercase()) {
@@ -546,6 +583,13 @@ pub fn sites(
                     };
                     CallTarget::Return { class: class.trim_start_matches('\\').to_owned(), method }
                 }
+                SiteCall::Property { class: (class, offset), name, .. } => {
+                    let class = match file_names.scope_at(offset).resolve(NameKind::ClassLike, &class).resolution {
+                        Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => fqn,
+                        Resolution::Relative(_) => return None,
+                    };
+                    CallTarget::Property { class: class.trim_start_matches('\\').to_owned(), name }
+                }
             };
             let class = raw.class.and_then(|(name, offset)| {
                 match file_names.scope_at(offset).resolve(NameKind::ClassLike, &name).resolution {
@@ -604,7 +648,20 @@ fn call_target<'a>(
     if let Some(class) = object.and_then(helper_instance) {
         classes.push(class.to_owned());
     }
-    Some(CallTarget::Method { classes, name })
+    let mut models: Vec<String> = Vec::new();
+    for member in receiver.members() {
+        let Type::Named { args, .. } = member else { continue };
+        for arg in args {
+            if let Type::Named { fqn, .. } = arg
+                && let Some(model) = resolver.class_model(fqn)
+                && model.is_subclass_of(eloquent::MODEL)
+                && !models.iter().any(|known| known == model.fqn())
+            {
+                models.push(model.fqn().to_owned());
+            }
+        }
+    }
+    Some(CallTarget::Method { classes, name, models })
 }
 
 /// `config()`: the service a helper returns without arguments.
@@ -818,6 +875,8 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &ViewName,
         &ValidationRule,
         &RequestField,
+        &EloquentField,
+        &EloquentRelation,
     ]
 }
 

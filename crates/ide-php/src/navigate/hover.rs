@@ -447,6 +447,9 @@ impl PhpEngine {
         let mut docs = match origin {
             AttributeOrigin::Relation { method } => format!("Eloquent relation, defined by `{method}()`"),
             AttributeOrigin::Accessor { method } => format!("Eloquent accessor `{method}()`"),
+            AttributeOrigin::Count { method } => {
+                format!("Count of the `{method}()` relation's models, loaded by `withCount('{method}')`")
+            }
             AttributeOrigin::Cast { cast, .. } => {
                 format!("Eloquent attribute, cast to `{}` by the model's casts", cast.trim_start_matches('\\'))
             }

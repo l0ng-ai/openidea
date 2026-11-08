@@ -72,6 +72,7 @@ const ATTRIBUTE: &str = "Illuminate\\Database\\Eloquent\\Casts\\Attribute";
 const RELATIONS: &str = "Illuminate\\Database\\Eloquent\\Relations\\";
 const RELATION: &str = "Illuminate\\Database\\Eloquent\\Relations\\Relation";
 const SUPPORT_COLLECTION: &str = "Illuminate\\Support\\Collection";
+const FACTORY: &str = "Illuminate\\Database\\Eloquent\\Factories\\Factory";
 const CARBON: &str = "Illuminate\\Support\\Carbon";
 const CARBON_IMMUTABLE: &str = "Carbon\\CarbonImmutable";
 
@@ -104,6 +105,36 @@ const RELATION_METHODS: &[(&str, &str)] = &[
 
 /// Relations to many models (their subclasses too).
 const TO_MANY: &[&str] = &["HasMany", "MorphMany", "BelongsToMany", "HasManyThrough"];
+
+/// Builder and model methods returning the models found as a collection.
+const COLLECTING: &[&str] = &["get", "all", "findMany", "hydrate", "fromQuery"];
+
+/// Factory methods making one model, a collection of them, and the
+/// factory's models (one, or a collection after `count(n)`).
+const FACTORY_ONE: &[&str] = &["createOne", "makeOne", "createOneQuietly"];
+const FACTORY_MANY: &[&str] = &["createMany", "createManyQuietly"];
+const FACTORY_MAKE: &[&str] = &["create", "make", "createQuietly"];
+
+/// Query methods taking a relation name and a closure on its query
+/// (`whereHas('posts', fn ($q) => …)`), or relations as the keys of an
+/// array of closures (`with(['posts' => fn ($q) => …])`).
+const RELATION_CLOSURES: &[&str] = &[
+    "whereHas",
+    "orWhereHas",
+    "whereDoesntHave",
+    "orWhereDoesntHave",
+    "withWhereHas",
+    "has",
+    "orHas",
+    "doesntHave",
+    "orDoesntHave",
+    "with",
+    "load",
+    "loadMissing",
+    "withCount",
+    "loadCount",
+    "withExists",
+];
 
 /// Container methods resolving a binding.
 const MAKE_METHODS: &[&str] = &["make", "makeWith"];
@@ -161,6 +192,21 @@ pub struct LaravelProvider;
 
 fn relation_class(method: &str) -> Option<&'static str> {
     RELATION_METHODS.iter().find(|(name, _)| name.eq_ignore_ascii_case(method)).map(|(_, class)| *class)
+}
+
+fn is_one_of(list: &[&str], method: &str) -> bool {
+    list.iter().any(|name| name.eq_ignore_ascii_case(method))
+}
+
+/// A relation of a model: its method, the related model and whether it
+/// relates to many models.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModelRelation {
+    pub name: String,
+    /// The class declaring the method.
+    pub class: String,
+    pub related: Option<String>,
+    pub many: bool,
 }
 
 fn is_make(method: &str) -> bool {
@@ -258,7 +304,7 @@ impl LaravelProvider {
     fn resolve_call(
         &self,
         name: &str,
-        class: &str,
+        (class, counted): (&str, bool),
         string: &str,
         args: &[Type],
         resolver: &Resolver<'_>,
@@ -293,6 +339,9 @@ impl LaravelProvider {
             }
             return None;
         }
+        if let Some(ty) = Self::eloquent_call(resolver, receiver, name, counted, args, context) {
+            return Some(ty);
+        }
         if *core != Type::Mixed && !Self::raw_builder(resolver, core, context) {
             return None;
         }
@@ -307,6 +356,213 @@ impl LaravelProvider {
                 .or_else(|| (*core != Type::Mixed).then_some(builder));
         }
         self.on_builder(resolver, receiver, name, core, context)
+    }
+
+    /// The model a builder, relation, Eloquent collection or factory is
+    /// about (its first generic argument that is a model), or the model
+    /// class itself.
+    pub(crate) fn about_model(resolver: &Resolver<'_>, ty: &Type, context: &Context) -> Option<String> {
+        if let Some(model) = Self::model_class(resolver, ty, context) {
+            return Some(model);
+        }
+        ty.members().iter().find_map(|member| {
+            let Type::Named { args, .. } = member else { return None };
+            args.iter().find_map(|arg| match arg {
+                Type::Named { fqn, .. } => {
+                    resolver.class_model(fqn).filter(|model| model.is_subclass_of(MODEL)).map(|m| m.fqn().to_owned())
+                }
+                _ => None,
+            })
+        })
+    }
+
+    /// The factory class among the members of `ty`, with its arguments.
+    fn factory_type(resolver: &Resolver<'_>, ty: &Type) -> Option<(String, Vec<Type>)> {
+        ty.members().iter().find_map(|member| match member {
+            Type::Named { fqn, args } => {
+                let model = resolver.class_model(fqn)?;
+                model.is_subclass_of(FACTORY).then(|| (model.fqn().to_owned(), args.clone()))
+            }
+            _ => None,
+        })
+    }
+
+    /// Calls Eloquent types differently from what the declarations say:
+    /// `get()`/`all()` on a model, its builder or a relation is a
+    /// collection of the model; `Model::factory()` is the model's factory
+    /// (`PostFactory<Post>`), whose `create()`/`make()` make the model, or
+    /// a collection of them after `count(n)` or `factory(n)` (the factory
+    /// then has the collection as its second argument).
+    fn eloquent_call(
+        resolver: &Resolver<'_>,
+        receiver: &Type,
+        name: &str,
+        counted: bool,
+        args: &[Type],
+        context: &Context,
+    ) -> Option<Type> {
+        let core = args.get(1)?;
+        if let Some((class, factory_args)) = Self::factory_type(resolver, receiver) {
+            let model = match factory_args.first() {
+                Some(model @ Type::Named { .. }) => model.clone(),
+                _ => Type::named(&Self::factory_model(resolver, &class)?),
+            };
+            let collection = Type::generic(COLLECTION, vec![Type::Int, model.clone()]);
+            let many = factory_args.get(1).is_some();
+            if is_one_of(FACTORY_ONE, name) {
+                return Some(model);
+            }
+            if is_one_of(FACTORY_MANY, name) {
+                return Some(collection);
+            }
+            if is_one_of(FACTORY_MAKE, name) {
+                return Some(if many { collection } else { model });
+            }
+            if name.eq_ignore_ascii_case("count") || name.eq_ignore_ascii_case("times") {
+                return Some(Type::generic(&class, vec![model, collection]));
+            }
+            // Fluent methods (`state()`, `has()`, `for()`) keep the factory.
+            return Self::factory_type(resolver, core).map(|_| Type::generic(&class, factory_args));
+        }
+        let model = Self::about_model(resolver, receiver, context)?;
+        // `$user->posts()` declared `: HasMany`: the relation to its model.
+        if Self::model_class(resolver, receiver, context).is_some()
+            && let Some(class) = resolver.class_model(&model)
+            && class.method(name).is_some_and(|method| !method.is_static)
+        {
+            let returned = Self::relation_return(resolver, &class, name);
+            if returned != *core && Self::is_a(resolver, &returned, context, &[RELATION]) {
+                return Some(returned);
+            }
+        }
+        if name.eq_ignore_ascii_case("factory") && Self::model_class(resolver, receiver, context).is_some() {
+            let class =
+                Self::factory_of(resolver, &model).or_else(|| Self::factory_type(resolver, core).map(|f| f.0))?;
+            let model = Type::named(&model);
+            return Some(if counted {
+                let collection = Type::generic(COLLECTION, vec![Type::Int, model.clone()]);
+                Type::generic(&class, vec![model, collection])
+            } else {
+                Type::generic(&class, vec![model])
+            });
+        }
+        // Only the model, its builder and relations collect models.
+        if !is_one_of(COLLECTING, name)
+            || !Self::is_a(resolver, receiver, context, &[MODEL, ELOQUENT_BUILDER, RELATION])
+        {
+            return None;
+        }
+        let raw = core.members().iter().all(|member| match member {
+            Type::Mixed => true,
+            Type::Named { args, .. } => {
+                args.is_empty() && Self::is_a(resolver, member, context, &[COLLECTION, SUPPORT_COLLECTION])
+            }
+            _ => false,
+        });
+        if !raw {
+            return None;
+        }
+        // Eloquent's collection, or the subclass the declaration names.
+        let class = core
+            .members()
+            .iter()
+            .find_map(|member| match member {
+                Type::Named { fqn, .. } if Self::is_a(resolver, member, context, &[COLLECTION]) => Some(fqn.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| COLLECTION.to_owned());
+        Some(Type::generic(&class, vec![Type::Int, Type::named(&model)]))
+    }
+
+    /// The factory class of `model` by Laravel's convention
+    /// (`Factory::resolveFactoryName`): `Database\Factories\` and the
+    /// model's name below the app's `Models\` namespace, plus `Factory`.
+    fn factory_of(resolver: &Resolver<'_>, model: &str) -> Option<String> {
+        let relative = match model.split_once("\\Models\\") {
+            Some((_, rest)) => rest,
+            None => model.rsplit('\\').next().unwrap_or(model),
+        };
+        let class = format!("Database\\Factories\\{relative}Factory");
+        resolver.class_model(&class).filter(|found| found.is_subclass_of(FACTORY)).map(|found| found.fqn().to_owned())
+    }
+
+    /// The model a factory class makes, by the reverse of the convention
+    /// (`Database\Factories\PostFactory` makes `App\Models\Post`, or
+    /// `App\Post`).
+    fn factory_model(resolver: &Resolver<'_>, factory: &str) -> Option<String> {
+        let relative = factory.strip_prefix("Database\\Factories\\")?.strip_suffix("Factory")?;
+        [format!("App\\Models\\{relative}"), format!("App\\{relative}")].into_iter().find_map(|class| {
+            resolver.class_model(&class).filter(|m| m.is_subclass_of(MODEL)).map(|m| m.fqn().to_owned())
+        })
+    }
+
+    /// The relations of model `class`: its methods returning a relation.
+    pub(crate) fn model_relations(resolver: &Resolver<'_>, class: &str) -> Vec<ModelRelation> {
+        let Some(model) = resolver.class_model(class).filter(|model| model.is_subclass_of(MODEL)) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for method in model.methods.iter() {
+            let framework = method.declaring.fqn.starts_with("Illuminate\\");
+            if method.is_static
+                || framework
+                || method.name.starts_with("__")
+                || scope_name(&method.name).is_some()
+                || accessor_name(&method.name).is_some()
+            {
+                continue;
+            }
+            let returned = Self::relation_return(resolver, &model, &method.name);
+            let found = returned.members().iter().find_map(|member| {
+                let Type::Named { fqn, args } = member else { return None };
+                let relation = resolver.class_model(fqn).filter(|class| class.is_subclass_of(RELATION))?;
+                let related = match args.first() {
+                    Some(Type::Named { fqn, .. }) => Some(fqn.trim_start_matches('\\').to_owned()),
+                    _ => None,
+                };
+                let many = TO_MANY.iter().any(|class| relation.is_subclass_of(&format!("{RELATIONS}{class}")));
+                Some((related, many))
+            });
+            if let Some((related, many)) = found {
+                out.push(ModelRelation {
+                    name: method.name.clone(),
+                    class: method.declaring.fqn.clone(),
+                    related,
+                    many,
+                });
+            }
+        }
+        out
+    }
+
+    /// The model at the end of the dotted relation path `path` from model
+    /// `class` (`posts.comments` from a user is a comment).
+    pub(crate) fn relation_path_model(resolver: &Resolver<'_>, class: &str, path: &str) -> Option<String> {
+        let mut model = class.to_owned();
+        for segment in path.split('.') {
+            // `posts:id,title` selects columns of the relation.
+            let segment = segment.split(':').next().unwrap_or(segment).trim();
+            let relation = Self::model_relations(resolver, &model).into_iter().find(|r| r.name == segment)?;
+            model = relation.related?;
+        }
+        Some(model)
+    }
+
+    /// See [`TypeProvider::closure_parameters`]: the related model's
+    /// builder for a relation closure.
+    fn relation_closure(
+        resolver: &Resolver<'_>,
+        receiver: &Type,
+        method: &str,
+        key: &str,
+        context: &Context,
+    ) -> Option<Vec<Type>> {
+        if !is_one_of(RELATION_CLOSURES, method) {
+            return None;
+        }
+        let model = Self::about_model(resolver, receiver, context)?;
+        let related = Self::relation_path_model(resolver, &model, key)?;
+        Some(vec![Type::generic(ELOQUENT_BUILDER, vec![Type::named(&related)])])
     }
 
     /// A raw Eloquent or query builder (what a `@mixin` without arguments
@@ -377,6 +633,33 @@ impl LaravelProvider {
         resolver.class_model(model).is_some_and(|model| model.method(&format!("scope{name}")).is_some())
     }
 
+    /// What method `name` of `model` returns: a relation declared raw
+    /// (`comments(): HasMany`) takes its related model from what the body
+    /// returns (`$this->hasMany(Comment::class)`).
+    fn relation_return(resolver: &Resolver<'_>, model: &ClassModel, name: &str) -> Type {
+        let this = Type::named(model.fqn());
+        let returned = resolver.method_return(&this, name, &Context::default());
+        let raw_relation = returned.members().iter().any(|member| {
+            matches!(member, Type::Named { fqn, args } if args.is_empty()
+                && resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(RELATION)))
+        });
+        if !raw_relation {
+            return returned;
+        }
+        let inferred = model
+            .method(name)
+            .and_then(|method| {
+                let lazy = method.declared()?.inferred_return.clone()?;
+                Some(resolver.resolve(&lazy, &Context::in_class(&method.self_class)))
+            })
+            .unwrap_or(Type::Mixed);
+        let generic = inferred.members().iter().any(|member| {
+            matches!(member, Type::Named { fqn, args } if !args.is_empty()
+                && resolver.class_model(fqn).is_some_and(|class| class.is_subclass_of(RELATION)))
+        });
+        if generic { inferred } else { returned }
+    }
+
     /// The type of a model's relation property, or of an accessor.
     fn model_property(resolver: &Resolver<'_>, class: &str, name: &str) -> Option<Type> {
         let model = resolver.class_model(class)?;
@@ -388,7 +671,7 @@ impl LaravelProvider {
         if let Some(method) = model.method(name)
             && !method.is_static
         {
-            let returned = resolver.method_return(&this, name, &context);
+            let returned = Self::relation_return(resolver, &model, name);
             for member in returned.members() {
                 let Type::Named { fqn, args } = member else { continue };
                 let Some(relation) = resolver.class_model(fqn) else { continue };
@@ -420,6 +703,17 @@ impl LaravelProvider {
             return Self::model_property(resolver, class, &camel);
         }
         Self::attribute(resolver, &model, name)
+            .or_else(|| Self::count_relation(resolver, class, name).map(|_| Type::Int))
+    }
+
+    /// The relation `name` (`posts_count`, `blog_posts_count`) counts, as
+    /// `withCount()` loads it.
+    fn count_relation(resolver: &Resolver<'_>, class: &str, name: &str) -> Option<String> {
+        let relation = name.strip_suffix("_count").filter(|relation| !relation.is_empty())?;
+        Self::model_relations(resolver, class)
+            .into_iter()
+            .find(|found| found.name == relation || snake(&found.name) == relation)
+            .map(|found| found.name)
     }
 
     /// The public methods of `class` other than magic ones, forwarded to.
@@ -509,6 +803,12 @@ impl LaravelProvider {
                 source,
             };
             push(&mut found, column.name.clone(), origin);
+        }
+        // `withCount('posts')` loads `posts_count` (laravel-ide-helper lists
+        // one for every relation too).
+        for relation in Self::model_relations(resolver, &class) {
+            let origin = AttributeOrigin::Count { method: relation.name.clone() };
+            push(&mut found, format!("{}_count", snake(&relation.name)), origin);
         }
         out.extend(found);
     }
@@ -637,6 +937,12 @@ impl LaravelProvider {
             (None, None) => return None,
         };
         Some(if column.is_some_and(|column| column.nullable) { ty.nullable() } else { ty })
+    }
+
+    /// The table of model `class`; `None` for other classes.
+    pub(crate) fn model_table(resolver: &Resolver<'_>, class: &str) -> Option<String> {
+        let model = resolver.class_model(class).filter(|model| model.is_subclass_of(MODEL))?;
+        Some(Self::table(&model))
     }
 
     /// A model's table: its `$table`, else the snake-case plural of its
@@ -800,7 +1106,12 @@ impl TypeProvider for LaravelProvider {
                 {
                     return None;
                 }
-                let payload = format!("call:{}:{class}:{string}", site.name);
+                // `factory(3)`: an integer first argument (a count).
+                let counted = match site.args.first() {
+                    Some(arg) if arg.name.is_none() && arg.int.is_some() => "n",
+                    _ => "",
+                };
+                let payload = format!("call:{}:{class}:{counted}:{string}", site.name);
                 let next = (site.next)();
                 Some(provided(self.key(), payload, vec![receiver, next.clone()], next))
             }
@@ -826,8 +1137,10 @@ impl TypeProvider for LaravelProvider {
                 Self::make(resolver, class, string)
             }
             "call" => {
-                let [name, class, string] = rest.splitn(3, ':').collect::<Vec<_>>()[..] else { return None };
-                self.resolve_call(name, class, string, args, resolver, context)
+                let [name, class, counted, string] = rest.splitn(4, ':').collect::<Vec<_>>()[..] else {
+                    return None;
+                };
+                self.resolve_call(name, (class, counted == "n"), string, args, resolver, context)
             }
             _ => None,
         }
@@ -845,6 +1158,20 @@ impl TypeProvider for LaravelProvider {
             return Vec::new();
         }
         Self::members_of(resolver, receiver, context)
+    }
+
+    fn closure_parameters(
+        &self,
+        receiver: &Type,
+        method: &str,
+        key: &str,
+        resolver: &Resolver<'_>,
+        context: &Context,
+    ) -> Option<Vec<Type>> {
+        if !Self::installed(resolver) {
+            return None;
+        }
+        Self::relation_closure(resolver, receiver, method, key, context)
     }
 }
 

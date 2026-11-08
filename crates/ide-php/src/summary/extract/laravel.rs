@@ -243,6 +243,8 @@ impl Extractor<'_> {
         }
         let args = args(list);
         let (Some(name), Some(callback)) = (args.first().and_then(|arg| string(arg)), args.get(1)) else { return };
+        // Statements other than expressions (`if`, loops) may make columns.
+        let mut partial = false;
         let (params, expressions): (_, Vec<&Expression<'_>>) = match callback {
             Expression::Closure(closure) => (
                 &closure.parameter_list,
@@ -252,7 +254,11 @@ impl Extractor<'_> {
                     .iter()
                     .filter_map(|statement| match statement {
                         Statement::Expression(statement) => Some(statement.expression),
-                        _ => None,
+                        Statement::Noop(_) => None,
+                        _ => {
+                            partial = true;
+                            None
+                        }
                     })
                     .collect(),
             ),
@@ -268,10 +274,11 @@ impl Extractor<'_> {
         };
         let mut columns = Vec::new();
         for expr in expressions {
-            column_statement(expr, &table, &mut columns, |span| self.loc(span));
+            partial |= !column_statement(expr, &table, &mut columns, |span| self.loc(span));
         }
-        if !columns.is_empty() {
-            self.summary.laravel.tables.push(Table { name, columns, file: None });
+        let created = method.eq_ignore_ascii_case("create");
+        if !columns.is_empty() || created || partial {
+            self.summary.laravel.tables.push(Table { name, columns, created, partial, file: None });
         }
     }
 
@@ -768,15 +775,50 @@ fn column_type(method: &str) -> Option<&'static str> {
     }
 }
 
+/// Blueprint methods that make no column of their own (indexes, keys,
+/// table options, drops and renames, which the columns don't track).
+const NON_COLUMNS: &[&str] = &[
+    "primary",
+    "unique",
+    "index",
+    "fulltext",
+    "spatialindex",
+    "foreign",
+    "dropprimary",
+    "dropunique",
+    "dropindex",
+    "dropfulltext",
+    "dropspatialindex",
+    "dropforeign",
+    "dropconstrainedforeignid",
+    "dropforeignidfor",
+    "dropconstrainedforeignidfor",
+    "renameindex",
+    "engine",
+    "charset",
+    "collation",
+    "comment",
+    "temporary",
+    "after",
+    "dropcolumn",
+    "droptimestamps",
+    "droptimestampstz",
+    "dropsoftdeletes",
+    "dropsoftdeletestz",
+    "dropremembertoken",
+    "dropmorphs",
+];
+
 /// The columns one `$table->…;` statement makes; `loc` maps a span of the
-/// file.
-fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, loc: impl Fn(Span) -> Loc) {
+/// file. False when the statement is a call on the blueprint that may make
+/// columns it doesn't know.
+fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, loc: impl Fn(Span) -> Loc) -> bool {
     // Unwind `$table->string('a')->nullable()->default('')`.
     let mut modifiers: Vec<(String, Vec<&Expression<'_>>)> = Vec::new();
     let mut expr = expr;
     let (method, args, method_span) = loop {
-        let Expression::Call(Call::Method(call)) = expr else { return };
-        let Some(name) = method_name(&call.method) else { return };
+        let Expression::Call(Call::Method(call)) = expr else { return true };
+        let Some(name) = method_name(&call.method) else { return false };
         if variable(call.object).as_deref() == Some(table) {
             break (name, args(&call.argument_list), call.method.span());
         }
@@ -806,16 +848,16 @@ fn column_statement(expr: &Expression<'_>, table: &str, out: &mut Vec<Column>, l
         "softdeletes" | "softdeletestz" => push(named.unwrap_or_else(|| "deleted_at".to_owned()), CARBON, true),
         "remembertoken" => push("remember_token".to_owned(), "string", true),
         "morphs" | "nullablemorphs" | "uuidmorphs" | "nullableuuidmorphs" | "ulidmorphs" | "nullableulidmorphs" => {
-            let Some(name) = named else { return };
+            let Some(name) = named else { return false };
             let nullable = nullable || lower.starts_with("nullable");
             let id = if lower.contains("uuid") || lower.contains("ulid") { "string" } else { "int" };
             push(format!("{name}_type"), "string", nullable);
             push(format!("{name}_id"), id, nullable);
         }
-        _ => {
-            if let (Some(ty), Some(name)) = (column_type(&method), named) {
-                push(name, ty, nullable);
-            }
-        }
+        _ => match (column_type(&method), named) {
+            (Some(ty), Some(name)) => push(name, ty, nullable),
+            _ => return NON_COLUMNS.contains(&lower.as_str()),
+        },
     }
+    true
 }

@@ -1125,6 +1125,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 self.selector(&call.method);
                 let signature = may_write(&call.argument_list, call.object).then(|| {
                     let receiver = self.type_of(call.object);
+                    self.keyed_closures(&receiver, &call.method, &call.argument_list);
                     self.types.method_signature(&receiver, &call.method, self.frames)
                 });
                 (&call.argument_list, signature.flatten())
@@ -1134,6 +1135,7 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 self.selector(&call.method);
                 let signature = may_write(&call.argument_list, call.object).then(|| {
                     let receiver = self.type_of(call.object).without_null();
+                    self.keyed_closures(&receiver, &call.method, &call.argument_list);
                     self.types.method_signature(&receiver, &call.method, self.frames)
                 });
                 (&call.argument_list, signature.flatten())
@@ -1142,6 +1144,9 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 self.expr(call.class);
                 self.selector(&call.method);
                 let class = self.types.class_ref(call.class, self.frames);
+                if may_write(&call.argument_list, call.class) {
+                    self.keyed_closures(&class, &call.method, &call.argument_list);
+                }
                 (&call.argument_list, self.types.method_signature(&class, &call.method, self.frames))
             }
         };
@@ -1193,6 +1198,53 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
 
     fn selector(&mut self, selector: &'a ClassLikeMemberSelector<'a>) {
         self.node(Node::ClassLikeMemberSelector(selector));
+    }
+
+    /// The closures passed to method `selector` of `receiver` with a string
+    /// (`whereHas('posts', fn ($q) => …)`, `with(['posts' => fn ($q) => …])`):
+    /// the parameter types the providers give them
+    /// ([`crate::types::provider::TypeProvider::closure_parameters`]).
+    fn keyed_closures(
+        &mut self,
+        receiver: &Type,
+        selector: &ClassLikeMemberSelector<'_>,
+        arguments: &'a ArgumentList<'a>,
+    ) {
+        let ClassLikeMemberSelector::Identifier(name) = selector else { return };
+        let method = String::from_utf8_lossy(name.value);
+        let mut keyed: Vec<(String, u32)> = Vec::new();
+        let mut previous: Option<String> = None;
+        for argument in arguments.arguments.iter() {
+            let value = argument_value(argument);
+            if let (Some(key), Some(start)) = (&previous, function_start(value)) {
+                keyed.push((key.clone(), start));
+            }
+            if let Expression::Array(_) | Expression::LegacyArray(_) = value {
+                let elements: Vec<&ArrayElement<'_>> = match value {
+                    Expression::Array(array) => array.elements.iter().collect(),
+                    Expression::LegacyArray(array) => array.elements.iter().collect(),
+                    _ => Vec::new(),
+                };
+                for element in elements {
+                    if let ArrayElement::KeyValue(element) = element
+                        && let (Some(key), Some(start)) = (string_literal(element.key), function_start(element.value))
+                    {
+                        keyed.push((key, start));
+                    }
+                }
+            }
+            previous = string_literal(value);
+        }
+        if keyed.is_empty() {
+            return;
+        }
+        let context = self.types.context(self.frames);
+        let resolver = self.types.resolver;
+        for (key, start) in keyed {
+            if let Some(params) = resolver.providers().closure_parameters(receiver, &method, &key, resolver, &context) {
+                self.types.expected.borrow_mut().insert(start, params);
+            }
+        }
     }
 
     /// The arguments of a call; those passed to a by-reference parameter
@@ -1706,6 +1758,14 @@ fn has_untyped_parameter(expr: &Expression<'_>) -> bool {
         _ => return false,
     };
     list.parameters.iter().any(|parameter| parameter.hint.is_none())
+}
+
+/// The value of a plain string literal.
+fn string_literal(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::Literal(Literal::String(string)) => string.value.map(|v| String::from_utf8_lossy(v).into_owned()),
+        _ => None,
+    }
 }
 
 /// The closure or arrow function `expr` is, maybe parenthesized: its start.

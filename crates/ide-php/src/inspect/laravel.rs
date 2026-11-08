@@ -12,6 +12,9 @@
 //!   point nor in the build manifest.
 //! - `PhpUnknownValidationRule`: a validation rule that is neither one of
 //!   Laravel's nor registered with `Validator::extend(…)`.
+//! - `PhpUnknownEloquentColumn`: a column name in a query or a model's
+//!   attribute lists that the model's table doesn't have, when the
+//!   migrations say for certain which columns it has.
 //!
 //! They run only while the indexes are ready, in Laravel projects.
 
@@ -19,7 +22,9 @@ use ide_core::Severity;
 
 use super::{Inspection, InspectionContext, Problems, QuickFix};
 use crate::engine::{EngineState, is_meta_path};
-use crate::frameworks::laravel::refs::{ConfigKey, EnvKey, ReferenceKind, TranslationKey, ValidationRule, ViteAsset};
+use crate::frameworks::laravel::refs::{
+    ConfigKey, EloquentField, EnvKey, ReferenceKind, TranslationKey, ValidationRule, ViteAsset,
+};
 
 /// One "undefined …" inspection; see the module documentation.
 pub struct UndefinedReference {
@@ -28,12 +33,13 @@ pub struct UndefinedReference {
 }
 
 /// The inspections, as `(inspection id, kind)`.
-const INSPECTIONS: [(&str, &dyn ReferenceKind); 5] = [
+const INSPECTIONS: [(&str, &dyn ReferenceKind); 6] = [
     ("PhpUndefinedConfigKey", &ConfigKey),
     ("PhpUndefinedEnvKey", &EnvKey),
     ("PhpUndefinedTranslation", &TranslationKey),
     ("PhpUndefinedViteAsset", &ViteAsset),
     ("PhpUnknownValidationRule", &ValidationRule),
+    ("PhpUnknownEloquentColumn", &EloquentField),
 ];
 
 impl UndefinedReference {

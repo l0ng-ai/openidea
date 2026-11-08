@@ -3,8 +3,10 @@
 namespace App\Models;
 
 use App\Enums\PostStatus;
+use Database\Factories\PostFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
@@ -13,6 +15,8 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Post extends Model
 {
+    /** @use HasFactory<PostFactory> */
+    use HasFactory;
     use SoftDeletes;
 
     protected $fillable = ['title', 'slug', 'body', 'status', 'published_at'];

@@ -75,6 +75,17 @@ impl LaravelFacts {
         }
         out
     }
+
+    /// Whether the migrations say for certain which columns `table` has:
+    /// some migration creates it, and every statement of the migrations
+    /// changing it was understood.
+    pub fn schema_certain(&self, table: &str) -> bool {
+        let mut tables = self.tables.iter().filter(|t| t.name.eq_ignore_ascii_case(table)).peekable();
+        tables.peek().is_some() && {
+            let all: Vec<&Table> = tables.collect();
+            all.iter().any(|t| t.created) && all.iter().all(|t| !t.partial)
+        }
+    }
 }
 
 /// A container binding registered under a string id (`'payments'`).
@@ -91,6 +102,11 @@ pub struct Binding {
 pub struct Table {
     pub name: String,
     pub columns: Vec<Column>,
+    /// `Schema::create` (as opposed to `Schema::table`).
+    pub created: bool,
+    /// Some statement of the closure wasn't understood: it may make columns
+    /// that aren't listed.
+    pub partial: bool,
     /// The file of the migration, when the facts were merged with their
     /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
     #[serde(skip)]

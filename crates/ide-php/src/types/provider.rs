@@ -78,6 +78,8 @@ pub struct SiteArg {
     pub class: Option<String>,
     /// The value of a string literal argument.
     pub string: Option<String>,
+    /// The value of an integer literal argument.
+    pub int: Option<i64>,
 }
 
 /// The [`SiteArg`]s of a call's arguments, from the syntax alone: `Foo::class`
@@ -106,14 +108,16 @@ pub(crate) fn site_args(scope: &NameScope, list: &ArgumentList<'_>) -> Vec<SiteA
                         };
                     }
                 }
-                Expression::Literal(literal) => {
-                    if let Type::LiteralString(string) = literal_type(literal) {
+                Expression::Literal(literal) => match literal_type(literal) {
+                    Type::LiteralString(string) => {
                         if is_class_name(&string) {
                             arg.class = Some(string.trim_start_matches('\\').to_owned());
                         }
                         arg.string = Some(string);
                     }
-                }
+                    Type::LiteralInt(value) => arg.int = Some(value),
+                    _ => {}
+                },
                 _ => {}
             }
             arg
@@ -222,6 +226,9 @@ pub enum MagicTarget {
 pub enum AttributeOrigin {
     /// The relation method of that name (`posts()`).
     Relation { method: String },
+    /// The count of a relation's models (`posts_count`, after
+    /// `withCount('posts')`), from relation method `method`.
+    Count { method: String },
     /// An accessor (`getFullNameAttribute()`, `fullName(): Attribute`).
     Accessor { method: String },
     /// A cast (`'boolean'`, `\App\Casts\Money`), in the casts of the class.
@@ -317,6 +324,22 @@ pub trait TypeProvider: Send + Sync {
     /// or document may be listed too; callers prefer those.
     fn magic_members(&self, _receiver: &Type, _resolver: &Resolver<'_>, _context: &Context) -> Vec<MagicMember> {
         Vec::new()
+    }
+
+    /// The parameter types of a closure passed to method `method` of
+    /// `receiver` along with the string `key` (the string argument before
+    /// it, or its key in an array argument): `whereHas('posts', fn ($q) =>
+    /// …)` gives `$q` the related model's builder. `None` lets the next
+    /// provider answer.
+    fn closure_parameters(
+        &self,
+        _receiver: &Type,
+        _method: &str,
+        _key: &str,
+        _resolver: &Resolver<'_>,
+        _context: &Context,
+    ) -> Option<Vec<Type>> {
+        None
     }
 
     /// The function and method names (any case) whose arguments
@@ -419,6 +442,22 @@ impl TypeProviders {
     /// The first local answer for an untyped property.
     pub fn property(&self, site: &PropertySite<'_>) -> Option<LazyType> {
         self.providers.iter().find_map(|(_, provider)| provider.property(site))
+    }
+
+    /// The first answer for the parameters of a closure passed to `method`
+    /// of `receiver` with the string `key`; see
+    /// [`TypeProvider::closure_parameters`].
+    pub fn closure_parameters(
+        &self,
+        receiver: &Type,
+        method: &str,
+        key: &str,
+        resolver: &Resolver<'_>,
+        context: &Context,
+    ) -> Option<Vec<Type>> {
+        self.providers
+            .iter()
+            .find_map(|(_, provider)| provider.closure_parameters(receiver, method, key, resolver, context))
     }
 
     /// The first answer for an undeclared property of `class`.

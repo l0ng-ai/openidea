@@ -78,7 +78,10 @@ impl Magic {
             MagicTarget::Method { class, method } => (class, method),
             MagicTarget::Attribute {
                 class,
-                origin: AttributeOrigin::Relation { method } | AttributeOrigin::Accessor { method },
+                origin:
+                    AttributeOrigin::Relation { method }
+                    | AttributeOrigin::Accessor { method }
+                    | AttributeOrigin::Count { method },
                 ..
             } => (class, method),
             MagicTarget::Attribute { .. } => return None,

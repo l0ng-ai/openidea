@@ -248,6 +248,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description:
       "Reports Laravel validation rules, in the rules of a Form Request, $request->validate() or Validator::make(), that are neither built in nor registered with Validator::extend().",
   },
+  {
+    code: "PhpUnknownEloquentColumn",
+    name: "Unknown Eloquent column",
+    group: "Frameworks",
+    description:
+      "Reports column names in Eloquent queries (where(), orderBy(), select(), create([...]) and the like) and in a model's $fillable, $hidden, $casts or $appends that the model's table doesn't have. Only reported when the migrations say for certain which columns the table has.",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionId(i.code), i]));

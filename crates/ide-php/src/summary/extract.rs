@@ -587,9 +587,15 @@ impl Extractor<'_> {
         // Laravel's `getFacadeAccessor()` names the facade's service by its
         // value (kept literal), which a `: string` hint doesn't give.
         let accessor = node.name.value.eq_ignore_ascii_case(b"getFacadeAccessor");
+        // An Eloquent relation declared raw (`comments(): HasMany`): the
+        // body (`$this->hasMany(Comment::class)`) names the related model.
+        let relation = matches!(&return_type, Some(TypeHint::Named(fqn))
+            if fqn.trim_start_matches('\\').starts_with("Illuminate\\Database\\Eloquent\\Relations\\"))
+            && doc.as_ref().is_none_or(|doc| doc.return_type.is_none());
         let inferred_return = match &node.body {
             MethodBody::Concrete(body)
                 if accessor
+                    || relation
                     || (self.infers_return(&return_type, &doc)
                         && !node.name.value.eq_ignore_ascii_case(b"__construct")) =>
             {

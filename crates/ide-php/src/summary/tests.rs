@@ -850,7 +850,7 @@ function documented() { return 1; }
             r"~ returns: Lib\Repo->find()->$name",
             r"~ returns: null | Lib\Repo->find()",
             // Static calls carry the Laravel provider's payload (facades, models).
-            r"~ returns: laravel:call:create::(Lib\Repo, Lib\Repo->create()) ?? Lib\Repo->create()",
+            r"~ returns: laravel:call:create:::(Lib\Repo, Lib\Repo->create()) ?? Lib\Repo->create()",
             "~ returns: non-empty-list",
             "~ returns: mixed",
             "~ returns: string",
@@ -889,7 +889,7 @@ function never_set() { return $missing; }
             r"~ returns: Lib\Repo",
             r"~ returns: Lib\Repo",
             "~ returns: int|string",
-            r"~ returns: laravel:call:find::(Lib\Repo, Lib\Repo->find()) ?? Lib\Repo->find()",
+            r"~ returns: laravel:call:find:::(Lib\Repo, Lib\Repo->find()) ?? Lib\Repo->find()",
             r"~ returns: Lib\Repo",
             "~ returns: mixed",
             "~ returns: mixed",

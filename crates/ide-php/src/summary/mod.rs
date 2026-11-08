@@ -62,8 +62,10 @@ use crate::types::LazyType;
 /// bindings, migrations and casts; 11: locations of casts and
 /// columns; 12: Doctrine repository classes of entities; 13: Symfony
 /// routes and repository entities; 14: Laravel route files; 15: the
-/// fields of `rules()` methods), so stored summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 15;
+/// fields of `rules()` methods; 16: created and partial migration
+/// tables, inferred returns of raw Eloquent relations), so stored
+/// summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

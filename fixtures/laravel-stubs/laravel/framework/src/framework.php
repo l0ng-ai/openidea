@@ -413,6 +413,16 @@ namespace Illuminate\Database\Eloquent {
     /** @template TModel of Model */
     class Builder {
         public function where($column, $operator = null, $value = null, $boolean = 'and'): static { return $this; }
+        public function whereIn($column, $values, $boolean = 'and', $not = false): static { return $this; }
+        public function orderBy($column, $direction = 'asc'): static { return $this; }
+        public function select($columns = ['*']): static { return $this; }
+        public function with($relations, $callback = null): static { return $this; }
+        public function has($relation, $operator = '>=', $count = 1, $boolean = 'and', ?\Closure $callback = null): static { return $this; }
+        public function whereHas($relation, ?\Closure $callback = null, $operator = '>=', $count = 1): static { return $this; }
+        public function withCount($relations): static { return $this; }
+        /** @return TModel */
+        public function firstOrCreate(array $attributes = [], array $values = []) { return new Model(); }
+        public function update(array $values): int { return 0; }
         public function latest($column = null): static { return $this; }
         /** @return Collection<int, TModel> */
         public function get($columns = ['*']) { return new Collection(); }
@@ -450,12 +460,37 @@ namespace Illuminate\Database\Eloquent {
         public function belongsTo($related, $foreignKey = null, $ownerKey = null, $relation = null): Relations\BelongsTo { return new Relations\BelongsTo(); }
         public function belongsToMany($related, $table = null): Relations\BelongsToMany { return new Relations\BelongsToMany(); }
         public static function query(): Builder { return new Builder(); }
+        /** @return Collection */
+        public static function all($columns = ['*']) { return new Collection(); }
+        public function load($relations): static { return $this; }
         public function update(array $attributes = [], array $options = []): bool { return true; }
         public function delete(): ?bool { return true; }
         public function getRouteKeyName(): string { return ''; }
     }
 
     trait SoftDeletes {}
+}
+
+namespace Illuminate\Database\Eloquent\Factories {
+    /** @template TModel of \Illuminate\Database\Eloquent\Model */
+    abstract class Factory {
+        /** @var class-string<TModel> */
+        protected $model;
+        /** @return array<string, mixed> */
+        abstract public function definition(): array;
+        public function count(?int $count): static { return $this; }
+        public function state($state): static { return $this; }
+        /** @return \Illuminate\Database\Eloquent\Collection<int, TModel>|TModel */
+        public function create($attributes = [], ?\Illuminate\Database\Eloquent\Model $parent = null) { return null; }
+        /** @return \Illuminate\Database\Eloquent\Collection<int, TModel>|TModel */
+        public function make($attributes = [], ?\Illuminate\Database\Eloquent\Model $parent = null) { return null; }
+    }
+
+    /** @template TFactory of Factory */
+    trait HasFactory {
+        /** @return TFactory */
+        public static function factory($count = null, $state = []) { return null; }
+    }
 }
 
 namespace Illuminate\Database\Eloquent\Relations {

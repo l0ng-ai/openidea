@@ -400,6 +400,11 @@ namespace Database\Migrations {
             Schema::create('ledger', function (Blueprint $table) {
                 $table->integer('amount');
             });
+            Schema::table('ledger', fn (Blueprint $t) => $t->dropColumn('amount'));
+            Schema::create('drafts', function (Blueprint $table) {
+                $table->id();
+                $table->vector('embedding', 3);
+            });
         }
     }
 }
@@ -504,16 +509,22 @@ fn laravel_facts_are_summarised() {
         "laravel bind 'report' => App\\Support\\Reports",
         "laravel bind 'time' => App\\Support\\Clock",
         "laravel bind 'gateway' => App\\Services\\PaymentGateway",
-        "laravel table 'invoices': id: int, number: string, note: ?string, total: string, paid: bool, \
+        "laravel table 'invoices' created: id: int, number: string, note: ?string, total: string, paid: bool, \
          meta: string, status: string, user_id: int, rate: float, created_at: ?\\Illuminate\\Support\\Carbon, \
          updated_at: ?\\Illuminate\\Support\\Carbon, deleted_at: ?\\Illuminate\\Support\\Carbon",
         "laravel table 'invoices': label: ?string",
-        "laravel table 'blog_categories': owner_type: string, owner_id: int, title: string",
-        "laravel table 'ledger': amount: int",
+        "laravel table 'blog_categories' created: owner_type: string, owner_id: int, title: string",
+        "laravel table 'ledger' created: amount: int",
+        "laravel table 'drafts' created partial: id: int",
         "laravel casts App\\Models\\Invoice: paid => boolean, meta => array, status => \\App\\Support\\Status, \
          total => \\App\\Support\\MoneyCast, issued_at => datetime:Y-m-d",
         "laravel casts App\\Models\\BlogCategory: tags => \\Illuminate\\Database\\Eloquent\\Casts\\AsCollection, \
          title => string, hits => integer",
     ];
     assert_eq!(rendered, expected);
+    // Created, and every statement understood (indexes and drops make no
+    // columns); not created here, or with a column type it doesn't know.
+    let facts = &summary.laravel;
+    assert!(facts.schema_certain("invoices") && facts.schema_certain("ledger"));
+    assert!(!facts.schema_certain("drafts") && !facts.schema_certain("unknown"));
 }

@@ -419,3 +419,6 @@ mod data_tests;
 
 #[path = "validation_tests.rs"]
 mod validation_tests;
+
+#[path = "eloquent_tests.rs"]
+mod eloquent_tests;

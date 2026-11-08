@@ -83,7 +83,9 @@ fn laravel(out: &mut String, facts: &LaravelFacts) {
             .iter()
             .map(|column| format!("{}: {}{}", column.name, if column.nullable { "?" } else { "" }, column.ty))
             .collect();
-        let _ = writeln!(out, "laravel table '{}': {}", table.name, columns.join(", "));
+        let created = if table.created { " created" } else { "" };
+        let partial = if table.partial { " partial" } else { "" };
+        let _ = writeln!(out, "laravel table '{}'{created}{partial}: {}", table.name, columns.join(", "));
     }
     for model in &facts.casts {
         let casts: Vec<String> =
