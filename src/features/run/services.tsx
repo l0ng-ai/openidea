@@ -27,7 +27,6 @@ import {
 } from "@/workbench/contributions";
 import { pickServices } from "./serviceImport";
 import { CATEGORY_ORDER, categoryOf, commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
-import { openUrl } from "./navigate";
 import { SessionPanel } from "./RunView";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
@@ -305,21 +304,6 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
 }
 
 /** The configurations of `kind` the tree shows: all, for added types; the ran ones, otherwise. */
-function kindConfigs(
-  kind: string,
-  configs: readonly RunConfig[],
-  added: readonly string[],
-  ran: readonly string[],
-  latest: ReadonlyMap<string, ServiceSession>,
-): RunConfig[] {
-  const entries: RunConfig[] = added.includes(kind)
-    ? configs.filter((c) => c.kind === kind)
-    : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
-  for (const s of latest.values())
-    if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
-  return entries;
-}
-
 /**
  * Groups by configuration type: added types list all their configurations, other
  * types only those that ran. A default type (Spring Boot) without configurations is hidden.
@@ -475,61 +459,8 @@ function debug(r: Resolved) {
   else if (r.config) void executeAction("run.debugConfig", r.config);
 }
 
-/** Run All / Restart All: starts the configurations of `kind` that can run, in display order. */
-async function startAll(kind: string, restart: boolean): Promise<void> {
-  const root = useProject.getState().project?.root ?? null;
-  const { configs, sessions } = useRun.getState();
-  const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
-  const latest = currentServiceSessions(executions);
-  const running = executions.filter((s) => s.config.kind === kind && liveServiceSession(s));
-  if (restart) await stopServiceSessions(running);
-  const location = projectLocation(root);
-  const order = location ? currentServiceOrder(location) : {};
-  const entries = orderServices(kindConfigs(kind, configs, currentTypes(), ranIds(root), latest), order[kind]);
-  for (const c of entries) {
-    if (isDebugOnly(c)) continue;
-    // Run All skips running configurations; Restart All stopped them above (the snapshot is stale then).
-    if (!restart) {
-      const s = latest.get(c.id);
-      if (s && liveServiceSession(s)) continue;
-    }
-    await startRun(c, undefined, undefined, { show: false });
-  }
-}
-
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
   const r = resolve(item);
-  // A type group: batch actions over its configurations.
-  if (!r.config && r.kind) {
-    const kind = r.kind;
-    const root = useProject.getState().project?.root ?? null;
-    const { configs, sessions } = useRun.getState();
-    const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
-    const latest = currentServiceSessions(executions);
-    const entries = kindConfigs(kind, configs, currentTypes(), ranIds(root), latest);
-    const running = executions.filter((s) => s.config.kind === kind && liveServiceSession(s));
-    const runnable = entries.some((c) => {
-      const s = latest.get(c.id);
-      return !(s && liveServiceSession(s)) && !isDebugOnly(c);
-    });
-    return [
-      { id: "run-all", title: "Run All", icon: "run", disabled: !runnable, run: () => startAll(kind, false) },
-      {
-        id: "restart-all",
-        title: "Restart All",
-        icon: "rerun",
-        disabled: !entries.length,
-        run: () => startAll(kind, true),
-      },
-      {
-        id: "stop-all",
-        title: "Stop All",
-        icon: "stop",
-        disabled: !running.length,
-        run: () => void stopServiceSessions(running),
-      },
-    ];
-  }
   const running = r.sessions.filter(liveServiceSession);
   const stop = {
     id: "stop",
@@ -541,18 +472,6 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
   if (!r.config) return [stop];
   const live = !!r.session && liveServiceSession(r.session);
   const debugging = serviceDebugger(r.session);
-  // A running web application's HTTP port becomes a browser link (IDEA's port URL).
-  const browser: ServiceItemAction[] =
-    live && r.session?.run?.httpPort
-      ? [
-          {
-            id: "open-browser",
-            title: "Open in Browser",
-            icon: "web",
-            run: () => void openUrl(`http://localhost:${r.session!.run!.httpPort}`),
-          },
-        ]
-      : [];
   return [
     {
       id: "run",
@@ -562,7 +481,6 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
       run: () => run(r),
     },
     { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
-    ...browser,
     stop,
     ...(isUpdatable(r.config)
       ? [

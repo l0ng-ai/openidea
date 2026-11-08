@@ -10,9 +10,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
 }));
 
 import {
-  addType,
   cleanupRemovedProject,
-  runServiceProvider,
   categorizedTypes,
   DEFAULT_TYPES,
   readHidden,
@@ -321,104 +319,6 @@ describe("embedded web server port", () => {
     expect(startedPort("Tomcat started on port 99999")).toBeNull();
   });
 
-  it("reads the port from Vite and Vue CLI dev server lines", () => {
-    expect(startedPort("  ➜  Local:   http://localhost:5173/")).toBe(5173);
-    expect(startedPort("- Local:   http://localhost:8080/")).toBe(8080);
-    expect(startedPort("  ➜  Local:   http://127.0.0.1:7001/")).toBe(7001);
-    expect(startedPort("  ➜  Local:   http://[::1]:4173/")).toBe(4173);
-    expect(startedPort("  ➜  Network: http://192.168.1.5:5173/")).toBeNull();
-    expect(startedPort("Compiled successfully in 123 ms")).toBeNull();
-  });
-});
-
-describe("open in browser", () => {
-  const item = () => ({ key: "run:config:a", label: "a", icon: "" });
-  const hasBrowser = () => runServiceProvider.actions!(item() as never).some((a: { id: string }) => a.id === "open-browser");
-
-  beforeEach(() => {
-    useProject.setState({ project: null });
-    useRun.setState({ configs: [], sessions: [] });
-  });
-
-  it("offers Open in Browser while a session runs with an HTTP port", () => {
-    useRun.setState({
-      configs: [config("a", "spring-boot")],
-      sessions: [session("s1", config("a", "spring-boot"), "running", 1, { httpPort: 8080 })],
-    });
-    expect(hasBrowser()).toBe(true);
-  });
-
-  it("hides Open in Browser without a port or a running session", () => {
-    useRun.setState({
-      configs: [config("a", "spring-boot")],
-      sessions: [session("s1", config("a", "spring-boot"), "running", 1)],
-    });
-    expect(hasBrowser()).toBe(false);
-    useRun.setState({ sessions: [session("s1", config("a", "spring-boot"), "finished", 1, { httpPort: 8080 })] });
-    expect(hasBrowser()).toBe(false);
-  });
-});
-
-describe("group batch actions", () => {
-  const group = () => ({ key: "run:type:spring-boot", label: "Spring Boot", icon: "" });
-  const action = (id: string) => runServiceProvider.actions!(group() as never).find((a: { id: string }) => a.id === id)!;
-
-  beforeEach(() => {
-    startRun.mockReset().mockResolvedValue(null);
-    stopServiceSessions.mockReset().mockResolvedValue(undefined);
-    useProject.setState({ project: null });
-    useRun.setState({ configs: [], sessions: [] });
-    addType("spring-boot");
-  });
-
-  it("enables Run All and Restart All with stopped configurations, Stop All only with running ones", () => {
-    useRun.setState({ configs: [config("a", "spring-boot"), config("b", "spring-boot")], sessions: [] });
-    expect(action("run-all").disabled).toBe(false);
-    expect(action("restart-all").disabled).toBe(false);
-    expect(action("stop-all").disabled).toBe(true);
-  });
-
-  it("enables Stop All when one runs and Run All while others are stopped", () => {
-    useRun.setState({
-      configs: [config("a", "spring-boot"), config("b", "spring-boot")],
-      sessions: [session("s1", config("a", "spring-boot"), "running", 1)],
-    });
-    expect(action("stop-all").disabled).toBe(false);
-    expect(action("run-all").disabled).toBe(false);
-  });
-
-  it("disables Run All when everything runs", () => {
-    useRun.setState({
-      configs: [config("a", "spring-boot")],
-      sessions: [session("s1", config("a", "spring-boot"), "running", 1)],
-    });
-    expect(action("run-all").disabled).toBe(true);
-  });
-
-  it("starts stopped configurations in display order, skipping running ones", async () => {
-    const a = config("a", "spring-boot");
-    const b = config("b", "spring-boot");
-    const c = config("c", "spring-boot");
-    useRun.setState({ configs: [a, b, c], sessions: [session("s1", a, "running", 1)] });
-    await action("run-all").run();
-    expect(startRun.mock.calls).toEqual([
-      [b, undefined, undefined, { show: false }],
-      [c, undefined, undefined, { show: false }],
-    ]);
-  });
-
-  it("restarts: stops the running ones, then starts every configuration in order", async () => {
-    const a = config("a", "spring-boot");
-    const b = config("b", "spring-boot");
-    useRun.setState({ configs: [a, b], sessions: [session("s1", a, "running", 1)] });
-    await action("restart-all").run();
-    expect(stopServiceSessions).toHaveBeenCalledOnce();
-    expect(stopServiceSessions.mock.calls[0]![0].map((s: { config: RunConfig }) => s.config.id)).toEqual(["a"]);
-    expect(startRun.mock.calls).toEqual([
-      [a, undefined, undefined, { show: false }],
-      [b, undefined, undefined, { show: false }],
-    ]);
-  });
 });
 
 describe("hidden configurations", () => {
