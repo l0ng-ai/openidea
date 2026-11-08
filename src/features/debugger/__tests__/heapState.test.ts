@@ -32,6 +32,7 @@ import { useDebug, type DebugSession } from "../state";
 import { HEAP_KIND, heapInput } from "../heap/heapInput";
 import {
   cancelCapture,
+  cancelOpen,
   captureHeap,
   closeHeapSnapshot,
   forgetHeapCapture,
@@ -451,6 +452,17 @@ describe("openHeapFile", () => {
     await expect(openHeapFile("/tmp/a.hprof")).rejects.toThrow("bad file");
     expect(useHeap.getState().opening).toBeNull();
   });
+
+  it("cancels the running open by its request, and nothing when none runs", async () => {
+    cancelOpen();
+    expect(ipc.cancelRequest).not.toHaveBeenCalled();
+    const done = openHeapFile("/tmp/a.hprof");
+    const request = useHeap.getState().opening!.request;
+    cancelOpen();
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(request);
+    open.resolve({ status: "ok", data: { status: "cancelled" } });
+    await done;
+  });
 });
 
 describe("closeHeapSnapshot", () => {
@@ -466,6 +478,23 @@ describe("closeHeapSnapshot", () => {
     useHeap.setState({ snapshots: { 7: { info: info(7), takenAtStop: 4, classes: null } } });
     await closeHeapSnapshot(7);
     expect(useHeap.getState().snapshots[7]).toBeUndefined();
+  });
+
+  it("tells the host once when the tab closes twice, and not for a snapshot of another window", async () => {
+    useHeap.setState({ snapshots: { 7: { info: info(7), takenAtStop: 4, classes: null } } });
+    await closeHeapSnapshot(7);
+    await closeHeapSnapshot(7);
+    await closeHeapSnapshot(8);
+    expect(ipc.debugHeapClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the snapshot when its tab cannot be opened", async () => {
+    openInput.mockRejectedValueOnce(new Error("no editor"));
+    const done = openHeapFile("/tmp/a.hprof");
+    open.resolve({ status: "ok", data: { status: "ready", snapshot: fileInfo(8) } });
+    await expect(done).rejects.toThrow("no editor");
+    expect(useHeap.getState().snapshots[8]).toBeUndefined();
+    expect(ipc.debugHeapClose).toHaveBeenCalledWith(8);
   });
 
   it("is not brought back by a class table that arrives after the close", async () => {

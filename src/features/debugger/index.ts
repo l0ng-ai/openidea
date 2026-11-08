@@ -10,6 +10,7 @@ import { selectionValueTooltip, valueTooltip } from "./editor/valueTooltip";
 import { quickEvaluateMouse } from "./editor/quickEvaluate";
 import { registerEditorContribution } from "@/editor/api";
 import {
+  registerEditorKind,
   registerMenuGroup,
   registerOverlay,
   registerRunConfigType,
@@ -39,6 +40,8 @@ import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
 import { forgetInstances } from "./memory/instancesState";
 import { forgetHeapCapture } from "./heap/heapState";
+import { heapEditorKind } from "./heap/heapEditorKind";
+import { installHeapContext } from "./heap/heapDumpFiles";
 import { forgetMemory } from "./memory/memoryState";
 
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
@@ -69,6 +72,8 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugToolWindow)),
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
     }),
+    registerEditorKind(heapEditorKind),
+    installHeapContext(),
     registerOverlay({
       id: "debugger",
       component: lazyWhen(useAnyOverlay, () => import("./ui/Overlays").then((m) => m.DebuggerOverlays)),

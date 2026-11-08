@@ -11,7 +11,7 @@ import styles from "./MemoryView.module.css";
 
 const isRunning = (c: CaptureState | undefined): c is CaptureState => !!c && c.error === null && c.unavailable === null;
 
-function progressText(p: HeapProgress | null): string {
+export function progressText(p: HeapProgress | null): string {
   if (p?.type !== "analyzing") return tx("Writing the heap dump…");
   switch (p.phase) {
     case "reading":

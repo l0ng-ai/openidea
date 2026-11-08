@@ -80,7 +80,17 @@ async function adopt(info: HeapSnapshotInfo, takenAtStop: number | null): Promis
     });
   } finally {
     // The tab may have been closed while the table loaded.
-    if (id in useHeap.getState().snapshots) await maybeEditorService()?.openInput(heapInput(info), { focus: true });
+    if (id in useHeap.getState().snapshots) await openTab(info);
+  }
+}
+
+/** Without a tab nothing would ever close the snapshot, so a tab that cannot open closes it. */
+async function openTab(info: HeapSnapshotInfo): Promise<void> {
+  try {
+    await maybeEditorService()?.openInput(heapInput(info), { focus: true });
+  } catch (e) {
+    await closeHeapSnapshot(info.id);
+    throw e;
   }
 }
 
@@ -140,9 +150,18 @@ export async function openHeapFile(path: string): Promise<HeapOpenResult | null>
   }
 }
 
+export function cancelOpen(): void {
+  const opening = useHeap.getState().opening;
+  if (opening) void commands.cancelRequest(opening.request).catch(() => {});
+}
+
+/**
+ * Forgets the snapshot and closes it on the host. A snapshot this window does not hold (closed already, or a tab
+ * moved here from the window that opened it) is left alone.
+ */
 export async function closeHeapSnapshot(id: number): Promise<void> {
+  if (!(id in useHeap.getState().snapshots)) return;
   useHeap.setState((s) => {
-    if (!(id in s.snapshots)) return s;
     const { [id]: _gone, ...rest } = s.snapshots;
     return { snapshots: rest };
   });

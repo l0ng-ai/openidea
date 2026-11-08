@@ -1,0 +1,313 @@
+.root {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+
+/* Header: what the snapshot is, then its tools. */
+.header {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.headerText {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.title,
+.totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  min-width: 0;
+}
+.label {
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.totals {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.headerTools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.compare {
+  width: 200px;
+}
+
+.views {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.main[hidden] {
+  display: none;
+}
+/* Biggest objects and the path share a strip under the view; the view keeps the rest. */
+.details {
+  flex: none;
+  display: flex;
+  height: min(calc(var(--h-row) + 10 * var(--h-list-row)), 45%);
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+.pane {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pane + .pane {
+  border-left: 1px solid var(--border);
+}
+.paneTitle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: var(--h-row);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-strong);
+}
+
+.view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.filter {
+  flex: 0 1 240px;
+  min-width: 80px;
+}
+
+.note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  color: var(--fg-subtle);
+}
+.error {
+  flex: none;
+  padding: 4px 12px;
+  color: var(--fg);
+  background: var(--bg-feedback-error);
+  border-bottom: 1px solid var(--border-feedback-error);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.errorText {
+  color: var(--danger);
+}
+
+/* Tables: a header row above a virtualised list of rows sharing its column template. */
+.table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.classColumns {
+  --heap-columns: minmax(0, 1fr) 88px 104px 104px;
+}
+.classColumns.withDiff {
+  --heap-columns: minmax(0, 1fr) 88px 104px 104px 88px 104px;
+}
+.objectColumns {
+  --heap-columns: minmax(0, 1fr) 88px 104px;
+}
+.head,
+.row {
+  display: grid;
+  grid-template-columns: var(--heap-columns);
+  align-items: center;
+  column-gap: 12px;
+  width: 100%;
+}
+.head {
+  flex: none;
+  height: var(--h-row);
+  padding: 0 16px 0 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.headCell {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+.headCell button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  text-align: left;
+}
+.headCell button:hover,
+.sorted button {
+  color: var(--fg-strong);
+}
+.headCell button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.numeric,
+.numeric button {
+  justify-content: flex-end;
+  text-align: right;
+}
+.list {
+  flex: 1;
+  min-height: 0;
+}
+.cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.className {
+  color: var(--fg-strong);
+  font-family: var(--font-mono);
+}
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: var(--fg-subtle);
+}
+
+/* The dominator tree: its rows lay the same columns out after the tree's indent and chevron. */
+.dominatorColumns {
+  --heap-columns: minmax(0, 1fr) 88px 104px 56px;
+}
+.treeHead {
+  padding: 0 20px 0 24px;
+}
+.treeRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.treeRow > :first-child {
+  flex: 1;
+}
+.treeRow > :nth-child(2) {
+  flex: none;
+  width: 88px;
+}
+.treeRow > :nth-child(3) {
+  flex: none;
+  width: 104px;
+}
+.treeRow > :nth-child(4) {
+  flex: none;
+  width: 56px;
+}
+
+/* An object: `className@address`, then a string's text or the class a class object stands for. */
+.object {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--font-mono);
+}
+.objectName {
+  flex: none;
+  color: var(--fg-strong);
+}
+.preview,
+.stringPreview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.preview {
+  color: var(--fg-muted);
+}
+.stringPreview {
+  color: var(--syn-string);
+}
+
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+.edge {
+  flex: none;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+}
+
+.openProgress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
