@@ -32,6 +32,7 @@ world plugin {
     import auth;
     import command-runner;
     import views;
+    import run;
     import settings;
 
     export lifecycle;
@@ -173,3 +174,12 @@ world plugin-diagnostics {
 world editor-diagnostics {
     export diagnostics-provider;
 }
+
+/// A plugin that exports project run configurations.
+world plugin-run-configurations { include plugin; export run-configurations; }
+/// Export-only configurations world, composed with plugin by SDK macros.
+world configurations-provider { export run-configurations; }
+/// A plugin that parses its test output.
+world plugin-test-results { include plugin; export test-results; }
+/// Export-only test parser world, composed with plugin by SDK macros.
+world test-results-provider { export test-results; }

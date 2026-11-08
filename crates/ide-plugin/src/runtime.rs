@@ -33,6 +33,8 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDea
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+use crate::wit_host::run_configurations_bindings::exports::openidea::plugin::run_configurations as wit_configs;
+use crate::wit_host::test_results_bindings::exports::openidea::plugin::test_results as wit_tests;
 use bindings::openidea::plugin::events as wit_events;
 use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
@@ -62,6 +64,60 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
+    /// Starts one of this plugin's configurations in a window.
+    fn start_run(
+        &self,
+        client: &str,
+        config: &str,
+        args: Vec<String>,
+        debug: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = (client, config, args, debug, cancel, timeout);
+        Err(HostError::Failed("runs unavailable".into()))
+    }
+    /// Opens/reuses a keyed terminal, retained across idle instance reclamation.
+    fn open_terminal_session(
+        &self,
+        client: &str,
+        key: String,
+        title: String,
+        cmd: ProcessCommand,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = (client, key, title, cmd, cancel, timeout);
+        Err(HostError::Failed("terminals unavailable".into()))
+    }
+    /// Writes only to an owned, live terminal.
+    fn write_terminal(
+        &self,
+        client: &str,
+        key: &str,
+        text: String,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (client, key, text, cancel, timeout);
+        Err(HostError::Failed("terminals unavailable".into()))
+    }
+    /// Opens a content tab through the shared editor implementation.
+    fn open_content_tab(
+        &self,
+        client: &str,
+        tab: crate::ContentTab,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (client, tab, cancel, timeout);
+        Err(HostError::Failed("content tabs unavailable".into()))
+    }
+    /// Answers a content action in the invoking window.
+    fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError> {
+        let _ = (client, request, reply);
+        Err(HostError::Failed("content tabs unavailable".into()))
+    }
     /// The invoking window's editors.
     fn open_editors(&self, client: &str) -> Result<Vec<crate::OpenEditor>, HostError> {
         let _ = client;
@@ -819,6 +875,8 @@ struct Exports {
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
     endpoints: Option<wit_endpoints::Guest>,
+    run_configurations: Option<wit_configs::Guest>,
+    test_results: Option<wit_tests::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -828,6 +886,18 @@ const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
+        WorkbenchEvent::RunExited(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "run-exited".into(),
+            data: serde_json::to_string(&value).unwrap(),
+        }),
+        WorkbenchEvent::TerminalExited(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "terminal-exited".into(),
+            data: serde_json::to_string(&value).unwrap(),
+        }),
+        WorkbenchEvent::ContentTabAction(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "content-tab-action".into(),
+            data: serde_json::to_string(&value).unwrap(),
+        }),
         WorkbenchEvent::FileClosed(p) => wit_events::Event::Other(wit_types::Extension {
             kind: "file-closed".into(),
             data: serde_json::to_string(&p).expect("path serializes"),
@@ -924,7 +994,12 @@ impl Runtime {
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
+        let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
+        let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
+        let run_configurations =
+            configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -989,11 +1064,62 @@ impl Runtime {
                 commit_checks,
                 inlay,
                 endpoints,
+                run_configurations,
+                test_results,
                 file_actions,
             },
             limits: setup.limits,
             version: setup.version,
         })
+    }
+
+    /// Complete configurations from the optional API 1.4 export.
+    pub fn run_configurations(
+        &mut self,
+        root: String,
+        timeout: Duration,
+    ) -> Result<Vec<crate::PluginRunConfiguration>, CallError> {
+        if self.exports.run_configurations.is_none() {
+            return Err(CallError::missing_export("run-configurations"));
+        }
+        let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
+        let items = self.call(invocation, timeout, |e, store| {
+            e.run_configurations.as_ref().unwrap().call_configurations(store, &root)
+        })?;
+        if items.len() > 1000 {
+            return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+        }
+        Ok(items
+            .into_iter()
+            .map(|c| crate::PluginRunConfiguration {
+                id: c.id,
+                name: c.name,
+                program: c.program,
+                args: c.args,
+                cwd: c.cwd,
+                test: c.test,
+                framework: c.framework,
+            })
+            .collect())
+    }
+    /// One editor-budget batch of a plugin test parser.
+    pub fn parse_test_results(
+        &mut self,
+        config: String,
+        chunk: String,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Vec<crate::PluginTestEvent>, CallError> {
+        if self.exports.test_results.is_none() {
+            return Err(CallError::missing_export("test-results"));
+        }
+        let items = self.call(invocation, timeout, |e, store| {
+            e.test_results.as_ref().unwrap().call_parse(store, &config, &chunk)
+        })?;
+        if items.len() > 10000 {
+            return Err(CallError::Guest(GuestError::Invalid("too many test events".into())));
+        }
+        Ok(items.into_iter().map(test_event_from_wit).collect())
     }
 
     /// The component exports `syntax-provider`.
@@ -1993,6 +2119,39 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
             kind: "sort".into(),
             data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
         }),
+    }
+}
+
+fn test_event_from_wit(event: wit_tests::TestEvent) -> crate::PluginTestEvent {
+    use crate::{PluginTestEvent as E, TestFailed, TestOutput, TestPassed, TestSkipped, TestStart};
+    let location = |l: wit_types::Location| crate::Location {
+        path: l.path.into(),
+        range: ide_core::Range::new(
+            ide_core::Pos::new(l.range.start.line, l.range.start.character),
+            ide_core::Pos::new(l.range.end.line, l.range.end.character),
+        ),
+    };
+    let start = |v: wit_tests::TestStart| TestStart {
+        id: v.id,
+        parent: v.parent,
+        name: v.name,
+        location: v.location.map(location),
+    };
+    match event {
+        wit_tests::TestEvent::SuiteStarted(v) => E::SuiteStarted(start(v)),
+        wit_tests::TestEvent::TestStarted(v) => E::TestStarted(start(v)),
+        wit_tests::TestEvent::Passed(v) => E::Passed(TestPassed { id: v.id, duration_ms: v.duration_ms }),
+        wit_tests::TestEvent::Failed(v) => E::Failed(TestFailed {
+            id: v.id,
+            duration_ms: v.duration_ms,
+            message: v.message,
+            expected: v.expected,
+            actual: v.actual,
+            location: v.location.map(location),
+        }),
+        wit_tests::TestEvent::Skipped(v) => E::Skipped(TestSkipped { id: v.id, reason: v.reason }),
+        wit_tests::TestEvent::Output(v) => E::Output(TestOutput { id: v.id, text: v.text }),
+        wit_tests::TestEvent::Other(v) => E::Other { kind: v.kind, data: v.data },
     }
 }
 

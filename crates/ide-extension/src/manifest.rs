@@ -145,6 +145,9 @@ impl ActivationEvent {
 /// Workbench event kinds (`on-event:<kind>`, WIT `events.event-kind`).
 /// `scheduled` comes from `on-schedule` instead.
 pub const EVENT_KINDS: &[&str] = &[
+    "run-exited",
+    "terminal-exited",
+    "content-tab-action",
     "file-closed",
     "settings-changed",
     "input-mode-changed",
@@ -344,7 +347,7 @@ impl Manifest {
         }
         let mut seen = BTreeSet::new();
         for event in &self.activation {
-            if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "file-closed" | "settings-changed" | "input-mode-changed"))
+            if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action"))
             {
                 self.needs_api(&format!("`{event}`"), 4)?;
             }
@@ -683,6 +686,9 @@ mod api14_tests {
             "activation = [\"on-event:file-closed\"]",
             "activation = [\"on-event:settings-changed\"]",
             "activation = [\"on-event:input-mode-changed\"]",
+            "activation = [\"on-event:run-exited\"]",
+            "activation = [\"on-event:terminal-exited\"]",
+            "activation = [\"on-event:content-tab-action\"]",
         ] {
             for engine in ["^1.0", "^1.3", "^1.4"] {
                 let manifest = format!(

@@ -185,3 +185,47 @@ async fn search_decodes_closed_documents_the_same_way_as_the_editor() {
     assert_eq!(result.matches[0].location.range, Range::new(Pos::new(0, 2), Pos::new(0, 8)));
     assert_eq!(result.matches[0].line, "😀needle");
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_debug_uses_the_source_language_and_revalidates_its_owned_program() {
+    use ide_host::plugins::{Consent, PluginEvent, PluginHost, WindowRequest};
+    use ide_plugin::{Invocation, Limits};
+    let f = Harness::new();
+    f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    std::fs::write(f.root.join("execution.marker"), "").unwrap();
+    std::fs::write(f.root.join("entry.py"), "print('test')\n").unwrap();
+    let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let captured = events.clone();
+    let plugins = Arc::new(
+        PluginHost::new(
+            f._tmp.path().join("plugins"),
+            Arc::new(move |client: Option<&str>, event: PluginEvent| {
+                captured.lock().push((client.map(str::to_owned), event))
+            }),
+            Limits::default(),
+        )
+        .unwrap(),
+    );
+    plugins.set_workspace(Some(Arc::new(f.workspace())));
+    f.host.set_plugin_host(&plugins);
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution");
+    plugins.install_from_dir(&package, &Consent::all()).unwrap();
+    plugins
+        .choose_program("execution", "process:execution-tool", Some(&f.root), Some(std::path::Path::new("/bin/cat")))
+        .unwrap();
+    let mut config =
+        plugins.run_detection().detect(&f.root).into_iter().find(|c| c.id == "plugin:execution:detected").unwrap();
+    config.args = vec!["entry.py".into()];
+    ide_run::save_user_configs(&f.root, &[config]).unwrap();
+    let config = f.workspace().run_configuration("main", "execution", "detected").unwrap();
+    assert_eq!(config.debug_adapter.as_deref(), Some("debugpy"));
+    let pinned = plugins.program_for_project("execution", "execution-tool", Some(&f.root)).unwrap();
+    assert_eq!(plugins.prepare_debug_run("main", config.clone()).unwrap().command, pinned.to_string_lossy());
+    let invocation =
+        Invocation { client: Some("main".into()), workspace_root: Some(f.root.clone()), ..Default::default() };
+    assert!(plugins.run_command("execution", "debug", None, invocation).unwrap().is_some());
+    assert!(events.lock().iter().any(|(client, event)| client.as_deref() == Some("main") && matches!(event, PluginEvent::WindowRequest { request: WindowRequest::Run { config, debug: true, .. }, .. } if config.command == pinned.to_string_lossy())));
+    plugins.set_capability("execution", "process:execution-tool", false).unwrap();
+    assert!(plugins.prepare_debug_run("main", config).is_err());
+}

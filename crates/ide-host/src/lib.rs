@@ -55,6 +55,7 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
     pub trust: trust::TrustStore,
@@ -123,6 +124,7 @@ impl Host {
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
+            plugin_host: RwLock::default(),
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
@@ -172,6 +174,14 @@ impl Host {
             let lsp = project.lsp.clone();
             self.runtime.spawn(async move { lsp.reconfigure().await });
         }
+    }
+
+    /// Associates the plugin runtime that executes this host's project operations.
+    pub fn set_plugin_host(&self, plugins: &Arc<plugins::PluginHost>) {
+        *self.plugin_host.write() = Arc::downgrade(plugins);
+    }
+    pub(crate) fn plugin_host(&self) -> Option<Arc<plugins::PluginHost>> {
+        self.plugin_host.read().upgrade()
     }
 
     /// Every open project (all windows).

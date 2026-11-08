@@ -4,6 +4,14 @@
  * workbench events it subscribed to (`events.subscribe`), reported in
  * batches.
  */
+import { providePluginTestParser } from "@/workbench/contributions";
+import {
+  contentTabData,
+  contentTabKey,
+  handleContentTabReplyText,
+  PLUGIN_CONTENT_EDITOR_KIND,
+  WASM_CONTENT_VIEW,
+} from "./views/contentTab";
 import { create } from "zustand";
 import type {
   CommitAnswer,
@@ -20,7 +28,7 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setPluginDecorations } from "./decorations";
 import { editorsFor, onEditorEvent } from "@/editor/api";
-import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
+import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { onIdeEvent } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
@@ -520,6 +528,19 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "viewMessage":
       deliverViewMessage(e.pluginId, e.view, e.message);
       return true;
+    case "windowRequest":
+      void handleWindowRequest(e);
+      return true;
+    case "contentTabReply":
+      handleContentTabReplyText(
+        e.pluginId,
+        JSON.stringify({
+          op: "content-tab-reply",
+          requestId: e.requestId,
+          ...JSON.parse(JSON.stringify(e.reply), (_k, v: unknown) => (v === null ? undefined : v)),
+        }),
+      );
+      return true;
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
@@ -610,6 +631,46 @@ function refreshOnProjectChange(): () => void {
 }
 
 export function startRuntimeUi(): () => void {
-  const disposers = [projectStatusItems(), trackWorkbenchEvents(), refreshOnProjectChange()];
+  const stopParser = providePluginTestParser((config, chunk) => pluginsBackend().parseTestResults(config, chunk));
+  const disposers = [stopParser, projectStatusItems(), trackWorkbenchEvents(), refreshOnProjectChange()];
   return () => disposers.reverse().forEach((d) => d());
+}
+
+async function handleWindowRequest(e: Extract<PluginEvent, { type: "windowRequest" }>) {
+  const r = e.request;
+  try {
+    if (r.kind === "contentTab") {
+      const raw = JSON.parse(JSON.stringify(r.tab), (_k, v: unknown) => (v === null ? undefined : v)) as object;
+      const data = contentTabData(e.pluginId, WASM_CONTENT_VIEW, raw, JSON.stringify(raw).length);
+      const editor = maybeEditorService();
+      if (!editor) throw new Error("Editor unavailable");
+      await editor.openInput({
+        kind: PLUGIN_CONTENT_EDITOR_KIND,
+        key: contentTabKey(e.pluginId, WASM_CONTENT_VIEW, data.key),
+        data,
+      });
+      await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+      return;
+    }
+    const finish = (status: number | null, stopped: boolean) => {
+      if (r.kind === "run") void pluginsBackend().finishOperation(r.operation, status, stopped);
+      else if (stopped) void pluginsBackend().closeTerminalSession(r.operation);
+    };
+    if (r.kind === "run") {
+      if (!getAction("run.pluginStart")) throw new Error("Run service unavailable");
+      await executeActionOrThrow("run.pluginStart", { config: r.config, debug: r.debug, onExit: finish });
+    } else {
+      if (!getAction("terminal.pluginSession")) throw new Error("Terminal service unavailable");
+      await executeActionOrThrow("terminal.pluginSession", {
+        ...r,
+        onExit: finish,
+        spawn: (cols: number, rows: number, output: import("@tauri-apps/api/core").Channel<string>) =>
+          pluginsBackend().terminalSessionSpawn(r.operation, cols, rows, output),
+      });
+    }
+    if (e.requestId) await pluginsBackend().answerCommand(e.requestId, { kind: "value", value: null });
+  } catch (error) {
+    if (r.kind === "run") await pluginsBackend().finishOperation(r.operation, null, false);
+    if (e.requestId) await pluginsBackend().answerCommand(e.requestId, { kind: "failed", value: String(error) });
+  }
 }

@@ -104,6 +104,7 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
         deliver(client, event);
     };
     let host = Arc::new(PluginHost::new(data_dir.join("plugins"), Arc::new(sink), Limits::default())?);
+    project_host.set_plugin_host(&host);
     // Plugin languages join detection, LSP and DAP of every project (forks share the store),
     // and the syntax of the ones without a built-in grammar comes from their plugin.
     project_host.languages.attach_plugins(host.language_store().clone());
@@ -935,4 +936,94 @@ pub fn plugin_decoration_sets(
     state: State<'_, AppState>,
 ) -> std::collections::BTreeMap<String, Vec<ide_host::plugins::DecorationSet>> {
     state.plugins.decoration_sets()
+}
+
+/// Reports exactly one completion from the operation's launching window.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_finish_operation(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    status: Option<i32>,
+    stopped: bool,
+) -> IdeResult<bool> {
+    Ok(state.plugins.finish_operation(window.label(), &id, status, stopped))
+}
+
+/// Dispatches a wasm content editor action through the owning plugin's event handler.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_content_tab_action(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    action: ide_plugin::ContentTabAction,
+) -> IdeResult<()> {
+    state.plugins.content_tab_action(window.label(), &plugin_id, action)
+}
+
+/// Parses one batch of an owned test configuration's output.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_parse_test_results(
+    window: Window,
+    state: State<'_, AppState>,
+    config: String,
+    chunk: String,
+) -> IdeResult<Option<Vec<ide_plugin::PluginTestEvent>>> {
+    let plugins = state.plugins.clone();
+    let client = window.label().to_owned();
+    tokio::task::spawn_blocking(move || plugins.parse_test_results(&client, &config, chunk))
+        .await
+        .map_err(|e| ide_core::IdeError::internal(e.to_string()))?
+}
+
+/// Starts only the pinned command recorded for this window's terminal operation.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_terminal_session_spawn(
+    window: Window,
+    state: State<'_, AppState>,
+    operation: String,
+    cols: u16,
+    rows: u16,
+    on_output: Channel<String>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    let (plugins, host, window) = (state.plugins.clone(), state.host.clone(), window.label().to_owned());
+    tokio::task::spawn_blocking(move || {
+        plugins.spawn_terminal_session(
+            &host,
+            &window,
+            &operation,
+            cols,
+            rows,
+            Arc::new(move |chunk| {
+                let _ = on_output.send(chunk);
+            }),
+        )
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Marks a keyed tab closed before ending its process.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_terminal_session_close(window: Window, state: State<'_, AppState>, operation: String) -> IdeResult<()> {
+    state.plugins.close_terminal_session(window.label(), &operation)
+}
+
+/// Revalidates a plugin run's executable before debugging, including reruns.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_prepare_debug_run(
+    window: Window,
+    state: State<'_, AppState>,
+    config: ide_run::RunConfig,
+) -> IdeResult<ide_run::RunConfig> {
+    let (plugins, client) = (state.plugins.clone(), window.label().to_owned());
+    tokio::task::spawn_blocking(move || plugins.prepare_debug_run(&client, config))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
 }

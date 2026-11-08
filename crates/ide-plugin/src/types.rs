@@ -103,6 +103,9 @@ pub enum EventKind {
     FileClosed,
     SettingsChanged,
     InputModeChanged,
+    RunExited,
+    TerminalExited,
+    ContentTabAction,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -113,10 +116,13 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 13] = [
         Self::FileClosed,
         Self::SettingsChanged,
         Self::InputModeChanged,
+        Self::RunExited,
+        Self::TerminalExited,
+        Self::ContentTabAction,
         Self::FileOpened,
         Self::FileSaved,
         Self::FilesChanged,
@@ -131,6 +137,9 @@ impl EventKind {
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
+            Self::RunExited => "run-exited",
+            Self::TerminalExited => "terminal-exited",
+            Self::ContentTabAction => "content-tab-action",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -150,7 +159,7 @@ impl EventKind {
     pub fn capability(self) -> Option<ide_extension::Capability> {
         match self {
             Self::ActionPerformed | Self::InputModeChanged => Some(ide_extension::Capability::InputEvents),
-            Self::Scheduled => None,
+            Self::Scheduled | Self::RunExited | Self::TerminalExited | Self::ContentTabAction => None,
             _ => Some(ide_extension::Capability::Events),
         }
     }
@@ -211,6 +220,9 @@ pub struct InputMode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    RunExited(crate::RunExited),
+    TerminalExited(crate::TerminalExited),
+    ContentTabAction(crate::ContentTabAction),
     FileClosed(String),
     SettingsChanged(Vec<String>),
     InputModeChanged(InputMode),
@@ -226,6 +238,9 @@ pub enum WorkbenchEvent {
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::RunExited(_) => EventKind::RunExited,
+            Self::TerminalExited(_) => EventKind::TerminalExited,
+            Self::ContentTabAction(_) => EventKind::ContentTabAction,
             Self::FileClosed(_) => EventKind::FileClosed,
             Self::SettingsChanged(_) => EventKind::SettingsChanged,
             Self::InputModeChanged(_) => EventKind::InputModeChanged,
@@ -479,6 +494,7 @@ pub struct ProviderDocument {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename = "PluginLocation")]
 pub struct Location {
     pub path: PathBuf,
     pub range: ide_core::Range,

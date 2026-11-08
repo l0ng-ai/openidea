@@ -146,6 +146,12 @@ struct State {
     refreshed: Vec<String>,
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
+    terminal_sessions: BTreeMap<String, (String, crate::host::Command, String)>,
+    terminal_writes: Vec<(String, String)>,
+    content_tabs: BTreeMap<String, crate::ContentTab>,
+    content_replies: Vec<(String, crate::ContentTabReply)>,
+    run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
+    configuration_runs: Vec<(String, String, Vec<String>, bool)>,
     log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
@@ -472,6 +478,23 @@ impl MockHost {
         self.state.borrow().locations.clone()
     }
 
+    /// Configurations available to start_run in native tests.
+    pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
+        self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+    }
+    /// Text written through write_terminal.
+    pub fn terminal_writes(&self) -> Vec<(String, String)> {
+        self.state.borrow().terminal_writes.clone()
+    }
+    /// Simulates exit, releasing the key for another operation.
+    pub fn finish_terminal(&self, key: &str) -> Option<crate::Event> {
+        let (id, _, _) = self.state.borrow_mut().terminal_sessions.remove(key)?;
+        Some(crate::Event::Other {
+            kind: "terminal-exited".into(),
+            data: serde_json::to_string(&crate::TerminalExited { id, key: key.into(), status: Some(0), closed: false })
+                .unwrap(),
+        })
+    }
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
@@ -1541,7 +1564,10 @@ pub mod current {
         with(|s| {
             let cap = match kind {
                 EventKind::ActionPerformed | EventKind::InputModeChanged => Some("events.input"),
-                EventKind::Scheduled => None,
+                EventKind::Scheduled
+                | EventKind::RunExited
+                | EventKind::TerminalExited
+                | EventKind::ContentTabAction => None,
                 _ => Some("events"),
             };
             if let Some(cap) = cap {
@@ -1728,6 +1754,56 @@ pub mod current {
         Ok(())
     }
 
+    pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
+        with(|s| {
+            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?;
+            require(s, &format!("process:{}", c.program))?;
+            if debug {
+                return Err(Error::Invalid("this configuration has no debugger".into()));
+            }
+            let id = format!("mock-run-{}", s.configuration_runs.len());
+            s.configuration_runs.push((id.clone(), config.into(), args.to_vec(), debug));
+            Ok(id)
+        })
+    }
+    pub fn open_terminal_session(key: &str, title: &str, cmd: &crate::host::Command) -> Result<String, Error> {
+        command_env(cmd)?;
+        with(|s| {
+            require(s, &format!("process:{}", cmd.program))?;
+            if key.is_empty() || key.len() > 128 || title.is_empty() || title.len() > 256 {
+                return Err(Error::Invalid("invalid terminal key or title".into()));
+            }
+            if let Some((id, _, _)) = s.terminal_sessions.get(key) {
+                return Ok(id.clone());
+            }
+            s.next_child += 1;
+            let id = format!("mock-terminal-{}", s.next_child);
+            s.terminal_sessions.insert(key.into(), (id.clone(), cmd.clone(), title.into()));
+            Ok(id)
+        })
+    }
+    pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            if !s.terminal_sessions.contains_key(key) {
+                return Err(Error::NotFound(key.into()));
+            }
+            s.terminal_writes.push((key.into(), text.into()));
+            Ok(())
+        })
+    }
+    pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
+        if tab.key.is_empty() || tab.title.is_empty() || tab.content.contains('\0') {
+            return Err(Error::Invalid("invalid content tab".into()));
+        }
+        with(|s| {
+            s.content_tabs.insert(tab.key.clone(), tab.clone());
+        });
+        Ok(())
+    }
+    pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
+        with(|s| s.content_replies.push((request.into(), reply.clone())));
+        Ok(())
+    }
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
         with(|s| {
             require(s, &format!("process:{program}"))?;

@@ -21,6 +21,7 @@ pub mod commit;
 pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
+mod execution;
 mod files_changed;
 mod hover;
 mod icon_extensions;
@@ -1528,6 +1529,7 @@ impl PluginHost {
     pub fn run_detection(&self) -> Arc<dyn ide_run::ExternalDetection> {
         Arc::new(run_detectors::PluginRunDetection {
             store: self.run_detectors.clone(),
+            dynamic: self.shared.run_configurations.clone(),
             pins: self.pins.clone(),
             project_pins: self.shared.project_pins.clone(),
         })
@@ -1721,7 +1723,20 @@ impl PluginHost {
             editors.remove(client);
         }
         drop(editors);
-        self.post_events(Some(client), events);
+        self.post_events(
+            Some(client),
+            events
+                .into_iter()
+                .filter(|e| {
+                    !matches!(
+                        e,
+                        WorkbenchEvent::RunExited(_)
+                            | WorkbenchEvent::TerminalExited(_)
+                            | WorkbenchEvent::ContentTabAction(_)
+                    )
+                })
+                .collect(),
+        );
     }
 
     pub fn post_events(&self, client: Option<&str>, events: Vec<WorkbenchEvent>) {
@@ -1780,7 +1795,15 @@ impl PluginHost {
             let excess = queue.events.len().saturating_sub(MAX_QUEUED_EVENTS);
             let mut remaining = excess;
             queue.events.retain(|event| {
-                if remaining > 0 && !matches!(event, WorkbenchEvent::FilesChanged(_)) {
+                if remaining > 0
+                    && !matches!(
+                        event,
+                        WorkbenchEvent::FilesChanged(_)
+                            | WorkbenchEvent::RunExited(_)
+                            | WorkbenchEvent::TerminalExited(_)
+                            | WorkbenchEvent::ContentTabAction(_)
+                    )
+                {
                     remaining -= 1;
                     false
                 } else {
@@ -1922,6 +1945,9 @@ impl PluginHost {
             if batches.running.as_ref() == Some(&kinds)
                 && !kinds.contains(&EventKind::Scheduled)
                 && !kinds.contains(&EventKind::FilesChanged)
+                && !kinds.iter().any(|k| {
+                    matches!(k, EventKind::RunExited | EventKind::TerminalExited | EventKind::ContentTabAction)
+                })
             {
                 actor.cancel_soft();
             }

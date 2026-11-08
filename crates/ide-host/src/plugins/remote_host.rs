@@ -131,7 +131,9 @@ pub fn package_digest(dir: &Path, files: &[PathBuf]) -> IdeResult<String> {
 pub fn forwarded(event: &PluginEvent) -> bool {
     matches!(
         event,
-        PluginEvent::DecorationsChanged { .. }
+        PluginEvent::WindowRequest { .. }
+            | PluginEvent::ContentTabReply { .. }
+            | PluginEvent::DecorationsChanged { .. }
             | PluginEvent::EditorOpen { .. }
             | PluginEvent::EditorRanges { .. }
             | PluginEvent::Notification { .. }
@@ -278,6 +280,7 @@ impl RemotePlugins {
             }
         };
         let host = Arc::new(PluginHost::new(data_dir.join(PLUGINS_DIR), Arc::new(sink), Limits::default())?);
+        projects.set_plugin_host(&host);
         host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(projects)))));
         host.set_secret_store(Arc::new(ClientSecrets { peer: peer.clone(), runtime: projects.runtime.clone() }));
         *host.shared.loopbacks.write() = Arc::new(ClientLoopbacks { peer, runtime: projects.runtime.clone() });
@@ -440,6 +443,55 @@ impl RemotePlugins {
                 alive(&h)?.set_ui_locale(&c.arg::<String>("tag")?);
                 Ok(())
             }
+        });
+        let h = host.clone();
+        d.add("plugin_parse_test_results", move |c| {
+            let h = h.clone();
+            async move {
+                let host = alive(&h)?;
+                let config = c.arg::<String>("config")?;
+                let chunk = c.arg("chunk")?;
+                blocking(move || host.parse_test_results(&c.window, &config, chunk)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_terminal_session_close", move |c| {
+            let h = h.clone();
+            async move { alive(&h)?.close_terminal_session(&c.window, &c.arg::<String>("operation")?) }
+        });
+        let h = host.clone();
+        d.add("plugin_terminal_session_spawn", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                let operation: String = c.arg("operation")?;
+                let cols = c.arg("cols")?;
+                let rows = c.arg("rows")?;
+                let output = c.channel("onOutput")?;
+                blocking(move || plugins.spawn_terminal_session(&c.host, &c.window, &operation, cols, rows, output))
+                    .await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_prepare_debug_run", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                let config = c.arg("config")?;
+                blocking(move || plugins.prepare_debug_run(&c.window, config)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_finish_operation", move |c| {
+            let h = h.clone();
+            async move {
+                Ok(alive(&h)?.finish_operation(&c.window, &c.arg::<String>("id")?, c.arg("status")?, c.arg("stopped")?))
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_content_tab_action", move |c| {
+            let h = h.clone();
+            async move { alive(&h)?.content_tab_action(&c.window, &c.arg::<String>("pluginId")?, c.arg("action")?) }
         });
         let h = host.clone();
         d.add("plugin_post_events", move |c| {

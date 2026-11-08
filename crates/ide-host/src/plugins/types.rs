@@ -8,6 +8,7 @@ pub use ide_plugin::{
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 
 /// A line a view's `process` body printed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -164,6 +165,13 @@ pub struct PluginUpdate {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PluginEvent {
+    /// A window-owned operation; an empty request id queues an asynchronous run.
+    #[serde(rename_all = "camelCase")]
+    WindowRequest { plugin_id: String, request_id: String, request: WindowRequest },
+    /// Reply to a content action in this window.
+    #[serde(rename_all = "camelCase")]
+    ContentTabReply { plugin_id: String, request_id: String, reply: ide_plugin::ContentTabReply },
+
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
     /// Complete replacement of one plugin's project-scoped decorations.
@@ -429,4 +437,24 @@ pub struct DecorationSet {
     pub tree: bool,
     pub items: Vec<ide_plugin::Decoration>,
     pub file: Option<ide_plugin::FileDecoration>,
+}
+
+/// A request that the invoking window acknowledges through plugin_answer_command.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WindowRequest {
+    /// Open and acknowledge validation by the shared content editor.
+    ContentTab { tab: ide_plugin::ContentTab },
+    #[serde(rename_all = "camelCase")]
+    Run { operation: String, config: Box<ide_run::RunConfig>, debug: bool },
+    #[serde(rename_all = "camelCase")]
+    Terminal {
+        operation: String,
+        key: String,
+        title: String,
+        program: ide_core::IpcPath,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+        cwd: ide_core::IpcPath,
+    },
 }

@@ -470,3 +470,195 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     desktop.shutdown();
     peer.kill();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution_host() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let executable = bin.join("execution-tool");
+    std::fs::write(&executable, "#!/bin/sh\nread line\nprintf '%s\\n' \"$line\"\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path_var = {
+        let bin = bin.clone();
+        Arc::new(move || Some(bin.clone().into_os_string()))
+    };
+    let desktop =
+        PluginHost::new(tmp.path().join("desktop/plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default())
+            .unwrap();
+    desktop.set_program_path(path_var.clone());
+    desktop.install_from_dir(&fixture("execution"), &Consent::all()).unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let project = project.canonicalize().unwrap();
+    std::fs::write(project.join("execution.marker"), "").unwrap();
+    let base = tmp.path().join("server");
+    let peer_slot = Arc::new(OnceLock::new());
+    let sink_peer = peer_slot.clone();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
+    plugins.host().set_program_path(path_var);
+    let mut dispatcher = Dispatcher::standard();
+    plugins.register(&mut dispatcher);
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, dispatcher, peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let client = Arc::new(Client::default());
+    let peer = Peer::connect(cr, cw, client.clone());
+    let _: Value = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
+    invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
+    invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
+    sync(&peer, &desktop, &[]).await;
+    assert!(sync(&peer, &desktop, &["execution"]).await.failed.is_empty());
+    let runner = peer.clone();
+    let run = tokio::spawn(async move {
+        invoke(
+            &runner,
+            "plugin_run_command",
+            json!({"pluginId": "execution", "commandId": "terminal", "arg": null, "editor": null}),
+        )
+        .await
+        .unwrap()
+    });
+    until("terminal request", 5, || {
+        client.plugin_events.lock().iter().any(|m| matches!(m.event, PluginEvent::WindowRequest { .. }))
+    })
+    .await;
+    let (request_id, operation) = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            PluginEvent::WindowRequest {
+                request_id,
+                request: ide_host::plugins::WindowRequest::Terminal { operation, .. },
+                ..
+            } => {
+                assert_eq!(m.window.as_deref(), Some("main"));
+                Some((request_id.clone(), operation.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let terminal = invoke(
+        &peer,
+        "plugin_terminal_session_spawn",
+        json!({"operation": operation, "cols": 80, "rows": 24, "onOutput": {"$channel": 35}}),
+    )
+    .await
+    .unwrap();
+    assert!(terminal["id"].as_u64().is_some());
+    assert!(
+        invoke(
+            &peer,
+            "plugin_terminal_session_spawn",
+            json!({"operation": operation, "cols": 80, "rows": 24, "onOutput": {"$channel": 36}})
+        )
+        .await
+        .is_err()
+    );
+    invoke(
+        &peer,
+        "plugin_answer_command",
+        json!({"requestId": request_id, "answer": {"kind": "value", "value": null}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.await.unwrap(), operation);
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId": "execution", "commandId": "write", "arg": "finished\n", "editor": null}),
+    )
+    .await
+    .unwrap();
+    until("PTY exit", 5, || client.events.lock().iter().any(|m| matches!(m.event, IdeEvent::TerminalExited { .. })))
+        .await;
+    plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
+    plugins.host().wait_events(Duration::from_secs(5));
+    let received = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
+    )
+    .await
+    .unwrap();
+    let received: Value = serde_json::from_str(received.as_str().unwrap()).unwrap();
+    assert_eq!(received.as_array().unwrap().len(), 1);
+    assert_eq!(received[0]["kind"], "terminal-exited");
+    let data: Value = serde_json::from_str(received[0]["data"].as_str().unwrap()).unwrap();
+    assert_eq!(data["id"], operation);
+    assert_eq!(data["status"], 0);
+    assert_eq!(data["closed"], false);
+
+    client.plugin_events.lock().clear();
+    client.events.lock().clear();
+    let runner = peer.clone();
+    let run = tokio::spawn(async move {
+        invoke(
+            &runner,
+            "plugin_run_command",
+            json!({"pluginId": "execution", "commandId": "run", "arg": null, "editor": null}),
+        )
+        .await
+        .unwrap()
+    });
+    until("run request", 5, || {
+        client.plugin_events.lock().iter().any(|m| {
+            matches!(&m.event, PluginEvent::WindowRequest { request: ide_host::plugins::WindowRequest::Run { .. }, .. })
+        })
+    })
+    .await;
+    let (request_id, operation, config) = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            PluginEvent::WindowRequest {
+                request_id,
+                request: ide_host::plugins::WindowRequest::Run { operation, config, .. },
+                ..
+            } => Some((request_id.clone(), operation.clone(), config.clone())),
+            _ => None,
+        })
+        .unwrap();
+    let info = invoke(&peer, "run_start", json!({"config": config, "onOutput": {"$channel": 37}})).await.unwrap();
+    invoke(
+        &peer,
+        "plugin_answer_command",
+        json!({"requestId": request_id, "answer": {"kind": "value", "value": null}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.await.unwrap(), operation);
+    invoke(&peer, "run_stdin", json!({"id": info["id"], "data": "finished\n"})).await.unwrap();
+    until("run exit", 5, || client.events.lock().iter().any(|m| matches!(&m.event, IdeEvent::RunExited { .. }))).await;
+    plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
+    plugins.host().wait_events(Duration::from_secs(5));
+    let received = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
+    )
+    .await
+    .unwrap();
+    let received: Value = serde_json::from_str(received.as_str().unwrap()).unwrap();
+    assert_eq!(received.as_array().unwrap().len(), 2);
+    assert_eq!(received[1]["kind"], "run-exited");
+    let data: Value = serde_json::from_str(received[1]["data"].as_str().unwrap()).unwrap();
+    assert_eq!(data["id"], operation);
+    assert_eq!(data["status"], 0);
+    assert_eq!(data["killed"], false);
+    plugins.host().shutdown();
+}

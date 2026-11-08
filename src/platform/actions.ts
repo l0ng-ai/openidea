@@ -167,7 +167,16 @@ export function onActionExecuted(listener: ActionListener): () => void {
 }
 
 /** Runs an action if registered and enabled. Returns whether it ran. */
-export async function executeAction(id: string, arg?: unknown): Promise<boolean> {
+export function executeAction(id: string, arg?: unknown): Promise<boolean> {
+  return runAction(id, arg, false);
+}
+
+/** Host requests need the launch error before acknowledging an operation. */
+export async function executeActionOrThrow(id: string, arg?: unknown): Promise<void> {
+  if (!(await runAction(id, arg, true))) throw new Error(`Action unavailable: ${id}`);
+}
+
+async function runAction(id: string, arg: unknown, propagateError: boolean): Promise<boolean> {
   const action = getAction(id);
   if (!action) {
     console.warn(`unknown action: ${id}`);
@@ -192,6 +201,7 @@ export async function executeAction(id: string, arg?: unknown): Promise<boolean>
     }
     await pending;
   } catch (e) {
+    if (propagateError) throw e;
     console.error(`action ${id} failed`, e);
   }
   return true;

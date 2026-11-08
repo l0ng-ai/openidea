@@ -75,6 +75,26 @@ impl TestWorkspace {
 }
 
 impl PluginWorkspace for TestWorkspace {
+    fn run_configuration(&self, _client: &str, plugin: &str, id: &str) -> Result<ide_run::RunConfig, HostError> {
+        if plugin != "execution" || !matches!(id, "detected" | "dynamic") {
+            return Err(HostError::NotFound(id.into()));
+        }
+        Ok(ide_run::RunConfig {
+            id: format!("plugin:execution:{id}"),
+            name: "Tests".into(),
+            kind: "plugin".into(),
+            command: "execution-tool".into(),
+            args: vec!["test".into()],
+            cwd: Some(self.root.clone().into()),
+            env: Default::default(),
+            detected: true,
+            is_test: true,
+            debug_adapter: None,
+            allow_parallel: false,
+            extras: ide_run::RunExtras { params: [("framework".into(), "plugin".into())].into(), ..Default::default() },
+        })
+    }
+
     fn projects(&self) -> Vec<PathBuf> {
         std::iter::once(self.root.clone()).chain(self.other_roots.lock().iter().cloned()).collect()
     }
@@ -5896,4 +5916,112 @@ fn api14_executable_choices_are_pinned_per_project_and_reset_revalidates() {
     assert!(
         !f.host.info_of("api14").unwrap().capabilities.iter().find(|c| c.id == "process:api14-tool").unwrap().granted
     );
+}
+
+#[cfg(unix)]
+fn execution_fixture() -> Arc<Fixture> {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Arc::new(fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() }));
+    f.install(&sample("execution"));
+    std::fs::write(f.project.join("execution.marker"), "").unwrap();
+    let executable = f._tmp.path().join("execution-bin");
+    std::fs::write(&executable, "#!/bin/sh\nprintf '%s\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.host.choose_program("execution", "process:execution-tool", Some(&f.project), Some(&executable)).unwrap();
+    f
+}
+
+#[cfg(unix)]
+fn execution_request(f: &Arc<Fixture>, command: &str) -> (String, WindowRequest) {
+    let command = command.to_owned();
+    let runner = f.clone();
+    let worker = std::thread::spawn(move || runner.run("execution", &command, None));
+    let mut request = None;
+    assert!(eventually(|| {
+        for (client, event) in f.take_events() {
+            if let PluginEvent::WindowRequest { request_id, request: r, .. } = event {
+                assert_eq!(client.as_deref(), Some("main"));
+                request = Some((request_id, r));
+            }
+        }
+        request.is_some()
+    }));
+    let (request_id, request) = request.unwrap();
+    assert!(!f.host.answer_command("second", &request_id, CommandAnswer::Value(None)));
+    if !request_id.is_empty() {
+        assert!(f.host.answer_command("main", &request_id, CommandAnswer::Value(None)));
+    }
+    let id = worker.join().unwrap().unwrap().unwrap_or_default();
+    (id, request)
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_stage3_runs_and_terminals_deliver_exactly_one_exit_after_idle_reclamation() {
+    let f = execution_fixture();
+    let (run, request) = execution_request(&f, "run");
+    assert!(matches!(request, WindowRequest::Run { config, .. } if config.args == ["test", "appended"]));
+    assert!(f.run("execution", "debug", None).unwrap_err().contains("debugger"));
+    let (terminal, _) = execution_request(&f, "terminal");
+    assert_eq!(execution_request(&f, "terminal").0, terminal);
+    assert!(f.run("execution", "write", None).unwrap_err().contains("running terminal"));
+    std::thread::sleep(Duration::from_millis(100));
+    f.host.tick();
+    assert_eq!(f.host.instances(), 0);
+    assert!(!f.host.finish_operation("second", &run, Some(2), false));
+    assert!(f.host.finish_operation("main", &run, Some(2), true));
+    assert!(!f.host.finish_operation("main", &run, Some(2), true));
+    assert!(f.host.finish_operation("main", &terminal, None, true));
+    assert!(!f.host.finish_operation("main", &terminal, Some(0), false));
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(eventually(|| f.host.wait_events(Duration::from_secs(1))));
+    let events: serde_json::Value =
+        serde_json::from_str(&f.run("execution", "events", None).unwrap().unwrap()).unwrap();
+    let events = events.as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "run-exited");
+    let data: serde_json::Value = serde_json::from_str(events[0]["data"].as_str().unwrap()).unwrap();
+    assert_eq!(data["id"], run);
+    assert_eq!(data["killed"], true);
+    assert_eq!(events[1]["kind"], "terminal-exited");
+    assert!(f.run("execution", "write", None).unwrap_err().contains("running terminal"));
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports() {
+    let f = execution_fixture();
+    f.host.refresh_run_configurations(&f.project);
+    let configs = f.host.run_detection().detect(&f.project);
+    assert!(configs.iter().any(|c| c.id == "plugin:execution:dynamic"
+        && c.is_test
+        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")));
+    assert_eq!(
+        f.host.parse_test_results("main", "plugin:execution:dynamic", "batch".into()).unwrap().unwrap().len(),
+        3
+    );
+    let (_, request) = execution_request(&f, "content");
+    assert!(matches!(request, WindowRequest::ContentTab { tab } if tab.key == "config"));
+    f.take_events();
+    let action = ide_plugin::ContentTabAction {
+        request_id: "ct-1".into(),
+        key: "config".into(),
+        action: "save".into(),
+        content: "edited".into(),
+    };
+    assert!(f.host.content_tab_action("second", "execution", action.clone()).is_err());
+    f.host.content_tab_action("main", "execution", action).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(eventually(|| {
+        f.events.lock().iter().any(|(client, event)| client.as_deref() == Some("main") && matches!(event, PluginEvent::ContentTabReply { request_id, reply, .. } if request_id == "ct-1" && reply.saved == Some(true)))
+    }));
+    assert!(f.host.parse_test_results("main", "plugin:execution:dynamic", "trap".into()).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
+    let f = execution_fixture();
+    f.host.set_capability("execution", "process:execution-tool", false).unwrap();
+    assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
 }

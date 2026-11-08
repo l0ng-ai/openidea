@@ -573,5 +573,10 @@
   "Connect to local socket {path} — equivalent to running arbitrary code on the project machine": "Connect to local socket {path} — equivalent to running arbitrary code on the project machine",
   "Output: {channel}": "Output: {channel}",
   "You can close this tab.": "You can close this tab.",
-  "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing": "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing"
+  "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing": "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing",
+  "Run Plugin Configuration": "Run Plugin Configuration",
+  "Open Plugin Terminal Session": "Open Plugin Terminal Session",
+  "Debug Plugin Configuration": "Debug Plugin Configuration",
+  "Expected: {0}": "Expected: {0}",
+  "Actual: {0}": "Actual: {0}"
 }

@@ -67,7 +67,7 @@ pub enum NotificationLevel {
 }
 
 /// 0-based line and UTF-16 code unit column (as in the editor and LSP).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Position {
     pub line: u32,
     pub character: u32,
@@ -80,7 +80,7 @@ impl Position {
 }
 
 /// Half-open range; a cursor is an empty range.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Range {
     pub start: Position,
     pub end: Position,
@@ -214,6 +214,9 @@ pub enum EventKind {
     FileClosed,
     SettingsChanged,
     InputModeChanged,
+    RunExited,
+    TerminalExited,
+    ContentTabAction,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -231,6 +234,9 @@ impl EventKind {
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
+            Self::RunExited => "run-exited",
+            Self::TerminalExited => "terminal-exited",
+            Self::ContentTabAction => "content-tab-action",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -371,7 +377,7 @@ pub struct CommitDraft {
 }
 
 /// A range in a file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     /// Absolute path.
     pub path: String,

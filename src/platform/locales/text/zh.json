@@ -6916,5 +6916,10 @@
   "Connect to local socket {path} — equivalent to running arbitrary code on the project machine": "连接到本地套接字 {path} — 等同于在项目所在的计算机上运行任意代码",
   "Output: {channel}": "输出：{channel}",
   "You can close this tab.": "你可以关闭此标签页。",
-  "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing": "如同您亲自选择一样运行任意 IDE 操作或其他插件的命令，包括运行程序、提交和推送"
+  "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing": "如同您亲自选择一样运行任意 IDE 操作或其他插件的命令，包括运行程序、提交和推送",
+  "Run Plugin Configuration": "运行插件配置",
+  "Open Plugin Terminal Session": "打开插件终端会话",
+  "Debug Plugin Configuration": "调试插件配置",
+  "Expected: {0}": "期望值：{0}",
+  "Actual: {0}": "实际值：{0}"
 }

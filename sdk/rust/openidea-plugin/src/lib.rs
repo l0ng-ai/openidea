@@ -286,6 +286,9 @@ macro_rules! register_plugin {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __optional_exports {
+    (run_configurations, $plugin:ty, $component:ident) => { $crate::__run_configurations_exports!($plugin, $component); };
+    (test_results, $plugin:ty, $component:ident) => { $crate::__test_results_exports!($plugin, $component); };
+
     (providers, $plugin:ty, $component:ident) => {
         $crate::__providers_exports!($plugin, $component);
     };
@@ -1069,6 +1072,63 @@ pub mod __rt {
         with::<T, _>(|p| p.render(&view, viewport, &ctx)).map(view_out).map_err(error_out)
     }
 
+    pub fn configurations<T: Plugin + crate::RunConfigurations + Default>(
+        root: &str,
+    ) -> Vec<crate::run_configurations_bindings::exports::openidea::plugin::run_configurations::RunConfiguration> {
+        use crate::run_configurations_bindings::exports::openidea::plugin::run_configurations::RunConfiguration as C;
+        with::<T, _>(|p| p.configurations(root))
+            .into_iter()
+            .map(|c| C {
+                id: c.id,
+                name: c.name,
+                program: c.program,
+                args: c.args,
+                cwd: c.cwd,
+                test: c.test,
+                framework: c.framework,
+            })
+            .collect()
+    }
+    pub fn test_results<T: Plugin + crate::TestResults + Default>(
+        config: &str,
+        chunk: &str,
+    ) -> Vec<crate::test_results_bindings::exports::openidea::plugin::test_results::TestEvent> {
+        use crate::PluginTestEvent as E;
+        use crate::test_results_bindings::exports::openidea::plugin::test_results as w;
+        let location = |l: crate::Location| b::types::Location {
+            path: l.path,
+            range: b::types::Range {
+                start: b::types::Position { line: l.range.start.line, character: l.range.start.character },
+                end: b::types::Position { line: l.range.end.line, character: l.range.end.character },
+            },
+        };
+        let start = |v: crate::TestStart| w::TestStart {
+            id: v.id,
+            parent: v.parent,
+            name: v.name,
+            location: v.location.map(location),
+        };
+        with::<T, _>(|p| p.parse(config, chunk))
+            .into_iter()
+            .map(|event| match event {
+                E::SuiteStarted(v) => w::TestEvent::SuiteStarted(start(v)),
+                E::TestStarted(v) => w::TestEvent::TestStarted(start(v)),
+                E::Passed(v) => w::TestEvent::Passed(w::TestPassed { id: v.id, duration_ms: v.duration_ms }),
+                E::Failed(v) => w::TestEvent::Failed(w::TestFailed {
+                    id: v.id,
+                    duration_ms: v.duration_ms,
+                    message: v.message,
+                    expected: v.expected,
+                    actual: v.actual,
+                    location: v.location.map(location),
+                }),
+                E::Skipped(v) => w::TestEvent::Skipped(w::TestSkipped { id: v.id, reason: v.reason }),
+                E::Output(v) => w::TestEvent::Output(w::TestOutput { id: v.id, text: v.text }),
+                E::Other { kind, data } => w::TestEvent::Other(b::types::Extension { kind, data }),
+            })
+            .collect()
+    }
+
     pub fn endpoints<T: Plugin + crate::endpoints::EndpointsProvider + Default>(
         ctx: &b::invocation::Invocation,
     ) -> Result<Vec<crate::endpoints_bindings::exports::openidea::plugin::endpoints_provider::Endpoint>, b::types::Error>
@@ -1210,4 +1270,46 @@ pub mod __rt {
             })
             .collect()
     }
+}
+
+pub mod execution;
+pub use execution::*;
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod run_configurations_bindings {
+    wit_bindgen::generate!({ world: "configurations-provider", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_configurations_world", default_bindings_module: "openidea_plugin::run_configurations_bindings" });
+}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod test_results_bindings {
+    wit_bindgen::generate!({ world: "test-results-provider", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_tests_world", default_bindings_module: "openidea_plugin::test_results_bindings",
+        with: { "openidea:plugin/types@1.4.0": crate::bindings::openidea::plugin::types },
+    });
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __run_configurations_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::run_configurations_bindings::exports::openidea::plugin::run_configurations::Guest for $component {
+            fn configurations(root: String) -> Vec<$crate::run_configurations_bindings::exports::openidea::plugin::run_configurations::RunConfiguration> {
+                $crate::__rt::configurations::<$plugin>(&root)
+            }
+        }
+        $crate::run_configurations_bindings::__export_configurations_world!($component with_types_in $crate::run_configurations_bindings);
+    };
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __test_results_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::test_results_bindings::exports::openidea::plugin::test_results::Guest for $component {
+            fn parse(config: String, chunk: String) -> Vec<$crate::test_results_bindings::exports::openidea::plugin::test_results::TestEvent> {
+                $crate::__rt::test_results::<$plugin>(&config, &chunk)
+            }
+        }
+        $crate::test_results_bindings::__export_tests_world!($component with_types_in $crate::test_results_bindings);
+    };
 }

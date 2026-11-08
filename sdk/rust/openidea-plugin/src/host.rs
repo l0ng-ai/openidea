@@ -647,6 +647,70 @@ mod imp {
         wit::views::post_message(view, message).map_err(error)
     }
 
+    fn content_action_to(v: &crate::ContentAction) -> wit::views::ContentAction {
+        wit::views::ContentAction {
+            id: v.id.clone(),
+            label: v.label.clone(),
+            icon: v.icon.clone(),
+            primary: v.primary.clone(),
+            save: v.save.clone(),
+        }
+    }
+
+    fn content_tab_to(v: &crate::ContentTab) -> wit::views::ContentTab {
+        wit::views::ContentTab {
+            key: v.key.clone(),
+            title: v.title.clone(),
+            file_name: v.file_name.clone(),
+            language: v.language.clone(),
+            content: v.content.clone(),
+            read_only: v.read_only.clone(),
+            actions: v.actions.iter().map(content_action_to).collect(),
+        }
+    }
+
+    fn content_diff_to(v: &crate::ContentDiff) -> wit::views::ContentDiff {
+        wit::views::ContentDiff {
+            left: v.left.clone(),
+            right: v.right.clone(),
+            left_label: v.left_label.clone(),
+            right_label: v.right_label.clone(),
+            title: v.title.clone(),
+        }
+    }
+
+    fn content_tab_reply_to(v: &crate::ContentTabReply) -> wit::views::ContentTabReply {
+        wit::views::ContentTabReply {
+            content: v.content.clone(),
+            saved: v.saved.clone(),
+            read_only: v.read_only.clone(),
+            status: v.status.clone(),
+            error: v.error.clone(),
+            diff: v.diff.as_ref().map(content_diff_to),
+        }
+    }
+
+    pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
+        wit::run::start(config, args, debug).map_err(error)
+    }
+    pub fn open_terminal_session(key: &str, title: &str, cmd: &super::Command) -> Result<String, Error> {
+        wit::views::open_terminal_session(
+            key,
+            title,
+            &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+        )
+        .map_err(error)
+    }
+    pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
+        wit::views::write_terminal(key, text).map_err(error)
+    }
+    pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
+        wit::views::open_content_tab(&content_tab_to(tab)).map_err(error)
+    }
+    pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
+        wit::views::reply_content_tab(request, &content_tab_reply_to(reply)).map_err(error)
+    }
+
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
         wit::views::open_terminal(title, program, args).map_err(error)
     }
@@ -1513,4 +1577,25 @@ pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Resu
 /// Clear this plugin's tree decoration set in all projects. Requires project.read.
 pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
     imp::clear_file_decorations(set)
+}
+
+/// Starts an owned run configuration in the invoking window. Its id receives run-exited.
+pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
+    imp::start_run(config, args, debug)
+}
+/// Opens/reuses a keyed, approved terminal with append-only environment variables.
+pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {
+    imp::open_terminal_session(key, title, cmd)
+}
+/// Writes to this plugin's running keyed terminal in the invoking window.
+pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
+    imp::write_terminal(key, text)
+}
+/// Opens a content editor through the existing content-tab protocol.
+pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
+    imp::open_content_tab(tab)
+}
+/// Replies to a content-tab-action event in its originating window.
+pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
+    imp::reply_content_tab(request, reply)
 }

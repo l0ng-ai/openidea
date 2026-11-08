@@ -87,6 +87,16 @@ export interface PluginsBackend {
   answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
   /** This window's answer to a plugin's `commitRequested`. */
   answerCommand(requestId: string, answer: CommandAnswer): Promise<void>;
+  parseTestResults(config: string, chunk: string): Promise<import("@/bindings").PluginTestEvent[] | null>;
+  closeTerminalSession(operation: string): Promise<void>;
+  terminalSessionSpawn(
+    operation: string,
+    cols: number,
+    rows: number,
+    output: Channel<string>,
+  ): Promise<import("@/bindings").TerminalInfo>;
+  finishOperation(id: string, status: number | null, stopped: boolean): Promise<void>;
+  contentTabAction(pluginId: string, action: import("@/bindings").ContentTabAction): Promise<void>;
   answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
   /** Runs plugins' before-commit checks on what `selection` commits. */
   commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
@@ -226,6 +236,18 @@ export const tauriPluginsBackend: PluginsBackend = {
   },
   answerPrompt: async (promptId, answer) => {
     await commands.pluginAnswerPrompt(promptId, answer);
+  },
+  parseTestResults: (config, chunk) => call(commands.pluginParseTestResults(config, chunk)),
+  closeTerminalSession: async (operation) => {
+    await call(commands.pluginTerminalSessionClose(operation));
+  },
+  terminalSessionSpawn: (operation, cols, rows, output) =>
+    call(commands.pluginTerminalSessionSpawn(operation, cols, rows, output)),
+  finishOperation: async (id, status, stopped) => {
+    await call(commands.pluginFinishOperation(id, status, stopped));
+  },
+  contentTabAction: async (pluginId, action) => {
+    await call(commands.pluginContentTabAction(pluginId, action));
   },
   answerCommand: async (requestId, answer) => {
     await call(commands.pluginAnswerCommand(requestId, answer));
@@ -631,6 +653,13 @@ export function createMemoryPluginsBackend(
     serviceDetail: async () => [],
     endpoints: async () => [],
     answerCommand: async () => {},
+    finishOperation: async () => {},
+    closeTerminalSession: async () => {},
+    terminalSessionSpawn: async () => {
+      throw new Error("Terminal unavailable");
+    },
+    parseTestResults: async () => null,
+    contentTabAction: async () => {},
     answerCommit: async () => {},
     commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {

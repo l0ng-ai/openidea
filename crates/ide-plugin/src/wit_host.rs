@@ -53,6 +53,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
@@ -87,6 +88,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
@@ -121,6 +123,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
@@ -1082,8 +1085,15 @@ impl events::Host for StoreData {
         let Some(kind) = EventKind::parse(&kind) else {
             return Ok(Err(wit::Error::Invalid(format!("no event kind {kind:?} in this OpenIDEA"))));
         };
-        if matches!(kind, EventKind::FileClosed | EventKind::SettingsChanged | EventKind::InputModeChanged)
-            && let Err(e) = self.host.require_api(kind.name(), 4)
+        if matches!(
+            kind,
+            EventKind::FileClosed
+                | EventKind::SettingsChanged
+                | EventKind::InputModeChanged
+                | EventKind::RunExited
+                | EventKind::TerminalExited
+                | EventKind::ContentTabAction
+        ) && let Err(e) = self.host.require_api(kind.name(), 4)
         {
             return Ok(Err(to_wit(e)));
         }
@@ -1412,6 +1422,68 @@ impl process::HostChild for StoreData {
 }
 
 impl views::Host for StoreData {
+    fn open_terminal_session(&mut self, key: String, title: String, cmd: process::Command) -> Fallible<String> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self
+            .host
+            .open_terminal_session(
+                self.invocation.client.as_deref().unwrap(),
+                key,
+                title,
+                cmd,
+                &self.cancel.token(),
+                self.remaining(),
+            )
+            .map_err(to_wit))
+    }
+    fn write_terminal(&mut self, key: String, text: String) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        if text.len() > MAX_STDIN_BYTES {
+            return Ok(Err(wit::Error::Invalid("terminal write too large".into())));
+        }
+        Ok(self
+            .host
+            .write_terminal(
+                self.invocation.client.as_deref().unwrap(),
+                &key,
+                text,
+                &self.cancel.token(),
+                self.remaining(),
+            )
+            .map_err(to_wit))
+    }
+    fn open_content_tab(&mut self, tab: views::ContentTab) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .open_content_tab(
+                self.invocation.client.as_deref().unwrap(),
+                tab.into(),
+                &self.cancel.token(),
+                self.remaining(),
+            )
+            .map_err(to_wit))
+    }
+    fn reply_content_tab(&mut self, request_id: String, reply: views::ContentTabReply) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .reply_content_tab(self.invocation.client.as_deref().unwrap(), &request_id, reply.into())
+            .map_err(to_wit))
+    }
+
     fn refresh(&mut self, view: String) -> wasmtime::Result<()> {
         self.host.refresh_view(&clip(view, 64));
         Ok(())
@@ -1733,6 +1805,75 @@ fn validate_ui_path(path: &str) -> Result<(), wit::Error> {
         return Err(wit::Error::Invalid("expected an absolute UI directory path of at most 8192 bytes".into()));
     }
     Ok(())
+}
+
+impl From<bindings::openidea::plugin::views::ContentAction> for crate::ContentAction {
+    fn from(v: bindings::openidea::plugin::views::ContentAction) -> Self {
+        Self { id: v.id, label: v.label, icon: v.icon, primary: v.primary, save: v.save }
+    }
+}
+
+impl From<bindings::openidea::plugin::views::ContentTab> for crate::ContentTab {
+    fn from(v: bindings::openidea::plugin::views::ContentTab) -> Self {
+        Self {
+            key: v.key,
+            title: v.title,
+            file_name: v.file_name,
+            language: v.language,
+            content: v.content,
+            read_only: v.read_only,
+            actions: v.actions.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<bindings::openidea::plugin::views::ContentDiff> for crate::ContentDiff {
+    fn from(v: bindings::openidea::plugin::views::ContentDiff) -> Self {
+        Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
+    }
+}
+
+impl From<bindings::openidea::plugin::views::ContentTabReply> for crate::ContentTabReply {
+    fn from(v: bindings::openidea::plugin::views::ContentTabReply) -> Self {
+        Self {
+            content: v.content,
+            saved: v.saved,
+            read_only: v.read_only,
+            status: v.status,
+            error: v.error,
+            diff: v.diff.map(Into::into),
+        }
+    }
+}
+
+impl bindings::openidea::plugin::run::Host for StoreData {
+    fn start(&mut self, config: String, args: Vec<String>, debug: bool) -> Fallible<String> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        if args.len() > MAX_ARGS || args.iter().any(|a| a.len() > MAX_ARG_BYTES || a.contains('\0')) {
+            return Ok(Err(wit::Error::Invalid("invalid run arguments".into())));
+        }
+        Ok(self
+            .host
+            .start_run(
+                self.invocation.client.as_deref().unwrap(),
+                &config,
+                args,
+                debug,
+                &self.cancel.token(),
+                self.remaining(),
+            )
+            .map_err(to_wit))
+    }
+}
+pub(crate) mod run_configurations_bindings {
+    wasmtime::component::bindgen!({ world: "configurations-provider", path: "../../wit" });
+}
+pub(crate) mod test_results_bindings {
+    wasmtime::component::bindgen!({ world: "test-results-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
 }
 
 #[cfg(test)]

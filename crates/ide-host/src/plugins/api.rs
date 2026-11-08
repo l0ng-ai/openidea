@@ -38,6 +38,11 @@ type ContextKey = (Option<String>, String, String);
 /// What plugins see of the open projects; provided by the app
 /// ([`super::PluginHost::set_workspace`]), over [`crate::Host`] on the desktop.
 pub trait PluginWorkspace: Send + Sync {
+    /// A freshly resolved configuration owned by this plugin in the invoking project.
+    fn run_configuration(&self, _client: &str, _plugin: &str, _config: &str) -> Result<ide_run::RunConfig, HostError> {
+        Err(HostError::NotFound("run configuration unavailable".into()))
+    }
+
     /// Window-owned reports shared with the MCP tools.
     fn open_editors(&self, _client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
         Ok(Vec::new())
@@ -239,13 +244,13 @@ struct TaskEntry {
 }
 
 /// A question a plugin's call waits on: the user's (a prompt) or a window's.
-struct PromptEntry {
-    plugin: String,
-    client: String,
-    answer: Waiter,
+pub(super) struct PromptEntry {
+    pub(super) plugin: String,
+    pub(super) client: String,
+    pub(super) answer: Waiter,
 }
 
-enum Waiter {
+pub(super) enum Waiter {
     Prompt(std::sync::mpsc::SyncSender<Option<Vec<String>>>),
     Commit(std::sync::mpsc::SyncSender<CommitAnswer>),
     Command(std::sync::mpsc::SyncSender<super::CommandAnswer>),
@@ -466,6 +471,8 @@ fn append_process_env(command: &mut StdCommand, env: &[(String, String)]) -> Res
 /// Approved project-specific programs.
 pub(super) type ProjectPins = Arc<RwLock<HashMap<(String, String, PathBuf), ProgramPin>>>;
 
+type ContentRequests = BTreeMap<(String, String, String), (String, Instant)>;
+
 type SettingSnapshots = BTreeMap<(Option<String>, String), BTreeMap<String, String>>;
 
 /// State shared by the host and every plugin's [`PluginApi`].
@@ -482,10 +489,15 @@ pub(super) struct Shared {
     connections: super::ipc::Connections,
     pub loopbacks: RwLock<Arc<dyn super::auth::Service>>,
     process_shutdowns: Mutex<Vec<std::thread::JoinHandle<()>>>,
-    prompts: Mutex<HashMap<u64, PromptEntry>>,
+    pub(super) prompts: Mutex<HashMap<u64, PromptEntry>>,
     /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
-    prompts_blocked: Mutex<BTreeSet<String>>,
-    next_prompt: AtomicU64,
+    pub(super) prompts_blocked: Mutex<BTreeSet<String>>,
+    pub(super) next_prompt: AtomicU64,
+    pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
+    pub(super) operations: Mutex<BTreeMap<String, super::execution::Operation>>,
+    pub(super) content_tabs: Mutex<BTreeMap<(String, String, String), ide_plugin::ContentTab>>,
+    pub(super) content_requests: Mutex<ContentRequests>,
+
     /// (plugin, item id) → item, for windows opened later.
     output: Mutex<BTreeMap<(String, String), String>>,
     decorations: Mutex<BTreeMap<String, Vec<super::DecorationSet>>>,
@@ -494,7 +506,7 @@ pub(super) struct Shared {
     window_status: Mutex<BTreeMap<(String, String, String), StatusItem>>,
     /// (scope, plugin, key) → JSON value.
     contexts: Mutex<BTreeMap<ContextKey, String>>,
-    closed_clients: Mutex<BTreeSet<String>>,
+    pub(super) closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
@@ -547,6 +559,11 @@ impl Shared {
             prompts: Mutex::default(),
             prompts_blocked: Mutex::default(),
             next_prompt: AtomicU64::new(1),
+            run_configurations: Arc::default(),
+            operations: Mutex::default(),
+            content_tabs: Mutex::default(),
+            content_requests: Mutex::default(),
+
             status: Mutex::default(),
             output: Mutex::default(),
             decorations: Mutex::default(),
@@ -662,6 +679,9 @@ impl Shared {
         self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
         self.loopbacks.read().forget_window(client);
         self.window_status.lock().retain(|(window, ..), _| window != client);
+        self.operations.lock().retain(|_, op| op.client != client);
+        self.content_tabs.lock().retain(|(_, window, _), _| window != client);
+        self.content_requests.lock().retain(|(_, window, _), _| window != client);
         self.event_editors.write().remove(client);
         self.setting_snapshots.lock().retain(|(window, _), _| window.as_deref() != Some(client));
         let mine: Vec<_> = {
@@ -719,6 +739,11 @@ impl Shared {
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
+        self.run_configurations.write().retain(|(p, _), _| p != plugin);
+        self.operations.lock().retain(|_, op| op.plugin != plugin);
+        self.content_tabs.lock().retain(|(p, _, _), _| p != plugin);
+        self.content_requests.lock().retain(|(p, _, _), _| p != plugin);
+
         self.kill_processes(plugin);
         self.connections.clear(plugin);
         self.setting_snapshots.lock().retain(|(_, p), _| p != plugin);
@@ -1223,6 +1248,176 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
+    fn start_run(
+        &self,
+        client: &str,
+        config: &str,
+        args: Vec<String>,
+        debug: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = timeout;
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let mut run =
+            self.shared.workspace().ok_or(HostError::Cancelled)?.run_configuration(client, self.id(), config)?;
+        let binary = self.approved_program_in_project(&run.command, self.shared.project_of(client).as_deref())?;
+        if debug && run.debug_adapter.is_none() {
+            return Err(HostError::Invalid("this configuration has no debugger".into()));
+        }
+        let program = run.command.clone();
+        if debug && run.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+            return Err(HostError::Invalid("debugging this target is not supported".into()));
+        }
+        if debug {
+            run.command = binary.to_string_lossy().into_owned();
+        }
+        run.args.extend(args);
+        let id = self.new_operation(
+            client,
+            super::execution::OperationKind::Run { config: config.into(), configuration: run.id.clone(), program },
+        )?;
+        run.extras.params.insert(super::execution::RUN_OPERATION.into(), id.clone());
+        let request = super::WindowRequest::Run { operation: id.clone(), config: Box::new(run), debug };
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::WindowRequest { plugin_id: self.id().into(), request_id: String::new(), request },
+        );
+        Ok(id)
+    }
+    fn open_terminal_session(
+        &self,
+        client: &str,
+        key: String,
+        title: String,
+        cmd: ProcessCommand,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        super::execution::label(&key, 128)?;
+        super::execution::label(&title, 256)?;
+        let root =
+            self.shared.project_of(client).ok_or_else(|| HostError::Invalid("no project in this window".into()))?;
+        if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        let binary = self.approved_program_in_project(&cmd.program, Some(&root))?;
+        let mut command = StdCommand::new(&binary);
+        append_process_env(&mut command, &cmd.env)?;
+        if cmd.args.iter().any(|a| a.contains('\0')) {
+            return Err(HostError::Invalid("NUL in terminal argument".into()));
+        }
+        let existing = self
+            .shared
+            .operations
+            .lock()
+            .iter()
+            .find(|(_, op)| {
+                op.plugin == self.id()
+                    && op.client == client
+                    && matches!(&op.kind, super::execution::OperationKind::Terminal { key: k, .. } if k == &key)
+            })
+            .map(|(id, _)| id.clone());
+        let id = match existing {
+            Some(id) => id,
+            None => self.new_operation(
+                client,
+                super::execution::OperationKind::Terminal { key: key.clone(), command: cmd.clone() },
+            )?,
+        };
+        let request = super::WindowRequest::Terminal {
+            operation: id.clone(),
+            key,
+            title,
+            program: binary.into(),
+            args: cmd.args,
+            env: cmd.env.into_iter().collect(),
+            cwd: root.into(),
+        };
+        if let Err(error) = self.window_request(client, request, cancel, timeout) {
+            self.shared.operations.lock().remove(&id);
+            return Err(error);
+        }
+        Ok(id)
+    }
+    fn write_terminal(
+        &self,
+        client: &str,
+        key: &str,
+        text: String,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let root = self.shared.project_of(client).ok_or(HostError::Cancelled)?;
+        if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        let _ = timeout;
+        if cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let terminal = self
+            .shared
+            .operations
+            .lock()
+            .iter()
+            .find(|(_, op)| {
+                op.plugin == self.id()
+                    && op.client == client
+                    && op.root.as_ref() == Some(&root)
+                    && matches!(&op.kind, super::execution::OperationKind::Terminal { key: k, .. } if k == key)
+            })
+            .and_then(|(_, op)| op.terminal.clone())
+            .ok_or_else(|| HostError::NotFound("no running terminal with this key".into()))?;
+        let (host, id) = terminal;
+        host.upgrade().ok_or(HostError::Cancelled)?.terminals.write(id, &text).map_err(failed)
+    }
+
+    fn open_content_tab(
+        &self,
+        client: &str,
+        tab: ide_plugin::ContentTab,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        super::execution::validate_tab(&tab)?;
+        let mut tabs = self.shared.content_tabs.lock();
+        let key = (self.id().into(), client.into(), tab.key.clone());
+        if !tabs.contains_key(&key) && tabs.keys().filter(|(p, w, _)| p == self.id() && w == client).count() >= 32 {
+            return Err(HostError::Invalid("at most 32 content tabs".into()));
+        }
+        let previous = tabs.insert(key.clone(), tab.clone());
+        drop(tabs);
+        if let Err(error) = self.window_request(client, super::WindowRequest::ContentTab { tab }, cancel, timeout) {
+            let mut tabs = self.shared.content_tabs.lock();
+            if let Some(previous) = previous {
+                tabs.insert(key, previous);
+            } else {
+                tabs.remove(&key);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn reply_content_tab(
+        &self,
+        client: &str,
+        request: &str,
+        reply: ide_plugin::ContentTabReply,
+    ) -> Result<(), HostError> {
+        super::execution::validate_reply(&reply)?;
+        if self.shared.content_requests.lock().remove(&(self.id().into(), client.into(), request.into())).is_none() {
+            return Err(HostError::NotFound("unknown content action request".into()));
+        }
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::ContentTabReply { plugin_id: self.id().into(), request_id: request.into(), reply },
+        );
+        Ok(())
+    }
+
     fn owns_command(&self, id: &str) -> bool {
         let commands = self.shared.ui.items(super::COMMANDS, None);
         let mut matches = commands.iter().filter(|c| id == format!("plugin.{}.{}", c.plugin_id, c.key)).peekable();
@@ -2478,6 +2673,40 @@ impl HostWorkspace {
 }
 
 impl PluginWorkspace for HostWorkspace {
+    fn run_configuration(&self, client: &str, plugin: &str, config: &str) -> Result<ide_run::RunConfig, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let prefix = format!("{}{}:", ide_run::EXTERNAL_PREFIX, plugin);
+        let id = if config.starts_with(&prefix) { config.to_owned() } else { format!("{prefix}{config}") };
+        let project = host.project(client).map_err(failed)?;
+        project.require_trust().map_err(failed)?;
+        let plugins = host.plugin_host().ok_or(HostError::Cancelled)?;
+        let detected = plugins
+            .run_detection()
+            .detect(&project.root)
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| HostError::NotFound("no owned run configuration with this id".into()))?;
+        let mut config = ide_run::load_user_configs(&project.root)
+            .map_err(failed)?
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap_or(detected);
+        ide_sdk::apply::apply_to_run_configs(
+            std::slice::from_mut(&mut config),
+            &project.root,
+            &project.settings.effective(),
+        );
+        if config.debug_adapter.is_none() {
+            let cwd = config.cwd.as_ref().map(|p| p.as_ref()).unwrap_or(&project.root);
+            config.debug_adapter =
+                config.args.iter().map(|arg| cwd.join(arg)).filter(|path| path.is_file()).find_map(|path| {
+                    let language = project.languages.detect(&path, None);
+                    project.languages.get(&language)?.debugger.map(|d| d.adapter)
+                });
+        }
+        Ok(config)
+    }
+
     fn buffer_text_in(&self, client: Option<&str>, path: &Path) -> Option<String> {
         client
             .and_then(|w| self.0.upgrade()?.project(w).ok()?.documents.text_of(path))
