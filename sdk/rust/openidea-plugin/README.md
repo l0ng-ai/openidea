@@ -64,3 +64,20 @@ tab with custom toolbar actions (`content-tab-action` / `content-tab-reply`),
 native diff viewer integration, and full `EditorDocumentLifecycle` support. See
 the [protocol and lifecycle](../../../plugins/README.md#plugin-backed-content-editor-tabs-api-13)
 and the [built fixture](../../../crates/ide-plugin/tests/fixtures/web-content).
+
+## Multi-page settings (API 1.3)
+
+Declare `[[contributes.settings.pages]]` with `id`, `title`, and `schema` and
+require `engines.openidea = "^1.3"`. The IDE supplies searchable pages, grouped
+fields, string lists and object tables. Values stay plugin-wide; read a table
+with `host::setting("profiles")` and deserialize its JSON array.
+
+A page action declares `title` and `command`. Pending settings are applied
+before the command runs; return `Error::Invalid` / `Error::Failed` for an inline
+failure and call `host::notify` on success. Keep API keys in declared secrets.
+
+The [complete example](../../../crates/ide-plugin/tests/fixtures/settings-pages)
+contains two pages, a model-profile table and a Test button, including the
+manifest, schemas and Rust command implementation. See the
+[settings contract](../../../plugins/README.md#multiple-pages-groups-lists-and-tables-api-13)
+for supported field types, limits and Apply/Cancel behavior.

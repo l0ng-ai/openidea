@@ -45,6 +45,7 @@ export interface CustomKeymapSettings {
 }
 
 export interface ValidSettings extends WorkflowSettings {
+  plugins: Record<string, Record<string, unknown>>;
   general: { reopenLastProject: boolean; confirmExit: boolean } & GeneralExtras;
   appearance: { theme: ThemeId; accent: string; uiFontSize: number; locale: Locale } & AppearanceExtras;
   editor: {
@@ -121,6 +122,7 @@ function validateSpelling(raw: unknown): SpellingValid {
 export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
+  plugins: {},
   general: { reopenLastProject: true, confirmExit: true, ...DEFAULT_GENERAL_EXTRAS },
   appearance: { theme: "light", accent: "#3871e1", uiFontSize: 13, locale: "en", ...DEFAULT_APPEARANCE_EXTRAS },
   editor: {
@@ -213,6 +215,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     customKeymaps[id] = { name: str(k.name, id), parent: str(k.parent, d.keymap), overrides: bindingMap(k.overrides) };
   }
   return {
+    plugins: Object.fromEntries(Object.entries(obj(root.plugins)).map(([id, values]) => [id, obj(values)])),
     general: {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),

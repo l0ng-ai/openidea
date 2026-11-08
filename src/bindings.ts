@@ -1075,7 +1075,7 @@ export const commands = {
 	path: string,
 	language: string,
 	selections: Range[],
-} | null, paths: string[] | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths })),
+} | null, paths: string[] | null, settingsScope: "global" | "project" | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
 	pluginPostEvents: (events: WorkbenchEvent[]) => __TAURI_INVOKE<void>("plugin_post_events", { events }),
 	/**  Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`). */

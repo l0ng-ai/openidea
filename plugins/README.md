@@ -149,7 +149,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `menus`         | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`), `view?`, `command`, `when?`             | no            |
 | `keymaps`       | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                             | no            |
 | `statusBar`     | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                   | no            |
-| `settings`      | `schema` (JSON file), `title?` — one table, see _Settings_                                                                                                    | no            |
+| `settings`      | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                          | no            |
 | `views`         | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3) | without `web` |
 | `customEditors` | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                   | without `web` |
 | `fileIcons`     | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                      | no            |
@@ -1250,6 +1250,81 @@ Types are `boolean`, `string` (optionally `enum`, `multiline`), `number` and
 Settings › Plugins (searchable; projects can override values) and the plugin
 reads values with `host::setting*`; a stored value of the wrong type falls
 back to the default.
+
+#### Multiple pages, groups, lists and tables (API 1.3)
+
+Require `engines.openidea = "^1.3"` when using pages, groups, arrays or actions.
+The single `schema` form above remains supported; do not combine it with `pages`.
+
+```toml
+[contributes.settings]
+title = "Model Profiles"
+
+[[contributes.settings.pages]]
+id = "templates"
+title = "Commit Template"
+schema = "templates.json"
+
+[[contributes.settings.pages]]
+id = "llm"
+title = "LLM Settings"
+schema = "llm.json"
+
+[[contributes.settings.pages.actions]]
+title = "Test"
+command = "test" # must also be declared under contributes.commands
+```
+
+Each page appears under the plugin's Settings node. Page titles, property
+labels, descriptions, groups, table columns, enum options and action titles
+are searchable. Page ids must be unique, contain no dots, and follow the
+contribution id rules. Setting keys are unique across the entire plugin;
+`host::setting(key)` still returns JSON, including arrays.
+
+Properties with `"group": "Provider"` share a heading in schema order.
+An `array` with `"items": {"type": "string"}` provides add/remove/reorder.
+For a model-profile table, use:
+
+```json
+{
+  "properties": {
+    "profiles": {
+      "type": "array", "title": "Model profiles", "group": "Provider",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "Name" },
+          "provider": { "type": "string", "title": "Provider", "enum": ["local", "openai"], "default": "local" },
+          "baseUrl": { "type": "string", "title": "Base URL" },
+          "model": { "type": "string", "title": "Model" }
+        }
+      }
+    }
+  }
+}
+```
+
+Table cells support scalar types, including enums. Rows edit inline; new rows
+use each column's default. Nested collections are unsupported. Arrays default
+to `[]` and contain at most 1,000 entries. A plugin can declare at most 32 pages,
+200 settings across pages, and 32 actions per page. Field and table-column order
+follows the schema; duplicate property keys are rejected, including table columns.
+
+Edits use the normal Apply/OK/Cancel flow. Reset discards only the current page’s
+edits, including when several pages edit one plugin. Invalid collection edits
+are rejected without replacing existing rows. **Running a page action applies all
+pending settings first**, then invokes its declared command using the page’s
+Global or This project settings layer. The command retains its project context. A failed save
+prevents the command; a command error appears beside the button. Successful
+commands report through plugin notifications. Cancel after an action does not
+undo settings that action already applied. Secrets remain under
+`[[contributes.secrets]]`; never store API keys in a profile table. Custom web
+settings pages and conditional fields are unsupported; use a plugin view for
+other custom UI.
+
+See the [complete two-page fixture](../crates/ide-plugin/tests/fixtures/settings-pages)
+for a model-profile table and working Test action, and the
+[Rust SDK settings example](../sdk/rust/openidea-plugin/README.md#multi-page-settings-api-13).
 
 ### Remote projects
 

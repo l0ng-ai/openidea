@@ -27,6 +27,8 @@ pub struct EditorContext {
 pub struct Invocation {
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    /// Settings actions can read the global layer while retaining their project context.
+    pub global_settings: bool,
     pub editor: Option<EditorContext>,
     /// Files and folders the command was run on.
     pub selected_paths: Vec<PathBuf>,

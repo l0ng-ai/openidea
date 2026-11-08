@@ -13,6 +13,7 @@ import {
   resetPage,
   stage,
   stageSshSecret,
+  stageMapEntry,
   SSH_SETTINGS_PAGE,
   stagedValue,
   useSettingsDialog,
@@ -302,5 +303,39 @@ describe("validateSettings", () => {
     expect(src.editor.fontSize).toBe(13);
     expect(getAt(out, "editor.fontSize")).toBe(14);
     expect(getAt(out, "editor.nope.deeper")).toBeUndefined();
+  });
+});
+
+describe("literal map entry staging", () => {
+  beforeEach(() => {
+    useProject.setState({ settings: structuredClone(DEFAULT_SETTINGS) as Settings, project: null });
+    openSettings();
+  });
+  it("preserves literal dots, per-page ownership, and merges one write per scope", async () => {
+    stageMapEntry("templates", "global", "plugins", ["example.helper", "prompt.with.dots"], ["one"]);
+    stageMapEntry("llm", "global", "plugins", ["example.helper", "profiles"], [{ name: "Local" }]);
+    stageMapEntry("other", "project", "plugins", ["other.plugin", "enabled"], true);
+    expect(pendingChanges(useSettingsDialog.getState())).toHaveLength(2);
+    resetPage("llm");
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toEqual({
+      "example.helper": { "prompt.with.dots": ["one"] },
+    });
+    const backend = fakeBackend();
+    expect(await applySettings(backend.deps)).toBe(true);
+    expect(backend.set.mock.calls.map((c) => [c[0], c[1], JSON.parse(c[2])])).toEqual([
+      ["global", "plugins", { "example.helper": { "prompt.with.dots": ["one"] } }],
+      ["project", "plugins", { "other.plugin": { enabled: true } }],
+    ]);
+    expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+  it("removes only its own override and clears a reverted edit", () => {
+    const base = validateSettings({ plugins: { "example.helper": { "a.b": 1, keep: true } } });
+    useSettingsDialog.setState({ base, globalBase: base });
+    stageMapEntry("a", "global", "plugins", ["example.helper", "a.b"], null);
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toEqual({
+      "example.helper": { keep: true },
+    });
+    stageMapEntry("a", "global", "plugins", ["example.helper", "a.b"], 1);
+    expect(useSettingsDialog.getState().staged).toEqual({});
   });
 });

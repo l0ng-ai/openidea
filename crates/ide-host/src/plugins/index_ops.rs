@@ -117,6 +117,7 @@ pub async fn plugin_navigation_index(
                     workspace_root: Some(project.root.clone()),
                     editor: None,
                     selected_paths: Vec::new(),
+                    global_settings: false,
                 },
             )?;
             // A document edit while WASM was executing must not publish stale ranges.

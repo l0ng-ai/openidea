@@ -905,11 +905,15 @@ export interface SettingsPageContribution {
  * edits not applied yet. Edits are written on Apply / OK and dropped on Cancel.
  */
 export interface SettingsForm {
+  /** Applies pending edits; false prevents an action from running after a failed save. */
+  apply(): Promise<boolean>;
   scope: "global" | "project";
   /** Value of a dotted key (map entries too, e.g. `languageServers.ruff.args`). */
   useValue(key: string): unknown;
   /** Stages a value; `null` removes the key on Apply. */
   set(key: string, value: unknown): void;
+  /** Stages a literal map entry with independent page/Reset ownership. */
+  setMapEntry(key: string, path: string[], value: unknown): void;
   /** Values stored outside settings JSON; the writer runs on Apply / OK and returns the saved value. */
   useExternal<T>(
     key: string,

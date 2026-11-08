@@ -191,6 +191,7 @@ fn two_windows_of_same_root_keep_unsaved_snapshots_isolated() {
                         workspace_root: Some(f.root.clone()),
                         editor: None,
                         selected_paths: Vec::new(),
+                        global_settings: false,
                     },
                 )
                 .unwrap();

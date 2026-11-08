@@ -396,5 +396,8 @@
   "Modified": "Modified",
   "Before": "Before",
   "After": "After",
-  "The plugin did not save the content": "The plugin did not save the content"
+  "The plugin did not save the content": "The plugin did not save the content",
+  "Running an action applies pending settings first.": "Running an action applies pending settings first.",
+  "Could not apply settings.": "Could not apply settings.",
+  "The value exceeds this setting’s limits.": "The value exceeds this setting’s limits."
 }
