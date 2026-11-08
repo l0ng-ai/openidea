@@ -50,8 +50,8 @@ search path.
 
 - Schemas = Oracle users (`ALL_USERS`); system accounts (`SYS`, `SYSTEM`,
   `XDB`, `MDSYS`…) appear only with **Schemas ▸ Show system**.
-- Tables, views, columns, indexes, foreign keys, triggers, routines and
-  sequences are read from the `ALL_*` views.
+- Tables, views, columns, indexes, foreign keys, triggers, procedures, functions
+  and sequences are read from the `ALL_*` views.
 - The query console runs SQL and PL/SQL blocks; `BEGIN … END;` blocks (nested
   `;` included) are sent as one statement, and a lone `/` on its own line ends
   one as in SQL*Plus.

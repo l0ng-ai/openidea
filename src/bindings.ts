@@ -3183,7 +3183,7 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
-/**  A schema's routines and sequences (the tree's `routines` / `sequences` folders). */
+/**  A schema's routines and sequences (the tree's `procedures` / `functions` / `sequences` folders). */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
 	sequences: DbSequenceInfo[],

@@ -15,12 +15,17 @@ import type { DbObjectRef } from "./objects";
 
 export type Group = "columns" | "keys" | "foreignKeys" | "indexes" | "triggers";
 
-/** Folders under a schema: IDEA's `tables`, `views`, `materialized views`, `routines`, `sequences`. */
-export type Folder = "tables" | "views" | "materializedViews" | "routines" | "sequences";
+/** Folders under a schema: IDEA's `tables`, `views`, `materialized views`, `procedures`, `functions`, `sequences`. */
+export type Folder = "tables" | "views" | "materializedViews" | "procedures" | "functions" | "sequences";
 
 /** The folder a table, view or materialized view is listed in. */
 export function tableFolder(kind: DbTableKind): Folder {
   return kind === "view" ? "views" : kind === "materializedView" ? "materializedViews" : "tables";
+}
+
+/** IDEA's *Separate Procedures and Functions* option: the folder a routine is listed in. */
+export function routineFolder(kind: DbSchemaObjectKind): "procedures" | "functions" {
+  return kind === "procedure" ? "procedures" : "functions";
 }
 
 /** Where a table-level node lives: connection target, schema, table. */
