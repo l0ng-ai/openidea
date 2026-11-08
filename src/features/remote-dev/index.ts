@@ -1,7 +1,7 @@
 /**
- * Remote development: a window whose project lives on an SSH host or in a WSL distribution. The backend
- * (`openidea-server`) runs there and this window routes its commands to it
- * (platform/remote.ts).
+ * Remote development: a window whose project lives on an SSH host, in a WSL distribution or in a
+ * dev container. The backend (`openidea-server`) runs there and this window routes its commands
+ * to it (platform/remote.ts).
  */
 import { registerActions } from "@/platform/actions";
 import { disconnectRemote, useRemote } from "@/platform/remote";
@@ -9,17 +9,25 @@ import { lazyComponent } from "@/ui";
 import { maybeEditorService, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
+import { reopenInContainer } from "./container";
 import { reloadEnvironment } from "./environment";
 import { RemoteStatus } from "./RemoteStatus";
 import { closeConnectDialog, openConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
 
-/** SSH tunnels are available while this window is connected to an SSH host. */
+/** Forwarded ports are available while this window is connected to an SSH host or a dev container. */
 function trackPortsWindow(): () => void {
   let off: (() => void) | null = null;
-  const sync = (connected: boolean) => {
-    if (connected && !off) {
+  let session = useRemote.getState().session;
+  const sync = () => {
+    const next = useRemote.getState().session;
+    const connected = next?.target.kind === "ssh" || next?.target.kind === "devContainer";
+    if (connected && (next !== session || !off)) {
+      usePorts.setState({ ports: [] });
       void restorePorts();
+    }
+    session = next;
+    if (connected && !off) {
       off = registerToolWindow({
         id: "remote.ports",
         title: "Ports",
@@ -35,8 +43,8 @@ function trackPortsWindow(): () => void {
       usePorts.setState({ ports: [] });
     }
   };
-  sync(useRemote.getState().session?.target.kind === "ssh");
-  const unsubscribe = useRemote.subscribe((s) => sync(s.session?.target.kind === "ssh"));
+  sync();
+  const unsubscribe = useRemote.subscribe(sync);
   return () => {
     unsubscribe();
     off?.();
@@ -79,6 +87,17 @@ export function activate(): () => void {
             throw e;
           }
         },
+      },
+      {
+        id: "remote.reopenInContainer",
+        title: "Reopen in Container",
+        description:
+          "Builds or starts the project's dev container (devcontainer.json) with the Dev Containers CLI and opens the project in it.",
+        category: "File",
+        icon: "folder",
+        keywords: ["devcontainer", "dev container", "docker", "container", "remote"],
+        when: "projectOpen",
+        run: () => reopenInContainer(),
       },
       {
         id: "remote.reloadEnvironment",

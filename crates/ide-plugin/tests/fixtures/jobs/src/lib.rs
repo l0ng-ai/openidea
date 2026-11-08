@@ -53,6 +53,28 @@ impl Plugin for Jobs {
                 }
                 Ok(None)
             }
+            "notify-actions" => {
+                if arg == Some("plain") {
+                    host::notify(NotificationLevel::Info, "Choose an action", "A plugin notification");
+                    return Ok(None);
+                }
+                use openidea_plugin::NotificationAction;
+                let command = if arg == Some("unknown") { "not-declared" } else { "context" };
+                let count = if arg == Some("four") { 4 } else { 3 };
+                let actions = (0..count)
+                    .map(|i| {
+                        NotificationAction::new(format!("Action {}", i + 1), command)
+                            .argument(format!("notification-action={}\nvalue", i + 1))
+                    })
+                    .collect::<Vec<_>>();
+                host::notify_with_actions(
+                    NotificationLevel::Info,
+                    "Choose an action",
+                    "A plugin notification",
+                    &actions,
+                )?;
+                Ok(None)
+            }
             "copy" => {
                 host::copy_to_clipboard(arg.unwrap_or_default())?;
                 Ok(None)
@@ -119,6 +141,7 @@ impl Views for Jobs {
             ViewEvent::Button(b) if b == "follow" => return self.follow(),
             ViewEvent::Button(b) if b == "log" => return host::open_location("jobs.log", 2, 4),
             ViewEvent::Button(b) if b == "outside" => return host::open_location("../outside.log", 0, 0),
+            ViewEvent::Message(msg) => return host::post_view_message(VIEW, &msg),
             _ => return Ok(()),
         }
         host::refresh_view(VIEW);

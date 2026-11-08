@@ -80,6 +80,15 @@
   outline: none;
 }
 
+.listItem[aria-selected="true"] {
+  background: var(--bg-tree-selected);
+}
+
+.master {
+  height: 100%;
+  overflow: auto;
+}
+
 .detail {
   color: var(--fg-muted);
 }
@@ -184,6 +193,19 @@
   color: var(--fg-muted);
 }
 
+.webWrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.cornerActions {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  z-index: 20;
+}
+
 .frame {
   border: none;
   width: 100%;
@@ -225,4 +247,23 @@
 .layoutActions > button {
   width: var(--h-floating-toolbar-button);
   height: var(--h-floating-toolbar-button);
+}
+
+.readonlyValue {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+/* Selectable, but framed like a disabled field so it doesn't read as editable. */
+.readonlyField:read-only {
+  border: 0;
+  border-radius: var(--radius-control, 4px);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.tableRow:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
 }

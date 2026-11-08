@@ -172,11 +172,11 @@ export interface LanguagesValid {
       runUsing: "gradle" | "ide";
     };
     maven: {
+      runnerJre: string;
       home: string;
       userSettings: string;
       toolchains: string;
       localRepository: string;
-      jdk: string;
       unlinkedProjects: string[];
       linkedProjects: string[];
       daemon: boolean;
@@ -242,11 +242,11 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     jdtlsVmArgs: "",
     gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
     maven: {
+      runnerJre: "",
       home: "",
       userSettings: "",
       toolchains: "",
       localRepository: "",
-      jdk: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
@@ -402,11 +402,11 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         runUsing: oneOf(gradle.runUsing, ["gradle", "ide"] as const, d.java.gradle.runUsing),
       },
       maven: {
+        runnerJre: text(maven.runnerJre, d.java.maven.runnerJre),
         home: text(maven.home, d.java.maven.home),
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
         toolchains: text(maven.toolchains, d.java.maven.toolchains),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
-        jdk: text(maven.jdk, d.java.maven.jdk),
         unlinkedProjects: folders(maven.unlinkedProjects),
         linkedProjects: folders(maven.linkedProjects),
         daemon: bool(maven.daemon, d.java.maven.daemon),

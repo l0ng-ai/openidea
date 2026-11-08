@@ -9,6 +9,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactElement,
   type RefObject,
 } from "react";
 import clsx from "clsx";
@@ -34,6 +35,7 @@ import {
   Icon,
   IconButton,
   Input,
+  InlineTag,
   Radio,
   SearchField,
   Spinner,
@@ -52,12 +54,22 @@ import { isImeKey } from "@/platform/ime";
 import { TaskStatusIcon } from "./AgentsView";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
-import { canSend, costLabel, emptyDraft, limitLabel, retryParts, usageLabel, workTime } from "./composerModel";
+import {
+  canSend,
+  costLabel,
+  emptyDraft,
+  limitLabel,
+  messageTokens,
+  retryParts,
+  usageLabel,
+  workTime,
+} from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
-import { AgentReply } from "./AgentReply";
+import { AgentReply, ReplyActions } from "./AgentReply";
 import { Markdown } from "./Markdown";
+import { useAgentErrorText } from "./loginHint";
 import {
   branchLabel,
   entriesKey,
@@ -70,6 +82,8 @@ import {
   subagentWorking,
   turnNumbers,
   replyTurns,
+  replyTimes,
+  type ReplyTimes,
   type ReplyTurn,
   type SubagentEntry,
 } from "./model";
@@ -162,8 +176,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       <div className={styles.conversation} hidden={docked && changesOpen}>
         <Header
           task={task}
-          entries={entries ?? null}
-          head={head}
           changes={changes ?? null}
           changesOpen={changesOpen}
           onToggleChanges={() => setChangesOpen(!changesOpen)}
@@ -188,7 +200,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         ) : (
           <>
             <QuestionCard task={task} entries={entries ?? null} />
-            <SessionComposer task={task} entries={entries ?? null} onOpenSubagent={openSubagent} />
+            <SessionComposer task={task} entries={entries ?? null} head={head} onOpenSubagent={openSubagent} />
           </>
         )}
       </div>
@@ -236,27 +248,20 @@ function useLocalHead(status: AgentTask["status"] | null, root: string | null): 
 
 function Header({
   task,
-  entries,
-  head,
   changes,
   changesOpen,
   onToggleChanges,
   docked,
 }: {
   task: AgentTask;
-  entries: AgentEntry[] | null;
-  head: string | null;
   changes: AgentChange[] | null;
   changesOpen: boolean;
   onToggleChanges: () => void;
   /** The tool window bar above a docked conversation already shows the title. */
   docked?: boolean;
 }) {
-  const project = useProject((s) => s.project);
-  const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
+  const tx = useTx();
   const count = changes?.length ?? 0;
-  const busy = isBusy(task.status);
-  const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
   return (
     <div
       className={styles.header}
@@ -271,40 +276,14 @@ function Header({
           {task.title}
         </span>
       )}
-      <span className={styles.headerDetail} title={task.cwd}>
-        <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
-        <span className={styles.headerText}>
-          {providerName(task.provider)}
-          {task.model ? ` · ${task.model}` : ""}
-          {projectName ? ` · ${projectName}` : ""}
-          {" · "}
-          {where ?? (
-            <>
-              <T>Local checkout</T>
-              {head ? ` · ${head}` : ""}
-            </>
-          )}
-          {" · "}
-          <T>{statusLabel(task.status)}</T>
-          {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
-        </span>
-      </span>
-      <Meters task={task} entries={entries} />
-      {busy && <IconButton icon="stop" title="Stop" size="small" onClick={() => void cancelTask(task.id)} />}
+      <span className={styles.headerSpacer} />
       <IconButton
         icon="terminal"
         title="Open in Terminal"
-        size="small"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
       {task.status === "archived" && (
-        <IconButton
-          icon="undo"
-          title="Unarchive Task"
-          size="small"
-          action="agents.unarchiveTasks"
-          actionArg={[task.id]}
-        />
+        <IconButton icon="undo" title="Unarchive Task" action="agents.unarchiveTasks" actionArg={[task.id]} />
       )}
       <button
         type="button"
@@ -318,6 +297,43 @@ function Header({
         <Icon name="toolwindow-changes" size={14} />
         {count > 0 && <span>{count}</span>}
       </button>
+    </div>
+  );
+}
+
+/** The task's agent, model, checkout and state, just above the composer. */
+function SessionStatus({
+  task,
+  entries,
+  head,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  head: string | null;
+}) {
+  const tx = useTx();
+  const project = useProject((s) => s.project);
+  const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
+  const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
+  return (
+    <div className={styles.statusBar}>
+      <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
+      <span className={styles.statusText} title={task.cwd}>
+        {providerName(task.provider)}
+        {task.model ? ` · ${task.model}` : ""}
+        {projectName ? ` · ${projectName}` : ""}
+        {" · "}
+        {where ?? (
+          <>
+            <T>Local checkout</T>
+            {head ? ` · ${head}` : ""}
+          </>
+        )}
+        {" · "}
+        <T>{statusLabel(task.status)}</T>
+        {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
+      </span>
+      <Meters task={task} entries={entries} />
     </div>
   );
 }
@@ -400,7 +416,7 @@ function SubagentBar({
   const card = cards.at(-1);
   return (
     <div className={styles.subagentBar}>
-      <IconButton icon="arrow-left" title="Back" size="small" onClick={() => onNavigate(path.slice(0, -1))} />
+      <IconButton icon="arrow-left" title="Back" onClick={() => onNavigate(path.slice(0, -1))} />
       <nav className={styles.crumbs} aria-label={tx("Subagent")}>
         <button type="button" className={styles.crumb} onClick={() => onNavigate([])} title={task.title}>
           {task.title}
@@ -429,7 +445,7 @@ function SubagentBar({
         </span>
       )}
       {card && subagentWorking(card.status) && card.cancellable && (
-        <IconButton icon="stop" title="Stop Subagent" size="small" onClick={() => void cancelTask(task.id, card.id)} />
+        <IconButton icon="stop" title="Stop Subagent" onClick={() => void cancelTask(task.id, card.id)} />
       )}
     </div>
   );
@@ -457,12 +473,64 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const positions = useAgents.getState().scrollPositions;
   const position = useRef(positions.get(key) ?? { top: 0, stick: true });
   const restored = useRef(false);
+  const previousLength = useRef(entries?.length ?? 0);
+  /** Scrolled away from the end: offer one click back to the latest message. */
+  const [away, setAway] = useState(() => positions.get(key)?.stick === false);
   // Opened at the end, the last entries come first and the earlier ones follow in batches:
   // reopening a long conversation paints at once. A kept offset needs them all.
   const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
-  const start = finding || !entries ? 0 : Math.max(0, entries.length - shown);
+  let start = finding || !entries ? 0 : Math.max(0, entries.length - shown);
+  // Keep a process run intact so prepending never replaces the anchored row.
+  while (entries && start > 0 && isProcessEntry(entries[start]!) && isProcessEntry(entries[start - 1]!)) start--;
+  const dragging = useRef(false);
+  // Earlier entries are prepended above the view: remember where the first painted row is
+  // so the content stays put and the scrollbar doesn't jump under the pointer.
+  const anchor = useRef<{ el: Element; top: number } | null>(null);
+  const loadEarlier = useCallback(() => {
+    const el = ref.current;
+    if (!el || start <= 0 || dragging.current || anchor.current) return;
+    const first = el.firstElementChild;
+    if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
+    startTransition(() => setShown((n) => n + ENTRY_BATCH));
+  }, [start]);
+  const loadTimer = useRef<number | null>(null);
+  /** Load the next batch once the user stops scrolling near the top. */
+  const loadWhenStill = useCallback(() => {
+    if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+    loadTimer.current = window.setTimeout(() => {
+      loadTimer.current = null;
+      loadEarlier();
+    }, 120);
+  }, [loadEarlier]);
   useEffect(() => {
-    if (start > 0) startTransition(() => setShown((n) => n + ENTRY_BATCH));
+    const down = (event: PointerEvent) => {
+      if (!ref.current?.contains(event.target as Node)) return;
+      dragging.current = true;
+      if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+    };
+    const up = () => {
+      if (!dragging.current) return;
+      dragging.current = false;
+      if (ref.current && (position.current.stick || ref.current.scrollTop < 120)) loadWhenStill();
+    };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", up);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", up);
+      if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+    };
+  }, [loadWhenStill]);
+  useEffect(() => {
+    // Following the end, paint the rest in the background. A user who scrolled away
+    // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
+    // is not resized mid-drag.
+    if (start > 0 && position.current.stick && !dragging.current)
+      startTransition(() => setShown((n) => n + ENTRY_BATCH));
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
@@ -474,9 +542,30 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
+    const truncated = entries.length < previousLength.current;
+    previousLength.current = entries.length;
+    if ((truncated || entries.length === 0) && el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+      position.current = { top: el.scrollTop, stick: true };
+      positions.set(key, position.current);
+      setAway(false);
+    }
+  }, [entries, visible, key, positions]);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || entries === null || !visible) return;
     if (position.current.stick) el.scrollTop = el.scrollHeight;
     else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
+  });
+  useLayoutEffect(() => {
+    // Prepending earlier entries moved the first painted row down: follow it, so the same
+    // text stays on screen. Rows appended below leave it in place and shift nothing.
+    const scroller = ref.current;
+    const from = anchor.current;
+    if (!scroller || !from) return;
+    anchor.current = null;
+    if (position.current.stick || !from.el.isConnected) return;
+    scroller.scrollTop += from.el.getBoundingClientRect().top - from.top;
   });
   useLayoutEffect(() => {
     const el = ref.current;
@@ -490,11 +579,43 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
   }, [key, positions]);
+  /** Back to the end of the stream; following resumes from there. */
+  const jumpToLatest = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    position.current = { top: el.scrollHeight, stick: true };
+    if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    else el.scrollTop = el.scrollHeight;
+    setAway(false);
+    el.focus({ preventScroll: true });
+  }, []);
   const waiting = entries?.some((e) => e.type === "permission" && !e.chosen);
   const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   // Forks and undo apply to the task's own turns, not a subagent's conversation.
   const turns = useMemo(() => (entries && !subagent ? turnNumbers(entries) : null), [entries, subagent]);
   const replies = useMemo(() => (entries && !subagent ? replyTurns(entries) : null), [entries, subagent]);
+  const times = useMemo(() => (entries && !subagent ? replyTimes(entries) : null), [entries, subagent]);
+  const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
+  const lastIndex = entries ? entries.length - 1 : -1;
+  const renderRow = useCallback(
+    (row: EntryRow) => (
+      <Entry
+        key={row.index}
+        task={task}
+        entry={row.entry}
+        turn={turns?.get(row.index) ?? null}
+        turnCount={turns?.size ?? 0}
+        reply={replies?.get(row.index)}
+        time={times?.get(row.index) ?? null}
+        working={row.index === lastIndex && busy}
+        onOpenSubagent={onOpenSubagent}
+        onDiagramDrawn={onDiagramDrawn}
+      />
+    ),
+    [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
+  );
+  // Only the tail is built while following the end; `start` moves earlier as batches load.
+  const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
@@ -507,6 +628,11 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           const el = e.currentTarget;
           position.current = { top: el.scrollTop, stick: el.scrollHeight - el.scrollTop - el.clientHeight < 40 };
           positions.set(key, position.current);
+          setAway(!position.current.stick);
+          // Reached the top of what is painted: fetch the earlier entries, but only
+          // once the drag has settled.
+          if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+          if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
         }}
         // Copy, plus Quote for a selection: replies to it in the composer.
         onContextMenu={(e) => {
@@ -523,24 +649,20 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         {entries === null ? (
           <Spinner />
         ) : (
-          entries
-            .slice(start)
-            .map((entry, i) => (
-              <Entry
-                key={start + i}
+          rows.map((row) =>
+            row.kind === "process" ? (
+              <ProcessRun
+                key={`process:${row.index}`}
+                row={row}
                 task={task}
-                entry={entry}
-                turn={turns?.get(start + i) ?? null}
-                turnCount={turns?.size ?? 0}
-                reply={replies?.get(start + i)}
-                working={
-                  start + i === entries.length - 1 &&
-                  (subagent ? subagentWorking(subagent.status) : isBusy(task.status))
-                }
-                onOpenSubagent={onOpenSubagent}
-                onDiagramDrawn={onDiagramDrawn}
+                lastIndex={lastIndex}
+                busy={busy}
+                renderRow={renderRow}
               />
-            ))
+            ) : (
+              renderRow(row)
+            ),
+          )
         )}
         {subagent && subagentWorking(subagent.status) && (
           <div className={styles.working}>
@@ -561,13 +683,64 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
           </div>
         )}
       </div>
+      {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
     </div>
   );
 }
 
 type UserEntry = Extract<AgentEntry, { type: "user" }>;
 
-/** Time since `since`, ticking every second. */
+/** Message text with file references and skills as tags, distinct from prose. */
+function MessageText({ text }: { text: string }) {
+  return (
+    <>
+      {messageTokens(text).map((token, i) =>
+        token.kind === "text" ? (
+          <Fragment key={i}>{token.value}</Fragment>
+        ) : (
+          <InlineTag key={i} accent={token.kind === "command"}>
+            {token.value}
+          </InlineTag>
+        ),
+      )}
+    </>
+  );
+}
+
+/** When a message was sent, or when the turn behind a reply finished, and how long it took. */
+function MessageTime({
+  sentMs,
+  doneMs,
+  at = "sent",
+}: {
+  sentMs: number | null;
+  doneMs: number | null;
+  /** Replies show when they finished; messages show when they were sent. */
+  at?: "sent" | "done";
+}) {
+  const shown = at === "done" ? doneMs : sentMs;
+  if (shown == null) return null;
+  return (
+    <span className={styles.messageTime} title={new Date(shown).toLocaleString()}>
+      {formatSentAt(shown)}
+      {sentMs != null && doneMs != null && ` · ${formatDuration(Math.max(0, doneMs - sentMs))}`}
+    </span>
+  );
+}
+
+/** One click back to the stream's end. */
+function JumpToLatest({ onJump }: { onJump: () => void }) {
+  return (
+    <IconButton
+      className={styles.jumpToLatest}
+      title="Jump to Latest"
+      icon="arrow-down"
+      action="agents.jumpToLatest"
+      actionArg={{ onJump }}
+    />
+  );
+}
+
 /** The agent lost its API connection (or was refused) and retries on its own. */
 function Retrying({ retry }: { retry: AgentRetry }) {
   const tx = useTx();
@@ -770,6 +943,7 @@ const Entry = memo(function Entry({
   turn,
   turnCount,
   reply,
+  time,
   working,
   onOpenSubagent,
   onDiagramDrawn,
@@ -780,6 +954,8 @@ const Entry = memo(function Entry({
   turn: number | null;
   turnCount: number;
   reply?: ReplyTurn;
+  /** When the turn this reply answered was asked and finished. */
+  time?: ReplyTimes | null;
   working: boolean;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
@@ -789,18 +965,33 @@ const Entry = memo(function Entry({
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
     case "agent":
       return (
-        <AgentReply
-          text={entry.text}
-          cwd={task.cwd}
-          task={task}
-          reply={reply}
-          turnCount={turnCount}
-          onDiagramDrawn={onDiagramDrawn}
-        />
+        <div className={styles.agentMessage}>
+          <div className={styles.messageHead}>
+            <div className={styles.role}>
+              <Icon name={providerIcon(task.provider)} size={13} />
+              <span>{providerName(task.provider)}</span>
+            </div>
+          </div>
+          <div className={styles.agentCard}>
+            <AgentReply
+              text={entry.text}
+              cwd={task.cwd}
+              task={task}
+              reply={reply}
+              turnCount={turnCount}
+              onDiagramDrawn={onDiagramDrawn}
+              actions={false}
+            />
+          </div>
+          <div className={styles.messageFooter}>
+            <ReplyActions text={entry.text} task={task} reply={reply} turnCount={turnCount} />
+            <MessageTime sentMs={time?.sentMs ?? null} doneMs={time?.doneMs ?? null} at="done" />
+          </div>
+        </div>
       );
     case "thought":
       return (
-        <div>
+        <div className={styles.process}>
           <details className={styles.thought}>
             <summary>
               {working ? (
@@ -850,7 +1041,9 @@ const Entry = memo(function Entry({
           <div className={styles.messageFrom}>
             <T>Task from the parent agent</T>
           </div>
-          <div className={styles.user}>{entry.text}</div>
+          <div className={styles.user}>
+            <MessageText text={entry.text} />
+          </div>
         </div>
       ) : (
         <div>
@@ -866,11 +1059,15 @@ const Entry = memo(function Entry({
       return (
         <div className={styles.error} role="alert">
           <Icon name="error" size={14} />
-          <span>{entry.message}</span>
+          <AgentErrorText message={entry.message} />
         </div>
       );
   }
 });
+
+function AgentErrorText({ message }: { message: string }) {
+  return <span>{useAgentErrorText(message)}</span>;
+}
 
 function UserMessage({
   task,
@@ -883,7 +1080,6 @@ function UserMessage({
   turn: number | null;
   turnCount: number;
 }) {
-  const tx = useTx();
   const [editing, setEditing] = useState(false);
   const failed = (title: string) => (e: unknown) => notifications().notify({ level: "error", title, body: String(e) });
   const fail = failed("Couldn't send the message");
@@ -902,8 +1098,7 @@ function UserMessage({
         later={turn < turnCount - 1}
         onCancel={() => setEditing(false)}
         onSend={async (text, images) => {
-          await rerunFrom(task.id, turn, text, images);
-          setEditing(false);
+          if (await rerunFrom(task.id, turn, text, images)) setEditing(false);
         }}
       />
     );
@@ -912,9 +1107,14 @@ function UserMessage({
   // Images are listed after the files in `attachments` and shown as thumbnails instead.
   const files = entry.attachments.slice(0, entry.attachments.length - images.length);
   return (
-    <div className={styles.message}>
+    <div className={clsx(styles.message, styles.userMessage)}>
+      <div className={styles.messageHead}>
+        <span className={styles.role}>
+          <T>You</T>
+        </span>
+      </div>
       <div className={styles.user}>
-        {entry.text}
+        <MessageText text={entry.text} />
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>
@@ -927,27 +1127,22 @@ function UserMessage({
           </div>
         )}
       </div>
-      <div className={styles.messageMeta}>
-        {entry.sentMs != null && (
-          <span className={styles.muted} title={new Date(entry.sentMs).toLocaleString()}>
-            {formatSentAt(entry.sentMs)}
-          </span>
-        )}
-        {entry.sentMs != null && entry.doneMs != null && (
-          <span className={styles.muted} title={tx("Time the agent took to answer")}>
-            {` · ${formatDuration(entry.doneMs - entry.sentMs)}`}
-          </span>
-        )}
+      <div className={styles.messageFooter}>
         <span className={styles.messageActions}>
-          <IconButton icon="copy" title="Copy" size="small" onClick={() => void copyText(entry.text)} />
-          {inPlace && entry.text && (
-            <IconButton icon="edit" title="Edit" size="small" onClick={() => setEditing(true)} />
+          <IconButton icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
+          {inPlace && entry.text && <IconButton icon="edit" title="Edit" onClick={() => setEditing(true)} />}
+          {inPlace && (
+            <IconButton
+              icon="diff-revert"
+              title="Retract Message"
+              action="agents.retractMessage"
+              actionArg={{ task: task.id, turn }}
+            />
           )}
           {!archived && entry.text && entry.attachments.length === 0 && (
             <IconButton
               icon="refresh"
               title={inPlace ? "Run Again From Here" : "Send Again"}
-              size="small"
               onClick={() =>
                 void (
                   inPlace ? rerunFrom(task.id, turn, entry.text, images) : resendMessage(task.id, entry.text)
@@ -959,11 +1154,11 @@ function UserMessage({
             <IconButton
               icon="branch"
               title="Copy to a New Task From Here"
-              size="small"
               onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't copy the task"))}
             />
           )}
         </span>
+        <MessageTime sentMs={entry.sentMs ?? null} doneMs={entry.doneMs ?? null} />
       </div>
     </div>
   );
@@ -1044,9 +1239,7 @@ function MessageEditor({
           </span>
         )}
         <span className={styles.editButtons}>
-          <Button size="small" disabled={sending} onClick={onCancel}>
-            Cancel
-          </Button>
+          <IconButton icon="close" title="Cancel" disabled={sending} onClick={onCancel} />
           <SubmitButton
             label="Send"
             pending={sending}
@@ -1093,7 +1286,103 @@ function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (in
   );
 }
 
-function ToolEntry({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry, { type: "tool" }> }) {
+type ToolEntryData = Extract<AgentEntry, { type: "tool" }>;
+
+/** An entry and its index in the whole conversation (not in the painted tail). */
+type IndexedEntry = { index: number; entry: AgentEntry };
+
+/** A row of the conversation: an entry, or a run of reasoning/tool calls folded together. */
+type ConversationRow =
+  | { kind: "entry"; index: number; entry: AgentEntry }
+  | { kind: "process"; index: number; entries: IndexedEntry[] };
+
+type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
+
+const liveTool = (entry: AgentEntry) =>
+  entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
+
+/** Reasoning and finished tool calls fold together; a running tool stays visible on its own. */
+const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || (entry.type === "tool" && !liveTool(entry));
+
+/**
+ * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
+ * one folded row (the work behind a decision), so messages and decisions stay readable.
+ */
+export function conversationRows(entries: readonly AgentEntry[], from: number): ConversationRow[] {
+  const rows: ConversationRow[] = [];
+  let run: IndexedEntry[] = [];
+  const flush = () => {
+    if (run.length > 1) rows.push({ kind: "process", index: run[0]!.index, entries: run });
+    else if (run.length === 1) rows.push({ kind: "entry", ...run[0]! });
+    run = [];
+  };
+  entries.slice(from).forEach((entry, i) => {
+    if (isProcessEntry(entry)) run.push({ index: from + i, entry });
+    else {
+      flush();
+      rows.push({ kind: "entry", index: from + i, entry });
+    }
+  });
+  flush();
+  return rows;
+}
+
+/** Reasoning and tool calls between messages, folded into one row. */
+const ProcessRun = memo(function ProcessRun({
+  row,
+  task,
+  lastIndex,
+  busy,
+  renderRow,
+}: {
+  row: Extract<ConversationRow, { kind: "process" }>;
+  task: AgentTask;
+  lastIndex: number;
+  busy: boolean;
+  /** Renders one non-folded row (a reasoning entry). */
+  renderRow: (row: EntryRow) => ReactElement;
+}) {
+  const tx = useTx();
+  const tools = row.entries.filter(
+    (item): item is IndexedEntry & { entry: ToolEntryData } => item.entry.type === "tool",
+  );
+  const reasoning = row.entries.filter(({ entry }) => entry.type === "thought").length;
+  const added = tools.reduce((n, { entry }) => n + entry.diffs.reduce((sum, d) => sum + d.added, 0), 0);
+  const removed = tools.reduce((n, { entry }) => n + entry.diffs.reduce((sum, d) => sum + d.removed, 0), 0);
+  const working = busy && row.entries.some(({ index }) => index === lastIndex);
+  const parts = [
+    reasoning > 0 ? tx("Reasoning") : null,
+    tools.length > 0 ? `${tools.length} ${tx(tools.length === 1 ? "tool call" : "tool calls")}` : null,
+  ].filter(Boolean);
+  return (
+    <details className={clsx(styles.processRun, styles.process)}>
+      <summary className={styles.processSummary}>
+        <Icon name="chevron-right" size={12} className={styles.processChevron} />
+        {working && <Spinner size={12} />}
+        <span>{parts.join(" · ")}</span>
+        {added > 0 && <span className={styles.added}>+{added}</span>}
+        {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+      </summary>
+      <div className={styles.processBody}>
+        {row.entries.map(({ index, entry }) =>
+          entry.type === "tool" ? (
+            <ToolEntry key={index} task={task} entry={entry} />
+          ) : (
+            renderRow({ kind: "entry", index, entry })
+          ),
+        )}
+      </div>
+    </details>
+  );
+});
+
+const ToolEntry = memo(function ToolEntry({
+  task,
+  entry,
+}: {
+  task: AgentTask;
+  entry: Extract<AgentEntry, { type: "tool" }>;
+}) {
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
@@ -1118,19 +1407,19 @@ function ToolEntry({ task, entry }: { task: AgentTask; entry: Extract<AgentEntry
   );
   if (!entry.output)
     return (
-      <div>
+      <div className={styles.process}>
         <div className={styles.tool}>{head}</div>
       </div>
     );
   return (
-    <div>
-      <details className={styles.toolDetails}>
+    <div className={styles.process}>
+      <details className={styles.toolDetails} open={liveTool(entry) || undefined}>
         <summary className={styles.tool}>{head}</summary>
         <pre className={styles.output}>{entry.output}</pre>
       </details>
     </div>
   );
-}
+});
 
 function SubagentStatusIcon({ status }: { status: SubagentEntry["status"] }) {
   switch (status) {
@@ -1286,9 +1575,7 @@ function PermissionAnswers({
           </button>
         ))
       ) : (
-        <button type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(null)}>
-          <T>Cancel</T>
-        </button>
+        <IconButton icon="close" title="Cancel" disabled={busy} onClick={() => answer(null)} />
       )}
     </span>
   );
@@ -1297,7 +1584,7 @@ function PermissionAnswers({
 /** A permission request in the conversation; while open, answered right there as in the banner. */
 function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEntry }) {
   return (
-    <div className={styles.permissionLine}>
+    <div className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}>
       <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
       <div className={styles.permissionBody}>
         <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
@@ -1374,7 +1661,13 @@ function QuestionForm({
     void respond(task.id, entry.id, option).finally(() => setBusy(false));
   };
   const submit = () =>
-    send(JSON.stringify(Object.fromEntries(answers.map((answer) => [answer.question.question, answerItems(answer)]))));
+    send(
+      JSON.stringify(
+        Object.fromEntries(
+          answers.map((answer) => [answer.question.answerKey ?? answer.question.question, answerItems(answer)]),
+        ),
+      ),
+    );
   const update = (previous: QuestionAnswer, next: QuestionAnswer) =>
     setAnswers(answers.map((answer) => (answer === previous ? next : answer)));
   const choose = (answer: QuestionAnswer, label: string, checked: boolean) =>
@@ -1563,10 +1856,12 @@ function QuestionForm({
 function SessionComposer({
   task,
   entries,
+  head,
   onOpenSubagent,
 }: {
   task: AgentTask;
   entries: AgentEntry[] | null;
+  head: string | null;
   onOpenSubagent: (id: string) => void;
 }) {
   const project = useProject((s) => s.project);
@@ -1594,14 +1889,17 @@ function SessionComposer({
     );
   return (
     <div className={styles.composerArea}>
+      <SessionStatus task={task} entries={entries} head={head} />
       {task.status === "archived" && (
         <div className={styles.banner}>
           <span className={styles.bannerText}>
             <T>This task is archived. Unarchive it to continue the conversation.</T>
           </span>
-          <Button size="small" onClick={() => void executeAction("agents.unarchiveTasks", [task.id])}>
-            Unarchive
-          </Button>
+          <IconButton
+            icon="undo"
+            title="Unarchive"
+            onClick={() => void executeAction("agents.unarchiveTasks", [task.id])}
+          />
         </div>
       )}
       <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
@@ -1621,7 +1919,7 @@ function SessionComposer({
         toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
         actions={
           <>
-            {busy && <IconButton icon="stop" title="Stop" size="small" onClick={() => void cancelTask(task.id)} />}
+            {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
               pending={sending}
@@ -1680,25 +1978,9 @@ function Queue({ task }: { task: AgentTask }) {
           <span className={styles.queuedText} title={q.prompt.text}>
             {q.prompt.text || <T>Image</T>}
           </span>
-          <button
-            type="button"
-            className={styles.bannerLink}
-            onClick={() => void sendQueuedNow(task.id, q.id).catch(fail)}
-          >
-            <T>Send now</T>
-          </button>
-          <IconButton
-            icon="edit"
-            title="Edit"
-            size="small"
-            onClick={() => void editQueued(task.id, q.id).catch(fail)}
-          />
-          <IconButton
-            icon="close"
-            title="Remove"
-            size="small"
-            onClick={() => void removeQueued(task.id, q.id).catch(fail)}
-          />
+          <IconButton icon="arrow-up" title="Send now" onClick={() => void sendQueuedNow(task.id, q.id).catch(fail)} />
+          <IconButton icon="edit" title="Edit" onClick={() => void editQueued(task.id, q.id).catch(fail)} />
+          <IconButton icon="close" title="Remove" onClick={() => void removeQueued(task.id, q.id).catch(fail)} />
         </div>
       ))}
     </div>
@@ -1772,7 +2054,7 @@ function ChangesPane({
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
-        {docked && <IconButton icon="arrow-left" title="Back to conversation" size="small" onClick={onHide} />}
+        {docked && <IconButton icon="arrow-left" title="Back to conversation" onClick={onHide} />}
         <span className={styles.changesTitle}>
           <T>Changes</T>
         </span>
@@ -1782,7 +2064,7 @@ function ChangesPane({
           </span>
         )}
         <span className={styles.bannerSpacer} />
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void refreshChanges(task.id)} />
+        <IconButton icon="refresh" title="Refresh" onClick={() => void refreshChanges(task.id)} />
         {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>
       {(head ?? task.base) && (

@@ -91,7 +91,11 @@ function localizeDecl(decl: unknown, keys: readonly string[], t: PluginTranslate
   const out: Record<string, unknown> = { ...(decl as Record<string, unknown>) };
   for (const key of keys) if (typeof out[key] === "string") out[key] = t(out[key]);
   if (Array.isArray(out.properties))
-    out.properties = out.properties.map((p) => localizeDecl(p, ["title", "description"], t));
+    out.properties = out.properties.map((p) => localizeDecl(p, ["title", "description", "group"], t));
+  if (Array.isArray(out.pages)) out.pages = out.pages.map((p) => localizeDecl(p, ["title"], t));
+  if (Array.isArray(out.actions)) out.actions = out.actions.map((a) => localizeDecl(a, ["title"], t));
+  if (out.items) out.items = localizeDecl(out.items, ["title", "description", "group"], t);
+  if (Array.isArray(out.variables)) out.variables = out.variables.map((v) => localizeDecl(v, ["prompt"], t));
   return out;
 }
 

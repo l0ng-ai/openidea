@@ -21,7 +21,17 @@ import { compoundChildren, compoundCycle, formatEnv, parseEnv, validateConfig } 
 import { contextConfig } from "./context";
 import { EditConfigsOverlay, moveConfig, treeRows } from "./EditConfigsDialog";
 import { pasteRows } from "./EnvDialog";
-import { CURRENT_FILE, resetRuns, selectConfig, sessionsOf, startCompound, startRun, useRun } from "./store";
+import {
+  CURRENT_FILE,
+  prepareLaunch,
+  resetRuns,
+  selectConfig,
+  sessionsOf,
+  setBeforeLaunchRunner,
+  startCompound,
+  startRun,
+  useRun,
+} from "./store";
 import {
   BUILTIN_TYPES,
   blankTemplate,
@@ -68,6 +78,15 @@ beforeEach(() => {
 });
 
 afterEach(() => disposeTypes());
+
+it.each([undefined, false])(
+  "respects the launch origin when a configuration requests focus (%s)",
+  async (showOption) => {
+    await startRun(cfg("focused", { focusToolWindow: true }), undefined, undefined, { show: showOption });
+    if (showOption === false) expect(show).not.toHaveBeenCalled();
+    else expect(show).toHaveBeenCalledWith("run", true);
+  },
+);
 
 describe("configuration types", () => {
   it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
@@ -116,7 +135,9 @@ describe("configuration types", () => {
     const type = typeFor(kind)!;
     const original = newConfigOfType(type, []);
     const config =
-      kind === "spring-boot" ? withParams(original, { ...original.params, mainClass: "a.Main" }) : original;
+      kind === "spring-boot"
+        ? withParams(original, { ...original.params, mainClass: "a.Main" })
+        : withParams(original, { ...original.params, deploymentMode: "artifact", artifact: "web" });
     const changed = vi.fn();
     render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
     expect(screen.getByRole("button", { name: "On 'Update' action" }).textContent).toContain("Show chooser");
@@ -629,6 +650,18 @@ describe("before launch tasks", () => {
     expect(buildModule).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arg: "core" }));
     expect(artifacts).toHaveBeenCalledOnce();
     disposeBuild();
+  });
+
+  it("forwards the tool-window visibility choice to the before launch runner", async () => {
+    const runner = vi.fn(async () => true);
+    setBeforeLaunchRunner(runner);
+    try {
+      const app = cfg("app", { beforeLaunch: [{ kind: "run", target: "other" }] });
+      expect(await prepareLaunch(app, [], false)).toBe(true);
+      expect(runner).toHaveBeenCalledWith(app, ["app"], false);
+    } finally {
+      setBeforeLaunchRunner(null);
+    }
   });
 });
 

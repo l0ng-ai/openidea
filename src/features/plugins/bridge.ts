@@ -9,7 +9,7 @@
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
-import { notifications } from "@/workbench/contributions";
+import { endpointsChanged, notifications } from "@/workbench/contributions";
 import { useI18n } from "@/platform/i18n";
 import { useProducerNames } from "@/platform/inspections";
 import { languageListChanged } from "@/platform/languageList";
@@ -36,7 +36,14 @@ import { defineBuiltinUiPoints } from "./points";
 import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, selectPluginTheme, updateAllPlugins, usePlugins } from "./store";
+import {
+  grantPlugin,
+  runPluginCommand,
+  refreshPlugins,
+  selectPluginTheme,
+  updateAllPlugins,
+  usePlugins,
+} from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -46,7 +53,14 @@ export function syncProjection(): () => void {
     const s = usePlugins.getState();
     syncUiContributions(localizeContributions(s.ui, usePluginCatalogs.getState().catalogs), s.plugins);
     // Their problems are listed by name in Settings › Inspections.
-    useProducerNames.setState({ names: new Map(s.plugins.map((p) => [`plugin:${p.id}`, p.name])) });
+    useProducerNames.setState({
+      names: new Map(
+        s.plugins.flatMap((p): [string, string][] => [
+          [`plugin:${p.id}`, p.name],
+          [`plugin-provider:${p.id}`, p.name],
+        ]),
+      ),
+    });
   };
   const loadCatalogs = () => void loadPluginCatalogs(usePlugins.getState().ui, useI18n.getState().locale);
   apply();
@@ -273,6 +287,9 @@ export function handlePluginEvent(e: PluginEvent) {
     case "commandsChanged":
       scheduleRefresh();
       break;
+    case "endpointsChanged":
+      if (e.root === useProject.getState().project?.root) endpointsChanged();
+      break;
     case "updatesAvailable":
       announceUpdates(e.updates);
       break;
@@ -284,6 +301,10 @@ export function handlePluginEvent(e: PluginEvent) {
         title: e.title || name,
         body: e.body || undefined,
         verbatim: true,
+        actions: e.actions.map((a) => ({
+          label: a.label,
+          run: () => void runPluginCommand(e.pluginId, a.command, a.argument),
+        })),
       });
       break;
     }

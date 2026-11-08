@@ -237,6 +237,25 @@ async fn forwarding_keeps_the_port_number_when_it_is_free() {
 }
 
 #[tokio::test]
+async fn dropping_a_tunnel_closes_active_connections() {
+    let env = env().await;
+    let session = Arc::new(env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap());
+    let tunnel = Tunnel::listen(session.clone(), "127.0.0.1", env.echo_port).await.unwrap();
+    let mut socket = TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
+    socket.write_all(b"ping").await.unwrap();
+    let mut reply = [0; 4];
+    socket.read_exact(&mut reply).await.unwrap();
+    assert_eq!(&reply, b"ping");
+    drop(tunnel);
+    let mut byte = [0];
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), socket.read(&mut byte)).await.unwrap().unwrap(),
+        0
+    );
+    assert!(!session.is_closed());
+}
+
+#[tokio::test]
 async fn key_pair_authentication_with_and_without_passphrase() {
     let env = env().await;
     let target = SshTarget { key_file: fixture("client").to_string_lossy().into(), ..env.target(SshAuth::KeyPair) };

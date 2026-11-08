@@ -54,22 +54,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.headerDetail {
+.header > .headerSpacer {
   flex: 1 1 0;
-  min-width: 0;
+}
+.providerIcon {
+  color: var(--fg-muted);
+}
+
+/* The task's state, just above the composer; the header keeps only the actions. */
+.statusBar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 2px;
   color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
-.headerText {
+.statusText {
+  flex: 1 1 0;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.providerIcon {
-  color: var(--fg-muted);
 }
 .muted {
   color: var(--fg-subtle);
@@ -142,10 +149,10 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   padding: calc(var(--space-3) * 2) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: calc(var(--space-3) * 2);
 }
 /* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
 .stream > * {
@@ -155,8 +162,44 @@
   margin-inline: auto;
   box-sizing: border-box;
 }
+/* Messages keep room around them; the folded reasoning/tool rows sit close together. */
+.stream > * + * {
+  margin-top: calc(var(--space-3) * 2);
+}
+.stream > * + .process {
+  margin-top: var(--space-2);
+}
+.stream > .process + * {
+  margin-top: var(--space-2);
+}
+.stream > .process + .process {
+  margin-top: 2px;
+}
 .stream:focus {
   outline: none;
+}
+/* Scrolled up: one click back to the latest message, floating over the stream's end. */
+.jumpToLatest {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-3);
+  transform: translateX(-50%);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-popup);
+  border-radius: 50%;
+  background: var(--bg-popup);
+  color: var(--fg);
+  box-shadow: var(--shadow-popup);
+  cursor: pointer;
+}
+.jumpToLatest:hover {
+  background: var(--bg-hover);
 }
 /* Your message with its actions, shown on hover. */
 .message {
@@ -165,35 +208,101 @@
   flex-direction: column;
   align-items: stretch;
 }
-.messageMeta {
-  position: absolute;
-  top: 100%;
-  left: 0;
+/* The author line, with the reply actions on its right; its height is always reserved. */
+.messageHead {
   display: flex;
   align-items: center;
-  min-height: 20px;
-  max-width: 100%;
-  padding-top: 2px;
+  justify-content: flex-start;
+  gap: 8px;
+  min-height: 24px;
+  margin-bottom: 3px;
+}
+.messageTime {
+  -webkit-user-select: none;
+  user-select: none;
+  color: var(--fg-subtle);
   font-size: var(--fs-small);
   white-space: nowrap;
-  opacity: 0;
+}
+.messageHead > .role {
+  margin-bottom: 0;
+}
+/* Chat layout: the user's messages sit on the right, the agent's on the left. */
+.userMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.userMessage > .messageHead {
+  align-self: stretch;
+  justify-content: flex-end;
+}
+.userMessage > .user {
+  width: fit-content;
+  max-width: min(80%, 720px);
+}
+.userMessage > .messageFooter {
+  align-self: flex-end;
+}
+/* The actions and time below a message, in flow so they never cover the next entry. */
+.messageFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+/* The footer's icons stay visible: the time follows them, at the message's side. */
+.messageFooter .messageActions {
+  margin-left: 0;
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Who wrote the message, above its card. */
+.role {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
   -webkit-user-select: none;
   user-select: none;
 }
+.agentMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.agentMessage > .messageHead,
+.agentCard {
+  max-width: min(80%, 760px);
+}
+.agentCard {
+  box-sizing: border-box;
+  width: fit-content;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-popup);
+  background: var(--bg-elev);
+}
 .messageActions {
   display: inline-flex;
-  gap: 2px;
-  margin-left: 6px;
+  gap: 4px;
+  margin-left: 8px;
   opacity: 0;
   pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
 }
 .message:hover .messageActions,
-.message:hover .messageMeta,
 .reply:hover .messageActions,
+.agentMessage:hover .messageActions,
+.agentMessage:focus-within .messageActions,
 .message:focus-within .messageActions,
-.message:focus-within .messageMeta,
 .reply:focus-within .messageActions,
 .messageActions[data-copied],
 .messageActions:focus-within {
@@ -208,8 +317,9 @@
   position: absolute;
   top: 100%;
   left: 0;
+  box-sizing: border-box;
   display: flex;
-  min-height: 20px;
+  min-height: 24px;
   padding-top: 2px;
   -webkit-user-select: none;
   user-select: none;
@@ -223,7 +333,6 @@
     opacity: 1;
     pointer-events: auto;
   }
-  .messageMeta,
   .replyFooter {
     position: static;
     margin-top: 4px;
@@ -261,8 +370,9 @@
   width: 100%;
   box-sizing: border-box;
   padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
   border-radius: var(--radius-popup);
-  background: var(--bg-elev);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-app));
   color: var(--fg-strong);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -535,6 +645,51 @@
 .toolDiff:hover {
   background: var(--bg-hover);
 }
+
+/* Reasoning and tool calls between messages, folded as one block per turn. */
+.processRun > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.processRun > summary::-webkit-details-marker {
+  display: none;
+}
+.processSummary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 8px;
+  margin-left: -8px;
+  border-radius: var(--radius-row);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.processSummary:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.processChevron {
+  flex: none;
+  transition: transform 120ms ease;
+}
+.processRun[open] .processChevron {
+  transform: rotate(90deg);
+}
+.processRun:not([open]) > .processBody {
+  display: none;
+}
+.processBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
 .output {
   margin: 4px 0 0;
   max-height: 240px;
@@ -568,11 +723,24 @@
 }
 
 .permissionLine {
+  box-sizing: border-box;
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-popup);
+  background: var(--bg-elev);
   color: var(--fg-secondary);
+}
+/* Waiting for an answer: the card takes the warning colour of the banner above. */
+.permissionAsking {
+  border-color: var(--border-feedback-warning);
+  background: var(--bg-feedback-warning);
+}
+.permissionDone {
+  opacity: 0.85;
 }
 /* Title, state and answers on one line when they fit; a long title takes its own line and
    the state and answers go below it, in line with it. */
@@ -588,6 +756,8 @@
 .permissionTitle {
   display: -webkit-box;
   flex: 0 1 auto;
+  color: var(--fg-strong);
+  font-weight: 600;
   min-width: 0;
   overflow: hidden;
   -webkit-box-orient: vertical;
@@ -674,7 +844,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
+  min-height: 28px;
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
   background: var(--bg-elev);
@@ -765,9 +935,8 @@
 .attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 4px 6px;
   margin-top: 4px;
-  color: var(--fg-muted);
   font-size: var(--fs-small);
 }
 .attachment {
@@ -1047,8 +1216,8 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 6px;
+  height: var(--h-control);
+  padding: 0 8px;
   border: 0;
   border-radius: var(--radius-small);
   background: transparent;
@@ -1078,7 +1247,10 @@
   gap: 12px;
   max-height: 50vh;
   overflow-y: auto;
-  margin: 0 12px 8px;
+  /* The composer's width, so the card sits exactly over the box it belongs to. */
+  width: 100%;
+  max-width: var(--agent-conversation-width);
+  margin: 0 auto 8px;
   padding: 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
@@ -1115,8 +1287,25 @@
 .question .questionOption {
   display: flex;
   align-items: flex-start;
-  padding: 4px 6px;
+  padding: 8px 10px;
   border-radius: var(--radius-row);
+}
+/* Each option is a card of its own: separate targets, not one list with hairlines. */
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question .questionChoices > * {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-row);
+}
+.question .questionChoices > *:hover {
+  border-color: var(--border-strong);
+}
+.question .questionChoices > *:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--bg-hover);
 }
 .question .questionOption:hover {
   background: var(--bg-hover);

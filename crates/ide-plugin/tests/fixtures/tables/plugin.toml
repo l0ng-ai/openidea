@@ -7,12 +7,27 @@ name = "Tables"
 version = "0.1.0"
 description = "Test fixture: a sortable table the plugin sorts itself."
 authors = ["OpenIDEA contributors"]
-engines.openidea = "^1.0"
+engines.openidea = "^1.3"
 wasm = "dist/plugin.wasm"
-activation = ["on-view:tables"]
+activation = ["on-view:tables", "on-view:fields", "on-command:inspect"]
 
 [[contributes.views]]
 id = "tables"
 title = "Tables"
 icon = "plugin"
 location = "right"
+
+[[contributes.views]]
+id = "fields"
+title = "Read-only Fields"
+icon = "plugin"
+location = "right"
+
+[[contributes.commands]]
+id = "inspect"
+title = "Inspect Row"
+
+[[contributes.menus]]
+menu = "viewItem.context"
+view = "tables"
+command = "inspect"

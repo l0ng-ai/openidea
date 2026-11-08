@@ -58,7 +58,13 @@ fn fixture() -> Fixture {
 }
 
 fn inv() -> Invocation {
-    Invocation { client: Some("main".into()), workspace_root: None, editor: None, selected_paths: Vec::new() }
+    Invocation {
+        client: Some("main".into()),
+        workspace_root: None,
+        editor: None,
+        selected_paths: Vec::new(),
+        global_settings: false,
+    }
 }
 
 fn misbehave() -> PathBuf {

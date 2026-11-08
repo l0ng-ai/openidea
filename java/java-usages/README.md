@@ -20,6 +20,13 @@ first and runs the full search after it. Rows in library classes (`jdt:` URIs) c
 line as `text`, from the contents the client would request for the class, so the client
 need not fetch thousands of class files to show them.
 
+`openidea.workspace.coveredFiles([candidateUri, ...])` returns candidate URIs already
+covered by the current JDT source search scope. It checks imported compilation units,
+classpath inclusion/exclusion rules and test-source policy; it does not infer coverage
+from directory names. References, rename and incoming calls leave those files closed
+and only widen with the remaining candidates. A missing or failing command retains
+widening. The result is query-local, so imports and classpath changes need no cache invalidation.
+
 ## Search plan and access semantics
 
 For source fields on the verified JDT LS implementation, a single plan merges
@@ -69,7 +76,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.7.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.9.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -103,6 +110,14 @@ Version 1.7.0 adds the `"sources"` scope to `openidea.java.usages`, searches eac
 file's decompiled source on its own and returns the line (`text`) of each usage in a library
 class; its reproducible SHA-256 is
 `56d35619d5be937b028ac143ba748365a66a74c803bc112e4788a7dce98b44fc`.
+Version 1.8.0 keeps each dependency JAR's configuration metadata across rebuilds of the
+configuration index (until the JAR or the project's classpath changes), so a source change no
+longer resolves every Spring Boot property again; its reproducible SHA-256 is
+`728ab33b5e01fa5e496818f25ddbc487458a92339026899b0e22abda5adfd67b`.
+
+Version 1.9.0 adds the analysis-scope command to avoid redundant semantic queries;
+its reproducible SHA-256 is
+`ae04182d6a86dfdd6f6befaaeb28907fd9e4c022ceedb445f0b32ea917dca379`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH

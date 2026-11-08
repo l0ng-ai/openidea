@@ -92,11 +92,44 @@ impl TerminalManager {
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
     ) -> IdeResult<TerminalInfo> {
+        self.spawn_impl(options, key, sink, on_output, false)
+    }
+
+    /// Runs an approved absolute executable with exact arguments and cwd.
+    /// A missing project directory fails instead of falling back to the home directory.
+    pub fn spawn_program(
+        &self,
+        options: TerminalOptions,
+        key: String,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+    ) -> IdeResult<TerminalInfo> {
+        if !options.shell.as_deref().is_some_and(|p| Path::new(p).is_absolute())
+            || !options.cwd.is_absolute()
+            || !options.cwd.is_dir()
+        {
+            return Err(IdeError::invalid("a program PTY requires an absolute executable and an existing cwd"));
+        }
+        self.spawn_impl(options, key, sink, on_output, true)
+    }
+
+    fn spawn_impl(
+        &self,
+        options: TerminalOptions,
+        key: String,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+        exact: bool,
+    ) -> IdeResult<TerminalInfo> {
         let size = pty_size(options.cols, options.rows);
         let pair = native_pty_system().openpty(size).map_err(|e| IdeError::internal(format!("openpty failed: {e}")))?;
 
-        let wsl = if cfg!(windows) { wsl_shell(&options) } else { None };
-        let (shell, mut args) = wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args));
+        let wsl = if cfg!(windows) && !exact { wsl_shell(&options) } else { None };
+        let (shell, mut args) = if exact {
+            (options.shell.clone().expect("spawn_program checked the executable"), options.args.clone())
+        } else {
+            wsl.clone().unwrap_or_else(|| resolve_shell(options.shell.as_deref(), &options.args))
+        };
         let mut env = terminal_env(&options.env);
         if let Some(msystem) = default_msystem(&shell, &options.env, std::env::var("MSYSTEM").ok().as_deref()) {
             env.insert("MSYSTEM".to_owned(), msystem.to_owned());
@@ -104,13 +137,19 @@ impl TerminalManager {
         if default_chere_invoking(&shell, &options.env, std::env::var("CHERE_INVOKING").ok().as_deref()) {
             env.insert("CHERE_INVOKING".to_owned(), "1".to_owned());
         }
-        if options.shell_integration {
+        if options.shell_integration && !exact {
             integration::apply(&shell_title(&shell), &mut args, &mut env);
         }
         let mut cmd = CommandBuilder::new(&shell);
         cmd.args(&args);
         // wsl.exe takes the directory through `--cd`; a UNC share is no valid process cwd.
-        cmd.cwd(if wsl.is_some() { resolve_cwd(Path::new("")) } else { resolve_cwd(&options.cwd) });
+        cmd.cwd(if exact {
+            options.cwd.0.clone()
+        } else if wsl.is_some() {
+            resolve_cwd(Path::new(""))
+        } else {
+            resolve_cwd(&options.cwd)
+        });
         for (k, v) in ide_core::process::host_env_fixes() {
             match v {
                 Some(v) => cmd.env(k, v),
@@ -558,13 +597,15 @@ pub fn available_shells() -> Vec<String> {
 /// argument-less) POSIX shell is started as a login shell, like Terminal.app,
 /// the Git Bash shortcut and IDEA: login start-up is what loads the completions
 /// and prompts users expect (`/etc/profile`, Git for Windows' git-completion).
+/// `OPENIDEA_SKIP_SHELL_ENV` disables the implicit login argument; explicit
+/// arguments still take precedence, and interactive startup files still run.
 pub fn resolve_shell(shell: Option<&str>, args: &[String]) -> (String, Vec<String>) {
     let shell = shell.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).unwrap_or_else(default_shell);
     if !args.is_empty() {
         return (shell, args.to_vec());
     }
-    let login =
-        matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
+    let login = std::env::var_os("OPENIDEA_SKIP_SHELL_ENV").is_none()
+        && matches!(shell_title(&shell).as_str(), "zsh" | "bash" | "sh" | "fish" | "ksh" | "dash" | "tcsh" | "csh");
     let args = if login { vec!["-l".to_owned()] } else { Vec::new() };
     (shell, args)
 }
@@ -766,6 +807,22 @@ mod tests {
             }
         }
         all
+    }
+
+    #[test]
+    fn program_sessions_never_fall_back_to_another_executable_or_cwd() {
+        let h = harness();
+        let mut options = sh("exit 0");
+        options.shell = None;
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        let mut options = sh("exit 0");
+        options.shell = Some("sh".into());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        let mut options = sh("exit 0");
+        options.cwd = std::env::temp_dir().join(format!("openidea-missing-{}", std::process::id())).into();
+        assert!(!options.cwd.exists());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.list().is_empty());
     }
 
     #[test]

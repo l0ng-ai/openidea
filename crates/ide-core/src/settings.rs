@@ -905,6 +905,8 @@ pub enum GradleDistribution {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MavenSettings {
+    /// JDK home used to run Maven; empty = Project JDK, else the POM's Java version.
+    pub runner_jre: String,
     /// Project-relative root POMs removed from the Maven project model.
     pub unlinked_projects: Vec<String>,
     /// Project-relative POMs outside the root reactor added as independent top-level projects.
@@ -917,9 +919,6 @@ pub struct MavenSettings {
     pub toolchains: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
-    /// Maven JDK home; empty = the Project JDK. Used by Maven builds and run configs,
-    /// apart from the JDK that runs the IDE and jdtls.
-    pub jdk: String,
     /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
     /// its own Maven, so `home` and the project's `mvnw` are bypassed when it is on.
     pub daemon: bool,
@@ -1335,6 +1334,17 @@ mod tests {
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn maven_runner_jre_defaults_and_round_trips() {
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(old.runner_jre.is_empty());
+        assert!(MavenSettings::default().runner_jre.is_empty());
+        let settings = MavenSettings { runner_jre: "/opt/jdk-21".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert!(encoded.contains(r#""runnerJre":"/opt/jdk-21""#));
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
+    }
 
     #[test]
     fn maven_linkage_defaults_and_round_trips() {

@@ -102,6 +102,16 @@ pub struct TextEdit {
     pub text: String,
 }
 
+/// A symbol from the host's current in-memory project index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolInfo {
+    pub name: String,
+    /// Host symbol kind in camelCase (`class`, `method`, `enumMember`, …).
+    pub kind: String,
+    pub container: Option<String>,
+    pub location: Location,
+}
+
 /// An editor's document at one version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
@@ -203,6 +213,7 @@ impl From<String> for ContextValue {
 pub enum EventKind {
     FileOpened,
     FileSaved,
+    FilesChanged,
     EditorFocused,
     /// Needs `events.input`.
     ActionPerformed,
@@ -216,6 +227,7 @@ impl EventKind {
         match self {
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
+            Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
@@ -260,12 +272,21 @@ pub struct ActionPerformed {
     pub shortcut: Option<String>,
 }
 
+/// Debounced changes in an open project, delivered with the `events` capability.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FilesChanged {
+    pub created: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+}
+
 /// A workbench event (see [`crate::host::subscribe`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
     FileOpened(String),
     FileSaved(String),
+    FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     /// A repository (its root) changed.
@@ -463,5 +484,36 @@ mod tests {
         assert_eq!(ActionSource::parse("pen"), ActionSource::Other, "a source of a newer IDE");
         let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
         assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
+    }
+}
+
+/// A notification button invoking a command declared by this plugin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
+}
+impl NotificationAction {
+    /// A button labelled `label`, invoking the plugin command `command`.
+    pub fn new(label: impl Into<String>, command: impl Into<String>) -> Self {
+        Self { label: label.into(), command: command.into(), argument: None }
+    }
+    /// Passes this text to the command when selected.
+    pub fn argument(mut self, argument: impl Into<String>) -> Self {
+        self.argument = Some(argument.into());
+        self
+    }
+}
+
+impl Event {
+    /// Decodes additive events while preserving unknown or malformed payloads.
+    pub fn from_other(kind: String, data: String) -> Self {
+        if kind == "files-changed"
+            && let Ok(batch) = serde_json::from_str(&data)
+        {
+            return Self::FilesChanged(batch);
+        }
+        Self::Other { kind, data }
     }
 }

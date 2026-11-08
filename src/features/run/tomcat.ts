@@ -4,24 +4,37 @@ import type { RunConfigTypeContribution } from "@/workbench/contributions";
 import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
 import { runUpdateBuild } from "./buildUpdate";
 
+const validatePort = (value: string) =>
+  /^\d+$/.test(value) && Number(value) > 0 && Number(value) <= 65535 ? null : "Port must be between 1 and 65535";
+
+const validateOptionalPort = (value: string) => (!value.trim() ? null : validatePort(value.trim()));
+
 export const tomcatType: RunConfigTypeContribution = {
   id: "tomcat",
   group: "Tomcat Server",
   label: "Local",
-  icon: "server",
+  icon: "tomcat",
   description: "Run a WAR application in a local Tomcat server",
   debugAdapter: "java-debug",
   terminal: false,
   defaults: {
     deployment: "artifact",
     httpPort: "8080",
+    jmxPort: "1099",
     buildArtifact: "true",
     openBrowser: "true",
     ...updatePolicyDefaults,
   },
   fields: [
-    ...updatePolicyFields(true),
     { key: "tomcatHome", label: "Tomcat installation directory", required: true, mono: true, browse: "directory" },
+    {
+      key: "tomcatBase",
+      label: "Tomcat base directory",
+      mono: true,
+      browse: "directory",
+      placeholder: "IDE-managed isolated base directory",
+      hint: "Read-only configuration source; leave empty to copy from Tomcat Home. Each launch uses an IDE-managed runtime directory.",
+    },
     {
       key: "deployment",
       label: "Deployment",
@@ -51,12 +64,28 @@ export const tomcatType: RunConfigTypeContribution = {
           : "Enter / or a context path such as /app",
     },
     {
-      key: "httpPort",
-      label: "HTTP port",
-      required: true,
-      validate: (value) =>
-        /^\d+$/.test(value) && Number(value) > 0 && Number(value) <= 65535 ? null : "Port must be between 1 and 65535",
+      key: "contextDescriptor",
+      label: "Context descriptor",
+      mono: true,
+      browse: "file",
+      placeholder: "META-INF/context.xml from application",
+      hint: "Custom context.xml descriptor; leave empty to use the application's META-INF/context.xml",
     },
+    {
+      key: "deployTomcatApps",
+      label: "Deploy applications configured in Tomcat instance",
+      control: "checkbox",
+    },
+    { key: "openBrowser", label: "Open browser after launch", control: "checkbox" },
+    {
+      key: "browserUrl",
+      label: "Browser URL",
+      mono: true,
+      placeholder: "Server URL from the HTTP port and context path",
+      visible: (p) => p.openBrowser === "true",
+      validate: (value) => (/^https?:\/\//i.test(value) ? null : "Enter an HTTP or HTTPS URL"),
+    },
+    ...updatePolicyFields(true),
     {
       key: "jre",
       label: "JRE",
@@ -66,14 +95,37 @@ export const tomcatType: RunConfigTypeContribution = {
       hint: "Java installation directory; empty uses the project JDK",
     },
     { key: "vmOptions", label: "VM options", control: "textarea", rows: 2, mono: true },
-    { key: "openBrowser", label: "Open browser after launch", control: "checkbox" },
     {
-      key: "browserUrl",
-      label: "Browser URL",
-      mono: true,
-      placeholder: "Server URL from the HTTP port and context path",
-      visible: (p) => p.openBrowser === "true",
-      validate: (value) => (/^https?:\/\//i.test(value) ? null : "Enter an HTTP or HTTPS URL"),
+      key: "httpPort",
+      label: "HTTP port",
+      required: true,
+      validate: validatePort,
+    },
+    {
+      key: "httpsPort",
+      label: "HTTPS port",
+      placeholder: "8443",
+      validate: validateOptionalPort,
+    },
+    {
+      key: "jmxPort",
+      label: "JMX port",
+      placeholder: "1099",
+      hint: "JMX remote port; leave empty to allocate a free port automatically",
+      validate: validateOptionalPort,
+    },
+    {
+      key: "ajpPort",
+      label: "AJP port",
+      placeholder: "8009",
+      validate: validateOptionalPort,
+    },
+    {
+      key: "shutdownPort",
+      label: "Shutdown port",
+      placeholder: "8005",
+      hint: "Tomcat server shutdown port; leave empty to allocate a free port automatically",
+      validate: validateOptionalPort,
     },
     {
       key: "buildArtifact",
@@ -120,6 +172,7 @@ export async function syncTomcatOutputs(config: RunConfig, resourcesOnly: boolea
 
 export function tomcatBrowserUrl(config: RunConfig): string {
   const p = config.params ?? {};
+  const host = "localhost";
   const name =
     p.artifactName ||
     p.deploymentPath
@@ -129,5 +182,5 @@ export function tomcatBrowserUrl(config: RunConfig): string {
       ?.replace(/\.war$/i, "") ||
     "";
   const context = p.contextPath || (name && name !== "ROOT" ? `/${name}` : "/");
-  return p.browserUrl || `http://localhost:${p.httpPort || "8080"}${context === "/" ? "/" : `${context}/`}`;
+  return p.browserUrl || `http://${host}:${p.httpPort || "8080"}${context === "/" ? "/" : `${context}/`}`;
 }

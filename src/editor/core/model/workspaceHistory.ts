@@ -59,8 +59,9 @@ export class WorkspaceHistory {
     return paths.some((root) => path === root || path.startsWith(`${root}/`));
   }
 
-  attach(target: WorkspaceHistoryTarget): () => void {
+  attach(target: WorkspaceHistoryTarget, restore = true): () => void {
     this.targets.add(target);
+    if (!restore) return () => this.targets.delete(target);
     const records = [...this.records].filter(([, record]) => this.affects(record.paths, target.path));
     for (const [id] of records) this.mark(target, id);
     // Build the same done/undone marker stacks as existing editors, without

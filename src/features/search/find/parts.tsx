@@ -1,16 +1,20 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { EditorState, StateEffect, StateField, type Range, type Text } from "@codemirror/state";
-import { Decoration, EditorView, type DecorationSet } from "@codemirror/view";
-import { codePreviewExtensions } from "@/editor/api";
+import { Decoration, EditorView, keymap, drawSelection, type DecorationSet } from "@codemirror/view";
+import { defaultKeymap } from "@codemirror/commands";
+import { attachDocument, codePreviewExtensions, type DocumentAttachment } from "@/editor/api";
 import { tokenSpans, useLineTokens, type LineSource } from "@/editor/lineTokens";
+import { effectiveBindings, registerKeyClaim } from "@/platform/keymap";
+import { getAction } from "@/platform/actions";
 import type { SearchQuery } from "@/platform/ipc";
 import { previewReplacement } from "./session";
-import { loadPreviewText } from "./preview";
+import { releasePreview, takePreview } from "./preview";
+import { notifications } from "@/workbench/contributions";
 import type { PreviewLine } from "./replaceFlow";
 import styles from "./parts.module.css";
 import { T } from "@/ui";
-import { tx } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 
 /**
  * A result line with matches highlighted; in replace mode shows `old → new`
@@ -99,9 +103,9 @@ export function previewDecorations(doc: Text, line: number, highlights: readonly
 }
 
 /**
- * Read-only, syntax-highlighted view of `path` (live editor buffer or disk)
+ * A secondary editor of `path`, sharing the document and its save pipeline,
  * scrolled to `line`, with the matches of `highlights` marked; the editor's
- * look via `codePreviewExtensions`. Text stays selectable and copyable.
+ * look via `codePreviewExtensions`. Read-only documents stay selectable.
  */
 export function CodePreview({
   path,
@@ -124,39 +128,86 @@ export function CodePreview({
   });
 
   useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    const view = new EditorView({ parent: host, state: EditorState.create({ extensions: [previewMarks, readOnly] }) });
-    viewRef.current = view;
-    return () => {
-      view.destroy();
-      viewRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
     if (!path) return;
     let alive = true;
-    // Debounced so arrowing through results doesn't load every file.
-    const t = setTimeout(() => {
-      Promise.all([loadPreviewText(path), codePreviewExtensions(path)]).then(
-        ([text, extensions]) => {
-          const view = viewRef.current;
-          if (!alive || !view) return;
-          view.setState(EditorState.create({ doc: text, extensions: [extensions, previewMarks, readOnly] }));
-          setLoaded({ path, version });
-          setError(null);
-        },
-        (e) => alive && setError(String((e as Error)?.message ?? e)),
-      );
+    let view: EditorView | null = null;
+    let attachment: DocumentAttachment | null = null;
+    let unclaim = () => {};
+    const timer = setTimeout(async () => {
+      try {
+        const held = takePreview(path);
+        attachment = held ?? (await attachDocument(path, { sharedHistory: true }));
+        if (!alive) {
+          attachment.release();
+          return;
+        }
+        const att = attachment;
+        const extensions = await codePreviewExtensions(path, !att.readOnly);
+        if (!alive) {
+          releasePreview(att);
+          return;
+        }
+        const fail = (error: unknown) =>
+          notifications().notify({ level: "error", title: t("app.unsaved.saveFailed"), body: String(error) });
+        view = new EditorView({
+          parent: hostRef.current!,
+          state:
+            att.editorState() ??
+            EditorState.create({
+              doc: att.text(),
+              extensions: [
+                extensions,
+                previewMarks,
+                att.extension,
+                drawSelection(),
+                keymap.of([
+                  { key: "Mod-z", run: () => att.undo(), preventDefault: true },
+                  { key: "Mod-Shift-z", run: () => att.redo(), preventDefault: true },
+                  { key: "Mod-y", run: () => att.redo(), preventDefault: true },
+                  {
+                    key: "Mod-s",
+                    run: () => {
+                      void att.save().catch(fail);
+                      return true;
+                    },
+                  },
+                  ...defaultKeymap.filter((binding) => binding.key !== "Escape"),
+                ]),
+                att.readOnly ? readOnly : [],
+              ],
+            }),
+          dispatchTransactions: (transactions, editor) => att.dispatchTransactions(transactions, editor),
+        });
+        // Text-editor actions otherwise target the tab behind the popup. Let this view's keymap own editing.
+        unclaim = registerKeyClaim(
+          (event, stroke) =>
+            !!view?.dom.contains(event.target as Node) &&
+            effectiveBindings().some(
+              ([binding, id]) => binding === stroke && !!getAction(id)?.when?.includes("editorTextFocus"),
+            ),
+        );
+        viewRef.current = view;
+        setLoaded({ path, version });
+        setError(null);
+      } catch (error) {
+        if (attachment) releasePreview(attachment);
+        attachment = null;
+        if (alive) setError(String((error as Error)?.message ?? error));
+      }
     }, 80);
     return () => {
       alive = false;
-      clearTimeout(t);
+      clearTimeout(timer);
+      unclaim();
+      viewRef.current = null;
+      if (view) {
+        view.destroy();
+        if (attachment) releasePreview(attachment);
+      }
     };
   }, [path, version]);
 
-  const current = !!path && loaded?.path === path;
+  const current = !!path && loaded?.path === path && loaded.version === version;
   // A new file or line scrolls to the line; new highlights alone only repaint.
   useEffect(() => {
     const view = viewRef.current;
@@ -176,7 +227,14 @@ export function CodePreview({
 
   const placeholder = !path ? <T>Select a result to preview</T> : error && !current ? error : null;
   return (
-    <div className={styles.preview} role="region" aria-label={tx("Preview")}>
+    <div
+      className={styles.preview}
+      role="region"
+      aria-label={tx("Preview")}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") event.stopPropagation();
+      }}
+    >
       <div ref={hostRef} className={clsx(styles.previewEditor, (!current || placeholder) && styles.previewHidden)} />
       {placeholder && <div className={styles.previewEmpty}>{placeholder}</div>}
     </div>

@@ -245,14 +245,26 @@ describe("Go test targets", () => {
       id: "go:typed",
       kind: "go",
       cwd: "runtime",
-      args: ["test", "-tags", "demo", "-run", "Old", ".", "-args", "-test.short"],
+      args: [
+        "test",
+        "-tags",
+        "demo",
+        "-run",
+        "Old",
+        ".",
+        "-args",
+        "-test.run=Old",
+        "-test.bench",
+        "OldBench",
+        "-test.short",
+      ],
       params: {
         goKind: "test",
         module: "app",
         scope: "package",
         target: ".",
         pattern: "Old",
-        programArgs: "-test.short",
+        programArgs: "-test.run=Old -test.bench OldBench -test.short",
       },
     });
     const text = 'package calc\nfunc TestNew(t *testing.T) {\n t.Run("child case", func(t *testing.T) {})\n}';
@@ -273,6 +285,7 @@ describe("Go test targets", () => {
       scope: "directory",
       target: ".",
       pattern: "^TestNew$/^child_case$",
+      programArgs: "-test.short",
     });
   });
 });
@@ -399,5 +412,81 @@ describe("php (Pest)", () => {
       [3, "test", "CalcTest/testAdd"],
       [5, "test", "x"],
     ]);
+  });
+});
+
+describe("Go declaration and callback scopes", () => {
+  it("finds aliased, dot-imported and multiline testing declarations", () => {
+    const text = [
+      "package p",
+      'import check "testing"',
+      "func TestAlias(",
+      "  subject *check.T,",
+      ") {",
+      '  subject.Run("outer", func(child *check.T) {',
+      "    child.Run(`nested/leaf case`, func(last *check.T) {})",
+      "  })",
+      '  subject.Run("sibling", func(child *check.T) {})',
+      "}",
+      "func BenchmarkAlias(b *check.B) {}",
+      "func FuzzAlias(f *check.F) {}",
+      "func Example() {}",
+      "func TestMain(m *check.M) {}",
+      "func Testlower(t *check.T) {}",
+      "func (s Suite) TestMethod(t *check.T) {}",
+    ].join("\n");
+    expect(detectRunTargets(text, "alias_test.go").map((target) => target.path)).toEqual([
+      ["TestAlias"],
+      ["TestAlias", "outer"],
+      ["TestAlias", "outer", "nested", "leaf_case"],
+      ["TestAlias", "sibling"],
+      ["BenchmarkAlias"],
+      ["FuzzAlias"],
+      ["Example"],
+    ]);
+    expect(
+      detectRunTargets('package p\nimport . "testing"\nfunc TestDot(t *T) {}', "dot_test.go").map(
+        (target) => target.path,
+      ),
+    ).toEqual([["TestDot"]]);
+  });
+
+  it("ignores comments, strings, methods and unrelated Run receivers", () => {
+    const text = [
+      "package p",
+      "/* func TestComment(t *testing.T) {} */",
+      "var fake = `",
+      "func TestString(t *testing.T) {}",
+      "//go:generate fake",
+      "`",
+      "func TestReal(t *testing.T) {",
+      '  // t.Run("comment", nil)',
+      '  _ = `t.Run("string", nil) }`',
+      '  other.Run("unrelated", nil)',
+      '  t.Run("a\\x20b", func(sub *testing.T) {',
+      '    sub.Run("quote\\\"brace}", nil)',
+      "  })",
+      "}",
+      "//go:generate real",
+    ].join("\n");
+    expect(detectRunTargets(text, "real_test.go").map((target) => [target.line, target.path])).toEqual([
+      [6, ["TestReal"]],
+      [10, ["TestReal", "a_b"]],
+      [11, ["TestReal", "a_b", 'quote"brace}']],
+      [14, ["14"]],
+    ]);
+  });
+
+  it("keeps nested benchmark paths and tolerates incomplete source", () => {
+    const text =
+      'package p\nfunc BenchmarkWork(b *testing.B) { b.Run("group", func(inner *testing.B) { inner.Run("leaf", nil) }) }';
+    expect(detectRunTargets(text, "bench_test.go").map((target) => target.path)).toEqual([
+      ["BenchmarkWork"],
+      ["BenchmarkWork", "group"],
+      ["BenchmarkWork", "group", "leaf"],
+    ]);
+    expect(() =>
+      detectRunTargets('func TestBroken(t *testing.T) { t.Run("\\UFFFFFFFF", nil) }', "broken_test.go"),
+    ).not.toThrow();
   });
 });

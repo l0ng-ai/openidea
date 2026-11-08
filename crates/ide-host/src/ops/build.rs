@@ -17,14 +17,6 @@ fn join_err(e: tokio::task::JoinError) -> IdeError {
     IdeError::internal(e.to_string())
 }
 
-/// `JAVA_HOME`: the project JDK, else the installed JDK matching `release` (none
-/// when the project names no version).
-fn java_env(project_jdk: Option<&ide_sdk::java::Jdk>, release: Option<u32>) -> BTreeMap<String, String> {
-    let jdks = ide_sdk::java::installed_jdks();
-    let jdk = project_jdk.or_else(|| release.and_then(|r| ide_sdk::java::pick_jdk(&jdks, Some(r))));
-    jdk.map(|j| BTreeMap::from([("JAVA_HOME".to_owned(), j.home.to_string_lossy().into_owned())])).unwrap_or_default()
-}
-
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
 /// the Maven home and options from Settings › Maven.
 pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
@@ -36,13 +28,11 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         &settings.languages.java.gradle,
     );
     let jdk = ide_sdk::apply::project_jdk(root, settings);
-    // Maven has its own JDK setting; empty inherits the Project JDK.
-    let maven_jdk = ide_sdk::apply::maven_jdk(root, settings);
     if let Some(m) = &mut model.maven {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);
         for p in &mut m.projects {
-            p.env = java_env(maven_jdk.as_ref(), p.java_version);
+            p.env = ide_sdk::apply::maven_build_env(root, settings, p.java_version);
             if let Some(mvn) = &mvn {
                 p.command = mvn.to_string_lossy().into_owned();
             }
@@ -66,7 +56,11 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     if let Some(m) = &mut model.maven
         && m.sync_error.is_some()
     {
-        let hint = m.projects.iter().find_map(|p| missing(p.java_version));
+        let hint = if settings.languages.java.maven.runner_jre.trim().is_empty() {
+            m.projects.iter().find_map(|p| missing(p.java_version))
+        } else {
+            None
+        };
         explain(&mut m.sync_error, hint);
     }
     for g in &mut model.gradle {
@@ -494,15 +488,32 @@ pub async fn maven_exclude_dependency(
     .map_err(join_err)?
 }
 
+fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
+    let commands = ide_run::cmake_build_configs(configs, id)?;
+    let title = commands.last().map(|c| c.name.clone()).unwrap_or_default();
+    let mut steps = Vec::new();
+    for mut config in commands {
+        let cwd = ide_core::project_roots::resolve(root, config.cwd.as_deref().unwrap_or(Path::new("")));
+        ide_run::prepare_cmake(&config, &cwd)?;
+        if kind == BuildKind::Rebuild && config.args.first().is_some_and(|a| a == "--build") {
+            config.args.insert(2, "--clean-first".into());
+        }
+        steps.push(compile::BuildStep::cmake(&config.command, config.args, cwd, config.env));
+    }
+    Ok(compile::BuildPlan { system: compile::BuildSystem::CMake, title, steps })
+}
+
 /// Build › Build Project / Rebuild Project / Build Module (`file`: a file or folder of the
 /// module) / Build Artifacts, streaming the console and messages on `on_event`; cancellable
 /// with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 /// are cleared first; the new messages are published as `build` diagnostics.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_run(
     host: &Host,
     window: &str,
     kind: BuildKind,
     file: Option<std::path::PathBuf>,
+    cmake: Option<String>,
     request: RequestId,
     clear: Vec<std::path::PathBuf>,
     on_event: Channel<BuildEvent>,
@@ -521,7 +532,10 @@ pub async fn build_run(
                 items: Vec::new(),
             });
         }
-        let plan = if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
+        let plan = if let Some(id) = cmake {
+            let configs = super::run::project_configs(&root, &settings, &config_dir)?;
+            cmake_plan(&root, kind, &configs, &id)?
+        } else if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
@@ -618,6 +632,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
             &c.window,
             c.arg("kind")?,
             c.arg("file")?,
+            c.arg("cmake")?,
             c.arg("request")?,
             c.arg("clear")?,
             c.sender("onEvent")?,
@@ -627,8 +642,44 @@ pub(crate) fn register(d: &mut Dispatcher) {
 }
 
 #[cfg(test)]
-mod gradle_settings_tests {
+mod build_tool_settings_tests {
     use super::*;
+
+    #[test]
+    fn cmake_builds_keep_target_configuration_environment_and_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let member = root.path().join("nested project");
+        std::fs::create_dir_all(&member).unwrap();
+        let config = |id: &str, args: &[&str]| -> ide_run::RunConfig {
+            serde_json::from_value(serde_json::json!({
+                "id":id,"name":id,"kind":"cmake","command":"custom-cmake",
+                "args":args,"cwd":"nested project","env":{"PROFILE":"release"},
+                "detected":true,"isTest":false,"debugAdapter":null
+            }))
+            .unwrap()
+        };
+        let configure = config("configure", &["-S", ".", "-B", "release", "-G", "Ninja"]);
+        let mut build =
+            config("target", &["--build", "release", "--target", "hello", "--config", "Release", "-j", "8"]);
+        build.extras.before_launch.push(ide_run::BeforeLaunchTask { kind: "build".into(), target: "configure".into() });
+        let configs = [configure, build];
+        for kind in [BuildKind::Build, BuildKind::Rebuild] {
+            let plan = cmake_plan(root.path(), kind, &configs, "target").unwrap();
+            assert_eq!(plan.system, compile::BuildSystem::CMake);
+            assert_eq!(plan.steps.len(), 2);
+            assert_eq!(plan.steps[0].args, configs[0].args);
+            let mut args = configs[1].args.clone();
+            if kind == BuildKind::Rebuild {
+                args.insert(2, "--clean-first".into());
+            }
+            assert_eq!(plan.steps[1].args, args);
+            for step in plan.steps {
+                assert_eq!(step.program, "custom-cmake");
+                assert_eq!(step.cwd, member);
+                assert_eq!(step.env["PROFILE"], "release");
+            }
+        }
+    }
 
     #[test]
     fn builds_apply_the_same_explicit_toolchains_as_runs() {
@@ -694,31 +745,6 @@ mod gradle_settings_tests {
     }
 
     #[test]
-    fn maven_jdk_setting_overrides_the_project_jdk_for_maven_builds() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = dunce::canonicalize(tmp.path()).unwrap();
-        std::fs::write(
-            root.join("pom.xml"),
-            r#"<project><groupId>demo</groupId><artifactId>app</artifactId><version>1</version></project>"#,
-        )
-        .unwrap();
-        let jdk = |name: &str| {
-            let home = root.join(name);
-            std::fs::create_dir_all(home.join("bin")).unwrap();
-            std::fs::write(home.join("release"), "JAVA_VERSION=\"17\"\n").unwrap();
-            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
-            home
-        };
-        let project = jdk("project-jdk");
-        let maven = jdk("maven-jdk");
-        let mut settings = Settings::default();
-        settings.languages.java.jdk = project.to_string_lossy().into_owned();
-        settings.languages.java.maven.jdk = maven.to_string_lossy().into_owned();
-        let model = load(&root, &root.join("cache"), &settings);
-        assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], maven.to_string_lossy());
-    }
-
-    #[test]
     fn settings_resolve_each_linked_builds_own_wrapper() {
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap();
@@ -734,6 +760,34 @@ mod gradle_settings_tests {
         assert_eq!(model.gradle.len(), 2);
         for g in model.gradle {
             assert_eq!(g.command, root.join(&g.dir).join(executable).to_string_lossy());
+        }
+    }
+
+    #[test]
+    fn model_for_maven_sync_goals_and_compile_uses_runner_jre() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#
+        ).unwrap();
+        for name in ["project-jdk", "runner-jdk"] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), "JAVA_VERSION=\"21\"\n").unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.java.jdk = "project-jdk".into();
+        for runner in ["", "runner-jdk"] {
+            settings.languages.java.maven.runner_jre = runner.into();
+            let expected = root.join(if runner.is_empty() { "project-jdk" } else { runner });
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
         }
     }
 

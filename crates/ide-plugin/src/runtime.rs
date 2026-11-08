@@ -8,22 +8,23 @@ use crate::types::{
     PluginHover, PluginInlayHint, ProviderDocument, SemanticToken,
 };
 use crate::types::{
-    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessOutput, Prompt,
-    RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken, WorkbenchEvent,
+    EventKind, HostError, HttpRequest, HttpResponse, Invocation, Limits, NotificationLevel, ProcessChunk,
+    ProcessCommand, ProcessOutput, Prompt, RepositoryStatus, StatusItem, SyntaxFold, SyntaxSymbol, SyntaxToken,
+    WorkbenchEvent,
 };
 use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
 use crate::wit_host::{
-    bindings, commit_checks_bindings, details_bindings, file_actions_bindings, hover_bindings, indexing_bindings,
-    inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
+    bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
+    indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
 };
 use ide_core::CancellationToken;
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
 use parking_lot::Mutex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -37,6 +38,7 @@ use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
 use details_bindings::openidea::plugin::detail_types as wit_dt;
+use endpoints_bindings::exports::openidea::plugin::endpoints_provider as wit_endpoints;
 use file_actions_bindings::exports::openidea::plugin::file_actions as wit_fa;
 use hover_bindings::exports::openidea::plugin::hover_provider as wit_hover;
 use indexing_bindings::exports::openidea::plugin::document_indexer as wit_index;
@@ -60,7 +62,15 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
-    fn notify(&self, client: Option<&str>, level: NotificationLevel, title: String, body: String);
+    /// Shows a notification; `actions` name commands the plugin declares.
+    fn notify(
+        &self,
+        client: Option<&str>,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        actions: Vec<crate::NotificationAction>,
+    ) -> Result<(), HostError>;
     fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
         let _ = (client, text);
         Ok(())
@@ -101,6 +111,30 @@ pub trait HostApi: Send + Sync {
     }
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
+    /// The most specific open project containing a document (including a new file).
+    fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
+        if !path.is_absolute() {
+            return None;
+        }
+        let real = crate::resolve_real(path);
+        self.projects()
+            .into_iter()
+            .filter(|root| real.starts_with(crate::resolve_real(root)))
+            .max_by_key(|root| root.components().count())
+    }
+
+    /// Searches the current in-memory index of an open project.
+    fn symbols(
+        &self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<Vec<crate::SymbolInfo>, HostError> {
+        let _ = (root, query, limit, cancel, deadline);
+        Err(HostError::NotFound("no project index is available".into()))
+    }
     /// Unsaved text of an open editor's file.
     fn buffer_text(&self, path: &Path) -> Option<String>;
     /// Version and text of the open document at `path`.
@@ -147,17 +181,50 @@ pub trait HostApi: Send + Sync {
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
     fn secret_is_set(&self, name: &str) -> bool;
-    /// Runs the approved file of `process:<program>`.
+    /// Runs the approved file of `process:<program>` with `cmd.env` added to
+    /// the inherited environment, and waits.
     fn run_process(
         &self,
-        program: &str,
-        args: Vec<String>,
+        cmd: ProcessCommand,
         cwd: Option<&Path>,
         stdin: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError>;
-    fn subscribe(&self, kind: EventKind, on: bool);
+    /// Delivers every event of `kind`, dropping its path filter.
+    fn subscribe(&self, kind: EventKind);
+    /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
+    fn unsubscribe(&self, kind: &str);
+    /// Starts `cmd` and returns the handle to it without waiting.
+    fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
+    /// What process `id` printed since the last call, each stream at most
+    /// `max` bytes (the rest waits for the next call), and its status once it
+    /// ended.
+    fn poll_process(&self, id: u64, max: usize) -> Result<ProcessChunk, HostError>;
+    /// Writes `text` to the stdin of process `id`.
+    fn write_process(
+        &self,
+        id: u64,
+        text: &str,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError>;
+    /// Closes the stdin of process `id`.
+    fn close_process_stdin(&self, id: u64) -> Result<(), HostError>;
+    /// Ends process `id`; not an error if it already ended.
+    fn kill_process(&self, id: u64) -> Result<(), HostError>;
+    /// Forgets the handle and ends its process if it still runs.
+    fn release_process(&self, id: u64);
+    /// Waits up to `timeout` for process `id` to end (`ZERO` only checks) and
+    /// returns what it printed meanwhile with its status once it ended.
+    fn wait_process(
+        &self,
+        id: u64,
+        max: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<ProcessChunk, HostError>;
     /// Starts a progress indicator; cancelling it from the UI cancels `cancel`.
     fn task_begin(&self, client: Option<&str>, title: String, cancellable: bool, cancel: CancellationToken) -> u64;
     fn task_report(&self, id: u64, done: u32, total: Option<u32>, message: Option<String>);
@@ -182,6 +249,21 @@ pub trait HostApi: Send + Sync {
     fn locale(&self) -> String;
     /// A setting of the plugin as JSON (project over global over the schema default).
     fn setting(&self, root: Option<&Path>, key: &str) -> Option<String>;
+    /// Reads and decodes a text file outside the project, whose real path an
+    /// `fs.read` grant already covers: the unsaved buffer wins, then the disk.
+    /// `max` bounds the bytes read.
+    fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
+    /// The plugin's private directory, independent of the current invocation.
+    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
+        Err(HostError::Failed("private plugin storage is unavailable".into()))
+    }
+    /// Replaces the text of a file whose real path the caller already checked:
+    /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
+    /// while an editor holds unsaved changes for it.
+    fn write_text_file(&self, real: &Path, text: &str) -> Result<(), HostError>;
+    /// Replaces the bytes of a file whose real path the caller already checked,
+    /// in one step. Refused while an editor holds unsaved changes for it.
+    fn write_bytes_file(&self, real: &Path, bytes: &[u8]) -> Result<(), HostError>;
 }
 
 /// Shared compilation engine plus an epoch ticker thread for wall-clock limits.
@@ -418,8 +500,10 @@ pub struct StoreData {
     pub(crate) granted: Vec<Capability>,
     pub(crate) host: Arc<dyn HostApi>,
     pub(crate) invocation: Invocation,
-    /// The running call is a command or an event, so it may ask the user.
+    /// The running call is a command or an event.
     pub(crate) interactive: bool,
+    /// Editor window for pick, pick-many, input and confirm during action resolution.
+    pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
@@ -552,9 +636,11 @@ struct Exports {
     views: Option<wit_view::Guest>,
     semantic: Option<wit_sem::Guest>,
     details: Option<wit_detail::Guest>,
+    diagnostics: Option<crate::wit_host::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider::Guest>,
     hover: Option<wit_hover::Guest>,
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
+    endpoints: Option<wit_endpoints::Guest>,
 }
 
 /// Most results one syntax call may return (more are dropped).
@@ -566,6 +652,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
+        WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
+            kind: "files-changed".into(),
+            data: serde_json::to_string(&batch).expect("file paths serialize"),
+        }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
@@ -607,6 +697,7 @@ impl Runtime {
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
+            action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
         };
@@ -637,9 +728,12 @@ impl Runtime {
         let view_indices = wit_view::GuestIndices::new(&pre).ok();
         let semantic_indices = wit_sem::GuestIndices::new(&pre).ok();
         let detail_indices = wit_detail::GuestIndices::new(&pre).ok();
+        use crate::wit_host::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider as wit_diag;
+        let diagnostics_indices = wit_diag::GuestIndices::new(&pre).ok();
         let hover_indices = wit_hover::GuestIndices::new(&pre).ok();
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
+        let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let instance = pre.instantiate(&mut store).map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
@@ -670,6 +764,10 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let diagnostics = match diagnostics_indices {
+            Some(i) => Some(i.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
         let hover = match hover_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
@@ -679,6 +777,10 @@ impl Runtime {
             None => None,
         };
         let inlay = match inlay_indices {
+            Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
+            None => None,
+        };
+        let endpoints = match endpoint_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
@@ -692,9 +794,11 @@ impl Runtime {
                 indexer,
                 semantic,
                 details,
+                diagnostics,
                 hover,
                 commit_checks,
                 inlay,
+                endpoints,
                 file_actions,
             },
             limits: setup.limits,
@@ -902,6 +1006,7 @@ impl Runtime {
         &mut self,
         doc: &ProviderDocument,
         action: &CodeAction,
+        invocation: Invocation,
         timeout: Duration,
     ) -> Result<CodeAction, CallError> {
         if action.file_action {
@@ -911,13 +1016,20 @@ impl Runtime {
             let d = file_action_doc(doc);
             let a = file_action_to_wit(action);
             let resolved = self.call(Invocation::default(), timeout, |e, store| {
+                store.data_mut().action_prompt_client = invocation.client;
                 e.file_actions.as_ref().expect("checked").call_resolve(store, &d, &a)
             })?;
             return resolved.map(file_action_from_wit).map_err(|e| CallError::Guest(e.into()));
         }
         let d = doc_to_wit(doc);
         let a = code_action_to_wit(action);
-        let resolved = self.provider_call(timeout, |p, s| p.call_resolve_code_action(s, &d, &a))?;
+        if self.exports.providers.is_none() {
+            return Err(CallError::missing_export("providers"));
+        }
+        let resolved = self.call(Invocation::default(), timeout, |e, store| {
+            store.data_mut().action_prompt_client = invocation.client;
+            e.providers.as_ref().expect("checked").call_resolve_code_action(store, &d, &a)
+        })?;
         resolved.map(code_action_from_wit).map_err(|e| CallError::Guest(e.into()))
     }
 
@@ -944,7 +1056,7 @@ impl Runtime {
             .take(MAX_PROVIDER_ITEMS)
             .map(|m| LineMarker {
                 line: m.line,
-                icon: m.icon.map(|i| clip(i, 32)),
+                icon: m.icon.map(|i| clip(i, 256)),
                 tooltip: clip(m.tooltip, 1024),
                 target: m.target.map(location_from_wit),
             })
@@ -977,6 +1089,27 @@ impl Runtime {
                 modifiers: t.modifiers.into_iter().take(MAX_TOKEN_MODIFIERS).map(|m| clip(m, 32)).collect(),
             })
             .collect())
+    }
+
+    pub fn provide_diagnostics(
+        &mut self,
+        doc: &ProviderDocument,
+        timeout: Duration,
+    ) -> Result<Vec<ide_core::Diagnostic>, CallError> {
+        use crate::wit_host::diagnostics_bindings::exports::openidea::plugin::diagnostics_provider as w;
+        if self.exports.diagnostics.is_none() {
+            return Err(CallError::missing_export("diagnostics-provider"));
+        }
+        let d = w::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let items = self.call(Invocation::default(), timeout, |e, store| {
+            e.diagnostics.as_ref().expect("checked").call_diagnostics(store, &d)
+        })?;
+        Ok(crate::wit_host::diagnostics_from_wit(items, &self.store.data().plugin_id))
     }
 
     pub fn provide_hover(
@@ -1101,6 +1234,37 @@ impl Runtime {
         }
     }
 
+    /// Project routes, with an explicit project invocation and background budget.
+    pub fn endpoints(&mut self, invocation: Invocation, timeout: Duration) -> Result<Vec<crate::Endpoint>, CallError> {
+        if self.exports.endpoints.is_none() {
+            return Err(CallError::missing_export("endpoints-provider"));
+        }
+        let result = self.call(invocation, timeout, |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let r = e
+                .endpoints
+                .as_ref()
+                .expect("checked")
+                .call_endpoints(&mut *store, wasmtime::component::Resource::new_borrow(ctx.rep()));
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        let entries = result.map_err(|e| CallError::Guest(e.into()))?;
+        if entries.len() > MAX_PROVIDER_ITEMS {
+            return Err(CallError::Guest(GuestError::Invalid("too many endpoints".into())));
+        }
+        Ok(entries
+            .into_iter()
+            .map(|e| crate::Endpoint {
+                method: e.method,
+                path: e.path,
+                framework: e.framework,
+                handler: e.handler,
+                location: location_from_wit(e.location),
+            })
+            .collect())
+    }
+
     /// The Services pane of node `key` of the plugin's services view `view`.
     pub fn service_detail(
         &mut self,
@@ -1208,6 +1372,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
+        data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
             data.host.task_end(id);
@@ -1557,8 +1722,23 @@ fn view_from_wit(v: wit_vt::View) -> View {
                             options: options.into_iter().take(1000).map(|o| clip(o, MAX_TITLE)).collect(),
                             selected: clip(selected, MAX_TITLE),
                         },
-                        // A field type of a newer API: left out.
-                        wit_vt::FieldValue::Other(_) => return None,
+                        wit_vt::FieldValue::Other(e) => match e.kind.as_str() {
+                            "label" => FieldValue::Label(clip(serde_json::from_str(&e.data).ok()?, MAX_CELL)),
+                            "readonly-text" => {
+                                #[derive(serde::Deserialize)]
+                                struct ReadonlyText {
+                                    text: String,
+                                    #[serde(default)]
+                                    multiline: bool,
+                                }
+                                let value: ReadonlyText = serde_json::from_str(&e.data).ok()?;
+                                FieldValue::ReadonlyText {
+                                    text: clip(value.text, if value.multiline { 1 << 20 } else { MAX_CELL }),
+                                    multiline: value.multiline,
+                                }
+                            }
+                            _ => return None,
+                        },
                     };
                     Some(ViewField { key: clip(f.key, 128), label: clip(f.label, MAX_TITLE), value })
                 })
@@ -1611,6 +1791,12 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
         ViewEvent::InsertRow { before } => W::InsertRow(before),
         ViewEvent::DeleteRows { rows } => W::DeleteRows(rows),
         ViewEvent::Message { text } => W::Message(text),
+        ViewEvent::TableSelect { row } => {
+            W::Other(wit_types::Extension { kind: "table-select".into(), data: format!(r#"{{"row":{row}}}"#) })
+        }
+        ViewEvent::TableActivate { row } => {
+            W::Other(wit_types::Extension { kind: "table-activate".into(), data: format!(r#"{{"row":{row}}}"#) })
+        }
         // A sortable table's header click, as an `other` view-event (plugins/
         // README.md §10): the SDKs decode the kinds they know.
         ViewEvent::Sort { column, descending } => W::Other(wit_types::Extension {
@@ -1623,6 +1809,44 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readonly_field_extensions_are_parsed_and_unknown_or_malformed_fields_are_skipped() {
+        let fields = [
+            ("label", r#""Title \"quoted\"""#),
+            ("readonly-text", r#"{"text":"one\ntwo","multiline":true}"#),
+            ("readonly-text", r#"{"text":"author"}"#),
+            ("label", "{}"),
+            ("readonly-text", r#"{"text":false}"#),
+            ("future", "null"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (kind, data))| wit_vt::Field {
+            key: i.to_string(),
+            label: "Field".into(),
+            value: wit_vt::FieldValue::Other(wit_types::Extension { kind: kind.into(), data: data.into() }),
+        })
+        .collect();
+        let view = view_from_wit(wit_vt::View { toolbar: vec![], body: wit_vt::Body::Form(fields), status: None });
+        let ViewBody::Form(fields) = view.body else { panic!("form") };
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].value, FieldValue::Label("Title \"quoted\"".into()));
+        assert_eq!(fields[1].value, FieldValue::ReadonlyText { text: "one\ntwo".into(), multiline: true });
+        assert_eq!(fields[2].value, FieldValue::ReadonlyText { text: "author".into(), multiline: false });
+    }
+
+    #[test]
+    fn table_row_events_leave_through_released_extension_case() {
+        for (event, kind) in [
+            (ViewEvent::TableSelect { row: 51 }, "table-select"),
+            (ViewEvent::TableActivate { row: 51 }, "table-activate"),
+        ] {
+            let wit_vt::ViewEvent::Other(extension) = event_to_wit_view(event) else { panic!("other") };
+            assert_eq!(extension.kind, kind);
+            assert_eq!(extension.data, r#"{"row":51}"#);
+        }
+    }
 
     #[cfg(windows)]
     #[test]
@@ -1642,6 +1866,7 @@ mod tests {
                 operations: Vec::new(),
                 open: None,
                 data: None,
+                file_action: false,
             };
             assert_eq!(code_action_to_wit(&action).edits[0].path, expected);
         }

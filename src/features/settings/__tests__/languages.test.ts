@@ -27,7 +27,13 @@ describe("languages settings", () => {
         jdtlsVmArgs: " -Xmx2g ",
         jdk: 21,
         jdtlsJdk: " /opt/jdk-25 ",
-        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd ", threads: " 2C " },
+        maven: {
+          runnerJre: " /opt/jdk-21 ",
+          home: " /opt/maven ",
+          daemon: "yes",
+          mvndHome: " /opt/mvnd ",
+          threads: " 2C ",
+        },
       },
     });
     expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
@@ -39,11 +45,11 @@ describe("languages settings", () => {
     expect(v.java.jdk).toBe("");
     expect(v.java.jdtlsJdk).toBe("/opt/jdk-25");
     expect(v.java.maven).toEqual({
+      runnerJre: "/opt/jdk-21",
       home: "/opt/maven",
       userSettings: "",
       toolchains: "",
       localRepository: "",
-      jdk: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
@@ -53,6 +59,13 @@ describe("languages settings", () => {
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
+  });
+
+  it("defaults the Maven runner JRE to the project JDK and preserves a chosen JDK", () => {
+    expect(validateSettings({}).languages.java.maven.runnerJre).toBe("");
+    expect(validateLanguages({ java: { maven: { runnerJre: 21 } } }).java.maven.runnerJre).toBe("");
+    const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
+    expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
   });
 
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {

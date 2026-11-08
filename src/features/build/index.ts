@@ -1,8 +1,9 @@
 /**
  * Build menu (Build Project ⌘F9, Build Module ⇧⌘F9, Rebuild Project, Build
  * Artifacts) and the Build tool window. The backend picks the build system of
- * the project or module: Maven, Gradle, Cargo, Go or TypeScript.
+ * the project or module: Maven, Gradle, Cargo, Go, TypeScript or CMake.
  */
+import { getContext } from "@/platform/context";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import {
@@ -57,11 +58,17 @@ export function activate(): () => void {
         category: "Build",
         icon: "build-project",
         when: WHEN,
-        keywords: ["compile", "make", "mvn", "gradle", "cargo", "tsc", "go build"],
+        keywords: ["compile", "make", "mvn", "gradle", "cargo", "tsc", "go build", "cmake"],
         // Awaitable: Run's "Build" before launch task waits for the result.
         run: async ({ arg }) => {
           const activate = !(typeof arg === "object" && arg !== null && "activate" in arg && arg.activate === false);
-          await startBuild("build", null, activate);
+          const cmake =
+            arg == null
+              ? getContext()["run.cmakeBuild"]
+              : typeof arg === "object" && arg !== null && "cmake" in arg
+                ? arg.cmake
+                : null;
+          await startBuild("build", null, activate, typeof cmake === "string" ? cmake : null);
         },
       },
       {
@@ -84,7 +91,10 @@ export function activate(): () => void {
         icon: "build-rebuild",
         when: WHEN,
         keywords: ["clean", "compile"],
-        run: () => void startBuild("rebuild"),
+        run: () => {
+          const cmake = getContext()["run.cmakeBuild"];
+          void startBuild("rebuild", null, true, typeof cmake === "string" ? cmake : null);
+        },
       },
       {
         id: "build.buildArtifacts",

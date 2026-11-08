@@ -201,6 +201,9 @@
   flex: 1;
   min-width: 0;
 }
+.existingPathRow {
+  flex: none;
+}
 .pathInput {
   flex: 1;
   min-width: 0;

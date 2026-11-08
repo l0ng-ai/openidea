@@ -1,7 +1,9 @@
 import type { Action } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
+import { confirm } from "@/workbench/messages";
 import { notifications } from "@/workbench/contributions";
 import { replyOperations, replyTurns, turnNumbers } from "./model";
-import { forkTask, quoteInComposer, rerunFrom, useAgents } from "./store";
+import { forkTask, quoteInComposer, rerunFrom, retractFrom, useAgents } from "./store";
 
 export interface CopyReply {
   text: string;
@@ -43,7 +45,7 @@ function resolveReply(arg: unknown) {
 }
 
 const pending = new Set<string>();
-async function runReplyOperation(task: string, title: string, run: () => Promise<void>) {
+async function runReplyOperation(task: string, title: string, run: () => Promise<unknown>) {
   if (pending.has(task)) return;
   pending.add(task);
   try {
@@ -57,6 +59,48 @@ async function runReplyOperation(task: string, title: string, run: () => Promise
 
 export const replyActions: Action[] = [
   copyReplyAction,
+  {
+    id: "agents.jumpToLatest",
+    title: "Jump to Latest",
+    category: "Agents",
+    icon: "arrow-down",
+    hidden: true,
+    run: ({ arg }) => {
+      const target = arg as { onJump?: () => void } | undefined;
+      target?.onJump?.();
+    },
+  },
+  {
+    id: "agents.retractMessage",
+    title: "Retract Message",
+    category: "Agents",
+    icon: "diff-revert",
+    hidden: true,
+    run: ({ arg }) => {
+      const target = arg as ReplyTarget | undefined;
+      if (!target || typeof target.task !== "string" || !Number.isInteger(target.turn)) return;
+      const task = useAgents.getState().tasks.get(target.task);
+      const entries = useAgents.getState().entries.get(target.task);
+      if (!task || !entries || task.status === "archived" || !task.capabilities?.rollback) return;
+      const turns = turnNumbers(entries);
+      const index = [...turns].find(([, turn]) => turn === target.turn)?.[0];
+      const prompt = index === undefined ? undefined : entries[index];
+      if (prompt?.type !== "user") return;
+      return runReplyOperation(task.id, "Couldn't retract the message", async () => {
+        if (
+          target.turn < turns.size - 1 &&
+          !(await confirm({
+            title: "Retract Message",
+            message: tx("The messages after this one are replaced. Files the agent changed stay as they are."),
+            ok: "Retract",
+            icon: "warning",
+          }))
+        )
+          return;
+        await retractFrom(task.id, target.turn, prompt.text, prompt.images ?? []);
+      });
+    },
+  },
   {
     id: "agents.quoteReply",
     title: "Quote Reply",
