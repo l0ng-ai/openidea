@@ -15,12 +15,16 @@ pub use ide_heap::{
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Shortest gap between two progress messages of one phase.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+/// Longest each of [`shutdown`]'s two waits lasts; `openidea-server` gives the whole host
+/// shutdown 10 s.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -62,7 +66,9 @@ pub async fn debug_heap_capture(
 ) -> IdeResult<HeapCaptureResult> {
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
+    let running = Running::begin(host, request, &cancel);
     let result = capture(host, window, session, &cancel, &on_progress).await;
+    drop(running);
     host.end_request(request);
     result
 }
@@ -124,9 +130,47 @@ pub async fn debug_heap_open(
 ) -> IdeResult<HeapOpenResult> {
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
+    let running = Running::begin(host, request, &cancel);
     let result = open(host, window, path.into_path_buf(), &cancel, &on_progress).await;
+    drop(running);
     host.end_request(request);
     result
+}
+
+/// The captures and opens in progress, so [`shutdown`] can cancel them and wait for them to delete
+/// their directories.
+#[derive(Default)]
+pub(crate) struct HeapRequests(parking_lot::Mutex<RequestsState>);
+
+#[derive(Default)]
+struct RequestsState {
+    /// Set by [`shutdown`]: what begins afterwards starts out cancelled.
+    closed: bool,
+    running: HashMap<RequestId, CancellationToken>,
+}
+
+/// One capture or open, from its start until it has cleaned up after itself.
+struct Running<'a> {
+    host: &'a Host,
+    request: RequestId,
+}
+
+impl<'a> Running<'a> {
+    fn begin(host: &'a Host, request: RequestId, cancel: &CancellationToken) -> Self {
+        let mut state = host.heap_requests.0.lock();
+        if state.closed {
+            cancel.cancel();
+        } else {
+            state.running.insert(request, cancel.clone());
+        }
+        Self { host, request }
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.host.heap_requests.0.lock().running.remove(&self.request);
+    }
 }
 
 async fn open(
@@ -322,7 +366,47 @@ pub(crate) fn close_window_snapshots(host: &Host, window: &str) {
     }
 }
 
+/// For a process that exits without dropping the host (the remote server): cancels the captures
+/// and opens in progress and waits for them, closes every snapshot, then removes what is left of
+/// this process's snapshot directories. Each wait gives up after [`SHUTDOWN_WAIT`] (a stuck
+/// analysis or delete).
+pub(crate) async fn shutdown(host: &Host) {
+    shutdown_within(host, SHUTDOWN_WAIT).await;
+}
+
+async fn shutdown_within(host: &Host, wait: Duration) {
+    let deadline = tokio::time::Instant::now() + wait;
+    {
+        let mut state = host.heap_requests.0.lock();
+        state.closed = true;
+        for token in state.running.values() {
+            token.cancel();
+        }
+    }
+    let ids: Vec<HeapSnapshotId> = host.heap.list().into_iter().map(|info| info.id).collect();
+    let closed: Vec<Arc<OpenSnapshot>> = ids.into_iter().filter_map(|id| take(host, id)).collect();
+    while !host.heap_requests.0.lock().running.is_empty() {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("heap captures or opens still running at shutdown");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let root = host.heap.root().to_path_buf();
+    let me = std::process::id();
+    let cleanup = host.runtime.spawn_blocking(move || {
+        drop(closed);
+        // Directories of work that did not finish in time count as abandoned, like a dead host's.
+        ide_heap::remove_stale(&root, |pid| pid != me && ide_core::process::process_alive(pid));
+    });
+    if tokio::time::timeout(wait, cleanup).await.is_err() {
+        tracing::warn!("heap snapshot directories were not deleted within {wait:?}");
+    }
+}
+
+/// Every op that takes a snapshot id goes through here, so none skips the trust check.
 fn open_snapshot(host: &Host, window: &str, id: HeapSnapshotId) -> IdeResult<Arc<OpenSnapshot>> {
+    host.require_trust(window)?;
     let owned = host.heap_windows.lock().get(&id).is_some_and(|w| w == host.owner_window(window));
     owned
         .then(|| host.heap.get(id))

@@ -71,6 +71,7 @@ pub struct Host {
     pub heap: Arc<ide_heap::HeapRegistry>,
     /// The window that owns each open heap snapshot; its project's close closes them.
     pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
+    pub(crate) heap_requests: ops::heap::HeapRequests,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -131,6 +132,7 @@ impl Host {
             debugger: ide_dap::DebugManager::new(languages.clone()),
             heap: Arc::new(ide_heap::HeapRegistry::new(ide_heap::snapshots_root(&local_data_dir))),
             heap_windows: Mutex::default(),
+            heap_requests: Default::default(),
             languages,
             syntax,
             config_dir,
@@ -373,9 +375,12 @@ impl Host {
         }
     }
 
-    /// Stops what this host started: notebook kernels, language servers, agents, runs and terminals.
+    /// Stops what this host started: heap snapshots, notebook kernels, language servers, agents,
+    /// runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
     pub async fn shutdown(&self) {
+        // A capture's dump may hold secrets from the debuggee's memory: delete it before exiting.
+        ops::heap::shutdown(self).await;
         self.environment.shutdown();
         self.processes.kill_all();
         self.terminals.kill_all();

@@ -59,6 +59,14 @@ impl Fixture {
         }
     }
 
+    /// Opens a second trusted project in `window`.
+    async fn open_window(&self, window: &str) {
+        let root = self.base.join(window);
+        std::fs::create_dir_all(&root).unwrap();
+        self.host.open_project(window, &root).unwrap();
+        self.host.set_project_trust(&root, true, false).await.unwrap();
+    }
+
     /// The snapshot directories under the registry's root (none when it does not exist yet).
     fn snapshot_dirs(&self) -> Vec<PathBuf> {
         let Ok(entries) = std::fs::read_dir(self.host.heap.root()) else { return Vec::new() };
@@ -180,9 +188,115 @@ async fn unknown_snapshot_is_not_found() {
     let open = f.open(&f.dump("sample.hprof", &sample())).await;
     not_found(debug_heap_compare(&f.host, WINDOW, open.id, missing).await.unwrap_err());
     // A snapshot belongs to the window that opened it.
+    f.open_window("other").await;
     not_found(debug_heap_classes(&f.host, "other", open.id).await.unwrap_err());
     not_found(debug_heap_close(&f.host, "other", open.id).await.unwrap_err());
     assert!(debug_heap_classes(&f.host, WINDOW, open.id).await.is_ok());
+}
+
+/// The error of every op that takes a snapshot id, in `window`.
+async fn query_errors(f: &Fixture, window: &str, id: HeapSnapshotId) -> Vec<IdeError> {
+    let host = &f.host;
+    vec![
+        debug_heap_classes(host, window, id).await.unwrap_err(),
+        debug_heap_dominators(host, window, id, None, None, 0, 10).await.unwrap_err(),
+        debug_heap_path(host, window, id, HeapObjectRef(0)).await.unwrap_err(),
+        debug_heap_compare(host, window, id, id).await.unwrap_err(),
+        debug_heap_save(host, window, id, f.base.join("saved.hprof").into()).await.unwrap_err(),
+        debug_heap_close(host, window, id).await.unwrap_err(),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queries_check_trust_before_the_snapshot() {
+    let f = Fixture::new().await;
+    let open = f.open(&f.dump("sample.hprof", &sample())).await;
+
+    let no_project = f.host.require_trust("nowhere").unwrap_err();
+    for err in query_errors(&f, "nowhere", open.id).await {
+        assert_eq!((err.kind, &err.message), (no_project.kind, &no_project.message));
+    }
+
+    f.host.set_project_trust(&f.root, false, false).await.unwrap();
+    let restricted = f.host.require_trust(WINDOW).unwrap_err();
+    assert_ne!(restricted.kind, ErrorKind::NotFound);
+    // An id that is not open is refused for trust too: the check comes before the lookup.
+    for id in [open.id, HeapSnapshotId(99)] {
+        for err in query_errors(&f, WINDOW, id).await {
+            assert_eq!((err.kind, &err.message), (restricted.kind, &restricted.message));
+        }
+    }
+    assert!(!f.base.join("saved.hprof").exists());
+    assert!(f.host.heap.get(open.id).is_some(), "a refused close keeps the snapshot");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_closes_every_snapshot() {
+    let f = Fixture::new().await;
+    let external = f.dump("sample.hprof", &sample());
+    f.open(&external).await;
+
+    // A capture: the dump sits in the snapshot directory.
+    let captured = ide_heap::create_snapshot_dir(f.host.heap.root()).unwrap();
+    let dump = captured.join("dump.hprof");
+    sample_with_two_more_nodes().write_to(&dump);
+    let origin = ide_heap::HeapOrigin::Captured {
+        session: DebugSessionId(1),
+        pid: 42,
+        java_version: "21".into(),
+        taken_while_suspended: false,
+        dump_ms: 1,
+    };
+    let analyzed = analyze(
+        &f.host,
+        WINDOW,
+        origin,
+        dump.clone(),
+        captured.clone(),
+        AnalyzeOptions::default(),
+        false,
+        &CancellationToken::new(),
+        &Channel::new(|_| {}),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(analyzed, Analyzed::Ready(_)));
+
+    // An open still running: shutdown cancels it and waits for it to clean up.
+    let running_dir = ide_heap::create_snapshot_dir(f.host.heap.root()).unwrap();
+    let cancel = CancellationToken::new();
+    let running = Running::begin(&f.host, RequestId(50), &cancel);
+    assert_eq!(f.snapshot_dirs().len(), 3);
+
+    let in_flight = async {
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(5), cancel.cancelled()).await;
+        assert!(cancelled.is_ok(), "shutdown cancels a running capture or open");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        std::fs::remove_dir_all(&running_dir).unwrap();
+        drop(running);
+    };
+    tokio::join!(f.host.shutdown(), in_flight);
+
+    assert!(f.snapshot_dirs().is_empty(), "{:?}", f.snapshot_dirs());
+    assert!(f.host.heap.list().is_empty());
+    assert!(external.is_file(), "an opened dump is the user's file");
+
+    let late = CancellationToken::new();
+    let _late = Running::begin(&f.host, RequestId(51), &late);
+    assert!(late.is_cancelled(), "nothing starts after shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_does_not_wait_forever_for_a_stuck_capture() {
+    let f = Fixture::new().await;
+    let stuck_dir = ide_heap::create_snapshot_dir(f.host.heap.root()).unwrap();
+    let cancel = CancellationToken::new();
+    let _stuck = Running::begin(&f.host, RequestId(60), &cancel);
+    let started = std::time::Instant::now();
+    shutdown_within(&f.host, std::time::Duration::from_millis(200)).await;
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(cancel.is_cancelled());
+    assert!(!stuck_dir.exists(), "its directory is removed once the wait is over");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
