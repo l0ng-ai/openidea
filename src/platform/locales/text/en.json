@@ -537,5 +537,6 @@
   "Select Maven toolchains.xml": "Select Maven toolchains.xml",
   "dev,integration": "dev,integration",
   "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.": "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.",
-  "Active profiles": "Active profiles"
+  "Active profiles": "Active profiles",
+  "the bundle of {gemfile} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`": "the bundle of {gemfile} has no `debug` gem. Add `gem \"debug\"` to the Gemfile and run `bundle install`"
 }

@@ -37,6 +37,8 @@ export interface AppearanceExtras {
   dndWithAltOnly: boolean;
   menuIcons: boolean;
   mainMenuStyle: "hamburger" | "merged";
+  /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+  mainMenuAlt: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -96,6 +98,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   dndWithAltOnly: false,
   menuIcons: true,
   mainMenuStyle: "hamburger",
+  mainMenuAlt: true,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -153,6 +156,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     dndWithAltOnly: b("dndWithAltOnly"),
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged"], d.mainMenuStyle),
+    mainMenuAlt: b("mainMenuAlt"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),
