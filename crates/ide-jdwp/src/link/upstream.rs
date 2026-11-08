@@ -3,7 +3,7 @@
 use super::{HANDSHAKE, OWN_IDS, OwnCommand, RESERVED_ID, Shared, check_handshake};
 use crate::codec::{HEADER_LEN, Header, MAX_ADAPTER_PACKET};
 use std::io;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::watch;
 
 const MAX_HELD: usize = 1024;
@@ -28,18 +28,20 @@ pub(super) async fn run(
     let mut open = !hold;
     let mut held: Vec<Vec<u8>> = Vec::new();
     loop {
-        // Keep the in-flight read across a release, including a partly read packet.
+        // Keep the in-flight read, including a partly read packet, across the other branches.
         let read = packet(&mut adapter);
         tokio::pin!(read);
-        let packet = tokio::select! {
-            packet = &mut read => packet?,
-            result = async { released.wait_for(|released| *released).await.map(drop) }, if !open => {
-                result.map_err(|_| io::Error::new(io::ErrorKind::ConnectionAborted, "link dropped"))?;
-                open = true;
-                for packet in held.drain(..) {
-                    forward(shared, &packet).await?;
+        let packet = loop {
+            tokio::select! {
+                packet = &mut read => break packet?,
+                result = async { released.wait_for(|released| *released).await.map(drop) }, if !open => {
+                    result.map_err(|_| io::Error::new(io::ErrorKind::ConnectionAborted, "link dropped"))?;
+                    open = true;
+                    for packet in held.drain(..) {
+                        forward(shared, &packet).await?;
+                    }
                 }
-                read.await?
+                () = shared.unfinished.notified() => finish_own(shared).await?,
             }
         };
         // Everything else must go through: attach itself queries threads and sets requests.
@@ -52,6 +54,12 @@ pub(super) async fn run(
             forward(shared, &packet).await?;
         }
     }
+}
+
+/// Writes what a cancelled command of the link's own left unwritten. Fails once a failed write
+/// took the writer, which ends the relay.
+async fn finish_own(shared: &Shared) -> io::Result<()> {
+    shared.jvm.lock().await.as_mut().ok_or_else(closed)?.finish().await
 }
 
 async fn packet(reader: &mut (impl AsyncRead + Unpin)) -> io::Result<Vec<u8>> {

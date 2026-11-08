@@ -1,13 +1,13 @@
 //! The link's own commands, injected while the VM is stopped.
 
-use super::state::{OwnCommand, Turn};
-use super::{JdwpLink, Shared, upstream};
+use super::state::{Core, OwnCommand, Turn};
+use super::{JdwpLink, JvmWriter, Shared, upstream};
 use crate::codec::{Header, Reader, Writer};
 use crate::ids::{IdSizes, ReplyIds};
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{Notify, oneshot, watch};
 
 /// `SuspendCount` checks before a command gives up with [`LinkError::Busy`].
 const SUSPEND_CHECKS: usize = 5;
@@ -38,7 +38,9 @@ pub enum LinkError {
 impl JdwpLink {
     /// Sends one command of the link's own and returns its reply body. Commands run one at a
     /// time, only while the VM is stopped: the stopped thread's `SuspendCount` must be above 0
-    /// and no adapter invoke pending, checked up to five times 100 ms apart.
+    /// and no adapter invoke pending, checked up to five times 100 ms apart. It runs in the stop
+    /// current at the call: once that stop ends, also while the command waits for an earlier
+    /// one, it fails with [`LinkError::Stale`].
     ///
     /// The ObjectIDs at `ids` in the reply are counted when it arrives, even after the caller
     /// gave up, and released with `DisposeObjects` once the adapter resumes the VM. The command
@@ -53,9 +55,9 @@ impl JdwpLink {
     ) -> Result<Vec<u8>, LinkError> {
         debug_assert!(!upstream::is_invoke((set, cmd)), "the link never invokes");
         let shared = &self.inner.shared;
-        // Fail fast without queueing behind a command that is still waiting for its reply.
-        shared.update(|core| core.target())?;
-        tokio::time::timeout(timeout, inject(shared, (set, cmd), &body, ids)).await.unwrap_or(Err(LinkError::TimedOut))
+        let target = shared.update(|core| core.target())?;
+        let injected = inject(shared, target, (set, cmd), &body, ids);
+        tokio::time::timeout(timeout, injected).await.unwrap_or(Err(LinkError::TimedOut))
     }
 
     pub fn id_sizes(&self) -> Option<IdSizes> {
@@ -63,10 +65,21 @@ impl JdwpLink {
     }
 }
 
-async fn inject(shared: &Shared, command: (u8, u8), body: &[u8], ids: ReplyIds) -> Result<Vec<u8>, LinkError> {
-    let turn: Turn = Arc::new(shared.turn.clone().lock_owned().await);
-    let (generation, thread) = shared.update(|core| core.target())?;
-    let sizes = shared.update(|core| core.sizes).ok_or(LinkError::NotSuspended)?;
+async fn inject(
+    shared: &Shared,
+    (generation, thread, sizes): (u64, u64, IdSizes),
+    command: (u8, u8),
+    body: &[u8],
+    ids: ReplyIds,
+) -> Result<Vec<u8>, LinkError> {
+    // The turn may stay taken past the end of the stop: an earlier command holds it until its
+    // reply arrives.
+    let mut stops = shared.stops.subscribe();
+    let turn: Turn = tokio::select! {
+        turn = shared.turn.clone().lock_owned() => Arc::new(turn),
+        () = stop_ended(&mut stops, generation) => return Err(ended(shared, generation)),
+    };
+    shared.update(|core| core.still_stopped(generation))?;
     let mut w = Writer::new();
     w.id(thread, sizes.object);
     let thread = w.into_vec();
@@ -110,6 +123,11 @@ async fn send(
     let (answer, reply) = oneshot::channel();
     {
         let mut jvm = shared.jvm.lock().await;
+        let writer = jvm.as_mut().ok_or(LinkError::Closed)?;
+        // What a cancelled packet left unwritten goes first.
+        if let Err(e) = writer.finish().await {
+            return Err(broken(shared, &mut jvm, &e));
+        }
         // Under the writer lock: an adapter resume or invoke is either written already, and
         // seen here, or waits until this command is written.
         let id = shared.update(|core| {
@@ -122,13 +140,17 @@ async fn send(
         let Some(id) = id else {
             return Ok(None);
         };
-        let jvm = jvm.as_mut().ok_or(LinkError::Closed)?;
-        let written = async {
-            jvm.write_all(&Header::command_bytes(id, set, cmd, body.len())).await?;
-            jvm.write_all(body).await?;
-            jvm.flush().await
-        };
-        written.await.map_err(|_| LinkError::Closed)?;
+        let mut packet = Header::command_bytes(id, set, cmd, body.len()).to_vec();
+        packet.extend_from_slice(body);
+        writer.queue(packet);
+        // A caller that gives up from here on leaves the rest of the packet to the relay; the
+        // entry stays until the reply.
+        let mut cancelled = WakeRelay(Some(&shared.unfinished));
+        let written = writer.finish().await;
+        cancelled.0 = None;
+        if let Err(e) = written {
+            return Err(broken(shared, &mut jvm, &e));
+        }
     }
     let mut stops = shared.stops.subscribe();
     tokio::select! {
@@ -138,10 +160,34 @@ async fn send(
             shared.update(|core| core.still_stopped(generation))?;
             reply.map(Some)
         }
-        () = stop_ended(&mut stops, generation) => {
-            Err(shared.update(|core| core.still_stopped(generation)).err().unwrap_or(LinkError::Stale))
+        () = stop_ended(&mut stops, generation) => Err(ended(shared, generation)),
+    }
+}
+
+/// Wakes the relay when dropped while set.
+struct WakeRelay<'a>(Option<&'a Notify>);
+
+impl Drop for WakeRelay<'_> {
+    fn drop(&mut self) {
+        if let Some(relay) = self.0 {
+            relay.notify_one();
         }
     }
+}
+
+/// A failed write may have left part of a packet with the JVM, so nothing else may follow it.
+fn broken(shared: &Shared, jvm: &mut Option<JvmWriter>, e: &io::Error) -> LinkError {
+    tracing::debug!("JDWP link: writing a command of its own failed: {e}");
+    shared.update(Core::close);
+    *jvm = None;
+    // The relay ends once it finds the writer gone.
+    shared.unfinished.notify_one();
+    LinkError::Closed
+}
+
+/// Why stop `generation` no longer lets a command run.
+fn ended(shared: &Shared, generation: u64) -> LinkError {
+    shared.update(|core| core.still_stopped(generation)).err().unwrap_or(LinkError::Stale)
 }
 
 async fn stop_ended(stops: &mut watch::Receiver<Option<u64>>, generation: u64) {

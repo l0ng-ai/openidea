@@ -15,13 +15,17 @@ mod downstream;
 mod ledger;
 mod state;
 mod upstream;
+mod writer;
 
 pub use command::LinkError;
+use writer::JvmWriter;
 
 #[cfg(test)]
 mod command_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod write_tests;
 
 /// Packet ids of the link's own commands; the adapter is expected never to use them.
 pub const OWN_IDS: std::ops::Range<u32> = 0x7000_0000..0x7FFF_FFFF;
@@ -73,13 +77,14 @@ impl Drop for Inner {
     }
 }
 
-type JvmWriter = Box<dyn AsyncWrite + Send + Unpin>;
-
 struct Shared {
     core: Mutex<Core>,
     state: watch::Sender<LinkState>,
     /// Every write to the JVM goes through this lock, so packets never interleave.
     jvm: tokio::sync::Mutex<Option<JvmWriter>>,
+    /// Signalled when a write of the link's own command stopped part way or failed: the relay
+    /// then finishes the packet, or ends once the writer is gone.
+    unfinished: tokio::sync::Notify,
     /// Signalled after each reply to one of the link's own commands.
     own_answered: tokio::sync::Notify,
     /// One injected command at a time (see `state::Turn`).
@@ -97,6 +102,7 @@ impl Shared {
             core: Mutex::new(core),
             state,
             jvm: tokio::sync::Mutex::new(None),
+            unfinished: tokio::sync::Notify::new(),
             own_answered: tokio::sync::Notify::new(),
             turn: Arc::default(),
             stops: watch::Sender::new(None),
@@ -198,7 +204,7 @@ where
 {
     let (adapter_rx, adapter_tx) = tokio::io::split(adapter);
     let (jvm_rx, jvm_tx) = tokio::io::split(jvm);
-    *shared.jvm.lock().await = Some(Box::new(jvm_tx));
+    *shared.jvm.lock().await = Some(JvmWriter::new(jvm_tx));
     shared.update(|core| core.connected = true);
     let hold = shared.update(|core| core.hold);
     let result = tokio::select! {

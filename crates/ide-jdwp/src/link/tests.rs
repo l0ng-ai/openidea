@@ -79,9 +79,17 @@ pub(super) struct Pair {
 }
 
 pub(super) fn pair(options: LinkOptions) -> Pair {
+    pair_over(options, |jvm| jvm)
+}
+
+/// `wrap` turns the link's end of the JVM stream into the one the link uses.
+pub(super) fn pair_over<J>(options: LinkOptions, wrap: impl FnOnce(DuplexStream) -> J) -> Pair
+where
+    J: AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
     let (adapter, link_adapter) = tokio::io::duplex(64 * 1024);
     let (link_jvm, jvm) = tokio::io::duplex(64 * 1024);
-    let link = JdwpLink::spawn_over(link_adapter, link_jvm, options);
+    let link = JdwpLink::spawn_over(link_adapter, wrap(link_jvm), options);
     Pair { link, adapter, jvm }
 }
 
@@ -103,7 +111,10 @@ async fn handshake(p: &mut Pair) -> u32 {
 
 /// Handshake and answer the link's `IDSizes` with 8-byte ids.
 pub(super) async fn connected(options: LinkOptions) -> Pair {
-    let mut p = pair(options);
+    connect(pair(options)).await
+}
+
+pub(super) async fn connect(mut p: Pair) -> Pair {
     let own = handshake(&mut p).await;
     p.jvm.write_all(&reply(own, 0, &id_sizes_body())).await.unwrap();
     p

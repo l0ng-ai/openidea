@@ -153,8 +153,9 @@ impl Core {
         }
     }
 
-    /// Where an injected command would run: the current stop's generation and thread.
-    pub(super) fn target(&self) -> Result<(u64, u64), LinkError> {
+    /// Where an injected command would run: the current stop's generation and thread, and the
+    /// id sizes to write the thread with.
+    pub(super) fn target(&self) -> Result<(u64, u64, IdSizes), LinkError> {
         if self.closed {
             return Err(LinkError::Closed);
         }
@@ -162,7 +163,7 @@ impl Core {
             return Err(LinkError::Degraded);
         }
         match (self.stopped, self.sizes, self.thread) {
-            (true, Some(_), Some(thread)) => Ok((self.generation, thread)),
+            (true, Some(sizes), Some(thread)) => Ok((self.generation, thread, sizes)),
             _ => Err(LinkError::NotSuspended),
         }
     }

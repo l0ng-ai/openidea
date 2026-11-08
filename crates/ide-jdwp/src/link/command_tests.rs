@@ -12,17 +12,17 @@ use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinHandle;
 
-const THREAD: u64 = 9;
+pub(super) const THREAD: u64 = 9;
 const SUSPENDED: LinkState = LinkState::Suspended { generation: 1, thread: Some(THREAD) };
 const QUIET: Duration = Duration::from_millis(200);
 
-type Disposal = (u32, Vec<(u64, u32)>);
+pub(super) type Disposal = (u32, Vec<(u64, u32)>);
 
-fn header(packet: &[u8]) -> Header {
+pub(super) fn header(packet: &[u8]) -> Header {
     Header::parse(packet[..HEADER_LEN].try_into().unwrap())
 }
 
-fn tagged(ids: &[u64]) -> Vec<u8> {
+pub(super) fn tagged(ids: &[u64]) -> Vec<u8> {
     let mut w = Writer::new();
     w.i32(ids.len() as i32);
     for &id in ids {
@@ -32,31 +32,34 @@ fn tagged(ids: &[u64]) -> Vec<u8> {
     w.into_vec()
 }
 
-fn instances_body() -> Vec<u8> {
+pub(super) fn instances_body() -> Vec<u8> {
     let mut w = Writer::new();
     w.id(0x42, 8);
     w.i32(1000);
     w.into_vec()
 }
 
-fn spawn_command(link: &JdwpLink, timeout: Duration) -> JoinHandle<Result<Vec<u8>, LinkError>> {
+pub(super) fn spawn_command(link: &JdwpLink, timeout: Duration) -> JoinHandle<Result<Vec<u8>, LinkError>> {
     let link = link.clone();
     tokio::spawn(async move { link.command(2, 16, instances_body(), ReplyIds::TaggedObjects, timeout).await })
 }
 
-async fn result(task: JoinHandle<Result<Vec<u8>, LinkError>>) -> Result<Vec<u8>, LinkError> {
+pub(super) async fn result(task: JoinHandle<Result<Vec<u8>, LinkError>>) -> Result<Vec<u8>, LinkError> {
     within("command result", task).await.unwrap()
 }
 
 async fn stopped() -> Pair {
-    let mut p = connected(OPEN).await;
+    suspended(connected(OPEN).await).await
+}
+
+pub(super) async fn suspended(mut p: Pair) -> Pair {
     stop(&mut p, 2, THREAD).await;
     wait_state(&p.link, SUSPENDED).await;
     p
 }
 
 /// The JVM's next packet that is not the link's `SuspendCount` check; each check is answered 1.
-async fn next_own(p: &mut Pair) -> Vec<u8> {
+pub(super) async fn next_own(p: &mut Pair) -> Vec<u8> {
     loop {
         let packet = read_packet(&mut p.jvm).await;
         let h = header(&packet);
@@ -69,7 +72,7 @@ async fn next_own(p: &mut Pair) -> Vec<u8> {
 }
 
 /// The link's `Instances` command as the JVM receives it; returns its id.
-async fn own_instances(p: &mut Pair) -> u32 {
+pub(super) async fn own_instances(p: &mut Pair) -> u32 {
     let packet = next_own(p).await;
     let h = header(&packet);
     assert_eq!((h.command(), h.is_reply()), ((2, 16), false));
@@ -103,7 +106,7 @@ fn parse_dispose(body: &[u8]) -> Vec<(u64, u32)> {
 
 /// Adapter `1/9` then a marker; the JVM must see the resume first, then only the link's
 /// `DisposeObjects` packets before the marker.
-async fn resume(p: &mut Pair) -> Vec<Disposal> {
+pub(super) async fn resume(p: &mut Pair) -> Vec<Disposal> {
     let resume = command(50, 1, 9, &[]);
     let marker = command(0x99, 1, 1, &[]);
     p.adapter.write_all(&resume).await.unwrap();
@@ -122,7 +125,7 @@ async fn resume(p: &mut Pair) -> Vec<Disposal> {
     }
 }
 
-fn entries(disposals: &[Disposal]) -> Vec<Vec<(u64, u32)>> {
+pub(super) fn entries(disposals: &[Disposal]) -> Vec<Vec<(u64, u32)>> {
     disposals.iter().map(|(_, entries)| entries.clone()).collect()
 }
 
@@ -211,6 +214,44 @@ async fn late_reply_after_resume_is_disposed_once() {
     assert_eq!(entries(&resume(&mut p).await), vec![vec![(0x33, 1)]]);
     stop(&mut p, 2, THREAD).await;
     assert_eq!(resume(&mut p).await, vec![]);
+}
+
+#[tokio::test]
+async fn queued_command_is_stale_once_its_stop_ends() {
+    let mut p = stopped().await;
+    let first = spawn_command(&p.link, WAIT);
+    let id = own_instances(&mut p).await;
+    let queued = spawn_command(&p.link, WAIT);
+    assert_jvm_quiet(&mut p).await;
+    assert_eq!(resume(&mut p).await, vec![]);
+    assert_eq!(result(first).await, Err(LinkError::Stale));
+    // the resume cancels it at once, though the first command still holds the turn
+    assert_eq!(result(queued).await, Err(LinkError::Stale));
+    p.jvm.write_all(&reply(id, 0, &tagged(&[0x33]))).await.unwrap();
+    jvm_marker(&mut p).await;
+    assert_jvm_quiet(&mut p).await;
+    stop(&mut p, 2, THREAD).await;
+    assert_eq!(entries(&resume(&mut p).await), vec![vec![(0x33, 1)]]);
+}
+
+#[tokio::test]
+async fn queued_command_never_runs_in_the_next_stop() {
+    let mut p = stopped().await;
+    let first = spawn_command(&p.link, WAIT);
+    let id = own_instances(&mut p).await;
+    let queued = spawn_command(&p.link, WAIT);
+    assert_jvm_quiet(&mut p).await;
+    assert_eq!(resume(&mut p).await, vec![]);
+    assert_eq!(result(first).await, Err(LinkError::Stale));
+    stop(&mut p, 2, THREAD).await;
+    wait_state(&p.link, LinkState::Suspended { generation: 2, thread: Some(THREAD) }).await;
+    // the turn comes free only in stop 2
+    p.jvm.write_all(&reply(id, 0, &tagged(&[0x33]))).await.unwrap();
+    jvm_marker(&mut p).await;
+    // neither a SuspendCount check nor a second Instances
+    assert_jvm_quiet(&mut p).await;
+    assert_eq!(result(queued).await, Err(LinkError::Stale));
+    assert_eq!(entries(&resume(&mut p).await), vec![vec![(0x33, 1)]]);
 }
 
 #[tokio::test]
