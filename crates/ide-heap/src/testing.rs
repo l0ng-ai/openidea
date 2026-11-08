@@ -184,7 +184,8 @@ impl HprofWriter {
         let mut out = self.top.clone();
         out.push(TAG_HEAP_SEGMENT);
         out.extend_from_slice(&0u32.to_be_bytes());
-        out.extend_from_slice(&(self.heap.len() as u32).to_be_bytes());
+        let heap_len = u32::try_from(self.heap.len()).expect("fixture heap segment exceeds 4 GiB");
+        out.extend_from_slice(&heap_len.to_be_bytes());
         out.extend_from_slice(&self.heap);
         out.push(TAG_HEAP_DUMP_END);
         out.extend_from_slice(&0u32.to_be_bytes());

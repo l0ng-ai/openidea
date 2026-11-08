@@ -61,12 +61,9 @@ impl<'a> Reader<'a> {
         Ok(u64::from_be_bytes(self.array()?))
     }
 
+    /// `id_size` is 4 or 8; the public entry points reject anything else before building a reader.
     pub(crate) fn id(&mut self) -> Result<u64, HeapError> {
-        match self.id_size {
-            8 => self.u8(),
-            4 => self.u4().map(u64::from),
-            n => Ok(self.bytes(n as usize)?.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))),
-        }
+        if self.id_size == 4 { self.u4().map(u64::from) } else { self.u8() }
     }
 }
 

@@ -830,10 +830,75 @@ mod tests {
         heap.bytes()
     }
 
+    fn with_header(id_size: u8, body: &[u8]) -> Vec<u8> {
+        let mut bytes = MAGIC_1_0_2.to_vec();
+        bytes.extend_from_slice(&u32::from(id_size).to_be_bytes());
+        bytes.extend_from_slice(&1_700_000_000_000u64.to_be_bytes());
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
     proptest! {
         #[test]
         fn parser_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..4096)) {
             let _ = parse_header(&bytes).and_then(|h| scan(&bytes, &h, &mut |_| Ok(())));
+        }
+
+        /// Random bytes alone fail the magic check, so this puts a valid header in front to make
+        /// `scan` and `scan_segment` run on arbitrary record streams.
+        #[test]
+        fn random_bytes_after_a_valid_header_never_panic(
+            id_size in prop_oneof![Just(4u8), Just(8u8)],
+            body in proptest::collection::vec(any::<u8>(), 0..4096),
+        ) {
+            let bytes = with_header(id_size, &body);
+            let header = parse_header(&bytes).unwrap();
+            prop_assert_eq!(header.id_size, id_size);
+            let _ = scan(&bytes, &header, &mut |_| Ok(()));
+            let _ = scan_segment(&bytes, header.body_start..bytes.len(), id_size, &mut |_, _| Ok(()));
+            for at in header.body_start..bytes.len() {
+                let _ = record_at(&bytes, at, id_size);
+            }
+        }
+
+        /// Same, but every record has a correct length so the random bytes reach the heap-dump
+        /// segments and the sub-record parsers instead of stopping at the first bad length.
+        #[test]
+        fn random_records_after_a_valid_header_never_panic(
+            id_size in prop_oneof![Just(4u8), Just(8u8)],
+            records in proptest::collection::vec(
+                (
+                    prop_oneof![Just(0x01u8), Just(0x02), Just(0x0C), Just(0x1C), Just(0x2C), any::<u8>()],
+                    prop_oneof![
+                        Just(0x20u8), Just(0x21), Just(0x22), Just(0x23), Just(0x01), Just(0x02), Just(0x03),
+                        Just(0x04), Just(0x05), Just(0x06), Just(0x07), Just(0x08), Just(0xFF), any::<u8>()
+                    ],
+                    proptest::collection::vec(any::<u8>(), 0..96),
+                ),
+                0..12,
+            ),
+        ) {
+            let mut body = Vec::new();
+            for (tag, first, rest) in records {
+                let mut record_body = vec![first];
+                record_body.extend_from_slice(&rest);
+                body.push(tag);
+                body.extend_from_slice(&0u32.to_be_bytes());
+                body.extend_from_slice(&(record_body.len() as u32).to_be_bytes());
+                body.extend_from_slice(&record_body);
+            }
+            let bytes = with_header(id_size, &body);
+            let header = parse_header(&bytes).unwrap();
+            let mut segments = Vec::new();
+            let _ = scan(&bytes, &header, &mut |r| {
+                if let Record::Segment(s) = r {
+                    segments.push(s);
+                }
+                Ok(())
+            });
+            for s in segments {
+                let _ = scan_segment(&bytes, s, id_size, &mut |_, _| Ok(()));
+            }
         }
 
         #[test]
