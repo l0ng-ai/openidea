@@ -497,5 +497,22 @@
   "Run All": "Run All",
   "Restart All": "Restart All",
   "Stop All": "Stop All",
-  "Open in Browser": "Open in Browser"
+  "Open in Browser": "Open in Browser",
+  "Build Module": "Build Module",
+  "Build Artifacts": "Build Artifacts",
+  "Build Module '{target}'": "Build Module '{target}'",
+  "Build cancelled": "Build cancelled",
+  "Build did not start": "Build did not start",
+  "Select a module for the Build Module task": "Select a module for the Build Module task",
+  "The Build Module task uses a different module; remove it and add it again": "The Build Module task uses a different module; remove it and add it again",
+  "Module '{target}' no longer exists": "Module '{target}' no longer exists",
+  "Choose Projects": "Choose Projects",
+  "Add Selected": "Add Selected",
+  "Projects found": "Projects found",
+  "Select All": "Select All",
+  "Select None": "Select None",
+  "Choose the projects to link to this workspace.": "Choose the projects to link to this workspace.",
+  "Already linked": "Already linked",
+  "Searching for projects…": "Searching for projects…",
+  "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.": "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again."
 }

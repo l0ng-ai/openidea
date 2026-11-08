@@ -288,6 +288,42 @@ describe("build feature", () => {
     );
   });
 
+  it.each([
+    ["build.buildModule", { target: "/p/core", activate: false, wait: true }, "build", "/p/core"],
+    ["build.buildArtifacts", { activate: false, wait: true }, "artifacts", null],
+  ])("awaits %s only when requested and keeps its successful build hidden", async (id, arg, kind, file) => {
+    setContext("build.lastStatus", "success");
+    let finished = false;
+    const run = executeAction(id, arg).then(() => {
+      finished = true;
+    });
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ kind, file });
+    expect(finished).toBe(false);
+    expect(getContext()["build.lastStatus"]).toBeNull();
+    expect(show).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(finished).toBe(true);
+    expect(getContext()["build.lastStatus"]).toBe("success");
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["build.buildModule", "/p/core"],
+    ["build.buildModule", undefined],
+    ["build.buildArtifacts", undefined],
+  ])("keeps ordinary %s calls nonblocking (%s)", async (id, arg) => {
+    await executeAction(id, arg);
+    expect(useBuildRun.getState().status).toBe("running");
+    expect(fake.calls.at(-1)?.file).toBe(arg ?? null);
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+  });
+
   it("starts a build without a workbench", async () => {
     show.mockImplementation(() => {
       throw new Error("No workbench");

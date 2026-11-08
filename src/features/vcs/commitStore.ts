@@ -27,6 +27,8 @@ interface CommitState {
   excludedHunks: Map<string, Set<string>>;
   /** Absolute paths selected in the changes tree. */
   selection: string[];
+  /** Keys of the selected tree nodes: which staging side of a partially staged file. */
+  selectionKeys: string[];
   /** Bumped to focus the message field. */
   focusTick: number;
   /** Bumped to open the commit message history popup. */
@@ -57,6 +59,7 @@ export const useCommit = create<CommitState>(() => ({
   checks: new Map(),
   excludedHunks: new Map(),
   selection: [],
+  selectionKeys: [],
   focusTick: 0,
   historyTick: 0,
   checkProblems: [],
@@ -280,6 +283,7 @@ export function installPreparedMessage(): () => void {
         checks: new Map(),
         excludedHunks: new Map(),
         selection: [],
+        selectionKeys: [],
         tab: "changes",
         selectedList: null,
         selectedShelf: null,
