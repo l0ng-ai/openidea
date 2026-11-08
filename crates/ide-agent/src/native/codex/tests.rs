@@ -247,11 +247,24 @@ fn approvals_offer_what_codex_offers_and_always_a_decline() {
     assert_eq!(
         command_approval_title(
             &json!({"command": "/bin/zsh -lc 'ls'", "commandActions": [{"type": "unknown", "command": "touch b"}]}),
-            None,
             None
         ),
-        "Run touch b"
+        "Run /bin/zsh -lc 'ls'"
     );
+}
+
+#[test]
+fn approval_command_uses_its_request_and_matching_item_only() {
+    let command = "python3 -c 'import pathlib\np = pathlib.Path(\"note.txt\")\np.write_text(\"hi\\n\")'";
+    let pending_read = json!({"id": "read", "type": "commandExecution", "command": "ls",
+        "commandActions": [{"type": "listFiles", "path": "."}]});
+    let request = json!({"itemId": "write", "command": command});
+    assert_eq!(command_approval_title(&request, Some(&pending_read)), format!("Run {command}"));
+    let item = json!({"id": "write", "command": command});
+    let request = json!({"itemId": "write"});
+    assert_eq!(command_approval_title(&request, Some(&item)), format!("Run {command}"));
+    assert_eq!(command_approval_title(&request, Some(&pending_read)), "Run a command");
+    assert_eq!(command_approval_title(&request, None), "Run a command");
 }
 
 #[test]
@@ -780,7 +793,7 @@ async fn approvals_are_asked_and_answered() {
     assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({"stopReason": "end_turn"}));
     let asked = client.asked.lock().clone();
     assert_eq!(asked.len(), 2);
-    assert_eq!(asked[0]["toolCall"]["title"], "Run touch b.txt");
+    assert_eq!(asked[0]["toolCall"]["title"], "Run /bin/zsh -lc 'touch b.txt'");
     let ids: Vec<&str> =
         asked[0]["options"].as_array().unwrap().iter().map(|o| o["optionId"].as_str().unwrap()).collect();
     assert_eq!(ids, ["accept", "acceptWithExecpolicyAmendment", "decline", "cancel"]);
