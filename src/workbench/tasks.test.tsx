@@ -78,6 +78,29 @@ describe("task queues", () => {
 });
 
 describe("cancelling", () => {
+  it.each([false, true])("keeps a replacement task when the old completion arrives (delayed: %s)", (delayed) => {
+    vi.useFakeTimers();
+    const uninstall = installTaskEvents();
+    const base = {
+      type: "task" as const,
+      title: "Finding references",
+      message: null,
+      fraction: null,
+      cancellable: false,
+    };
+    emitLocalIdeEvent({ ...base, id: 51, done: false });
+    if (delayed) vi.advanceTimersByTime(600);
+    emitLocalIdeEvent({ ...base, id: 52, done: false });
+    emitLocalIdeEvent({ ...base, id: 51, done: true });
+    vi.advanceTimersByTime(600);
+    expect(useTasks.getState().tasks.map((t) => t.id)).toEqual([52]);
+    emitLocalIdeEvent({ ...base, id: 52, done: true });
+    emitLocalIdeEvent({ ...base, id: 52, done: true });
+    vi.advanceTimersByTime(600);
+    expect(useTasks.getState().tasks).toEqual([]);
+    uninstall();
+  });
+
   it("shows Cancelling… until the task ends, then removes it without the finished bar", () => {
     vi.useFakeTimers();
     const cancel = vi.fn();
