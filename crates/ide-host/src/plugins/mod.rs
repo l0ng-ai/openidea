@@ -498,7 +498,7 @@ impl PluginHost {
             if self.plugins.read().contains_key(&pending.id) {
                 continue;
             }
-            let dir = self.plugins_dir.join(pending.dir);
+            let dir = pending.package_dir(&self.plugins_dir);
             let mut manifest = placeholder_manifest(&dir);
             manifest.id = pending.id.clone();
             manifest.name = pending.name;
@@ -888,6 +888,8 @@ impl PluginHost {
         let id = pkg.id().to_owned();
         if let Some(plugin) = self.plugins.read().get(&id) {
             self.check_not_uninstalling(plugin)?;
+        } else {
+            self.check_uninstall_pending(&id)?;
         }
         if let Some(existing) = self.plugins.read().get(&id)
             && existing.source != PluginSource::Installed
@@ -963,7 +965,11 @@ impl PluginHost {
     /// Makes `previous` the active version of `id` again and drops `failed`
     /// (its directory, its consent). Called with the plugin unloaded or not.
     fn roll_back(&self, id: &str, previous: &str, failed: &str, grant: Option<ledger::Grant>) {
-        if self.get(id).is_ok_and(|plugin| self.check_not_uninstalling(&plugin).is_err()) {
+        let ready = match self.get(id) {
+            Ok(plugin) => self.check_not_uninstalling(&plugin),
+            Err(_) => self.check_uninstall_pending(id),
+        };
+        if ready.is_err() {
             return;
         }
         let root = self.plugins_dir.join(id);
@@ -1099,6 +1105,13 @@ impl PluginHost {
             .map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))
     }
 
+    fn check_uninstall_pending(&self, id: &str) -> IdeResult<()> {
+        if install::uninstall_pending(&self.plugins_dir, id)? {
+            return Err(IdeError::unavailable(std::io::Error::from(std::io::ErrorKind::ResourceBusy).to_string()));
+        }
+        Ok(())
+    }
+
     pub fn uninstall(&self, id: &str) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
@@ -1121,15 +1134,14 @@ impl PluginHost {
             id: id.to_owned(),
             name: plugin.manifest().name.clone(),
             version: plugin.manifest().version.clone(),
-            dir: plugin
-                .dir()
-                .strip_prefix(&self.plugins_dir)
-                .map_err(|e| IdeError::internal(e.to_string()))?
-                .to_path_buf(),
+            flat: plugin.dir() == self.plugins_dir.join(id),
             secrets: secrets.clone(),
             error: None,
         };
-        install::remember_uninstall(&self.plugins_dir, &pending)?;
+        // A broken manifest has no trusted identity to journal; keep its existing removal path.
+        if !plugin.invalid {
+            install::remember_uninstall(&self.plugins_dir, &pending, plugin.dir())?;
+        }
         // Retain registration for retry, but prevent concurrent on-demand activation.
         {
             let _runtime = plugin.runtime.lock();
@@ -1167,7 +1179,9 @@ impl PluginHost {
         };
         if let Err(e) = cleanup() {
             pending.error = Some(e.to_string());
-            if let Err(record_error) = install::remember_uninstall(&self.plugins_dir, &pending) {
+            if !plugin.invalid
+                && let Err(record_error) = install::remember_uninstall(&self.plugins_dir, &pending, plugin.dir())
+            {
                 tracing::warn!(plugin = %id, "cannot save uninstall error: {record_error}");
             }
             self.set_failed(&plugin, e.to_string());
@@ -2229,13 +2243,19 @@ impl PluginHost {
         if plugin.meta.lock().uninstalling {
             return Err(IdeError::unavailable("Uninstall incomplete; retry Uninstall to finish cleanup."));
         }
+        if plugin.source == PluginSource::Installed {
+            self.check_uninstall_pending(plugin.id())?;
+        }
         Ok(())
     }
 
     /// Validates, checks grants and commits the contributions; activates code
     /// whose activation event already fired.
     fn start(&self, plugin: &Arc<LoadedPlugin>) {
-        if self.check_not_uninstalling(plugin).is_err() {
+        if let Err(e) = self.check_not_uninstalling(plugin) {
+            if !plugin.meta.lock().uninstalling {
+                self.set_failed(plugin, e.message);
+            }
             return;
         }
         self.registry.dispose_plugin(plugin.id());

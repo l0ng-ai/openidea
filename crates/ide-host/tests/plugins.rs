@@ -909,10 +909,19 @@ fn private_uninstall_recovers_after_package_metadata_is_removed() {
         assert!(host.info_of(id).is_ok(), "partial package cleanup must retain a restartable uninstall target");
         assert!(host.info_of(id).unwrap().error.is_some());
         assert_eq!(host.info_of(id).unwrap().status, PluginStatus::Failed);
+        assert!(host.reload(id).is_err());
+        assert!(host.set_enabled(id, true).is_err());
+        assert_eq!(
+            host.install_from_dir(&sample("private-dir"), &Consent::all()).unwrap_err().kind,
+            ErrorKind::Unavailable
+        );
         host.uninstall(id).unwrap();
         assert!(host.info_of(id).is_err());
         assert!(!root.exists());
         assert!(!f.plugins_dir.join(".uninstall").join(format!("{id}.json")).exists());
+        host.install_from_dir(&sample("private-dir"), &Consent::all()).unwrap();
+        host.uninstall(id).unwrap();
+        assert!(!root.exists());
     }
 }
 
