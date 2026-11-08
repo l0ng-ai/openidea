@@ -606,7 +606,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Add an "unknown column" inspection, only when the schema is known for certain. Tests: caret fixtures on the fixture app's models.
 
-- [ ] Phase 8.11: Live database schema
+- [x] Phase 8.11: Live database schema
       Optionally use a connection from `ide-db` as a schema source for models, the validation rules of 8.9 and the query builder (`DB::table('…')`). The user picks the connection in Settings › PHP › Laravel. Merge it with the migration data, with the database winning and the source shown in hover. Refresh it on demand and when the database tool reports a schema change. Text goes in `en.json` and `zh.json`. Tests: an in-memory SQLite connection through `ide-db`.
 
 - [ ] Phase 8.12: Eloquent model view

@@ -29,6 +29,7 @@ use ide_lsp::types::{
 use crate::language_service::Answer;
 use ide_php::complete::{Completion, CompletionData};
 use ide_php::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
+use ide_php::frameworks::laravel::LiveSchema;
 use ide_php::inspect::InspectionConfig;
 use ide_php::project::LayoutConfig;
 use ide_php::refactor::{CHANGE_SIGNATURE, ChangeSignature};
@@ -62,6 +63,9 @@ pub struct PhpEngineSlot {
     engine: RwLock<Option<Arc<PhpEngine>>>,
     /// Serializes starts and stops.
     switching: Mutex<()>,
+    /// The id of the data source the live schema was read from (Settings › PHP › Laravel),
+    /// and the schema, given to the engine whenever it starts.
+    live_schema: Mutex<(String, Option<LiveSchema>)>,
 }
 
 impl PhpEngineSlot {
@@ -75,7 +79,22 @@ impl PhpEngineSlot {
             documents,
             engine: RwLock::new(None),
             switching: Mutex::new(()),
+            live_schema: Mutex::new((String::new(), None)),
         }
+    }
+
+    /// Uses the live schema of data source `source` (its id) for Laravel models, validation
+    /// rules and the query builder; `None` drops it.
+    pub fn set_live_schema(&self, source: &str, schema: Option<LiveSchema>) {
+        *self.live_schema.lock() = (source.to_owned(), schema.clone());
+        if let Some(engine) = self.engine() {
+            engine.set_live_schema(schema);
+        }
+    }
+
+    /// The id of the data source whose live schema is in use (empty: none).
+    pub fn live_schema_source(&self) -> String {
+        self.live_schema.lock().0.clone()
     }
 
     /// The running engine, if Settings › PHP › Engine is `Native`.
@@ -115,6 +134,7 @@ impl PhpEngineSlot {
                 };
                 engine.configure_inspections(InspectionConfig::from_settings(settings));
                 engine.set_laravel_settings(settings.languages.php.laravel.clone());
+                engine.set_live_schema(self.live_schema.lock().1.clone());
                 *self.engine.write() = Some(engine.clone());
                 for doc in self.documents.open_documents() {
                     if let Ok(info) = self.documents.snapshot(doc)

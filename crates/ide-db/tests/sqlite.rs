@@ -318,3 +318,28 @@ async fn applies_driver_properties_and_the_startup_script_on_connect() -> IdeRes
     assert_eq!(db.schemas("s1").await?, vec!["main"]);
     Ok(())
 }
+
+#[tokio::test]
+async fn an_in_memory_database_is_shared_by_the_pool() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-passwords.json")));
+    let db = DbManager::new(root.clone(), root.join("passwords.json"), root.join("history.json"), ssh);
+    db.save_sources(vec![DataSource {
+        id: "mem".into(),
+        name: "memory".into(),
+        driver: DbDriver::Sqlite,
+        file: Some(":memory:".into()),
+        ..Default::default()
+    }])
+    .await?;
+    let c = CancellationToken::new();
+    db.execute("mem", "CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT NOT NULL)", 10, &c).await?;
+    let completion = db.completion("mem").await?;
+    let posts = completion.tables.iter().find(|t| t.name == "posts").expect("posts");
+    let cols: Vec<_> = posts.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(cols, ["id", "title"]);
+    // No file was created for it.
+    assert!(!root.join(":memory:").exists());
+    Ok(())
+}

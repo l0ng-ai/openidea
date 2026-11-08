@@ -338,6 +338,14 @@ export const commands = {
 	 *  "Create translation key…" dialog), from the native PHP engine.
 	 */
 	phpLaravelCreateTranslation: (key: string, texts: TranslationText[]) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_create_translation", { key, texts })),
+	/**
+	 *  Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
+	 *  native PHP engine (`None`: none chosen).
+	 */
+	phpLaravelRefreshSchema: () => typedError<{
+	source: string,
+	tables: number,
+} | null, IdeError>(__TAURI_INVOKE("php_laravel_refresh_schema")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
 	/**  Folders holding indexed files, for `@` references. */
 	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
@@ -4773,6 +4781,12 @@ export type LaravelRoute = {
 	request: string,
 };
 
+/**  The live schema in use: the data source's name and how many tables it has. */
+export type LaravelSchemaStatus = {
+	source: string,
+	tables: number,
+};
+
 /**
  *  Settings › PHP › Laravel. The native engine takes it as it is (`ide_php`), so another
  *  front end can map its own configuration onto it.
@@ -4783,6 +4797,12 @@ export type LaravelSettings = {
 	 *  route registration. On by default.
 	 */
 	routeHints?: boolean,
+	/**
+	 *  The id of the data source (Database tool window) whose live schema the engine uses
+	 *  for model columns, validation rules and `DB::table('…')`, along with the migrations;
+	 *  empty = the migrations alone.
+	 */
+	database?: string,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */

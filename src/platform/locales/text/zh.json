@@ -6283,5 +6283,12 @@
   "There are two parameters named '${name}'": "有两个名为 '${name}' 的形参",
   "The variadic parameter '${name}' must be the last one": "可变形参 '${name}' 必须是最后一个",
   "The new parameter '${name}' needs a default value or a value for the existing calls": "新形参 '${name}' 需要默认值或现有调用处的值",
-  "Change Signature of '{name}'": "更改 '{name}' 的签名"
+  "Change Signature of '{name}'": "更改 '{name}' 的签名",
+  "migrations only": "仅迁移",
+  "A data source of the Database tool window whose tables and columns are used for model attributes, validation rules and DB::table() queries, along with the migrations. Where they differ, the database wins; hover shows where a column comes from. The schema is read again when the Database tool changes it.": "数据库工具窗口中的一个数据源，其表和列与迁移一起用于模型属性、验证规则和 DB::table() 查询。两者不一致时以数据库为准；悬停提示会显示列的来源。数据库工具更改架构时会重新读取架构。",
+  "Laravel database": "Laravel 数据库",
+  "Refresh Schema": "刷新架构",
+  "No data source is chosen: the migrations alone are used": "未选择数据源：仅使用迁移",
+  "Schema of {source} read (tables: {tables})": "已读取 {source} 的架构（表：{tables}）",
+  "Could not read the schema: {message}": "无法读取架构：{message}"
 }

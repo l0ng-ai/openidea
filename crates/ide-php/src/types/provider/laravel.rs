@@ -67,6 +67,8 @@ const MODEL: &str = "Illuminate\\Database\\Eloquent\\Model";
 const FORM_REQUEST: &str = "Illuminate\\Foundation\\Http\\FormRequest";
 const ELOQUENT_BUILDER: &str = "Illuminate\\Database\\Eloquent\\Builder";
 const QUERY_BUILDER: &str = "Illuminate\\Database\\Query\\Builder";
+const DATABASE_MANAGER: &str = "Illuminate\\Database\\DatabaseManager";
+const DATABASE_CONNECTION: &str = "Illuminate\\Database\\ConnectionInterface";
 const COLLECTION: &str = "Illuminate\\Database\\Eloquent\\Collection";
 const ATTRIBUTE: &str = "Illuminate\\Database\\Eloquent\\Casts\\Attribute";
 const RELATIONS: &str = "Illuminate\\Database\\Eloquent\\Relations\\";
@@ -322,6 +324,14 @@ impl LaravelProvider {
             && let Some(made) = Self::make(resolver, class, string)
         {
             return Some(made);
+        }
+        // `DB::table('posts')`: a query builder remembering its table (for
+        // the columns of `where('…')` and the like).
+        if name.eq_ignore_ascii_case("table")
+            && !string.is_empty()
+            && Self::is_a(resolver, target, context, &[DATABASE_MANAGER, DATABASE_CONNECTION])
+        {
+            return Some(Type::generic(QUERY_BUILDER, vec![Type::LiteralString(string.to_owned())]));
         }
         if let Some(relation) = relation_class(name)
             && !class.is_empty()
@@ -800,6 +810,7 @@ impl LaravelProvider {
                 table: table.clone(),
                 ty: column.ty.0.trim_start_matches('\\').to_owned(),
                 nullable: column.nullable,
+                from: migration.source_label(),
                 source,
             };
             push(&mut found, column.name.clone(), origin);

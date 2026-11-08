@@ -105,6 +105,10 @@ namespace Illuminate\Support\Facades {
     class App extends Facade {
         protected static function getFacadeAccessor() { return 'app'; }
     }
+    /** @method static \Illuminate\Database\Query\Builder table(string $table, string|null $as = null) */
+    class DB extends Facade {
+        protected static function getFacadeAccessor() { return 'db'; }
+    }
     /**
      * @method static \Illuminate\Routing\Route get(string $uri, array|string|callable|null $action = null)
      * @method static \Illuminate\Routing\Route post(string $uri, array|string|callable|null $action = null)
@@ -544,6 +548,29 @@ namespace Illuminate\Database\Migrations {
 
 namespace Illuminate\Database {
     class Seeder {}
+    interface ConnectionInterface {
+        public function table($table, $as = null): Query\Builder;
+    }
+    class Connection implements ConnectionInterface {
+        public function table($table, $as = null): Query\Builder { return new Query\Builder(); }
+    }
+    /** @mixin Connection */
+    class DatabaseManager {
+        public function connection($name = null): Connection { return new Connection(); }
+        public function __call($method, $parameters): mixed { return null; }
+    }
+}
+
+namespace Illuminate\Database\Query {
+    class Builder {
+        public function where($column, $operator = null, $value = null, $boolean = 'and'): static { return $this; }
+        public function orderBy($column, $direction = 'asc'): static { return $this; }
+        public function select($columns = ['*']): static { return $this; }
+        public function pluck($column, $key = null): \Illuminate\Support\Collection { return new \Illuminate\Support\Collection(); }
+        public function get($columns = ['*']): \Illuminate\Support\Collection { return new \Illuminate\Support\Collection(); }
+        public function insert(array $values): bool { return true; }
+        public function update(array $values): int { return 0; }
+    }
 }
 
 namespace Illuminate\Database\Schema {

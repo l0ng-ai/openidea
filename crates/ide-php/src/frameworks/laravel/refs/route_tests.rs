@@ -490,7 +490,9 @@ fn route_lenses_on_controller_methods() {
     assert_eq!(lenses.iter().map(RouteLens::title).collect::<Vec<_>>(), ["GET / · home"]);
 
     // Off in the settings.
-    project.engine.set_laravel_settings(ide_core::settings::LaravelSettings { route_hints: false });
+    project
+        .engine
+        .set_laravel_settings(ide_core::settings::LaravelSettings { route_hints: false, ..Default::default() });
     assert_eq!(project.engine.laravel_route_lenses(doc), Some(Vec::new()));
 }
 
@@ -538,7 +540,9 @@ fn route_hints_after_registrations() {
     // Not a route file.
     let controller = project.open_file("app/Http/Controllers/PostController.php");
     assert_eq!(project.engine.laravel_route_hints(controller, all), Some(Vec::new()));
-    project.engine.set_laravel_settings(ide_core::settings::LaravelSettings { route_hints: false });
+    project
+        .engine
+        .set_laravel_settings(ide_core::settings::LaravelSettings { route_hints: false, ..Default::default() });
     assert_eq!(project.engine.laravel_route_hints(doc, all), Some(Vec::new()));
 }
 

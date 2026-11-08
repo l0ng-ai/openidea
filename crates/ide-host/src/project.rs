@@ -545,6 +545,9 @@ impl Host {
         }
         // Only when Settings › PHP › Engine asks for it; returns at once (it indexes in the background).
         project.php.apply(&project.settings.effective());
+        if !project.light {
+            crate::ops::laravel::refresh_schema_if_changed(&project, &self.runtime);
+        }
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
         }

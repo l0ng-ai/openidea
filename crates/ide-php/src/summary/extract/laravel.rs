@@ -278,7 +278,7 @@ impl Extractor<'_> {
         }
         let created = method.eq_ignore_ascii_case("create");
         if !columns.is_empty() || created || partial {
-            self.summary.laravel.tables.push(Table { name, columns, created, partial, file: None });
+            self.summary.laravel.tables.push(Table { name, columns, created, partial, file: None, database: None });
         }
     }
 

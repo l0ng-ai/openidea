@@ -70,6 +70,17 @@ pub async fn php_laravel_create_translation(
     ide_host::ops::laravel::php_laravel_create_translation(&state.host, window.label(), key, texts).await
 }
 
+/// Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
+/// native PHP engine (`None`: none chosen).
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_refresh_schema(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::laravel::LaravelSchemaStatus>> {
+    ide_host::ops::laravel::php_laravel_refresh_schema(&state.host, window.label()).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn find_symbols(

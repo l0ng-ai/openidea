@@ -453,9 +453,9 @@ impl PhpEngine {
             AttributeOrigin::Cast { cast, .. } => {
                 format!("Eloquent attribute, cast to `{}` by the model's casts", cast.trim_start_matches('\\'))
             }
-            AttributeOrigin::Column { table, ty, nullable, .. } => {
+            AttributeOrigin::Column { table, ty, nullable, from, .. } => {
                 let nullable = if *nullable { ", nullable" } else { "" };
-                format!("Column `{}` of table `{table}` (`{ty}`{nullable}), from a migration", magic.member.name)
+                format!("Column `{}` of table `{table}` (`{ty}`{nullable}), from {from}", magic.member.name)
             }
             AttributeOrigin::Rule { rules, .. } if rules.is_empty() => "Validated field, from `rules()`".to_owned(),
             AttributeOrigin::Rule { rules, .. } => format!("Validated field (`{rules}`), from `rules()`"),

@@ -271,3 +271,133 @@ fn reports_unknown_columns_when_the_schema_is_certain() {
     let draft = "<?php\nnamespace App\\Models;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\nclass Draft extends Model\n{\n    public function run(): void\n    {\n        self::where('anything', 1);\n    }\n}\n";
     assert_eq!(project.column_problems("app/Models/Draft.php", draft), []);
 }
+
+/// The live schema of data source `app`: `posts` with a column no
+/// migration makes (`rating`) and `title` nullable, and a table no
+/// migration creates (`audits`).
+fn live_schema() -> crate::frameworks::laravel::LiveSchema {
+    use crate::frameworks::laravel::{LiveColumn, LiveSchema, LiveTable};
+    let column = |name: &str, data_type: &str, nullable: bool| LiveColumn {
+        name: name.into(),
+        data_type: data_type.into(),
+        nullable,
+    };
+    LiveSchema {
+        source: "app".into(),
+        tables: vec![
+            LiveTable {
+                name: "posts".into(),
+                columns: vec![
+                    column("id", "INTEGER", false),
+                    column("title", "TEXT", true),
+                    column("rating", "REAL", true),
+                ],
+            },
+            LiveTable {
+                name: "audits".into(),
+                columns: vec![column("id", "INTEGER", false), column("event", "varchar(40)", false)],
+            },
+        ],
+    }
+}
+
+#[test]
+fn a_live_schema_merges_with_the_migrations() {
+    let mut project = Project::app();
+    let before = project.engine.modification_count();
+    project.engine.set_live_schema(Some(live_schema()));
+    assert!(project.engine.modification_count() > before);
+
+    // Columns only the database has are completed, the migrations' kept.
+    let found = project.eloquent_labels(PROBE, &controller("Post::where('/*|*/');"));
+    let labels = names(&found);
+    for column in ["rating", "title", "slug", "published_at"] {
+        assert!(labels.contains(&column), "{column}: {labels:?}");
+    }
+    let detail = |name: &str| found.iter().find(|(label, _)| label == name).and_then(|(_, detail)| detail.clone());
+    assert_eq!(detail("rating").as_deref(), Some("?float"));
+
+    // The database wins (`title` is nullable there) and is named in hover;
+    // goto still opens the migration.
+    let hover = project.eloquent_hover(PROBE, &controller("Post::where('ti/*|*/tle', 'x');"));
+    assert!(hover.contains("(`string`, nullable), from the database `app`"), "{hover}");
+    let hover = project.eloquent_hover(PROBE, &controller("Post::where('sl/*|*/ug', 'x');"));
+    assert!(hover.contains("from a migration"), "{hover}");
+    let found = project.eloquent_goto(&controller("Post::where('ti/*|*/tle', 'x');"));
+    assert_eq!(found, [(POSTS_MIGRATION.to_owned(), 13, "'title'".to_owned())]);
+    assert!(project.eloquent_type("$post->rating/*|*/;").contains("float"));
+    let hover = project.eloquent_hover(PROBE, &controller("$post->rat/*|*/ing;"));
+    assert!(hover.contains("from the database `app`"), "{hover}");
+    assert!(project.column_problems(PROBE, &controller("Post::where('rating', 1);")).is_empty());
+
+    // Validation rules see the database's tables and columns.
+    let found = project.eloquent_labels(
+        PROBE,
+        &controller(r"\Illuminate\Support\Facades\Validator::make([], ['a' => 'exists:au/*|*/']);"),
+    );
+    assert_eq!(names(&found), ["audits"]);
+    let found = project.eloquent_labels(
+        PROBE,
+        &controller(r"\Illuminate\Support\Facades\Validator::make([], ['a' => 'exists:audits,ev/*|*/']);"),
+    );
+    assert_eq!(names(&found), ["event"]);
+
+    // Dropping the schema goes back to the migrations alone.
+    project.engine.set_live_schema(None);
+    let found = project.eloquent_labels(PROBE, &controller("Post::where('rat/*|*/');"));
+    assert!(found.is_empty(), "{found:?}");
+    let hover = project.eloquent_hover(PROBE, &controller("Post::where('ti/*|*/tle', 'x');"));
+    assert!(hover.contains("(`string`), from a migration"), "{hover}");
+}
+
+#[test]
+fn the_query_builder_knows_its_table() {
+    let mut project = Project::app();
+    project.engine.set_live_schema(Some(live_schema()));
+    let db = r"\Illuminate\Support\Facades\DB";
+    let table: &[(&str, Option<&str>)] = &[
+        (r"\Illuminate\Support\Facades\DB::table('/*|*/posts');", Some("dbTable")),
+        (r"\Illuminate\Support\Facades\DB::connection()->table('/*|*/posts');", Some("dbTable")),
+        (r"\Illuminate\Support\Facades\DB::table('posts')->where('/*|*/title', 1);", Some("eloquentField")),
+        (r"\Illuminate\Support\Facades\DB::table('posts')->insert(['/*|*/title' => 'x']);", Some("eloquentField")),
+    ];
+    for (body, expected) in table {
+        assert_eq!(project.eloquent_kind_at(body), *expected, "{body}");
+    }
+    // The table is a literal type argument (shown widened).
+    assert_eq!(
+        project.eloquent_type(&format!("{db}::table('posts')->where('a', 1)/*|*/;")),
+        r"Illuminate\Database\Query\Builder<string>"
+    );
+
+    // Table names from the migrations and the database.
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{db}::table('/*|*/');")));
+    let labels = names(&found);
+    for name in ["audits", "comments", "post_tag", "posts", "tags", "users"] {
+        assert!(labels.contains(&name), "{name}: {labels:?}");
+    }
+    let detail = |name: &str| found.iter().find(|(label, _)| label == name).and_then(|(_, detail)| detail.clone());
+    assert_eq!(detail("audits").as_deref(), Some("2 columns · database"));
+    assert_eq!(detail("tags").as_deref(), Some("2 columns · migration"));
+    let hover = project.eloquent_hover(PROBE, &controller(&format!("{db}::table('pos/*|*/ts');")));
+    assert!(
+        hover.contains("Table `posts`") && hover.contains("- `rating` `float`, nullable, from the database `app`"),
+        "{hover}"
+    );
+    let found = project.eloquent_goto(&controller(&format!("{db}::table('ta/*|*/gs');")));
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, POSTS_MIGRATION);
+
+    // The builder's columns.
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{db}::table('audits')->where('/*|*/');")));
+    assert_eq!(names(&found), ["event", "id"]);
+    let found = project.eloquent_labels(PROBE, &controller(&format!("{db}::table('posts')->orderBy('rat/*|*/');")));
+    assert_eq!(names(&found), ["rating"]);
+    let found = project.eloquent_goto(&controller(&format!("{db}::table('posts')->where('sl/*|*/ug', 1);")));
+    assert_eq!(found, [(POSTS_MIGRATION.to_owned(), 14, "'slug'".to_owned())]);
+    let hover = project.eloquent_hover(PROBE, &controller(&format!("{db}::table('audits')->where('ev/*|*/ent', 1);")));
+    assert!(hover.contains("Column `event` of table `audits` (`string`), from the database `app`"), "{hover}");
+    let found = project
+        .column_problems(PROBE, &controller(&format!("{db}::table('audits')->where('evnt', 1)->where('event', 'x');")));
+    assert_eq!(found, [(11, "Unknown column 'evnt' of table 'audits'".to_owned())]);
+}

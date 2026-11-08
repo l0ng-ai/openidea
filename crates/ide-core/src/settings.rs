@@ -740,11 +740,15 @@ pub struct LaravelSettings {
     /// A code lens on controller methods listing their routes, and the full URI after each
     /// route registration. On by default.
     pub route_hints: bool,
+    /// The id of the data source (Database tool window) whose live schema the engine uses
+    /// for model columns, validation rules and `DB::table('…')`, along with the migrations;
+    /// empty = the migrations alone.
+    pub database: String,
 }
 
 impl Default for LaravelSettings {
     fn default() -> Self {
-        Self { route_hints: true }
+        Self { route_hints: true, database: String::new() }
     }
 }
 

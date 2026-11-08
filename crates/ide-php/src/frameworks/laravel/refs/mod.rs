@@ -48,6 +48,7 @@
 
 pub mod config_key;
 pub mod controller_action;
+pub mod db_table;
 pub mod eloquent;
 pub mod env_key;
 pub mod middleware;
@@ -87,6 +88,7 @@ use crate::types::{ExprTypes, Resolver, Type};
 
 pub use config_key::ConfigKey;
 pub use controller_action::{ControllerAction, ResourceAction};
+pub use db_table::DbTable;
 pub use eloquent::{EloquentField, EloquentRelation};
 pub use env_key::EnvKey;
 pub use middleware::Middleware;
@@ -228,8 +230,10 @@ pub enum CallTarget {
     /// the global one for an unqualified name).
     Function(Vec<String>),
     /// A method of the receiver's classes (FQNs); `models` are the models
-    /// the receiver's generic arguments name (`Builder<Post>`).
-    Method { classes: Vec<String>, name: String, models: Vec<String> },
+    /// the receiver's generic arguments name (`Builder<Post>`), `tables`
+    /// the tables they name (`DB::table('posts')` is a
+    /// `Query\Builder<'posts'>`).
+    Method { classes: Vec<String>, name: String, models: Vec<String>, tables: Vec<String> },
     /// The value a method returns: the class declaring it (FQN) and its
     /// name.
     Return { class: String, method: String },
@@ -649,9 +653,15 @@ fn call_target<'a>(
         classes.push(class.to_owned());
     }
     let mut models: Vec<String> = Vec::new();
+    let mut tables: Vec<String> = Vec::new();
     for member in receiver.members() {
         let Type::Named { args, .. } = member else { continue };
         for arg in args {
+            if let Type::LiteralString(table) = arg
+                && !tables.contains(table)
+            {
+                tables.push(table.clone());
+            }
             if let Type::Named { fqn, .. } = arg
                 && let Some(model) = resolver.class_model(fqn)
                 && model.is_subclass_of(eloquent::MODEL)
@@ -661,7 +671,7 @@ fn call_target<'a>(
             }
         }
     }
-    Some(CallTarget::Method { classes, name, models })
+    Some(CallTarget::Method { classes, name, models, tables })
 }
 
 /// `config()`: the service a helper returns without arguments.
@@ -877,6 +887,7 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &RequestField,
         &EloquentField,
         &EloquentRelation,
+        &DbTable,
     ]
 }
 

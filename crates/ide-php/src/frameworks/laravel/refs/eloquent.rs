@@ -40,11 +40,13 @@ use crate::types::{Context, Type};
 
 pub(crate) const MODEL: &str = "Illuminate\\Database\\Eloquent\\Model";
 const BUILDER: &str = "Illuminate\\Database\\Eloquent\\Builder";
+const QUERY_BUILDER: &str = "Illuminate\\Database\\Query\\Builder";
 const RELATION: &str = "Illuminate\\Database\\Eloquent\\Relations\\Relation";
 const COLLECTION: &str = "Illuminate\\Database\\Eloquent\\Collection";
 
-/// What queries a model: the model, its builder and its relations.
-const QUERIES: &[&str] = &[MODEL, BUILDER, RELATION];
+/// What queries a model (the model, its builder and its relations) or a
+/// table (`DB::table('posts')`).
+const QUERIES: &[&str] = &[MODEL, BUILDER, RELATION, QUERY_BUILDER];
 /// What loads relations: the above and a collection of models.
 const LOADS: &[&str] = &[MODEL, BUILDER, RELATION, COLLECTION];
 
@@ -105,6 +107,9 @@ const ATTRIBUTES_FIRST: &[&str] = &[
     "updateOrCreate",
     "where",
     "orWhere",
+    "insert",
+    "insertOrIgnore",
+    "insertGetId",
 ];
 /// Methods whose second argument is an attributes array too.
 const ATTRIBUTES_SECOND: &[&str] = &["firstOrCreate", "firstOrNew", "updateOrCreate"];
@@ -213,6 +218,15 @@ fn site_model(cx: &RefContext<'_>) -> Option<String> {
     }
 }
 
+/// The table a query builder's site is about (`DB::table('posts')->where('…')`),
+/// when it isn't about a model.
+fn site_table(cx: &RefContext<'_>) -> Option<String> {
+    match &cx.site.as_ref()?.call.as_ref()?.0 {
+        CallTarget::Method { tables, .. } => tables.first().cloned(),
+        _ => None,
+    }
+}
+
 /// Whether the site is `$appends` (accessor names, not columns).
 fn in_appends(cx: &RefContext<'_>) -> bool {
     matches!(
@@ -299,13 +313,16 @@ impl ReferenceKind for EloquentField {
     }
 
     fn complete(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<RefItem> {
-        let Some(model) = site_model(cx) else { return Vec::new() };
         let (table, from, to) = column_parts(value);
         if at < from || at > to {
             return Vec::new();
         }
         let item =
             |label: String, detail: String| RefItem { insert: label.clone(), label, detail: Some(detail), from, to };
+        let Some(model) = site_model(cx) else {
+            let Some(table) = table.map(str::to_owned).or_else(|| site_table(cx)) else { return Vec::new() };
+            return Self::table_columns(cx, &table).into_iter().map(|(name, ty, _)| item(name, ty)).collect();
+        };
         if let Some(table) = table.filter(|table| !Self::own_table(cx, &model, table)) {
             return Self::table_columns(cx, table).into_iter().map(|(name, ty, _)| item(name, ty)).collect();
         }
@@ -328,9 +345,16 @@ impl ReferenceKind for EloquentField {
     }
 
     fn resolve(&self, cx: &RefContext<'_>, value: &str, _at: usize) -> Vec<Target> {
-        let Some(model) = site_model(cx) else { return Vec::new() };
         let (table, from, to) = column_parts(value);
         let name = &value[from..to];
+        let Some(model) = site_model(cx) else {
+            let Some(table) = table.map(str::to_owned).or_else(|| site_table(cx)) else { return Vec::new() };
+            return Self::table_columns(cx, &table)
+                .into_iter()
+                .filter(|(column, _, _)| column == name)
+                .filter_map(|(_, _, target)| target)
+                .collect();
+        };
         if let Some(table) = table.filter(|table| !Self::own_table(cx, &model, table)) {
             return Self::table_columns(cx, table)
                 .into_iter()
@@ -351,30 +375,51 @@ impl ReferenceKind for EloquentField {
     }
 
     fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
-        let model = site_model(cx)?;
+        let model = site_model(cx);
         let (table, from, to) = column_parts(value);
         let name = &value[from..to];
         let resolver = cx.engine.resolver();
-        let table = match table {
-            Some(table) => table.to_owned(),
-            None => LaravelProvider::model_table(&resolver, &model)?,
+        let table = match (table, &model) {
+            (Some(table), _) => table.to_owned(),
+            (None, Some(model)) => LaravelProvider::model_table(&resolver, model)?,
+            (None, None) => site_table(cx)?,
         };
         let facts = resolver.laravel();
         let columns = facts.columns(&table);
-        let (_, column) = columns.iter().find(|(_, column)| column.name == name)?;
+        let (from, column) = columns.iter().find(|(_, column)| column.name == name)?;
         let nullable = if column.nullable { ", nullable" } else { "" };
-        let short = model.rsplit('\\').next().unwrap_or(&model);
-        Some(format!(
-            "Column `{name}` of table `{table}` (`{}`{nullable}), from a migration\n\nModel `{short}`",
-            column.ty.0.trim_start_matches('\\')
-        ))
+        let mut out = format!(
+            "Column `{name}` of table `{table}` (`{}`{nullable}), from {}",
+            column.ty.0.trim_start_matches('\\'),
+            from.source_label()
+        );
+        if let Some(model) = &model {
+            let short = model.rsplit('\\').next().unwrap_or(model);
+            out.push_str(&format!("\n\nModel `{short}`"));
+        }
+        Some(out)
     }
 
     fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
-        let model = site_model(cx)?;
         if value.contains(['*', '(', '`', '"', ',']) {
             return None;
         }
+        let Some(model) = site_model(cx) else {
+            // `DB::table('posts')->where('…')`: the table's columns.
+            let (qualified, from, to) = column_parts(value);
+            let name = &value[from..to];
+            let table = site_table(cx)?;
+            if name.is_empty() || qualified.is_some_and(|q| !q.eq_ignore_ascii_case(&table)) {
+                return None;
+            }
+            if !cx.engine.resolver().laravel().schema_certain(&table) {
+                return None;
+            }
+            if Self::table_columns(cx, &table).iter().any(|(column, _, _)| column == name) {
+                return None;
+            }
+            return Some(Undefined::warning(format!("Unknown column '{name}' of table '{table}'")));
+        };
         let (table, from, to) = column_parts(value);
         let name = &value[from..to];
         if name.is_empty() || table.is_some_and(|table| !Self::own_table(cx, &model, table)) {

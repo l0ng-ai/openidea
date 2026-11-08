@@ -10,6 +10,7 @@ import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form
 import { choosePath } from "./api";
 import { useSetting } from "../components/context";
 import { SdkField, tildify, useDetected } from "./components";
+import { LaravelDatabaseRow } from "./LaravelDatabase";
 import styles from "./Sdk.module.css";
 
 function PathInput({
@@ -196,6 +197,7 @@ export function PhpPage() {
           onChange={setRouteHints}
           hint="In Laravel projects, shows the routes pointing to each controller method above it and the full URI after each route registration. Click one to go to the route, copy or open its URL, or create an HTTP request for it."
         />
+        <LaravelDatabaseRow />
       </Section>
       <Section title="CLI Interpreter">
         <SdkRow

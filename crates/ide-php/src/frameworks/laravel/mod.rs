@@ -1,6 +1,7 @@
 //! Laravel support (`docs/php-engine/LARAVEL-ROADMAP.md`): the project
 //! model ([`project`]) every Laravel feature reads, the configuration keys
-//! ([`config`]), the environment keys ([`env`]), the translations
+//! ([`config`]), a live database schema ([`database`]), the environment
+//! keys ([`env`]), the translations
 //! ([`lang`]), the Vite assets ([`assets`]), the routes and middleware
 //! ([`routes`]), the route hints and route search ([`route_hints`]), the
 //! views ([`views`]), Blade layouts, components and directives ([`blade`]),
@@ -11,6 +12,7 @@
 pub mod assets;
 pub mod blade;
 pub mod config;
+pub mod database;
 pub mod env;
 pub mod lang;
 pub mod project;
@@ -26,6 +28,7 @@ mod tests;
 pub use assets::ViteAssets;
 pub use blade::{BladeCatalog, BladeComponent, CustomDirective};
 pub use config::{ConfigEntry, ConfigKeys};
+pub use database::{LiveColumn, LiveSchema, LiveTable};
 pub use env::{EnvEntry, EnvKeys};
 pub use lang::{TransEntry, Translations};
 pub use project::{LaravelPaths, LaravelProject, Module, ModuleKind, RouteFile};

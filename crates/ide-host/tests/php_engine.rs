@@ -480,3 +480,80 @@ async fn laravel_create_translation_key_action_and_command() {
     assert!(err.message.contains("can't be added"), "{err:?}");
     host.close_project("main");
 }
+
+/// Settings › PHP › Laravel › Database: the chosen data source's schema reaches the engine
+/// when the setting changes, when the Database tool changes the schema, and on demand.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laravel_live_database_schema() {
+    use ide_db::split::SqlStatement;
+    use ide_db::{DataSource, DbDriver};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("blog");
+    write(&root.join("composer.json"), r#"{"require": {"laravel/framework": "^11.0"}}"#);
+    write(&root.join("app/Probe.php"), "<?php\n");
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(WAIT));
+
+    let source = DataSource {
+        id: "mem".into(),
+        name: "app".into(),
+        driver: DbDriver::Sqlite,
+        file: Some(":memory:".into()),
+        ..Default::default()
+    };
+    ops::db::save_sources(&host, "main", vec![source]).await.unwrap();
+    let run = |sql: &str| {
+        let host = host.clone();
+        let statement = SqlStatement { from: 0, to: sql.len() as u32, text: sql.to_owned() };
+        async move { ops::db::execute(&host, "main", ide_core::RequestId(90), "mem", vec![statement], 10).await.unwrap() }
+    };
+    let outcome = run("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, rating REAL)").await;
+    assert_eq!(outcome[0].error, None);
+    let columns = |engine: &PhpEngine| -> Vec<(String, String)> {
+        let schema = engine.live_schema();
+        let Some(schema) = schema else { return Vec::new() };
+        schema
+            .tables
+            .iter()
+            .filter(|table| table.name == "posts")
+            .flat_map(|table| table.columns.iter().map(|c| (c.name.clone(), c.data_type.clone())))
+            .collect()
+    };
+    assert!(columns(&engine).is_empty());
+
+    // Choosing the data source reads its schema.
+    ops::project::set_settings(&host, "main", SettingsScope::Project, "languages.php.laravel.database", "\"mem\"")
+        .unwrap();
+    until("the live schema", || columns(&engine).len() == 3).await;
+    assert_eq!(engine.live_schema().unwrap().source, "app");
+    assert_eq!(project.php.live_schema_source(), "mem");
+    let facts = engine.resolver().laravel();
+    let rating = facts
+        .columns("posts")
+        .into_iter()
+        .find(|(_, column)| column.name == "rating")
+        .map(|(t, c)| (c.ty.0.clone(), t.database.clone()));
+    assert_eq!(rating, Some(("float".to_owned(), Some("app".to_owned()))));
+
+    // A DDL statement in the Database tool reads it again; queries don't.
+    run("ALTER TABLE posts ADD COLUMN views INTEGER").await;
+    until("the changed schema", || columns(&engine).iter().any(|(name, _)| name == "views")).await;
+
+    // On demand.
+    run("CREATE TABLE audits (id INTEGER PRIMARY KEY)").await;
+    let status = ops::laravel::php_laravel_refresh_schema(&host, "main").await.unwrap();
+    assert_eq!(status, Some(ops::laravel::LaravelSchemaStatus { source: "app".into(), tables: 2 }));
+
+    // No data source: the migrations alone.
+    ops::project::set_settings(&host, "main", SettingsScope::Project, "languages.php.laravel.database", "\"\"")
+        .unwrap();
+    until("the live schema to go", || engine.live_schema().is_none()).await;
+    assert_eq!(ops::laravel::php_laravel_refresh_schema(&host, "main").await.unwrap(), None);
+    host.close_project("main");
+}

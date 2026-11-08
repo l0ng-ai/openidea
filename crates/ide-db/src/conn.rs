@@ -565,19 +565,30 @@ impl Pool {
         match source.driver {
             DbDriver::Sqlite => {
                 let file = source.file.as_deref().ok_or_else(|| IdeError::invalid("no database file"))?;
-                let file = match root {
-                    Some(r) if file.is_relative() => r.join(file),
-                    _ => file.to_path_buf(),
+                // `:memory:`: a private in-memory database shared by the pool's connections,
+                // kept while the data source is connected.
+                let in_memory = file.as_os_str() == ":memory:";
+                let mut opts = if in_memory {
+                    "sqlite::memory:".parse::<SqliteConnectOptions>().map_err(db_err)?
+                } else {
+                    let file = match root {
+                        Some(r) if file.is_relative() => r.join(file),
+                        _ => file.to_path_buf(),
+                    };
+                    SqliteConnectOptions::new().filename(&file).create_if_missing(false)
                 };
-                let mut opts =
-                    SqliteConnectOptions::new().filename(&file).create_if_missing(false).read_only(source.read_only);
+                opts = opts.read_only(source.read_only);
                 for (k, v) in setup.params {
                     opts = opts.pragma(k, v);
                 }
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
-                let pool = SqlitePoolOptions::new()
+                let mut pool_options = SqlitePoolOptions::new();
+                if in_memory {
+                    pool_options = pool_options.min_connections(1).idle_timeout(None).max_lifetime(None);
+                }
+                let pool = pool_options
                     .max_connections(MAX)
                     .acquire_timeout(timeout)
                     .after_connect(after_connect!())

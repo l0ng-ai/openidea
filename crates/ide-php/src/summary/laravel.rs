@@ -78,13 +78,10 @@ impl LaravelFacts {
 
     /// Whether the migrations say for certain which columns `table` has:
     /// some migration creates it, and every statement of the migrations
-    /// changing it was understood.
+    /// changing it was understood; or the live database schema has it.
     pub fn schema_certain(&self, table: &str) -> bool {
-        let mut tables = self.tables.iter().filter(|t| t.name.eq_ignore_ascii_case(table)).peekable();
-        tables.peek().is_some() && {
-            let all: Vec<&Table> = tables.collect();
-            all.iter().any(|t| t.created) && all.iter().all(|t| !t.partial)
-        }
+        let all: Vec<&Table> = self.tables.iter().filter(|t| t.name.eq_ignore_ascii_case(table)).collect();
+        all.iter().any(|t| t.database.is_some()) || (all.iter().any(|t| t.created) && all.iter().all(|t| !t.partial))
     }
 }
 
@@ -111,6 +108,24 @@ pub struct Table {
     /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
     #[serde(skip)]
     pub file: Option<PathBuf>,
+    /// The data source whose live schema says the table has these columns
+    /// (their types and nullability as the database reports them), when
+    /// the engine was given one ([`LiveSchema`](crate::frameworks::laravel::database::LiveSchema));
+    /// `file` is then the migration making the columns, if any. Not stored
+    /// in summaries.
+    #[serde(skip)]
+    pub database: Option<String>,
+}
+
+impl Table {
+    /// Where the columns come from, for hover: "a migration", "the
+    /// database `app`".
+    pub fn source_label(&self) -> String {
+        match &self.database {
+            Some(source) => format!("the database `{source}`"),
+            None => "a migration".to_owned(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

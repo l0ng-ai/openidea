@@ -233,8 +233,10 @@ pub enum AttributeOrigin {
     Accessor { method: String },
     /// A cast (`'boolean'`, `\App\Casts\Money`), in the casts of the class.
     Cast { cast: String, source: Option<Source> },
-    /// A column a migration gives the model's table.
-    Column { table: String, ty: String, nullable: bool, source: Option<Source> },
+    /// A column a migration or the live database gives the model's table
+    /// (`from`: where it comes from, "a migration" or "the database
+    /// `app`").
+    Column { table: String, ty: String, nullable: bool, from: String, source: Option<Source> },
     /// A field a Form Request's `rules()` validates (`rules`: the rule
     /// names, pipe-joined).
     Rule { rules: String, source: Option<Source> },

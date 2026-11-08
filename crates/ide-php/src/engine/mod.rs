@@ -55,7 +55,7 @@ use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, Ser
 use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::frameworks::laravel::{
-    BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, RouteTable, Translations, ViewTable, ViteAssets,
+    BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, LiveSchema, RouteTable, Translations, ViewTable, ViteAssets,
 };
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
@@ -207,6 +207,8 @@ struct Shared {
     laravel_blade: Mutex<Option<(u64, Arc<BladeCatalog>)>>,
     /// What Laravel support shows (Settings › PHP › Laravel).
     laravel_settings: Mutex<LaravelSettings>,
+    /// The tables of the data source chosen in Settings › PHP › Laravel.
+    live_schema: RwLock<Option<Arc<LiveSchema>>>,
 }
 
 /// The variables passed to view files: by file, for a modification count.
@@ -264,6 +266,7 @@ impl PhpEngine {
             view_variables: Mutex::new(HashMap::new()),
             laravel_blade: Mutex::new(None),
             laravel_settings: Mutex::new(LaravelSettings::default()),
+            live_schema: RwLock::new(None),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -727,6 +730,27 @@ impl PhpEngine {
         *self.shared.laravel_settings.lock() = settings;
     }
 
+    /// Uses the tables and columns of a live database (Settings › PHP ›
+    /// Laravel) along with the migrations, the database winning; `None`
+    /// goes back to the migrations alone. Open documents are inspected
+    /// again.
+    pub fn set_live_schema(&self, schema: Option<LiveSchema>) {
+        {
+            let mut current = self.shared.live_schema.write();
+            if current.as_deref() == schema.as_ref() {
+                return;
+            }
+            *current = schema.map(Arc::new);
+        }
+        self.shared.modification.fetch_add(1, Ordering::SeqCst);
+        self.shared.inspect_open_documents();
+    }
+
+    /// The live database schema in use ([`PhpEngine::set_live_schema`]).
+    pub fn live_schema(&self) -> Option<Arc<LiveSchema>> {
+        self.shared.live_schema.read().clone()
+    }
+
     /// Every open document.
     pub fn open_documents(&self) -> Vec<OpenDocument> {
         self.shared.documents.lock().values().cloned().collect()
@@ -957,7 +981,13 @@ impl Declarations for PhpEngine {
             }
         }
         summaries.sort_by(|a, b| a.0.cmp(&b.0));
-        LaravelFacts::merge_located(summaries.iter().map(|(path, summary)| (Some(path.as_path()), &summary.laravel)))
+        let mut facts = LaravelFacts::merge_located(
+            summaries.iter().map(|(path, summary)| (Some(path.as_path()), &summary.laravel)),
+        );
+        if let Some(live) = self.shared.live_schema.read().clone() {
+            live.merge_into(&mut facts);
+        }
+        facts
     }
 
     /// The configuration, then the facts of the indexed files that have

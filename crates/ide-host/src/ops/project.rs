@@ -209,6 +209,7 @@ pub fn set_settings(
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
     if php {
         let affected = affected();
+        let runtime = host.runtime.clone();
         host.runtime.spawn_blocking(move || {
             for project in affected.into_iter().filter(|p| !p.light) {
                 let settings = project.settings.effective();
@@ -216,6 +217,8 @@ pub fn set_settings(
                 if let Some(analyzers) = &project.php_analyzers {
                     analyzers.apply(&settings);
                 }
+                // Settings › PHP › Laravel › Database: read the chosen data source's schema.
+                crate::ops::laravel::refresh_schema_if_changed(&project, &runtime);
             }
         });
     }
