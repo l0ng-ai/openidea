@@ -1,5 +1,8 @@
-/** Minimum time between two fits while the host keeps resizing (a tool window drag). */
-export const FIT_INTERVAL_MS = 100;
+/**
+ * How long requests must stop before a terminal that keeps resizing (a tool window drag)
+ * refits. A fit reflows the whole scrollback, so during the drag the pane only clips.
+ */
+export const FIT_SETTLE_MS = 120;
 /** How long the size must stay put before the process behind the terminal is told. */
 export const PROCESS_RESIZE_DELAY_MS = 150;
 
@@ -11,36 +14,34 @@ export interface FitScheduler {
 }
 
 /**
- * Coalesces fit requests. An idle terminal fits on the next frame; while its host keeps
- * resizing it refits at most every FIT_INTERVAL_MS, and once more when the resizing
- * stops. Re-rendering xterm on every pointer move of a drag costs a frame each time.
+ * Coalesces fit requests. An idle terminal fits on the next frame; while requests keep
+ * coming (its host is being resized) it fits once, FIT_SETTLE_MS after the last one.
  */
 export function fitScheduler(fit: () => void): FitScheduler {
   let raf = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let pending = false;
-  let last = -Infinity;
+  let lastRequest = -Infinity;
   const cancel = () => {
     cancelAnimationFrame(raf);
     clearTimeout(timer);
     raf = 0;
     timer = undefined;
-    pending = false;
   };
   const run = () => {
     cancel();
-    last = performance.now();
     fit();
   };
   return {
     schedule() {
-      if (pending) return;
-      pending = true;
-      const wait = last + FIT_INTERVAL_MS - performance.now();
-      if (wait > 0) {
-        timer = setTimeout(run, wait);
+      const now = performance.now();
+      const resizing = now - lastRequest < FIT_SETTLE_MS;
+      lastRequest = now;
+      if (resizing) {
+        cancel();
+        timer = setTimeout(run, FIT_SETTLE_MS);
         return;
       }
+      if (timer !== undefined) return;
       raf = requestAnimationFrame(run);
       // WebKit pauses rAF in background windows; don't leave the terminal unfitted until it is shown.
       timer = setTimeout(run, 100);

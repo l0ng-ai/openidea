@@ -5544,4 +5544,52 @@ fn view_header_none_needs_api_1_3_and_an_ungrouped_web_view() {
     let info = f.install(&pkg);
     assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
     assert_eq!(f.host.ui_items("views")[0].decl["header"], "none");
+
+    std::fs::write(pkg.join("plugin.toml"), manifest("^1.2", "web = \"web/index.html\"\nsecondary = true")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err().message;
+    assert!(err.contains("new in plugin API 1.3"), "{err}");
+
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        "id = \"headerless\"\nname = \"Headerless\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.3\"\n[[contributes.views]]\nid = \"panel\"\ntitle = \"Panel\"\nlocation = \"right\"\nsecondary = true\nweb = \"web/index.html\"\nheader = \"none\"\n",
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(f.host.ui_items("views")[0].decl["secondary"], true);
+}
+
+#[test]
+fn view_secondary_requires_api_1_3_and_a_boolean_tool_window_placement() {
+    let f = fixture(Limits::default());
+    for location in ["left", "right", "bottom"] {
+        for fields in ["", "secondary = false", "secondary = true", "group = \"g\"\nsecondary = true"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let pkg = hello_variant(tmp.path(), |t| {
+                t.replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.3\"")
+                    .replace("location = \"right\"", &format!("location = {location:?}\n{fields}"))
+            });
+            assert!(f.install(&pkg).error.is_none());
+            let decl = &f.host.ui_items("views")[0].decl;
+            assert_eq!(decl["location"], location);
+            let expected = if fields.is_empty() { None } else { Some(!fields.contains("false")) };
+            assert_eq!(decl.get("secondary").and_then(|v| v.as_bool()), expected);
+        }
+    }
+    for (api, location, value, message) in [
+        ("^1.0", "right", "true", "new in plugin API 1.3"),
+        ("^1.2", "right", "false", "new in plugin API 1.3"),
+        ("^1.3", "services", "true", "does not apply to a services view"),
+        ("^1.3", "services", "false", "does not apply to a services view"),
+        ("^1.3", "bottom", "\"yes\"", "boolean"),
+        ("^1.3", "left", "1", "boolean"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = hello_variant(tmp.path(), |t| {
+            t.replace("engines.openidea = \"^1.0\"", &format!("engines.openidea = {api:?}"))
+                .replace("location = \"right\"", &format!("location = {location:?}\nsecondary = {value}"))
+        });
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{api}, {location}, {value}: {err:?}");
+    }
 }
