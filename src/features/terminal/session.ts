@@ -459,6 +459,7 @@ export class TerminalSession {
   }
 
   private scheduleFit() {
+    this.ptyResize.cancel();
     this.fitter.schedule();
   }
 
