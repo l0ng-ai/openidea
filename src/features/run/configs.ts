@@ -42,56 +42,6 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 export const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
-/**
- * The menu category of a run configuration kind, for the Services "Add Service"
- * menu (IDEA's template groups): a registered type's group (Docker, Servers),
- * else its language/tool category, else "Others".
- */
-export const KIND_CATEGORIES: Record<string, string> = {
-  "spring-boot": "Java",
-  application: "Java",
-  native: "Java",
-  "java-file": "Java",
-  kotlin: "Java",
-  kotlinc: "Java",
-  "scala-cli": "Java",
-  maven: "Build Tools",
-  gradle: "Build Tools",
-  cmake: "Build Tools",
-  make: "Build Tools",
-  just: "Build Tools",
-  npm: "JavaScript",
-  vue: "JavaScript",
-  node: "JavaScript",
-  bun: "JavaScript",
-  deno: "JavaScript",
-  python: "Python",
-  pytest: "Python",
-  cargo: "Rust",
-  rustc: "Rust",
-  go: "Go",
-  cc: "C/C++",
-  shell: "Shell",
-  program: "Shell",
-};
-
-/** Category order of the Add Service menu; unlisted categories (plugins) sort after, then "Others". */
-export const CATEGORY_ORDER: readonly string[] = [
-  "Java",
-  "Build Tools",
-  "JavaScript",
-  "Python",
-  "Rust",
-  "Go",
-  "C/C++",
-  "Shell",
-  "Servers",
-  "Docker",
-];
-
-export function categoryOf(kind: string): string {
-  return useRunConfigTypes.getState().types.get(kind)?.group ?? KIND_CATEGORIES[kind] ?? "Others";
-}
 
 
 export function kindLabel(kind: string): string {

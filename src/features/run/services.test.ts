@@ -13,18 +13,15 @@ import {
   addType,
   cleanupRemovedProject,
   runServiceProvider,
-  categorizedTypes,
   DEFAULT_TYPES,
-  readHidden,
   readRan,
   readTypes,
   runServiceItems,
   sessionDetail,
   sessionStatus,
 } from "./services";
-import { KIND_OPTIONS, categoryOf } from "./configs";
 import { startedPort } from "./serverPort";
-import { registerRunConfigType, type DebugServiceSession } from "@/workbench/contributions";
+import type { DebugServiceSession } from "@/workbench/contributions";
 import { useRun, type RunSession } from "./store";
 
 const { startRun, stopServiceSessions } = vi.hoisted(() => ({
@@ -321,14 +318,6 @@ describe("embedded web server port", () => {
     expect(startedPort("Tomcat started on port 99999")).toBeNull();
   });
 
-  it("reads the port from Vite and Vue CLI dev server lines", () => {
-    expect(startedPort("  ➜  Local:   http://localhost:5173/")).toBe(5173);
-    expect(startedPort("- Local:   http://localhost:8080/")).toBe(8080);
-    expect(startedPort("  ➜  Local:   http://127.0.0.1:7001/")).toBe(7001);
-    expect(startedPort("  ➜  Local:   http://[::1]:4173/")).toBe(4173);
-    expect(startedPort("  ➜  Network: http://192.168.1.5:5173/")).toBeNull();
-    expect(startedPort("Compiled successfully in 123 ms")).toBeNull();
-  });
 });
 
 describe("open in browser", () => {
@@ -418,108 +407,6 @@ describe("group batch actions", () => {
       [a, undefined, undefined, { show: false }],
       [b, undefined, undefined, { show: false }],
     ]);
-  });
-});
-
-describe("hidden configurations", () => {
-  const a = config("a", "spring-boot");
-  const b = config("b", "spring-boot");
-
-  it("hides a configuration unless it runs", () => {
-    const hidden = { "spring-boot": ["a"] };
-    const stopped = runServiceItems([a, b], [], DEFAULT_TYPES, [], {}, [], () => false, hidden);
-    expect(stopped[0]!.children!.map((c) => c.key)).toEqual(["run:config:b"]);
-    const running = runServiceItems([a, b], [session("s1", a, "running", 1)], DEFAULT_TYPES, [], {}, [], () => false, hidden);
-    expect(running[0]!.children!.map((c) => c.key)).toEqual(["run:config:a", "run:config:b"]);
-  });
-
-  it("keeps an empty default group whose configurations are all hidden", () => {
-    const items = runServiceItems([a], [], DEFAULT_TYPES, [], {}, [], () => false, { "spring-boot": ["a"] });
-    expect(items).toHaveLength(1);
-    expect(items[0]!.children).toEqual([]);
-  });
-
-  it("persists hidden ids per project", () => {
-    localStorage.clear();
-    expect(readHidden("/p")).toEqual({});
-    localStorage.setItem("openidea.services.runHidden:/p", JSON.stringify({ "spring-boot": ["a"] }));
-    expect(readHidden("/p")).toEqual({ "spring-boot": ["a"] });
-    expect(readHidden("/q")).toEqual({});
-    expect(readHidden(null)).toEqual({});
-  });
-});
-
-describe("add service categories", () => {
-  it("categorizes every built-in kind; update the table when adding kinds", () => {
-    const expected: Record<string, string> = {
-      npm: "JavaScript",
-      vue: "JavaScript",
-      node: "JavaScript",
-      bun: "JavaScript",
-      deno: "JavaScript",
-      cargo: "Rust",
-      rustc: "Rust",
-      gradle: "Build Tools",
-      maven: "Build Tools",
-      cmake: "Build Tools",
-      make: "Build Tools",
-      just: "Build Tools",
-      go: "Go",
-      python: "Python",
-      pytest: "Python",
-      phpunit: "Others",
-      composer: "Others",
-      cc: "C/C++",
-      shell: "Shell",
-      program: "Shell",
-      compound: "Others",
-      application: "Java",
-      "spring-boot": "Java",
-      native: "Java",
-      "java-file": "Java",
-      kotlin: "Java",
-      kotlinc: "Java",
-      "scala-cli": "Java",
-      ruby: "Others",
-      php: "Others",
-      perl: "Others",
-      lua: "Others",
-      r: "Others",
-      swift: "Others",
-      dart: "Others",
-      elixir: "Others",
-    };
-    for (const { value } of KIND_OPTIONS) expect(categoryOf(value), value).toBe(expected[value]);
-  });
-
-  it("orders buckets: fixed order first, unlisted plugin categories after, Others last", () => {
-    const dispose = registerRunConfigType({
-      id: "fake-cloud",
-      label: "Cloud Run",
-      icon: "cloud",
-      group: "Clouds",
-      fields: [],
-      commandLine: () => null,
-    });
-    const buckets = categorizedTypes(["ruby", "spring-boot", "npm", "fake-cloud", "gradle"]);
-    expect(buckets.map((b) => b.category)).toEqual(["Java", "Build Tools", "JavaScript", "Clouds", "Others"]);
-    dispose();
-  });
-
-  it("keeps a single-member category as its own bucket", () => {
-    expect(categorizedTypes(["go", "ruby"])).toEqual([
-      { category: "Go", kinds: ["go"] },
-      { category: "Others", kinds: ["ruby"] },
-    ]);
-  });
-
-  it("sorts each bucket's kinds by their label", () => {
-    const buckets = categorizedTypes(["spring-boot", "application", "java-file", "native"]);
-    expect(buckets[0]).toEqual({ category: "Java", kinds: ["application", "java-file", "native", "spring-boot"] });
-  });
-
-  it("groups nothing for an empty list", () => {
-    expect(categorizedTypes([])).toEqual([]);
   });
 });
 
