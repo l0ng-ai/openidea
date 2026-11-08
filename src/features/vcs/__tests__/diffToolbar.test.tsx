@@ -11,6 +11,7 @@ const openFile = vi.fn();
 const openInput = vi.fn();
 const texts: Record<string, string> = { HEAD: "a\n", abc123: "a\n" };
 let working = "a\n";
+let workingEol = "lf";
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -36,7 +37,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
     Promise.resolve({
       path,
       text: () => working,
-      lineEnding: () => "lf",
+      lineEnding: () => workingEol,
       readOnly: false,
       extension: [],
       save: () => Promise.resolve(),
@@ -64,6 +65,7 @@ const input = {
 const paths = (html: string) => [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
 
 beforeEach(() => {
+  workingEol = "lf";
   probe.mockReset();
   openFile.mockReset();
   openInput.mockReset();
@@ -95,13 +97,48 @@ describe("Diff toolbar", () => {
     await waitFor(() => expect(screen.queryByText("Binary files cannot be shown as text")).toBeNull());
   });
 
-  it("reports a line-separator-only difference instead of no differences", async () => {
-    texts.HEAD = "a\r\n";
-    texts.abc123 = "a\n";
+  it.each([
+    ["CRLF", "a\r\n", "a\n"],
+    ["CR", "a\r", "a\n"],
+    ["mixed with the same dominant ending", "a\r\nb\nc\n", "a\nb\nc\n"],
+    ["mixed with a different dominant ending", "a\r\nb\r\nc\n", "a\nb\nc\n"],
+  ])("reports %s line-separator-only differences", async (_name, a, b) => {
+    texts.HEAD = a;
+    texts.abc123 = b;
     render(<DiffEditor input={input} />);
     expect(await screen.findByText("Contents differ only in line separators")).toBeInTheDocument();
     expect(screen.queryByText("No differences")).toBeNull();
     expect(screen.queryByText("Contents are identical")).toBeNull();
+  });
+
+  it.each(["a\n", "a\r\n", "a\r\nb\n", ""])("recognizes identical contents %j", async (text) => {
+    texts.HEAD = texts.abc123 = text;
+    render(<DiffEditor input={input} />);
+    expect(await screen.findByText("Contents are identical")).toBeInTheDocument();
+    expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
+  });
+
+  it("does not describe ignored whitespace as only line separators", async () => {
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ ignore: "whitespace" }));
+    texts.HEAD = "a \r\n";
+    texts.abc123 = "a\n";
+    const mounted = render(<DiffEditor input={input} />);
+    await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
+    expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
+    mounted.unmount();
+    localStorage.removeItem("openidea.vcs.diffOptions");
+  });
+
+  it("compares a normalized live CRLF document with a raw CRLF revision", async () => {
+    texts.HEAD = "a\r\n";
+    workingEol = "crLf";
+    render(
+      <DiffEditor
+        input={diffInput({ path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } })}
+      />,
+    );
+    expect(await screen.findByText("Contents are identical")).toBeInTheDocument();
+    expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
   });
 
   it("puts Jump to Source right after Next Difference, in the navigation group", async () => {

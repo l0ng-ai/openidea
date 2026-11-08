@@ -89,14 +89,20 @@ describe("Git Log branches pane", () => {
     expect(screen.getByText("feature").closest("[data-row]")).toHaveAttribute("aria-selected", "true");
   });
 
-  it("renders incoming and outgoing branch counts with their semantic colours", () => {
-    useVcs.setState({
-      branches: [b("main", { current: true, ahead: 2, behind: 3 })],
-    });
+  it.each([
+    [2, 0],
+    [0, 3],
+    [2, 3],
+    [0, 0],
+  ])("renders shared branch markers for ahead %i / behind %i", (ahead, behind) => {
+    useVcs.setState({ branches: [b("main", { current: true, ahead, behind })] });
     render(<BranchesPanel />);
-
-    expect(screen.getByLabelText("3 incoming commits")).toHaveClass(syncStyles.incoming!);
-    expect(screen.getByLabelText("2 outgoing commits")).toHaveClass(syncStyles.outgoing!);
+    const incoming = screen.queryByLabelText("3 incoming commits");
+    const outgoing = screen.queryByLabelText("2 outgoing commits");
+    if (behind) expect(incoming).toHaveClass(syncStyles.incoming!);
+    else expect(incoming).toBeNull();
+    if (ahead) expect(outgoing).toHaveClass(syncStyles.outgoing!);
+    else expect(outgoing).toBeNull();
   });
 
   it("double click switches the log to that branch", () => {

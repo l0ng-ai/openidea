@@ -60,6 +60,7 @@
   min-width: 60px;
 }
 .branchTree {
+  --tree-detail-flex-shrink: 0;
   flex: 1;
   min-height: 0;
 }

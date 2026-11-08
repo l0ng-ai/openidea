@@ -238,4 +238,21 @@ export function detectLineEnding(text: string): LineEnding {
   return lf >= crlf && lf >= cr ? "lf" : crlf >= cr ? "crLf" : "cr";
 }
 
-export const EOL_BADGE: Record<LineEnding, string> = { lf: "LF", crLf: "CRLF", cr: "CR" };
+const EOL_BADGE: Record<LineEnding, string> = { lf: "LF", crLf: "CRLF", cr: "CR" };
+
+const EOL_SEPARATOR: Record<LineEnding, string> = { lf: "\n", crLf: "\r\n", cr: "\r" };
+
+/** Reconstruct a normalized document using its configured save separator. */
+export function liveSideText(text: string, ending: LineEnding): string {
+  return text.replace(/\n/g, EOL_SEPARATOR[ending]);
+}
+
+export function lineEndingBadge(text: string): string {
+  const separators = new Set(text.match(/\r\n|\r|\n/g));
+  return (
+    Object.entries(EOL_SEPARATOR)
+      .filter(([, separator]) => separators.has(separator))
+      .map(([ending]) => EOL_BADGE[ending as LineEnding])
+      .join(" / ") || "LF"
+  );
+}

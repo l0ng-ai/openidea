@@ -35,7 +35,7 @@ function BranchSyncItem({
   return (
     <span className={clsx(styles.item, styles[direction])} role="img" aria-label={label} title={label}>
       <Icon name={direction === "incoming" ? "vcs-incoming" : "vcs-outgoing"} size={12} />
-      {showCount && <span className={styles.count}>{count}</span>}
+      {showCount && <span>{count}</span>}
     </span>
   );
 }
