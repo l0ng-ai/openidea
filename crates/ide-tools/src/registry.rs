@@ -397,6 +397,35 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "laravel-lsp",
+        display: "Laravel LSP",
+        kind: LanguageServer,
+        commands: &["laravel-lsp"],
+        // Plain binaries per platform (`server-v*-<arch>-<os>[.exe]`).
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "laravel/lsp" },
+            assets: &[
+                rule(Mac, Arm64, "server-v*-arm64-darwin"),
+                rule(Mac, X64, "server-v*-x64-darwin"),
+                rule(Linux, Arm64, "server-v*-arm64-linux"),
+                rule(Linux, X64, "server-v*-x64-linux"),
+                rule(Windows, X64, "server-v*-x64-win32.exe"),
+            ],
+            locate: &[
+                "laravel-lsp",
+                "server-v*-arm64-darwin",
+                "server-v*-x64-darwin",
+                "server-v*-arm64-linux",
+                "server-v*-x64-linux",
+                "server-v*-x64-win32",
+            ],
+        },
+        fallback: None,
+        version: ver("laravel-lsp"),
+        homepage: "https://github.com/laravel/lsp",
+        needs: &[],
+    },
+    ToolSpec {
         name: "gopls",
         display: "gopls",
         kind: LanguageServer,

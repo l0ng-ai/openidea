@@ -123,7 +123,7 @@ describe("theme tokens", () => {
  * on purpose: colours the user assigns (project and data source colours), the
  * platform's caption close and macOS window buttons, and the tint strength.
  */
-const INHERITED_FROM_BASE = /^--(project-color-|db-color-|caption-close-|fg-caption-close-|mac-window-|tint-strength$)/;
+const INHERITED_FROM_BASE = /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$)/;
 
 describe("palette themes", () => {
   const ISLANDS = ["light", "dark", "dark-hc"];

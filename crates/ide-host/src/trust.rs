@@ -214,6 +214,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
         cmd,
         "app_info"
             | "app_build_info"
+            | "app_cli_install"
+            | "app_cli_uninstall"
             | "app_log_location"
             | "app_check_update"
             | "app_startup_update_check"

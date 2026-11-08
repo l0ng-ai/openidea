@@ -491,8 +491,13 @@ function RunTargetsEditor() {
               className={clsx(styles.toolRow, t.id === selected && styles.toolRowSelected)}
               onMouseDown={() => setSelected(t.id)}
             >
-              <span>{t.name || t.id}</span>
-              <span className={styles.toolGroup}>
+              <span className={styles.toolName} title={t.name || t.id}>
+                {t.name || t.id}
+              </span>
+              <span
+                className={styles.toolGroup}
+                title={t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
+              >
                 {t.kind === "ssh" ? (t.sshConfig ? sshName(t.sshConfig) : "") : containerSummary(t)}
               </span>
             </div>

@@ -191,6 +191,9 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 act("app.about", "About OpenIDEA"),
                 act("app.checkForUpdates", "Check for Updates…"),
                 SEP,
+                act("app.installCli", "Install 'openidea' Command"),
+                act("app.uninstallCli", "Uninstall 'openidea' Command"),
+                SEP,
                 act("file.settings", "Settings…"),
                 SEP,
                 Entry::Native(Native::Services),
@@ -702,41 +705,45 @@ pub fn spec(os: Os) -> Vec<Entry> {
         ],
     ));
 
-    menus.push(sub(
-        "tools",
-        "Tools",
-        vec![
-            act("http.newRequest", "New HTTP Request"),
-            act("http.showToolWindow", "HTTP Client"),
+    let mut tools = vec![
+        act("http.newRequest", "New HTTP Request"),
+        act("http.showToolWindow", "HTTP Client"),
+        SEP,
+        act("db.showToolWindow", "Database"),
+        act("db.newDataSource", "New Data Source…"),
+        act("db.openConsole", "Open Query Console"),
+        SEP,
+        act("ssh.startSession", "Start SSH Session…"),
+        act("ssh.configurations", "SSH Configurations…"),
+        sub(
+            "deployment",
+            "Deployment",
+            vec![
+                act("deployment.uploadToDefault", "Upload to Default Server"),
+                act("deployment.uploadTo", "Upload to…"),
+                act("deployment.downloadFromDefault", "Download from Default Server"),
+                act("deployment.downloadFrom", "Download from…"),
+                act("deployment.syncWith", "Sync with Deployed…"),
+                act("deployment.deleteFromServer", "Delete from Server"),
+                SEP,
+                act("deployment.toggleAutoUpload", "Automatic Upload"),
+                act("deployment.browseRemoteHost", "Browse Remote Host"),
+                act("deployment.openInBrowser", "Open in Browser"),
+                act("deployment.configure", "Configuration…"),
+            ],
+        ),
+        SEP,
+        act("vim.toggle", "Vim"),
+        Entry::Dynamic(DYNAMIC_PLUGIN_TOOLS),
+    ];
+    if !mac {
+        tools.extend([
             SEP,
-            act("db.showToolWindow", "Database"),
-            act("db.newDataSource", "New Data Source…"),
-            act("db.openConsole", "Open Query Console"),
-            SEP,
-            act("ssh.startSession", "Start SSH Session…"),
-            act("ssh.configurations", "SSH Configurations…"),
-            sub(
-                "deployment",
-                "Deployment",
-                vec![
-                    act("deployment.uploadToDefault", "Upload to Default Server"),
-                    act("deployment.uploadTo", "Upload to…"),
-                    act("deployment.downloadFromDefault", "Download from Default Server"),
-                    act("deployment.downloadFrom", "Download from…"),
-                    act("deployment.syncWith", "Sync with Deployed…"),
-                    act("deployment.deleteFromServer", "Delete from Server"),
-                    SEP,
-                    act("deployment.toggleAutoUpload", "Automatic Upload"),
-                    act("deployment.browseRemoteHost", "Browse Remote Host"),
-                    act("deployment.openInBrowser", "Open in Browser"),
-                    act("deployment.configure", "Configuration…"),
-                ],
-            ),
-            SEP,
-            act("vim.toggle", "Vim"),
-            Entry::Dynamic(DYNAMIC_PLUGIN_TOOLS),
-        ],
-    ));
+            act("app.installCli", "Install 'openidea' Command"),
+            act("app.uninstallCli", "Uninstall 'openidea' Command"),
+        ]);
+    }
+    menus.push(sub("tools", "Tools", tools));
 
     let mut window = Vec::new();
     if mac {
