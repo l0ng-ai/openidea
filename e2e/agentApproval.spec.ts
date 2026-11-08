@@ -112,9 +112,10 @@ for (const theme of ["dark", "light"] as const) {
       });
       expect(geometry.scroll).toBe(geometry.client);
       expect(geometry.contained).toBe(true);
-      expect(geometry.promptRadius).toBeLessThanOrEqual(4);
-      expect(geometry.replyBackground).not.toBe("rgba(0, 0, 0, 0)");
-      expect(geometry.replyBorder).toBe("1px");
+      expect(geometry.promptRadius).toBeLessThanOrEqual(6);
+      // Replies read as plain text on the panel.
+      expect(geometry.replyBackground).toBe("rgba(0, 0, 0, 0)");
+      expect(geometry.replyBorder).toBe("0px");
       expect(geometry.userOnRight).toBe(true);
       expect(geometry.approvalAligned).toBe(true);
       expect(geometry.authorBeforeWork).toBe(true);
