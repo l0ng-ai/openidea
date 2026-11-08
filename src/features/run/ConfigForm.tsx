@@ -327,6 +327,13 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       })),
     },
     { label: TASK_LABELS.build, icon: "build-project", run: () => addTask("build") },
+    {
+      label: TASK_LABELS.buildModule,
+      icon: "build-project",
+      disabled: config.module == null,
+      run: () => addTask("buildModule", config.module ?? ""),
+    },
+    { label: TASK_LABELS.buildArtifacts, icon: "build-rebuild", run: () => addTask("buildArtifacts") },
     ...(config.kind === "dotnet"
       ? [{ label: TASK_LABELS.dotnetBuild, icon: "build-project", run: () => addTask("dotnetBuild") }]
       : []),

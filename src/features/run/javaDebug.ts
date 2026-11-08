@@ -65,6 +65,12 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
     // A delegated Application: its init script adds the agent (port 0) to the JavaExec JVM.
     if (args.some((a) => a.startsWith(DELEGATED_MAIN)))
       return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
+    // Gradle Test forks test workers: the init script gives them a dynamic JDWP port.
+    if (config.isTest || args.some((a) => /(^|:)(test|integrationTest)$/.test(a)))
+      return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
+    // BootRun's init script gives the forked application JVM a dynamic port.
+    if (args.some((a) => /(^|:)bootRun$/.test(a)))
+      return args.includes(DELEGATED_DEBUG) ? config : { ...config, args: [...args, DELEGATED_DEBUG] };
     if (!args.some(isGradleJvmTask)) return null;
     return args.includes("--debug-jvm") ? config : { ...config, args: [...args, "--debug-jvm"] };
   }
