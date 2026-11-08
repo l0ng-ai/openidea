@@ -217,6 +217,21 @@ describe("declarationFallback", () => {
       kind: "unsupported",
     });
   });
+
+  it("answers a Vue component from the <script> region's shifted coordinates", async () => {
+    cmd.syntaxSupport.mockReturnValueOnce(ok({ tree: true, locals: true }));
+    // The backend answers a script region's local in document coordinates.
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local({ name: "size", definition: r(9, 6, 10) })));
+    const res = await fb.declarationFallback({ ...doc, path: "/p/App.vue", language: "vue" }, text, {
+      line: 9,
+      col: 6,
+    });
+    expect(res).toEqual({
+      kind: "targets",
+      targets: [{ path: "/p/App.vue", range: r(9, 6, 10), name: "size" }],
+      ambiguous: false,
+    });
+  });
 });
 
 describe("rename helpers", () => {
@@ -263,6 +278,15 @@ describe("rename helpers", () => {
     cmd.syntaxLocals.mockReturnValueOnce(ok(local()));
     await fb.planLocalRename({ doc: 7, language: "python" }, { line: 0, col: 6 });
     expect(cmd.syntaxNodeAt).not.toHaveBeenCalled();
+  });
+
+  it("plans a Vue component's local rename with shorthand detection", async () => {
+    cmd.syntaxLocals.mockReturnValueOnce(ok(local()));
+    const short = ok({ node: node("shorthand_property_identifier", r(1, 2, 3)), ancestors: [] });
+    cmd.syntaxNodeAt.mockReturnValueOnce(short);
+    cmd.syntaxNodeAt.mockReturnValueOnce(short);
+    const plan = await fb.planLocalRename({ doc: 7, language: "vue" }, { line: 1, col: 2 });
+    expect(plan.kind === "plan" && plan.plan.occurrences.map((o) => o.shorthand)).toEqual([true, true]);
   });
 
   it("flags ambiguity and name clashes inside the scope", async () => {

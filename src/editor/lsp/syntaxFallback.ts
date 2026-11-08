@@ -199,8 +199,19 @@ export function localHighlights(locals: Locals): LocalHighlight[] | null {
 // ---------------------------------------------------------------------------
 // Rename
 
-/** Languages whose shorthand fields (`{ x }`, `S { x }`) name both a key and a variable. */
-const SHORTHAND_LANGUAGES = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "rust"]);
+/** Languages whose shorthand fields (`{ x }`, `S { x }`) name both a key and a variable;
+ * the web containers host the same TS/JS inside their `<script>` blocks. */
+const SHORTHAND_LANGUAGES = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "rust",
+  "vue",
+  "svelte",
+  "html",
+  "jsp",
+]);
 const SHORTHAND_NODES = new Set([
   "shorthand_property_identifier",
   "shorthand_property_identifier_pattern",

@@ -60,6 +60,22 @@ describe("File Structure popup", () => {
     expect(rows()).toEqual(["OrderController", "list", "create", "helper"]);
   });
 
+  it("shows a Vue component's script declarations nested under its script block", () => {
+    useOutline.setState({
+      path: "/p/App.vue",
+      doc: 1,
+      loading: false,
+      error: null,
+      items: [
+        item("template", "module", 0),
+        { ...item("script", "module", 4), children: [item("App", "function", 8), item("size", "variable", 12)] },
+      ],
+    });
+    render(<FileStructureOverlay />);
+    act(() => useFileStructurePopup.setState({ open: true }));
+    expect(rows()).toEqual(["template", "script", "App", "size"]);
+  });
+
   it("Esc clears the filter first, then closes", () => {
     const input = open();
     fireEvent.change(input, { target: { value: "help" } });
