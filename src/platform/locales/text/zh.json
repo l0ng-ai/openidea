@@ -6499,5 +6499,13 @@
   "Counting objects through the debugger. This can take several seconds on a large heap.": "正在通过调试器统计对象。堆较大时可能需要几秒钟。",
   "Counted by the debugger: reachable objects only, no sizes.": "由调试器统计：仅包含可达对象，不含大小。",
   "Pause the program to count objects through the debugger.": "暂停程序以通过调试器统计对象。",
-  "{n} classes · {m} objects": "{n} 个类 · {m} 个对象"
+  "{n} classes · {m} objects": "{n} 个类 · {m} 个对象",
+  "Debugging Kotlin with kotlin-debug-adapter": "使用 kotlin-debug-adapter 调试 Kotlin",
+  "Waiting for kotlin-lsp to import the project": "正在等待 kotlin-lsp 导入项目",
+  "kotlin-lsp is not the Kotlin language server of this project.": "kotlin-lsp 不是此项目的 Kotlin 语言服务器。",
+  "kotlin-lsp is not installed.": "未安装 kotlin-lsp。",
+  "kotlin-lsp did not start: {detail}": "kotlin-lsp 未能启动：{detail}",
+  "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.": "kotlin-lsp 仍在导入项目。导入完成后再次调试即可使用其调试器。",
+  "kotlin-lsp could not import the project.": "kotlin-lsp 无法导入项目。",
+  "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp 无法启动其调试器：{detail}"
 }

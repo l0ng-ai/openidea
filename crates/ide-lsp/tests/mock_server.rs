@@ -4654,6 +4654,22 @@ async fn a_failed_import_of_the_module_is_reported() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_is_reported_through_a_symlinked_root() {
+    // The debugged path names the root through a symlink, the folder URI names its target,
+    // and the file does not exist yet.
+    let (h, s) = kotlin_lsp_harness();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(&h.root, &link).unwrap();
+    let debug =
+        spawn_kotlin_debug_server(&h, &link.join("app/Main.kt"), Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "FAILED")]);
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::ImportFailed));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_older_finished_import_does_not_count_after_a_restart() {
     let (h, s) = kotlin_lsp_harness();

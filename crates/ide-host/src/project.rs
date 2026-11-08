@@ -13,6 +13,7 @@ use ide_vfs::Watcher;
 use ide_workspace::documents::DocumentObserver;
 use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoots, SettingsStore, SourceFolder};
 use parking_lot::{Mutex, RwLock};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,6 +47,8 @@ pub struct Project {
     pub cache_dir: PathBuf,
     /// Superseded launch snapshots retained until this project session ends.
     pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
+    /// Reasons this window was already told why Kotlin is debugged with kotlin-debug-adapter.
+    pub(crate) kotlin_debug_notices: Mutex<HashSet<&'static str>>,
     /// Database tool window: data sources and their connections.
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
@@ -530,6 +533,7 @@ impl Host {
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
                 self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
+            kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
             agents,
@@ -675,6 +679,7 @@ impl Host {
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
                 self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
+            kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
             agents,

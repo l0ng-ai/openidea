@@ -124,5 +124,13 @@
   "Counting objects through the debugger. This can take several seconds on a large heap.": "Counting objects through the debugger. This can take several seconds on a large heap.",
   "Counted by the debugger: reachable objects only, no sizes.": "Counted by the debugger: reachable objects only, no sizes.",
   "Pause the program to count objects through the debugger.": "Pause the program to count objects through the debugger.",
-  "{n} classes · {m} objects": "{n} classes · {m} objects"
+  "{n} classes · {m} objects": "{n} classes · {m} objects",
+  "Debugging Kotlin with kotlin-debug-adapter": "Debugging Kotlin with kotlin-debug-adapter",
+  "Waiting for kotlin-lsp to import the project": "Waiting for kotlin-lsp to import the project",
+  "kotlin-lsp is not the Kotlin language server of this project.": "kotlin-lsp is not the Kotlin language server of this project.",
+  "kotlin-lsp is not installed.": "kotlin-lsp is not installed.",
+  "kotlin-lsp did not start: {detail}": "kotlin-lsp did not start: {detail}",
+  "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.": "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.",
+  "kotlin-lsp could not import the project.": "kotlin-lsp could not import the project.",
+  "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp could not start its debugger: {detail}"
 }

@@ -137,7 +137,7 @@ async fn wait_for_import(server: &Server, path: &Path) -> Result<(), KotlinDebug
             && current.finished
             && !importing(server)
         {
-            if current.failed.iter().any(|dir| path.starts_with(dir)) {
+            if current.failed.iter().any(|dir| canonical(path).starts_with(canonical(dir))) {
                 return Err(KotlinDebugUnavailable::ImportFailed);
             }
             return Ok(());
@@ -147,6 +147,18 @@ async fn wait_for_import(server: &Server, path: &Path) -> Result<(), KotlinDebug
             () = progress_ended => {}
         }
     }
+}
+
+/// `path` with its deepest existing ancestor resolved, so a symlinked root (or `/tmp` vs
+/// `/private/tmp` on macOS) and the folder URIs kotlin-lsp reports name one directory alike.
+fn canonical(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if let Ok(real) = dunce::canonicalize(ancestor) {
+            let rest = path.strip_prefix(ancestor).unwrap_or(Path::new(""));
+            return if rest.as_os_str().is_empty() { real } else { real.join(rest) };
+        }
+    }
+    path.to_path_buf()
 }
 
 #[cfg(test)]
