@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setContext } from "@/platform/context";
-import { EDITOR_AREA_SELECTOR, installFocusTracking } from "./focus";
+import { EDITOR_AREA_SELECTOR, focusEditor, installFocusTracking } from "./focus";
 
 describe("focus after popups", () => {
   afterEach(() => {
@@ -13,6 +13,18 @@ describe("focus after popups", () => {
     document.body.innerHTML = `<div data-editor-area><div class="cm-content" tabindex="0"></div></div><button id="other">x</button>`;
     return document.querySelector<HTMLElement>(`${EDITOR_AREA_SELECTOR} .cm-content`)!;
   }
+
+  it("waits for the restored editor to become visible before focusing it", () => {
+    vi.useFakeTimers();
+    const editor = setup();
+    const area = editor.parentElement!;
+    area.hidden = true;
+    focusEditor();
+    expect(document.activeElement).not.toBe(editor);
+    area.hidden = false;
+    vi.runAllTimers();
+    expect(document.activeElement).toBe(editor);
+  });
 
   it("returns focus to the editor when the last popup closes and focus was left nowhere", () => {
     vi.useFakeTimers();

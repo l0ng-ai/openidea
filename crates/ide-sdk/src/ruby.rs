@@ -163,7 +163,12 @@ pub fn debug_environment(
     let mut gem_bins: Option<Vec<PathBuf>> = None;
     let mut find = |name: &str| {
         ide_core::process::find_executable(name, bin.as_os_str()).or_else(|| {
-            let dirs = gem_bins.get_or_insert_with(|| gem_bin_dirs(&ruby, dir));
+            let dirs = gem_bins.get_or_insert_with(|| {
+                let vars: Vec<_> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                query_in(&ruby, &["-e", ide_core::tool_path::RUBY_GEM_BIN_SCRIPT], Some(dir), &vars, QUERY_TIMEOUT)
+                    .map(|out| ide_core::tool_path::gem_bin_dirs(&out))
+                    .unwrap_or_default()
+            });
             ide_core::process::find_executable(name, &std::env::join_paths(dirs.iter()).ok()?)
         })
     };
@@ -251,7 +256,10 @@ mod tests {
         }
         // Homebrew's Ruby installs gem executables outside its `bin`.
         let scripts = [
-            (bin.join("ruby"), format!("#!/bin/sh\necho '{}'\n", gem_bin.display())),
+            (
+                bin.join("ruby"),
+                format!("#!/bin/sh\necho \"${{GEM_HOME:-{}}}/bin\"\n", dir.path().join("gems").display()),
+            ),
             (bin.join("bundle"), String::new()),
             (gem_bin.join("rdbg"), String::new()),
         ];
@@ -266,6 +274,15 @@ mod tests {
         let tools = debug_environment(dir.path(), dir.path(), &s, &mut env);
         assert_eq!(tools, [("bundle", bin.join("bundle")), ("rdbg", gem_bin.join("rdbg"))]);
         assert_eq!(std::env::split_paths(&env["PATH"]).next(), Some(bin.clone()));
+        let custom_home = dir.path().join("custom gems");
+        std::fs::create_dir_all(custom_home.join("bin")).unwrap();
+        let custom_rdbg = custom_home.join("bin/rdbg");
+        std::fs::write(&custom_rdbg, "").unwrap();
+        std::fs::set_permissions(&custom_rdbg, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut env =
+            std::collections::BTreeMap::from([("GEM_HOME".into(), custom_home.to_string_lossy().into_owned())]);
+        let tools = debug_environment(dir.path(), dir.path(), &s, &mut env);
+        assert_eq!(tools, [("bundle", bin.join("bundle")), ("rdbg", custom_rdbg)]);
         // The configuration's own PATH stays.
         let mut env = std::collections::BTreeMap::from([("PATH".to_owned(), "/custom".to_owned())]);
         debug_environment(dir.path(), dir.path(), &s, &mut env);

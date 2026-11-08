@@ -11,8 +11,8 @@ const validateOptionalPort = (value: string) => (!value.trim() ? null : validate
 
 export const tomcatType: RunConfigTypeContribution = {
   id: "tomcat",
-  group: "Tomcat Server",
-  label: "Local",
+  group: "Servers",
+  label: "Tomcat Server",
   icon: "tomcat",
   description: "Run a WAR application in a local Tomcat server",
   debugAdapter: "java-debug",
