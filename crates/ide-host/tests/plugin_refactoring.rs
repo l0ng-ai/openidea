@@ -398,7 +398,7 @@ async fn code_identifier_rename(host: &Host, plugins: &PluginHost, root: &Path, 
     use ide_core::{FileEdit, Range};
     use ide_jsonrpc::{Handler, Peer};
     use serde_json::{Value, json};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicU8, Ordering};
     let plugin = root.join("ruby-indexer");
     std::fs::create_dir_all(plugin.join("dist")).unwrap();
     std::fs::copy(fixture.join("dist/plugin.wasm"), plugin.join("dist/plugin.wasm")).unwrap();
@@ -477,18 +477,22 @@ async fn code_identifier_rename(host: &Host, plugins: &PluginHost, root: &Path, 
         [("order.rb".to_owned(), 3, 4, list.clone()), ("orders_controller.rb".to_owned(), 1, 4, list)]
     );
     project.lsp.did_close(doc.id);
-    struct Native(Arc<AtomicBool>);
+    struct Native(Arc<AtomicU8>);
     impl Handler for Native {
         fn on_notification(&self, _: &str, _: Value) {}
         fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
-            let owned = self.0.load(Ordering::SeqCst);
+            let mode = self.0.load(Ordering::SeqCst);
             let name = json!({"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 9}});
             Ok(match method {
                 "initialize" => {
                     json!({"capabilities": {"textDocumentSync": 1, "renameProvider": {"prepareProvider": true}}})
                 }
-                "textDocument/prepareRename" if owned => name,
-                "textDocument/rename" if owned => {
+                "textDocument/prepareRename" if mode == 0 => name,
+                "textDocument/prepareRename" if mode == 2 => {
+                    json!({"start": {"line": 2, "character": 0}, "end": {"line": 2, "character": 3}})
+                }
+                "textDocument/prepareRename" if mode == 3 => return Err((-32603, "cannot check name".into())),
+                "textDocument/rename" if mode == 0 => {
                     let uri = params["textDocument"]["uri"].as_str().unwrap().to_owned();
                     json!({"changes": {uri: [{"range": name, "newText": params["newName"]}]}})
                 }
@@ -496,12 +500,12 @@ async fn code_identifier_rename(host: &Host, plugins: &PluginHost, root: &Path, 
             })
         }
     }
-    let owned = Arc::new(AtomicBool::new(true));
+    let mode = Arc::new(AtomicU8::new(0));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let peers = Arc::new(Mutex::new(Vec::<Peer>::new()));
     let accepted = peers.clone();
-    let state = owned.clone();
+    let state = mode.clone();
     let task = tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let (reader, writer) = stream.into_split();
@@ -525,10 +529,26 @@ async fn code_identifier_rename(host: &Host, plugins: &PluginHost, root: &Path, 
         ops::lsp::lsp_rename(host, "ruby", RequestId(122), doc.id, Pos::new(2, 5), "purchase".into()).await.unwrap();
     assert!(renamed.preview);
     assert_eq!(edits(&renamed.edit.files), everywhere, "the server's rename and the indexed names merge");
-    owned.store(false, Ordering::SeqCst);
-    let renamed =
-        ops::lsp::lsp_rename(host, "ruby", RequestId(123), doc.id, Pos::new(2, 5), "purchase".into()).await.unwrap();
-    assert_eq!(edits(&renamed.edit.files), everywhere, "a server that declines the name leaves it to the plugin");
+    for value in 1..=3 {
+        mode.store(value, Ordering::SeqCst);
+        assert_eq!(
+            ops::lsp::lsp_prepare_rename(host, "ruby", doc.id, Pos::new(2, 5)).await.unwrap(),
+            Some(Range::new(Pos::new(2, 4), Pos::new(2, 9)))
+        );
+        let renamed = ops::lsp::lsp_rename(host, "ruby", RequestId(123), doc.id, Pos::new(2, 5), "purchase".into())
+            .await
+            .unwrap();
+        assert_eq!(edits(&renamed.edit.files), everywhere, "declined or failed preparation retains indexed edits");
+        assert_eq!(renamed.incomplete.is_some(), value == 3, "only protocol errors warn about incomplete results");
+    }
+    host.cancel_request(RequestId(124));
+    assert_eq!(
+        ops::lsp::lsp_rename(host, "ruby", RequestId(124), doc.id, Pos::new(2, 5), "purchase".into())
+            .await
+            .unwrap_err()
+            .kind,
+        ErrorKind::Cancelled
+    );
     assert_eq!(std::fs::read_to_string(&model).unwrap(), source);
     assert_eq!(std::fs::read_to_string(&usage).unwrap(), used);
     project.lsp.did_close(doc.id);
