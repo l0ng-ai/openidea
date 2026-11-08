@@ -287,3 +287,22 @@ fn identifiers_in_files_loads_in_parallel_and_skips_misses() {
     let got: Vec<(String, usize)> = found.iter().map(|f| (f.path.display().to_string(), f.occurrences.len())).collect();
     assert_eq!(got, [("/p/a.ts".to_owned(), 1), ("/p/d.rs".to_owned(), 2)]);
 }
+
+#[test]
+fn in_code_distinguishes_identifiers_from_strings_and_comments() {
+    let js = lang("javascript");
+    let src = "def fetchOrder\nref fetchOrder\nref \"route\"\n";
+    let s = snap(&js, src);
+    assert!(service().in_code(&s, occ(src, "fetchOrder", 1), &none()).unwrap(), "fetchOrder line 0");
+    assert!(service().in_code(&s, occ(src, "fetchOrder", 2), &none()).unwrap(), "fetchOrder line 1");
+    assert!(!service().in_code(&s, occ(src, "route", 1), &none()).unwrap(), "route in a string");
+
+    // Comments and non-code leaves stay plugin-owned.
+    let src2 = "// fetchOrder\nconst x = \"route\"\n";
+    let s2 = snap(&js, src2);
+    assert!(!service().in_code(&s2, occ(src2, "fetchOrder", 1), &none()).unwrap(), "comment");
+    assert!(!service().in_code(&s2, occ(src2, "route", 1), &none()).unwrap(), "string literal");
+
+    let unsupported = service().in_code(&snap(&lang("plaintext"), "x"), occ("x", "x", 1), &none());
+    assert_eq!(unsupported, Err(StructureError::Unsupported));
+}

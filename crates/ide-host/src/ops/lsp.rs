@@ -787,14 +787,47 @@ async fn is_client_follow_up(
 
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
     if let Some(symbol) = indexed_symbol(host, window, doc, pos).await? {
-        let project = host.project(window)?;
-        return blocking(move || {
-            validate_indexed_symbol(&project, &symbol, None)?;
-            Ok(Some(symbol.range))
-        })
-        .await;
+        // A plugin's anchors rename alone only where the language has no say.
+        // On a code identifier the language server decides — even one that can
+        // rename only part of it — so prepare through it: a match opens the
+        // in-place rename (server edit + anchors), a decline refuses instead of
+        // half-renaming the symbol.
+        let code = indexed_in_code(host, window, doc, symbol.range);
+        let range = host.project(window)?.lsp.prepare_rename(doc, pos).await;
+        match (code.await, range) {
+            // The server owns the word: its answer decides, error or decline
+            // alike — a missing or failing one refuses the rename.
+            (true, range) => return range,
+            (false, Ok(range)) => return Ok(range.or(Some(symbol.range))),
+            (false, Err(e)) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => {
+                let project = host.project(window)?;
+                return blocking(move || {
+                    validate_indexed_symbol(&project, &symbol, None)?;
+                    Ok(Some(symbol.range))
+                })
+                .await;
+            }
+            (false, Err(e)) => return Err(e),
+        }
     }
     host.project(window)?.lsp.prepare_rename(doc, pos).await
+}
+
+/// `symbol.range` classified by the file's grammar: a code token needs the
+/// language server's answer, string/comment content stays plugin-owned. No
+/// grammar or unparseable file leaves the symbol indexed-owned (`false`).
+async fn indexed_in_code(host: &Host, window: &str, doc: DocId, range: Range) -> bool {
+    let Ok(project) = host.project(window) else { return false };
+    blocking(move || {
+        let snap = project.documents.text_snapshot(doc)?;
+        if snap.large {
+            return Ok(false);
+        }
+        let snap = ide_syntax::Snapshot::doc(doc, snap.version, &snap.language, &snap.text);
+        Ok(project.structure.in_code(&snap, range, &ide_core::CancellationToken::new()).unwrap_or(false))
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Computes the rename edit without applying it, so the UI can preview conflicts.
@@ -863,12 +896,26 @@ pub async fn lsp_rename(
     let result = async {
         let symbol = indexed_symbol(host, window, doc, pos).await?;
         let mut native_owned = false;
+        // On a code identifier only the language server may rename: its answer
+        // (edit or refusal) wins, and a missing/failed one refuses instead of
+        // half-renaming the declaration's references.
+        let code_anchor = match &symbol {
+            Some(symbol) => indexed_in_code(host, window, doc, symbol.range).await,
+            None => false,
+        };
         let result = async {
             if let Some(symbol) = &symbol {
                 let range = tokio::select! {
                     _ = cancel.cancelled() => return Err(ide_core::IdeError::cancelled()),
                     range = project.lsp.prepare_rename(doc, pos) => range?,
                 };
+                if code_anchor {
+                    native_owned = range.is_some();
+                    return match range {
+                        Some(_) => project.lsp.rename(doc, pos, new_name.clone(), cancel.clone()).await,
+                        None => Err(ide_core::IdeError::invalid("the language server declined this rename")),
+                    };
+                }
                 if range != Some(symbol.range) {
                     return Ok(Renamed::default());
                 }
@@ -882,7 +929,7 @@ pub async fn lsp_rename(
         }
         let mut renamed = match result {
             Ok(renamed) => renamed,
-            Err(e) if symbol.is_some() && !native_owned => {
+            Err(e) if symbol.is_some() && !native_owned && !code_anchor => {
                 Renamed { incomplete: indexed_lsp_error(e)?, ..Default::default() }
             }
             Err(e) => return Err(e),

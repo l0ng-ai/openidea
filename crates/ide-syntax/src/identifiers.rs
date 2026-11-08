@@ -3,6 +3,7 @@
 use crate::kinds::in_comment_or_string;
 use crate::types::IdentifierOccurrence;
 use crate::{Ctx, StructureResult};
+use ide_core::Range;
 use tree_sitter::TreeCursor;
 
 /// Leaf kinds that never name anything.
@@ -52,6 +53,31 @@ fn seek(cursor: &mut TreeCursor, s: usize) -> bool {
         }
     }
     true
+}
+
+/// Whether `range` lands on a code token — not inside a comment or string
+/// content (interpolations count as code), and a word-like leaf. Rename of an
+/// indexed anchor uses this to keep its plugin-only fallback off identifiers
+/// the language owns.
+pub(crate) fn in_code(cx: &Ctx, range: Range) -> bool {
+    let (a, b) = cx.lines.bytes(range);
+    let root = cx.tree.root_node();
+    let Some(node) = root.descendant_for_byte_range(a, b.max(a)) else { return false };
+    if node.start_byte() != a || node.end_byte() != b || node.child_count() != 0 {
+        return false;
+    }
+    let kind = node.kind();
+    let word_like = kind.contains("identifier") || node.is_named();
+    if !word_like || is_non_name_leaf(kind) || node.is_missing() {
+        return false;
+    }
+    let mut ancestors = Vec::new();
+    let mut up = node.parent();
+    while let Some(n) = up {
+        ancestors.push(n);
+        up = n.parent();
+    }
+    !in_comment_or_string(&node, ancestors.into_iter())
 }
 
 pub(crate) fn identifiers_named(cx: &Ctx, name: &str) -> StructureResult<Vec<IdentifierOccurrence>> {

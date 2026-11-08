@@ -8,8 +8,13 @@ use ide_plugin::{Invocation, Limits};
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
 
+/// `set_editor_providers` is process-wide, so the tests in this file run one
+/// at a time rather than trading the shared plugin host.
+static EDITOR_PROVIDERS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
+    let _editor_providers = EDITOR_PROVIDERS_LOCK.lock().await;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let first = root.join("definition.idx");
@@ -391,4 +396,106 @@ async fn native_rename_refusal(
     for peer in peers.lock().drain(..) {
         peer.kill();
     }
+}
+
+/// An indexed anchor on a code identifier belongs to the language: a server
+/// that cannot rename it refuses the operation rather than half-renaming only
+/// the occurrences the plugin happens to index (#2204).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn indexed_rename_on_a_code_identifier_requires_the_server() {
+    let _editor_providers = EDITOR_PROVIDERS_LOCK.lock().await;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    // `.idx` stays the indexer's extension but parses as JavaScript here, so
+    // the grammar can tell `fetchOrder` (code) from `"route"` (a string).
+    let languages_dir = root.join("user-languages");
+    std::fs::create_dir_all(&languages_dir).unwrap();
+    std::fs::write(
+        languages_dir.join("idxjs.toml"),
+        "id = \"idxjs\"\nname = \"Indexed JS\"\nextensions = [\"idx\"]\ntree-sitter = \"javascript\"\n",
+    )
+    .unwrap();
+    let source = "def fetchOrder\nref fetchOrder\nref \"route\"\n";
+    let first = root.join("usage.idx");
+    std::fs::write(&first, source).unwrap();
+    let events = Arc::new(Mutex::new(vec![]));
+    let captured = events.clone();
+    let registry = ide_language::LanguageRegistry::load(Some(&languages_dir)).unwrap();
+    // `Syntax::new()` would map only the built-in languages; the fixture's
+    // `.idx` → `idxjs` one needs its `tree-sitter` field bound too.
+    let syntax = std::sync::OnceLock::from(Arc::new(ide_language::Syntax::with_languages(&registry.all())));
+    let host = Host::new(HostConfig {
+        config_dir: root.join("config"),
+        data_dir: root.join("data"),
+        local_data_dir: root.join("local"),
+        languages: Arc::new(registry),
+        syntax: Arc::new(syntax),
+        sink_for: Box::new(move |_| {
+            let events = captured.clone();
+            Arc::new(move |e| events.lock().push(e))
+        }),
+        owner: |window| window,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    let project = host.open_light("main", &first).unwrap();
+    let doc = project.documents.open(dunce::simplified(&first)).unwrap();
+    assert_eq!(doc.text, source);
+    let plugins =
+        Arc::new(PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap());
+    plugins.set_project_policy(Arc::new(|_| true));
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/indexer");
+    plugins.install_from_dir(&fixture, &Consent::all()).unwrap();
+    set_editor_providers(Some(&plugins));
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            set_editor_providers(None);
+        }
+    }
+    let _clear = Clear;
+    plugins
+        .index_navigation(
+            &project.root,
+            Snapshot { path: &first, text: source, version: Some(doc.version), symbols: &[], scope: "app" },
+            Invocation {
+                client: Some("main".into()),
+                workspace_root: Some(project.root.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    // `fetchOrder` is an identifier in code on both lines; the `"route"`
+    // anchor is inside a string literal.
+    let code_pos = Pos::new(1, 5);
+    let string_pos = Pos::new(2, 5);
+    assert!(plugins.indexed_symbol_at(&project.root, &first, code_pos, Some("main")).is_some());
+    assert!(plugins.indexed_symbol_at(&project.root, &first, string_pos, Some("main")).is_some());
+    // No language server at all: code identifiers refuse at prepare.
+    let kind = ops::lsp::lsp_prepare_rename(&host, "main", doc.id, code_pos).await.unwrap_err().kind;
+    assert!(
+        matches!(kind, ErrorKind::NotFound | ErrorKind::Unavailable),
+        "a code anchor without a renamer must not offer the plugin-only rename, got {kind:?}"
+    );
+    let kind =
+        ops::lsp::lsp_rename(&host, "main", RequestId(10), doc.id, code_pos, "newName".into()).await.unwrap_err().kind;
+    assert!(
+        matches!(kind, ErrorKind::NotFound | ErrorKind::Unavailable | ErrorKind::InvalidInput),
+        "indexed-only rename of a code identifier is refused, got {kind:?}"
+    );
+    // The string anchor keeps the indexed rename working.
+    assert_eq!(
+        ops::lsp::lsp_prepare_rename(&host, "main", doc.id, string_pos)
+            .await
+            .unwrap()
+            .map(|r| (r.start.col, r.end.col)),
+        Some((4, 11)),
+        "anchors in string content still rename through the index alone"
+    );
+    let renamed =
+        ops::lsp::lsp_rename(&host, "main", RequestId(11), doc.id, string_pos, "new.route".into()).await.unwrap();
+    ops::lsp::apply_workspace_edit(&host, "main", renamed.edit).await.unwrap();
+    // The fixture's `ref` anchor covers the whole quoted token, so the rename
+    // replaces it quotes and all.
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "def fetchOrder\nref fetchOrder\nref new.route\n");
 }

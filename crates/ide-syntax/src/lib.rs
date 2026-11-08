@@ -200,6 +200,13 @@ impl StructureService {
         self.run(snap, cancel, |cx| identifiers::identifiers_named(cx, name))
     }
 
+    /// Whether `range` lands on a code token — outside comments and string
+    /// contents (interpolations count as code), on a word-like leaf.
+    /// `Unsupported` when the language has no grammar.
+    pub fn in_code(&self, snap: &Snapshot, range: Range, cancel: &CancellationToken) -> StructureResult<bool> {
+        self.run(snap, cancel, |cx| Ok(identifiers::in_code(cx, range)))
+    }
+
     /// [`StructureService::identifiers_named`] over many files in parallel
     /// (find-usages filtering). `load` returns a file's language, its open
     /// document (id, version) if any, and its text; files it cannot load, and
