@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { PluginInfo, ViewEvent } from "@/bindings";
 import { addFileIconProvider, fileIconName, registerExternalIcons } from "@/ui";
 import { provideEditorService, type EditorInput, type EditorService } from "@/workbench/contributions";
@@ -417,7 +418,11 @@ describe("WebView", () => {
       );
       showToolWindow("plugin.acme.kube.normal");
       const first = render(<ToolWindowLayout editor={null} />);
-      await frameOf(first.container);
+      const normal = await frameOf(first.container);
+      fireEvent.load(normal.frame);
+      expect(
+        normal.posted.some((m) => (m.theme as { vars: Record<string, string> })?.vars["--openidea-corner-inset-width"]),
+      ).toBe(false);
       expect(first.container.querySelector('[data-toolwindow="plugin.acme.kube.normal"] header')).not.toBeNull();
       expect(screen.getByText("Normal View")).toBeInTheDocument();
       first.unmount();
@@ -449,13 +454,15 @@ describe("WebView", () => {
       expect(screen.getByRole("button", { name: "Options" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument();
 
-      // 3. Once the frame resolves, the standard <header> is replaced by corner actions and the frame gets the corner inset vars.
-      act(() => resolveUrl("about:blank"));
+      // A resolved URL is still loading until the iframe has loaded.
+      act(() => resolveUrl("https://plugin.invalid/revision-1"));
       const { frame, posted } = await frameOf(second.container);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      fireEvent.load(frame);
       await waitFor(() =>
         expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull(),
       );
-      fireEvent.load(frame);
+      expect(second.container.querySelector("iframe")).toBe(frame);
       await waitFor(() =>
         expect(
           posted.some(
@@ -468,18 +475,38 @@ describe("WebView", () => {
         ).toBe(true),
       );
 
-      // Corner actions are present and keyboard-operable (focus + click/activate).
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.1" }] }));
+      act(() => resolveUrl("https://plugin.invalid/revision-2"));
+      await waitFor(() => expect(frame).toHaveAttribute("src", "https://plugin.invalid/revision-2"));
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      expect(second.container.querySelector("iframe")).toBe(frame);
+      fireEvent.load(frame);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull();
+
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.2" }] }));
+      act(() => rejectUrl(new Error("page missing")));
+      await waitFor(() => expect(screen.getByText("page missing")).toBeInTheDocument());
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      act(() => usePlugins.setState({ plugins: [{ ...plugin, version: "1.0.3" }] }));
+      act(() => resolveUrl("https://plugin.invalid/revision-2"));
+      const recovered = await frameOf(second.container);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).not.toBeNull();
+      fireEvent.load(recovered.frame);
+      expect(second.container.querySelector('[data-toolwindow="plugin.acme.kube.cluster"] header')).toBeNull();
+
+      const user = userEvent.setup();
       const optionsBtn = screen.getByRole("button", { name: "Options" });
       optionsBtn.focus();
       expect(document.activeElement).toBe(optionsBtn);
-      fireEvent.click(optionsBtn);
+      await user.keyboard("{Enter}");
       expect(optionsBtn).toHaveAttribute("aria-expanded", "true");
-      fireEvent.keyDown(optionsBtn, { key: "Escape" });
+      await user.keyboard("{Escape}");
+      expect(optionsBtn).toHaveAttribute("aria-expanded", "false");
 
       const hideBtn = screen.getByRole("button", { name: "Hide" });
-      hideBtn.focus();
+      await user.tab();
       expect(document.activeElement).toBe(hideBtn);
-      fireEvent.click(hideBtn);
+      await user.keyboard(" ");
       expect(isToolWindowVisible("plugin.acme.kube.cluster")).toBe(false);
       second.unmount();
 

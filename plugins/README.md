@@ -1053,6 +1053,16 @@ actions (`Options` and `Hide`) and sets `--openidea-corner-inset-width` (`64px`)
 and `--openidea-corner-inset-height` (`34px`) on the frame's root element (and
 in `openidea.theme.vars`) so the page can pad its top bar around them. Loading
 and error states keep the standard tool-window header.
+Omitting `header` (or setting `header = "default"`) keeps the standard header.
+For example, a page can reserve the corner in its own toolbar:
+
+```css
+.toolbar {
+  min-height: var(--openidea-corner-inset-height, 0px);
+  padding-right: var(--openidea-corner-inset-width, 0px);
+}
+```
+
 `plugins/official/excalidraw` is a complete example: a Vite + React page in
 `web-src/`, built into `web/` by `plugins/build.sh`. `plugins/official/graphviz`
 pairs a page with code: the page renders (Graphviz compiled to WebAssembly) and

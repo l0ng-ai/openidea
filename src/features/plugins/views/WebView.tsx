@@ -145,8 +145,9 @@ export interface WebViewProps {
 export function WebView({ pluginId, view, label, header = "default", document = null, doc = null }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
-  const ready = page !== null && !("error" in page);
-  const headless = !document && header === "none" && ready;
+  const [loadedPage, setLoadedPage] = useState<PageState | null>(null);
+  const ownHeader = !document && header === "none";
+  const headless = ownHeader && page !== null && "url" in page && loadedPage === page;
   useOwnToolWindowHeader(headless);
   const hasCode = plugin?.hasCode ?? false;
   const clipboard = plugin?.capabilities.some((c) => c.id === "clipboard" && c.granted) ?? false;
@@ -157,12 +158,12 @@ export function WebView({ pluginId, view, label, header = "default", document = 
   }, []);
   const postTheme = useCallback(() => {
     const t = frameTheme();
-    if (headless) {
+    if (ownHeader) {
       t.vars["--openidea-corner-inset-width"] = `${HEADERLESS_CORNER_INSET.width}px`;
       t.vars["--openidea-corner-inset-height"] = `${HEADERLESS_CORNER_INSET.height}px`;
     }
     post(frameThemeMessage(t));
-  }, [headless, post]);
+  }, [ownHeader, post]);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   useEffect(postTheme, [theme, postTheme]);
 
@@ -329,13 +330,16 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
       src={page.url}
-      onLoad={postTheme}
+      onLoad={() => {
+        postTheme();
+        setLoadedPage(page);
+      }}
     />
   );
-  if (!headless) return iframe;
+  if (!ownHeader) return iframe;
   return (
     <div className={styles.webWrap}>
-      <ToolWindowCornerActions className={styles.cornerActions} />
+      {headless && <ToolWindowCornerActions className={styles.cornerActions} />}
       {iframe}
     </div>
   );
