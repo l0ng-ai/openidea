@@ -549,6 +549,10 @@ struct ViewDecl {
     icon: Option<String>,
     #[serde(default = "right")]
     location: String,
+    /// Place the tool window in the secondary split of its dock (`left` → Left Bottom,
+    /// `right` → Right Bottom, `bottom` → Bottom Right).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secondary: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -596,6 +600,12 @@ pub(super) fn view(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         pkg.manifest.needs_api(&format!("view {:?}: `location = \"services\"`", d.id), 3)?;
         if d.web.is_some() {
             return Err(format!("view {:?}: a services view is rendered by the plugin's code (no `web`)", d.id));
+        }
+    }
+    if d.secondary.is_some() {
+        pkg.manifest.needs_api("contributes.views.secondary", 3)?;
+        if d.location == SERVICES_LOCATION {
+            return Err(format!("view {:?}: `secondary` does not apply to a services view", d.id));
         }
     }
     if d.detail {

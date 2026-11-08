@@ -871,8 +871,13 @@ tool window `ctx.editor()` is the window's active text editor, as for a
 command, so a view's buttons can act on what the user is editing (a click in
 the tool window doesn't change which editor that is).
 
-API 1.3 adds optional `group` and `when` fields to `[[contributes.views]]`;
-using either requires `engines.openidea = "^1.3"`. `when` uses the same
+API 1.3 adds optional `group`, `when` and `secondary` fields to `[[contributes.views]]`;
+using any of them requires `engines.openidea = "^1.3"`. `secondary = true`
+places a `left`, `right` or `bottom` tool window in the secondary split of its
+dock (**Left Bottom**, **Right Bottom** or **Bottom Right**). It defaults to
+`false` for every view, including views with `header = "none"`. A saved user
+placement takes precedence. Older IDEs that do not recognize `secondary` reject
+the manifest at install; update the IDE to use it. `when` uses the same
 context clauses as commands and menus, including `workspaceContains:pom.xml`
 and keys set with `set_context`. A false condition removes the view from the
 stripe and its group tabs; context changes, file creation/removal and project
@@ -881,7 +886,7 @@ changes evaluate it again. Hidden views are not rendered or activated.
 Tool-window views (`left`, `right` or `bottom`) with the same `group`
 **within one plugin** share a tool window, with
 tabs in manifest declaration order. The first declaration supplies the window's
-title, icon and default location, even when that view is hidden; the window
+title, icon, default location and `secondary`, even when that view is hidden; the window
 is absent when all its tabs are hidden. Group ids follow the same rules as
 view ids and are scoped to the declaring plugin. Tabs load on first selection
 and keep their content mounted while they apply, preserving web-view state
