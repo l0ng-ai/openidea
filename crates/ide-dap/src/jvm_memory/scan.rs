@@ -31,12 +31,23 @@ pub(crate) fn local_jdwp_port(arguments: &Value) -> Option<u16> {
         }
         Some(_) => false,
     };
+    jdwp_port(arguments).filter(|_| local)
+}
+
+/// `port` of an attach request: a number or a numeric string, never 0.
+fn jdwp_port(arguments: &Value) -> Option<u16> {
     let port = match arguments.get("port")? {
         Value::Number(n) => n.as_u64().and_then(|p| u16::try_from(p).ok()),
         Value::String(s) => s.trim().parse().ok(),
         _ => None,
     };
-    port.filter(|&p| local && p != 0)
+    port.filter(|&p| p != 0)
+}
+
+/// `hostName` (empty when absent) and `port` of an attach request, local or not.
+pub(crate) fn attach_target(arguments: &Value) -> Option<(String, u16)> {
+    let host = arguments.get("hostName").and_then(Value::as_str).unwrap_or_default();
+    Some((host.to_owned(), jdwp_port(arguments)?))
 }
 
 /// Pid of the local JVM listening on a JDWP port (first argument), given whether the session is

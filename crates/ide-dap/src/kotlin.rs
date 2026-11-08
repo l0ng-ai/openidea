@@ -9,6 +9,12 @@ use std::{
 
 pub const ADAPTER: &str = "kotlin-debug-adapter";
 
+/// fwcd's adapter resumes the VM while constructing its debuggee, before its breakpoint hooks
+/// exist, so only its link holds resumes back until the attach is done.
+pub(crate) fn link_options(adapter: &str) -> ide_jdwp::LinkOptions {
+    ide_jdwp::LinkOptions { hold_resumes: adapter == ADAPTER }
+}
+
 pub struct SourceMirror {
     dir: tempfile::TempDir,
     paths: HashMap<PathBuf, PathBuf>,

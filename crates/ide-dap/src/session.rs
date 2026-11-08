@@ -73,7 +73,13 @@ pub(crate) struct Session {
     /// Resolved path → the path as the IDE knows it, for adapters given resolved paths.
     resolved_paths: Mutex<HashMap<PathBuf, PathBuf>>,
     progress: Mutex<HashMap<String, TaskId>>,
-    pub kotlin_relay: Mutex<Option<crate::kotlin_jdwp::StartupRelay>>,
+    /// Relay between a Kotlin adapter and its JVM. Dropping it closes both sockets.
+    pub jdwp_link: parking_lot::Mutex<Option<ide_jdwp::JdwpLink>>,
+    pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
+    /// `hostName` (empty when absent) and `port` of the session's `attach` request, as the IDE
+    /// was given them: Kotlin then replaces them with the link's. Unlike `jdwp_port`, also set
+    /// for a remote JVM.
+    pub attach_target: std::sync::OnceLock<(String, u16)>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
 }
@@ -161,7 +167,9 @@ impl Session {
             breakpoint_ids: Mutex::new(HashMap::new()),
             resolved_paths: Mutex::new(HashMap::new()),
             progress: Mutex::new(HashMap::new()),
-            kotlin_relay: Mutex::new(None),
+            jdwp_link: parking_lot::Mutex::new(None),
+            jvm_inspector: parking_lot::Mutex::new(None),
+            attach_target: std::sync::OnceLock::new(),
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
         }
@@ -324,7 +332,9 @@ impl Session {
 
     /// Kills the adapter and every debuggee we started.
     pub fn kill_processes(&self) {
-        self.kotlin_relay.lock().take();
+        // The inspector holds a clone of the link, so both go.
+        self.jvm_inspector.lock().take();
+        self.jdwp_link.lock().take();
         if let Some(mut c) = self.adapter_process.lock().take() {
             let _ = c.start_kill();
         }

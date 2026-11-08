@@ -35,6 +35,8 @@ struct Script {
     hold_set_breakpoints: usize,
     /// Send a `continued` event right after the first `stopped` one.
     continued_after_stop: bool,
+    /// Close the connection when a `pause` request arrives (the adapter dies).
+    hang_up_on_pause: bool,
 }
 
 impl Default for Script {
@@ -50,6 +52,7 @@ impl Default for Script {
             supports_terminate: true,
             hold_set_breakpoints: 0,
             continued_after_stop: false,
+            hang_up_on_pause: false,
         }
     }
 }
@@ -239,6 +242,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(json!({"type": "event", "event": "exited", "body": {"exitCode": 3}}));
                 send!(json!({"type": "event", "event": "terminated"}));
             }
+            "pause" if script.hang_up_on_pause => break,
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "redefineClasses" => {
                 send!(
@@ -1856,4 +1860,90 @@ async fn unknown_pid_reports_no_jvm_process() {
         h.manager.jvm_memory_classes(id).await.unwrap(),
         JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess }
     );
+}
+
+fn kotlin_attach(project: &std::path::Path, host: &str, port: u16) -> LaunchConfig {
+    LaunchConfig {
+        adapter: kotlin::ADAPTER.into(),
+        cwd: Some(project.to_owned().into()),
+        extra_json: Some(json!({"projectRoot": project, "hostName": host, "port": port}).to_string()),
+        ..java_config("attach")
+    }
+}
+
+#[test]
+fn link_options_hold_only_for_fwcd() {
+    assert!(kotlin::link_options(kotlin::ADAPTER).hold_resumes);
+    assert!(!kotlin::link_options("x").hold_resumes);
+}
+
+#[tokio::test]
+async fn kotlin_session_installs_link_inspector() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_attach(project.path(), "127.0.0.1", 5005)).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert!(session.jdwp_link.lock().is_some());
+    assert!(session.jvm_inspector.lock().is_some());
+}
+
+#[tokio::test]
+async fn attach_target_recorded_before_kotlin_rewrite() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_attach(project.path(), "10.0.0.5", 5005)).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.attach_target.get(), Some(&("10.0.0.5".to_owned(), 5005)));
+    let sent = &h.request("attach")["arguments"];
+    assert_eq!(sent["hostName"], "127.0.0.1");
+    let link_port = sent["port"].as_u64().unwrap();
+    assert!(link_port != 0 && link_port != 5005);
+}
+
+#[tokio::test]
+async fn java_attach_records_target() {
+    let h = harness(Script::default());
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "localhost", "port": 5005}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert_eq!(session.attach_target.get(), Some(&("localhost".to_owned(), 5005)));
+    assert!(session.jdwp_link.lock().is_none());
+    assert!(session.jvm_inspector.lock().is_none());
+}
+
+#[tokio::test]
+async fn attach_target_recorded_for_any_adapter() {
+    let h = harness(Script::default());
+    let mut cfg = java_config("attach");
+    // "x" is not a registered adapter; debugpy has no JVM link or memory support.
+    cfg.adapter = "debugpy".into();
+    cfg.extra_json = Some(json!({"hostName": "h", "port": 7}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.manager.session(id).unwrap().attach_target.get(), Some(&("h".to_owned(), 7)));
+}
+
+#[tokio::test]
+async fn launch_sessions_have_no_attach_target() {
+    let h = harness(Script::default());
+    let id = h.start(java_config("launch")).await.unwrap();
+    assert_eq!(h.manager.session(id).unwrap().attach_target.get(), None);
+}
+
+#[tokio::test]
+async fn closing_the_session_drops_the_link() {
+    let h = harness(Script { hang_up_on_pause: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_attach(project.path(), "127.0.0.1", 5005)).await.unwrap();
+    let session = h.manager.session(id).unwrap();
+    assert!(session.jdwp_link.lock().is_some() && session.jvm_inspector.lock().is_some());
+    let _ = session.conn.request_timeout("pause", json!({"threadId": 1}), Duration::from_secs(2)).await;
+    for _ in 0..200 {
+        if h.manager.session(id).is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(session.jdwp_link.lock().is_none());
+    assert!(session.jvm_inspector.lock().is_none());
 }

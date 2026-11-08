@@ -15,7 +15,6 @@ pub mod connection;
 pub mod jdwp;
 mod jvm_memory;
 pub mod kotlin;
-mod kotlin_jdwp;
 mod session;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
@@ -898,7 +897,12 @@ impl DebugManager {
         } else {
             &s.request
         };
-        // Before the Kotlin relay below replaces the JVM's address with its own.
+        // Both blocks below run before the Kotlin link replaces the JVM's address with its own.
+        if request == "attach"
+            && let Some(target) = jvm_memory::attach_target(&arguments)
+        {
+            let _ = s.attach_target.set(target);
+        }
         if cfg!(unix)
             && s.request == "attach"
             && JVM_MEMORY_ADAPTERS.contains(&s.adapter.as_str())
@@ -922,8 +926,9 @@ impl DebugManager {
                 .and_then(|p| u16::try_from(p).ok())
                 .filter(|p| *p != 0)
                 .ok_or_else(|| IdeError::invalid("Invalid Kotlin JDWP port"))?;
-            let (relay, port) = kotlin_jdwp::StartupRelay::start(host, port).await?;
-            *s.kotlin_relay.lock() = Some(relay);
+            let (link, port) = ide_jdwp::JdwpLink::start(host, port, kotlin::link_options(&s.adapter)).await?;
+            *s.jvm_inspector.lock() = Some(Arc::new(ide_jdwp::LinkInspector::new(link.clone())));
+            *s.jdwp_link.lock() = Some(link);
             arguments["hostName"] = json!("127.0.0.1");
             arguments["port"] = json!(port);
         }
@@ -1004,8 +1009,8 @@ impl DebugManager {
                 Err(_) => return Err(DapError::Timeout(s.request.clone()).into()),
             }
         }
-        if let Some(relay) = s.kotlin_relay.lock().as_mut() {
-            relay.release();
+        if let Some(link) = s.jdwp_link.lock().as_ref() {
+            link.release();
         }
         Ok(())
     }

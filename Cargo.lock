@@ -4214,8 +4214,10 @@ version = "0.1.38"
 dependencies = [
  "futures",
  "ide-core",
+ "ide-jdwp",
  "ide-jsonrpc",
  "ide-jvm-attach",
+ "ide-jvm-inspect",
  "ide-language",
  "libc",
  "memchr",
