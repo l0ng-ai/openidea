@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use ide_core::process::process_alive;
 use ide_core::{DebugSessionId, IpcPath};
 use serde::{Deserialize, Serialize};
 
-use crate::disk::{process_alive, remove_stale};
+use crate::disk::remove_stale;
 use crate::index::{HeapIndex, HeapSummary};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]

@@ -70,6 +70,16 @@ fn snapshot_dir_records_its_owner_and_leaves_no_tmp() {
     assert_ne!(create_snapshot_dir(&missing_parent).unwrap(), dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn snapshot_dir_is_private_to_the_owner() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = create_snapshot_dir(root.path()).unwrap();
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+}
+
 #[test]
 fn stale_dirs_removed_on_start() {
     let root = tempfile::tempdir().unwrap();
@@ -124,16 +134,4 @@ fn stale_scan_never_follows_a_symlink_out_of_the_root() {
     remove_stale(root.path(), |_| false);
     remove_stale_at(root.path(), |_| false, SystemTime::now() + 2 * TMP_GRACE);
     assert_eq!(names(outside.path()), ["precious"]);
-}
-
-#[cfg(unix)]
-#[test]
-fn process_alive_tells_live_from_dead_pids() {
-    assert!(process_alive(std::process::id()));
-    assert!(!process_alive(0));
-    assert!(!process_alive(u32::MAX));
-    let mut child = std::process::Command::new("true").spawn().unwrap();
-    let pid = child.id();
-    child.wait().unwrap();
-    assert!(!process_alive(pid));
 }

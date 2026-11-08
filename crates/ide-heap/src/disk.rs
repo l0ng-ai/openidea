@@ -73,7 +73,7 @@ pub fn create_snapshot_dir(root: &Path) -> io::Result<PathBuf> {
     let name = uuid::Uuid::new_v4().to_string();
     let building = root.join(format!("{name}{TMP_SUFFIX}"));
     let dir = root.join(&name);
-    fs::create_dir(&building)?;
+    create_private_dir(&building)?;
     let published =
         fs::write(building.join(OWNER_FILE), std::process::id().to_string()).and_then(|()| fs::rename(&building, &dir));
     if let Err(err) = published {
@@ -81,6 +81,15 @@ pub fn create_snapshot_dir(root: &Path) -> io::Result<PathBuf> {
         return Err(err);
     }
     Ok(dir)
+}
+
+/// A dump holds whatever was in the JVM's memory, passwords and tokens included, so on unix only
+/// the owner may enter the directory. Windows keeps the ACL inherited from the user's data dir.
+fn create_private_dir(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path)
 }
 
 /// Removes the directories under `root` whose owner file is missing, unreadable or names a pid
@@ -117,24 +126,6 @@ fn read_owner(dir: &Path) -> Option<u32> {
     let mut text = String::new();
     fs::File::open(dir.join(OWNER_FILE)).ok()?.take(32).read_to_string(&mut text).ok()?;
     text.trim().parse().ok()
-}
-
-/// Whether a process with this pid exists. Off unix every pid counts as alive, so nothing is
-/// removed on a guess.
-#[cfg(unix)]
-pub(crate) fn process_alive(pid: u32) -> bool {
-    // `kill(2)` addresses process groups for pid 0 and negative values.
-    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
-    if pid == 0 {
-        return false;
-    }
-    // SAFETY: signal 0 delivers nothing; it only checks that the process exists and is reachable.
-    unsafe { libc::kill(pid, 0) == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
-}
-
-#[cfg(not(unix))]
-pub(crate) fn process_alive(_pid: u32) -> bool {
-    true
 }
 
 #[cfg(test)]

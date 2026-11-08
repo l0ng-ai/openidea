@@ -72,6 +72,49 @@ pub fn kill_tree_of(pid: u32) {
     let _ = pid;
 }
 
+/// Whether a process with this id exists. PID reuse makes this conservative: a reused id keeps
+/// whatever was tied to the old process alive, a live process is never reported dead.
+pub fn process_alive(pid: u32) -> bool {
+    // `kill(0, 0)` would signal the caller's own process group.
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        // Above `i32::MAX` the id would wrap to a negative value, which `kill` reads as a group.
+        let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+        // SAFETY: signal 0 delivers nothing; it only checks that the process exists and is reachable.
+        unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: plain call; a non-null result is a process handle owned by this function.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            // A process we may not open still exists.
+            // SAFETY: reads the thread's last error, set by the call above.
+            return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+        }
+        // SAFETY: `handle` is valid and nobody else owns it.
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let mut code = 0u32;
+        // SAFETY: a live process handle opened with query access; one out-parameter.
+        let ok = unsafe { GetExitCodeProcess(handle.as_raw_handle(), &mut code) };
+        // A handle that cannot be queried is not evidence that the process is gone.
+        ok == 0 || code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
+    }
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,
@@ -518,6 +561,30 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_alive_tells_live_from_dead_pids() {
+        assert!(process_alive(std::process::id()));
+        assert!(!process_alive(0));
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "exit 0"]);
+            cmd
+        } else {
+            Command::new("true")
+        };
+        let mut child = cmd.spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child);
+        assert!(!process_alive(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_alive_rejects_ids_that_are_not_a_single_process() {
+        assert!(!process_alive(u32::MAX));
+    }
 
     #[cfg(unix)]
     #[test]
