@@ -492,5 +492,14 @@
   "Copied": "Copied",
   "Could not copy. Select the details below and copy them.": "Could not copy. Select the details below and copy them.",
   "Startup error details": "Startup error details",
-  "Startup did not finish within 30 seconds.": "Startup did not finish within 30 seconds."
+  "Startup did not finish within 30 seconds.": "Startup did not finish within 30 seconds.",
+  "Choose Projects": "Choose Projects",
+  "Add Selected": "Add Selected",
+  "Projects found": "Projects found",
+  "Select All": "Select All",
+  "Select None": "Select None",
+  "Choose the projects to link to this workspace.": "Choose the projects to link to this workspace.",
+  "Already linked": "Already linked",
+  "Searching for projects…": "Searching for projects…",
+  "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.": "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again."
 }
