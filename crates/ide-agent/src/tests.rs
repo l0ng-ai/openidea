@@ -357,7 +357,9 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             worktrees_dir: dir.join("worktrees"),
             models_file: models_file.to_path_buf(),
             custom_agents_dir: Some(agents),
-            home_dir: None,
+            // The project is the boundary of the skill walk: nothing above it (such as the
+            // user's profile, when temp lives under it) leaks into the test.
+            home_dir: Some(dir.to_path_buf()),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -1939,6 +1941,7 @@ async fn task_project_root_controls_local_and_worktree_repositories() {
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
     };
     git(&["init", "-q", "-b", "member-main"]);
+    git(&["config", "core.autocrlf", "false"]);
     std::fs::write(member.join("file.txt"), "original\n").unwrap();
     git(&["add", "."]);
     git(&["commit", "-qm", "initial"]);
@@ -2252,6 +2255,7 @@ async fn delete_running_agent(no_load: bool) {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     };
     git(&["init", "-q", "-b", "main"]);
+    git(&["config", "core.autocrlf", "false"]);
     std::fs::write(root.join("file.txt"), "original\n").unwrap();
     git(&["add", "."]);
     git(&["commit", "-qm", "initial"]);

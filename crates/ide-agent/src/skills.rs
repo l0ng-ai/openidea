@@ -211,7 +211,9 @@ mod tests {
     #[test]
     fn project_and_user_skills_and_commands() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
+        // Home is an ancestor of the project, so the walk stops there instead of climbing
+        // past it into the real profile (a temp dir under the user's home holds its skills).
+        let home = tmp.path().to_path_buf();
         let repo = tmp.path().join("work").join("idea");
         let skills = repo.join(".claude/skills");
         write(
