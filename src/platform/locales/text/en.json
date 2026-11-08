@@ -1,6 +1,8 @@
 {
+  "Cannot remove a worktree containing the open project.": "Cannot remove a worktree containing the open project.",
   "Delete Remote Branches": "Delete Remote Branches",
   "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.": "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.",
+  "Identifiers › Package reference": "Identifiers › Package reference",
   "Add or Remove Caret": "Add or Remove Caret",
   "Select Python Environment Folder": "Select Python Environment Folder",
   "Checking interpreter": "Checking interpreter",
@@ -428,5 +430,6 @@
   "Allowed for this session": "Allowed for this session",
   "Always allowed": "Always allowed",
   "Declined": "Declined",
-  "Always declined": "Always declined"
+  "Always declined": "Always declined",
+  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted."
 }
