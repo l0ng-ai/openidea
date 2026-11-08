@@ -8,22 +8,22 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 
 const editor = vi.hoisted(() => vi.fn());
 vi.mock("../DiffEditor", () => ({
-  DiffEditor: (props: { input: { data: { path: string; embedded?: boolean } } }) => {
+  DiffEditor: (props: { input: { data: { path: string; embedded?: boolean } }; onJumpToSource?: () => void }) => {
     editor(props);
     return <div data-testid="diff-view" data-path={props.input.data.path} />;
   },
 }));
 
-const openDiff = vi.hoisted(() => vi.fn());
-vi.mock("../diffInput", async (original) => ({
-  ...(await original<typeof import("../diffInput")>()),
-  openDiff,
-}));
-
+import type { Settings } from "@/bindings";
+import { useProject } from "@/platform/project";
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { provideEditorService } from "@/workbench/contributions";
 import { ChangesTree, nodeMenu } from "../CommitView";
 import type { ChangeNode } from "../changes";
 import { VcsDialogHost } from "../dialogs";
 import { useVcs } from "../store";
+import { openDiffDialog } from "../diffDialog";
 
 const modified = (path: string) => ({
   path,
@@ -32,6 +32,10 @@ const modified = (path: string) => ({
   unstaged: "modified" as const,
   renamedFrom: null,
 });
+
+/** Editor tabs: none may open behind the modal Commit dialog. */
+const openDiff = vi.fn(async () => undefined);
+provideEditorService({ openInput: openDiff } as never);
 
 /** Activates (double-clicks) the file row the way a user does. */
 function activateFile(name: string) {
@@ -44,8 +48,8 @@ const diffDialogs = async () => (await screen.findAllByRole("dialog", { name: /\
 
 describe("Commit dialog diff window (#1863)", () => {
   beforeEach(() => {
-    openDiff.mockClear();
-    editor.mockClear();
+    // The Commit dialog exists with "Use non-modal commit interface" unticked.
+    useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
     // The dialog stack is module state: close whatever a previous test left open.
     for (const close of screen.queryAllByRole("button", { name: "Close" })) act(() => fireEvent.click(close));
     useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status: [modified("/p/a.ts")] });
@@ -59,8 +63,8 @@ describe("Commit dialog diff window (#1863)", () => {
       </>,
     );
     activateFile("a.ts");
-    expect(openDiff).not.toHaveBeenCalled();
     await diffDialogs();
+    expect(openDiff).not.toHaveBeenCalled();
     expect(screen.getByTestId("diff-view")).toHaveAttribute("data-path", "/p/a.ts");
     expect(editor.mock.calls.at(-1)?.[0].input.data.embedded).toBe(true);
   });
@@ -85,13 +89,13 @@ describe("Commit dialog diff window (#1863)", () => {
     render(<VcsDialogHost />);
     const f = modified("/p/a.ts");
     const node: ChangeNode = { key: f.path, type: "file", label: "a.ts", group: "changes", files: [f], path: f.path };
-    const item = nodeMenu([node], ["/p"], { mode: "dialog", roots: [node] }).find(
+    const item = nodeMenu([node], ["/p"], { roots: [node] }).find(
       (i) => i.kind !== "separator" && "label" in i && i.label === "Show Diff",
     );
     expect(item).toMatchObject({ label: "Show Diff" });
     act(() => (item as { run: () => void }).run());
-    expect(openDiff).not.toHaveBeenCalled();
     await diffDialogs();
+    expect(openDiff).not.toHaveBeenCalled();
     expect(screen.getByTestId("diff-view")).toHaveAttribute("data-path", "/p/a.ts");
   });
 
@@ -111,4 +115,58 @@ describe("Commit dialog diff window (#1863)", () => {
     expect(screen.getByTestId("diff-view")).toHaveAttribute("data-path", "/p/b.ts");
     await screen.findByRole("dialog", { name: "b.ts (HEAD ↔ Your version)" });
   });
+
+  it("closes on Jump to Source so the editor it opens is not hidden behind it", async () => {
+    render(
+      <>
+        <ChangesTree mode="dialog" />
+        <VcsDialogHost />
+      </>,
+    );
+    activateFile("a.ts");
+    await diffDialogs();
+    act(() => editor.mock.calls.at(-1)?.[0].onJumpToSource());
+    expect(screen.queryByRole("dialog", { name: /\(HEAD ↔ Your version\)/ })).toBeNull();
+    expect(screen.getByRole("tree", { name: "Changes" })).toBeTruthy();
+  });
+
+  it.each(["body", "footer", "titlebar"])("owns the close shortcut with %s focus", (location) => {
+    const closeTab = vi.fn();
+    const unregister = registerAction({ id: "editor.closeTab", title: "Close Tab", run: closeTab });
+    const keymap = useKeymap.getState();
+    useKeymap.setState({ overrides: { "editor.closeTab": ["Meta+W"], "toolwindow.closeContent": ["Meta+W"] } });
+    const uninstall = installKeyboardDispatcher(window);
+    render(<VcsDialogHost />);
+    let close: () => void;
+    try {
+      act(() => {
+        close = openDiffDialog({ path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
+      });
+      const dialog = screen.getByRole("dialog", { name: /\(HEAD ↔ Your version\)/ });
+      const target = dialog.querySelector(
+        location === "body"
+          ? "[data-testid='diff-view']"
+          : location === "footer"
+            ? "[data-dialog-footer] button"
+            : "[data-dialog-titlebar] button",
+      )!;
+      fireEvent.keyDown(target, { key: "w", code: "KeyW", metaKey: true });
+      expect(closeTab).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog", { name: /\(HEAD ↔ Your version\)/ })).toBeNull();
+    } finally {
+      act(() => close?.());
+      uninstall();
+      unregister();
+      useKeymap.setState(keymap);
+    }
+  });
+});
+
+it("opens an editor tab instead once the non-modal interface is chosen", async () => {
+  useProject.setState({ settings: null });
+  useVcs.setState({ available: true, root: "/p", repo: "/p", roots: ["/p"], status: [modified("/p/a.ts")] });
+  render(<ChangesTree mode="dialog" />);
+  activateFile("a.ts");
+  await vi.waitFor(() => expect(openDiff).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole("dialog", { name: /\(HEAD ↔ Your version\)/ })).toBeNull();
 });

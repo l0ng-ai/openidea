@@ -1,10 +1,11 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, RevisionChange } from "@/bindings";
 import { call, commands, type LineEnding } from "@/platform/ipc";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
-import { renamedFromPath } from "./changes";
+import { groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 
@@ -131,6 +132,40 @@ export function diffTitle(data: DiffData): string {
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
   await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
+}
+
+/**
+ * Whether openVcsDiff shows diffs in the front window: the modal commit interface
+ * (Settings › Version Control › Commit). Same test as commitUi.isModalCommit, which
+ * this module cannot import (commitUi → remoteUi → … → diffInput is a cycle).
+ */
+export const vcsDiffInFront = () => !workflowSettings().vcs.commit.nonModal;
+
+/**
+ * Diffs the user opens (changed files, a log entry's file, Show Diff, Shelf, compare
+ * with a revision, Compare actions): the modal commit interface shows them in the front
+ * window (#1863), the non-modal one keeps editor tabs. Passive previews, diffs embedded
+ * in dedicated surfaces (the comparison window, merge editors) and pull request files
+ * (`vcs.openDiff`, with review comments) call openDiff directly.
+ */
+export async function openVcsDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
+  if (!vcsDiffInFront()) return openDiff(data, opts);
+  const { openDiffDialog } = await import("./diffDialog");
+  openDiffDialog(data);
+}
+
+/** A changes-tree file's working diff, on its side of the index under a "by staging state" group. */
+export function changeNodeDiff(node: ChangeNode, line?: number): DiffData {
+  return workingDiffData(node.path!, line, stagingSide(node.group, node.files[0]!));
+}
+
+/** A changes-tree file's diff, with the files of its group (in tree order) as the F7 chain. */
+export function changeNodeDiffData(roots: readonly ChangeNode[], node: ChangeNode): DiffData {
+  const nodes = groupFileNodes(roots, node);
+  return withChain(
+    nodes.map((n) => changeNodeDiff(n)),
+    Math.max(0, nodes.indexOf(node)),
+  );
 }
 
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
