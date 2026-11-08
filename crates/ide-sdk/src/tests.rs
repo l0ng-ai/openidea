@@ -313,7 +313,7 @@ fn npm_config_runs_on_its_own_node_interpreter() {
 
 fn fake_jdk(dir: &Path) {
     std::fs::create_dir_all(dir.join("bin")).unwrap();
-    std::fs::write(dir.join("bin").join(exe("java")), "").unwrap();
+    crate::java::write_test_java(dir);
     std::fs::write(
         dir.join("release"),
         "JAVA_VERSION=\"17.0.9\"\nMODULES=\"java.base jdk.compiler jdk.jdi jdk.unsupported\"\n",
@@ -921,6 +921,17 @@ fn jdtls_jdk_setting() {
     s.languages.java.jdtls_jdk = "jdk17.0.1".into();
     let err = jdtls_jdk(tmp.path(), &s).unwrap_err();
     assert!(err.contains("jdk17.0.1 does not exist") && err.contains("Languages & Frameworks › Java"), "{err}");
+
+    let bundle = tmp.path().join("outside-scan/jdk25.jdk");
+    let home = bundle.join("Contents/Home");
+    fake_jdk(&home);
+    for path in [&bundle, &home, &home.join("bin"), &home.join("bin/java")] {
+        s.languages.java.jdtls_jdk = path.to_string_lossy().into_owned();
+        assert_eq!(jdtls_jdk(tmp.path(), &s).unwrap().unwrap().home, dunce::canonicalize(&home).unwrap());
+    }
+    std::fs::write(home.join("bin/java"), "#!/bin/sh\nexit 126\n").unwrap();
+    let error = jdtls_jdk(tmp.path(), &s).unwrap_err();
+    assert!(error.contains(home.to_string_lossy().as_ref()) && error.contains("cannot run"), "{error}");
 }
 
 #[test]

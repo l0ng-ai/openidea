@@ -1,4 +1,5 @@
 {
+  "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.": "The language server Java executable ({path}) cannot run on this machine. Choose a working JDK in {setting}, or set it to Auto.",
   "Docker": "Docker",
   "Shell": "Shell",
   "C/C++": "C/C++",
