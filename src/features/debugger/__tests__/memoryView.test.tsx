@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
@@ -734,6 +735,68 @@ describe("MemoryView", () => {
         .getAllByRole("row")
         .map((r) => r.textContent?.slice(0, 4));
       expect(order).toEqual(["Leaf", "Node"]);
+    });
+
+    // Z2: retained sizes sit only beside the table they were computed for.
+    describe("which table gets retained sizes", () => {
+      const refresh = async (calls: number) => {
+        fireEvent.click(screen.getByRole("button", { name: "Refresh Memory View" }));
+        await waitFor(() => expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(calls));
+        await waitFor(() => expect(useMemory.getState().bySession[1]!.loading).toBe(false));
+      };
+      const moveTo = (next: DebugSession, rerender: (ui: ReactElement) => void) => {
+        act(() => useDebug.setState({ sessions: { 1: next } }));
+        rerender(<MemoryView session={next} />);
+      };
+
+      it("shows them while paused at the stop of both the table and the dump", async () => {
+        snapshotAt(0, [heapRow("Node", 104)]);
+        render(<MemoryView session={withHeap} />);
+        await screen.findByText("Node");
+        expect(headers()).toContain("Retained Size");
+      });
+
+      it("hides them after Resume, also once the table is refreshed while running", async () => {
+        snapshotAt(0, [heapRow("Node", 104)]);
+        const { rerender } = render(<MemoryView session={withHeap} />);
+        await screen.findByText("Node");
+        expect(headers()).toContain("Retained Size");
+
+        // Resume does not move `stops`: the refreshed table has the dump's stop but counts the running program.
+        moveTo({ ...withHeap, status: "running" }, rerender);
+        expect(headers()).not.toContain("Retained Size");
+        await refresh(2);
+        expect(useMemory.getState().bySession[1]!.takenAtStop).toBe(0);
+        expect(headers()).not.toContain("Retained Size");
+      });
+
+      it("hides them beside a table of a later stop than the dump", async () => {
+        const later = { ...withHeap, stops: 1 };
+        useDebug.setState({ sessions: { 1: later } });
+        snapshotAt(0, [heapRow("Node", 104)]);
+        render(<MemoryView session={later} />);
+        await screen.findByText("Node");
+        expect(useMemory.getState().bySession[1]!.takenAtStop).toBe(1);
+        expect(headers()).not.toContain("Retained Size");
+      });
+
+      it("shows them again for a capture at the next stop once the table is refreshed there", async () => {
+        snapshotAt(0, [heapRow("Node", 104)]);
+        const { rerender } = render(<MemoryView session={withHeap} />);
+        await screen.findByText("Node");
+        moveTo({ ...withHeap, status: "running" }, rerender);
+        const stopped = { ...withHeap, stops: 1 };
+        moveTo(stopped, rerender);
+        await refresh(2);
+        expect(headers()).not.toContain("Retained Size");
+
+        ipc.debugHeapClasses.mockReturnValue(ok([heapRow("Node", 208)]));
+        fireEvent.click(screen.getByRole("button", { name: "Capture Heap Snapshot" }));
+        await waitFor(() => expect(channel).not.toBeNull());
+        await act(async () => answer({ status: "ready", snapshot: info(8) }));
+        await waitFor(() => expect(headers()).toContain("Retained Size"));
+        expect(within(rowOf("Node")).getAllByRole("cell").at(-1)!.textContent).toBe("208 B");
+      });
     });
   });
 });

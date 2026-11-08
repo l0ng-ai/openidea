@@ -154,12 +154,14 @@ export async function closeHeapSnapshot(id: number): Promise<void> {
 }
 
 /**
- * Retained bytes by class name, for the Memory table of stop `tableStop`; `null` unless the table, the dump and the
- * session are all at that same stop (sizes of another state beside these counts would mislead). Names shared by
- * several classes are left out: the name is the only join key and cannot tell them apart.
+ * Retained bytes by class name, for the Memory table of stop `tableStop`; `null` unless the session is paused and the
+ * table, the dump and the session are all at that same stop (sizes of another state beside these counts would
+ * mislead). `stops` does not move on Resume, so a table refreshed while running would otherwise match an older dump.
+ * Names shared by several classes are left out: the name is the only join key and cannot tell them apart.
  */
 export function retainedForSession(session: DebugSessionId, tableStop: number): Map<string, number> | null {
-  if (stopsOf(session) !== tableStop) return null;
+  const s = useDebug.getState().sessions[session];
+  if (s?.status !== "paused" || s.stops !== tableStop) return null;
   let latest: HeapSnapshotEntry | null = null;
   for (const entry of Object.values(useHeap.getState().snapshots)) {
     const { origin, createdMs, id } = entry.info;

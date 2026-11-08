@@ -87,8 +87,8 @@ let capture: ReturnType<typeof deferred<{ status: "ok"; data: HeapCaptureResult 
 let open: ReturnType<typeof deferred<{ status: "ok"; data: HeapOpenResult }>>;
 const openInput = vi.fn(async (_input: EditorInput, _options?: unknown) => {});
 
-const setStops = (stops: number, id: DebugSessionId = SESSION) =>
-  useDebug.setState((s) => ({ sessions: { ...s.sessions, [id]: { id, stops } as DebugSession } }));
+const setStops = (stops: number, id: DebugSessionId = SESSION, status: DebugSession["status"] = "paused") =>
+  useDebug.setState((s) => ({ sessions: { ...s.sessions, [id]: { id, stops, status } as DebugSession } }));
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -316,6 +316,13 @@ describe("retainedForSession", () => {
     withSnapshot(4, [row("Node", 104)]);
     setStops(4);
     expect(retainedForSession(SESSION, 3)).toBeNull();
+  });
+
+  // `stops` moves only on a stop, so after Resume the dump's stop still matches a table refreshed while running.
+  it("is null while the session is not paused", () => {
+    withSnapshot(4, [row("Node", 104)]);
+    setStops(4, SESSION, "running");
+    expect(retainedForSession(SESSION, 4)).toBeNull();
   });
 
   it("is null when the dump is from an earlier stop than the table", () => {

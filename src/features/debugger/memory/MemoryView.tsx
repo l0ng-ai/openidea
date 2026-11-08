@@ -111,10 +111,11 @@ export function MemoryView({ session }: { session: DebugSession }) {
   const source = snapshot?.source ?? "histogram";
   const heapSnapshots = useHeap((s) => s.snapshots);
   const tableStop = snapshot ? (entry?.takenAtStop ?? null) : null;
+  // `retainedForSession` alone decides whether the sizes fit this table (Z2), so other callers cannot skip a check.
   const retained = useMemo(
-    () => (tableStop !== null && session.stops === tableStop ? retainedForSession(id, tableStop) : null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the heap store's snapshots are the input of retainedForSession()
-    [id, tableStop, session.stops, heapSnapshots],
+    () => (tableStop === null ? null : retainedForSession(id, tableStop)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the heap snapshots and the session's stop and status are the inputs of retainedForSession()
+    [id, tableStop, session.stops, session.status, heapSnapshots],
   );
   const sorted = useMemo(() => queryFor(query, source, retained !== null), [query, source, retained]);
   const listsInstances = sessionSupports("jvmInstances", session);
