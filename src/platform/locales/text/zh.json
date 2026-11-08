@@ -6831,4 +6831,5 @@
   "Tool: {0}": "工具：{0}",
   "Could not send the answer: {0}": "无法发送回复：{0}",
   "Deny": "拒绝",
-  "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.": "智能体可通过内置工具读取、编辑和运行 OpenIDEA 中打开的项目。运行工具会请求确认。服务器仅监听 127.0.0.1，并需要令牌。"}
+  "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.": "智能体可通过内置工具读取、编辑和运行 OpenIDEA 中打开的项目。运行工具会请求确认。服务器仅监听 127.0.0.1，并需要令牌。"
+}
