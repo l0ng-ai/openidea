@@ -84,12 +84,24 @@ impl HprofWriter {
 
     /// `statics` are `(name id, object id)` reference statics.
     pub fn class(&mut self, id: u64, super_id: u64, fields: &[(u64, BasicType)], statics: &[(u64, u64)]) -> &mut Self {
+        self.class_with_loader(id, super_id, 0, fields, statics)
+    }
+
+    pub fn class_with_loader(
+        &mut self,
+        id: u64,
+        super_id: u64,
+        loader_id: u64,
+        fields: &[(u64, BasicType)],
+        statics: &[(u64, u64)],
+    ) -> &mut Self {
         self.heap.push(0x20);
         self.heap_id(id);
         self.heap_u4(0);
         self.heap_id(super_id);
-        for _ in 0..5 {
-            self.heap_id(0); // loader, signers, protection domain, 2 reserved
+        self.heap_id(loader_id);
+        for _ in 0..4 {
+            self.heap_id(0); // signers, protection domain, 2 reserved
         }
         let instance_size: usize = fields.iter().map(|(_, ty)| ty.hprof_size(self.id_size)).sum();
         self.heap_u4(instance_size as u32);
@@ -337,4 +349,40 @@ impl MiniHeap {
     pub fn write_to(&self, path: &Path) {
         std::fs::write(path, self.bytes()).unwrap_or_else(|e| panic!("MiniHeap: writing {}: {e}", path.display()));
     }
+}
+
+/// The heap most analysis tests share:
+///
+/// - `Holder { a: Object, b: Object }`, `Node { next: Object, v: long }`,
+///   `java.lang.ref.Reference { referent: Object, queue: Object }`,
+///   `java.lang.ref.WeakReference extends Reference`, `[Ljava.lang.Object;`
+/// - H `0x1000` Holder { a: N1, b: N2 }; N1 `0x1100` Node { next: N3 }; N2 `0x1200` Node { next: N3 };
+///   N3 `0x1300` Node { next: L }; L `0x1400` long[2]; R `0x1500` Object[] { N1, null, null };
+///   W `0x1600` WeakReference { referent: N4 }; N4 `0x1700` Node {}
+/// - roots: JNI global H, Java frame N3 (thread serial 1), JNI global W
+///
+/// R and N4 are unreachable (N4 only through the weak referent).
+pub fn sample() -> MiniHeap {
+    let mut heap = MiniHeap::new();
+    heap.class("Holder", Some("java.lang.Object"), &[("a", BasicType::Object), ("b", BasicType::Object)])
+        .class("Node", Some("java.lang.Object"), &[("next", BasicType::Object), ("v", BasicType::Long)])
+        .class(
+            "java.lang.ref.Reference",
+            Some("java.lang.Object"),
+            &[("referent", BasicType::Object), ("queue", BasicType::Object)],
+        )
+        .class("java.lang.ref.WeakReference", Some("java.lang.ref.Reference"), &[])
+        .class("[Ljava.lang.Object;", Some("java.lang.Object"), &[])
+        .object(0x1000, "Holder", &[("a", 0x1100), ("b", 0x1200)])
+        .object(0x1100, "Node", &[("next", 0x1300)])
+        .object(0x1200, "Node", &[("next", 0x1300)])
+        .object(0x1300, "Node", &[("next", 0x1400)])
+        .prim(0x1400, BasicType::Long, 2)
+        .array_of(0x1500, "[Ljava.lang.Object;", &[0x1100, 0, 0])
+        .object(0x1600, "java.lang.ref.WeakReference", &[("referent", 0x1700)])
+        .object(0x1700, "Node", &[])
+        .root(HeapRootKind::JniGlobal, 0x1000)
+        .root(HeapRootKind::JavaFrame, 0x1300)
+        .root(HeapRootKind::JniGlobal, 0x1600);
+    heap
 }

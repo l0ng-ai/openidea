@@ -9,6 +9,7 @@
 
 mod builder;
 
+pub(crate) use builder::ChunkHasher;
 pub use builder::IdMapBuilder;
 
 use crate::column::{Column, NONE};

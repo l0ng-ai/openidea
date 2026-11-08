@@ -37,9 +37,10 @@ const SORTED_FILE: &str = "ids.sorted.u64";
 
 /// Chunk numbers are already well spread by a multiplicative hash; SipHash would dominate the
 /// per-insert cost on a 100M-object heap. The product keeps the low zero bits of its input, so
-/// the high half is folded down for the bucket index.
+/// the high half is folded down for the bucket index. The graph builder keys class and string
+/// ids (addresses) with it for the same reason.
 #[derive(Default)]
-struct ChunkHasher(u64);
+pub(crate) struct ChunkHasher(u64);
 
 impl Hasher for ChunkHasher {
     fn finish(&self) -> u64 {
