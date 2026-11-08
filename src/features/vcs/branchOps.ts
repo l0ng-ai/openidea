@@ -1,6 +1,6 @@
 /** Branch operations (checkout, create, merge, rebase, update, delete) with recents and favorites. */
 import { create } from "zustand";
-import type { Branch, BranchInfo, CheckoutOptions } from "@/bindings";
+import type { Branch, BranchInfo, CheckoutOptions, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -9,9 +9,10 @@ import { isFavoriteBranch, pushRecent, shortRemoteName } from "./branches";
 import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
-import { runOp, runRemote, saveAll } from "./ops";
-import { conflictedFiles, currentRepo, currentRepoRoot, focusRepo, refreshNow, repoName, useVcs } from "./store";
+import { errorMessage, runOp, runRemote, saveAll } from "./ops";
+import { conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 
 const recentKey = () => `openidea.vcs.recentBranches:${useVcs.getState().root ?? ""}`;
 
@@ -280,16 +281,62 @@ export async function renameBranch(name: string) {
 }
 
 /**
+ * A branch checked out in another worktree cannot be deleted: `git branch -d` refuses.
+ * Offers to delete such a worktree first (its folder goes with it); false when the user
+ * backed out. The main worktree cannot be removed, so it keeps git's own message on the
+ * branch deletion. A worktree containing this window's project cannot be removed either;
+ * worktrees below a project opened on a parent folder can still be offered.
+ */
+async function deleteHoldingWorktree(repo: string | null, name: string): Promise<boolean> {
+  let holding: Worktree | undefined;
+  try {
+    holding = (await call(commands.vcsWorktrees(repo))).find((w) => w.branch === name && !w.main);
+  } catch {
+    return true; // no worktree list: let the branch deletion speak for itself
+  }
+  if (!holding) return true;
+  const root = useProject.getState().project?.root.replace(/\/+$/, "");
+  const path = holding.path.replace(/\/+$/, "");
+  if (root !== undefined && (root === path || root.startsWith(path + "/"))) return true;
+  const ok = await confirmDialog({
+    title: "Delete Branch",
+    message: tx`Branch '${name}' is checked out in the worktree at ${holding.path}.\nDelete the worktree and the branch? Its folder is deleted.`,
+    okLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return false;
+  try {
+    await call(commands.vcsRemoveWorktree(repo, holding.path, false));
+  } catch (e) {
+    const force = await confirmDialog({
+      title: "Delete Branch",
+      message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
+      okLabel: "Force Remove",
+      danger: true,
+    });
+    if (!force) return false;
+    const removed = await runOp(tx`Delete branch ${name}`, async () => {
+      await call(commands.vcsRemoveWorktree(repo, holding.path, true));
+      return true;
+    });
+    if (!removed) return false;
+  }
+  return true;
+}
+
+/**
  * Delete Branch as IDEA does it: no confirmation; a branch that is not fully merged is
  * deleted anyway and the notification says so, offering View Commits. Restore recreates
  * the branch (with its upstream); Delete Tracked Branch removes the remote branch too.
  */
-export async function deleteBranch(name: string) {
-  const repo = currentRepo();
+export async function deleteBranch(name: string, repo = currentRepo()) {
+  if (!(await deleteHoldingWorktree(repo, name))) return;
   const deleted = await runOp(tx`Delete branch ${name}`, () => call(commands.vcsDeleteBranch(repo, name)));
   if (!deleted) return;
   const tracked = deleted.upstream;
-  const otherTracking = useVcs.getState().branches.some((b) => !b.remote && b.name !== name && b.upstream === tracked);
+  const branches = await call(commands.vcsBranches(repo)).catch(() => []);
+  if (repo === currentRepo()) useVcs.setState({ branches, branchesLoaded: true });
+  const otherTracking = branches.some((b) => !b.remote && b.name !== name && b.upstream === tracked);
   const key = `vcs.deleted.${name}`;
   const done = () => notifications().expire?.(key);
   notifications().notify({
@@ -421,22 +468,17 @@ async function confirmRemoteBranches(remote: readonly { branch: Branch }[]): Pro
   });
 }
 
-/** Deletes selected branches, skipping current branches and restoring the focused repository. */
+/** Deletes selected branches in their repositories without changing focus, skipping current branches. */
 export async function deleteBranches(targets: readonly { ref?: string; repo?: string; branch?: Branch }[]) {
   const list = targets.filter((t): t is { repo?: string; branch: Branch } => canDeleteBranch(t));
   if (!list.length) return;
-  const previous = currentRepoRoot();
+  const fallback = currentRepo();
   const remote = list.filter((t) => t.branch.remote);
   if (remote.length && !(await confirmRemoteBranches(remote))) return;
-  try {
-    for (const t of list) {
-      const repo = t.repo ?? previous;
-      if (repo && repo !== currentRepo()) await focusRepo(repo);
-      if (t.branch.remote) await runRemote({ op: "deleteBranch", branch: t.branch.name }, t.branch.name);
-      else await deleteBranch(t.branch.name);
-    }
-  } finally {
-    if (previous && previous !== currentRepo()) await focusRepo(previous);
+  for (const t of list) {
+    const repo = t.repo ?? fallback;
+    if (t.branch.remote) await runRemote({ op: "deleteBranch", branch: t.branch.name }, t.branch.name, [repo]);
+    else await deleteBranch(t.branch.name, repo);
   }
 }
 

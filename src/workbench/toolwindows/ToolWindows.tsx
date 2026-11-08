@@ -420,6 +420,7 @@ function StripeButton({
         e.preventDefault();
         showContextMenu(e, stripeButtonMenu(tw, showName));
       }}
+      data-tooltip-stripe={side}
       {...tooltipAttrs(titleOf(tw), shortcut, true)}
     >
       <span className={styles.stripeIcon}>
@@ -463,6 +464,7 @@ function StripeMore({ windows }: { windows: ToolWindowContribution[] }) {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
+        data-tooltip-stripe="left"
         {...tooltipAttrs("More Tool Windows")}
       >
         <Icon name="more-horizontal" size={20} />

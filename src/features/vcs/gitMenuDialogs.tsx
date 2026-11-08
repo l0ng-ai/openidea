@@ -24,9 +24,10 @@ import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
 import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
-import { groupWorktrees, isCurrentWorktree, type RepoWorktrees } from "./worktrees";
+import { groupWorktrees, isCurrentWorktree, worktreeContainsProject, type RepoWorktrees } from "./worktrees";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 
 // --- shared -----------------------------------------------------------------
 
@@ -596,6 +597,7 @@ interface WorktreeNode {
  * tool window's Worktrees tab. `listClassName` replaces the dialog's default height.
  */
 export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
+  const projectRoot = useProject((s) => s.project?.root);
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
   const [groups, setGroups] = useState<RepoWorktrees[]>([]);
@@ -640,6 +642,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     ? groups.find((g) => g.worktrees.some((w) => `w:${w.path}` === selected))
     : undefined;
   const current = currentGroup?.worktrees.find((w) => `w:${w.path}` === selected);
+  const containsProject = !!current && worktreeContainsProject(current.path, projectRoot);
   const selectedKeys = useMemo(() => new Set(selected ? [selected] : []), [selected]);
   const isCurrent = (path: string) => repos.some((root) => isCurrentWorktree(path, root));
   const icon = (node: WorktreeNode) =>
@@ -656,7 +659,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   };
 
   const remove = async () => {
-    if (!current || !currentGroup || current.main) return;
+    if (!current || !currentGroup || current.main || containsProject) return;
     const ok = await confirmDialog({
       title: "Remove Worktree",
       message: tx`Remove the worktree at ${current.path}? Its folder is deleted.`,
@@ -694,9 +697,10 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         />
         <IconButton
           icon="minus"
-          title="Remove Worktree"
+          title={containsProject ? "Cannot remove a worktree containing the open project." : "Remove Worktree"}
+          aria-label="Remove Worktree"
           size="small"
-          disabled={!current || current.main}
+          disabled={!current || current.main || containsProject}
           onClick={() => void remove()}
         />
         <IconButton

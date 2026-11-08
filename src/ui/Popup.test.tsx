@@ -228,6 +228,91 @@ describe("Menu action enablement", () => {
     expect(active).toEqual(["Save", "Close", "Save"]);
   });
 
+  it.each(["enter submenu", "enter padding", "stop", "move away", "switch submenu", "unmount"])(
+    "protects a diagonal submenu path until the pointer chooses to %s",
+    (choice) => {
+      vi.useFakeTimers();
+      try {
+        const onActive = vi.fn();
+        const { unmount } = render(
+          <MenuList
+            items={[
+              { label: "Parent", submenu: [{ label: "Child" }] },
+              {
+                label: "Sibling",
+                onActive,
+                submenu: choice === "switch submenu" ? [{ label: "Other child" }] : undefined,
+              },
+            ]}
+            onDone={() => {}}
+          />,
+        );
+        const parent = screen.getByRole("menuitem", { name: "Parent" });
+        const sibling = screen.getByRole("menuitem", { name: "Sibling" });
+        fireEvent.pointerEnter(parent, { clientX: 40, clientY: 20 });
+        act(() => vi.advanceTimersByTime(120));
+        const child = screen.getByRole("menuitem", { name: "Child" });
+        vi.spyOn(child.closest("[data-popup]")!, "getBoundingClientRect").mockReturnValue({
+          left: 182,
+          right: 362,
+          top: 6,
+          bottom: 150,
+          width: 180,
+          height: 144,
+          x: 182,
+          y: 6,
+          toJSON: () => ({}),
+        });
+        fireEvent.pointerMove(parent, { clientX: 50, clientY: 20 });
+        fireEvent.pointerLeave(parent);
+        fireEvent.pointerEnter(sibling, { clientX: 70.5, clientY: 35.5 });
+        fireEvent.mouseLeave(parent);
+        fireEvent.mouseEnter(sibling, { clientX: 70, clientY: 35 });
+        act(() => vi.advanceTimersByTime(250));
+        expect(parent).toHaveClass(menuStyles.active!);
+        expect(parent).toHaveAttribute("aria-expanded", "true");
+        expect(onActive).not.toHaveBeenCalled();
+        fireEvent.pointerMove(sibling, { clientX: 100, clientY: 45 });
+        act(() => vi.advanceTimersByTime(250));
+        expect(parent).toHaveAttribute("aria-expanded", "true");
+
+        if (choice === "unmount") {
+          unmount();
+          act(() => vi.advanceTimersByTime(500));
+          expect(onActive).not.toHaveBeenCalled();
+        } else if (choice === "enter submenu" || choice === "enter padding") {
+          fireEvent.pointerLeave(sibling);
+          fireEvent.pointerMove(document.body, { clientX: 181, clientY: 65 });
+          if (choice === "enter padding") {
+            fireEvent.pointerMove(child.closest("[data-popup]")!, { clientX: 184, clientY: 8 });
+          } else {
+            fireEvent.pointerEnter(child, { clientX: 190, clientY: 65 });
+          }
+          act(() => vi.advanceTimersByTime(500));
+          expect(parent).toHaveClass(menuStyles.active!);
+          expect(parent).toHaveAttribute("aria-expanded", "true");
+          expect(onActive).not.toHaveBeenCalled();
+        } else {
+          if (choice === "move away") {
+            fireEvent.pointerMove(sibling, { clientX: 60, clientY: 45 });
+            expect(sibling).toHaveClass(menuStyles.active!);
+            act(() => vi.advanceTimersByTime(200));
+          } else {
+            act(() => vi.advanceTimersByTime(50));
+          }
+          expect(parent).toHaveAttribute("aria-expanded", "false");
+          expect(sibling).toHaveClass(menuStyles.active!);
+          expect(onActive).toHaveBeenCalledTimes(1);
+          if (choice === "switch submenu") expect(screen.getByText("Other child")).toBeInTheDocument();
+        }
+        unmount();
+      } finally {
+        vi.restoreAllMocks();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("follows context changes after the menu opened", () => {
     const dispose = registerAction({ id: "test.menuWhen", title: "Needs Flag", when: "qaMenuFlag", run: () => {} });
     setContext("qaMenuFlag", false);
