@@ -223,6 +223,25 @@ describe("notifications", () => {
     expect(useNotifications.getState().items.every((n) => n.read && !n.balloon)).toBe(true);
     dispose();
   });
+
+  it("pops up the answer to a command the user ran even when balloons are off for its group", async () => {
+    const { useProject } = await import("@/platform/project");
+    useProject.setState({
+      settings: { notifications: { balloons: false, groups: { updates: { display: "none", log: true } } } } as never,
+    });
+    try {
+      act(() => {
+        notify({ level: "info", title: "Checking for updates…", key: "app.update", userInitiated: true });
+        notify({ level: "info", title: "Update available", key: "app.update.background" });
+      });
+      const balloon = (title: string) => useNotifications.getState().items.find((n) => n.title === title)?.balloon;
+      expect(balloon("Checking for updates…")).toBe(true);
+      // What the IDE raises on its own still follows the settings.
+      expect(balloon("Update available")).toBe(false);
+    } finally {
+      useProject.setState({ settings: null });
+    }
+  });
 });
 
 describe("tool window stripe", () => {

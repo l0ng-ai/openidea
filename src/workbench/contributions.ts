@@ -633,6 +633,13 @@ export interface NotificationService {
      * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
      */
     group?: string;
+    /**
+     * The notification answers a command the user just ran (Check for Updates
+     * and the install it offers). It pops up even when balloon notifications
+     * are turned off or its group's popup type is "No popup": those settings
+     * silence what the IDE reports on its own, not the answer to a request.
+     */
+    userInitiated?: boolean;
   }): void;
   /** Hides the balloon of the notification with `key` (it stays in the log), e.g. once its cause is gone. */
   expire?(key: string): void;
