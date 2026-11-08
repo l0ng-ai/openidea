@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import type { Branch, BranchInfo, Worktree } from "@/bindings";
+import type { Branch, BranchInfo, ProjectInfo, Worktree } from "@/bindings";
 const mocks = vi.hoisted(() => ({
   prompt: vi.fn(),
   confirm: vi.fn(),
@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   removeWorktree: vi.fn(),
   deleteBranch: vi.fn(),
   worktrees: vi.fn(),
+  restoreBranch: vi.fn(),
+  branches: vi.fn(),
 }));
 vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
@@ -23,11 +25,14 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsWorktrees: mocks.worktrees,
       vcsRemoveWorktree: mocks.removeWorktree,
       vcsDeleteBranch: mocks.deleteBranch,
+      vcsRestoreBranch: mocks.restoreBranch,
+      vcsBranches: mocks.branches,
     },
   };
 });
-import { deleteBranch, newBranch, newBranchInRepos, renameBranch } from "../branchOps";
+import { deleteBranch, deleteBranches, newBranch, newBranchInRepos, renameBranch } from "../branchOps";
 import { useVcs } from "../store";
+import { useProject } from "@/platform/project";
 
 const branch = (head: string | null): BranchInfo => ({
   head,
@@ -49,7 +54,8 @@ const local = (name: string, current = false): Branch => ({
 });
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  useProject.setState({ project: { root: "/p", name: "p" } as ProjectInfo });
   // The current branch is always among the local branches, so the suggestion names an existing one.
   useVcs.setState({
     root: "/p",
@@ -113,6 +119,8 @@ const ok = (data: unknown) => ({ status: "ok", data });
 beforeEach(() => {
   mocks.deleteBranch.mockResolvedValue(ok(deleted));
   mocks.removeWorktree.mockResolvedValue(ok(null));
+  mocks.restoreBranch.mockResolvedValue(ok(null));
+  mocks.branches.mockResolvedValue(ok([]));
 });
 
 it("deletes a worktree holding the branch before deleting it", async () => {
@@ -152,4 +160,116 @@ it("keeps the branch checked out in the main worktree: git's own error stands", 
   expect(mocks.confirm).not.toHaveBeenCalled();
   expect(mocks.removeWorktree).not.toHaveBeenCalled();
   expect(mocks.deleteBranch).toHaveBeenCalledWith("/p/front", "feature/wt");
+});
+
+it.each([
+  ["/p/front", "/p/front"],
+  ["/p/front/", "/p/front/"],
+  ["/p/front", "/p/front/nested"],
+  ["/p/front/", "/p/front/nested/"],
+])("never offers to remove holding worktree %s containing project %s", async (path, root) => {
+  useProject.setState({ project: { root, name: "project" } as ProjectInfo });
+  mocks.worktrees.mockResolvedValue(ok([worktree(path, "feature/wt")]));
+  mocks.confirm.mockResolvedValue(true);
+  mocks.removeWorktree.mockRejectedValue(new Error("would reach Force Remove"));
+  await deleteBranch("feature/wt");
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(mocks.removeWorktree).not.toHaveBeenCalled();
+  expect(mocks.deleteBranch).toHaveBeenCalledWith("/p/front", "feature/wt");
+});
+
+it("offers a prefix-only sibling of the project folder", async () => {
+  useProject.setState({ project: { root: "/p/front-wt", name: "project" } as ProjectInfo });
+  mocks.worktrees.mockResolvedValue(ok([worktree("/p/front", "feature/wt")]));
+  mocks.confirm.mockResolvedValue(true);
+  await deleteBranch("feature/wt");
+  expect(mocks.removeWorktree).toHaveBeenCalledWith("/p/front", "/p/front", false);
+});
+
+it("ignores detached worktrees and matches the entire local branch name", async () => {
+  mocks.worktrees.mockResolvedValue(
+    ok([worktree("/p/detached", null), worktree("/p/wrong", "wt"), worktree("/p/right", "feature/wt")]),
+  );
+  mocks.confirm.mockResolvedValue(true);
+  await deleteBranch("feature/wt");
+  expect(mocks.removeWorktree).toHaveBeenCalledExactlyOnceWith("/p/front", "/p/right", false);
+});
+
+it("cancelling Force Remove keeps both the worktree and branch", async () => {
+  mocks.worktrees.mockResolvedValue(ok([worktree("/p/wt", "feature/wt")]));
+  mocks.removeWorktree.mockRejectedValue(new Error("fatal: '/p/wt' contains modified or untracked files"));
+  mocks.confirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+  await deleteBranch("feature/wt");
+  expect(mocks.confirm.mock.calls[1]?.[0]).toMatchObject({
+    message: "fatal: '/p/wt' contains modified or untracked files\n\nRemove it anyway, discarding its changes?",
+    okLabel: "Force Remove",
+    danger: true,
+  });
+  expect(mocks.removeWorktree).toHaveBeenCalledExactlyOnceWith("/p/front", "/p/wt", false);
+  expect(mocks.deleteBranch).not.toHaveBeenCalled();
+});
+
+it("force removes a dirty worktree before deleting its branch", async () => {
+  mocks.worktrees.mockResolvedValue(ok([worktree("/p/wt", "feature/wt")]));
+  mocks.removeWorktree.mockRejectedValueOnce(new Error("dirty"));
+  mocks.confirm.mockResolvedValue(true);
+  await deleteBranch("feature/wt");
+  expect(mocks.removeWorktree.mock.calls).toEqual([
+    ["/p/front", "/p/wt", false],
+    ["/p/front", "/p/wt", true],
+  ]);
+  expect(mocks.deleteBranch).toHaveBeenCalledWith("/p/front", "feature/wt");
+});
+
+it("reports a locked worktree's force-removal error and keeps the branch", async () => {
+  const error = "fatal: cannot remove a locked working tree; use 'remove -f -f' to override";
+  mocks.worktrees.mockResolvedValue(ok([{ ...worktree("/p/wt", "feature/wt"), locked: true }]));
+  mocks.removeWorktree.mockRejectedValue(new Error(error));
+  mocks.confirm.mockResolvedValue(true);
+  await deleteBranch("feature/wt");
+  expect(mocks.deleteBranch).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: error }));
+});
+
+it.each([false, true])("continues a multi-repository selection after cancelling (force: %s)", async (force) => {
+  mocks.worktrees.mockImplementation(async (repo) => ok([worktree(`${repo}/wt`, "feature/wt")]));
+  if (force) {
+    mocks.removeWorktree.mockRejectedValueOnce(new Error("dirty"));
+    mocks.confirm.mockResolvedValueOnce(true).mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  } else mocks.confirm.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  await deleteBranches([
+    { repo: "/p/front", branch: local("feature/wt") },
+    { repo: "/p/back", branch: local("feature/wt") },
+  ]);
+  expect(mocks.worktrees.mock.calls).toEqual([["/p/front"], ["/p/back"]]);
+  expect(mocks.removeWorktree).toHaveBeenLastCalledWith("/p/back", "/p/back/wt", false);
+  expect(mocks.deleteBranch).toHaveBeenCalledExactlyOnceWith("/p/back", "feature/wt");
+  expect(useVcs.getState().repo).toBe("/p/front");
+});
+
+it("restores only the branch after removing its worktree", async () => {
+  mocks.worktrees.mockResolvedValue(ok([worktree("/p/wt", "feature/wt")]));
+  mocks.confirm.mockResolvedValue(true);
+  await deleteBranch("feature/wt");
+  const notification = mocks.notify.mock.calls.find(([n]) => n.title === "Deleted branch feature/wt")![0];
+  notification.actions.find((a: { label: string }) => a.label === "Restore").run();
+  await vi.waitFor(() => expect(mocks.restoreBranch).toHaveBeenCalledWith("/p/front", deleted));
+  expect(notification.title).not.toContain("worktree");
+});
+
+it("refreshes tracking branches in the deletion repository without replacing the focused branches", async () => {
+  const focused = [local("main", true)];
+  useVcs.setState({ branches: focused });
+  mocks.worktrees.mockResolvedValue(ok([]));
+  mocks.deleteBranch.mockResolvedValue(ok({ ...deleted, upstream: "origin/feature/wt" }));
+  mocks.branches.mockResolvedValue(ok([{ ...local("other"), upstream: "origin/feature/wt" }]));
+  await deleteBranch("feature/wt", "/p/back");
+  expect(mocks.worktrees).toHaveBeenCalledWith("/p/back");
+  expect(mocks.deleteBranch).toHaveBeenCalledWith("/p/back", "feature/wt");
+  expect(mocks.branches).toHaveBeenCalledWith("/p/back");
+  expect(useVcs.getState().branches).toEqual(focused);
+  const notification = mocks.notify.mock.calls.find(([n]) => n.title === "Deleted branch feature/wt")![0];
+  expect(notification.actions.map((a: { label: string }) => a.label)).not.toContain("Delete Tracked Branch");
+  notification.actions.find((a: { label: string }) => a.label === "Restore").run();
+  await vi.waitFor(() => expect(mocks.restoreBranch).toHaveBeenCalledWith("/p/back", expect.anything()));
 });
