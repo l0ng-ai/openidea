@@ -86,10 +86,15 @@ pub fn create_snapshot_dir(root: &Path) -> io::Result<PathBuf> {
 /// A dump holds whatever was in the JVM's memory, passwords and tokens included, so on unix only
 /// the owner may enter the directory. Windows keeps the ACL inherited from the user's data dir.
 fn create_private_dir(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(path)
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::DirBuilder::new().create(path)
+    }
 }
 
 /// Removes the directories under `root` whose owner file is missing, unreadable or names a pid
