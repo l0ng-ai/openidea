@@ -93,6 +93,26 @@ describe("ownTerminalInput", () => {
     expect(sent).toEqual(["123"]);
   });
 
+  it("sends the whole text of one key event carrying several characters", () => {
+    // Telex tools on macOS retype `ông` as one synthetic key; xterm's keypress sends only `ô`.
+    const { textarea, sent, reached } = setup();
+    keydown(textarea, { key: "ông", keyCode: 65 });
+    keypress(textarea, "ông");
+    input(textarea, { inputType: "insertText", data: "ông" });
+    keyup(textarea, 65);
+    expect(sent).toEqual(["ông"]);
+    expect(reached).toEqual(["keydown"]);
+  });
+
+  it("leaves a single-character keypress to xterm", () => {
+    const { textarea, sent, reached } = setup();
+    keydown(textarea, { key: "ô", keyCode: 65 });
+    keypress(textarea, "ô");
+    input(textarea, { inputType: "insertText", data: "ô" });
+    expect(sent).toEqual([]);
+    expect(reached).toEqual(["keydown", "keypress", "insertText"]);
+  });
+
   it("sends a composition commit reported without compositionstart", () => {
     const { textarea, sent } = setup();
     input(textarea, { inputType: "insertFromComposition", data: "，" });

@@ -58,6 +58,9 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
   // xterm emits a pressed character from keypress; for an IME key that would duplicate the
   // text the input event delivers.
   const onKeyPress = (e: KeyboardEvent) => {
+    // Telex tools on macOS post a retyped `ông` as one key event. xterm builds its keypress
+    // text from `charCode`, which holds only `ô`, so the input event must deliver this one.
+    if (!composing && e.key.length > 1 && e.key !== "Enter") imeKey = imeDown = true;
     if (imeKey) e.stopPropagation();
   };
 
