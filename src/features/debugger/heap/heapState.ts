@@ -14,6 +14,7 @@ import {
   type JvmHeapUnavailable,
   type RequestId,
 } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { maybeEditorService } from "@/workbench/contributions";
 import { useDebug } from "../state";
 import { heapInput } from "./heapInput";
@@ -48,6 +49,9 @@ interface HeapStore {
 export const useHeap = create<HeapStore>(() => ({ snapshots: {}, captures: {}, opening: null }));
 
 const isRunning = (c: CaptureState | undefined): c is CaptureState => !!c && c.error === null && c.unavailable === null;
+
+/** Moves when the window switches project; a capture or open started before that drops its reply. */
+let generation = 0;
 
 const stopsOf = (session: DebugSessionId): number | null => useDebug.getState().sessions[session]?.stops ?? null;
 
@@ -103,8 +107,10 @@ export async function captureHeap(session: DebugSessionId): Promise<void> {
   }));
   const channel = new Channel<HeapProgress>();
   channel.onmessage = (progress) => patchCapture(session, request, { progress });
+  const started = generation;
   try {
     const result = await call(commands.debugHeapCapture(session, request, channel));
+    if (started !== generation) return;
     if (result.status === "ready") {
       const stopAtReply = stopsOf(session);
       await adopt(result.snapshot, stopAtClick !== null && stopAtClick === stopAtReply ? stopAtClick : null);
@@ -141,18 +147,41 @@ export async function openHeapFile(path: string): Promise<HeapOpenResult | null>
   const channel = new Channel<HeapProgress>();
   channel.onmessage = (progress) =>
     useHeap.setState((s) => (s.opening?.request === request ? { opening: { request, progress } } : s));
+  const started = generation;
   try {
     const result = await call(commands.debugHeapOpen(path, request, channel));
+    if (started !== generation) return { status: "cancelled" };
     if (result.status === "ready") await adopt(result.snapshot, null);
     return result;
+  } catch (e) {
+    if (started !== generation) return { status: "cancelled" };
+    throw e;
   } finally {
-    useHeap.setState({ opening: null });
+    useHeap.setState((s) => (s.opening?.request === request ? { opening: null } : s));
   }
 }
 
 export function cancelOpen(): void {
   const opening = useHeap.getState().opening;
   if (opening) void commands.cancelRequest(opening.request).catch(() => {});
+}
+
+/**
+ * A project change closes the window's snapshots on the host and drops their tabs without `onClose`, so the store
+ * forgets them (no `debugHeapClose`), cancels what still captures or opens, and ignores those requests' late replies.
+ */
+export function forgetHeapOnProjectChange(): () => void {
+  return useProject.subscribe((s, prev) => {
+    if ((s.project?.root ?? null) === (prev.project?.root ?? null)) return;
+    const { opening, captures } = useHeap.getState();
+    const requests = Object.values(captures)
+      .filter(isRunning)
+      .map((c) => c.request);
+    if (opening) requests.push(opening.request);
+    generation++;
+    useHeap.setState({ snapshots: {}, captures: {}, opening: null });
+    for (const request of requests) void commands.cancelRequest(request).catch(() => {});
+  });
 }
 
 /**

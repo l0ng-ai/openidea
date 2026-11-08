@@ -39,7 +39,7 @@ import {
 import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
 import { forgetInstances } from "./memory/instancesState";
-import { forgetHeapCapture } from "./heap/heapState";
+import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
 import { installHeapContext } from "./heap/heapDumpFiles";
 import { forgetMemory } from "./memory/memoryState";
@@ -74,6 +74,7 @@ export function activate(): () => void {
     }),
     registerEditorKind(heapEditorKind),
     installHeapContext(),
+    forgetHeapOnProjectChange(),
     registerOverlay({
       id: "debugger",
       component: lazyWhen(useAnyOverlay, () => import("./ui/Overlays").then((m) => m.DebuggerOverlays)),

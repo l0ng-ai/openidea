@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: class {
@@ -36,11 +36,13 @@ import {
   captureHeap,
   closeHeapSnapshot,
   forgetHeapCapture,
+  forgetHeapOnProjectChange,
   openHeapFile,
   progressFraction,
   retainedForSession,
   useHeap,
 } from "../heap/heapState";
+import { useProject } from "@/platform/project";
 
 const SESSION = 3 as DebugSessionId;
 const OTHER = 4 as DebugSessionId;
@@ -507,6 +509,75 @@ describe("closeHeapSnapshot", () => {
     classes.resolve({ status: "ok", data: [row("Node", 1)] });
     await done;
     expect(useHeap.getState().snapshots[7]).toBeUndefined();
+  });
+});
+
+describe("forgetHeapOnProjectChange", () => {
+  let stop: () => void;
+  beforeEach(() => {
+    useProject.setState({ project: { root: "/a" } as never });
+    stop = forgetHeapOnProjectChange();
+  });
+  afterEach(() => {
+    stop();
+    useProject.setState({ project: null });
+  });
+
+  it("forgets the snapshots without closing them again when the project root changes", () => {
+    useHeap.setState({
+      snapshots: {
+        7: { info: info(7), takenAtStop: 4, classes: null },
+        8: { info: fileInfo(8), takenAtStop: null, classes: null },
+      },
+    });
+    useProject.setState({ project: { root: "/a", trusted: true } as never });
+    expect(Object.keys(useHeap.getState().snapshots)).toEqual(["7", "8"]);
+
+    useProject.setState({ project: { root: "/b" } as never });
+    expect(useHeap.getState().snapshots).toEqual({});
+    expect(ipc.debugHeapClose).not.toHaveBeenCalled();
+  });
+
+  it("forgets the snapshots when the project closes", () => {
+    useHeap.setState({ snapshots: { 7: { info: info(7), takenAtStop: 4, classes: null } } });
+    useProject.setState({ project: null });
+    expect(useHeap.getState().snapshots).toEqual({});
+  });
+
+  it("cancels a capture in flight and drops its late reply", async () => {
+    const done = captureHeap(SESSION);
+    await flush();
+    const request = ipc.debugHeapCapture.mock.calls[0]![1];
+    useProject.setState({ project: { root: "/b" } as never });
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(request);
+    expect(useHeap.getState().captures).toEqual({});
+
+    capture.resolve({ status: "ok", data: { status: "ready", snapshot: info(7) } });
+    await done;
+    expect(useHeap.getState().snapshots).toEqual({});
+    expect(ipc.debugHeapClasses).not.toHaveBeenCalled();
+    expect(openInput).not.toHaveBeenCalled();
+  });
+
+  it("cancels an open in flight, drops its late reply and leaves the next open alone", async () => {
+    const done = openHeapFile("/tmp/a.hprof");
+    const request = useHeap.getState().opening!.request;
+    useProject.setState({ project: { root: "/b" } as never });
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(request);
+    expect(useHeap.getState().opening).toBeNull();
+
+    const late = open;
+    open = deferred();
+    const next = openHeapFile("/tmp/b.hprof");
+    const nextRequest = useHeap.getState().opening!.request;
+    late.resolve({ status: "ok", data: { status: "ready", snapshot: fileInfo(8) } });
+    await expect(done).resolves.toEqual({ status: "cancelled" });
+    expect(useHeap.getState().snapshots).toEqual({});
+    expect(openInput).not.toHaveBeenCalled();
+    expect(useHeap.getState().opening).toEqual({ request: nextRequest, progress: null });
+
+    open.resolve({ status: "ok", data: { status: "cancelled" } });
+    await next;
   });
 });
 

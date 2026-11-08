@@ -38,7 +38,8 @@ import {
   type EditorInput,
   type EditorService,
 } from "@/workbench/contributions";
-import { useHeap } from "../heap/heapState";
+import { useProject } from "@/platform/project";
+import { forgetHeapOnProjectChange, useHeap } from "../heap/heapState";
 import { heapInput } from "../heap/heapInput";
 import { installHeapContext, openHeapDump } from "../heap/heapDumpFiles";
 import { heapEditorKind } from "../heap/heapEditorKind";
@@ -262,6 +263,24 @@ describe("HeapSnapshotEditor", () => {
     expect(within(row).getByText("+64 B")).toBeInTheDocument();
     // A name shared by several classes has no difference to show.
     expect(within(rowOf(classTable(), "java.lang.String")).getAllByText("—")).toHaveLength(2);
+  });
+
+  it("offers no snapshot of the previous project to compare with", () => {
+    useProject.setState({ project: { root: "/a" } as never });
+    const stop = forgetHeapOnProjectChange();
+    try {
+      keep(SNAPSHOT);
+      keep(captured(8, "12:31:00"));
+      act(() => useProject.setState({ project: { root: "/b" } as never }));
+      const next = captured(9, "12:40:00");
+      keep(next);
+      show(next);
+      expect(screen.getByRole("button", { name: "Compare with…" })).toBeDisabled();
+      expect(Object.keys(useHeap.getState().snapshots)).toEqual(["9"]);
+    } finally {
+      stop();
+      useProject.setState({ project: null });
+    }
   });
 
   it("offers Save for captured snapshots only", () => {
