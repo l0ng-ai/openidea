@@ -1,4 +1,7 @@
 {
+  "Select Python Environment Folder": "Select Python Environment Folder",
+  "Checking interpreter": "Checking interpreter",
+  "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.",
   "Native server declined rename": "Native server declined rename",
   "document is too large or is not a regular file": "document is too large or is not a regular file",
   "document is too large": "document is too large",
