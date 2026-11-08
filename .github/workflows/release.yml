@@ -70,7 +70,6 @@ jobs:
             const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo });
             const existing = releases.find((r) => r.tag_name === tag);
             if (existing) {
-              if (!existing.draft) core.setFailed(`release ${tag} is already published`);
               core.setOutput("id", existing.id);
               return;
             }
