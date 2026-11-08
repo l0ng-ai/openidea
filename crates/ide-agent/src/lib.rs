@@ -100,6 +100,8 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    /// One pre-session command lookup per provider, including failed attempts.
+    command_fetches: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
 }
@@ -149,6 +151,40 @@ impl Shared {
     fn known_commands(&self, provider: &str) -> Vec<AgentCommand> {
         let cache = self.known.lock();
         cache.get(provider).and_then(|k| k.commands.get(&self.root_key())).cloned().unwrap_or_default()
+    }
+
+    async fn fetch_commands(self: &Arc<Self>, spec: provider::ProviderSpec) {
+        let mut ready = {
+            let mut fetches = self.command_fetches.lock();
+            fetches
+                .entry(spec.id.clone())
+                .or_insert_with(|| {
+                    let (done, ready) = tokio::sync::watch::channel(false);
+                    let shared = self.clone();
+                    // Keep the lookup alive if a composer unmounts while it is waiting.
+                    self.runtime.spawn(async move {
+                        if let Ok(commands) =
+                            native::claude::commands(spec.clone(), shared.paths.project_root.clone()).await
+                        {
+                            let commands = config::commands_of(&json!({ "availableCommands": commands }), &spec.id);
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if shared.known_commands(&spec.id).is_empty() {
+                                    shared.remember(&spec.id, None, Some(&commands), None);
+                                }
+                            })
+                            .await;
+                        }
+                        let _ = done.send(true);
+                    });
+                    ready
+                })
+                .clone()
+        };
+        while !*ready.borrow_and_update() {
+            if ready.changed().await.is_err() {
+                break;
+            }
+        }
     }
 
     fn root_key(&self) -> String {
@@ -317,6 +353,7 @@ impl AgentManager {
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
+            command_fetches: Mutex::new(HashMap::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
         });
         let mut tasks = HashMap::new();
@@ -420,6 +457,13 @@ impl AgentManager {
         // Commands the agent implements itself and never lists (its CLI builtins):
         // merged without duplicating what `availableCommands` or the disk offer.
         let mut offered = offered;
+        if task.is_none()
+            && offered.is_empty()
+            && let Some(spec) = self.shared.spec(&provider).filter(|s| s.driver == provider::Driver::Claude)
+        {
+            self.shared.fetch_commands(spec).await;
+            offered = self.shared.known_commands(&provider);
+        }
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
                 offered.push(AgentCommand {

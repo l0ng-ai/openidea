@@ -279,6 +279,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "project_rename"
             | "light_edit_open"
             | "workspace_create"
+            | "workspace_discover_projects"
             | "workspace_update"
             | "workspace_attach"
             | "cancel_request"
