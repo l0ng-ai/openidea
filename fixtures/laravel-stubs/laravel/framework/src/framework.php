@@ -175,6 +175,13 @@ namespace Illuminate\Support\Facades {
      * @method static void directive(string $name, callable $handler)
      * @method static void if(string $name, callable $callback)
      */
+    /**
+     * @method static \Illuminate\Contracts\Validation\Validator make(array $data, array $rules, array $messages = [], array $attributes = [])
+     * @method static void extend(string $rule, \Closure|string $extension, string|null $message = null)
+     */
+    class Validator extends Facade {
+        protected static function getFacadeAccessor() { return 'validator'; }
+    }
     class Blade extends Facade {
         protected static function getFacadeAccessor() { return 'blade.compiler'; }
     }
@@ -288,6 +295,18 @@ namespace Illuminate\Http {
         public static function capture(): static { return new static(); }
         /** @return mixed */
         public function user($guard = null) { return null; }
+        public function validate(array $rules, ...$params): array { return []; }
+        public function validateWithBag(string $errorBag, array $rules, ...$params): array { return []; }
+        /** @return mixed */
+        public function input($key = null, $default = null) { return null; }
+        /** @return mixed */
+        public function query($key = null, $default = null) { return null; }
+        public function string($key, $default = null): string { return ''; }
+        public function integer($key, $default = 0): int { return 0; }
+        public function boolean($key = null, $default = false): bool { return false; }
+        public function has($key): bool { return false; }
+        public function only($keys): array { return []; }
+        public function except($keys): array { return []; }
     }
     class Response extends \Symfony\Component\HttpFoundation\Response {}
     class RedirectResponse extends \Symfony\Component\HttpFoundation\Response {
@@ -302,7 +321,19 @@ namespace Illuminate\Foundation\Http {
     }
 }
 
+namespace Illuminate\Contracts\Validation {
+    interface Validator {}
+    interface Factory {
+        public function make(array $data, array $rules, array $messages = [], array $attributes = []): Validator;
+    }
+}
+
 namespace Illuminate\Validation {
+    class Validator implements \Illuminate\Contracts\Validation\Validator {}
+    class Factory implements \Illuminate\Contracts\Validation\Factory {
+        public function make(array $data, array $rules, array $messages = [], array $attributes = []): \Illuminate\Contracts\Validation\Validator { return new Validator(); }
+        public function extend($rule, $extension, $message = null): void {}
+    }
     class Rule {
         public static function unique(string $table, string $column = 'NULL'): Rules\Unique { return new Rules\Unique(); }
         public static function enum(string $type): Rules\Enum { return new Rules\Enum(); }

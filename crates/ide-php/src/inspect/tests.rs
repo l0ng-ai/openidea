@@ -396,6 +396,7 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpUndefinedEnvKey",
             "PhpUndefinedTranslation",
             "PhpUndefinedViteAsset",
+            "PhpUnknownValidationRule",
         ]
     );
 }

@@ -3,8 +3,8 @@
 //! ([`config`]), the environment keys ([`env`]), the translations
 //! ([`lang`]), the Vite assets ([`assets`]), the routes and middleware
 //! ([`routes`]), the route hints and route search ([`route_hints`]), the
-//! views ([`views`]), Blade layouts, components and directives ([`blade`])
-//! and string references ([`refs`]).
+//! views ([`views`]), Blade layouts, components and directives ([`blade`]),
+//! validation rules ([`validation`]) and string references ([`refs`]).
 //!
 //! Only Laravel's own source and documentation (MIT) are design inputs.
 
@@ -17,6 +17,7 @@ pub mod project;
 pub mod refs;
 pub mod route_hints;
 pub mod routes;
+pub mod validation;
 pub mod views;
 
 #[cfg(test)]

@@ -416,3 +416,6 @@ mod blade_tests;
 
 #[path = "data_tests.rs"]
 mod data_tests;
+
+#[path = "validation_tests.rs"]
+mod validation_tests;

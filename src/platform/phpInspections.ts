@@ -241,6 +241,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description:
       "Reports paths passed to Vite::asset() or @vite that are neither a file, a Vite entry point nor in the build manifest.",
   },
+  {
+    code: "PhpUnknownValidationRule",
+    name: "Unknown validation rule",
+    group: "Frameworks",
+    description:
+      "Reports Laravel validation rules, in the rules of a Form Request, $request->validate() or Validator::make(), that are neither built in nor registered with Validator::extend().",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionId(i.code), i]));

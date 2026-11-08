@@ -625,6 +625,7 @@ impl PhpEngine {
             let path = self.document_path(doc)?;
             let (start, end) = parsed.line_index().byte_range(range);
             out.extend(intentions::intentions(self, &parsed, &path, start, end));
+            out.extend(self.validation_intentions(&parsed, &path, start, end));
         }
         if [
             crate::refactor::EXTRACT_VARIABLE,

@@ -570,7 +570,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 - [x] Phase 8.8.b: Create translation key dialog
       Phase 8.8 added the engine query `PhpEngine::laravel_create_translation(key, [(locale, text)])` (and `laravel_locales()`) and a quick-fix that writes a default text to every locale. Add the asking UI on top: a code action (PHP and Blade, on any `translationKey` string, known or not) running a client command that opens a dialog asking for the text per locale and which locales to write, then applies the query's edit. Expose the query as a Tauri/remote command (regenerate bindings). Dialog text in `en` and `zh`. Tests: engine test of the code action, a host test of the command, and frontend tests for the dialog.
 
-- [ ] Phase 8.9: Validation
+- [x] Phase 8.9: Validation
       Add the `validationRule` kind:
   - rules in Form Request `rules()`, `$request->validate()`, `Validator::make`, `validated()`
   - pipe strings and arrays
@@ -581,6 +581,15 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
   Add these too:
   - **Request fields:** completion of `$request->input('…')`, `$request->field` and `validated('…')` from the rules
   - **Intentions:** convert a rule string to an array, convert all of them, and convert to a `Rule::` object (`unique`, `exists`, `in`, `dimensions`)
+  - **Promote to a Form Request:** move the inline rules of a controller method into a new Form Request class and inject it
+  - **Generate rules:** a Generate action that adds rule entries from the model's fields
+
+  Tests: caret fixtures and refactoring tests.
+
+- [ ] Phase 8.9.b: Validation refactorings and request properties
+      Phase 8.9 added the `validationRule` and `requestField` kinds (`refs/validation_rule.rs`, rules in `rules()`, `validate()`, `Validator::make`, `validator()`; rule and parameter completion; the "unknown rule" inspection; `$request->input('…')`/`validated('…')` fields) and the "convert rule string to array" intentions. Add the rest:
+  - `$request->field` magic properties typed from the rules (a Form Request's `rules()`, `validate()` calls in the method)
+  - the intention converting a rule to a `Rule::` object (`unique`, `exists`, `in`, `dimensions`), adding the `use`
   - **Promote to a Form Request:** move the inline rules of a controller method into a new Form Request class and inject it
   - **Generate rules:** a Generate action that adds rule entries from the model's fields
 

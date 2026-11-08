@@ -52,3 +52,6 @@ function base_path($path = ''): string { return ''; }
 function database_path($path = ''): string { return ''; }
 
 function resource_path($path = ''): string { return ''; }
+
+/** @return mixed */
+function validator(array $data = [], array $rules = [], array $messages = [], array $attributes = []) { return null; }

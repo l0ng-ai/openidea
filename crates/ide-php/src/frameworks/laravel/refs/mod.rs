@@ -13,7 +13,11 @@
 //! `envKey` ([`env_key`]), `translationKey` ([`translation_key`]),
 //! `viteAsset` ([`vite_asset`]), `routeName` ([`route_name`]),
 //! `controllerAction` and `resourceAction` ([`controller_action`]),
-//! `middleware` ([`middleware`]) and `viewName` ([`view_name`]).
+//! `middleware` ([`middleware`]), `viewName` ([`view_name`]), and
+//! `validationRule` and `requestField` ([`validation_rule`]).
+//!
+//! A place may also be the value a method returns
+//! ([`CalleePattern::Return`]: what a Form Request's `rules()` returns).
 //!
 //! A kind may describe a usage for hover ([`ReferenceKind::hover`]) and say
 //! what is wrong with one that names nothing ([`ReferenceKind::undefined`]),
@@ -47,6 +51,7 @@ pub mod route_name;
 #[cfg(test)]
 mod tests;
 pub mod translation_key;
+pub mod validation_rule;
 pub mod view_name;
 pub mod vite_asset;
 
@@ -81,6 +86,7 @@ pub use env_key::EnvKey;
 pub use middleware::Middleware;
 pub use route_name::RouteName;
 pub use translation_key::TranslationKey;
+pub use validation_rule::{RequestField, ValidationRule};
 pub use view_name::ViewName;
 pub use vite_asset::ViteAsset;
 
@@ -94,6 +100,10 @@ pub enum CalleePattern {
     /// One of `names` (any case) called on one of `classes`, a subclass or
     /// an implementation of one (FQNs; `new` is `__construct`).
     Method { classes: &'static [&'static str], names: &'static [&'static str] },
+    /// What one of `names` (any case), a method of one of `classes` or of a
+    /// subclass, returns (`rules()` of a Form Request). The returned value
+    /// is the argument at index 0.
+    Return { classes: &'static [&'static str], names: &'static [&'static str] },
 }
 
 /// Where in the argument the string sits.
@@ -143,7 +153,7 @@ impl PlacePattern {
     fn names(&self) -> Vec<&'static str> {
         match self.callee {
             CalleePattern::Function(fqn) => vec![fqn.rsplit('\\').next().unwrap_or(fqn)],
-            CalleePattern::Method { names, .. } => names.to_vec(),
+            CalleePattern::Method { names, .. } | CalleePattern::Return { names, .. } => names.to_vec(),
         }
     }
 
@@ -184,6 +194,13 @@ impl PlacePattern {
                             })
                     })
             }
+            (CalleePattern::Return { classes, names }, CallTarget::Return { class, method }) => {
+                names.iter().any(|wanted| wanted.eq_ignore_ascii_case(method))
+                    && (classes.iter().any(|wanted| fqn_eq(NameKind::ClassLike, class, wanted))
+                        || resolver.class_model(class).is_some_and(|model| {
+                            classes.iter().any(|wanted| wanted.contains('\\') && model.is_subclass_of(wanted))
+                        }))
+            }
             _ => false,
         }
     }
@@ -199,6 +216,9 @@ pub enum CallTarget {
     Function(Vec<String>),
     /// A method of the receiver's classes (FQNs).
     Method { classes: Vec<String>, name: String },
+    /// The value a method returns: the class declaring it (FQN) and its
+    /// name.
+    Return { class: String, method: String },
 }
 
 /// One step from an argument into the arrays around the string.
@@ -226,6 +246,9 @@ pub struct StringSite {
     pub steps: Vec<ArrayStep>,
     /// The class a `Foo::class` element of the string's array names.
     pub class: Option<String>,
+    /// The byte the call (or the `return`) starts at: strings of one call
+    /// share it.
+    pub call: u32,
 }
 
 /// Helpers that return a service when called without arguments, as
@@ -239,9 +262,39 @@ const HELPER_INSTANCES: &[(&str, &str)] = &[
     ("trans", "Illuminate\\Translation\\Translator"),
 ];
 
+/// What a string literal sits in: a call, or the value a method returns.
+#[derive(Clone)]
+enum SiteCall<'a> {
+    Call(&'a Expression<'a>),
+    /// The class (as written, with the offset of its name), the method and
+    /// the offset of the `return`.
+    Return {
+        class: (String, u32),
+        method: String,
+        at: u32,
+    },
+}
+
+impl SiteCall<'_> {
+    fn start(&self) -> u32 {
+        match self {
+            SiteCall::Call(call) => call.span().start.offset,
+            SiteCall::Return { at, .. } => *at,
+        }
+    }
+}
+
+/// A class-like, function or method the walker is in.
+enum Frame {
+    /// A named class (its name and offset), or another class-like.
+    Class(Option<(String, u32)>),
+    Method(String),
+    Function,
+}
+
 /// A string literal argument before its call is resolved.
 struct RawSite<'a> {
-    call: &'a Expression<'a>,
+    call: SiteCall<'a>,
     span: Span,
     index: Option<usize>,
     argument_name: Option<String>,
@@ -256,6 +309,8 @@ struct Collect<'a, 'n> {
     /// The function and method names asked about, lower case.
     names: &'n HashSet<String>,
     out: Vec<RawSite<'a>>,
+    /// The class-likes, functions and methods around the walker.
+    frames: Vec<Frame>,
 }
 
 struct SiteWalker;
@@ -295,7 +350,7 @@ fn call_parts<'a>(expr: &'a Expression<'a>) -> Option<(String, &'a ArgumentList<
 impl<'a> Collect<'a, '_> {
     fn strings(
         &mut self,
-        call: &'a Expression<'a>,
+        call: &SiteCall<'a>,
         value: &'a Expression<'a>,
         at: (Option<usize>, Option<&str>),
         steps: &mut Vec<ArrayStep>,
@@ -306,7 +361,7 @@ impl<'a> Collect<'a, '_> {
                 let span = string.span();
                 if self.want.is_none_or(|want| want == span.start.offset) {
                     self.out.push(RawSite {
-                        call,
+                        call: call.clone(),
                         span,
                         index: at.0,
                         argument_name: at.1.map(str::to_owned),
@@ -364,22 +419,89 @@ fn class_constant(expr: &Expression<'_>) -> Option<(String, u32)> {
 }
 
 impl<'a> Walker<'a, 'a, Collect<'a, '_>> for SiteWalker {
+    fn walk_in_class(&self, class: &'a mago_syntax::cst::Class<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.push(Frame::Class(Some((lossy(class.name.value), class.name.span.start.offset))));
+    }
+
+    fn walk_out_class(&self, _: &'a mago_syntax::cst::Class<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.pop();
+    }
+
+    fn walk_in_anonymous_class(&self, _: &'a mago_syntax::cst::AnonymousClass<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.push(Frame::Class(None));
+    }
+
+    fn walk_out_anonymous_class(&self, _: &'a mago_syntax::cst::AnonymousClass<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.pop();
+    }
+
+    fn walk_in_trait(&self, _: &'a mago_syntax::cst::Trait<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.push(Frame::Class(None));
+    }
+
+    fn walk_out_trait(&self, _: &'a mago_syntax::cst::Trait<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.pop();
+    }
+
+    fn walk_in_method(&self, method: &'a mago_syntax::cst::Method<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.push(Frame::Method(lossy(method.name.value)));
+    }
+
+    fn walk_out_method(&self, _: &'a mago_syntax::cst::Method<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.pop();
+    }
+
+    fn walk_in_function(&self, _: &'a mago_syntax::cst::Function<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.push(Frame::Function);
+    }
+
+    fn walk_out_function(&self, _: &'a mago_syntax::cst::Function<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.pop();
+    }
+
+    fn walk_in_closure(&self, _: &'a mago_syntax::cst::Closure<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.push(Frame::Function);
+    }
+
+    fn walk_out_closure(&self, _: &'a mago_syntax::cst::Closure<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.pop();
+    }
+
+    fn walk_in_arrow_function(&self, _: &'a mago_syntax::cst::ArrowFunction<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.push(Frame::Function);
+    }
+
+    fn walk_out_arrow_function(&self, _: &'a mago_syntax::cst::ArrowFunction<'a>, cx: &mut Collect<'a, '_>) {
+        cx.frames.pop();
+    }
+
+    fn walk_in_return(&self, r#return: &'a mago_syntax::cst::Return<'a>, cx: &mut Collect<'a, '_>) {
+        let Some(value) = r#return.value else { return };
+        let [.., Frame::Class(Some(class)), Frame::Method(method)] = cx.frames.as_slice() else { return };
+        if !cx.names.contains(&method.to_ascii_lowercase()) {
+            return;
+        }
+        let call = SiteCall::Return { class: class.clone(), method: method.clone(), at: r#return.span().start.offset };
+        cx.strings(&call, value, (Some(0), None), &mut Vec::new(), None);
+    }
+
     fn walk_in_expression(&self, expr: &'a Expression<'a>, cx: &mut Collect<'a, '_>) {
         let Some((name, list)) = call_parts(expr) else { return };
         if !cx.names.contains(&name.to_ascii_lowercase()) {
             return;
         }
+        let call = SiteCall::Call(expr);
         let mut positional = 0;
         for argument in list.arguments.iter() {
             let mut steps = Vec::new();
             match argument {
                 Argument::Positional(argument) => {
-                    cx.strings(expr, argument.value, (Some(positional), None), &mut steps, None);
+                    cx.strings(&call, argument.value, (Some(positional), None), &mut steps, None);
                     positional += 1;
                 }
                 Argument::Named(argument) => {
                     let name = lossy(argument.name.value);
-                    cx.strings(expr, argument.value, (None, Some(&name)), &mut steps, None);
+                    cx.strings(&call, argument.value, (None, Some(&name)), &mut steps, None);
                 }
             }
         }
@@ -400,7 +522,7 @@ pub fn sites(
         .flat_map(|kind| kind.patterns().iter().flat_map(PlacePattern::names))
         .map(str::to_ascii_lowercase)
         .collect();
-    let mut collect = Collect { want, names: &names, out: Vec::new() };
+    let mut collect = Collect { want, names: &names, out: Vec::new(), frames: Vec::new() };
     SiteWalker.walk_program(parsed.program(), &mut collect);
     if collect.out.is_empty() {
         return Vec::new();
@@ -413,7 +535,17 @@ pub fn sites(
         .out
         .into_iter()
         .filter_map(|raw| {
-            let target = call_target(&types, &file_names, resolver, raw.call)?;
+            let call = raw.call.start();
+            let target = match raw.call {
+                SiteCall::Call(expr) => call_target(&types, &file_names, resolver, expr)?,
+                SiteCall::Return { class: (name, offset), method, .. } => {
+                    let class = match file_names.scope_at(offset).resolve(NameKind::ClassLike, &name).resolution {
+                        Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => fqn,
+                        Resolution::Relative(_) => return None,
+                    };
+                    CallTarget::Return { class: class.trim_start_matches('\\').to_owned(), method }
+                }
+            };
             let class = raw.class.and_then(|(name, offset)| {
                 match file_names.scope_at(offset).resolve(NameKind::ClassLike, &name).resolution {
                     Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => {
@@ -433,6 +565,7 @@ pub fn sites(
                 argument_name: raw.argument_name,
                 steps: raw.steps,
                 class,
+                call,
             })
         })
         .collect()
@@ -503,6 +636,12 @@ pub struct SiteInfo {
     pub start: u32,
     /// The class the string is about.
     pub class: Option<String>,
+    /// The call the string is an argument of (or the method returning it)
+    /// and the byte it starts at ([`StringSite::call`]).
+    pub call: Option<(CallTarget, u32)>,
+    /// The key of the string's entry in the argument's array, when it sits
+    /// in one (`'title'` for `['title' => 'required']`).
+    pub key: Option<String>,
 }
 
 impl RefContext<'_> {
@@ -676,6 +815,8 @@ pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
         &ResourceAction,
         &Middleware,
         &ViewName,
+        &ValidationRule,
+        &RequestField,
     ]
 }
 
@@ -795,7 +936,17 @@ impl PhpEngine {
             let routes = self.laravel_routes()?;
             routes.route_at(path, site.start).and_then(|route| route.action.class()).map(str::to_owned)
         });
-        cx.site = Some(SiteInfo { path: path.to_path_buf(), start: site.start, class });
+        let key = match site.steps.first() {
+            Some(ArrayStep::Value(key)) => key.clone(),
+            _ => None,
+        };
+        cx.site = Some(SiteInfo {
+            path: path.to_path_buf(),
+            start: site.start,
+            class,
+            call: Some((site.target.clone(), site.call)),
+            key,
+        });
         Some(cx)
     }
 
