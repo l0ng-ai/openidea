@@ -108,3 +108,36 @@ describe("terminal copy capture", () => {
     }
   });
 });
+
+it.each([
+  ["Ctrl+C", "c", "KeyC", true],
+  ["Ctrl+R", "r", "KeyR", false],
+  ["Shift+Enter", "Enter", "Enter", false],
+] as const)("keeps terminal handling for %s even when bound to font zoom", (stroke, key, code, selection) => {
+  mock.settings.terminal.overrideIdeShortcuts = true;
+  mock.session.hasSelection = selection;
+  useKeymap.setState({ preset: "intellij-windows", overrides: { "editor.increaseFontSize": [stroke] } });
+  const zoom = vi.fn();
+  const removeAction = registerAction({ id: "editor.increaseFontSize", title: "Increase Font Size", run: zoom });
+  const removeKeys = installTerminalKeys();
+  const removeDispatcher = installKeyboardDispatcher();
+  try {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key,
+        code,
+        ctrlKey: stroke.startsWith("Ctrl"),
+        shiftKey: stroke.startsWith("Shift"),
+        cancelable: true,
+      }),
+    );
+    expect(zoom).not.toHaveBeenCalled();
+    if (selection) expect(mock.session.copySelection).toHaveBeenCalledOnce();
+    else expect(mock.session.send).toHaveBeenCalledWith(key === "r" ? "\x12" : "\x1b\r");
+  } finally {
+    removeDispatcher();
+    removeKeys();
+    removeAction();
+    useKeymap.setState({ overrides: {} });
+  }
+});

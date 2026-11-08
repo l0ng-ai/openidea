@@ -310,6 +310,9 @@ pub struct DebugManager {
 /// In a Bundler project it runs from the bundle, which must have `debug`: the debuggee then
 /// loads that version, and the gems rdbg needs (irb is not a default gem from Ruby 3.5).
 fn rdbg_command_line(spec: &mut AdapterSpec, config: &LaunchConfig, cwd: &Path) -> IdeResult<()> {
+    if config.request != "launch" {
+        return Ok(());
+    }
     if spec.command == "rdbg"
         && let Some(gemfile) = bundler_gemfile(cwd, &config.env)
     {
@@ -324,6 +327,11 @@ fn rdbg_command_line(spec: &mut AdapterSpec, config: &LaunchConfig, cwd: &Path) 
     }
     spec.env.extend(config.env.iter().map(|(k, v)| (k.clone(), v.clone())));
     spec.args.push("--".into());
+    // With only a command, Ruby's exec treats it as shell text. Ruby entry points
+    // without arguments go through -S so spaces and metacharacters stay literal.
+    if config.program.is_some() && config.args.is_empty() {
+        spec.args.extend(["ruby", "-S", "--"].map(str::to_owned));
+    }
     spec.args.extend(config.program.iter().cloned());
     spec.args.extend(config.args.iter().cloned());
     Ok(())
@@ -331,9 +339,13 @@ fn rdbg_command_line(spec: &mut AdapterSpec, config: &LaunchConfig, cwd: &Path) 
 
 /// The Gemfile Bundler uses in `dir`: `BUNDLE_GEMFILE`, else the closest `Gemfile` / `gems.rb` from `dir` up.
 fn bundler_gemfile(dir: &Path, env: &BTreeMap<String, String>) -> Option<PathBuf> {
-    match env.get("BUNDLE_GEMFILE").filter(|g| !g.is_empty()) {
+    let gemfile = env
+        .get("BUNDLE_GEMFILE")
+        .cloned()
+        .or_else(|| ide_core::process::host_var_os("BUNDLE_GEMFILE").map(|v| v.to_string_lossy().into_owned()));
+    match gemfile.filter(|g| !g.is_empty()) {
         Some(gemfile) => Some(dir.join(gemfile)),
-        None => dir.ancestors().flat_map(|d| [d.join("Gemfile"), d.join("gems.rb")]).find(|g| g.is_file()),
+        None => dir.ancestors().flat_map(|d| [d.join("gems.rb"), d.join("Gemfile")]).find(|g| g.is_file()),
     }
 }
 
@@ -842,14 +854,23 @@ impl DebugManager {
             let stderr = stderr.clone();
             Connection::start_with_output(io.reader, io.writer, Box::new(move |line| adapter::push_line(&stderr, line)))
         };
+        let rdbg_pid = (adapter_name == "rdbg" && request == "launch")
+            .then(|| io.child.as_ref().and_then(tokio::process::Child::id))
+            .flatten();
         let session =
             Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        // rdbg execs the debuggee in its own process and sends no DAP process event.
+        if let Some(pid) = rdbg_pid {
+            session.debuggee_pid.store(i64::from(pid), Ordering::Release);
+        }
         if let Some(mut output) = io.program_output {
+            session.output_drained.send_replace(false);
             let session = session.clone();
             tokio::spawn(async move {
                 while let Some((category, output)) = output.recv().await {
                     session.emit(ide_core::event::DebugEvent::Output { category: category.into(), output });
                 }
+                session.output_drained.send_replace(true);
             });
         }
         self.sessions.lock().insert(id, session.clone());
@@ -1051,7 +1072,9 @@ impl DebugManager {
         // the console (`terminated`), as IDEA does with the process it owns.
         let pid = s.debuggee_pid.load(Ordering::Acquire);
         let own_terminate = terminate && s.request == "launch" && pid > 0;
-        let graceful = terminate && s.request == "launch" && s.supports("supportsTerminateRequest");
+        // rdbg's terminate exits the Ruby process without terminating its children.
+        let graceful =
+            terminate && s.request == "launch" && s.adapter != "rdbg" && s.supports("supportsTerminateRequest");
         if !s.conn.is_closed() {
             if graceful {
                 let _ = s.conn.request_timeout("terminate", json!({ "restart": false }), SHUTDOWN_TIMEOUT).await;
