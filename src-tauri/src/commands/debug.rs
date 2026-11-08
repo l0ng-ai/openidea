@@ -314,10 +314,11 @@ pub async fn debug_redefine_classes(state: State<'_, AppState>, session: DebugSe
 #[tauri::command]
 #[specta::specta]
 pub async fn debug_jvm_memory_classes(
+    window: Window,
     state: State<'_, AppState>,
     session: DebugSessionId,
 ) -> IdeResult<JvmMemoryResult> {
-    ide_host::ops::debug::debug_jvm_memory_classes(&state.host, "", session).await
+    ide_host::ops::debug::debug_jvm_memory_classes(&state.host, window.label(), session).await
 }
 
 /// Up to `limit` live instances of the class in the stopped JVM.

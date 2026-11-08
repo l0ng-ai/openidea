@@ -62,7 +62,7 @@ impl Quirks {
         self.step_pending.store(true, Ordering::Release);
     }
 
-    /// Before `continue` or run to cursor.
+    /// Before `continue` or run to cursor, or after a step request failed.
     pub fn resume_sent(&self) {
         self.step_pending.store(false, Ordering::Release);
     }

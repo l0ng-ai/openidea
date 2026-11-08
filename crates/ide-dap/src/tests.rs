@@ -47,6 +47,8 @@ struct Script {
     stop_after_continue: bool,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
+    /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
+    refuse_next: bool,
     /// Send `invalidated { areas: ["variables"] }` right after the first `stopped` event.
     invalidated_after_stop: bool,
     /// On `threads`: stop again on thread 2 first, then answer with thread 1 of the earlier stop.
@@ -73,6 +75,7 @@ impl Default for Script {
             continue_reply: None,
             stop_after_continue: false,
             step_reason: None,
+            refuse_next: false,
             invalidated_after_stop: false,
             stop_during_threads: false,
             frame_name: None,
@@ -203,6 +206,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "restartFrame" => {
                 ok!(msg, Value::Null);
                 send!(json!({"type": "event", "event": "stopped", "body": {"reason": "restart", "threadId": 1}}));
+            }
+            "next" if script.refuse_next => {
+                send!(
+                    json!({"type": "response", "request_seq": msg["seq"], "command": "next", "success": false, "message": "refused"})
+                );
+                // Lets the client handle the refusal before the stop.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}}));
             }
             "next" => {
                 ok!(msg, Value::Null);
@@ -2207,6 +2218,17 @@ async fn a_breakpoint_after_continue_stays_a_breakpoint() {
     h.manager.step(id, 1, StepKind::Into).await.unwrap();
     h.manager.resume(id, 1).await.unwrap();
     assert_eq!(stop_reasons(&h, 3).await, ["breakpoint", "step", "breakpoint"]);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_breakpoint_after_a_refused_step_stays_a_breakpoint() {
+    let h = harness(Script { refuse_next: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(h.manager.step(id, 1, StepKind::Over).await.is_err());
+    assert_eq!(stop_reasons(&h, 2).await, ["breakpoint", "breakpoint"]);
     h.manager.stop(id).await.unwrap();
 }
 

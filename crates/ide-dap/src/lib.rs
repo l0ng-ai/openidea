@@ -555,6 +555,16 @@ fn unverified(enabled: impl Iterator<Item = bool>) -> Vec<BreakpointState> {
         .collect()
 }
 
+/// A step request's outcome; a failed one leaves no step pending, so the next stop keeps its reason.
+fn step_settled(session: &Session, sent: Result<Value, DapError>) -> Result<Value, DapError> {
+    if sent.is_err()
+        && let Some(quirks) = session.kotlin_lsp_quirks()
+    {
+        quirks.resume_sent();
+    }
+    sent
+}
+
 /// Delve compiles the debuggee to `__debug_bin` in the session's cwd (on Windows
 /// `__debug_bin.exe` plus `__debug_bin.exe<digits>` in DAP mode) and removes it on a
 /// graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
@@ -1464,7 +1474,8 @@ impl DebugManager {
             quirks.step_sent();
         }
         let ticket = session.suspended.ticket();
-        session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
+        let sent = session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await;
+        step_settled(&session, sent)?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
         session.suspended.resumed(ticket, thread_id, false);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
@@ -1572,10 +1583,11 @@ impl DebugManager {
             quirks.step_sent();
         }
         let ticket = session.suspended.ticket();
-        session
+        let sent = session
             .conn
             .request_timeout("stepIn", json!({ "threadId": thread_id, "targetId": target_id }), REQUEST_TIMEOUT)
-            .await?;
+            .await;
+        step_settled(&session, sent)?;
         session.suspended.resumed(ticket, thread_id, false);
         session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
         Ok(())

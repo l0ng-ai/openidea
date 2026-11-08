@@ -421,9 +421,10 @@ pub async fn debug_redefine_classes(host: &Host, _window: &str, session: DebugSe
 /// The debuggee JVM's loaded classes, or why they cannot be read.
 pub async fn debug_jvm_memory_classes(
     host: &Host,
-    _window: &str,
+    window: &str,
     session: DebugSessionId,
 ) -> IdeResult<JvmMemoryResult> {
+    host.require_trust(window)?;
     host.debugger.jvm_memory_classes(session).await
 }
 
