@@ -45,6 +45,8 @@ interface Case {
   file: string;
   /** A variable of the paused frame. */
   variable: string;
+  /** Its value once the adapter has filled in a placeholder (`invalidated`), as the Variables pane shows it. */
+  filledValue?: RegExp;
   /** An expression evaluated there (Evaluate Expression), and its value. */
   evaluate: [string, RegExp];
   /** A server: the breakpoint is in this request's handler, and the session is stopped at the end. */
@@ -118,6 +120,8 @@ const CASES: Record<string, Case> = {
     adapter: "kotlin-lsp",
     // kotlin-lsp evaluates for itself after each stop, which the inspector's link waits out.
     retryTimedOut: true,
+    // First "Collecting data…", then the `toString` kotlin-lsp invokes.
+    filledValue: /Library@/,
   },
   "kotlin-fwcd": {
     ...kotlin,
@@ -279,8 +283,28 @@ async function smoke(language: string) {
   expect(top.line).toBe(line);
 
   const scopes = await call(commands.debugScopes(s.id, top.id));
-  const locals = await call(commands.debugVariables(s.id, scopes[0]!.variablesReference));
+  let locals = await call(commands.debugVariables(s.id, scopes[0]!.variablesReference));
   expect(locals.map((v) => v.name)).toContain(c.variable);
+  let filled = "";
+  if (c.filledValue) {
+    const since = Date.now();
+    let epoch: number | null = null;
+    let last = locals.find((v) => v.name === c.variable)?.value;
+    while (!c.filledValue.test(last ?? "")) {
+      if (Date.now() - since > 10_000) throw new Error(`${c.variable} stayed ${JSON.stringify(last)}\n${shown()}`);
+      const now = useDebug.getState().variablesEpoch;
+      if (now === epoch) {
+        await new Promise((r) => setTimeout(r, 100));
+        continue;
+      }
+      // What the Variables pane does on each `invalidated`: pull the frame's locals again.
+      epoch = now;
+      const again = await call(commands.debugScopes(s.id, top.id));
+      locals = await call(commands.debugVariables(s.id, again.find((sc) => !sc.expensive)!.variablesReference));
+      last = locals.find((v) => v.name === c.variable)?.value;
+    }
+    filled = ` (filled in after ${((Date.now() - since) / 1000).toFixed(1)} s)`;
+  }
 
   // The value, not kotlin-lsp's "Collecting data…" placeholder.
   const value = await evaluate(c.evaluate[0], "repl", s);
@@ -293,7 +317,7 @@ async function smoke(language: string) {
   const waits = events.slice(begun).filter((e) => e.startsWith("task Waiting for")).length;
   console.info(
     `${language}: ${c.adapter} stopped after ${(firstStop / 1000).toFixed(1)} s (${waits} wait task events); ` +
-      `${c.variable} = ${locals.find((v) => v.name === c.variable)?.value}; evaluated ${value.value}; ` +
+      `${c.variable} = ${locals.find((v) => v.name === c.variable)?.value}${filled}; evaluated ${value.value}; ` +
       `exception filters [${filterIds.join(", ")}]`,
   );
 
