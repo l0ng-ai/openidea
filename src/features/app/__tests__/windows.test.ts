@@ -47,7 +47,7 @@ vi.mock("@/platform/project", async (orig) => {
   return { ...real, openProject: (p: string) => openProject(p) };
 });
 const diffs: unknown[] = [];
-vi.mock("@/features/vcs/diffInput", () => ({ openDiff: (data: unknown) => void diffs.push(data) }));
+vi.mock("@/features/vcs/diffInput", () => ({ openVcsDiff: (data: unknown) => void diffs.push(data) }));
 
 const {
   openProjectInWindow,

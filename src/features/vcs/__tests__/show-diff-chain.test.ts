@@ -1,14 +1,18 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { FileStatus } from "@/bindings";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { FileStatus, Settings } from "@/bindings";
 import { getAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
 import { registerVcsActions } from "../actions";
 import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
 import { initialChangelists, useChangelists } from "../changelists";
-import { chainNeighbour } from "../diffInput";
+import { useGitLog } from "../logStore";
+import { compareChangeWithLocal } from "../logChanges";
+import { chainNeighbour, openVcsDiff } from "../diffInput";
 
 const opened = vi.hoisted(() => vi.fn());
+const diffWindow = vi.hoisted(() => vi.fn());
 const project = vi.hoisted(() => ({ paths: [] as string[] }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
@@ -16,6 +20,7 @@ vi.mock("@/workbench/contributions", async (original) => ({
   projectViewSelection: () => project.paths,
 }));
 vi.mock("../comparePaths", () => ({ showDirectoryWorkingDiff: async () => false }));
+vi.mock("../diffDialog", () => ({ openDiffDialog: diffWindow }));
 
 const status = (name: string): FileStatus => ({
   path: `/repo/${name}`,
@@ -27,6 +32,9 @@ const status = (name: string): FileStatus => ({
 const vcs = useVcs.getState();
 const commit = useCommit.getState();
 const lists = useChangelists.getState();
+const gitTab = useGitLog.getState().tab;
+const settings = useProject.getState().settings;
+const modal = () => useProject.setState({ settings: { vcs: { commit: { nonModal: false } } } as Settings });
 let unregister: () => void;
 
 beforeEach(() => {
@@ -49,6 +57,8 @@ afterEach(() => {
   useVcs.setState(vcs);
   useCommit.setState(commit);
   useChangelists.setState(lists);
+  useGitLog.setState({ tab: gitTab });
+  useProject.setState({ settings });
 });
 
 it("keeps sibling files in tree order when Show Diff opens a changed file", async () => {
@@ -111,4 +121,105 @@ it("shows a Project view selection outside the changes tree", async () => {
   setContext("activeToolWindow", "project");
   await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
   expect(opened.mock.calls[0]![0].data.path).toBe("/repo/z.ts");
+});
+
+it("opens the front diff window from the modal Local Changes selection (⌘D)", async () => {
+  modal();
+  setContext("activeToolWindow", "git");
+  useGitLog.setState({ tab: "changes" });
+  useCommit.setState({ selection: ["/repo/b.ts"] });
+  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  expect(diffWindow).toHaveBeenCalledTimes(1);
+  const data = diffWindow.mock.calls[0]![0];
+  expect(data.path).toBe("/repo/b.ts");
+  expect(data.chain.map((d: { path: string }) => d.path)).toEqual(["/repo/a.ts", "/repo/b.ts", "/repo/z.ts"]);
+  expect(opened).not.toHaveBeenCalled();
+});
+
+it("keeps the editor diff outside the modal interface with the Commit window focused", async () => {
+  useProject.setState({ settings: null });
+  setContext("activeToolWindow", "commit");
+  useCommit.setState({ selection: ["/repo/b.ts"] });
+  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  expect(diffWindow).not.toHaveBeenCalled();
+  expect(opened).toHaveBeenCalled();
+});
+
+it("openVcsDiff opens the front window under the modal interface", async () => {
+  modal();
+  await openVcsDiff({ path: "/repo/b.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
+  expect(diffWindow).toHaveBeenCalledTimes(1);
+  expect(diffWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts" });
+  expect(opened).not.toHaveBeenCalled();
+});
+
+it("openVcsDiff keeps editor tabs without the modal interface", async () => {
+  useProject.setState({ settings: null });
+  await openVcsDiff({ path: "/repo/b.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" } });
+  expect(diffWindow).not.toHaveBeenCalled();
+  expect(opened).toHaveBeenCalled();
+});
+
+it("Compare with Local opens the front window under the modal interface", async () => {
+  modal();
+  await compareChangeWithLocal({
+    path: "b.ts",
+    repo: "/repo",
+    oldPath: null,
+    kind: "modified",
+    before: null,
+    after: "abc123",
+    statsFrom: "p",
+    statsTo: "c",
+    diff: { path: "/repo/b.ts", left: { type: "rev", rev: "p" }, right: { type: "rev", rev: "c" } },
+  });
+  expect(diffWindow).toHaveBeenCalledTimes(1);
+  expect(diffWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts" });
+});
+
+it("keeps the hunk's line when Show Diff opens the front window (gutter popup)", async () => {
+  modal();
+  await getAction("vcs.showDiff")!.run({ arg: { path: "/repo/b.ts", line: 42 }, ctx: { vcsAvailable: true } });
+  expect(diffWindow).toHaveBeenCalledTimes(1);
+  expect(diffWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts", line: 42 });
+});
+
+describe("a partially staged file under the staging groups", () => {
+  const partial: FileStatus = { ...status("b.ts"), staged: "modified" };
+  beforeEach(() => {
+    modal();
+    useVcs.setState({ status: [partial], byPath: new Map([[partial.path, partial]]) });
+    useCommit.setState({ groupByStaging: true });
+  });
+
+  it("opens its whole working diff for a path, which does not tell the side", async () => {
+    await getAction("vcs.showDiff")!.run({ arg: "/repo/b.ts", ctx: { vcsAvailable: true } });
+    expect(diffWindow.mock.calls[0]![0]).toMatchObject({
+      left: { type: "rev", rev: "HEAD" },
+      right: { type: "worktree" },
+    });
+  });
+
+  it("opens the side selected in the changes tree", async () => {
+    setContext("activeToolWindow", "git");
+    useGitLog.setState({ tab: "changes" });
+    useCommit.setState({ selection: ["/repo/b.ts"], selectionKeys: ["unstaged:/repo/b.ts"] });
+    await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+    expect(diffWindow.mock.calls[0]![0]).toMatchObject({
+      left: { type: "rev", rev: ":0" },
+      right: { type: "worktree" },
+    });
+  });
+});
+
+it("chains the selected files in the front window", async () => {
+  modal();
+  setContext("activeToolWindow", "git");
+  useGitLog.setState({ tab: "changes" });
+  useCommit.setState({ selection: ["/repo/z.ts", "/repo/other.ts"], selectionKeys: [] });
+  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  expect(diffWindow).toHaveBeenCalledTimes(1);
+  const data = diffWindow.mock.calls[0]![0];
+  expect(data.path).toBe("/repo/z.ts");
+  expect(data.chain.map((d: { path: string }) => d.path)).toEqual(["/repo/z.ts", "/repo/other.ts"]);
 });
