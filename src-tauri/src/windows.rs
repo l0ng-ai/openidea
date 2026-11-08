@@ -1152,19 +1152,43 @@ pub fn on_second_instance(app: &AppHandle, args: Vec<String>, cwd: String) {
             remember_cli_position(&app.state::<WindowsState>(), &args, &path);
             open_path(app, &path)
         }
-        None => {
-            if let Some(w) = target_window(app) {
-                focus(&w);
-            } else {
-                spawn_window(app, None);
-            }
-        }
+        None => focus_any(app),
     }
+}
+
+/// Focuses the window the user last looked at, else opens a new one.
+fn focus_any(app: &AppHandle) {
+    if let Some(w) = target_window(app) {
+        focus(&w);
+    } else {
+        spawn_window(app, None);
+    }
+}
+
+/// Opens what the `openidea` command asked for, like [`open_paths`]; files open at their
+/// 1-based line and column. Without targets, focuses a window.
+pub fn open_targets(app: &AppHandle, targets: Vec<ide_cli::Target>) {
+    if targets.is_empty() {
+        return focus_any(app);
+    }
+    let windows = app.state::<WindowsState>();
+    let paths = targets
+        .into_iter()
+        .map(|t| {
+            if let Some(line) = t.line
+                && !t.path.is_dir()
+            {
+                windows.set_position(&t.path, (line.saturating_sub(1), t.column.map_or(0, |c| c.saturating_sub(1))));
+            }
+            t.path
+        })
+        .collect();
+    open_paths(app, paths);
 }
 
 /// `openidea diff a.txt b.txt` while the app is running: hands the pair to the window the user is
 /// looking at (a project window, never an auxiliary one), else opens a new window for it.
-fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
+pub(crate) fn open_diff_files(app: &AppHandle, diff: DiffFilesLaunch) {
     let launch = Launch { diff: Some(Box::new(diff)), ..Default::default() };
     let target = target_window(app)
         .filter(|window| auxiliary_parent(window.label()).is_none())
