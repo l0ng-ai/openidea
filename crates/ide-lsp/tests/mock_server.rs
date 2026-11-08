@@ -1306,6 +1306,41 @@ async fn progress_titled_with_an_executable_path_shows_the_program_name() {
     assert_eq!(titles, ["cargo check"; 3]);
 }
 
+/// PHPantom reuses a fixed token for concurrent requests: begin, begin, end, end.
+/// Every task it started ends, and the server reads ready afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_progress_token_begun_again_ends_the_task_it_replaces() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let progress =
+        |token: &str, kind: &str, title: &str| json!({ "token": token, "value": { "kind": kind, "title": title } });
+    for kind in ["begin", "begin", "end", "end"] {
+        peer.notify("$/progress", progress("find_references", kind, "Finding references")).unwrap();
+    }
+    // Notifications are handled in order: once this task ended, so did everything above.
+    peer.notify("$/progress", progress("later", "begin", "Indexing")).unwrap();
+    peer.notify("$/progress", progress("later", "end", "Indexing")).unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Indexing"))
+    })
+    .await;
+    let (mut begun, mut ended) = (Vec::new(), Vec::new());
+    for e in h.events.lock().iter() {
+        if let IdeEvent::Task { id, title, done, .. } = e
+            && title == "Finding references"
+        {
+            if *done { ended.push(*id) } else { begun.push(*id) }
+        }
+    }
+    assert_eq!(begun.len(), 2);
+    for id in &begun {
+        assert_eq!(ended.iter().filter(|e| *e == id).count(), 1, "every task ends once: {begun:?} {ended:?}");
+    }
+    h.wait_status("mock", ServerStatus::Ready).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
