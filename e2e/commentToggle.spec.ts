@@ -13,7 +13,8 @@ const SRC = `export function App() {
 
 test("⌘/ twice on a JSX line gives the line back", async ({ workbench: page }) => {
   await page.evaluate(async (src) => {
-    const mod = await import(/* @vite-ignore */ "/src/editor/core/backend.ts");
+    const backendModule = "/src/editor/core/backend.ts";
+    const mod = await import(/* @vite-ignore */ backendModule);
     const backend = mod.docBackend() as { files: Map<string, string> };
     backend.files.set("/dev/acme-api/App.tsx", src);
   }, SRC);
