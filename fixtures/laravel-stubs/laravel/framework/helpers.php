@@ -30,6 +30,8 @@ function route($name, $parameters = [], $absolute = true): string { return ''; }
 
 function redirect($to = null, $status = 302, $headers = [], $secure = null): \Illuminate\Routing\Redirector { return new \Illuminate\Routing\Redirector(); }
 
+function action($name, $parameters = [], $absolute = true): string { return ''; }
+
 function to_route($route, $parameters = [], $status = 302, $headers = []): \Illuminate\Http\RedirectResponse { return new \Illuminate\Http\RedirectResponse(); }
 
 function now($tz = null): \Illuminate\Support\Carbon { return new \Illuminate\Support\Carbon(); }

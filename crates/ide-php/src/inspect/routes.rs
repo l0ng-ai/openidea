@@ -4,6 +4,10 @@
 //! `generateUrl()`, `redirectToRoute()` and a URL generator's `generate()`,
 //! checked against `config/routes*.yaml` and the `#[Route]` attributes.
 //!
+//! In a Laravel project, the route names of `route()`, `to_route()`,
+//! `redirect()->route()`, `URL::route()` and `Route::has()` (the `routeName`
+//! string references) are checked against the routes of its route files.
+//!
 //! Only string literals are checked, and only while the indexes are ready
 //! and the project names some route (a project whose routes come from
 //! somewhere the engine doesn't read reports nothing).
@@ -16,6 +20,8 @@ use mago_syntax::walker::Walker;
 
 use super::{Inspection, InspectionContext, Problems};
 use crate::engine::{EngineState, is_meta_path};
+use crate::frameworks::laravel::RouteTable;
+use crate::frameworks::laravel::refs::{ReferenceKind, RouteName, kind_of, sites};
 use crate::signature::{Callee, callee};
 use crate::types::Type;
 use crate::types::ops::literal_type;
@@ -35,6 +41,10 @@ impl Inspection for UndefinedRoute {
 
     fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
         if cx.engine.status().state != EngineState::Ready || is_meta_path(cx.path) {
+            return;
+        }
+        if let Some(routes) = cx.engine.laravel_routes() {
+            laravel(cx, &routes, out);
             return;
         }
         let resolver = cx.resolver();
@@ -114,6 +124,30 @@ impl<'a, 'p> Walker<'a, 'a, Calls<'a, 'p>> for CallWalker {
             && matches!(argument.value, Expression::Literal(Literal::String(_)))
         {
             cx.found.push((expr, argument.value));
+        }
+    }
+}
+
+/// In a Laravel project: the `routeName` string references
+/// ([`RouteName`]: `route('…')`, `to_route('…')`, `redirect()->route('…')`, …)
+/// whose route no route file names. Nothing while the project has no named
+/// route (its routes come from somewhere the engine doesn't read).
+fn laravel(cx: &InspectionContext<'_>, routes: &RouteTable, out: &mut Problems) {
+    if !routes.routes().iter().any(|route| route.name.is_some()) {
+        return;
+    }
+    let resolver = cx.resolver();
+    for site in sites(cx.parsed, &resolver, &[&RouteName], None) {
+        if cx.is_cancelled() {
+            return;
+        }
+        let value = &site.value;
+        // Only plain literals (no interpolation or escapes).
+        if value.is_empty() || value.contains(['$', '\\', '{']) || routes.named(value).next().is_some() {
+            continue;
+        }
+        if kind_of(&site, &resolver).is_some_and(|kind| kind.id() == RouteName.id()) {
+            out.report(site.start, site.end, format!("Route '{value}' is not defined"));
         }
     }
 }

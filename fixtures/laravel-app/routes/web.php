@@ -15,3 +15,7 @@ Route::middleware(['auth', 'author'])->prefix('dashboard')->name('dashboard.')->
     Route::post('/posts', [PostController::class, 'store'])->name('posts.store');
     Route::delete('/posts/{post}', [PostController::class, 'destroy'])->name('posts.destroy');
 });
+
+Route::controller(PostController::class)->prefix('archive')->name('archive.')->group(function () {
+    Route::get('/', 'index')->name('index')->middleware('throttle:60,1');
+});

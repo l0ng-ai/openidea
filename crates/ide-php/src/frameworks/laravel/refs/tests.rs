@@ -403,3 +403,6 @@ fn kinds_validate_values() {
     assert!(ConfigKey.is_known(&cx, "blog.feed"));
     assert!(!ConfigKey.is_known(&cx, "app.nope"));
 }
+
+#[path = "route_tests.rs"]
+mod route_tests;

@@ -135,7 +135,21 @@ impl PhpEngine {
         if sought.is_empty() {
             return None;
         }
-        Some(self.find_usages(&sought, &path, &here, include_declaration, cancel))
+        let found = self.find_usages(&sought, &path, &here, include_declaration, cancel);
+        Some(found.map(|mut usages| {
+            // A controller method's routes count as its usages.
+            let before = usages.len();
+            for sought in &sought {
+                if let Sought::Member { kind: MemberKind::Method, name, declaring, .. } = sought {
+                    usages.extend(self.route_action_usages(declaring, name));
+                }
+            }
+            if usages.len() > before {
+                usages.sort_by_key(|usage| (path_key(&usage.path), usage.range.start));
+                usages.dedup_by(|b, a| path_key(&a.path) == path_key(&b.path) && a.range == b.range);
+            }
+            usages
+        }))
     }
 
     pub(super) fn sought(&self, subject: Subject, path: &Path, here: &FileSummary) -> Vec<Sought> {

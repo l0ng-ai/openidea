@@ -30,7 +30,7 @@ manual QA, do the same or run `composer install` on a copy.
 | `artisan`, `public/index.php`                               | entry points (skeleton)                                                                                            |
 | `bootstrap/app.php`                                         | `withRouting(web:, api:, commands:, health:, then:)` route files (`then:` loads `routes/admin.php` in a group), middleware alias `author` |
 | `bootstrap/providers.php`                                   | registered service providers                                                                                       |
-| `routes/web.php`                                            | route names, an invokable controller, `Route::view`, `Route::resource()->only()`, a group with prefix, name prefix and middleware, `[Controller::class, 'method']` actions |
+| `routes/web.php`                                            | route names, an invokable controller, `Route::view`, `Route::resource()->only()`, a group with prefix, name prefix and middleware, `[Controller::class, 'method']` actions, a `Route::controller()` group with a method-name action and middleware parameters |
 | `routes/api.php`                                            | the `api` route file (prefix from `withRouting`)                                                                   |
 | `routes/admin.php`                                          | a route file loaded with prefix `admin`, name prefix `admin.` and `web`/`auth` middleware                          |
 | `routes/console.php`                                        | `Artisan::command` closure command, `Schedule::command`                                                            |

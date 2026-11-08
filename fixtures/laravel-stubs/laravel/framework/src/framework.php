@@ -107,8 +107,15 @@ namespace Illuminate\Support\Facades {
      * @method static \Illuminate\Routing\Route get(string $uri, array|string|callable|null $action = null)
      * @method static \Illuminate\Routing\Route post(string $uri, array|string|callable|null $action = null)
      * @method static \Illuminate\Routing\Route delete(string $uri, array|string|callable|null $action = null)
+     * @method static \Illuminate\Routing\Route put(string $uri, array|string|callable|null $action = null)
+     * @method static \Illuminate\Routing\Route patch(string $uri, array|string|callable|null $action = null)
+     * @method static \Illuminate\Routing\Route any(string $uri, array|string|callable|null $action = null)
+     * @method static \Illuminate\Routing\Route match(array|string $methods, string $uri, array|string|callable|null $action = null)
      * @method static \Illuminate\Routing\Route view(string $uri, string $view, array $data = [], int|array $status = 200, array $headers = [])
      * @method static \Illuminate\Routing\PendingResourceRegistration resource(string $name, string $controller, array $options = [])
+     * @method static \Illuminate\Routing\PendingResourceRegistration apiResource(string $name, string $controller, array $options = [])
+     * @method static \Illuminate\Routing\RouteRegistrar controller(string $controller)
+     * @method static void group(array $attributes, \Closure|array|string $routes)
      * @method static \Illuminate\Routing\RouteRegistrar middleware(array|string|null $middleware)
      * @method static \Illuminate\Routing\RouteRegistrar prefix(string $prefix)
      * @method static \Illuminate\Routing\RouteRegistrar name(string $value)
@@ -116,6 +123,13 @@ namespace Illuminate\Support\Facades {
      */
     class Route extends Facade {
         protected static function getFacadeAccessor() { return 'router'; }
+    }
+    /**
+     * @method static string route(string $name, mixed $parameters = [], bool $absolute = true)
+     * @method static string action(string|array $action, mixed $parameters = [], bool $absolute = true)
+     */
+    class URL extends Facade {
+        protected static function getFacadeAccessor() { return 'url'; }
     }
     /**
      * @method static void create(string $table, \Closure $callback)
@@ -194,8 +208,12 @@ namespace Illuminate\Routing {
     class Route {
         public function name(string $name): static { return $this; }
         public function middleware(array|string|null $middleware = null): static { return $this; }
+        public function withoutMiddleware(array|string $middleware): static { return $this; }
     }
     class RouteRegistrar {
+        public function get(string $uri, array|string|callable|null $action = null): \Illuminate\Routing\Route { return new \Illuminate\Routing\Route(); }
+        public function post(string $uri, array|string|callable|null $action = null): \Illuminate\Routing\Route { return new \Illuminate\Routing\Route(); }
+        public function controller(string $controller): static { return $this; }
         public function middleware(array|string|null $middleware): static { return $this; }
         public function prefix(string $prefix): static { return $this; }
         public function name(string $value): static { return $this; }
@@ -204,9 +222,12 @@ namespace Illuminate\Routing {
     class PendingResourceRegistration {
         public function only(array|string $methods): static { return $this; }
         public function except(array|string $methods): static { return $this; }
+        public function names(array|string $names): static { return $this; }
+        public function middleware(array|string|null $middleware = null): static { return $this; }
     }
     class Redirector {
         public function route(string $route, mixed $parameters = [], int $status = 302, array $headers = []): \Illuminate\Http\RedirectResponse { return new \Illuminate\Http\RedirectResponse(); }
+        public function action(string|array $action, mixed $parameters = [], int $status = 302, array $headers = []): \Illuminate\Http\RedirectResponse { return new \Illuminate\Http\RedirectResponse(); }
     }
 }
 

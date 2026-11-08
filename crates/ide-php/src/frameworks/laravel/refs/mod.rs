@@ -9,8 +9,15 @@
 //! name; the string itself or a key or value of an array argument, nested
 //! or not), and a **reference kind** ([`ReferenceKind`]) says what such a
 //! string names and supplies completion items, targets, usages, rename and
-//! validation. Kinds are listed in [`kinds`]; so far `configKey`
-//! ([`config_key`]).
+//! validation. Kinds are listed in [`kinds`]: `configKey` ([`config_key`]),
+//! `routeName` ([`route_name`]), `controllerAction` and `resourceAction`
+//! ([`controller_action`]) and `middleware` ([`middleware`]).
+//!
+//! A kind sees the string's site ([`SiteInfo`]): its file, and the class it
+//! is about (the `Foo::class` before it in its array, or the controller of
+//! the route registering it), so `[PostController::class, 'index']` names a
+//! method of `PostController`. Usages are compared by their canonical value
+//! ([`ReferenceKind::canonical`]: `App\Http\Controllers\PostController@index`).
 //!
 //! The string at the caret is found in the document's parse, or, while it
 //! is being typed and isn't closed yet, in a copy of the file with a closed
@@ -23,6 +30,9 @@
 //! ([`PhpEngine::laravel`]).
 
 pub mod config_key;
+pub mod controller_action;
+pub mod middleware;
+pub mod route_name;
 #[cfg(test)]
 mod tests;
 
@@ -32,13 +42,17 @@ use std::sync::Arc;
 
 use ide_core::{CancellationToken, DocId, FileEdit, IdeError, IdeResult, Pos, Range, TextEdit, WorkspaceEdit};
 use mago_span::{HasSpan, Span};
-use mago_syntax::cst::{Argument, ArgumentList, ArrayElement, Call, ClassLikeMemberSelector, Expression, Literal};
+use mago_syntax::cst::{
+    Access, Argument, ArgumentList, ArrayElement, Call, ClassLikeConstantSelector, ClassLikeMemberSelector, Expression,
+    Literal,
+};
 use mago_syntax::walker::Walker;
 
 use super::LaravelProject;
+use super::routes::RouteAction;
 use crate::complete::{Completion, CompletionKind, Completions};
 use crate::engine::PhpEngine;
-use crate::names::{FileNames, NameKind, fqn_eq};
+use crate::names::{FileNames, NameKind, Resolution, fqn_eq};
 use crate::navigate::{Target, Usage, UsageKind};
 use crate::signature::Callee;
 use crate::summary::FileSummary;
@@ -46,6 +60,9 @@ use crate::syntax::ParsedFile;
 use crate::types::{ExprTypes, Resolver, Type};
 
 pub use config_key::ConfigKey;
+pub use controller_action::{ControllerAction, ResourceAction};
+pub use middleware::Middleware;
+pub use route_name::RouteName;
 
 // --------------------------------------------------------------- patterns
 
@@ -187,11 +204,17 @@ pub struct StringSite {
     pub argument_name: Option<String>,
     /// From the argument down to the string.
     pub steps: Vec<ArrayStep>,
+    /// The class a `Foo::class` element of the string's array names.
+    pub class: Option<String>,
 }
 
 /// Helpers that return a service when called without arguments, as
 /// Laravel's `helpers.php` documents them (`config()` is the repository).
-const HELPER_INSTANCES: &[(&str, &str)] = &[("config", "Illuminate\\Config\\Repository")];
+const HELPER_INSTANCES: &[(&str, &str)] = &[
+    ("config", "Illuminate\\Config\\Repository"),
+    ("redirect", "Illuminate\\Routing\\Redirector"),
+    ("url", "Illuminate\\Routing\\UrlGenerator"),
+];
 
 /// A string literal argument before its call is resolved.
 struct RawSite<'a> {
@@ -200,6 +223,8 @@ struct RawSite<'a> {
     index: Option<usize>,
     argument_name: Option<String>,
     steps: Vec<ArrayStep>,
+    /// The `Foo::class` of the string's array: the name and its offset.
+    class: Option<(String, u32)>,
 }
 
 struct Collect<'a, 'n> {
@@ -251,6 +276,7 @@ impl<'a> Collect<'a, '_> {
         value: &'a Expression<'a>,
         at: (Option<usize>, Option<&str>),
         steps: &mut Vec<ArrayStep>,
+        class: Option<&(String, u32)>,
     ) {
         match value {
             Expression::Literal(Literal::String(string)) => {
@@ -262,33 +288,39 @@ impl<'a> Collect<'a, '_> {
                         index: at.0,
                         argument_name: at.1.map(str::to_owned),
                         steps: steps.clone(),
+                        class: class.cloned(),
                     });
                 }
             }
-            Expression::Parenthesized(inner) => self.strings(call, inner.expression, at, steps),
+            Expression::Parenthesized(inner) => self.strings(call, inner.expression, at, steps, class),
             Expression::Array(_) | Expression::LegacyArray(_) => {
                 let elements: Vec<&ArrayElement<'_>> = match value {
                     Expression::Array(array) => array.elements.iter().collect(),
                     Expression::LegacyArray(array) => array.elements.iter().collect(),
                     _ => Vec::new(),
                 };
+                let class = elements.iter().find_map(|element| match element {
+                    ArrayElement::Value(element) => class_constant(element.value),
+                    _ => None,
+                });
+                let class = class.as_ref();
                 for element in elements {
                     match element {
                         ArrayElement::KeyValue(element) => {
                             steps.push(ArrayStep::Key);
-                            self.strings(call, element.key, at, steps);
+                            self.strings(call, element.key, at, steps, class);
                             steps.pop();
                             let key = match element.key {
                                 Expression::Literal(Literal::String(string)) => string.value.map(lossy),
                                 _ => None,
                             };
                             steps.push(ArrayStep::Value(key));
-                            self.strings(call, element.value, at, steps);
+                            self.strings(call, element.value, at, steps, class);
                             steps.pop();
                         }
                         ArrayElement::Value(element) => {
                             steps.push(ArrayStep::Value(None));
-                            self.strings(call, element.value, at, steps);
+                            self.strings(call, element.value, at, steps, class);
                             steps.pop();
                         }
                         _ => {}
@@ -298,6 +330,14 @@ impl<'a> Collect<'a, '_> {
             _ => {}
         }
     }
+}
+
+/// `Foo::class`: the name as written and its offset.
+fn class_constant(expr: &Expression<'_>) -> Option<(String, u32)> {
+    let Expression::Access(Access::ClassConstant(access)) = expr else { return None };
+    let ClassLikeConstantSelector::Identifier(constant) = &access.constant else { return None };
+    let Expression::Identifier(identifier) = access.class else { return None };
+    constant.value.eq_ignore_ascii_case(b"class").then(|| (lossy(identifier.value()), identifier.span().start.offset))
 }
 
 impl<'a> Walker<'a, 'a, Collect<'a, '_>> for SiteWalker {
@@ -311,12 +351,12 @@ impl<'a> Walker<'a, 'a, Collect<'a, '_>> for SiteWalker {
             let mut steps = Vec::new();
             match argument {
                 Argument::Positional(argument) => {
-                    cx.strings(expr, argument.value, (Some(positional), None), &mut steps);
+                    cx.strings(expr, argument.value, (Some(positional), None), &mut steps, None);
                     positional += 1;
                 }
                 Argument::Named(argument) => {
                     let name = lossy(argument.name.value);
-                    cx.strings(expr, argument.value, (None, Some(&name)), &mut steps);
+                    cx.strings(expr, argument.value, (None, Some(&name)), &mut steps, None);
                 }
             }
         }
@@ -351,6 +391,14 @@ pub fn sites(
         .into_iter()
         .filter_map(|raw| {
             let target = call_target(&types, &file_names, resolver, raw.call)?;
+            let class = raw.class.and_then(|(name, offset)| {
+                match file_names.scope_at(offset).resolve(NameKind::ClassLike, &name).resolution {
+                    Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => {
+                        Some(fqn.trim_start_matches('\\').to_owned())
+                    }
+                    Resolution::Relative(_) => None,
+                }
+            });
             let start = raw.span.start.offset + 1;
             let end = raw.span.end.offset.saturating_sub(1).max(start);
             Some(StringSite {
@@ -361,6 +409,7 @@ pub fn sites(
                 index: raw.index,
                 argument_name: raw.argument_name,
                 steps: raw.steps,
+                class,
             })
         })
         .collect()
@@ -419,6 +468,25 @@ fn helper_instance(object: &Expression<'_>) -> Option<&'static str> {
 pub struct RefContext<'e> {
     pub engine: &'e PhpEngine,
     pub project: Arc<LaravelProject>,
+    /// The string's site, when the question is about one string.
+    pub site: Option<SiteInfo>,
+}
+
+/// Where a string sits; see the module documentation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteInfo {
+    pub path: PathBuf,
+    /// The byte its content starts at.
+    pub start: u32,
+    /// The class the string is about.
+    pub class: Option<String>,
+}
+
+impl RefContext<'_> {
+    /// The class of the string's site.
+    pub fn class(&self) -> Option<&str> {
+        self.site.as_ref()?.class.as_deref()
+    }
 }
 
 /// A completion item of a kind.
@@ -462,10 +530,23 @@ pub trait ReferenceKind: Send + Sync {
     /// segments may resolve the segment at the caret).
     fn resolve(&self, cx: &RefContext<'_>, value: &str, at: usize) -> Vec<Target>;
 
-    /// Words (lower case) every file holding a usage of `value` has, for the
-    /// word index.
+    /// Words (lower case) every file holding a usage of `value` (a
+    /// canonical value) has, for the word index.
     fn usage_words(&self, value: &str) -> Vec<String> {
         crate::index::words(value)
+    }
+
+    /// Text every file holding a usage of `value` (a canonical value)
+    /// contains.
+    fn usage_text<'v>(&self, value: &'v str) -> &'v str {
+        value
+    }
+
+    /// The value a string written `value` at the context's site stands
+    /// for, the same for every usage of one thing (the class and method of
+    /// a controller action).
+    fn canonical(&self, _cx: &RefContext<'_>, value: &str) -> String {
+        value.to_owned()
     }
 
     /// Whether a usage written `value` is one of `key`.
@@ -513,7 +594,7 @@ pub struct Declared {
 
 /// The built-in kinds.
 pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
-    &[&ConfigKey]
+    &[&ConfigKey, &RouteName, &ControllerAction, &ResourceAction, &Middleware]
 }
 
 /// The kind whose patterns `site` matches.
@@ -590,7 +671,50 @@ pub fn site_at(parsed: &ParsedFile, resolver: &Resolver<'_>, offset: u32) -> Opt
 impl PhpEngine {
     /// The reference context, when the project is a Laravel project.
     fn ref_context(&self) -> Option<RefContext<'_>> {
-        Some(RefContext { engine: self, project: self.laravel()? })
+        Some(RefContext { engine: self, project: self.laravel()?, site: None })
+    }
+
+    /// Where class-like `fqn` is declared.
+    pub(crate) fn class_targets(&self, fqn: &str) -> Vec<Target> {
+        self.declarations_of(NameKind::ClassLike, fqn, Path::new(""), &FileSummary::default())
+    }
+
+    /// The places the project's routes name method `method` of `class` (or
+    /// of a class it extends, or that extends it): the method's string in
+    /// `[Foo::class, 'bar']` and `'Foo@bar'`, the class of an invokable
+    /// controller or of a resource. Empty outside Laravel projects.
+    pub(crate) fn route_action_usages(&self, class: &str, method: &str) -> Vec<Usage> {
+        let Some(routes) = self.laravel_routes() else { return Vec::new() };
+        let resolver = self.resolver();
+        let related = |found: &str| {
+            fqn_eq(NameKind::ClassLike, found, class)
+                || resolver.class_model(found).is_some_and(|model| model.is_subclass_of(class))
+                || resolver.class_model(class).is_some_and(|model| model.is_subclass_of(found))
+        };
+        let mut out: Vec<Usage> = Vec::new();
+        for route in routes.routes() {
+            let RouteAction::Controller { class: found, method: named, at: Some((_, _, range)) } = &route.action else {
+                continue;
+            };
+            if named.eq_ignore_ascii_case(method) && related(found) {
+                let usage = Usage { path: route.path.clone(), range: *range, kind: UsageKind::String };
+                if !out.contains(&usage) {
+                    out.push(usage);
+                }
+            }
+        }
+        out
+    }
+
+    /// The reference context of `site` in the file at `path`.
+    fn site_context(&self, path: &Path, site: &StringSite) -> Option<RefContext<'_>> {
+        let mut cx = self.ref_context()?;
+        let class = site.class.clone().or_else(|| {
+            let routes = self.laravel_routes()?;
+            routes.route_at(path, site.start).and_then(|route| route.action.class()).map(str::to_owned)
+        });
+        cx.site = Some(SiteInfo { path: path.to_path_buf(), start: site.start, class });
+        Some(cx)
     }
 
     /// What the caret at `offset` of `parsed` (the file at `path`) is on.
@@ -602,6 +726,7 @@ impl PhpEngine {
         if let Some(site) = site_at(parsed, &resolver, offset)
             && let Some(kind) = kind_of(&site, &resolver)
         {
+            let cx = self.site_context(path, &site)?;
             let at = (offset.clamp(site.start, site.end) - site.start) as usize;
             let subject = Subject { kind, value: site.value, at, start: site.start, end: site.end, declaration: false };
             return Some((cx, subject));
@@ -679,13 +804,13 @@ impl PhpEngine {
         cancel: &CancellationToken,
     ) -> Option<IdeResult<Vec<Usage>>> {
         let (cx, subject) = self.ref_subject(parsed, path, offset)?;
-        let key = subject.value.clone();
+        let key = if subject.declaration { subject.value.clone() } else { subject.kind.canonical(&cx, &subject.value) };
         let kind = subject.kind;
         let found = self.string_usages(kind, &key, &|value| kind.refers_to(value, &key), cancel);
         Some(found.map(|sites| {
             let mut usages: Vec<Usage> = Vec::new();
             if include_declaration {
-                for target in kind.resolve(&cx, &key, key.len()) {
+                for target in kind.resolve(&cx, &subject.value, subject.value.len()) {
                     usages.push(Usage { path: target.path, range: target.range, kind: UsageKind::Declaration });
                 }
             }
@@ -780,9 +905,12 @@ impl PhpEngine {
                 out.push(StringHighlight { range: target.range, write: true });
             }
         }
+        let key = if subject.declaration { subject.value.clone() } else { subject.kind.canonical(&cx, &subject.value) };
         for site in sites(&parsed, &resolver, &[subject.kind], None) {
-            if subject.kind.refers_to(&site.value, &subject.value)
-                && kind_of(&site, &resolver).is_some_and(|kind| kind.id() == subject.kind.id())
+            if kind_of(&site, &resolver).is_some_and(|kind| kind.id() == subject.kind.id())
+                && self
+                    .site_context(&path, &site)
+                    .is_some_and(|cx| subject.kind.refers_to(&subject.kind.canonical(&cx, &site.value), &key))
             {
                 out.push(StringHighlight { range: lines.range(site.start, site.end), write: false });
             }
@@ -824,6 +952,7 @@ impl PhpEngine {
             }
         }
         candidates.sort();
+        let text = kind.usage_text(key);
         let resolver = self.resolver();
         let library = |path: &Path| self.is_library(path);
         let mut out = Vec::new();
@@ -837,19 +966,23 @@ impl PhpEngine {
             let parsed = match open.iter().find(|document| document.path == path) {
                 Some(document) => self.parse_open(document),
                 None => {
-                    let Ok(text) = std::fs::read_to_string(&path) else { continue };
-                    if !text.contains(key) {
+                    let Ok(source) = std::fs::read_to_string(&path) else { continue };
+                    if !source.contains(text) {
                         continue;
                     }
-                    Arc::new(ParsedFile::parse("usages.php", text))
+                    Arc::new(ParsedFile::parse("usages.php", source))
                 }
             };
-            if !parsed.text().contains(key) {
+            if !parsed.text().contains(text) {
                 continue;
             }
             let lines = Arc::new(parsed.line_index().clone());
             for site in sites(&parsed, &resolver, &[kind], None) {
-                if !keep(&site.value) || !kind.patterns().iter().any(|pattern| pattern.matches(&site, &resolver)) {
+                if !kind.patterns().iter().any(|pattern| pattern.matches(&site, &resolver)) {
+                    continue;
+                }
+                let Some(cx) = self.site_context(&path, &site) else { continue };
+                if !keep(&kind.canonical(&cx, &site.value)) {
                     continue;
                 }
                 let range = lines.range(site.start, site.end);

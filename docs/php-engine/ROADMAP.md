@@ -511,7 +511,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Hook it into completion, goto, references, rename and document highlights. Implement it first for one kind, `configKey` (`config('app.name')`, `Config::get`, `config()->get`), with completion of nested keys segment by segment, goto to the array entry, and find usages. Tests: caret fixtures in partial and complete strings, and a pattern-matching table test.
 
-- [ ] Phase 8.4: Routes: names, actions and middleware
+- [x] Phase 8.4: Routes: names, actions and middleware
       Add the `routeName` kind:
   - `route()`, `to_route()`, `redirect()->route()`, `URL::route`, `Route::has`, `->name()` prefixes in groups
   - completion, goto to the `->name()` call, find usages, rename across route files and callers, and an "undefined route" inspection
