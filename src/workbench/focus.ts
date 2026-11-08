@@ -27,6 +27,23 @@ function focusEditorNow() {
 }
 
 /**
+ * WebKit keeps the DOM caret of an editor that loses focus during a mouse press, as when a
+ * right-click opens the context menu. The editor redraws its lines while unfocused, which moves
+ * that caret to an unrelated line, and focusing the editor again scrolls to it even with
+ * `preventScroll`. Without it, focusing puts the caret at the start of the content without
+ * scrolling and CodeMirror restores its own selection.
+ */
+function dropEditorCaret(e: FocusEvent) {
+  const editor = e.target;
+  if (!(editor instanceof HTMLElement) || editor.getAttribute("contenteditable") !== "true") return;
+  // The window lost focus and keeps the editor focused for its return.
+  if (document.activeElement === editor) return;
+  if (e.relatedTarget instanceof Node && editor.contains(e.relatedTarget)) return;
+  const selection = document.getSelection();
+  if (selection?.anchorNode && editor.contains(selection.anchorNode)) selection.removeAllRanges();
+}
+
+/**
  * Tracks which workbench part holds focus and publishes `toolWindowFocus`,
  * `activeToolWindow` and `editorAreaFocus`. Returns an uninstaller.
  */
@@ -38,6 +55,7 @@ export function installFocusTracking(onToolWindowFocus: (id: string | null) => v
     setContext("editorAreaFocus", !!el?.closest?.(EDITOR_AREA_SELECTOR));
   };
   const onFocusOut = (e: FocusEvent) => {
+    dropEditorCaret(e);
     if (e.relatedTarget) return;
     // Focus left to nowhere (window blur keeps document.activeElement).
     queueMicrotask(() => {

@@ -38,6 +38,23 @@ describe("focus after popups", () => {
     dispose();
   });
 
+  it("drops the editor's caret when focus moves to a menu, so focusing the editor again cannot scroll to it", () => {
+    document.body.innerHTML = `<div class="cm-content" contenteditable="true" tabindex="0">first line</div><button id="other">x</button>`;
+    const editor = document.querySelector<HTMLElement>(".cm-content")!;
+    const dispose = installFocusTracking(() => {});
+    editor.focus();
+    document.getSelection()!.collapse(editor.firstChild, 3);
+    // WebKit keeps the caret during a mouse press; jsdom moves the selection on focus, so check
+    // what is left once the editor has lost focus.
+    let caretLeft: Node | null = null;
+    const probe = () => (caretLeft = document.getSelection()!.anchorNode);
+    document.addEventListener("focusout", probe);
+    document.getElementById("other")!.focus();
+    document.removeEventListener("focusout", probe);
+    expect(caretLeft).toBeNull();
+    dispose();
+  });
+
   it("leaves focus alone when the popup handed it to another component", () => {
     vi.useFakeTimers();
     setup();
