@@ -58,17 +58,19 @@ static JAVA_PROBES: Mutex<BTreeMap<PathBuf, JavaProbe>> = Mutex::new(BTreeMap::n
 pub(crate) fn java_runs(java: &Path) -> bool {
     let Ok(metadata) = java.metadata() else { return false };
     let Ok(modified) = metadata.modified() else { return false };
-    let mut probes = JAVA_PROBES.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(probe) = probes.get(java)
-        && probe.modified == modified
-        && probe.len == metadata.len()
-        && probe.permissions == metadata.permissions()
-        && probe.at.elapsed() < RESCAN_AFTER
     {
-        return probe.runnable;
+        let probes = JAVA_PROBES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(probe) = probes.get(java)
+            && probe.modified == modified
+            && probe.len == metadata.len()
+            && probe.permissions == metadata.permissions()
+            && probe.at.elapsed() < RESCAN_AFTER
+        {
+            return probe.runnable;
+        }
     }
     let runnable = crate::exec::query(java, &["-version"], Duration::from_secs(5)).is_some();
-    probes.insert(
+    JAVA_PROBES.lock().unwrap_or_else(|e| e.into_inner()).insert(
         java.to_path_buf(),
         JavaProbe { modified, len: metadata.len(), permissions: metadata.permissions(), at: Instant::now(), runnable },
     );
@@ -229,11 +231,14 @@ pub fn installed_jdks() -> Arc<[Jdk]> {
 /// the list is rescanned (at most every [`RESCAN_AFTER`]), so a JDK installed
 /// after startup is picked up when the server is restarted.
 pub fn jdtls_jdks(min_java: u32, data_dir: &Path) -> Arc<[Jdk]> {
-    let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
-    let installed = match &*slot {
-        Some(s) if jdtls_runtime(&s.jdks, min_java).is_some() || s.at.elapsed() < RESCAN_AFTER => s.jdks.clone(),
-        _ => rescan(&mut slot),
+    let (installed, expired) = {
+        let mut slot = JDKS.lock().unwrap_or_else(|e| e.into_inner());
+        match &*slot {
+            Some(s) => (s.jdks.clone(), s.at.elapsed() >= RESCAN_AFTER),
+            None => (rescan(&mut slot), false),
+        }
     };
+    let installed = if expired && jdtls_runtime(&installed, min_java).is_none() { rescan_jdks() } else { installed };
     runtime_candidates(&installed, data_dir).into()
 }
 
@@ -478,14 +483,22 @@ pub fn configure_jdtls(
     set_jvm_property(&mut cfg.args, ZIP64_LENIENCY);
     let managed = language_server_runtimes_dir(data_dir);
     let managed = dunce::canonicalize(&managed).unwrap_or(managed);
-    let project_jdk = project_jdk.filter(|jdk| project_jdk_is_usable(jdk));
+    let mut excluded_jdks = Vec::new();
     let project_jdks: Vec<_> = project_jdk
         .into_iter()
         .chain(jdks)
         .filter(|jdk| !jdk.home.starts_with(&managed) || project_jdk == Some(*jdk))
-        .filter(|jdk| project_jdk_is_usable(jdk))
+        .filter(|jdk| {
+            if project_jdk_is_usable(jdk) {
+                true
+            } else {
+                excluded_jdks.push(jdk.home.clone());
+                false
+            }
+        })
         .cloned()
         .collect();
+    let project_jdk = project_jdk.filter(|jdk| project_jdks.contains(jdk));
     let mut all: Vec<Jdk> = Vec::new();
     for j in project_jdk.into_iter().chain(jdks).chain(server_jdk) {
         if !all.contains(j) {
@@ -519,9 +532,11 @@ pub fn configure_jdtls(
             }
         }
     }
-    if generated_workspace {
+    if generated_workspace && !excluded_jdks.is_empty() {
         // JDT retains VM installs in its workspace even after they leave the runtime list.
-        let key = text_key(&json!({ "server": cfg.env.get("JAVA_HOME"), "runtimes": &runtimes }).to_string());
+        excluded_jdks.sort();
+        excluded_jdks.dedup();
+        let key = text_key(&json!(excluded_jdks).to_string());
         let data = cfg.args.iter().position(|a| a == "-data").unwrap() + 1;
         cfg.args[data].push_str(&format!("-runtimes-{key}"));
     }
@@ -899,26 +914,59 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn changed_runtimes_do_not_reuse_cached_vm_installs() {
+    fn slow_java_probe_does_not_hold_the_cache_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk = test_jdk(tmp.path(), 25, "slow25");
+        let ready = tmp.path().join("ready");
+        std::fs::write(
+            java_executable(&jdk.home),
+            format!("#!/bin/sh\ntouch '{}'\nexec /bin/sleep 2\n", ready.display()),
+        )
+        .unwrap();
+        std::thread::scope(|scope| {
+            let probe = scope.spawn(|| java_runs(&java_executable(&jdk.home)));
+            let started = Instant::now();
+            while !ready.exists() && started.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(ready.exists(), "the probe must start");
+            assert!(
+                JAVA_PROBES.try_lock().is_ok(),
+                "a running java -version must not lock out cached or unrelated probes"
+            );
+            assert!(probe.join().unwrap());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_excluded_jdks_change_the_generated_workspace() {
         let tmp = tempfile::tempdir().unwrap();
         let project = test_jdk(tmp.path(), 8, "project8");
         let server = test_jdk(tmp.path(), 25, "server25");
-        let workspace = |jdks: &[Jdk], custom: bool| {
+        let other_server = test_jdk(tmp.path(), 26, "server26");
+        let workspace = |jdks: &[Jdk], server: &Jdk, custom: bool| {
             let mut cfg: LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
             if custom {
                 cfg.args.extend(["-data".into(), "/own/workspace".into()]);
             }
-            configure_jdtls(&mut cfg, tmp.path(), tmp.path(), jdks, Some(&project), Some(&server), 25, &[], None);
+            configure_jdtls(&mut cfg, tmp.path(), tmp.path(), jdks, Some(&project), Some(server), 25, &[], None);
             cfg.args.windows(2).find(|a| a[0] == "-data").unwrap()[1].clone()
         };
         let installed = [project.clone(), server.clone()];
-        let before = workspace(&installed, false);
-        assert_eq!(before, workspace(&installed, false));
+        let before = workspace(&installed, &server, false);
+        let original = tmp.path().join("lsp/jdtls").join(path_key(tmp.path()));
+        assert_eq!(before, original.to_string_lossy(), "working JDKs retain the pre-existing workspace");
+        assert_eq!(before, workspace(&[], &other_server, false), "installing or removing working JDKs keeps the path");
         std::fs::write(java_executable(&project.home), "#!/bin/sh\nexit 126\n").unwrap();
-        let after = workspace(&installed, false);
+        let after = workspace(&installed, &server, false);
         assert_ne!(before, after, "the workspace holding the now-invalid JDK must not be reused");
-        assert_eq!(after, workspace(std::slice::from_ref(&server), false));
-        assert_eq!(workspace(&installed, true), "/own/workspace");
+        assert_eq!(after, workspace(&installed, &server, false));
+        assert_eq!(after, workspace(std::slice::from_ref(&other_server), &other_server, false));
+        assert_eq!(after, workspace(&[server.clone(), project.clone(), project.clone()], &server, false));
+        assert_eq!(workspace(&installed, &server, true), "/own/workspace");
+        write_test_java(&project.home);
+        assert_eq!(before, workspace(&installed, &server, false), "repairing the JDK restores the original path");
     }
 
     #[test]
