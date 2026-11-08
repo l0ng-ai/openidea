@@ -10,7 +10,7 @@ use ide_core::CancellationToken;
 use serde::{Deserialize, Serialize};
 
 pub use self::layout::VmLayout;
-use self::mirrors::Mirrors;
+use self::mirrors::{Mirrors, injected_by_table};
 use crate::error::HeapError;
 use crate::graph::{ClassInfo, HeapGraph};
 use crate::hprof::BasicType;
@@ -27,8 +27,9 @@ const GAP_TRUST_TENTHS: usize = 9;
 ///
 /// Class objects (mirrors) are approximate in every case: HotSpot leaves the fields it injects
 /// into `java.lang.Class` out of the dump, so their layout size is short by a fixed amount per
-/// mirror. With a histogram that amount is fitted to its `java.lang.Class` row; without one it is
-/// 0, because it differs between JDK versions.
+/// mirror. With a histogram that amount is fitted to its `java.lang.Class` row; otherwise (or when
+/// the fit is rejected) it comes from a table measured per JDK and reference size, within a few
+/// bytes per mirror, or is 32 when the JDK is unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SizeSource {
@@ -95,15 +96,16 @@ impl ShallowModel {
 
         let class_slot = graph.class_slot as usize;
         let mirrors = Mirrors::collect(graph, by_layout[class_slot], layout);
-        let mut injected = 0;
+        let mut fitted = None;
         if let Some(rows) = histogram
             && !ambiguous[class_slot]
         {
             let mut class_rows = rows.iter().filter(|row| row.name == names[class_slot]);
             if let (Some(row), None) = (class_rows.next(), class_rows.next()) {
-                injected = mirrors.fit_injected(graph, layout, by_layout[class_slot], row, cancel)?;
+                fitted = mirrors.fit_injected(graph, layout, by_layout[class_slot], row, cancel)?;
             }
         }
+        let injected = fitted.unwrap_or_else(|| injected_by_table(layout));
 
         let mut types: Vec<TypeSize> = classes
             .iter()

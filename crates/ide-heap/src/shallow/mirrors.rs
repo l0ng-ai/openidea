@@ -14,6 +14,33 @@ const MAX_INJECTED: u64 = 128;
 /// for something else than the mirrors of this dump.
 const MAX_FIT_ERROR_PERCENT: u128 = 5;
 
+/// Bytes HotSpot injects into every mirror (`klass`, `array_klass`, `oop_size`,
+/// `static_oop_field_count`, and oops such as `protection_domain`) without listing them in the class
+/// dump, as measured by comparing the dump with `GC.class_histogram` on JDK 8, 11, 21, 23 and 25,
+/// with and without compressed oops. Each X is the best fit in steps of 4; the real value is
+/// within a few bytes (statics padding). `None` for a reference size the table does not cover.
+pub(super) fn injected_mirror_bytes(java_major: u32, ref_size: u8) -> Option<u64> {
+    match (ref_size, java_major) {
+        // 8, 11, 21 and 23 measure 36; 25 is the first JDK that shows 28.
+        (4, ..=24) => Some(36),
+        (4, 25..) => Some(28),
+        // 8, 11 and 21 measure 44; 23 is the first to show 40 and 25 the first to show 32.
+        (8, ..=22) => Some(44),
+        (8, 23..=24) => Some(40),
+        (8, 25..) => Some(32),
+        _ => None,
+    }
+}
+
+/// Used when the JVM is unknown (a dump without `VM.flags`): the midpoint of the measured values
+/// with 4-byte references, 36 and 28.
+const UNKNOWN_JVM_INJECTED: u64 = 32;
+
+/// The injected bytes per mirror the layout implies, without looking at a histogram.
+pub(super) fn injected_by_table(layout: VmLayout) -> u64 {
+    layout.java_major.and_then(|major| injected_mirror_bytes(major, layout.ref_size)).unwrap_or(UNKNOWN_JVM_INJECTED)
+}
+
 pub(super) struct Mirrors {
     /// `(node, size before alignment)` of every class dump that is an object of the graph, by node.
     dumped: Vec<(u32, u64)>,
@@ -42,8 +69,8 @@ impl Mirrors {
     }
 
     /// The injected bytes per mirror (a multiple of 4, at most 128) that make the mirrors of this
-    /// dump add up to `class_row`'s share of the histogram, or 0 when no value gets within 5%: a
-    /// histogram of other mirrors than these (a different JVM stop) must not skew the sizes.
+    /// dump add up to `class_row`'s share of the histogram, or `None` when no value gets within 5%:
+    /// a histogram of other mirrors than these (a different JVM stop) must not skew the sizes.
     ///
     /// The fit compares averages, since the histogram also counts mirrors the dump has no class
     /// dump for (primitive types, classes only archived by CDS). Every mirror still gets the same
@@ -55,16 +82,16 @@ impl Mirrors {
         instance: u64,
         class_row: &HistogramEntry,
         cancel: &CancellationToken,
-    ) -> Result<u64, HeapError> {
+    ) -> Result<Option<u64>, HeapError> {
         if class_row.instances == 0 {
-            return Ok(0);
+            return Ok(None);
         }
         // Mirrors without a class dump (primitive types) have no statics.
         let class_typed = count_slot(graph, graph.class_slot, cancel)?;
         let bare = class_typed.saturating_sub(self.dumped.len() as u64);
         let mirrors = self.dumped.len() as u64 + bare;
         if mirrors == 0 {
-            return Ok(0);
+            return Ok(None);
         }
         let target = u128::from(class_row.bytes) * u128::from(mirrors) / u128::from(class_row.instances);
         let total = |injected: u64| -> u128 {
@@ -76,7 +103,7 @@ impl Mirrors {
             .map(|injected| (injected, total(injected).abs_diff(target)))
             .min_by_key(|&(injected, error)| (error, injected))
             .unwrap_or((0, u128::MAX));
-        Ok(if error * 100 <= target * MAX_FIT_ERROR_PERCENT { best } else { 0 })
+        Ok((error * 100 <= target * MAX_FIT_ERROR_PERCENT).then_some(best))
     }
 }
 

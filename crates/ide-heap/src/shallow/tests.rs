@@ -72,31 +72,39 @@ const J25_COMPACT: &str = "-XX:MaxHeapSize=1073741824 -XX:+UseCompressedOops -XX
 
 #[test]
 fn layout_from_flags() {
+    // The layout of a JVM of `major` with default flags otherwise.
+    let jvm = |major: u32, layout: VmLayout| VmLayout { java_major: Some(major), ..layout };
     let legacy = VmLayout { legacy_array_base: true, ..VmLayout::DEFAULT };
-    assert_eq!(flags(J8_11_1G, 8), legacy);
-    assert_eq!(flags(J8_11_1G, 11), legacy);
-    assert_eq!(flags(J21_25_1G, 21), legacy);
-    assert_eq!(flags(J21_25_1G, 25), VmLayout::DEFAULT);
-    assert_eq!(flags(J25_COMPACT, 25), VmLayout { header: 8, length_offset: 8, ..VmLayout::DEFAULT });
-    assert_eq!(flags(&format!("{J21_25_1G} -XX:+UseG1GC"), 21), legacy);
-    assert_eq!(flags(&format!("{J21_25_1G} -XX:ObjectAlignmentInBytes=16"), 21), VmLayout { alignment: 16, ..legacy });
+    assert_eq!(flags(J8_11_1G, 8), jvm(8, legacy));
+    assert_eq!(flags(J8_11_1G, 11), jvm(11, legacy));
+    assert_eq!(flags(J21_25_1G, 21), jvm(21, legacy));
+    assert_eq!(flags(J21_25_1G, 25), jvm(25, VmLayout::DEFAULT));
+    assert_eq!(flags(J25_COMPACT, 25), jvm(25, VmLayout { header: 8, length_offset: 8, ..VmLayout::DEFAULT }));
+    assert_eq!(flags(&format!("{J21_25_1G} -XX:+UseG1GC"), 21), jvm(21, legacy));
+    assert_eq!(
+        flags(&format!("{J21_25_1G} -XX:ObjectAlignmentInBytes=16"), 21),
+        jvm(21, VmLayout { alignment: 16, ..legacy })
+    );
 }
 
 #[test]
 fn heaps_too_big_for_compressed_oops_print_no_flag() {
-    let wide_legacy = VmLayout { header: 16, ref_size: 8, length_offset: 16, legacy_array_base: true, alignment: 8 };
-    assert_eq!(flags(J8_11_40G, 8), wide_legacy);
-    assert_eq!(flags(J8_11_40G, 11), wide_legacy);
+    let jvm = |major: u32, layout: VmLayout| VmLayout { java_major: Some(major), ..layout };
+    let wide_legacy =
+        VmLayout { header: 16, ref_size: 8, length_offset: 16, legacy_array_base: true, ..VmLayout::DEFAULT };
+    assert_eq!(flags(J8_11_40G, 8), jvm(8, wide_legacy));
+    assert_eq!(flags(J8_11_40G, 11), jvm(11, wide_legacy));
     // From JDK 15 compressed class pointers stay on without compressed oops.
-    assert_eq!(flags(J21_25_40G, 21), VmLayout { ref_size: 8, legacy_array_base: true, ..VmLayout::DEFAULT });
-    assert_eq!(flags(J21_25_40G, 25), VmLayout { ref_size: 8, ..VmLayout::DEFAULT });
+    let wide = VmLayout { ref_size: 8, ..VmLayout::DEFAULT };
+    assert_eq!(flags(J21_25_40G, 21), jvm(21, VmLayout { legacy_array_base: true, ..wide }));
+    assert_eq!(flags(J21_25_40G, 25), jvm(25, wide));
     assert_eq!(flags(J21_40G_OFF, 21), flags(J21_25_40G, 21));
 }
 
 #[test]
 fn layout_flag_edge_cases() {
     let legacy = VmLayout { legacy_array_base: true, ..VmLayout::DEFAULT };
-    // No VM.flags (an external dump): the default layout.
+    // No VM.flags (an external dump): the default layout, of an unknown JVM.
     assert_eq!(flags("", 25), VmLayout::DEFAULT);
     assert_eq!(flags("", 21), legacy);
     assert_eq!(flags("-Xmx1g --add-opens=x -XX:Foo", 25), VmLayout::DEFAULT);
@@ -294,13 +302,15 @@ fn class_objects_use_the_layout_even_when_the_histogram_names_them() {
     let by_layout = model(&g, VmLayout::DEFAULT, None);
     assert_eq!(by_histogram.source, SizeSource::Jvm);
     for m in [&by_histogram, &by_layout] {
-        // java.lang.Class has 12 bytes of fields: 24; Statics adds two references.
-        assert_eq!(size_at(&g, m, 0x100), 24, "java.lang.Class itself");
-        assert_eq!(size_at(&g, m, 0x200), 32, "two reference statics");
-        assert_eq!(size_at(&g, m, 0x300), 24, "no statics");
+        // java.lang.Class has 12 bytes of fields: 24; Statics adds two references; every mirror
+        // gets the 32 bytes assumed for an unknown JVM (the histogram row does not fit).
+        assert_eq!(size_at(&g, m, 0x100), 56, "java.lang.Class itself");
+        assert_eq!(size_at(&g, m, 0x200), 64, "two reference statics");
+        assert_eq!(size_at(&g, m, 0x300), 56, "no statics");
     }
+    // 8-byte references: 40 for java.lang.Class, 16 for the statics, 44 injected (JDK 21), aligned.
     let wide = model(&g, flags("-XX:-UseCompressedOops", 21), None);
-    assert_eq!(size_at(&g, &wide, 0x200), 56, "references are 8 bytes");
+    assert_eq!(size_at(&g, &wide, 0x200), 104);
 }
 
 #[test]
@@ -309,7 +319,7 @@ fn primitive_statics_add_to_the_class_object() {
     let statics = g.classes.iter().position(|c| c.name == "Statics").unwrap();
     g.classes[statics].static_bytes = 12;
     let m = model(&g, VmLayout::DEFAULT, None);
-    assert_eq!(size_at(&g, &m, 0x200), 48, "24 + 12 + 2 × 4 = 44, aligned");
+    assert_eq!(size_at(&g, &m, 0x200), 80, "24 + 12 + 2 × 4 + 32 injected = 76, aligned");
 }
 
 #[test]
@@ -318,7 +328,7 @@ fn a_dump_without_java_lang_class_sizes_class_objects_as_empty_mirrors() {
     w.string(1, "Statics").load_class(0x200, 1).class(0x200, 0, &[], &[(2, 0), (2, 0), (2, 0)]);
     let g = build_graph(&w.finish(), &Store::Ram, &no_progress, &CancellationToken::new()).unwrap();
     let m = model(&g, VmLayout::DEFAULT, None);
-    assert_eq!(size_at(&g, &m, 0x200), 32, "16 + 3 × 4, aligned");
+    assert_eq!(size_at(&g, &m, 0x200), 64, "16 + 3 × 4 + 32 injected = 60, aligned");
 }
 
 fn one_class_two_instances(stride: u64) -> (HeapGraph, ShallowModel) {
@@ -470,31 +480,93 @@ fn the_fit_tolerates_mirrors_the_dump_has_no_class_for() {
     assert_eq!(got, expected_mirrors(&MIRROR_STATICS, 28));
 }
 
+fn mirror_sizes(g: &HeapGraph, addrs: &[u64], layout: VmLayout, histogram: Option<&[HistogramEntry]>) -> Vec<u64> {
+    let m = model(g, layout, histogram);
+    addrs.iter().map(|&a| size_at(g, &m, a)).collect()
+}
+
 #[test]
-fn a_histogram_row_that_cannot_describe_these_mirrors_adds_nothing() {
+fn a_histogram_row_that_cannot_describe_these_mirrors_falls_back_to_the_table() {
     let (g, addrs) = mirror_heap(&MIRROR_STATICS);
-    let plain = expected_mirrors(&MIRROR_STATICS, 0);
-    for row in [
+    let rows = [
         entry("java.lang.Class", 9, 9 * 5000),
         entry("java.lang.Class", 9, 9),
         entry("java.lang.Class", 0, 0),
         entry("Something.Else", 9, 9 * 100),
-    ] {
-        let m = model(&g, VmLayout::DEFAULT, Some(std::slice::from_ref(&row)));
-        let got: Vec<_> = addrs.iter().map(|&a| size_at(&g, &m, a)).collect();
-        assert_eq!(got, plain, "{row:?}");
+    ];
+    for row in &rows {
+        let one = std::slice::from_ref(row);
+        // Unknown JVM: the documented 32; JDK 11 with 4-byte references: 36.
+        assert_eq!(
+            mirror_sizes(&g, &addrs, VmLayout::DEFAULT, Some(one)),
+            expected_mirrors(&MIRROR_STATICS, 32),
+            "{row:?}"
+        );
+        assert_eq!(
+            mirror_sizes(&g, &addrs, flags(J8_11_1G, 11), Some(one)),
+            expected_mirrors(&MIRROR_STATICS, 36),
+            "{row:?}"
+        );
     }
     let twice = [entry("java.lang.Class", 9, 9 * 60), entry("java.lang.Class", 9, 9 * 60)];
-    let m = model(&g, VmLayout::DEFAULT, Some(&twice));
-    assert_eq!(size_at(&g, &m, addrs[0]), plain[0], "two rows of the name cannot be told apart");
+    assert_eq!(mirror_sizes(&g, &addrs, flags(J8_11_1G, 11), Some(&twice)), expected_mirrors(&MIRROR_STATICS, 36));
 }
 
 #[test]
-fn without_a_histogram_class_objects_get_no_injected_bytes() {
+fn an_accepted_fit_beats_the_table() {
     let (g, addrs) = mirror_heap(&MIRROR_STATICS);
-    let m = model(&g, VmLayout::DEFAULT, None);
-    let got: Vec<_> = addrs.iter().map(|&a| size_at(&g, &m, a)).collect();
-    assert_eq!(got, expected_mirrors(&MIRROR_STATICS, 0));
+    let total = expected_mirrors(&MIRROR_STATICS, 20).iter().sum::<u64>() + 48;
+    let histogram = [entry("java.lang.Class", 9, total)];
+    // JDK 11's table says 36; the histogram says 20.
+    assert_eq!(mirror_sizes(&g, &addrs, flags(J8_11_1G, 11), Some(&histogram)), expected_mirrors(&MIRROR_STATICS, 20));
+}
+
+#[test]
+fn injected_mirror_bytes_table() {
+    // (JDK, 4-byte references, 8-byte references): the measured cells, then the JDKs between.
+    for (major, narrow, wide) in
+        [(8, 36, 44), (11, 36, 44), (21, 36, 44), (22, 36, 44), (23, 36, 40), (24, 36, 40), (25, 28, 32), (26, 28, 32)]
+    {
+        assert_eq!(mirrors::injected_mirror_bytes(major, 4), Some(narrow), "JDK {major}, compressed oops");
+        assert_eq!(mirrors::injected_mirror_bytes(major, 8), Some(wide), "JDK {major}, 8-byte references");
+    }
+    assert_eq!(mirrors::injected_mirror_bytes(21, 2), None);
+}
+
+#[test]
+fn without_a_histogram_class_objects_get_the_injected_bytes_of_their_jvm() {
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    // The class dump of the fixture has 4-byte references; the layout under test decides the table
+    // cell, so use layouts whose reference size matches it.
+    for (layout, injected) in [
+        (flags(J8_11_1G, 8), 36),
+        (flags(J8_11_1G, 11), 36),
+        (flags(J21_25_1G, 21), 36),
+        (flags(J21_25_1G, 23), 36),
+        (flags(J21_25_1G, 25), 28),
+        (flags(J25_COMPACT, 25), 28),
+    ] {
+        assert_eq!(mirror_sizes(&g, &addrs, layout, None), expected_mirrors(&MIRROR_STATICS, injected), "{layout:?}");
+    }
+}
+
+#[test]
+fn eight_byte_references_use_their_own_cells() {
+    let g = build_graph(&class_dump(), &Store::Ram, &no_progress, &CancellationToken::new()).unwrap();
+    // java.lang.Class = 12 + 3 × 8 = 36 → 40; Plain has no statics: 40 + injected, aligned.
+    for (major, injected) in [(8, 44), (21, 44), (23, 40), (25, 32)] {
+        let m = model(&g, flags(J21_25_40G, major), None);
+        assert_eq!(size_at(&g, &m, 0x300), (40u64 + injected).next_multiple_of(8), "JDK {major}");
+    }
+}
+
+#[test]
+fn an_unknown_jvm_uses_the_midpoint_of_the_compressed_oop_cells() {
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    assert_eq!(mirror_sizes(&g, &addrs, VmLayout::DEFAULT, None), expected_mirrors(&MIRROR_STATICS, 32));
+    // Flags without any -XX: option say nothing about the JVM either.
+    assert_eq!(mirror_sizes(&g, &addrs, flags("", 21), None), expected_mirrors(&MIRROR_STATICS, 32));
+    assert_eq!(VmLayout::DEFAULT.java_major, None);
 }
 
 #[test]

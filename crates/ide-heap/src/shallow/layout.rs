@@ -16,17 +16,26 @@ pub struct VmLayout {
     /// JDKs at the next boundary of the element size.
     pub legacy_array_base: bool,
     pub alignment: u16,
+    /// The JDK the flags came from; `None` when nothing is known about the JVM.
+    pub java_major: Option<u32>,
 }
 
 impl VmLayout {
-    pub const DEFAULT: VmLayout =
-        VmLayout { header: 12, ref_size: 4, length_offset: 12, legacy_array_base: false, alignment: 8 };
+    pub const DEFAULT: VmLayout = VmLayout {
+        header: 12,
+        ref_size: 4,
+        length_offset: 12,
+        legacy_array_base: false,
+        alignment: 8,
+        java_major: None,
+    };
 
     /// `flags` is the output of `VM.flags`, which lists the flags set on this run. Compressed oops
     /// are off by default and only switched on by ergonomics, so `-XX:+UseCompressedOops` is
     /// printed exactly when references take 4 bytes; a heap too big for them prints no such flag.
     /// Before JDK 15 compressed class pointers follow the same rule. Flags without any `-XX:`
-    /// option (an external dump) give [`Self::DEFAULT`] with the array base of `java_major`.
+    /// option (an external dump) give [`Self::DEFAULT`] with the array base of `java_major` and an
+    /// unknown JDK, since the reference size is a guess.
     /// An `ObjectAlignmentInBytes` that is not a power of two in `8..=256` is ignored.
     pub fn from_vm_flags(flags: &str, java_major: u32) -> Self {
         let legacy_array_base = java_major <= 21;
@@ -58,6 +67,7 @@ impl VmLayout {
             length_offset,
             legacy_array_base,
             alignment,
+            java_major: Some(java_major),
         }
     }
 
