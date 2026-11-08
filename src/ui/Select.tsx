@@ -51,25 +51,35 @@ function containsOrFuzzy(haystack: string, needle: string): boolean {
   return false;
 }
 
-/** Dropdown select with a listbox popup (↑↓ Enter Esc, type-ahead). */
-export function Select<V extends string = string>({
+export interface SelectListboxProps<V extends string = string> {
+  value: V | null;
+  options: readonly SelectOption<V>[];
+  /** Called with the chosen option; closing, if any, is the caller's. */
+  onChoose: (value: V) => void;
+  searchable?: boolean;
+  onPreview?: (value: V | null) => void;
+  /** Extra class for the scrolling list, e.g. to set its height. */
+  listClassName?: string;
+  "aria-label"?: string;
+}
+
+/** The searchable listbox of a {@link Select}, for a popup that shows it without a trigger button. */
+export function SelectListbox<V extends string = string>({
   value,
   options,
-  onChange,
-  placeholder = "Select…",
-  disabled,
-  variant = "framed",
-  className,
-  renderValue,
+  onChoose,
   searchable = false,
   onPreview,
+  listClassName,
   ...aria
-}: SelectProps<V>) {
+}: SelectListboxProps<V>) {
   const given = useGivenTx();
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const current = options.find((o) => !o.section && o.value === value);
-  const [active, setActive] = useState(0);
+  const [active, setActive] = useState(() =>
+    Math.max(
+      0,
+      options.findIndex((o) => !o.section && !o.disabled && o.value === value),
+    ),
+  );
   const [query, setQuery] = useState("");
   const typeAhead = useRef({ text: "", at: -Infinity });
   const isSection = (o: SelectOption<V>) => !!o.section;
@@ -117,29 +127,25 @@ export function Select<V extends string = string>({
   const activeIndex =
     filtered[active] && !unavailable(filtered[active]!) ? active : filtered.findIndex((o) => !unavailable(o));
 
-  const previewed = open ? (filtered[activeIndex]?.value ?? null) : null;
+  const previewed = filtered[activeIndex]?.value ?? null;
   const lastPreview = useRef<V | null>(null);
   useEffect(() => {
     if (previewed === lastPreview.current) return;
     lastPreview.current = previewed;
     onPreview?.(previewed);
   }, [previewed, onPreview]);
-
-  const openPopup = () => {
-    setQuery("");
-    setActive(
-      Math.max(
-        0,
-        options.findIndex((o) => !unavailable(o) && o.value === value),
-      ),
-    );
-    setOpen(true);
-  };
+  // The list is only mounted while open: closing it ends the preview.
+  useEffect(
+    () => () => {
+      if (lastPreview.current !== null) onPreview?.(null);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
 
   const choose = (o: SelectOption<V> | undefined) => {
     if (!o || unavailable(o)) return;
-    onChange(o.value);
-    setOpen(false);
+    onChoose(o.value);
   };
 
   const onPopupKey = (e: KeyboardEvent) => {
@@ -150,7 +156,12 @@ export function Select<V extends string = string>({
       return;
     }
     if (searching && !["ArrowDown", "ArrowUp"].includes(e.key)) return;
-    const next = listNavigate(e.key, { items: filtered, active: activeIndex, isSection: unavailable, wrap: true });
+    const next = listNavigate(e.key, {
+      items: filtered,
+      active: activeIndex,
+      isSection: unavailable,
+      wrap: true,
+    });
     if (next !== null) {
       e.preventDefault();
       setActive(next);
@@ -173,6 +184,95 @@ export function Select<V extends string = string>({
       }
     }
   };
+
+  return (
+    <div
+      tabIndex={-1}
+      data-autofocus={searchable ? undefined : true}
+      onKeyDown={onPopupKey}
+      className={styles.popupInner}
+    >
+      {searchable && (
+        <div className={styles.searchWrap}>
+          <SearchField
+            value={query}
+            autoFocus
+            data-autofocus
+            placeholder={tx("Search…")}
+            onChange={(v) => {
+              setQuery(v);
+              setActive(-1);
+            }}
+            size="normal"
+            variant="framed"
+            className={styles.search}
+          />
+        </div>
+      )}
+      {/* Virtualised rows are absolutely positioned; this sizes the popup to the widest label. */}
+      <div aria-hidden className={styles.sizer}>
+        {options.map((o) => (
+          <div key={`${o.section ? "section" : "option"}:${o.value}`} className={styles.sizerRow}>
+            <span className={styles.check} />
+            {o.icon && <Icon name={o.icon} size={14} />}
+            <span>{given(o.label)}</span>
+            {o.detail && <span className={styles.sizerDetail}>{given(o.detail)}</span>}
+          </div>
+        ))}
+      </div>
+      <List
+        items={filtered}
+        getKey={(o) => `${o.section ? "section" : "option"}:${o.value}`}
+        isSection={isSection}
+        renderSection={(o) => <span className={styles.disabled}>{given(o.label)}</span>}
+        activeIndex={activeIndex}
+        onActiveChange={(i) => {
+          if (!unavailable(filtered[i]!)) setActive(i);
+        }}
+        onActivate={(o) => choose(o)}
+        focusable={false}
+        hoverSelects
+        rowHeight={24}
+        aria-label={given(aria["aria-label"])}
+        className={clsx(styles.list, listClassName)}
+        renderItem={(o) => (
+          <span className={clsx(styles.option, o.disabled && styles.disabled)} aria-disabled={o.disabled || undefined}>
+            <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
+            {o.icon && <Icon name={o.icon} size={14} />}
+            <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={given(o.label)}>
+              {given(o.label)}
+            </span>
+            {o.detail && (
+              <span className={styles.detail} title={o.detail}>
+                {given(o.detail)}
+              </span>
+            )}
+          </span>
+        )}
+      />
+    </div>
+  );
+}
+
+/** Dropdown select with a listbox popup (↑↓ Enter Esc, type-ahead). */
+export function Select<V extends string = string>({
+  value,
+  options,
+  onChange,
+  placeholder = "Select…",
+  disabled,
+  variant = "framed",
+  className,
+  renderValue,
+  searchable = false,
+  onPreview,
+  ...aria
+}: SelectProps<V>) {
+  const given = useGivenTx();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const current = options.find((o) => !o.section && o.value === value);
+  const openPopup = () => setOpen(true);
 
   return (
     <>
@@ -213,73 +313,17 @@ export function Select<V extends string = string>({
         role="presentation"
         className={styles.popup}
       >
-        <div
-          tabIndex={-1}
-          data-autofocus={searchable ? undefined : true}
-          onKeyDown={onPopupKey}
-          className={styles.popupInner}
-        >
-          {searchable && (
-            <div className={styles.searchWrap}>
-              <SearchField
-                value={query}
-                autoFocus
-                placeholder={tx("Search…")}
-                onChange={(v) => {
-                  setQuery(v);
-                  setActive(-1);
-                }}
-                size="normal"
-                variant="framed"
-                className={styles.search}
-              />
-            </div>
-          )}
-          {/* Virtualised rows are absolutely positioned; this sizes the popup to the widest label. */}
-          <div aria-hidden className={styles.sizer}>
-            {options.map((o) => (
-              <div key={`${o.section ? "section" : "option"}:${o.value}`} className={styles.sizerRow}>
-                <span className={styles.check} />
-                {o.icon && <Icon name={o.icon} size={14} />}
-                <span>{given(o.label)}</span>
-                {o.detail && <span className={styles.sizerDetail}>{given(o.detail)}</span>}
-              </div>
-            ))}
-          </div>
-          <List
-            items={filtered}
-            getKey={(o) => `${o.section ? "section" : "option"}:${o.value}`}
-            isSection={isSection}
-            renderSection={(o) => <span className={styles.disabled}>{given(o.label)}</span>}
-            activeIndex={activeIndex}
-            onActiveChange={(i) => {
-              if (!unavailable(filtered[i]!)) setActive(i);
-            }}
-            onActivate={(o) => choose(o)}
-            focusable={false}
-            hoverSelects
-            rowHeight={24}
-            aria-label={given(aria["aria-label"])}
-            className={styles.list}
-            renderItem={(o) => (
-              <span
-                className={clsx(styles.option, o.disabled && styles.disabled)}
-                aria-disabled={o.disabled || undefined}
-              >
-                <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
-                {o.icon && <Icon name={o.icon} size={14} />}
-                <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={given(o.label)}>
-                  {given(o.label)}
-                </span>
-                {o.detail && (
-                  <span className={styles.detail} title={o.detail}>
-                    {given(o.detail)}
-                  </span>
-                )}
-              </span>
-            )}
-          />
-        </div>
+        <SelectListbox
+          value={value}
+          options={options}
+          searchable={searchable}
+          onPreview={onPreview}
+          aria-label={aria["aria-label"]}
+          onChoose={(v) => {
+            onChange(v);
+            setOpen(false);
+          }}
+        />
       </Popup>
     </>
   );

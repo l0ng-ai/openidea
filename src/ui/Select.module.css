@@ -99,6 +99,7 @@
 }
 /* The label keeps its width (up to most of the row); a long detail (a path) is cut instead. */
 .withDetail {
+  flex-shrink: 0;
   max-width: 70%;
 }
 .detail {
