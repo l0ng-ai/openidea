@@ -6,6 +6,7 @@ for (const theme of ["light", "dark"] as const) {
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`/e2e/httpHighlight.html?theme=${theme}${extension === "rest" ? "&rest" : ""}`);
+      await expect(page.locator("#json .cm-line").first()).toBeVisible();
       const token = (text: string) =>
         page
           .locator("#http .cm-line span")
