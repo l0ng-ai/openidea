@@ -16,7 +16,10 @@ import type {
   StatusItem,
   WorkbenchEvent,
 } from "@/bindings";
-import { onEditorEvent } from "@/editor/api";
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { setPluginDecorations } from "./decorations";
+import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { onIdeEvent } from "@/platform/ipc";
@@ -463,6 +466,34 @@ async function answerCommand(e: Extract<PluginEvent, { type: "executeCommand" }>
 /** Handles the runtime UI events; returns whether `e` was one. */
 export function handleRuntimeEvent(e: PluginEvent): boolean {
   switch (e.type) {
+    case "decorationsChanged":
+      setPluginDecorations(e.pluginId, e.sets);
+      return true;
+    case "editorOpen": {
+      const r = e.selection;
+      void maybeEditorService()?.openFile(e.path, {
+        focus: true,
+        selection: r ? { line: r.start.line, col: r.start.col, endLine: r.end.line, endCol: r.end.col } : undefined,
+      });
+      return true;
+    }
+    case "editorRanges": {
+      for (const editor of editorsFor(e.path)) {
+        const doc = editor.view.state.doc;
+        const ranges = e.ranges.map((r) => {
+          if (r.start.line >= doc.lines || r.end.line >= doc.lines) return null;
+          const start = doc.line(r.start.line + 1),
+            end = doc.line(r.end.line + 1);
+          if (r.start.col > start.length || r.end.col > end.length) return null;
+          return EditorSelection.range(start.from + r.start.col, end.from + r.end.col);
+        });
+        if (!ranges.length || ranges.some((r) => r == null)) continue;
+        const valid = ranges.filter((r) => r != null);
+        if (e.reveal) editor.view.dispatch({ effects: EditorView.scrollIntoView(valid[0]!, { y: "center" }) });
+        else editor.view.dispatch({ selection: EditorSelection.create(valid) });
+      }
+      return true;
+    }
     case "executeCommand":
       void answerCommand(e);
       return true;

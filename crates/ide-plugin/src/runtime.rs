@@ -62,6 +62,88 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
+    /// The invoking window's editors.
+    fn open_editors(&self, client: &str) -> Result<Vec<crate::OpenEditor>, HostError> {
+        let _ = client;
+        Ok(Vec::new())
+    }
+    /// Opens a validated file and optionally selects a range.
+    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError> {
+        let _ = (client, path, selection);
+        Err(HostError::Failed("editor unavailable".into()))
+    }
+    /// Changes the selections, or reveals a range, only in an editor of this window.
+    fn editor_ranges(
+        &self,
+        client: &str,
+        path: &Path,
+        ranges: Vec<ide_core::Range>,
+        reveal: bool,
+    ) -> Result<(), HostError> {
+        let _ = (client, path, ranges, reveal);
+        Err(HostError::Failed("editor unavailable".into()))
+    }
+    /// Find in Files with the project's document overlay.
+    fn search_text(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        query: crate::TextQuery,
+        limit: u32,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<crate::TextSearch, HostError> {
+        let _ = (client, root, query, limit, cancel, deadline);
+        Err(HostError::Failed("search unavailable".into()))
+    }
+    /// Window-reported Problems view snapshot.
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<crate::FileProblems>, HostError> {
+        let _ = (client, path);
+        Ok(Vec::new())
+    }
+    /// Replace or clear an editor decoration set.
+    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<crate::Decoration>) -> Result<(), HostError> {
+        let _ = (path, set, items);
+        Err(HostError::Failed("decorations unavailable".into()))
+    }
+    /// Replace or clear a tree decoration set.
+    fn file_decorations(
+        &self,
+        path: Option<&Path>,
+        set: &str,
+        item: Option<crate::FileDecoration>,
+    ) -> Result<(), HostError> {
+        let _ = (path, set, item);
+        Err(HostError::Failed("decorations unavailable".into()))
+    }
+    /// Trusted repository history.
+    fn vcs_log(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        limit: u32,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<crate::CommitInfo>, HostError> {
+        let _ = (root, path, limit, cancel);
+        Err(HostError::Failed("git unavailable".into()))
+    }
+    /// Trusted repository attribution, including unsaved documents.
+    fn vcs_blame(&self, client: Option<&str>, root: &Path, path: &str) -> Result<Vec<crate::BlameLine>, HostError> {
+        let _ = (client, root, path);
+        Err(HostError::Failed("git unavailable".into()))
+    }
+    /// Trusted repository working-tree patch, bounded to 4 MiB.
+    fn vcs_diff(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        against: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        let _ = (root, path, against, cancel);
+        Err(HostError::Failed("git unavailable".into()))
+    }
+
     /// Shows a notification; `actions` name commands the plugin declares.
     fn notify(
         &self,
@@ -100,6 +182,11 @@ pub trait HostApi: Send + Sync {
     fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
         let _ = (client, view);
         Ok(())
+    }
+    /// Whether this stable id is a command declared by this plugin.
+    fn owns_command(&self, id: &str) -> bool {
+        let _ = id;
+        false
     }
     /// Executes a stable command in the invoking window and waits for its result.
     fn execute_command(

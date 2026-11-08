@@ -17,6 +17,7 @@ world plugin {
     import fs;
     import workspace;
     import editor;
+    import decorations;
     import invocation;
     import vcs;
     import commit;

@@ -2,9 +2,65 @@ use openidea_plugin::{Error, Event, Invocation, Plugin, StatusItem, host, regist
 #[derive(Default)]
 struct Api14;
 impl Plugin for Api14 {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
         let arg = arg.unwrap_or_default();
         match id {
+            "open-editors" => Ok(Some(format!("{:?}", host::open_editors()?))),
+            "open-editor" => {
+                host::open_editor(arg, Some(openidea_plugin::Range::default()))?;
+                Ok(None)
+            }
+            "set-selections" => {
+                ctx.editor().unwrap().set_selections(&[openidea_plugin::Range::default()])?;
+                Ok(None)
+            }
+            "reveal" => {
+                ctx.editor().unwrap().reveal(openidea_plugin::Range::default())?;
+                Ok(None)
+            }
+            "search-text" => {
+                let result = ctx
+                    .project()
+                    .unwrap()
+                    .search_text(&openidea_plugin::TextQuery { pattern: arg.into(), ..Default::default() }, 10)?;
+                Ok(Some(format!("{result:?}")))
+            }
+            "problems" => Ok(Some(format!("{:?}", host::problems(if arg.is_empty() { None } else { Some(arg) })?))),
+            "decorations" => {
+                host::set_decorations(
+                    arg,
+                    "test",
+                    &[openidea_plugin::Decoration {
+                        range: openidea_plugin::Range::default(),
+                        style: "highlight".into(),
+                        hover: Some("hover".into()),
+                        after: Some("after".into()),
+                    }],
+                )?;
+                Ok(None)
+            }
+            "clear-decorations" => {
+                host::clear_decorations("test")?;
+                Ok(None)
+            }
+            "file-decoration" => {
+                host::set_file_decoration(
+                    arg,
+                    "test",
+                    &openidea_plugin::FileDecoration { badge: Some("OK".into()), style: "added".into(), tooltip: None },
+                )?;
+                Ok(None)
+            }
+            "clear-file-decorations" => {
+                host::clear_file_decorations("test")?;
+                Ok(None)
+            }
+            "vcs-log" => Ok(Some(format!(
+                "{:?}",
+                ctx.project().unwrap().vcs_log(if arg.is_empty() { None } else { Some(arg) }, 10)?
+            ))),
+            "vcs-blame" => Ok(Some(format!("{:?}", ctx.project().unwrap().vcs_blame(arg)?))),
+            "vcs-diff" => ctx.project().unwrap().vcs_diff(if arg.is_empty() { None } else { Some(arg) }, None),
             "ipc" => {
                 let stream = host::ipc_connect(arg)?;
                 stream.write(b"echo")?;

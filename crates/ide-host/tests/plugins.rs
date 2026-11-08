@@ -5649,6 +5649,20 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
     let f = fixture(Limits::default());
     f.host.install_from_dir(&sample("api14"), &Consent::default()).unwrap();
     for (command, arg, capability) in [
+        ("execute", "test.action", "ide.commands"),
+        ("execute", "plugin.other.run", "ide.commands"),
+        ("execute", "plugin.api14.other.run", "ide.commands"),
+        ("open-editors", "", "editor.read"),
+        ("open-editor", "a.txt", "project.read"),
+        ("search-text", "needle", "project.read"),
+        ("problems", "", "project.read"),
+        ("decorations", "a.txt", "project.read"),
+        ("clear-decorations", "", "project.read"),
+        ("file-decoration", "a.txt", "project.read"),
+        ("clear-file-decorations", "", "project.read"),
+        ("vcs-log", "", "vcs.read"),
+        ("vcs-blame", "a.txt", "vcs.read"),
+        ("vcs-diff", "", "vcs.read"),
         ("ipc", "/tmp/api14-no-grant", "ipc:"),
         ("fetch", "http://example.com/", "net.http:"),
         ("secret", "value", "secrets"),
@@ -5661,6 +5675,8 @@ fn api14_denies_new_privileges_and_requires_an_invoking_window() {
         let error = f.host.run_command("api14", command, Some("value"), Invocation::default()).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidInput, "{command}: {error:?}");
     }
+    let own = f.run("api14", "execute", Some("plugin.api14.execute")).unwrap_err();
+    assert!(own.contains("recursive") && !own.contains("not granted"), "{own}");
     f.host.set_capability("api14", "secrets", true).unwrap();
     f.run("api14", "secret", Some(" raw value ")).unwrap();
     assert_eq!(f.host.declared_secret("api14", "token"), Some(" raw value ".into()));

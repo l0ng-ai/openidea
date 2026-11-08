@@ -478,7 +478,7 @@ pub struct ProviderDocument {
     pub text: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct Location {
     pub path: PathBuf,
     pub range: ide_core::Range,
@@ -745,4 +745,82 @@ pub struct NotificationAction {
     pub label: String,
     pub command: String,
     pub argument: Option<String>,
+}
+
+/// An open editor reported by its window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenEditor {
+    pub path: String,
+    pub language: String,
+    pub dirty: bool,
+    pub active: bool,
+}
+/// Find in Files options.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TextQuery {
+    pub pattern: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+/// A search hit, using UTF-16 coordinates.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct TextMatch {
+    pub location: Location,
+    pub line: String,
+}
+/// Bounded search results.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TextSearch {
+    pub matches: Vec<TextMatch>,
+    pub limit_hit: bool,
+}
+/// A file's problems from one producer.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct FileProblems {
+    pub path: String,
+    pub source: String,
+    pub diagnostics: Vec<ide_core::Diagnostic>,
+}
+/// An editor decoration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct Decoration {
+    pub range: ide_core::Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+}
+/// A tree decoration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct FileDecoration {
+    pub badge: Option<String>,
+    pub style: String,
+    pub tooltip: Option<String>,
+}
+/// Commit metadata, date in Unix seconds.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitInfo {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub author_email: String,
+    pub date: i64,
+    pub subject: String,
+    pub body: String,
+    pub parents: Vec<String>,
+}
+/// One zero-based line's attribution, date in Unix seconds.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+pub struct BlameLine {
+    pub line: u32,
+    pub commit: String,
+    pub author: String,
+    pub date: i64,
+    pub summary: String,
 }

@@ -99,6 +99,14 @@ pub struct Host {
 const EXIT_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Host {
+    /// Windows whose current project has this root.
+    pub(crate) fn windows_for_root(&self, root: &std::path::Path) -> Vec<String> {
+        let mut windows: Vec<_> =
+            self.projects.read().iter().filter(|(_, p)| p.root == root).map(|(w, _)| w.clone()).collect();
+        windows.sort();
+        windows
+    }
+
     pub fn new(config: HostConfig) -> Self {
         let HostConfig {
             config_dir,

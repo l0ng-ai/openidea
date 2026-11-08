@@ -20,6 +20,8 @@ pub enum Capability {
     EditorWrite,
     /// Create and replace files inside the project root.
     ProjectWrite,
+    /// Run arbitrary IDE actions and other plugins' commands.
+    IdeCommands,
     VcsRead,
     VcsWrite,
     /// The plugin's own key-value store and data directory.
@@ -70,7 +72,7 @@ impl Capability {
             | Self::Secrets
             | Self::InputEvents
             | Self::Clipboard => Risk::Medium,
-            Self::Ipc(_) | Self::Process(_) | Self::FsRead(_) | Self::FsWrite(_) => Risk::High,
+            Self::IdeCommands | Self::Ipc(_) | Self::Process(_) | Self::FsRead(_) | Self::FsWrite(_) => Risk::High,
         }
     }
 
@@ -87,6 +89,7 @@ impl Capability {
             Self::EditorRead => "Read the focused editor's file and selection".into(),
             Self::EditorWrite => "Change text in the editor".into(),
             Self::ProjectWrite => "Create and change files in the open project".into(),
+            Self::IdeCommands => "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing".into(),
             Self::VcsRead => "Read version control state".into(),
             Self::VcsWrite => "Change version control state (commit, fetch, checkout)".into(),
             Self::Storage => "Store its own data".into(),
@@ -213,6 +216,7 @@ impl fmt::Display for Capability {
             Self::EditorRead => f.write_str("editor.read"),
             Self::EditorWrite => f.write_str("editor.write"),
             Self::ProjectWrite => f.write_str("project.write"),
+            Self::IdeCommands => f.write_str("ide.commands"),
             Self::VcsRead => f.write_str("vcs.read"),
             Self::VcsWrite => f.write_str("vcs.write"),
             Self::Storage => f.write_str("storage"),
@@ -284,6 +288,7 @@ impl FromStr for Capability {
             "editor.read" | "editor-read" => Self::EditorRead,
             "editor.write" | "editor-write" => Self::EditorWrite,
             "project.write" => Self::ProjectWrite,
+            "ide.commands" => Self::IdeCommands,
             "vcs.read" => Self::VcsRead,
             "vcs.write" => Self::VcsWrite,
             "storage" => Self::Storage,
@@ -422,5 +427,20 @@ mod api14_tests {
         {
             assert!(invalid.parse::<Capability>().is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    #[test]
+    fn ide_commands_is_explicit_and_high_risk() {
+        let cap: Capability = "ide.commands".parse().unwrap();
+        assert_eq!(cap, Capability::IdeCommands);
+        assert_eq!(cap.to_string(), "ide.commands");
+        assert_eq!(cap.risk(), Risk::High);
+        assert!(!cap.auto_migrates());
+        assert!(!Capability::VcsWrite.covers(&cap));
+        assert!(!Capability::Process("git".into()).covers(&cap));
     }
 }

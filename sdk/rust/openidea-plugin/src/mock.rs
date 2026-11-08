@@ -38,6 +38,8 @@ pub struct MockTask {
 
 type CommandHandler = dyn Fn(Option<&str>) -> Result<Option<String>, Error>;
 
+type SearchHandler = Box<dyn Fn(&TextQuery, u32) -> Result<TextSearch, Error>>;
+
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
 
@@ -124,6 +126,15 @@ struct State {
     declared_secrets: BTreeSet<String>,
     commands: BTreeMap<String, Rc<CommandHandler>>,
     command_depth: usize,
+    owned_commands: BTreeSet<String>,
+    search: Option<SearchHandler>,
+    commits: Vec<CommitInfo>,
+    blame: BTreeMap<String, Vec<BlameLine>>,
+    patch: Option<String>,
+    restricted: bool,
+    decorations: BTreeMap<(String, String), Vec<Decoration>>,
+    file_decorations: BTreeMap<(String, String), FileDecoration>,
+    revealed_ranges: Vec<Range>,
     loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
@@ -171,6 +182,7 @@ pub struct MockHost {
 
 /// Every capability a plugin can hold, except `process:`/`net:`/`fs.read:`.
 const ALL: &[&str] = &[
+    "ide.commands",
     "project.read",
     "editor.read",
     "editor.write",
@@ -183,6 +195,41 @@ const ALL: &[&str] = &[
 ];
 
 impl MockHost {
+    /// Registers one of this plugin's declared commands, callable without ide.commands.
+    pub fn on_own_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
+        let stable = format!("plugin.mock.{id}");
+        self.on_command(&stable, handler);
+        self.state.borrow_mut().owned_commands.insert(stable);
+    }
+
+    /// Supplies search responses without duplicating the IDE search engine.
+    pub fn on_search(&self, handler: impl Fn(&TextQuery, u32) -> Result<TextSearch, Error> + 'static) {
+        self.state.borrow_mut().search = Some(Box::new(handler));
+    }
+    /// Supplies read-only repository data.
+    pub fn set_vcs_reads(&self, commits: Vec<CommitInfo>, path: &str, blame: Vec<BlameLine>, patch: Option<String>) {
+        let mut s = self.state.borrow_mut();
+        s.commits = commits;
+        s.blame.insert(path.into(), blame);
+        s.patch = patch;
+    }
+    /// Simulates Restricted Mode for new VCS read APIs.
+    pub fn set_restricted(&self, restricted: bool) {
+        self.state.borrow_mut().restricted = restricted;
+    }
+    /// Editor decoration snapshots keyed by (set id, absolute path).
+    pub fn decorations(&self) -> BTreeMap<(String, String), Vec<Decoration>> {
+        self.state.borrow().decorations.clone()
+    }
+    /// Tree decoration snapshots keyed by (set id, absolute path).
+    pub fn file_decorations(&self) -> BTreeMap<(String, String), FileDecoration> {
+        self.state.borrow().file_decorations.clone()
+    }
+    /// Ranges requested to scroll into view.
+    pub fn revealed_ranges(&self) -> Vec<Range> {
+        self.state.borrow().revealed_ranges.clone()
+    }
+
     /// Installs a mock granting the usual capabilities, with project `/project`.
     pub fn install() -> Self {
         let state = Rc::new(RefCell::new(State {
@@ -447,7 +494,9 @@ impl MockHost {
 
     /// Registers the result of a stable action or plugin command.
     pub fn on_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
-        self.state.borrow_mut().commands.insert(id.into(), Rc::new(handler));
+        let mut state = self.state.borrow_mut();
+        state.owned_commands.remove(id);
+        state.commands.insert(id.into(), Rc::new(handler));
     }
     /// Queues the raw browser query returned by the next loopback wait.
     pub fn queue_loopback_query(&self, query: Option<&str>) {
@@ -710,6 +759,9 @@ pub mod current {
     }
     pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
         let handler = with(|s| {
+            if !s.owned_commands.contains(id) {
+                require(s, "ide.commands")?;
+            }
             if s.command_depth >= 8 {
                 return Err(Error::Invalid("command nesting limit (8)".into()));
             }
@@ -1207,6 +1259,204 @@ pub mod current {
         })
     }
 
+    pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
+        with(|s| {
+            require(s, "editor.read")?;
+            Ok(s.editor
+                .iter()
+                .map(|e| OpenEditor {
+                    path: e.path.clone(),
+                    language: e.language.clone(),
+                    dirty: e.version > 1,
+                    active: true,
+                })
+                .collect())
+        })
+    }
+    pub fn editor_open(path: &str, selection: Option<Range>) -> Result<(), Error> {
+        let text = with(|s| {
+            if is_private_path(path) {
+                return s.external.get(path).cloned().ok_or_else(|| Error::NotFound(path.into()));
+            }
+            require(s, "project.read")?;
+            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let rel = rel_in_root(&p, path)?;
+            s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
+        })?;
+        with(|s| {
+            let path =
+                if path.starts_with('/') { path.into() } else { format!("{}/{path}", s.root.as_deref().unwrap()) };
+            s.editor = Some(Editor {
+                path,
+                language: "text".into(),
+                text,
+                version: 1,
+                selections: selection.into_iter().collect(),
+            });
+        });
+        Ok(())
+    }
+    fn valid_ranges(text: &str, ranges: &[Range]) -> bool {
+        ranges.iter().all(|r| matches!((crate::text::offset(text, r.start), crate::text::offset(text, r.end)), (Some(a), Some(b)) if a <= b))
+    }
+    pub fn editor_set_selections(_: &EditorRes, ranges: &[Range]) -> Result<(), Error> {
+        editor(|_, e| {
+            if ranges.is_empty() || ranges.len() > 1000 || !valid_ranges(&e.text, ranges) {
+                return Err(Error::Invalid("invalid selections".into()));
+            }
+            e.selections = ranges.to_vec();
+            Ok(())
+        })
+    }
+    pub fn editor_reveal(_: &EditorRes, range: Range) -> Result<(), Error> {
+        editor(|s, e| {
+            if !valid_ranges(&e.text, &[range]) {
+                return Err(Error::Invalid("invalid range".into()));
+            }
+            s.revealed_ranges.push(range);
+            Ok(())
+        })
+    }
+    pub fn project_search_text(_: &ProjectRes, query: &TextQuery, limit: u32) -> Result<TextSearch, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if limit == 0 {
+                return Ok(TextSearch::default());
+            }
+            let mut result = match &s.search {
+                Some(f) => f(query, limit.min(10_000))?,
+                None => TextSearch::default(),
+            };
+            result.limit_hit |= result.matches.len() > limit.min(10_000) as usize;
+            result.matches.truncate(limit.min(10_000) as usize);
+            Ok(result)
+        })
+    }
+    pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let wanted = path.map(|path| rel_in_root(&p, path).map(|rel| format!("{}/{rel}", p.root))).transpose()?;
+            Ok(s.diagnostics
+                .iter()
+                .chain(s.provider_diagnostics.iter())
+                .filter(|(path, _)| wanted.as_ref().is_none_or(|p| p == *path))
+                .map(|(path, diagnostics)| FileProblems {
+                    path: path.clone(),
+                    source: "mock".into(),
+                    diagnostics: diagnostics.clone(),
+                })
+                .collect())
+        })
+    }
+    fn decoration_path(s: &State, path: &str) -> Result<String, Error> {
+        let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+        Ok(format!("{}/{}", p.root, rel_in_root(&p, path)?))
+    }
+    fn style(s: &str) -> bool {
+        matches!(
+            s,
+            "highlight"
+                | "search"
+                | "added"
+                | "modified"
+                | "removed"
+                | "warning"
+                | "error"
+                | "info"
+                | "underline"
+                | "strikethrough"
+                | "muted"
+        )
+    }
+    pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut next = s.decorations.clone();
+            next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
+            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
+            let count: usize = next.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum();
+            if set.is_empty() || set.len() > 128 || names.len() > 50 || count > 10_000 {
+                return Err(Error::Invalid("decoration limit".into()));
+            }
+            s.decorations = next;
+            Ok(())
+        })
+    }
+    pub fn clear_decorations(set: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            s.decorations.retain(|(id, _), _| id != set);
+            Ok(())
+        })
+    }
+    pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut next = s.file_decorations.clone();
+            next.remove(&(set.into(), path.clone()));
+            if style(&item.style) {
+                next.insert((set.into(), path), item.clone());
+            }
+            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
+            if set.is_empty()
+                || set.len() > 128
+                || names.len() > 50
+                || item.badge.as_ref().is_some_and(|b| b.chars().count() > 2)
+            {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations = next;
+            Ok(())
+        })
+    }
+    pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            s.file_decorations.retain(|(id, _), _| id != set);
+            Ok(())
+        })
+    }
+    fn vcs_read(s: &State) -> Result<(), Error> {
+        require(s, "vcs.read")?;
+        if s.restricted {
+            return Err(Error::Failed("project is in Restricted Mode".into()));
+        }
+        Ok(())
+    }
+    pub fn vcs_log(p: &ProjectRes, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            if let Some(path) = path {
+                rel_in_root(p, path)?;
+            }
+            Ok(s.commits.iter().take(limit.min(1000) as usize).cloned().collect())
+        })
+    }
+    pub fn vcs_blame(p: &ProjectRes, path: &str) -> Result<Vec<BlameLine>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            rel_in_root(p, path)?;
+            Ok(s.blame.get(path).cloned().unwrap_or_default())
+        })
+    }
+    pub fn vcs_diff(p: &ProjectRes, path: Option<&str>, against: Option<&str>) -> Result<Option<String>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            if let Some(path) = path {
+                rel_in_root(p, path)?;
+            }
+            if against.is_some_and(|r| r.is_empty() || r.starts_with('-') || r.contains('\0')) {
+                return Err(Error::Invalid("invalid revision".into()));
+            }
+            if s.patch.as_ref().is_some_and(|p| p.len() > 4 << 20) {
+                return Err(Error::Failed("diff exceeds 4 MiB".into()));
+            }
+            Ok(s.patch.clone())
+        })
+    }
     pub fn vcs_status(_: &ProjectRes) -> Result<Option<RepositoryStatus>, Error> {
         with(|s| {
             require(s, "vcs.read")?;

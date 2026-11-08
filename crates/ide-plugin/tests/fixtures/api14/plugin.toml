@@ -7,7 +7,7 @@ activation = ["on-command:*", "on-event:file-closed", "on-event:settings-changed
 
 [capabilities]
 required = ["storage"]
-optional = ["events", "events.input", "editor.read", "secrets", "net:localhost", "net.http:example.com", "ipc:$TMPDIR/api14-*"]
+optional = ["ide.commands", "project.read", "vcs.read", "events", "events.input", "editor.read", "secrets", "net:localhost", "net.http:example.com", "ipc:$TMPDIR/api14-*"]
 
 [[contributes.secrets]]
 name = "token"
@@ -83,3 +83,55 @@ title = "terminal"
 [[contributes.commands]]
 id = "log"
 title = "log"
+
+[[contributes.commands]]
+id = "open-editors"
+title = "open-editors"
+
+[[contributes.commands]]
+id = "open-editor"
+title = "open-editor"
+
+[[contributes.commands]]
+id = "set-selections"
+title = "set-selections"
+
+[[contributes.commands]]
+id = "reveal"
+title = "reveal"
+
+[[contributes.commands]]
+id = "search-text"
+title = "search-text"
+
+[[contributes.commands]]
+id = "problems"
+title = "problems"
+
+[[contributes.commands]]
+id = "decorations"
+title = "decorations"
+
+[[contributes.commands]]
+id = "clear-decorations"
+title = "clear-decorations"
+
+[[contributes.commands]]
+id = "file-decoration"
+title = "file-decoration"
+
+[[contributes.commands]]
+id = "clear-file-decorations"
+title = "clear-file-decorations"
+
+[[contributes.commands]]
+id = "vcs-log"
+title = "vcs-log"
+
+[[contributes.commands]]
+id = "vcs-blame"
+title = "vcs-blame"
+
+[[contributes.commands]]
+id = "vcs-diff"
+title = "vcs-diff"

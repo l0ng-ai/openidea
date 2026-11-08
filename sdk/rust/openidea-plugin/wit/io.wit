@@ -3,6 +3,11 @@ package openidea:plugin@1.4.0;
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {
     use types.{error, range, location};
+    /// Problems reported by a source for a file in this window's project.
+    record file-problems { path: string, source: string, diagnostics: list<diagnostic> }
+    /// Current Problems view snapshot, optionally filtered to a project file.
+    /// Requires project.read and an invoking window. Empty for remote projects.
+    problems: func(path: option<string>) -> result<list<file-problems>, error>;
 
     enum severity {
         error,

@@ -115,6 +115,7 @@ interface command-runner {
     use types.{error};
     /// Only in commands/events of a window. Returns a plugin command's value,
     /// or none for IDE actions; unknown ids are not-found. Nested calls are bounded.
+    /// Requires high-risk `ide.commands`, except for this plugin's own commands.
     execute: func(id: string, arg: option<string>) -> result<option<string>, error>;
 }
 

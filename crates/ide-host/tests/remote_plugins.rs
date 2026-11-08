@@ -407,6 +407,25 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     let report = sync(&peer, &desktop, &["api14"]).await;
     assert!(report.failed.is_empty(), "{report:?}");
     let run = |command: &str, arg: Option<&str>| json!({ "pluginId": "api14", "commandId": command, "arg": arg, "editor": null });
+    let remote_file = project.join("remote.txt");
+    std::fs::write(&remote_file, "remote text").unwrap();
+    invoke(&peer, "mcp_set_open_editors", json!({"paths": [remote_file]})).await.unwrap();
+    invoke(&peer, "mcp_set_focused_editor", json!({"editor": {"path": remote_file, "selection": {"start": {"line": 0, "col": 0}, "end": {"line": 0, "col": 0}}, "selectedText": ""}, "focused": true})).await.unwrap();
+    let editors = invoke(&peer, "plugin_run_command", run("open-editors", None)).await.unwrap();
+    assert!(editors.as_str().unwrap().contains("remote.txt"));
+    assert!(editors.as_str().unwrap().contains("active: true"));
+    let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
+    assert_eq!(problems.as_str(), Some("[]"));
+    invoke(&peer, "plugin_run_command", run("open-editor", Some("remote.txt"))).await.unwrap();
+    invoke(&peer, "plugin_run_command", run("decorations", remote_file.to_str())).await.unwrap();
+    let sets = invoke(&peer, "plugin_decoration_sets", json!({})).await.unwrap();
+    assert_eq!(sets["api14"][0]["root"], project.to_str().unwrap());
+    until("forwarded editor and decoration events", 5, || {
+        let events = client.plugin_events.lock();
+        events.iter().any(|m| m.window.as_deref() == Some("main") && matches!(m.event, PluginEvent::EditorOpen { .. }))
+            && events.iter().any(|m| matches!(m.event, PluginEvent::DecorationsChanged { .. }))
+    })
+    .await;
     invoke(&peer, "plugin_run_command", run("secret", Some("remote-token"))).await.unwrap();
     assert_eq!(desktop.declared_secret("api14", "token").as_deref(), Some("remote-token"));
     invoke(&peer, "plugin_run_command", run("delete-secret", None)).await.unwrap();

@@ -326,7 +326,7 @@ impl Manifest {
             check_relative(icon, "icon")?;
         }
         for cap in self.capabilities.required.iter().chain(&self.capabilities.optional) {
-            if matches!(cap, Capability::NetHttp(_) | Capability::Ipc(_)) {
+            if matches!(cap, Capability::IdeCommands | Capability::NetHttp(_) | Capability::Ipc(_)) {
                 self.needs_api(&format!("capability `{cap}`"), 4)?;
             }
             if matches!(cap, Capability::ProjectWrite | Capability::FsWrite(_)) {
@@ -696,5 +696,16 @@ mod api14_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod commands_api_tests {
+    use super::*;
+    #[test]
+    fn ide_commands_requires_api_1_4() {
+        let manifest = "id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.3\"\n[capabilities]\nrequired = [\"ide.commands\"]\n";
+        assert!(Manifest::parse(manifest).unwrap_err().contains("1.4"));
+        assert!(Manifest::parse(&manifest.replace("^1.3", "^1.4")).is_ok());
     }
 }

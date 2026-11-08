@@ -1114,6 +1114,8 @@ export const commands = {
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
 	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	/**  Project-scoped decoration snapshots; the window filters to its current root. */
+	pluginDecorationSets: () => __TAURI_INVOKE<{ [key in string]: DecorationSet[] }>("plugin_decoration_sets"),
 	/**  Plugin context keys in effect for this window (later changes arrive as `contextChanged`). */
 	pluginContextKeys: () => __TAURI_INVOKE<PluginContextKey[]>("plugin_context_keys"),
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
@@ -3199,6 +3201,24 @@ export type DebuggerSettings = {
 	python?: PythonDebuggerSettings,
 };
 
+/**  An editor decoration. */
+export type Decoration = {
+	range: Range,
+	style: string,
+	hover: string | null,
+	after: string | null,
+};
+
+/**  A plugin-owned editor or project-tree decoration set for one file. */
+export type DecorationSet = {
+	root: IpcPath,
+	path: IpcPath,
+	setId: string,
+	tree: boolean,
+	items: Decoration[],
+	file: FileDecoration | null,
+};
+
 /**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
 export type DeletedBranch = {
 	name: string,
@@ -3904,6 +3924,13 @@ export type FileCoverage = {
 	linesCovered: number,
 	branchesTotal: number,
 	branchesCovered: number,
+};
+
+/**  A tree decoration. */
+export type FileDecoration = {
+	badge: string | null,
+	style: string,
+	tooltip: string | null,
 };
 
 export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 
@@ -6145,6 +6172,12 @@ export type PluginEndpoint = {
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
 { type: "commandsChanged" } | 
+/**  Complete replacement of one plugin's project-scoped decorations. */
+{ type: "decorationsChanged"; pluginId: string; sets: DecorationSet[] } | 
+/**  Open a file in the invoking window. */
+{ type: "editorOpen"; path: IpcPath; selection: Range | null } | 
+/**  Change selection or scrolling only in this window's already open editor. */
+{ type: "editorRanges"; path: IpcPath; ranges: Range[]; reveal: boolean } | 
 /**  A bounded output channel snapshot, or withdrawal when the plugin stops. */
 { type: "outputChanged"; pluginId: string; channel: string; text: string | null } | 
 /**  Reveal a read-only Output tab in the receiving window. */

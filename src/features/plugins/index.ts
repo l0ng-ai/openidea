@@ -33,6 +33,7 @@ import { defineBuiltinUiPoints } from "./points";
 import { startViewUi } from "./uiPoints";
 import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
+import { startPluginDecorations } from "./decorations";
 import { startIndexedMarkers } from "./indexedMarkers";
 import { startPluginNavigation } from "./navigation";
 import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
@@ -151,6 +152,7 @@ export function activate(): () => void {
     startPluginBridge(),
     startPluginNavigation(),
     startIndexedMarkers(),
+    startPluginDecorations(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
     startWorkspaceContains(),

@@ -927,3 +927,12 @@ pub async fn plugin_program(
     };
     blocking(move || host.program_for_project(&plugin_id, &program, root.as_deref()).map(Into::into)).await
 }
+
+/// Project-scoped decoration snapshots; the window filters to its current root.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_decoration_sets(
+    state: State<'_, AppState>,
+) -> std::collections::BTreeMap<String, Vec<ide_host::plugins::DecorationSet>> {
+    state.plugins.decoration_sets()
+}

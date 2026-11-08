@@ -91,7 +91,7 @@ impl Reports {
     pub(super) fn focused_window(&self) -> Option<String> {
         self.0.read().focused.clone()
     }
-    pub(super) fn editors(&self, windows: &[String]) -> Vec<PathBuf> {
+    pub(crate) fn editors(&self, windows: &[String]) -> Vec<PathBuf> {
         let state = self.0.read();
         let mut paths = Vec::new();
         for window in windows.iter().filter_map(|w| state.windows.get(w)) {
@@ -103,10 +103,10 @@ impl Reports {
         }
         paths
     }
-    pub(super) fn focused(&self, window: &str) -> Option<FocusedEditor> {
+    pub(crate) fn focused(&self, window: &str) -> Option<FocusedEditor> {
         self.0.read().windows.get(window).and_then(|w| w.focused.clone())
     }
-    pub(super) fn problems(&self, windows: &[String]) -> Vec<FileProblems> {
+    pub(crate) fn problems(&self, windows: &[String]) -> Vec<FileProblems> {
         let state = self.0.read();
         let mut files: BTreeMap<PathBuf, Vec<Diagnostic>> = BTreeMap::new();
         for window in windows.iter().filter_map(|w| state.windows.get(w)) {

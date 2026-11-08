@@ -38,10 +38,38 @@ type ContextKey = (Option<String>, String, String);
 /// What plugins see of the open projects; provided by the app
 /// ([`super::PluginHost::set_workspace`]), over [`crate::Host`] on the desktop.
 pub trait PluginWorkspace: Send + Sync {
+    /// Window-owned reports shared with the MCP tools.
+    fn open_editors(&self, _client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+        Ok(Vec::new())
+    }
+    /// Shared Find in Files service, preferring the invoking window's document store.
+    fn search_text(
+        &self,
+        _client: Option<&str>,
+        _root: &Path,
+        _query: ide_plugin::TextQuery,
+        _limit: u32,
+        _cancel: &CancellationToken,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        Err(HostError::Failed("search unavailable".into()))
+    }
+    /// Problems view reports for this window's project.
+    fn problems(&self, _client: &str, _path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        Ok(Vec::new())
+    }
+
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
     /// Unsaved text of the open document at `path`.
     fn buffer_text(&self, path: &Path) -> Option<String>;
+    /// A window's unsaved text, with the normal project overlay as fallback.
+    fn buffer_text_in(&self, _client: Option<&str>, path: &Path) -> Option<String> {
+        self.buffer_text(path)
+    }
+    /// An editor owned by this window.
+    fn document_in(&self, _client: &str, path: &Path) -> Option<(u64, String)> {
+        self.document(path)
+    }
     /// Whether the editor holds changes for `path` that are not on disk yet;
     /// writing such a file would lose them.
     fn buffer_dirty(&self, _path: &Path) -> bool {
@@ -460,6 +488,7 @@ pub(super) struct Shared {
     next_prompt: AtomicU64,
     /// (plugin, item id) → item, for windows opened later.
     output: Mutex<BTreeMap<(String, String), String>>,
+    decorations: Mutex<BTreeMap<String, Vec<super::DecorationSet>>>,
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
     setting_snapshots: Mutex<SettingSnapshots>,
     window_status: Mutex<BTreeMap<(String, String, String), StatusItem>>,
@@ -520,6 +549,7 @@ impl Shared {
             next_prompt: AtomicU64::new(1),
             status: Mutex::default(),
             output: Mutex::default(),
+            decorations: Mutex::default(),
             window_status: Mutex::default(),
             setting_snapshots: Mutex::default(),
             contexts: Mutex::default(),
@@ -727,6 +757,9 @@ impl Shared {
         for (window, _, id) in removed {
             self.sink
                 .emit(Some(&window), PluginEvent::WindowStatusItemChanged { plugin_id: plugin.into(), id, item: None });
+        }
+        if self.decorations.lock().remove(plugin).is_some() {
+            self.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: plugin.into(), sets: Vec::new() });
         }
         self.withdraw_prompts(plugin);
         let removed: Vec<(Option<String>, String)> = {
@@ -1190,6 +1223,169 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
+    fn owns_command(&self, id: &str) -> bool {
+        let commands = self.shared.ui.items(super::COMMANDS, None);
+        let mut matches = commands.iter().filter(|c| id == format!("plugin.{}.{}", c.plugin_id, c.key)).peekable();
+        matches.peek().is_some() && matches.all(|c| c.plugin_id == self.id())
+    }
+
+    fn open_editors(&self, client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+        self.shared.workspace().ok_or_else(|| HostError::NotFound("window project".into()))?.open_editors(client)
+    }
+    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError> {
+        self.shared.sink.emit(Some(client), PluginEvent::EditorOpen { path: path.into(), selection });
+        Ok(())
+    }
+    fn editor_ranges(
+        &self,
+        client: &str,
+        path: &Path,
+        ranges: Vec<ide_core::Range>,
+        reveal: bool,
+    ) -> Result<(), HostError> {
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("window project".into()))?;
+        if !workspace.open_editors(client)?.iter().any(|e| Path::new(&e.path) == path) {
+            return Err(HostError::Invalid("editor does not belong to the invoking window".into()));
+        }
+        let (_, text) =
+            workspace.document_in(client, path).ok_or_else(|| HostError::NotFound("editor is closed".into()))?;
+        let document = ide_text::Document::new(&text);
+        for r in &ranges {
+            if !valid_range(&document, *r) {
+                return Err(HostError::Invalid("range outside document".into()));
+            }
+        }
+        self.shared.sink.emit(Some(client), PluginEvent::EditorRanges { path: path.into(), ranges, reveal });
+        Ok(())
+    }
+    fn search_text(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        query: ide_plugin::TextQuery,
+        limit: u32,
+        cancel: &CancellationToken,
+        deadline: Instant,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("project closed".into()))?;
+        if query.pattern.len() > 16_384 || query.include.len() + query.exclude.len() > 256 {
+            return Err(HostError::Invalid("search query too large".into()));
+        }
+        let token = cancel.child_token();
+        let timed = token.clone();
+        let (done, wait) = std::sync::mpsc::channel();
+        let timer = std::thread::spawn(move || {
+            if wait.recv_timeout(deadline.saturating_duration_since(Instant::now())).is_err() {
+                timed.cancel();
+            }
+        });
+        let result = workspace.search_text(client, root, query, limit.min(10_000), &token);
+        let _ = done.send(());
+        let _ = timer.join();
+        if cancel.is_cancelled() {
+            Err(HostError::Cancelled)
+        } else if Instant::now() >= deadline {
+            Err(HostError::Failed("text search timed out".into()))
+        } else {
+            result
+        }
+    }
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        self.shared.workspace().ok_or_else(|| HostError::NotFound("window project".into()))?.problems(client, path)
+    }
+    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<ide_plugin::Decoration>) -> Result<(), HostError> {
+        self.set_decorations(path, set, items, None, false)
+    }
+    fn file_decorations(
+        &self,
+        path: Option<&Path>,
+        set: &str,
+        item: Option<ide_plugin::FileDecoration>,
+    ) -> Result<(), HostError> {
+        self.set_decorations(path, set, Vec::new(), item, true)
+    }
+    fn vcs_log(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        limit: u32,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<ide_plugin::CommitInfo>, HostError> {
+        let repo = self.read_repo(root)?;
+        let path = path
+            .map(|p| ide_plugin::resolve_new_in_root(root, p).map(ide_core::IpcPath::from).map_err(HostError::Invalid))
+            .transpose()?;
+        let Some(repo) = repo else {
+            return Ok(Vec::new());
+        };
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let query = ide_vcs::LogQuery { path, limit: limit.min(1000), ..Default::default() };
+        repo.log_cancellable(&query, cancel)
+            .map(|cs| {
+                cs.into_iter()
+                    .map(|c| ide_plugin::CommitInfo {
+                        id: c.id,
+                        short_id: c.short_id,
+                        author: c.author,
+                        author_email: c.email,
+                        date: (c.time_ms / 1000.0) as i64,
+                        subject: c.summary,
+                        body: c
+                            .message
+                            .split_once('\n')
+                            .map_or(String::new(), |(_, body)| body.trim_start_matches('\n').into()),
+                        parents: c.parents,
+                    })
+                    .collect()
+            })
+            .map_err(failed)
+    }
+    fn vcs_blame(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        path: &str,
+    ) -> Result<Vec<ide_plugin::BlameLine>, HostError> {
+        let repo = self.read_repo(root)?;
+        let path = ide_plugin::resolve_new_in_root(root, path).map_err(HostError::Invalid)?;
+        let Some(repo) = repo else {
+            return Ok(Vec::new());
+        };
+        let workspace = self.shared.workspace().unwrap();
+        let text = workspace.buffer_text_in(client, &path);
+        repo.blame(&path, text.as_deref(), None, workspace.vcs_encoding(&path))
+            .map(|lines| {
+                lines
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, l)| ide_plugin::BlameLine {
+                        line: i as u32,
+                        commit: l.commit,
+                        author: l.author,
+                        date: (l.time_ms / 1000.0) as i64,
+                        summary: l.summary,
+                    })
+                    .collect()
+            })
+            .map_err(failed)
+    }
+    fn vcs_diff(
+        &self,
+        root: &Path,
+        path: Option<&str>,
+        against: Option<&str>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        let repo = self.read_repo(root)?;
+        let path = path.map(|p| ide_plugin::resolve_new_in_root(root, p).map_err(HostError::Invalid)).transpose()?;
+        let Some(repo) = repo else {
+            return Ok(None);
+        };
+        repo.working_tree_patch(path.as_deref(), against, 4 << 20, cancel).map(Some).map_err(failed)
+    }
+
     fn execute_command(
         &self,
         invocation: &ide_plugin::Invocation,
@@ -2264,6 +2460,13 @@ fn not_writable(path: &Path, e: ide_core::error::IdeError) -> HostError {
 pub struct HostWorkspace(pub std::sync::Weak<crate::Host>);
 
 impl HostWorkspace {
+    fn project_for(&self, client: Option<&str>, root: &Path) -> Option<Arc<crate::project::Project>> {
+        let host = self.0.upgrade()?;
+        client
+            .and_then(|w| host.project(w).ok())
+            .filter(|p| p.root == root)
+            .or_else(|| host.windows_for_root(root).first().and_then(|w| host.project(w).ok()))
+    }
     fn projects(&self) -> Vec<Arc<crate::project::Project>> {
         self.0.upgrade().map(|h| h.projects()).unwrap_or_default()
     }
@@ -2275,6 +2478,146 @@ impl HostWorkspace {
 }
 
 impl PluginWorkspace for HostWorkspace {
+    fn buffer_text_in(&self, client: Option<&str>, path: &Path) -> Option<String> {
+        client
+            .and_then(|w| self.0.upgrade()?.project(w).ok()?.documents.text_of(path))
+            .or_else(|| self.buffer_text(path))
+    }
+    fn document_in(&self, client: &str, path: &Path) -> Option<(u64, String)> {
+        let project = self.0.upgrade()?.project(client).ok()?;
+        let doc = project.documents.by_path(path)?;
+        let snapshot = project.documents.snapshot(doc).ok()?;
+        Some((u64::from(snapshot.version), snapshot.text))
+    }
+    fn open_editors(&self, client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = host.project(client).map_err(failed)?;
+        let active = host.mcp_reports.focused(client).map(|e| e.path.into_path_buf());
+        Ok(host
+            .mcp_reports
+            .editors(&[client.into()])
+            .into_iter()
+            .map(|path| {
+                let language = project
+                    .languages
+                    .detect(&path, project.documents.text_of(&path).as_deref().and_then(|t| t.lines().next()));
+                ide_plugin::OpenEditor {
+                    active: active.as_ref() == Some(&path),
+                    dirty: project
+                        .documents
+                        .by_path(&path)
+                        .is_some_and(|doc| project.documents.is_dirty(doc).unwrap_or(false)),
+                    language: language.to_string(),
+                    path: to_ipc(&path),
+                }
+            })
+            .collect())
+    }
+    fn search_text(
+        &self,
+        client: Option<&str>,
+        root: &Path,
+        query: ide_plugin::TextQuery,
+        limit: u32,
+        cancel: &CancellationToken,
+    ) -> Result<ide_plugin::TextSearch, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = self.project_for(client, root).ok_or_else(|| HostError::NotFound("project closed".into()))?;
+        if limit == 0 {
+            return Ok(ide_plugin::TextSearch::default());
+        }
+        let mut query = ide_search::SearchQuery {
+            pattern: query.pattern,
+            is_regex: query.regex,
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_word,
+            include: query.include,
+            exclude: query.exclude,
+            scope: ide_search::SearchScope::Project,
+            max_matches: limit.min(10_000).saturating_add(1),
+            context: Default::default(),
+        };
+        query.exclude.extend(project.search_excludes());
+        let files = Mutex::new(Vec::new());
+        let summary = crate::ops::search::search_project(&project, &host.syntax(), &query, cancel, &|file| {
+            files.lock().push(file)
+        })
+        .map_err(failed)?;
+        if summary.cancelled || cancel.is_cancelled() {
+            return Err(HostError::Cancelled);
+        }
+        let mut out = ide_plugin::TextSearch { matches: Vec::new(), limit_hit: summary.limit_hit };
+        let mut bytes = 0usize;
+        for file in files.into_inner() {
+            if cancel.is_cancelled() {
+                return Err(HostError::Cancelled);
+            }
+            // Restrict project.read to the project root, including symlink targets.
+            let Ok(path) = ide_plugin::resolve_in_root(root, &to_ipc(&file.path.0)) else {
+                continue;
+            };
+            let text = project.documents.text_of(&path).or_else(|| {
+                let loaded = project.documents.load_file_bounded(&path, ide_plugin::MAX_READ_BYTES as usize).ok()?;
+                (!loaded.binary && !loaded.too_large)
+                    .then(|| ide_text::normalize_line_endings(&loaded.text).into_owned())
+            });
+            let Some(text) = text else {
+                out.limit_hit = true;
+                continue;
+            };
+            let doc = ide_text::Document::new(&text);
+            for (start, end) in ide_search::match_ranges(&text, &query).map_err(failed)? {
+                if out.matches.len() >= limit as usize {
+                    out.limit_hit = true;
+                    return Ok(out);
+                }
+                let range = ide_core::Range::new(doc.byte_to_pos(start), doc.byte_to_pos(end));
+                let line = text[..start].rfind('\n').map_or(0, |i| i + 1);
+                let end_line = text[start..].find('\n').map_or(text.len(), |i| start + i);
+                let preview = text[line..end_line].trim_end_matches('\r');
+                let mut cut = preview.len().min(4096);
+                while !preview.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                let preview = &preview[..cut];
+                bytes += preview.len() + path.as_os_str().len() + 64;
+                if bytes > 4 << 20 {
+                    out.limit_hit = true;
+                    return Ok(out);
+                }
+                out.matches.push(ide_plugin::TextMatch {
+                    location: ide_plugin::Location { path: path.clone(), range },
+                    line: preview.into(),
+                });
+            }
+        }
+        Ok(out)
+    }
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let root = host.project(client).map_err(failed)?.root.clone();
+        let windows = host.windows_for_root(&root);
+        let mut out = Vec::new();
+        for file in host.mcp_reports.problems(&windows) {
+            if path.is_some_and(|p| p != file.path.0) {
+                continue;
+            }
+            if ide_plugin::resolve_new_in_root(&root, &to_ipc(&file.path.0)).is_err() {
+                continue;
+            }
+            let mut sources: BTreeMap<String, Vec<ide_core::Diagnostic>> = BTreeMap::new();
+            for d in file.items {
+                sources.entry(d.server.clone().or_else(|| d.source.clone()).unwrap_or_default()).or_default().push(d);
+            }
+            out.extend(sources.into_iter().map(|(source, diagnostics)| ide_plugin::FileProblems {
+                path: to_ipc(&file.path.0),
+                source,
+                diagnostics,
+            }));
+        }
+        Ok(out)
+    }
+
     fn projects(&self) -> Vec<PathBuf> {
         let mut roots: Vec<PathBuf> = HostWorkspace::projects(self).iter().map(|p| p.root.clone()).collect();
         roots.sort();
@@ -2869,5 +3212,311 @@ mod credential_tests {
         }
         assert!(matches!(from_window(None, "open a URL"), Err(HostError::Invalid(_))));
         assert_eq!(from_window(Some("main"), "open a URL").unwrap(), "main");
+    }
+}
+
+fn valid_range(document: &ide_text::Document, range: ide_core::Range) -> bool {
+    range.start <= range.end
+        && [range.start, range.end].into_iter().all(|pos| document.byte_to_pos(document.pos_to_byte(pos)) == pos)
+}
+
+impl PluginApi {
+    fn read_repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
+        if !self.shared.workspace().is_some_and(|w| w.trusted(root)) {
+            return Err(HostError::Failed("the project is in Restricted Mode: git does not run there".into()));
+        }
+        let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
+        if let Some(repo) = &repo {
+            repo.set_execution_allowed(false);
+        }
+        Ok(repo)
+    }
+    fn set_decorations(
+        &self,
+        path: Option<&Path>,
+        set: &str,
+        mut items: Vec<ide_plugin::Decoration>,
+        file: Option<ide_plugin::FileDecoration>,
+        tree: bool,
+    ) -> Result<(), HostError> {
+        if set.is_empty() || set.len() > 128 {
+            return Err(HostError::Invalid("set id must be 1-128 bytes".into()));
+        }
+        if items.len() > 10_000 || file.as_ref().and_then(|f| f.badge.as_ref()).is_some_and(|b| b.chars().count() > 2) {
+            return Err(HostError::Invalid("decoration limit exceeded".into()));
+        }
+        items.retain(|d| decoration_style(&d.style));
+        if items.iter().any(|d| d.range.start > d.range.end) {
+            return Err(HostError::Invalid("reversed decoration range".into()));
+        }
+        let replacement = if let Some(path) = path {
+            let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project open".into()))?;
+            let (root, real) = workspace
+                .projects()
+                .into_iter()
+                .filter_map(|root| ide_plugin::resolve_new_in_root(&root, &to_ipc(path)).ok().map(|real| (root, real)))
+                .max_by_key(|(root, _)| root.components().count())
+                .ok_or_else(|| HostError::Invalid("path outside open projects".into()))?;
+            Some(super::DecorationSet {
+                root: root.into(),
+                path: real.into(),
+                set_id: set.into(),
+                tree,
+                items,
+                file: file.filter(|f| decoration_style(&f.style)),
+            })
+        } else {
+            None
+        };
+        let mut all = self.shared.decorations.lock();
+        let mut sets = all.get(self.id()).cloned().unwrap_or_default();
+        sets.retain(|s| !(s.tree == tree && s.set_id == set && replacement.as_ref().is_none_or(|r| r.path == s.path)));
+        if let Some(replacement) = replacement {
+            sets.push(replacement);
+        }
+        let names: BTreeSet<_> = sets.iter().filter(|s| s.tree == tree).map(|s| &s.set_id).collect();
+        if names.len() > 50 || serde_json::to_vec(&sets).map_err(failed)?.len() > 4 << 20 {
+            return Err(HostError::Invalid("decoration sets exceed plugin limits".into()));
+        }
+        // A plugin may spread one file's annotations across sets, but the combined limit is fixed.
+        let mut counts = BTreeMap::new();
+        for s in &sets {
+            *counts.entry(&s.path).or_insert(0usize) += s.items.len();
+        }
+        if counts.values().any(|n| *n > 10_000) {
+            return Err(HostError::Invalid("at most 10000 decorations per file".into()));
+        }
+        all.insert(self.id().into(), sets.clone());
+        // Emit while holding the state lock so replacement snapshots cannot arrive out of order.
+        self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
+        Ok(())
+    }
+}
+fn decoration_style(style: &str) -> bool {
+    matches!(
+        style,
+        "highlight"
+            | "search"
+            | "added"
+            | "modified"
+            | "removed"
+            | "warning"
+            | "error"
+            | "info"
+            | "underline"
+            | "strikethrough"
+            | "muted"
+    )
+}
+impl Shared {
+    pub(super) fn decoration_sets(&self) -> BTreeMap<String, Vec<super::DecorationSet>> {
+        self.decorations.lock().clone()
+    }
+}
+
+#[cfg(test)]
+mod workbench_tests {
+    use super::*;
+    struct Workspace {
+        root: PathBuf,
+        trusted: bool,
+        text: Option<String>,
+    }
+    impl PluginWorkspace for Workspace {
+        fn projects(&self) -> Vec<PathBuf> {
+            vec![self.root.clone()]
+        }
+        fn buffer_text(&self, _: &Path) -> Option<String> {
+            self.text.clone()
+        }
+        fn document(&self, _: &Path) -> Option<(u64, String)> {
+            self.text.clone().map(|s| (1, s))
+        }
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+            Err(HostError::Stale)
+        }
+        fn trusted(&self, _: &Path) -> bool {
+            self.trusted
+        }
+        fn project_of(&self, _: &str) -> Option<PathBuf> {
+            Some(self.root.clone())
+        }
+        fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn open_editors(&self, client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
+            Ok(if client == "main" {
+                vec![ide_plugin::OpenEditor {
+                    path: to_ipc(&self.root.join("a.txt")),
+                    language: "text".into(),
+                    active: true,
+                    dirty: true,
+                }]
+            } else {
+                Vec::new()
+            })
+        }
+    }
+    fn api(root: &Path, trusted: bool, text: Option<&str>) -> PluginApi {
+        let manifest = ide_extension::Manifest::parse(
+            "id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.4\"\n",
+        )
+        .unwrap();
+        let shared = Shared::new(
+            Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+            root.join(".data"),
+            Arc::default(),
+            ide_extension::UiStore::new(),
+        );
+        *shared.workspace.write() =
+            Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));
+        PluginApi { pkg: Package::new(manifest, root.into()), shared }
+    }
+    #[test]
+    fn command_exemption_requires_a_declared_unambiguous_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), true, None);
+        let own = api.shared.ui.insert(ide_extension::UiContribution {
+            plugin_id: "test".into(),
+            point: super::super::COMMANDS.into(),
+            key: "other.run".into(),
+            decl: serde_json::json!({}),
+        });
+        assert!(api.owns_command("plugin.test.other.run"));
+        assert!(!api.owns_command("plugin.test.unknown"));
+        let other = api.shared.ui.insert(ide_extension::UiContribution {
+            plugin_id: "test.other".into(),
+            point: super::super::COMMANDS.into(),
+            key: "run".into(),
+            decl: serde_json::json!({}),
+        });
+        assert!(!api.owns_command("plugin.test.other.run"));
+        drop(other);
+        assert!(api.owns_command("plugin.test.other.run"));
+        drop(own);
+    }
+    #[test]
+    fn selections_validate_window_and_utf16_without_requiring_a_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("a.txt");
+        let api = api(&root, true, Some("😀abc"));
+        let range = |col| ide_core::Range::point(ide_core::Pos::new(0, col));
+        assert!(api.editor_ranges("main", &path, vec![range(2)], false).is_ok());
+        assert!(api.editor_ranges("main", &path, vec![range(1)], true).is_err());
+        assert!(api.editor_ranges("other", &path, vec![range(2)], false).is_err());
+    }
+    #[test]
+    fn decoration_sets_validate_paths_limits_and_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("a.txt");
+        std::fs::write(&path, "text").unwrap();
+        let api = api(&root, true, None);
+        let item = |style: &str| ide_plugin::Decoration {
+            range: ide_core::Range::default(),
+            style: style.into(),
+            hover: None,
+            after: Some("after".into()),
+        };
+        api.decorations(Some(&path), "set", vec![item("highlight"), item("unknown")]).unwrap();
+        assert_eq!(api.shared.decoration_sets()["test"][0].items.len(), 1);
+        assert!(api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).is_err());
+        api.decorations(None, "set", vec![]).unwrap();
+        for i in 0..50 {
+            api.decorations(Some(&path), &format!("s{i}"), vec![]).unwrap();
+        }
+        assert!(api.decorations(Some(&path), "overflow", vec![]).is_err());
+        api.decorations(Some(&path), "s0", vec![item("info"); 10_000]).unwrap();
+        assert!(api.decorations(Some(&path), "s1", vec![item("info")]).is_err());
+        assert!(
+            api.file_decorations(
+                Some(&path),
+                "tree",
+                Some(ide_plugin::FileDecoration { badge: Some("abc".into()), style: "info".into(), tooltip: None })
+            )
+            .is_err()
+        );
+        api.shared.clear_plugin("test", true);
+        assert!(api.shared.decoration_sets().is_empty());
+    }
+    fn git(root: &Path, args: &[&str]) {
+        let out = StdCommand::new("git").current_dir(root).args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    #[test]
+    fn vcs_reads_reuse_history_and_dirty_blame_and_require_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        let path = root.join("a.txt");
+        std::fs::write(&path, "committed\nsecond\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "Subject\n\nBody"]);
+        std::fs::write(&path, "disk\nsecond\n").unwrap();
+        let api = api(&root, true, Some("unsaved\nsecond\nnew\n"));
+        let cancel = CancellationToken::new();
+        let history = api.vcs_log(&root, Some("a.txt"), 10, &cancel).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].subject, "Subject");
+        assert_eq!(history[0].body.trim(), "Body");
+        assert!(history[0].date > 0);
+        let lines = api.vcs_blame(None, &root, "a.txt").unwrap();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].commit.bytes().all(|b| b == b'0'));
+        assert_eq!(lines[1].commit, history[0].id);
+        assert_eq!(lines[2].line, 2);
+        let patch = api.vcs_diff(&root, Some("a.txt"), None, &cancel).unwrap().unwrap();
+        assert!(patch.contains("+disk"));
+        assert!(!patch.contains("+unsaved"));
+        assert!(api.vcs_diff(&root, None, Some("--output=outside"), &cancel).is_err());
+        assert!(api.vcs_log(&root, Some("../outside"), 1, &cancel).is_err());
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(api.vcs_log(&root, Some("a.txt"), 10, &cancel).unwrap().len(), 1);
+        assert!(api.vcs_diff(&root, Some("a.txt"), None, &cancel).unwrap().unwrap().contains("-committed"));
+        let restricted = super::workbench_tests::api(&root, false, None);
+        assert!(restricted.vcs_log(&root, None, 1, &cancel).is_err());
+        assert!(restricted.vcs_blame(None, &root, "a.txt").is_err());
+        assert!(restricted.vcs_diff(&root, None, None, &cancel).is_err());
+        std::fs::write(&path, "x".repeat(5 << 20)).unwrap();
+        assert!(api.vcs_diff(&root, None, None, &cancel).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn vcs_reads_never_run_repository_configured_helpers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "user.name", "Test"]);
+        git(&root, &["config", "user.email", "test@example.com"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "base"]);
+        let marker = root.join("HELPER-RAN");
+        let helper = format!("touch '{}'", marker.display());
+        for key in [
+            "core.fsmonitor",
+            "diff.external",
+            "diff.test.command",
+            "diff.test.textconv",
+            "filter.test.clean",
+            "filter.test.process",
+        ] {
+            git(&root, &["config", key, &helper]);
+        }
+        git(&root, &["config", "filter.test.required", "true"]);
+        assert!(!marker.exists(), "setup ran helper");
+        std::fs::write(root.join(".gitattributes"), "*.txt diff=test filter=test\n").unwrap();
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        let api = api(&root, true, Some("unsaved\n"));
+        let cancel = CancellationToken::new();
+        api.vcs_log(&root, None, 10, &cancel).unwrap();
+        assert!(!marker.exists(), "log ran helper");
+        api.vcs_blame(None, &root, "a.txt").unwrap();
+        assert!(!marker.exists(), "blame ran helper");
+        api.vcs_diff(&root, None, None, &cancel).unwrap();
+        assert!(!marker.exists());
     }
 }

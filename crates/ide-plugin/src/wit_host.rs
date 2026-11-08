@@ -44,6 +44,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
@@ -77,6 +78,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
@@ -110,6 +112,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
             "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
             "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
@@ -577,6 +580,44 @@ impl workspace::Host for StoreData {
 }
 
 impl workspace::HostProject for StoreData {
+    fn search_text(
+        &mut self,
+        this: Resource<ProjectRes>,
+        query: workspace::TextQuery,
+        limit: u32,
+    ) -> Fallible<workspace::TextSearch> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let root = &self.table.get(&this)?.root;
+        let query = crate::TextQuery {
+            pattern: query.pattern,
+            regex: query.regex,
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_word,
+            include: query.include,
+            exclude: query.exclude,
+        };
+        Ok(self
+            .host
+            .search_text(self.client(), root, query, limit.min(10_000), &self.cancel.token(), self.deadline)
+            .map(|s| workspace::TextSearch {
+                limit_hit: s.limit_hit,
+                matches: s
+                    .matches
+                    .into_iter()
+                    .map(|m| workspace::TextMatch {
+                        location: wit::Location {
+                            path: to_ipc(&m.location.path),
+                            range: range_to_wit(&m.location.range),
+                        },
+                        line: m.line,
+                    })
+                    .collect(),
+            })
+            .map_err(to_wit))
+    }
+
     fn root(&mut self, this: Resource<ProjectRes>) -> Fallible<String> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -704,11 +745,94 @@ impl workspace::HostProject for StoreData {
     }
 }
 
-impl editor::Host for StoreData {}
+impl editor::Host for StoreData {
+    fn open_editors(&mut self) -> Fallible<Vec<editor::OpenEditor>> {
+        if let Err(e) = self.require(Capability::EditorRead).and_then(|_| self.require_window()) {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .open_editors(self.client().unwrap())
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|e| editor::OpenEditor {
+                        path: e.path,
+                        language: e.language,
+                        dirty: e.dirty,
+                        active: e.active,
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
+    fn open(&mut self, path: String, selection: Option<wit::Range>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let real = match self.openable_path(&path) {
+            Ok(p) => p,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.editor_open(self.client().unwrap(), &real, selection.map(core_range)).map_err(to_wit))
+    }
+}
+
+fn core_range(r: wit::Range) -> ide_core::Range {
+    ide_core::Range::new(pos(r.start), pos(r.end))
+}
+impl StoreData {
+    fn decoration_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
+        if Path::new(path).is_absolute() {
+            return Ok(PathBuf::from(path));
+        }
+        let root = self
+            .invocation
+            .workspace_root
+            .as_ref()
+            .ok_or_else(|| wit::Error::Invalid("relative decorations need an invoking project".into()))?;
+        sandbox::resolve_in_root(root, path).map_err(wit::Error::Invalid)
+    }
+    fn openable_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
+        if let Ok(dir) = self.host.plugin_dir()
+            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], path)
+        {
+            return Ok(real);
+        }
+        self.require(Capability::ProjectRead)?;
+        let root = self
+            .invocation
+            .workspace_root
+            .as_ref()
+            .ok_or_else(|| wit::Error::Invalid("no project is open in this window".into()))?;
+        sandbox::resolve_in_root(root, path).map_err(wit::Error::Invalid)
+    }
+}
 
 impl detail_types::Host for StoreData {}
 
 impl editor::HostTextEditor for StoreData {
+    fn set_selections(&mut self, this: Resource<EditorRes>, selections: Vec<wit::Range>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        if selections.is_empty() || selections.len() > 1000 {
+            return Ok(Err(wit::Error::Invalid("requires 1-1000 selections".into())));
+        }
+        let path = &self.table.get(&this)?.ctx.path;
+        Ok(self
+            .host
+            .editor_ranges(self.client().unwrap(), path, selections.into_iter().map(core_range).collect(), false)
+            .map_err(to_wit))
+    }
+    fn reveal(&mut self, this: Resource<EditorRes>, range: wit::Range) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let path = &self.table.get(&this)?.ctx.path;
+        Ok(self.host.editor_ranges(self.client().unwrap(), path, vec![core_range(range)], true).map_err(to_wit))
+    }
+
     fn path(&mut self, this: Resource<EditorRes>) -> wasmtime::Result<String> {
         Ok(to_ipc(&self.table.get(&this)?.ctx.path))
     }
@@ -793,6 +917,69 @@ impl invocation::HostInvocation for StoreData {
 }
 
 impl vcs::Host for StoreData {
+    fn log(
+        &mut self,
+        project: Resource<ProjectRes>,
+        path: Option<String>,
+        limit: u32,
+    ) -> Fallible<Vec<vcs::CommitInfo>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        let root = &self.table.get(&project)?.root;
+        Ok(self
+            .host
+            .vcs_log(root, path.as_deref(), limit.min(1000), &self.cancel.token())
+            .map(|v| {
+                v.into_iter()
+                    .map(|c| vcs::CommitInfo {
+                        id: c.id,
+                        short_id: c.short_id,
+                        author: c.author,
+                        author_email: c.author_email,
+                        date: c.date,
+                        subject: c.subject,
+                        body: c.body,
+                        parents: c.parents,
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
+    fn blame(&mut self, project: Resource<ProjectRes>, path: String) -> Fallible<Vec<vcs::BlameLine>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        let root = &self.table.get(&project)?.root;
+        Ok(self
+            .host
+            .vcs_blame(self.client(), root, &path)
+            .map(|v| {
+                v.into_iter()
+                    .map(|c| vcs::BlameLine {
+                        line: c.line,
+                        commit: c.commit,
+                        author: c.author,
+                        date: c.date,
+                        summary: c.summary,
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
+    fn diff(
+        &mut self,
+        project: Resource<ProjectRes>,
+        path: Option<String>,
+        against: Option<String>,
+    ) -> Fallible<Option<String>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        let root = &self.table.get(&project)?.root;
+        Ok(self.host.vcs_diff(root, path.as_deref(), against.as_deref(), &self.cancel.token()).map_err(to_wit))
+    }
+
     fn status(&mut self, project: Resource<ProjectRes>) -> Fallible<Option<vcs::RepositoryStatus>> {
         if let Err(e) = self.require(Capability::VcsRead) {
             return Ok(Err(e));
@@ -991,6 +1178,40 @@ impl StoreData {
 }
 
 impl diagnostics::Host for StoreData {
+    fn problems(&mut self, path: Option<String>) -> Fallible<Vec<diagnostics::FileProblems>> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if self.client().is_none() {
+            return Ok(Err(wit::Error::Invalid("requires an invoking window".into())));
+        }
+        let real = match path {
+            None => None,
+            Some(path) => {
+                let Some(root) = self.invocation.workspace_root.as_ref() else {
+                    return Ok(Err(wit::Error::Invalid("no project in this window".into())));
+                };
+                match sandbox::resolve_new_in_root(root, &path) {
+                    Ok(p) => Some(p),
+                    Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+                }
+            }
+        };
+        Ok(self
+            .host
+            .problems(self.client().unwrap(), real.as_deref())
+            .map(|v| {
+                v.into_iter()
+                    .map(|f| diagnostics::FileProblems {
+                        path: f.path,
+                        source: f.source,
+                        diagnostics: f.diagnostics.into_iter().map(diagnostic_to_wit).collect(),
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
+    }
+
     fn publish(&mut self, path: String, items: Vec<diagnostics::Diagnostic>) -> Fallible<()> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -1618,6 +1839,11 @@ impl bindings::openidea::plugin::command_runner::Host for StoreData {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
+        if !self.host.owns_command(&id)
+            && let Err(e) = self.require(Capability::IdeCommands)
+        {
+            return Ok(Err(e));
+        }
         if id.len() > 256 || arg.as_ref().is_some_and(|a| a.len() > 64 << 10) {
             return Ok(Err(wit::Error::Invalid("command id or argument too long".into())));
         }
@@ -1684,5 +1910,84 @@ impl bindings::openidea::plugin::output::Host for StoreData {
             return Ok(Err(e));
         }
         Ok(self.host.output_reveal(self.invocation.client.as_deref().expect("checked"), &channel).map_err(to_wit))
+    }
+}
+
+fn diagnostic_to_wit(d: ide_core::Diagnostic) -> diagnostics::Diagnostic {
+    diagnostics::Diagnostic {
+        range: range_to_wit(&d.range),
+        severity: match d.severity {
+            ide_core::Severity::Error => diagnostics::Severity::Error,
+            ide_core::Severity::Warning => diagnostics::Severity::Warning,
+            ide_core::Severity::Info => diagnostics::Severity::Info,
+            ide_core::Severity::Hint => diagnostics::Severity::Hint,
+        },
+        message: d.message,
+        code: d.code,
+        source: d.source,
+        tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
+            .into_iter()
+            .filter(|(yes, _)| *yes)
+            .map(|(_, tag)| tag.into())
+            .collect(),
+        related: Vec::new(),
+    }
+}
+impl bindings::openidea::plugin::decorations::Host for StoreData {
+    fn set(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::Decoration>,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if items.len() > 10_000 {
+            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
+        }
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration { range: core_range(d.range), style: d.style, hover: d.hover, after: d.after })
+            .collect();
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+    }
+    fn clear(&mut self, set_id: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        Ok(self.host.decorations(None, &set_id, Vec::new()).map_err(to_wit))
+    }
+    fn set_file(
+        &mut self,
+        path: String,
+        set_id: String,
+        item: bindings::openidea::plugin::decorations::FileDecoration,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self
+            .host
+            .file_decorations(
+                Some(&real),
+                &set_id,
+                Some(crate::FileDecoration { badge: item.badge, style: item.style, tooltip: item.tooltip }),
+            )
+            .map_err(to_wit))
+    }
+    fn clear_file(&mut self, set_id: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        Ok(self.host.file_decorations(None, &set_id, None).map_err(to_wit))
     }
 }

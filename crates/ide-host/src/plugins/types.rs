@@ -166,6 +166,13 @@ pub struct PluginUpdate {
 pub enum PluginEvent {
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
+    /// Complete replacement of one plugin's project-scoped decorations.
+    #[serde(rename_all = "camelCase")]
+    DecorationsChanged { plugin_id: String, sets: Vec<DecorationSet> },
+    /// Open a file in the invoking window.
+    EditorOpen { path: ide_core::IpcPath, selection: Option<ide_core::Range> },
+    /// Change selection or scrolling only in this window's already open editor.
+    EditorRanges { path: ide_core::IpcPath, ranges: Vec<ide_core::Range>, reveal: bool },
     /// A bounded output channel snapshot, or withdrawal when the plugin stops.
     #[serde(rename_all = "camelCase")]
     OutputChanged { plugin_id: String, channel: String, text: Option<String> },
@@ -410,4 +417,16 @@ pub enum CommandAnswer {
     Value(Option<String>),
     NotFound,
     Failed(String),
+}
+
+/// A plugin-owned editor or project-tree decoration set for one file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DecorationSet {
+    pub root: ide_core::IpcPath,
+    pub path: ide_core::IpcPath,
+    pub set_id: String,
+    pub tree: bool,
+    pub items: Vec<ide_plugin::Decoration>,
+    pub file: Option<ide_plugin::FileDecoration>,
 }

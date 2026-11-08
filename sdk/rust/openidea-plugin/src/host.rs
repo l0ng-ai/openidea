@@ -263,6 +263,150 @@ mod imp {
         e.apply_edits(version, &edits).map_err(error)
     }
 
+    pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
+        wit::editor::open_editors()
+            .map(|v| {
+                v.into_iter()
+                    .map(|e| OpenEditor { path: e.path, language: e.language, dirty: e.dirty, active: e.active })
+                    .collect()
+            })
+            .map_err(error)
+    }
+    pub fn editor_open(path: &str, selection: Option<Range>) -> Result<(), Error> {
+        wit::editor::open(path, selection.map(range_out)).map_err(error)
+    }
+    pub fn editor_set_selections(e: &EditorRes, ranges: &[Range]) -> Result<(), Error> {
+        e.set_selections(&ranges.iter().copied().map(range_out).collect::<Vec<_>>()).map_err(error)
+    }
+    pub fn editor_reveal(e: &EditorRes, range: Range) -> Result<(), Error> {
+        e.reveal(range_out(range)).map_err(error)
+    }
+    pub fn project_search_text(p: &ProjectRes, q: &TextQuery, limit: u32) -> Result<TextSearch, Error> {
+        let q = wit::workspace::TextQuery {
+            pattern: q.pattern.clone(),
+            regex: q.regex,
+            case_sensitive: q.case_sensitive,
+            whole_word: q.whole_word,
+            include: q.include.clone(),
+            exclude: q.exclude.clone(),
+        };
+        p.search_text(&q, limit)
+            .map(|s| TextSearch {
+                limit_hit: s.limit_hit,
+                matches: s
+                    .matches
+                    .into_iter()
+                    .map(|m| TextMatch {
+                        location: Location { path: m.location.path, range: range_in(m.location.range) },
+                        line: m.line,
+                    })
+                    .collect(),
+            })
+            .map_err(error)
+    }
+    fn diagnostic_in(d: wit::diagnostics::Diagnostic) -> Diagnostic {
+        Diagnostic {
+            range: range_in(d.range),
+            severity: match d.severity {
+                wit::diagnostics::Severity::Error => Severity::Error,
+                wit::diagnostics::Severity::Warning => Severity::Warning,
+                wit::diagnostics::Severity::Info => Severity::Info,
+                wit::diagnostics::Severity::Hint => Severity::Hint,
+            },
+            message: d.message,
+            code: d.code,
+            source: d.source,
+            unnecessary: d.tags.iter().any(|s| s == "unnecessary"),
+            deprecated: d.tags.iter().any(|s| s == "deprecated"),
+            related: d
+                .related
+                .into_iter()
+                .map(|r| RelatedInformation {
+                    location: Location { path: r.location.path, range: range_in(r.location.range) },
+                    message: r.message,
+                })
+                .collect(),
+        }
+    }
+    pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
+        wit::diagnostics::problems(path)
+            .map(|v| {
+                v.into_iter()
+                    .map(|f| FileProblems {
+                        path: f.path,
+                        source: f.source,
+                        diagnostics: f.diagnostics.into_iter().map(diagnostic_in).collect(),
+                    })
+                    .collect()
+            })
+            .map_err(error)
+    }
+    pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::Decoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set(path, set, &items).map_err(error)
+    }
+    pub fn clear_decorations(set: &str) -> Result<(), Error> {
+        wit::decorations::clear(set).map_err(error)
+    }
+    pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Result<(), Error> {
+        wit::decorations::set_file(
+            path,
+            set,
+            &wit::decorations::FileDecoration {
+                badge: item.badge.clone(),
+                style: item.style.clone(),
+                tooltip: item.tooltip.clone(),
+            },
+        )
+        .map_err(error)
+    }
+    pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
+        wit::decorations::clear_file(set).map_err(error)
+    }
+    pub fn vcs_log(p: &ProjectRes, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
+        wit::vcs::log(p, path, limit)
+            .map(|v| {
+                v.into_iter()
+                    .map(|c| CommitInfo {
+                        id: c.id,
+                        short_id: c.short_id,
+                        author: c.author,
+                        author_email: c.author_email,
+                        date: c.date,
+                        subject: c.subject,
+                        body: c.body,
+                        parents: c.parents,
+                    })
+                    .collect()
+            })
+            .map_err(error)
+    }
+    pub fn vcs_blame(p: &ProjectRes, path: &str) -> Result<Vec<BlameLine>, Error> {
+        wit::vcs::blame(p, path)
+            .map(|v| {
+                v.into_iter()
+                    .map(|c| BlameLine {
+                        line: c.line,
+                        commit: c.commit,
+                        author: c.author,
+                        date: c.date,
+                        summary: c.summary,
+                    })
+                    .collect()
+            })
+            .map_err(error)
+    }
+    pub fn vcs_diff(p: &ProjectRes, path: Option<&str>, against: Option<&str>) -> Result<Option<String>, Error> {
+        wit::vcs::diff(p, path, against).map_err(error)
+    }
     pub fn vcs_status(p: &ProjectRes) -> Result<Option<RepositoryStatus>, Error> {
         wit::vcs::status(p)
             .map(|s| {
@@ -641,6 +785,24 @@ pub struct Project {
 }
 
 impl Project {
+    /// Find in Files with unsaved text, project excludes, cancellation and a 10,000 match cap.
+    /// Requires project.read; locations use zero-based lines and UTF-16 columns.
+    pub fn search_text(&self, query: &TextQuery, limit: u32) -> Result<TextSearch, Error> {
+        imp::project_search_text(&self.inner, query, limit)
+    }
+    /// Trusted project history, newest first, at most 1000 commits. Requires vcs.read.
+    pub fn vcs_log(&self, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
+        imp::vcs_log(&self.inner, path, limit)
+    }
+    /// Trusted project attribution including unsaved text. Requires vcs.read.
+    pub fn vcs_blame(&self, path: &str) -> Result<Vec<BlameLine>, Error> {
+        imp::vcs_blame(&self.inner, path)
+    }
+    /// Disk working tree versus HEAD or a revision, failing above 4 MiB. Requires vcs.read and trust.
+    pub fn vcs_diff(&self, path: Option<&str>, against: Option<&str>) -> Result<Option<String>, Error> {
+        imp::vcs_diff(&self.inner, path, against)
+    }
+
     /// Absolute path of the root. Needs `project.read`.
     pub fn root(&self) -> Result<String, Error> {
         imp::project_root(&self.inner)
@@ -925,6 +1087,15 @@ pub struct TextEditor {
 }
 
 impl TextEditor {
+    /// Changes this window's selections. Commands/events only; no capability needed.
+    pub fn set_selections(&self, ranges: &[Range]) -> Result<(), Error> {
+        imp::editor_set_selections(&self.inner, ranges)
+    }
+    /// Scrolls a range into view in this window. Commands/events only; no capability needed.
+    pub fn reveal(&self, range: Range) -> Result<(), Error> {
+        imp::editor_reveal(&self.inner, range)
+    }
+
     pub fn path(&self) -> String {
         imp::editor_path(&self.inner)
     }
@@ -1266,8 +1437,10 @@ pub fn ipc_connect(name: &str) -> Result<Connection, Error> {
     imp::ipc_connect(name).map(|inner| Connection { inner })
 }
 
-/// Executes a stable action or another plugin's command in the invoking window.
-/// IDE actions return `None`; plugin commands return their result (API 1.4).
+/// Executes a stable action or plugin command in the invoking window (API 1.4).
+/// Requires high-risk `ide.commands`, except for this plugin's declared commands.
+/// IDE actions return `None`; plugin commands return their result. Waiting instances
+/// cannot re-enter themselves; command nesting is bounded.
 pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
     imp::execute_command(id, arg)
 }
@@ -1310,4 +1483,34 @@ pub fn output_clear(channel: &str) -> Result<(), Error> {
 /// Reveals a read-only Output tab in the invoking window.
 pub fn output_reveal(channel: &str) -> Result<(), Error> {
     imp::output_reveal(channel)
+}
+
+/// The invoking window's open editors. Requires editor.read; commands/events only.
+pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
+    imp::open_editors()
+}
+/// Opens a project file (project.read) or plugin-dir file, optionally selecting a range.
+/// Only available in commands/events of a window.
+pub fn open_editor(path: &str, selection: Option<Range>) -> Result<(), Error> {
+    imp::editor_open(path, selection)
+}
+/// The invoking window's project Problems view. Requires project.read. Empty for remote projects.
+pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
+    imp::problems(path)
+}
+/// Replace a file's editor decorations. Requires project.read; 10,000 items/file, 50 sets.
+pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
+    imp::set_decorations(path, set, items)
+}
+/// Clear this plugin's editor decoration set in all projects. Requires project.read.
+pub fn clear_decorations(set: &str) -> Result<(), Error> {
+    imp::clear_decorations(set)
+}
+/// Set a project-tree badge/style. Requires project.read. Badge is at most two characters.
+pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Result<(), Error> {
+    imp::set_file_decoration(path, set, item)
+}
+/// Clear this plugin's tree decoration set in all projects. Requires project.read.
+pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
+    imp::clear_file_decorations(set)
 }

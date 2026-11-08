@@ -523,3 +523,77 @@ impl Event {
         Self::Other { kind, data }
     }
 }
+
+/// An editor in the invoking window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenEditor {
+    pub path: String,
+    pub language: String,
+    pub dirty: bool,
+    pub active: bool,
+}
+/// Find in Files options. Include and exclude are project-relative globs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextQuery {
+    pub pattern: String,
+    pub regex: bool,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+/// A text search match with zero-based UTF-16 coordinates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextMatch {
+    pub location: Location,
+    pub line: String,
+}
+/// Bounded text search result.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextSearch {
+    pub matches: Vec<TextMatch>,
+    pub limit_hit: bool,
+}
+/// A file's Problems view diagnostics from one source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileProblems {
+    pub path: String,
+    pub source: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+/// An editor annotation. Styles are fixed theme-token names; unknown names are ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+}
+/// A project-tree annotation. Badge is at most two Unicode characters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDecoration {
+    pub badge: Option<String>,
+    pub style: String,
+    pub tooltip: Option<String>,
+}
+/// Repository history metadata. Date is Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitInfo {
+    pub id: String,
+    pub short_id: String,
+    pub author: String,
+    pub author_email: String,
+    pub date: i64,
+    pub subject: String,
+    pub body: String,
+    pub parents: Vec<String>,
+}
+/// Attribution for a zero-based document line. Date is Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlameLine {
+    pub line: u32,
+    pub commit: String,
+    pub author: String,
+    pub date: i64,
+    pub summary: String,
+}

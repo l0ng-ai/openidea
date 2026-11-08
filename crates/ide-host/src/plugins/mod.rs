@@ -412,6 +412,11 @@ struct PendingUpdate {
 }
 
 impl PluginHost {
+    /// Current decoration snapshots for windows opening after a plugin published them.
+    pub fn decoration_sets(&self) -> std::collections::BTreeMap<String, Vec<DecorationSet>> {
+        self.shared.decoration_sets()
+    }
+
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
     pub fn new(plugins_dir: PathBuf, sink: Arc<dyn PluginEventSink>, limits: Limits) -> IdeResult<Self> {
         std::fs::create_dir_all(&plugins_dir)?;

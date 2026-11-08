@@ -131,7 +131,10 @@ pub fn package_digest(dir: &Path, files: &[PathBuf]) -> IdeResult<String> {
 pub fn forwarded(event: &PluginEvent) -> bool {
     matches!(
         event,
-        PluginEvent::Notification { .. }
+        PluginEvent::DecorationsChanged { .. }
+            | PluginEvent::EditorOpen { .. }
+            | PluginEvent::EditorRanges { .. }
+            | PluginEvent::Notification { .. }
             | PluginEvent::StatusItemChanged { .. }
             | PluginEvent::WindowStatusItemChanged { .. }
             | PluginEvent::ExecuteCommand { .. }
@@ -527,6 +530,22 @@ impl RemotePlugins {
                 )
                 .await
             }
+        });
+        d.add("mcp_set_open_editors", |c| async move {
+            let paths: Vec<ide_core::IpcPath> = c.arg("paths")?;
+            c.host.project(&c.window)?;
+            c.host.mcp_reports.set_open_editors(&c.window, paths.into_iter().map(PathBuf::from).collect());
+            Ok(())
+        });
+        d.add("mcp_set_focused_editor", |c| async move {
+            c.host.project(&c.window)?;
+            c.host.mcp_reports.set_focused_editor(&c.window, c.arg("editor")?, c.arg("focused")?);
+            Ok(())
+        });
+        let h = host.clone();
+        d.add("plugin_decoration_sets", move |_c| {
+            let h = h.clone();
+            async move { Ok(alive(&h)?.decoration_sets()) }
         });
         let h = host.clone();
         d.add("plugin_set_active_file", move |c| {

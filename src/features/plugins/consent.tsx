@@ -32,6 +32,11 @@ export function sortByRisk(caps: readonly CapabilityInfo[]): CapabilityInfo[] {
 
 /** Parameterised permission text, translated independently of the granted host/path. */
 export function capabilityDescription(cap: CapabilityInfo): string {
+  if (cap.id === "ide.commands") {
+    return tx(
+      "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing",
+    );
+  }
   if (cap.id.startsWith("net.http:")) {
     const host = cap.id.slice(9);
     return tx`Connect to ${host} over unencrypted HTTP (from the machine the project is on)`;
