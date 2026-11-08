@@ -214,6 +214,7 @@ pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>
 /// The closing tab's project vetoed (its unsaved-changes prompt was cancelled): leave the rest open.
 pub fn cancel_close(app: &AppHandle, caller: &str) {
     let state = app.state::<WindowsState>();
+    state.close_settled(caller);
     let mut batch = state.tab_closes.lock();
     if batch.as_ref().is_some_and(|b| b.pending.front().is_some_and(|l| l == caller)) {
         *batch = None;
