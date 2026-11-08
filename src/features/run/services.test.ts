@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MenuItem } from "@/ui";
+import { pickServices } from "./serviceImport";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
@@ -40,6 +42,7 @@ vi.mock("./serviceSessions", async (importOriginal) => ({
   stopServiceSessions,
 }));
 
+vi.mock("./serviceImport", () => ({ pickServices: vi.fn() }));
 vi.mock("./navigate", () => ({ openUrl }));
 vi.mock("@/ui", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/ui")>()), showContextMenu }));
 
@@ -335,7 +338,6 @@ describe("embedded web server port", () => {
     expect(startedPort("Started DemoApplication in 1.2 seconds")).toBeNull();
     expect(startedPort("Tomcat started on port 99999")).toBeNull();
   });
-
 });
 
 describe("hidden configurations", () => {
@@ -346,7 +348,16 @@ describe("hidden configurations", () => {
     const hidden = { "spring-boot": ["a"] };
     const stopped = runServiceItems([a, b], [], DEFAULT_TYPES, [], {}, [], () => false, hidden);
     expect(stopped[0]!.children!.map((c) => c.key)).toEqual(["run:config:b"]);
-    const running = runServiceItems([a, b], [session("s1", a, "running", 1)], DEFAULT_TYPES, [], {}, [], () => false, hidden);
+    const running = runServiceItems(
+      [a, b],
+      [session("s1", a, "running", 1)],
+      DEFAULT_TYPES,
+      [],
+      {},
+      [],
+      () => false,
+      hidden,
+    );
     expect(running[0]!.children!.map((c) => c.key)).toEqual(["run:config:a", "run:config:b"]);
   });
 
@@ -387,6 +398,7 @@ describe("add service categories", () => {
       phpunit: "Others",
       composer: "Others",
       cc: "C/C++",
+      "cmake-application": "C/C++",
       shell: "Shell",
       program: "Shell",
       compound: "Others",
@@ -663,5 +675,68 @@ describe("removing a workspace member from Services", () => {
 
     expect(useRun.getState().configs.map((c) => c.id)).toEqual(["app", "serve", "dev2"]);
     expect(readTypes("/w/main")).toEqual(["npm"]);
+  });
+});
+
+describe("service selection", () => {
+  const group = { key: "run:type:npm", label: "npm", icon: "" };
+  const item = (id: string) => ({ key: `run:config:${id}`, label: id, icon: "" });
+  const leaf = (items: MenuItem[], label: string): Extract<MenuItem, { run?: unknown }> => {
+    for (const entry of items) {
+      if (entry.kind === "separator" || entry.kind === "header" || entry.kind === "action") continue;
+      if (entry.label === label) return entry;
+      if (entry.submenu) {
+        const found = leaf(entry.submenu, label);
+        if (found) return found;
+      }
+    }
+    return undefined!;
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    useProject.setState({ project: { root: "/selection" } as never });
+    useRun.setState({ configs: [config("dev", "npm")], sessions: [] });
+    vi.mocked(pickServices).mockReset();
+    startRun.mockReset().mockResolvedValue(null);
+  });
+
+  it("restores a hidden single configuration through its group's Add Service", async () => {
+    leaf(runServiceProvider.menu!(item("dev")), "Remove from Services").run!();
+    expect(readHidden("/selection")).toEqual({ npm: ["dev"] });
+    await leaf(runServiceProvider.menu!(group), "Add Service").run!();
+    expect(readHidden("/selection")).toEqual({ npm: [] });
+    expect(pickServices).not.toHaveBeenCalled();
+  });
+
+  it("keeps Run All and Restart All scoped to visible configurations", async () => {
+    addType("npm");
+    useRun.setState({ configs: [config("dev", "npm"), config("test", "npm")] });
+    leaf(runServiceProvider.menu!(item("dev")), "Remove from Services").run!();
+    for (const id of ["run-all", "restart-all"]) {
+      startRun.mockClear();
+      await runServiceProvider.actions!(group)
+        .find((a) => a.id === id)!
+        .run();
+      expect(startRun.mock.calls.map(([c]) => c.id)).toEqual(["test"]);
+    }
+  });
+
+  it("does not apply a picker result after switching projects", async () => {
+    useRun.setState({ configs: [config("dev", "npm"), config("test", "npm")] });
+    let finish!: (value: Set<string>) => void;
+    vi.mocked(pickServices).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = leaf(runServiceProvider.menu!(group), "Add Service").run!();
+    useProject.setState({ project: { root: "/other-selection" } as never });
+    finish(new Set(["dev"]));
+    await pending;
+    await Promise.resolve();
+    expect(readHidden("/other-selection")).toEqual({});
+    expect(readTypes("/other-selection")).toEqual(DEFAULT_TYPES);
   });
 });

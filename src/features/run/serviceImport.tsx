@@ -88,7 +88,7 @@ function ImportDialog(props: {
     >
       <div className={styles.importList}>
         {props.configs.map((c) => (
-          <Checkbox key={c.id} checked={picked.has(c.id)} onChange={() => toggle(c.id)} label={c.name} />
+          <Checkbox key={c.id} checked={picked.has(c.id)} onChange={() => toggle(c.id)} label={<span>{c.name}</span>} />
         ))}
       </div>
     </Dialog>

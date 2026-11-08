@@ -4,6 +4,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { registerRunConfigType } from "@/workbench/contributions";
 import {
   categoryOf,
+  kindLabel,
   commandLine,
   duplicateConfig,
   formatArgs,
@@ -442,10 +443,6 @@ describe("context configuration", () => {
     });
 
     it("seeds gutter pytest configs from the pytest template", () => {
-      // TEMP-DEBUG
-      import("./types").then(({ BUILTIN_TYPES }) =>
-        console.log("TEMP:", BUILTIN_TYPES.map((t, i) => `${i}:${t?.id ?? "UNDEF"}`).join(",")),
-      );
       const dispose = registerBuiltinTypes();
       try {
         cacheRunTemplates([
@@ -549,6 +546,7 @@ describe("categoryOf", () => {
   it("prefers a registered type's group (Servers, Docker) over the category map", () => {
     const disposeTomcat = registerRunConfigType(tomcatType);
     expect(categoryOf("tomcat")).toBe("Servers");
+    expect(kindLabel("tomcat")).toBe("Tomcat Server");
     disposeTomcat();
     const dispose = registerRunConfigType({
       id: "fake-server",

@@ -69,7 +69,7 @@ const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
 const RAN_KEY = "openidea.services.ran:";
-/** Types shown in Services until the user changes the list. npm covers the JS dev servers (vite and friends). */
+/** Types shown in Services until the user changes the list. */
 export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
 
 // ---------------------------------------------------------------------------
@@ -260,14 +260,16 @@ function hideConfig(kind: string, id: string) {
 
 /** "Add Service" on a type group: pick which of the kind's configurations show. */
 async function pickForKind(kind: string) {
+  const location = projectLocation(useProject.getState().project?.root);
   const configs = useRun.getState().configs.filter((c) => c.kind === kind);
   if (configs.length <= 1) {
+    saveHidden({ ...currentHidden(), [kind]: [] });
     addType(kind);
     return;
   }
   const hidden = new Set(currentHidden()[kind] ?? []);
   const picked = await pickServices(kind, configs, new Set(configs.filter((c) => !hidden.has(c.id)).map((c) => c.id)));
-  if (!picked) return;
+  if (!picked || projectLocation(useProject.getState().project?.root) !== location) return;
   addType(kind);
   const remaining = configs.filter((c) => !picked.has(c.id)).map((c) => c.id);
   saveHidden({ ...currentHidden(), [kind]: remaining });
@@ -306,7 +308,6 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
   return s.run ? sessionDetail(s.run) : "Finished";
 }
 
-/** The configurations of `kind` the tree shows: all, for added types; the ran ones, otherwise. */
 /**
  * Groups by configuration type: added types list all their configurations, other
  * types only those that ran. A default type (Spring Boot) without configurations is hidden.
@@ -344,8 +345,8 @@ export function runServiceItems(
       const s = latest.get(c.id);
       return !!s && liveServiceSession(s);
     });
-    // A default type with everything removed keeps its empty group, so "Add Service" can restore it.
-    if (!visible.length && DEFAULT_TYPES.includes(kind) && hiddenIds.size === 0) return [];
+    // Keep an empty group only when its existing configurations can be restored.
+    if (!visible.length && DEFAULT_TYPES.includes(kind) && !configs.some((c) => c.kind === kind)) return [];
     const children = orderServices(visible, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
       return {
@@ -476,6 +477,7 @@ function groupConfigs(kind: string): RunConfig[] {
     location ? currentServiceOrder(location) : {},
     debug,
     configRemoved,
+    currentHidden(),
   ).find((item) => item.key === TYPE_PREFIX + kind);
   return (group?.children ?? []).flatMap((item) => {
     const id = item.key.slice(CONFIG_PREFIX.length);
@@ -661,7 +663,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
         label: "Add Service",
         icon: "plus",
         disabled: !useRun.getState().configs.some((c) => c.kind === kind),
-        run: () => void pickForKind(kind),
+        run: () => pickForKind(kind),
       },
     );
     if (currentTypes().includes(kind))
@@ -815,7 +817,7 @@ function addMenu(): MenuItem[] {
   const item = (kind: string): MenuItem => ({
     label: useRunConfigTypes.getState().types.get(kind)?.label ?? kindLabel(kind),
     icon: configIcon({ kind, isTest: false }),
-    run: () => void pickForKind(kind),
+    run: () => pickForKind(kind),
   });
   const grouped = (list: readonly string[]) =>
     categorizedTypes(list).map(({ category, kinds: members }) => ({
@@ -867,6 +869,8 @@ export const runServiceProvider: ServiceProviderContribution = {
         ranIds(useProject.getState().project?.root ?? null),
         order,
         useDebugRunSessions.getState().serviceSessions,
+        configRemoved,
+        currentHidden(),
       ).find((g) => g.key === TYPE_PREFIX + kind);
       const ids = group?.children?.map((c) => c.key.slice(CONFIG_PREFIX.length)) ?? [];
       const from = source.key.slice(CONFIG_PREFIX.length),

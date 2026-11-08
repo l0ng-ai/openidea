@@ -60,9 +60,7 @@ describe("Tomcat Local", () => {
       openBrowser: "true",
     });
     expect(config.debugAdapter).toBe("java-debug");
-    expect(typeRows([tomcatType], "")).toEqual(
-      expect.arrayContaining([expect.objectContaining({ label: "Servers" })]),
-    );
+    expect(typeRows([tomcatType], "")).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Servers" })]));
     expect(missingParams(config, tomcatType)).toHaveProperty("tomcatHome");
   });
   it("validates ports and context paths and supports manually chosen web roots", () => {

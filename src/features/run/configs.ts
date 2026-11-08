@@ -72,6 +72,7 @@ export const KIND_CATEGORIES: Record<string, string> = {
   rustc: "Rust",
   go: "Go",
   cc: "C/C++",
+  "cmake-application": "C/C++",
   shell: "Shell",
   program: "Shell",
 };
@@ -94,11 +95,9 @@ export function categoryOf(kind: string): string {
   return useRunConfigTypes.getState().types.get(kind)?.group ?? KIND_CATEGORIES[kind] ?? "Others";
 }
 
-
 export function kindLabel(kind: string): string {
   const type = useRunConfigTypes.getState().types.get(kind);
-  // A grouped type ("Tomcat Server › Local") is named by its group outside the Add menu.
-  return type?.group ?? type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
+  return type?.label ?? KIND_LABELS[kind] ?? (kind ? kind[0]!.toUpperCase() + kind.slice(1) : "Other");
 }
 
 export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {

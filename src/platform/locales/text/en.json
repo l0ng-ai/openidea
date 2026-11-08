@@ -1,4 +1,13 @@
 {
+  "Docker": "Docker",
+  "Shell": "Shell",
+  "C/C++": "C/C++",
+  "Go": "Go",
+  "Rust": "Rust",
+  "Python": "Python",
+  "JavaScript": "JavaScript",
+  "Build Tools": "Build Tools",
+  "Java": "Java",
   "Add Service ({kind})": "Add Service ({kind})",
   "Others": "Others",
   "Servers": "Servers",
