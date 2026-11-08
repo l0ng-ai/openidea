@@ -398,6 +398,101 @@ describe("MemoryView", () => {
       expect(screen.getByText("Pause the program to count objects through the debugger.")).toBeTruthy();
     });
 
+    describe("when the first answer predates the debugger", () => {
+      const NO_LISTENER =
+        "Memory view needs a JVM on this computer started with -XX:+StartAttachListener. Programs the IDE debugs get it automatically.";
+      const PAUSE_HINT = "Pause the program to count objects through the debugger.";
+      const OUTDATED = "Taken before the last stop. Refresh to update.";
+      const promised = (canCountWhenPaused: boolean): JvmMemoryResult => ({
+        status: "unavailable",
+        reason: { kind: "attachedJvmNotFound" },
+        canCountWhenPaused,
+      });
+      // `refreshMemory` reads the stop count from the store, which the tool window's session prop comes from.
+      const show = (s: DebugSession) => {
+        useDebug.setState({ sessions: { 1: s } });
+        return <MemoryView session={s} />;
+      };
+      const running = { ...session, status: "running" } as DebugSession;
+
+      it("reloads once the session can list instances", async () => {
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(promised(false)));
+        const { rerender } = render(show(running));
+        await screen.findByText(NO_LISTENER);
+        expect(screen.queryByText(PAUSE_HINT)).toBeNull();
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(promised(true)));
+        rerender(show({ ...running, caps: { jvmInstances: true } as DebugCapabilities }));
+        expect(await screen.findByText(PAUSE_HINT)).toBeTruthy();
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(2);
+        // A later capability event asks nothing more.
+        rerender(show({ ...running, caps: { jvmInstances: true, jvmMemory: true } as DebugCapabilities }));
+        await act(async () => {});
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(2);
+      });
+
+      it("reloads when the session could list instances before the first answer came back", async () => {
+        let answer!: (r: Awaited<ReturnType<typeof ok<JvmMemoryResult>>>) => void;
+        ipc.debugJvmMemoryClasses.mockReturnValueOnce(new Promise((r) => (answer = r)));
+        const { rerender } = render(show(running));
+        await waitFor(() => expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(1));
+        rerender(show({ ...running, caps: { jvmInstances: true } as DebugCapabilities }));
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(promised(true)));
+        await act(async () => answer({ status: "ok", data: promised(false) }));
+        expect(await screen.findByText(PAUSE_HINT)).toBeTruthy();
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(2);
+      });
+
+      it("does not count again on later stops after a failed count", async () => {
+        // Paused with the inspector, the count timed out: only Refresh tries again.
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(promised(false)));
+        const { rerender } = render(show({ ...withInstances, stops: 1 }));
+        await screen.findByText(NO_LISTENER);
+        rerender(show({ ...withInstances, status: "running", stops: 1 }));
+        rerender(show({ ...withInstances, stops: 2 }));
+        await act(async () => {});
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(1);
+      });
+
+      it("counts once the program stops after the pause hint", async () => {
+        const live = { ...withInstances, status: "running" } as DebugSession;
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(promised(true)));
+        const { rerender } = render(show(live));
+        await screen.findByText(PAUSE_HINT);
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(debuggerCounts(ORDER_ROWS)));
+        rerender(show({ ...live, status: "paused", stops: 1 }));
+        await screen.findByText("com.x.Order");
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(2);
+        expect(screen.getByText("Counted by the debugger: reachable objects only, no sizes.")).toBeTruthy();
+        expect(screen.queryByText(PAUSE_HINT)).toBeNull();
+        expect(screen.queryByText(OUTDATED)).toBeNull();
+        // The next stop only marks the table outdated (§8.4).
+        rerender(show({ ...live, stops: 1 }));
+        rerender(show({ ...live, status: "paused", stops: 2 }));
+        await act(async () => {});
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(2);
+        expect(screen.getByText(OUTDATED)).toBeTruthy();
+      });
+
+      it("does not count again on a stop once a table is shown", async () => {
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
+        const { rerender } = render(show({ ...withInstances, status: "running" } as DebugSession));
+        await screen.findByText("Heap$Live");
+        rerender(show({ ...withInstances, status: "paused", stops: 1 }));
+        await act(async () => {});
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(1);
+        expect(screen.getByText(OUTDATED)).toBeTruthy();
+      });
+
+      it("does not ask again on a stop without a promise to count", async () => {
+        ipc.debugJvmMemoryClasses.mockReturnValue(ok(promised(false)));
+        const { rerender } = render(show(running));
+        await screen.findByText(NO_LISTENER);
+        rerender(show({ ...running, status: "paused", stops: 1 }));
+        await act(async () => {});
+        expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("says the debugger is counting while paused", async () => {
       ipc.debugJvmMemoryClasses.mockReturnValue(new Promise(() => {}));
       const counting = "Counting objects through the debugger. This can take several seconds on a large heap.";

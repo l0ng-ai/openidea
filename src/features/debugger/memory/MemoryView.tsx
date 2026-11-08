@@ -6,7 +6,15 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemorySnapshot, JvmMemoryUnavailable } from "@/platform/ipc";
 import { sessionSupports, type DebugSession } from "../state";
-import { DEFAULT_QUERY, isOutdated, refreshMemory, selectMemoryClass, setMemoryQuery, useMemory } from "./memoryState";
+import {
+  DEFAULT_QUERY,
+  isOutdated,
+  isOvertaken,
+  refreshMemory,
+  selectMemoryClass,
+  setMemoryQuery,
+  useMemory,
+} from "./memoryState";
 import { InstancesPane } from "./InstancesPane";
 import { backendText } from "./instancesTree";
 import { keepKeysOnButton } from "./rowButtonKeys";
@@ -125,6 +133,10 @@ export function MemoryView({ session }: { session: DebugSession }) {
     const e = useMemory.getState().bySession[id];
     if (!e?.result && !e?.loading) void refreshMemory(id);
   }, [id]);
+  const overtaken = entry ? isOvertaken(entry, session) : false;
+  useEffect(() => {
+    if (overtaken) void refreshMemory(id);
+  }, [id, overtaken]);
 
   const rows = useMemo(() => (snapshot ? visibleRows(snapshot.rows, sorted) : []), [snapshot, sorted]);
   const columns = COLUMNS.filter((c) => columnsOf(source).includes(c.key));

@@ -1,11 +1,13 @@
 import { create } from "zustand";
 import { call, commands, type DebugSessionId, type JvmMemoryResult, type JvmMemorySnapshot } from "@/platform/ipc";
-import { useDebug } from "../state";
+import { sessionSupports, useDebug, type DebugSession } from "../state";
 import type { RowQuery } from "./rows";
 
 export interface MemoryEntry {
   /** The latest answer, which may say why no snapshot could be taken. */
   result: JvmMemoryResult | null;
+  /** The session when `result` was asked for: its `stops` and whether it could list instances. */
+  asked: { stop: number; listsInstances: boolean } | null;
   /** The last snapshot taken: it stays on screen when a later refresh is refused or fails. */
   snapshot: JvmMemorySnapshot | null;
   loading: boolean;
@@ -21,6 +23,7 @@ export const DEFAULT_QUERY: RowQuery = { filter: "", sort: "bytes", desc: true, 
 
 const emptyEntry = (): MemoryEntry => ({
   result: null,
+  asked: null,
   snapshot: null,
   loading: false,
   error: null,
@@ -45,13 +48,15 @@ export async function refreshMemory(id: DebugSessionId): Promise<void> {
   if (useMemory.getState().bySession[id]?.loading) return;
   const token = Symbol("memory");
   inflight.set(id, token);
-  const stop = useDebug.getState().sessions[id]?.stops ?? 0;
+  const session = useDebug.getState().sessions[id] ?? null;
+  const stop = session?.stops ?? 0;
+  const asked = { stop, listsInstances: sessionSupports("jvmInstances", session) };
   patchEntry(id, () => ({ loading: true, error: null }));
   try {
     const result = await call(commands.debugJvmMemoryClasses(id));
     if (inflight.get(id) !== token) return;
     patchEntry(id, () =>
-      result.status === "ready" ? { result, snapshot: result.snapshot, takenAtStop: stop } : { result },
+      result.status === "ready" ? { result, asked, snapshot: result.snapshot, takenAtStop: stop } : { result, asked },
     );
   } catch (e) {
     if (inflight.get(id) !== token) return;
@@ -74,6 +79,19 @@ export function selectMemoryClass(id: DebugSessionId, name: string | null): void
 
 export function isOutdated(entry: MemoryEntry, sessionStops: number): boolean {
   return entry.takenAtStop !== sessionStops;
+}
+
+/**
+ * Whether asking again could now give a table where the last answer gave none: the session got
+ * its JVM inspector after a "no" (it attaches after the session starts), or stopped after the
+ * "Pause the program to count" hint. A table on screen is never refetched by itself (§8.4).
+ */
+export function isOvertaken(entry: MemoryEntry, session: DebugSession): boolean {
+  const { result, asked } = entry;
+  if (entry.snapshot || entry.loading || !asked || result?.status !== "unavailable") return false;
+  return result.canCountWhenPaused
+    ? session.status === "paused" && session.stops !== asked.stop
+    : !asked.listsInstances && sessionSupports("jvmInstances", session);
 }
 
 export function forgetMemory(id: DebugSessionId): void {
