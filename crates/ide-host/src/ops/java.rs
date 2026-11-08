@@ -80,14 +80,7 @@ async fn resolve_launch(
                 &cancel,
             )?;
             let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
-            if let Some(failure) = outputs.failure {
-                info.build = Some(JavaBuildStatus::Failed);
-                info.hints.push(failure);
-            } else {
-                info.build = Some(JavaBuildStatus::Succeeded);
-                info.errors.clear();
-                info.error_count = 0;
-            }
+            apply_external_build_result(&mut info, outputs.failure);
             copies
         } else if external {
             let built = compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?;
@@ -154,6 +147,18 @@ async fn resolve_launch(
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+fn apply_external_build_result(info: &mut JavaLaunchInfo, failure: Option<String>) {
+    info.build = Some(if let Some(failure) = failure {
+        info.hints.push(failure);
+        JavaBuildStatus::Failed
+    } else if info.error_count > 0 {
+        // Incremental Maven compilation can accept error-stub classes written by JDT.
+        JavaBuildStatus::WithErrors
+    } else {
+        JavaBuildStatus::Succeeded
+    });
 }
 
 /// A classpath entry as a comparable key. Entries come from JDT LS and from our own
@@ -282,6 +287,33 @@ pub(crate) fn register(d: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_external_compilation_does_not_erase_scoped_jdt_errors() {
+        for (failure, expected) in
+            [(None, JavaBuildStatus::WithErrors), (Some("compile failed"), JavaBuildStatus::Failed)]
+        {
+            let mut info = JavaLaunchInfo {
+                error_count: 1,
+                errors: vec![ide_lsp::jdtls::JavaCompileError {
+                    path: "src/main/java/Main.java".into(),
+                    line: 4,
+                    column: 28,
+                    message: "missingName cannot be resolved to a variable".into(),
+                }],
+                ..Default::default()
+            };
+            let errors = info.errors.clone();
+            apply_external_build_result(&mut info, failure.map(str::to_owned));
+            assert_eq!(info.build, Some(expected));
+            assert_eq!(info.error_count, 1);
+            assert_eq!(info.errors, errors);
+            assert_eq!(info.hints, failure.into_iter().collect::<Vec<_>>());
+        }
+        let mut info = JavaLaunchInfo::default();
+        apply_external_build_result(&mut info, None);
+        assert_eq!(info.build, Some(JavaBuildStatus::Succeeded));
+    }
 
     #[test]
     fn library_scopes_filter_jdt_classpaths_and_module_paths() {

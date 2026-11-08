@@ -120,6 +120,16 @@ it("starts with the last compiled classes for makeAndContinueOnErrors", async ()
   expect(ipc.runStart).toHaveBeenCalled();
 });
 
+it.each([undefined, "automatic", "make", "rebuild"] as const)(
+  "does not launch scoped compilation-error bytecode under %s",
+  async (buildPolicy) => {
+    ipc.javaResolveLaunch.mockResolvedValueOnce({ status: "ok", data: launchInfo("withErrors") });
+    const session = await startRun({ ...config, module: "app", buildPolicy });
+    expect(session?.status).toBe("failed");
+    expect(ipc.runStart).not.toHaveBeenCalled();
+  },
+);
+
 it("finds the source module for an old saved configuration without a module", async () => {
   await startRun({ ...config, cwd: "/outside/modules" });
   expect(ipc.findFiles).toHaveBeenCalledWith("Main.java", 1000);

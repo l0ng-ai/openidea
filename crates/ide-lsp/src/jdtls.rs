@@ -877,8 +877,8 @@ impl LspManager {
             };
             (cp, java_home)
         };
-        let (errors, error_count, scoped) = match build {
-            Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed) => {
+        let (errors, error_count, scoped) = match (build, build_lock_held) {
+            (Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed), _) | (None, true) => {
                 let scope_module = module.to_path_buf();
                 let cp = cp.clone();
                 let scope = tokio::task::spawn_blocking(move || LaunchScope::new(&scope_module, test, cp.as_ref()))
@@ -890,7 +890,9 @@ impl LspManager {
             }
             _ => (Vec::new(), 0, false),
         };
-        let build = if build == Some(JavaBuildStatus::WithErrors) && error_count == 0 && scoped {
+        let build = if build.is_none() && build_lock_held && error_count > 0 {
+            Some(JavaBuildStatus::WithErrors)
+        } else if build == Some(JavaBuildStatus::WithErrors) && error_count == 0 && scoped {
             Some(JavaBuildStatus::Succeeded)
         } else {
             build
