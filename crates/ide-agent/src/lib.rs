@@ -1937,7 +1937,7 @@ fn permission_title(params: &Value) -> String {
         if let Some(command) = call.pointer("/rawInput/command").and_then(Value::as_str).filter(|c| !c.is_empty()) {
             // Network approvals describe the host rather than approving command execution.
             if !title.is_some_and(|t| t.starts_with("Allow network access to ")) {
-                return format!("Run {command}");
+                return format!("Run {}", shell_script(command).unwrap_or_else(|| command.to_owned()));
             }
         }
         if title.is_none()
@@ -1948,6 +1948,45 @@ fn permission_title(params: &Value) -> String {
         }
     }
     title.unwrap_or("The agent asks for permission").to_owned()
+}
+
+/// The script of a `<shell> -c <quoted script>` command line, when the whole line is exactly that.
+pub(crate) fn shell_script(command: &str) -> Option<String> {
+    let (shell, rest) = command.split_once(' ')?;
+    if !matches!(shell.rsplit('/').next(), Some("sh" | "bash" | "zsh")) {
+        return None;
+    }
+    let quoted = rest.strip_prefix("-lc ").or_else(|| rest.strip_prefix("-c "))?;
+    let mut out = String::new();
+    let mut chars = quoted.chars();
+    // Adjacent quoted words, e.g. 'a'\''b' or "a \"b\"".
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    c => out.push(c),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '\\' => match chars.next()? {
+                        c @ ('"' | '\\' | '$' | '`') => out.push(c),
+                        '\n' => {}
+                        c => {
+                            out.push('\\');
+                            out.push(c);
+                        }
+                    },
+                    c => out.push(c),
+                }
+            },
+            '\\' => out.push(chars.next()?),
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// The questions a permission request asks, and whether they answer by question index.
