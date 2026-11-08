@@ -141,7 +141,7 @@ pub fn build_graph(
     progress.report(HeapPhase::Reading, len, len)?;
 
     let ids = builder.build(store, cancel)?;
-    let table = classes::resolve(dumps, class_by_id, &names, &class_names, id_size)?;
+    let table = classes::resolve(dumps, class_by_id, &names, &class_names, id_size, buf.len())?;
     drop((names, class_names));
     let n = ids.len();
     let objects = u64::from(n);

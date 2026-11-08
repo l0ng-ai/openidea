@@ -376,7 +376,7 @@ async function smoke(language: string) {
       const page = await call(commands.debugHeapDominators(snapshot.id, null, row!.classIndex, 0, 1));
       expect(page.rows, `${className} dominator rows`).toHaveLength(1);
       const path = await call(commands.debugHeapPath(snapshot.id, page.rows[0]!.object));
-      const last = path?.at(-1)?.via;
+      const last = path?.steps.at(-1)?.via;
       expect(last?.kind, `path to a GC root: ${JSON.stringify(path)}`).toBe("root");
       await call(commands.debugHeapClose(snapshot.id));
       expect(dirs(), "snapshot directories after close").toEqual([]);
@@ -386,7 +386,7 @@ async function smoke(language: string) {
         `${language}: heap snapshot in ${captureMs} ms (${java}, analysis ${snapshot.summary.analysisMs} ms, ` +
           `${dumpBytes} bytes, ${snapshot.summary.objects} objects; ${phases.join(" → ")}); ` +
           `${className} ${row!.count} / ${row!.shallow} B / retained ${row!.retained} B, ${page.total} reachable; ` +
-          `path ${path!.length} steps to ${last?.kind === "root" ? last.root : "?"}`,
+          `path ${path!.steps.length + path!.omitted} steps to ${last?.kind === "root" ? last.root : "?"}`,
       );
     }
   }

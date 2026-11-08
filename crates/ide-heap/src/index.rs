@@ -20,7 +20,9 @@ use crate::ids::IdMap;
 use crate::shallow::SizeSource;
 
 pub(crate) use self::fields::{id_value, instance_fields};
-pub use self::rows::{HeapClassRow, HeapEdge, HeapObjectPage, HeapObjectRef, HeapObjectRow, HeapPathStep, MAX_PAGE};
+pub use self::rows::{
+    HeapClassRow, HeapEdge, HeapObjectPage, HeapObjectRef, HeapObjectRow, HeapPathStep, HeapRootPath, MAX_PAGE,
+};
 
 /// Counts over instances and arrays; class objects (class dumps) are left out.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]

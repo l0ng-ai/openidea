@@ -36,7 +36,7 @@ pub use hprof::{
 pub use ids::{IdMap, IdMapBuilder};
 pub use index::{
     ClassStat, HeapClassRow, HeapEdge, HeapIndex, HeapObjectPage, HeapObjectRef, HeapObjectRow, HeapPathStep,
-    HeapSummary, MAX_PAGE,
+    HeapRootPath, HeapSummary, MAX_PAGE,
 };
 pub use names::display_name;
 pub use progress::HeapPhase;

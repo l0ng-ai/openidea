@@ -166,6 +166,7 @@ const TAG_UTF8: u8 = 0x01;
 const TAG_LOAD_CLASS: u8 = 0x02;
 const TAG_HEAP_DUMP: u8 = 0x0C;
 const TAG_HEAP_DUMP_SEGMENT: u8 = 0x1C;
+const TAG_HEAP_DUMP_END: u8 = 0x2C;
 /// Tag (u1), timestamp (u4) and body length (u4).
 const RECORD_HEADER_LEN: usize = 9;
 
@@ -193,7 +194,8 @@ pub fn parse_header(buf: &[u8]) -> Result<HprofHeader, HeapError> {
 }
 
 /// Walks every top-level record and, for heap-dump segments, the sub-records inside them.
-/// A record whose length runs past the end of `buf` is `Truncated`.
+/// A record whose length runs past the end of `buf` is `Truncated`, and so are segments that no
+/// HEAP DUMP END follows: HotSpot writes whole segments, so a dump it did not finish ends after one.
 pub fn scan<'a>(
     buf: &'a [u8],
     header: &HprofHeader,
@@ -205,6 +207,7 @@ pub fn scan<'a>(
         return Err(truncated(buf));
     }
     let mut pos = header.body_start;
+    let mut unended_segments = false;
     while pos < buf.len() {
         let mut head = Reader::new(buf, pos, id_size);
         let tag = head.u1()?;
@@ -228,12 +231,18 @@ pub fn scan<'a>(
                 visit(Record::LoadClass { class_id, name_id })?;
             }
             TAG_HEAP_DUMP | TAG_HEAP_DUMP_SEGMENT => {
+                // A single HEAP DUMP (JDK 8, under 2 GB) has no end record.
+                unended_segments |= tag == TAG_HEAP_DUMP_SEGMENT;
                 visit(Record::Segment(start..end))?;
                 walk_segment(buf, start..end, id_size, &mut |at, record| visit(Record::Heap { at, record }))?;
             }
+            TAG_HEAP_DUMP_END => unended_segments = false,
             _ => {}
         }
         pos = end;
+    }
+    if unended_segments {
+        return Err(truncated(buf));
     }
     Ok(())
 }
@@ -740,6 +749,17 @@ mod tests {
         assert!(err.to_string().contains(&bytes.len().to_string()));
     }
 
+    /// HotSpot flushes whole segments, so a JVM killed while dumping leaves a file that ends
+    /// right after one, without HEAP DUMP END.
+    #[test]
+    fn a_dump_the_jvm_did_not_finish_ends_early() {
+        let mut bytes = MiniHeap::new().bytes();
+        bytes.truncate(bytes.len() - RECORD_HEADER_LEN);
+        let err = collect(&bytes).unwrap_err();
+        assert!(matches!(err, HeapError::Truncated { at } if at == bytes.len() as u64), "{err:?}");
+        assert!(err.to_string().starts_with("the dump ends early"), "{err}");
+    }
+
     #[test]
     fn every_prefix_is_ok_or_truncated_at_its_length() {
         let mut heap = MiniHeap::new();
@@ -749,10 +769,12 @@ mod tests {
             .root(HeapRootKind::ThreadObject, 0x10);
         let bytes = heap.bytes();
         let header = parse_header(&bytes).unwrap();
+        let segment = segment_of(&bytes);
         for cut in header.body_start..bytes.len() {
             let prefix = &bytes[..cut];
             match scan(prefix, &header, &mut |_| Ok(())) {
-                Ok(()) => {}
+                // Only a prefix without heap data is a complete (empty) dump.
+                Ok(()) => assert!(cut < segment.start, "cut at {cut} has heap data but no end"),
                 Err(HeapError::Truncated { at }) => assert_eq!(at, cut as u64, "cut at {cut}"),
                 Err(other) => panic!("cut at {cut}: {other:?}"),
             }

@@ -185,5 +185,6 @@
   "This heap snapshot is not available in this window.": "This heap snapshot is not available in this window.",
   "Heap dump": "Heap dump",
   "Cannot open the heap dump": "Cannot open the heap dump",
-  "Cannot save the heap dump": "Cannot save the heap dump"
+  "Cannot save the heap dump": "Cannot save the heap dump",
+  "Path truncated: {count} steps not shown": "Path truncated: {count} steps not shown"
 }

@@ -100,7 +100,7 @@ async fn open_and_query_a_dump() {
     let long_array = below.rows.first().unwrap();
     assert_eq!(long_array.address, "0x1400");
     let path_to_root = debug_heap_path(&f.host, WINDOW, info.id, long_array.object).await.unwrap().unwrap();
-    assert_eq!(path_to_root.len(), 2);
+    assert_eq!(path_to_root.steps.len(), 2);
 
     debug_heap_close(&f.host, WINDOW, info.id).await.unwrap();
     assert!(f.snapshot_dirs().is_empty(), "the index directory goes with the snapshot");
@@ -161,6 +161,19 @@ async fn not_a_dump_is_an_error() {
     assert!(err.message.contains("not a heap dump"), "{}", err.message);
     assert!(f.snapshot_dirs().is_empty());
     assert!(path.is_file());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dump_without_its_end_record_is_an_error() {
+    let f = Fixture::new().await;
+    let path = f.base.join("killed.hprof");
+    let bytes = sample().bytes();
+    // HEAP DUMP END: tag, timestamp and length.
+    std::fs::write(&path, &bytes[..bytes.len() - 9]).unwrap();
+    let err = f.open_with(&path, 1, Channel::new(|_| {})).await.unwrap_err();
+    assert!(err.message.contains("the dump ends early"), "{}", err.message);
+    assert!(f.snapshot_dirs().is_empty());
+    assert!(f.host.heap.list().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

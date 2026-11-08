@@ -1038,7 +1038,12 @@ export const commands = {
 	/**  A page of the dominator tree: under `parent`, of type `classIndex`, or both. */
 	debugHeapDominators: (snapshot: HeapSnapshotId, parent: number | null, classIndex: number | null, offset: number, limit: number) => typedError<HeapObjectPage, IdeError>(__TAURI_INVOKE("debug_heap_dominators", { snapshot, parent, classIndex, offset, limit })),
 	/**  The shortest path from `object` to a GC root; `null` when it is unreachable. */
-	debugHeapPath: (snapshot: HeapSnapshotId, object: HeapObjectRef) => typedError<HeapPathStep[] | null, IdeError>(__TAURI_INVOKE("debug_heap_path", { snapshot, object })),
+	debugHeapPath: (snapshot: HeapSnapshotId, object: HeapObjectRef) => typedError<{
+	steps: HeapPathStep[],
+	/**  Steps left out between `steps[omitted_after - 1]` and `steps[omitted_after]`; 0 for none. */
+	omitted: number,
+	omittedAfter: number,
+} | null, IdeError>(__TAURI_INVOKE("debug_heap_path", { snapshot, object })),
 	debugHeapCompare: (base: HeapSnapshotId, current: HeapSnapshotId) => typedError<HeapClassDiff[], IdeError>(__TAURI_INVOKE("debug_heap_compare", { base, current })),
 	/**  Copies the snapshot's dump to `path`, replacing a file there. */
 	debugHeapSave: (snapshot: HeapSnapshotId, path: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_save", { snapshot, path })),
@@ -4390,6 +4395,14 @@ export type HeapPhase = "reading" | "linking" | "dominators" | "retained" | "pat
 export type HeapProgress = { type: "dumping" } | { type: "analyzing"; phase: HeapPhase; done: number; total: number };
 
 export type HeapRootKind = "unknown" | "jniGlobal" | "jniLocal" | "javaFrame" | "nativeStack" | "stickyClass" | "threadBlock" | "monitorUsed" | "threadObject";
+
+/**  A path from an object up to its GC root. A long one keeps only the steps nearest each end. */
+export type HeapRootPath = {
+	steps: HeapPathStep[],
+	/**  Steps left out between `steps[omitted_after - 1]` and `steps[omitted_after]`; 0 for none. */
+	omitted: number,
+	omittedAfter: number,
+};
 
 export type HeapSnapshotId = number;
 

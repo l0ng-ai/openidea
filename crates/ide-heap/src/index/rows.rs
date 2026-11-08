@@ -83,3 +83,13 @@ pub struct HeapPathStep {
     /// How the next step holds this object; on the last step, the root.
     pub via: HeapEdge,
 }
+
+/// A path from an object up to its GC root. A long one keeps only the steps nearest each end.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HeapRootPath {
+    pub steps: Vec<HeapPathStep>,
+    /// Steps left out between `steps[omitted_after - 1]` and `steps[omitted_after]`; 0 for none.
+    pub omitted: u32,
+    pub omitted_after: u32,
+}

@@ -6560,5 +6560,6 @@
   "This heap snapshot is not available in this window.": "此堆快照在此窗口中不可用。",
   "Heap dump": "堆转储",
   "Cannot open the heap dump": "无法打开堆转储",
-  "Cannot save the heap dump": "无法保存堆转储"
+  "Cannot save the heap dump": "无法保存堆转储",
+  "Path truncated: {count} steps not shown": "路径已截断：{count} 步未显示"
 }

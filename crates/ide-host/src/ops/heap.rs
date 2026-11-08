@@ -9,7 +9,7 @@ use ide_core::{CancellationToken, DebugSessionId, IdeError, IdeResult, IpcPath, 
 use ide_dap::{JvmHeapOutcome, JvmHeapUnavailable};
 use ide_heap::{AnalyzeOptions, HeapError, HeapOrigin, OpenSnapshot};
 pub use ide_heap::{
-    HeapClassDiff, HeapClassRow, HeapObjectPage, HeapObjectRef, HeapPathStep, HeapPhase, HeapSnapshotId,
+    HeapClassDiff, HeapClassRow, HeapObjectPage, HeapObjectRef, HeapPhase, HeapRootPath, HeapSnapshotId,
     HeapSnapshotInfo,
 };
 use serde::{Deserialize, Serialize};
@@ -307,7 +307,7 @@ pub async fn debug_heap_path(
     window: &str,
     snapshot: HeapSnapshotId,
     object: HeapObjectRef,
-) -> IdeResult<Option<Vec<HeapPathStep>>> {
+) -> IdeResult<Option<HeapRootPath>> {
     let snapshot = open_snapshot(host, window, snapshot)?;
     host.blocking(move || Ok(snapshot.index().path_to_root(object))).await
 }

@@ -204,14 +204,38 @@ describe("HeapSnapshotEditor", () => {
       { object: obj(17, "Node"), via: { kind: "root", root: "javaFrame", thread: "main" } },
     ];
     ipc.debugHeapDominators.mockReturnValue(ok(page([obj(16)])));
-    ipc.debugHeapPath.mockReturnValue(ok(steps));
+    ipc.debugHeapPath.mockReturnValue(ok({ steps, omitted: 0, omittedAfter: 0 }));
     show();
     fireEvent.mouseDown(rowOf(classTable(), "Node"));
     fireEvent.mouseDown(rowOf(await screen.findByRole("table", { name: "Biggest objects of Node" }), "Node@0x10"));
     const path = await screen.findByRole("region", { name: "Path to GC Root" });
     expect(await within(path).findByText(".next")).toBeInTheDocument();
     expect(within(path).getByText("Local variable in main")).toBeInTheDocument();
+    expect(within(path).queryByText(/Path truncated/)).not.toBeInTheDocument();
     expect(ipc.debugHeapPath).toHaveBeenCalledWith(7, 16);
+  });
+
+  it("says where a long path to the GC root leaves steps out", async () => {
+    keep(SNAPSHOT);
+    const steps: HeapPathStep[] = [
+      { object: obj(16), via: { kind: "field", name: "next" } },
+      { object: obj(17, "Node"), via: { kind: "field", name: "prev" } },
+      { object: obj(18, "Node"), via: { kind: "root", root: "javaFrame", thread: "main" } },
+    ];
+    ipc.debugHeapDominators.mockReturnValue(ok(page([obj(16)])));
+    ipc.debugHeapPath.mockReturnValue(ok({ steps, omitted: 2000, omittedAfter: 1 }));
+    show();
+    fireEvent.mouseDown(rowOf(classTable(), "Node"));
+    fireEvent.mouseDown(rowOf(await screen.findByRole("table", { name: "Biggest objects of Node" }), "Node@0x10"));
+    const path = await screen.findByRole("region", { name: "Path to GC Root" });
+    const gap = await within(path).findByText(`Path truncated: ${(2000).toLocaleString()} steps not shown`);
+    const rows = within(path).getAllByRole("option");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining(".next"),
+      gap.textContent,
+      expect.stringContaining(".prev"),
+      expect.stringContaining("Local variable in main"),
+    ]);
   });
 
   it("says when the selection is not reachable from a GC root", async () => {

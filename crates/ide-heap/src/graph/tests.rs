@@ -432,6 +432,38 @@ fn edge_count_past_u32_is_too_large() {
     assert!(matches!(accumulate(&mut [0, 1], &cancel), Err(HeapError::Cancelled)));
 }
 
+/// A class with `fields` instance fields, every one named by the same `name_len`-byte UTF8 record.
+fn shared_long_field_names(name_len: usize, fields: usize) -> Vec<u8> {
+    let mut w = HprofWriter::new();
+    let long = "f".repeat(name_len);
+    w.string(1, "java/lang/Object").load_class(0x100, 1).class(0x100, 0, &[], &[]);
+    w.string(2, "Wide").string(3, &long).load_class(0x200, 2);
+    w.class(0x200, 0x100, &vec![(3, BasicType::Int); fields], &[]);
+    w.finish()
+}
+
+#[test]
+fn names_that_would_decode_far_larger_than_the_file_are_refused() {
+    // 128 MiB of names from a file of about 70 KB.
+    let bytes = shared_long_field_names(32 << 10, 4000);
+    assert!(bytes.len() < 100 << 10, "{}", bytes.len());
+    let err = build(&bytes).err().expect("refused");
+    assert!(matches!(err, HeapError::NamesTooLarge), "{err:?}");
+}
+
+#[test]
+fn a_name_longer_than_the_jvm_allows_is_refused() {
+    let mut w = HprofWriter::new();
+    w.string(1, &"C".repeat(70_000)).load_class(0x100, 1).class(0x100, 0, &[], &[]);
+    assert!(matches!(build(&w.finish()), Err(HeapError::NamesTooLarge)));
+}
+
+#[test]
+fn real_sized_names_shared_by_many_fields_are_fine() {
+    let g = build(&shared_long_field_names(40, 4000)).unwrap();
+    assert_eq!(g.classes[class(&g, "Wide").0 as usize].fields.len(), 4000);
+}
+
 proptest! {
     #[test]
     fn build_graph_never_panics_on_mutated_dumps(flips in proptest::collection::vec((0usize..4096, any::<u8>()), 1..12)) {

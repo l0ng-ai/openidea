@@ -1,35 +1,53 @@
 //! Paths to GC roots, along the BFS tree of `gc_parent`.
 
-use super::{HeapEdge, HeapIndex, HeapObjectRef, HeapPathStep, id_value, instance_fields};
+use super::{HeapEdge, HeapIndex, HeapObjectRef, HeapPathStep, HeapRootPath, id_value, instance_fields};
 use crate::column::NONE;
 use crate::hprof::{BasicType, HeapRecord, HeapRootKind};
 use crate::strings::{char_array_text, string_preview};
 
 const THREAD_NAME_CHARS: usize = 100;
 
+/// Steps a long path keeps at each end: one deep in a long linked list would otherwise send
+/// every node over IPC.
+const PATH_END_STEPS: u32 = 500;
+
 impl HeapIndex {
-    /// From `object` up to its GC root, each step with how the next one holds it. `None` for an
-    /// unreachable object or a ref that names no object.
-    pub fn path_to_root(&self, object: HeapObjectRef) -> Option<Vec<HeapPathStep>> {
+    /// From `object` up to its GC root, each step with how the next one holds it; past 1000
+    /// steps, only the 500 at each end. `None` for an unreachable object or a ref that names no
+    /// object.
+    pub fn path_to_root(&self, object: HeapObjectRef) -> Option<HeapRootPath> {
         let root = self.root();
         let mut v = object.0;
         if v >= root || self.gc_parent[v as usize] == NONE {
             return None;
         }
-        let mut steps = Vec::new();
-        // A BFS tree has no cycles; the bound only stops a corrupt column from looping.
-        for _ in 0..root {
+        let len = self.path_len(v)?;
+        let end = PATH_END_STEPS;
+        let cut = len > 2 * end;
+        let mut steps = Vec::with_capacity(len.min(2 * end) as usize);
+        for i in 0..len {
             let parent = self.gc_parent[v as usize];
-            let via = if parent == root {
-                self.root_edge(v)
-            } else if parent < root {
-                self.edge(parent, v)
-            } else {
-                return None;
-            };
-            steps.push(HeapPathStep { object: self.object_row(HeapObjectRef(v))?, via });
+            if !cut || i < end || i >= len - end {
+                let via = if parent == root { self.root_edge(v) } else { self.edge(parent, v) };
+                steps.push(HeapPathStep { object: self.object_row(HeapObjectRef(v))?, via });
+            }
+            v = parent;
+        }
+        let omitted = if cut { len - 2 * end } else { 0 };
+        Some(HeapRootPath { steps, omitted, omitted_after: if cut { end } else { 0 } })
+    }
+
+    /// Steps from `v` to the root; `None` when `gc_parent` leads nowhere.
+    fn path_len(&self, mut v: u32) -> Option<u32> {
+        let root = self.root();
+        // A BFS tree has no cycles; the bound only stops a corrupt column from looping.
+        for len in 1..=root {
+            let parent = self.gc_parent[v as usize];
             if parent == root {
-                return Some(steps);
+                return Some(len);
+            }
+            if parent > root {
+                return None;
             }
             v = parent;
         }

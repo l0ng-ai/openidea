@@ -19,8 +19,9 @@ fn retained(page: &HeapObjectPage) -> Vec<u64> {
 }
 
 fn path(index: &HeapIndex, addr: u64) -> Option<Vec<(String, HeapEdge)>> {
-    let steps = index.path_to_root(obj(index, addr))?;
-    Some(steps.into_iter().map(|s| (s.object.address, s.via)).collect())
+    let path = index.path_to_root(obj(index, addr))?;
+    assert_eq!((path.omitted, path.omitted_after), (0, 0));
+    Some(path.steps.into_iter().map(|s| (s.object.address, s.via)).collect())
 }
 
 fn field(name: &str) -> HeapEdge {
@@ -124,6 +125,37 @@ fn path_to_root_names_fields_and_root() {
     );
     assert_eq!(path(&index, W), Some(vec![("0x1600".to_owned(), root(HeapRootKind::JniGlobal, None))]));
     assert_eq!(path(&index, N4), None);
+}
+
+/// A rooted linked list of `len` Nodes from `0x100000`, each held by the next one's `next`.
+fn chain(len: u64) -> HeapIndex {
+    let mut heap = sample();
+    for i in 0..len {
+        let next = if i == 0 { 0 } else { 0x10_0000 + (i - 1) * 0x20 };
+        heap.object(0x10_0000 + i * 0x20, "Node", &[("next", next)]);
+    }
+    heap.root(HeapRootKind::JniGlobal, 0x10_0000 + (len - 1) * 0x20);
+    analyzed(&heap)
+}
+
+#[test]
+fn path_of_an_object_deep_in_a_linked_list_keeps_both_ends() {
+    let index = chain(3000);
+    let path = index.path_to_root(obj(&index, 0x10_0000)).unwrap();
+    assert_eq!((path.steps.len(), path.omitted, path.omitted_after), (1000, 2000, 500));
+    let address = |i: usize| path.steps[i].object.address.clone();
+    assert_eq!([address(0), address(499)], ["0x100000", "0x103e60"]);
+    // The step after the gap is the one 2000 nodes further up.
+    assert_eq!([address(500), address(999)], ["0x113880", "0x1176e0"]);
+    assert_eq!(path.steps[999].via, root(HeapRootKind::JniGlobal, None));
+    assert!(path.steps[..999].iter().all(|s| s.via == field("next")));
+}
+
+#[test]
+fn path_of_exactly_a_thousand_steps_is_whole() {
+    let index = chain(1000);
+    let path = index.path_to_root(obj(&index, 0x10_0000)).unwrap();
+    assert_eq!((path.steps.len(), path.omitted, path.omitted_after), (1000, 0, 0));
 }
 
 #[test]

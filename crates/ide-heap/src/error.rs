@@ -15,6 +15,8 @@ pub enum HeapError {
     MissingClass { id: u64, at: u64 },
     #[error("the heap has too many objects to analyze")]
     TooLarge,
+    #[error("the dump's class and field names are too long; it is not a dump a JVM wrote")]
+    NamesTooLarge,
     #[error("not enough disk space: {needed} bytes needed, {available} free")]
     NotEnoughDiskSpace { needed: u64, available: u64 },
     #[error("cancelled")]

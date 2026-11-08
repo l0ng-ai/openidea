@@ -3,8 +3,8 @@
 use crate::state::AppState;
 use ide_core::{DebugSessionId, IdeResult, IpcPath, RequestId};
 use ide_host::ops::heap::{
-    HeapCaptureResult, HeapClassDiff, HeapClassRow, HeapObjectPage, HeapObjectRef, HeapOpenResult, HeapPathStep,
-    HeapProgress, HeapSnapshotId,
+    HeapCaptureResult, HeapClassDiff, HeapClassRow, HeapObjectPage, HeapObjectRef, HeapOpenResult, HeapProgress,
+    HeapRootPath, HeapSnapshotId,
 };
 use tauri::ipc::Channel;
 use tauri::{State, Window};
@@ -91,7 +91,7 @@ pub async fn debug_heap_path(
     state: State<'_, AppState>,
     snapshot: HeapSnapshotId,
     object: HeapObjectRef,
-) -> IdeResult<Option<Vec<HeapPathStep>>> {
+) -> IdeResult<Option<HeapRootPath>> {
     ide_host::ops::heap::debug_heap_path(&state.host, window.label(), snapshot, object).await
 }
 

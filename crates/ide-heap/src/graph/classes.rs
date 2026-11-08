@@ -32,20 +32,45 @@ pub(super) struct ClassTable {
     pub(super) fielded: Vec<u32>,
 }
 
+/// The longest name a JVM gives a class or field (a constant pool UTF8 has a `u2` length).
+const MAX_NAME_BYTES: usize = 65_535;
+/// Name bytes a dump may decode beyond 4 per byte of the file.
+const NAME_BUDGET_FLOOR: usize = 64 << 20;
+
+/// Names decoded from the UTF8 records within a budget: every field of every class may name the
+/// same record, so a small crafted file could otherwise ask for terabytes and abort the IDE.
+struct Names<'m, 'b> {
+    records: &'m IdHash<&'b [u8]>,
+    left: usize,
+}
+
+impl Names<'_, '_> {
+    /// Empty for an id with no record.
+    fn text(&mut self, id: u64) -> Result<String, HeapError> {
+        let Some(bytes) = self.records.get(&id) else { return Ok(String::new()) };
+        if bytes.len() > MAX_NAME_BYTES || bytes.len() > self.left {
+            return Err(HeapError::NamesTooLarge);
+        }
+        self.left -= bytes.len();
+        Ok(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
 /// `dumps` holds one dump per class id, and `by_id` its position; `names` are the UTF8 records
-/// and `class_names` the LOAD CLASS class id → name id pairs.
+/// and `class_names` the LOAD CLASS class id → name id pairs. `file_len` bounds the name bytes.
 pub(super) fn resolve(
     dumps: Vec<ClassDump>,
     by_id: IdHash<u32>,
     names: &IdHash<&[u8]>,
     class_names: &IdHash<u64>,
     id_size: u8,
+    file_len: usize,
 ) -> Result<ClassTable, HeapError> {
     // Room for the synthetic java.lang.Class and the primitive slots in a `u32` type id.
     if dumps.len() > (u32::MAX - PRIM_SLOTS - 1) as usize {
         return Err(HeapError::TooLarge);
     }
-    let text = |id: u64| names.get(&id).map(|t| String::from_utf8_lossy(t).into_owned()).unwrap_or_default();
+    let mut names = Names { records: names, left: file_len.saturating_mul(4).saturating_add(NAME_BUDGET_FLOOR) };
     let mut supers: Vec<Option<u32>> =
         dumps.iter().map(|d| if d.super_id == 0 { None } else { by_id.get(&d.super_id).copied() }).collect();
     cut_super_cycles(&mut supers);
@@ -55,10 +80,11 @@ pub(super) fn resolve(
     let mut own_bytes = Vec::with_capacity(dumps.len() + 1);
     for (dump, super_index) in dumps.into_iter().zip(supers) {
         let name = match class_names.get(&dump.id) {
-            Some(&name_id) if names.contains_key(&name_id) => text(name_id).replace('/', "."),
+            Some(&name_id) if names.records.contains_key(&name_id) => names.text(name_id)?.replace('/', "."),
             _ => format!("{:#x}", dump.id),
         };
-        let fields: Vec<(String, BasicType)> = dump.fields.iter().map(|&(n, ty)| (text(n), ty)).collect();
+        let fields =
+            dump.fields.iter().map(|&(n, ty)| Ok((names.text(n)?, ty))).collect::<Result<Vec<_>, HeapError>>()?;
         let weak_field = if name == REFERENCE {
             fields.iter().position(|(n, ty)| n == "referent" && *ty == BasicType::Object)
         } else {
@@ -79,7 +105,11 @@ pub(super) fn resolve(
             name,
             super_index,
             fields,
-            statics: dump.statics.iter().map(|&(n, object)| (text(n), object)).collect(),
+            statics: dump
+                .statics
+                .iter()
+                .map(|&(n, object)| Ok((names.text(n)?, object)))
+                .collect::<Result<_, HeapError>>()?,
             static_bytes: dump.static_bytes,
             weak_field,
         });
