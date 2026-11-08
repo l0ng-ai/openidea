@@ -1,4 +1,5 @@
 {
+  "Skills": "技能",
   "Identifiers": "标识符",
   "Parameter": "参数",
   "Package reference": "包引用",
@@ -6804,9 +6805,7 @@
   "Always allowed": "已设为始终允许",
   "Declined": "已拒绝",
   "Always declined": "已设为始终拒绝",
-  "Cancel Hot Swap Build": "取消 Hot Swap 构建",
-  "Stop the compile a Reload Changed Classes action is waiting on": "停止 Reload Changed Classes 正在等待的编译",
-  "Hot Swap cancelled": "Hot Swap 已取消",
+  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "分支 '{name}' 被位于 {path} 的工作树签出。\n删除该工作树和分支？其文件夹将被删除。",
   "Maven Goals": "Maven 目标",
   "Gradle Tasks": "Gradle 任务",
   "MCP Server": "MCP 服务器",
@@ -6830,5 +6829,14 @@
   "Could not send the answer: {0}": "无法发送回复：{0}",
   "Deny": "拒绝",
   "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.": "智能体可通过内置工具读取、编辑和运行 OpenIDEA 中打开的项目。运行工具会请求确认。服务器仅监听 127.0.0.1，并需要令牌。",
-  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "分支 '{name}' 被位于 {path} 的工作树签出。\n删除该工作树和分支？其文件夹将被删除。"
+  "OpenIDEA could not start": "OpenIDEA 无法启动",
+  "Copy the details below and include them in a GitHub issue.": "请复制下方详情，并附在 GitHub 问题中。",
+  "Report an issue": "报告问题",
+  "Copy details": "复制详情",
+  "Could not copy. Select the details below and copy them.": "无法复制。请选择下方详情并手动复制。",
+  "Startup error details": "启动错误详情",
+  "Startup did not finish within 30 seconds.": "启动未在 30 秒内完成。",
+  "Cancel Hot Swap Build": "取消 Hot Swap 构建",
+  "Stop the compile a Reload Changed Classes action is waiting on": "停止 Reload Changed Classes 正在等待的编译",
+  "Hot Swap cancelled": "Hot Swap 已取消"
 }
