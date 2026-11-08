@@ -744,6 +744,12 @@ struct MarkerIconDecl {
     icon: PathBuf,
     #[serde(default)]
     icon_dark: Option<PathBuf>,
+    /// Key prefixes of document-indexer markers drawn with this icon.
+    #[serde(default)]
+    markers: Vec<String>,
+    /// Shown above the targets of those markers.
+    #[serde(default)]
+    tooltip: Option<String>,
 }
 
 pub(super) fn marker_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
@@ -753,7 +759,25 @@ pub(super) fn marker_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, St
     if d.icon.to_string_lossy().len() > 256 {
         return Err("marker icon paths are up to 256 bytes".into());
     }
-    let mut out = UiDecl::new(d.id.clone(), d.id.clone(), serde_json::json!({ "id": d.id, "icon": d.icon }));
+    if d.markers.len() > MAX_PATTERNS || d.markers.iter().any(|m| m.is_empty() || m.len() > 256) {
+        return Err(format!(
+            "marker icon {:?}: `markers` lists up to {MAX_PATTERNS} key prefixes of 1–256 bytes",
+            d.id
+        ));
+    }
+    if let Some(tooltip) = &d.tooltip {
+        if d.markers.is_empty() {
+            return Err(format!("marker icon {:?}: `tooltip` applies to indexed markers; set `markers`", d.id));
+        }
+        if tooltip.trim().is_empty() || tooltip.len() > MAX_TITLE {
+            return Err(format!("marker icon {:?}: tooltips are 1–{MAX_TITLE} bytes", d.id));
+        }
+    }
+    let mut out = UiDecl::new(
+        d.id.clone(),
+        d.id.clone(),
+        serde_json::json!({ "id": d.id, "icon": d.icon, "markers": d.markers, "tooltip": d.tooltip }),
+    );
     for (path, variant) in [(Some(&d.icon), "light"), (d.icon_dark.as_ref(), "dark")] {
         let Some(path) = path else { continue };
         let svg = super::icons::read_icon(pkg, path, super::icons::MAX_SVG)?;

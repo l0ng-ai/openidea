@@ -43,7 +43,7 @@ it("invalidates both changed files and markers targeting them", () => {
         {
           path: "/p/A.xml",
           version: 1,
-          markers: [{ range, targets: [{ path: "/p/A.java", range }] }],
+          markers: [{ range, targets: [{ path: "/p/A.java", range }], pluginId: "p", icon: null }],
         },
       ],
     ]),

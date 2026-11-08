@@ -55,6 +55,7 @@ import {
   usePlugins,
 } from "./store";
 import { useProject } from "@/platform/project";
+import { openExternalUrl } from "@/platform/openUrl";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
 import styles from "./PluginsPage.module.css";
@@ -328,6 +329,34 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
   );
 }
 
+function Homepage({ value }: { value: string }) {
+  let isWebUrl = false;
+  try {
+    const { protocol } = new URL(value);
+    isWebUrl = protocol === "http:" || protocol === "https:";
+  } catch {
+    // Malformed manifest values remain readable as plain text.
+  }
+  return (
+    <dd className={clsx(styles.mono, styles.homepage)}>
+      {isWebUrl ? (
+        <a
+          href={value}
+          className={styles.homepageLink}
+          onClick={(event) => {
+            event.preventDefault();
+            void openExternalUrl(value);
+          }}
+        >
+          {value}
+        </a>
+      ) : (
+        value
+      )}
+    </dd>
+  );
+}
+
 function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   const busy = usePlugins((s) => !!s.busy[plugin.id]);
   const status = STATUS[plugin.status];
@@ -362,7 +391,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             <dt>
               <T>Homepage</T>
             </dt>
-            <dd className={styles.mono}>{plugin.homepage}</dd>
+            <Homepage value={plugin.homepage} />
           </>
         )}
       </dl>
@@ -503,6 +532,14 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
           <T>Code</T>
         </dt>
         <dd>{entry.hasCode ? tx("WebAssembly component (sandboxed)") : tx("None — contributions only")}</dd>
+        {entry.homepage && (
+          <>
+            <dt>
+              <T>Homepage</T>
+            </dt>
+            <Homepage value={entry.homepage} />
+          </>
+        )}
         {contributes.length > 0 && (
           <>
             <dt>
