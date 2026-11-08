@@ -13,9 +13,9 @@
 //! macro event operator key heading impl extension.
 
 use super::Grammar;
-use super::lines::LineIndex;
+use super::lines::{LineIndex, shift_range};
 use crate::SymbolTag;
-use ide_core::{OutlineItem, SymbolKind, Visibility};
+use ide_core::{LanguageId, OutlineItem, Pos, SymbolKind, Visibility};
 use std::collections::HashMap;
 use tree_sitter::{Node, Query, QueryCursor, StreamingIterator, Tree};
 
@@ -294,6 +294,69 @@ pub(crate) fn outline(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) ->
         }
     }
     collect(g, q, tree, text).into_iter().map(convert).collect()
+}
+
+/// [`outline`], plus, for the HTML grammar, each inline `<script>` region's
+/// TS/JS declarations nested under its `script` entry and shifted to document
+/// coordinates (Vue SFC / HTML documents). `block` outlines one region's
+/// language, answering in region-local coordinates.
+pub(crate) fn outline_nested(
+    g: &Grammar,
+    q: &OutlineQuery,
+    tree: &Tree,
+    text: &str,
+    block: &impl Fn(&LanguageId, &str) -> Vec<OutlineItem>,
+) -> Vec<OutlineItem> {
+    let mut items = outline(g, q, tree, text);
+    if g.spec.name != "html" {
+        return items;
+    }
+    let lines = LineIndex::new(text);
+    for region in super::sfc::script_regions(tree, text) {
+        let mut decls = block(&region.language, &region.text);
+        if decls.is_empty() {
+            continue;
+        }
+        let base = lines.pos(region.base);
+        shift_outline(&mut decls, base);
+        if !attach_script(&mut items, base, &mut Some(decls)) {
+            // The region and the entry come from the same `script_element` node,
+            // so this means the outline query no longer matches script elements.
+            tracing::debug!("outline: no script entry for the <script> region at byte {}", region.base);
+        }
+    }
+    items
+}
+
+/// Recursively shifts region-local positions in `items` to document coordinates.
+fn shift_outline(items: &mut [OutlineItem], base: Pos) {
+    for item in items {
+        item.range = shift_range(item.range, base);
+        item.selection_range = shift_range(item.selection_range, base);
+        shift_outline(&mut item.children, base);
+    }
+}
+
+/// Nests `decls` under the innermost `script` entry covering `base`. The
+/// region and the entry both come from the same `script_element` node, so the
+/// entry always exists; a miss means the outline query no longer matches it.
+fn attach_script(items: &mut [OutlineItem], base: Pos, decls: &mut Option<Vec<OutlineItem>>) -> bool {
+    let covers = |range: &ide_core::Range| {
+        (range.start.line, range.start.col) <= (base.line, base.col)
+            && (base.line, base.col) < (range.end.line, range.end.col)
+    };
+    for item in items.iter_mut() {
+        if item.name == "script" && covers(&item.range) {
+            item.children.extend(decls.take().unwrap_or_default());
+            return true;
+        }
+    }
+    for item in items.iter_mut() {
+        if attach_script(&mut item.children, base, decls) {
+            return true;
+        }
+    }
+    false
 }
 
 pub(crate) fn tags(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Vec<SymbolTag> {

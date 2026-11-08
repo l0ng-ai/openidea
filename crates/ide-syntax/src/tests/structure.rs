@@ -287,3 +287,52 @@ fn identifiers_in_files_loads_in_parallel_and_skips_misses() {
     let got: Vec<(String, usize)> = found.iter().map(|f| (f.path.display().to_string(), f.occurrences.len())).collect();
     assert_eq!(got, [("/p/a.ts".to_owned(), 1), ("/p/d.rs".to_owned(), 2)]);
 }
+
+// ---------------------------------------------------------------------------
+// Vue SFC / HTML: answers from the inline <script> regions' block grammars
+
+#[test]
+fn web_containers_support_the_tree_and_locals() {
+    let s = service();
+    for id in ["vue", "html"] {
+        let support = s.support(&lang(id));
+        assert!(support.tree, "{id}");
+        assert!(support.locals, "{id}");
+    }
+    let rust = s.support(&lang("rust"));
+    assert!(rust.tree && rust.locals, "languages with their own grammar are unchanged");
+    let plain = s.support(&lang("plaintext"));
+    assert!(!plain.tree && !plain.locals);
+}
+
+#[test]
+fn node_at_inside_a_script_region_answers_from_the_block_grammar() {
+    let src = "<template>\n  <div>{{ n }}</div>\n</template>\n<script lang=\"ts\">\nconst size = 1;\n</script>\n";
+    let vue = lang("vue");
+    // `size` inside the script: a TypeScript identifier, at document coordinates.
+    let at = service().node_at(&snap(&vue, src), occ(src, "size", 1), &none()).unwrap().unwrap();
+    assert_eq!(at.node.kind, "identifier");
+    assert_eq!(at.node.range, occ(src, "size", 1), "document coordinates");
+    assert_eq!(at.node.field.as_deref(), Some("name"));
+    // Template markup is not TypeScript: an empty answer, not markup nodes.
+    assert!(service().node_at(&snap(&vue, src), occ(src, "div", 1), &none()).unwrap().is_none());
+}
+
+#[test]
+fn locals_inside_a_script_region_shift_every_range() {
+    let src = "<template><div/></template>\n<script lang=\"ts\">\nfunction f() {\n  let count = 0;\n  count += 1;\n}\n</script>\n";
+    let vue = lang("vue");
+    let byte = occurrences(src, "count")[0];
+    let l = service().locals(&snap(&vue, src), pos_of(src, byte), &none()).unwrap();
+    let Locals::Local { symbol } = l else {
+        panic!("expected a local, got {l:?}");
+    };
+    assert_eq!(symbol.name, "count");
+    assert!(symbol.certain);
+    assert_eq!(symbol.definition, occ(src, "count", 1), "definition in document coordinates");
+    assert_eq!(symbol.references, vec![occ(src, "count", 2)], "references in document coordinates");
+    // Template: no TypeScript identifier here, so nothing local.
+    let byte = occurrences(src, "div")[0];
+    let l = service().locals(&snap(&vue, src), pos_of(src, byte), &none()).unwrap();
+    assert!(matches!(l, Locals::NoIdentifier));
+}

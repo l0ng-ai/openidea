@@ -759,6 +759,7 @@ fn outline_html_css_xml() {
           Field body
             Field div
             Field script
+              Variable a
         ",
     );
     check_outline(
@@ -1544,4 +1545,71 @@ fn script_regions_tolerate_deep_markup() {
     let regions = syntax().script_regions(&lang("html"), &src);
     assert_eq!(regions.len(), 1);
     assert_eq!(regions[0].base, src.find("const").unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// Outline with nested <script> declarations (Vue SFC / HTML)
+
+#[test]
+fn html_outline_nests_script_declarations() {
+    let src = "<html><body>\n<script>\nfunction boot() {}\nconst app = 1;\n</script>\n\
+               <script type=\"application/json\">{\"a\": 1}</script>\n</body></html>";
+    check_outline(
+        "html",
+        src,
+        "
+        Field html
+          Field body
+            Field script
+              Function boot
+              Constant app
+            Field script
+        ",
+    );
+}
+
+#[test]
+fn vue_outline_nests_script_declarations_without_a_grammar() {
+    let src = "<template>\n  <div class=\"app\"/>\n</template>\n\
+               <script setup lang=\"ts\">\ninterface Props { size: number }\nfunction scale(n: number) {}\n</script>\n\
+               <style scoped>\n.app { color: red }\n</style>";
+    check_outline(
+        "vue",
+        src,
+        "
+        Field template
+        Field script
+          Interface Props
+            Property size
+          Function scale
+        Field style
+        ",
+    );
+}
+
+#[test]
+fn script_outline_positions_are_document_coordinates() {
+    use super::lines::LineIndex;
+    let src = "<template><!-- 😀 --></template>\r\n<script lang=\"ts\">\r\nconst answer = 42;\r\n</script>";
+    let outline = syntax().outline(&lang("vue"), src);
+    let decl = &outline.iter().find(|i| i.name == "script").unwrap().children[0];
+    // Cross-check against the document's own byte -> UTF-16 conversion.
+    let idx = LineIndex::new(src);
+    let at = src.find("answer").unwrap();
+    assert_eq!(decl.selection_range, idx.range(at, at + "answer".len()));
+    // `@def.constant` captures the declarator (`answer = 42`), not the `const` keyword.
+    assert_eq!(decl.range, idx.range(at, src.find("42;").unwrap() + 2));
+}
+
+#[test]
+fn cached_outline_matches_syntax_outline_for_web_documents() {
+    use ide_core::DocId;
+    use std::sync::Arc;
+    let cache = SyntaxCache::new(Arc::new(Syntax::new()));
+    let id = DocId::next();
+    let src = "<template><div/></template>\n<script lang=\"ts\">\nconst app = 1;\n</script>\n";
+    cache.open(id, &lang("vue"), 0);
+    assert_eq!(cache.outline(id, &lang("vue"), 0, src), syntax().outline(&lang("vue"), src));
+    cache.open(id, &lang("html"), 0);
+    assert_eq!(cache.outline(id, &lang("html"), 0, src), syntax().outline(&lang("html"), src));
 }

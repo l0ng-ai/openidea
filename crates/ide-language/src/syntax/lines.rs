@@ -96,6 +96,19 @@ pub(crate) fn byte_at(text: &str, pos: Pos) -> Option<usize> {
     Some(start + utf16_to_byte(&text[start..line_end], pos.col as usize))
 }
 
+/// Shifts a position from a document suffix that starts at `base` into document
+/// coordinates: the suffix's first line continues `base`'s line, later lines
+/// add the base line. Used to map inline `<script>` region answers (Vue SFC /
+/// HTML) back onto the whole document; positions are 0-based lines / UTF-16 cols.
+pub fn shift_pos(pos: Pos, base: Pos) -> Pos {
+    if pos.line == 0 { Pos::new(base.line, base.col + pos.col) } else { Pos::new(base.line + pos.line, pos.col) }
+}
+
+/// [`shift_pos`] for both ends of a range.
+pub fn shift_range(range: Range, base: Pos) -> Range {
+    Range::new(shift_pos(range.start, base), shift_pos(range.end, base))
+}
+
 pub(crate) fn utf16_to_byte(s: &str, offset: usize) -> usize {
     let mut units = 0;
     for (i, c) in s.char_indices() {
@@ -158,6 +171,18 @@ mod tests {
         for off in [1usize, 3, 4, 9999, 40_001] {
             assert_eq!(idx.byte_of_utf16(off as u32), utf16_to_byte(&text, off), "offset {off}");
         }
+    }
+
+    #[test]
+    fn shifts_suffix_positions_into_document_coordinates() {
+        let base = Pos::new(3, 7);
+        assert_eq!(shift_pos(Pos::new(0, 2), base), Pos::new(3, 9));
+        assert_eq!(shift_pos(Pos::new(0, 0), base), base);
+        assert_eq!(shift_pos(Pos::new(2, 1), base), Pos::new(5, 1));
+        assert_eq!(
+            shift_range(Range::new(Pos::new(0, 1), Pos::new(1, 4)), base),
+            Range::new(Pos::new(3, 8), Pos::new(4, 4))
+        );
     }
 
     #[test]

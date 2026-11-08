@@ -195,8 +195,16 @@ impl SyntaxCache {
             || {
                 self.with_tree(doc, lang, version, text, |g, tree, text| {
                     let query = g.outline_query()?;
-                    Some(outline::outline(g, query, tree, text))
+                    // HTML documents answer from the cached tree, with nested
+                    // <script> declarations.
+                    Some(outline::outline_nested(g, query, tree, text, &|rl, rt| self.syntax.outline(rl, rt)))
                 })
+                // Web containers (Vue SFC / Svelte / JSP) have no grammar of their
+                // own, hence no cached tree: the syntax layer answers with a fresh
+                // HTML parse, which the memo covers per version.
+                // shortcut: no incremental re-parse for containers, upgrade when
+                // their trees join the cache.
+                .or_else(|| self.syntax.web_outline(lang, text))
                 .or_else(|| super::external::outline(lang, text))
             },
         )
