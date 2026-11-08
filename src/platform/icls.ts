@@ -1,5 +1,13 @@
 /** IntelliJ editor schemes. Unsupported keys are counted, never copied into CSS. */
-import { ATTRIBUTES, CLEAR_COLOR, customSchemes, isHexColor, listSchemes, resolvedSchemeTokens } from "./colorScheme";
+import {
+  ATTRIBUTES,
+  CLEAR_COLOR,
+  customSchemes,
+  isHexColor,
+  listSchemes,
+  resolvedAttribute,
+  resolvedSchemeTokens,
+} from "./colorScheme";
 import { isBuiltinTheme, themeKind } from "./themes";
 import type { CustomColorScheme, CustomColorSchemes, TextAttributesOverride } from "./editorSettings";
 
@@ -370,6 +378,11 @@ export function exportIcls(
   const custom = customSchemes(customs)[id];
   const name = listSchemes(customs).find((s) => s.id === id)?.name ?? id;
   const tokens = resolvedSchemeTokens(id, customs);
+  const tokenEffect = (attr: (typeof ATTRIBUTES)[number]): TextAttributesOverride => {
+    if (!attr.token) return {};
+    const { effect, effectColor } = resolvedAttribute(id, attr.id, customs);
+    return { effect, effectColor };
+  };
   const values = (attr: (typeof ATTRIBUTES)[number]): TextAttributesOverride => ({
     ...(attr.token
       ? {
@@ -386,6 +399,7 @@ export function exportIcls(
     ...(attr.fg && isHexColor(tokens.get(attr.fg)) ? { foreground: tokens.get(attr.fg) } : {}),
     ...(attr.bg && isHexColor(tokens.get(attr.bg)) ? { background: tokens.get(attr.bg) } : {}),
     ...(attr.effect && isHexColor(tokens.get(attr.effect)) ? { effectColor: tokens.get(attr.effect) } : {}),
+    ...tokenEffect(attr),
     ...custom?.attributes[attr.id],
     ...overrides[attr.id],
   });

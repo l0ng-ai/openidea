@@ -169,6 +169,42 @@ describe(".icls schemes", () => {
     expect(parseIcls(xml).scheme.attributes.error).toBeUndefined();
   });
 
+  it("round trips the Islands Light doc comment tag underline", () => {
+    const xml = exportIcls("light", {});
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const tag = doc.querySelector('option[name="DEFAULT_DOC_COMMENT_TAG"]');
+    expect(tag?.querySelector('option[name="EFFECT_TYPE"]')?.getAttribute("value")).toBe("1");
+    expect(tag?.querySelector('option[name="EFFECT_COLOR"]')?.getAttribute("value")).toBe("999999");
+    const scheme = parseIcls(xml).scheme;
+    expect(scheme.attributes.docCommentTag).toMatchObject({ effect: "underline", effectColor: "#999999" });
+    const imported = parseIcls(exportIcls("custom-docs", { "custom-docs": scheme })).scheme;
+    expect(imported.attributes.docCommentTag).toEqual(scheme.attributes.docCommentTag);
+  });
+
+  it("round trips language effects and exports none without changing shared state", () => {
+    const scheme = parseIcls(`<scheme name="Effects"><attributes>
+      <option name="JAVA_DOC_TAG"><value><option name="FOREGROUND" value="112233"/><option name="EFFECT_COLOR" value="abcdef"/><option name="EFFECT_TYPE" value="2"/></value></option>
+    </attributes></scheme>`).scheme;
+    const customs = { "custom-effects": scheme };
+    const overrides = {
+      keyword: { effect: "underline" as const },
+      number: { effect: "none" as const, effectColor: "#ff0000" },
+      "java.string": { effect: "strikeout" as const },
+    };
+    const before = structuredClone({ customs, overrides });
+    const xml = exportIcls("custom-effects", customs, overrides);
+    expect({ customs, overrides }).toEqual(before);
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    expect(doc.querySelector('option[name="DEFAULT_NUMBER"] option[name="EFFECT_TYPE"]')).toBeNull();
+    const imported = parseIcls(xml).scheme;
+    expect(imported.attributes["java.docCommentTag"]).toMatchObject({ effect: "wave", effectColor: "#abcdef" });
+    expect(imported.attributes["java.string"]).toMatchObject({ effect: "strikeout" });
+    expect(imported.attributes.number?.effect).toBeUndefined();
+    const roundTrip = parseIcls(exportIcls("custom-effects", { "custom-effects": imported })).scheme;
+    expect(roundTrip.attributes["java.docCommentTag"]).toEqual(imported.attributes["java.docCommentTag"]);
+    expect(roundTrip.attributes["java.string"]).toEqual(imported.attributes["java.string"]);
+  });
+
   it("imports PyCharm dot keys after shared defaults without inherited font effects", () => {
     const xml = `<scheme name="Python"><attributes>
       <option name="PY.KEYWORD"><value><option name="FOREGROUND" value="112233"/></value></option>
