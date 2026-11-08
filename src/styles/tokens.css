@@ -116,6 +116,11 @@ html {
   --syn-comment: #7a7e85;
   --syn-comment-style: normal;
   --syn-doc-comment: #5f826b;
+  --syn-doc-comment-tag: #67a37c;
+  --syn-doc-comment-tag-effect: none;
+  --syn-doc-comment-tag-value: #abadb3;
+  --syn-doc-markup: #68a67e;
+  --syn-doc-markup-bg: transparent;
   --syn-docstring: #5f826b;
   --syn-annotation: #b3ae60;
   --syn-decorator: #b3ae60;
@@ -523,6 +528,11 @@ html {
   --syn-comment: #8c8c8c;
   --syn-comment-style: italic;
   --syn-doc-comment: #8c8c8c;
+  --syn-doc-comment-tag: #8c8c8c;
+  --syn-doc-comment-tag-effect: underline #999999;
+  --syn-doc-comment-tag-value: #3d3d3d;
+  --syn-doc-markup: #8c8c8c;
+  --syn-doc-markup-bg: #e2ffe2;
   --syn-docstring: #067d17;
   --syn-annotation: #9e880d;
   --syn-decorator: #9e880d;
@@ -801,6 +811,11 @@ html {
   --syn-function-call: #e3e4e8;
   --syn-comment: #a5a9b0;
   --syn-doc-comment: #8fb89c;
+  --syn-doc-comment-tag: #8fcca3;
+  --syn-doc-comment-tag-effect: none;
+  --syn-doc-comment-tag-value: #d2d4d9;
+  --syn-doc-markup: #90c9a3;
+  --syn-doc-markup-bg: transparent;
   --syn-docstring: #8fb89c;
   --syn-annotation: #d6d17a;
   --syn-decorator: #d6d17a;
@@ -1168,6 +1183,11 @@ html {
   --syn-function-call: var(--palette-blue);
   --syn-comment: var(--palette-comment);
   --syn-doc-comment: var(--palette-comment);
+  --syn-doc-comment-tag: var(--palette-keyword);
+  --syn-doc-comment-tag-effect: none;
+  --syn-doc-comment-tag-value: var(--palette-variable);
+  --syn-doc-markup: var(--syn-doc-comment);
+  --syn-doc-markup-bg: transparent;
   --syn-docstring: var(--palette-green);
   --syn-annotation: var(--palette-orange);
   --syn-decorator: var(--palette-orange);
