@@ -35,6 +35,8 @@ struct FakeAgent {
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
+    request_error: Option<(i64, String)>,
+    auth_methods: Vec<Value>,
     /// Hold the late mode reply until the prompt's permission request is already waiting.
     hold_late_mode: bool,
     empty_config: AtomicBool,
@@ -128,7 +130,10 @@ impl Handler for FakeAgent {
         if (method == "session/new" && self.auth_on_new)
             || (method == "session/prompt" && params.pointer("/prompt/0/text") == Some(&json!("auth")))
         {
-            return Err((codes::INTERNAL_ERROR, "Authentication required".into()));
+            return Err(self
+                .request_error
+                .clone()
+                .unwrap_or((codes::INTERNAL_ERROR, "Authentication required".into())));
         }
         if self.hold_late_mode
             && method == "session/set_config_option"
@@ -143,8 +148,10 @@ impl Handler for FakeAgent {
                 if params.pointer("/clientCapabilities/subagents").is_some_and(Value::is_object) {
                     self.calls.lock().push("subagents".into());
                 }
-                Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": !self.no_load,
-                    "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true, "backgroundTasks": true}}}}))
+                Ok(
+                    json!({"protocolVersion": 1, "authMethods": self.auth_methods, "agentCapabilities": {"loadSession": !self.no_load,
+                    "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true, "backgroundTasks": true}}}}),
+                )
             }
             "session/new" => {
                 if self.empty_config.load(Ordering::Acquire) {
@@ -392,7 +399,110 @@ async fn authentication_failures_name_the_session_executable_at_start_and_during
             .expect("authentication error");
         assert!(error.starts_with("Cursor needs you to sign in. Run `"), "{error}");
         assert!(error.contains(&*program.to_string_lossy()), "{error}");
-        assert!(error.ends_with(" login` in a terminal."), "{error}");
+        assert!(error.ends_with(" login` in a terminal.\n\nAuthentication required"), "{error}");
+        mgr.shutdown();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sign_in_errors_preserve_details_and_leave_unrelated_errors_unchanged() {
+    for auth_on_new in [true, false] {
+        for (code, message, sign_in) in [
+            (-32000, "This Google account is not eligible for this agent.", true),
+            (codes::INTERNAL_ERROR, "Authentication failed: token expired for account alice.", true),
+            (codes::INTERNAL_ERROR, "UNAUTHORIZED: account refused", true),
+            (codes::INTERNAL_ERROR, "You are not logged in to this installation.", true),
+            (codes::INTERNAL_ERROR, "Please sign in with your work account.", true),
+            (codes::INTERNAL_ERROR, "Missing author field", false),
+            (codes::INTERNAL_ERROR, "Unknown authority in configuration", false),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let agent =
+                Arc::new(FakeAgent { auth_on_new, request_error: Some((code, message.into())), ..Default::default() });
+            let mgr = manager(tmp.path(), agent);
+            let task = mgr
+                .create(NewAgentTask {
+                    project_root: None,
+                    prompt: text("again"),
+                    provider: "cursor".into(),
+                    config: vec![],
+                    isolation: Isolation::Local,
+                    base: None,
+                })
+                .await
+                .unwrap();
+            if !auth_on_new {
+                wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+                mgr.prompt(&task.id, text("auth"), false).await.unwrap();
+            }
+            wait_for(&mgr, &task.id, AgentStatus::Failed).await;
+            let entries = mgr.entries(&task.id, None).unwrap();
+            let error = entries
+                .iter()
+                .find_map(|e| match e {
+                    AgentEntry::Error { message, .. } => Some(message),
+                    _ => None,
+                })
+                .unwrap();
+            if sign_in {
+                assert!(error.starts_with("Cursor needs you to sign in. Run `"), "{error}");
+                assert!(error.ends_with(&format!("\n\n{message}")), "{error}");
+            } else {
+                assert_eq!(error, message);
+            }
+            mgr.shutdown();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn registry_sign_in_errors_use_the_advertised_terminal_login() {
+    for terminal in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent {
+            auth_on_new: true,
+            request_error: Some((-32000, "This account is not eligible.".into())),
+            auth_methods: vec![json!({"type": if terminal { "terminal" } else { "agent" },
+                "id": "cli", "name": "CLI", "args": ["auth", "login"]})],
+            ..Default::default()
+        });
+        let mgr = manager(tmp.path(), agent);
+        let program = tmp.path().join("Registry Tools").join("antigravity.cmd");
+        let mut spec = provider::builtin_spec("cursor").unwrap();
+        spec.id = "antigravity".into();
+        spec.name = "Google Antigravity".into();
+        spec.command = program.to_string_lossy().into_owned();
+        spec.source = AgentSource::Registry { version: "1.4.5".into(), update: None };
+        spec.login_hint = "Sign in with the agent's own command line first.".into();
+        mgr.shared.providers.write().push(spec);
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("again"),
+                provider: "antigravity".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Failed).await;
+        let entries = mgr.entries(&task.id, None).unwrap();
+        let error = entries
+            .iter()
+            .find_map(|e| match e {
+                AgentEntry::Error { message, .. } => Some(message),
+                _ => None,
+            })
+            .unwrap();
+        assert!(error.starts_with("Google Antigravity needs you to sign in. "), "{error}");
+        if terminal {
+            assert!(error.contains(&*program.to_string_lossy()), "{error}");
+            assert!(error.contains(" auth login` in a terminal."), "{error}");
+        } else {
+            assert!(error.contains("Sign in with the agent's own command line first."), "{error}");
+        }
+        assert!(error.ends_with("\n\nThis account is not eligible."), "{error}");
         mgr.shutdown();
     }
 }
@@ -2144,4 +2254,18 @@ async fn delete_running_agent(no_load: bool) {
         String::from_utf8_lossy(&cmd.output().unwrap().stdout).contains(&format!("\"{pid}\""))
     };
     assert!(!alive, "the agent (pid {pid}) is still running");
+}
+
+#[test]
+fn mcp_servers_follow_server_state_and_agent_capabilities() {
+    let root = std::path::Path::new("/project");
+    let exe = std::path::Path::new("/app/openidea");
+    assert!(super::stdio_mcp_servers(None, true, root).is_empty());
+    assert!(super::stdio_mcp_servers(Some(exe), false, root).is_empty());
+    let servers = super::stdio_mcp_servers(Some(exe), true, root);
+    assert_eq!(
+        servers,
+        vec![json!({"name":"OpenIDEA","command":"/app/openidea",
+        "args":["--mcp-stdio","--project","/project"],"env":[]})]
+    );
 }

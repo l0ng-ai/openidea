@@ -6,6 +6,7 @@ import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
 import { AboutOverlay } from "./AboutDialog";
 import { appActions, updateActions } from "./appActions";
 import { checkForUpdatesOnStartup } from "./updates";
+import { cliActions } from "./cliCommand";
 import { installCloseGuard } from "./closeGuard";
 import { TerminationOverlay } from "./termination";
 import { InvalidateCachesOverlay, registerInvalidateCachesActions } from "./InvalidateCaches";
@@ -31,6 +32,7 @@ export function activate(): () => void {
   const disposers = [
     installLocaleSync(),
     registerLocalizedActions(() => [...appActions(), ...windowActions()]),
+    registerLocalizedActions(cliActions),
     registerOverlay({ id: "app.about", component: AboutOverlay }),
     registerOverlay({ id: "app.keymapReference", component: KeymapReferenceOverlay }),
     registerOverlay({ id: "app.invalidateCaches", component: InvalidateCachesOverlay }),

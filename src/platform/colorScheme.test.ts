@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  ATTRIBUTES,
   CLEAR_COLOR,
   _setSchemeSource,
   resolvedAttribute,
@@ -44,6 +45,13 @@ describe("color schemes", () => {
     expect(imported).toMatch(/\.cm-editor\[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/);
   });
 
+  it("offers a Go scheme page and scopes its overrides to Go editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
+    const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="Go"]');
+    expect(css).toContain("--syn-constant: #224466 !important");
+  });
+
   it("resolves scheme attribute state and editor defaults", () => {
     expect(resolvedAttribute("light", "lineComment")).toMatchObject({
       foreground: "#8c8c8c",
@@ -71,6 +79,15 @@ describe("color schemes", () => {
       italic: false,
       effect: "wave",
     });
+  });
+
+  it("resolves package references from the editor foreground and emits their overrides", () => {
+    for (const theme of ["light", "dark", "dark-hc"] as const) {
+      expect(resolvedAttribute(theme, "packageReference").foreground).toBe(schemeTokens(theme).get("--fg-editor"));
+    }
+    const css = schemeCss("dark", { dark: { packageReference: { foreground: "#446688", italic: true } } });
+    expect(css).toContain("--syn-namespace: #446688 !important");
+    expect(css).toContain("--syn-namespace-italic: italic !important");
   });
 
   it("emits scheme and override declarations", () => {

@@ -251,6 +251,7 @@ struct Live {
     embedded: bool,
     /// `session/load`: the process can be stopped between turns and the session reloaded.
     resumable: bool,
+    mcp_stdio: bool,
 }
 
 struct Task {
@@ -696,7 +697,7 @@ impl AgentManager {
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
-            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": [] }), None)
+            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers_for(live.mcp_stdio, &source.shared.paths.project_root) }), None)
             .await
             .map_err(|e| IdeError::internal(source.describe(e)))?;
         let session = reply
@@ -1394,13 +1395,22 @@ impl Task {
             };
             return Failure { message, limit: Some(resets) };
         }
-        match e {
-            // Signed out, or the account was refused (Claude Code: "API Error: 403").
-            RpcError::Server { message, .. } if message.to_lowercase().contains("auth") => {
-                Failure::from(self.live.lock().as_ref().map(|live| live.sign_in_message.clone()).unwrap_or(message))
-            }
-            e => Failure::from(self.describe(e)),
+        let guidance = self.live.lock().as_ref().map(|live| live.sign_in_message.clone());
+        Failure::from(self.sign_in_error(&e, guidance.as_deref()).unwrap_or_else(|| self.describe(e)))
+    }
+
+    fn sign_in_error(&self, e: &RpcError, guidance: Option<&str>) -> Option<String> {
+        let RpcError::Server { code, message, .. } = e else { return None };
+        if !acp::auth_required(*code, message) {
+            return None;
         }
+        tracing::warn!(task = %self.id, code, %message, "agent sign-in failed");
+        let Some(guidance) = guidance else { return Some(message.clone()) };
+        Some(if message.trim().is_empty() || guidance.contains(message) {
+            guidance.to_owned()
+        } else {
+            format!("{guidance}\n\n{message}")
+        })
     }
 
     async fn ensure_session(self: &Arc<Self>) -> Result<Live, String> {
@@ -1419,7 +1429,6 @@ impl Task {
         let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
             .await
             .map_err(|e| e.to_string())?;
-        let sign_in_message = spec.sign_in_message();
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);
@@ -1439,7 +1448,9 @@ impl Task {
             .map_err(|e| format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command))?;
 
         let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
+        let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
+        let mcp_stdio = init.mcp_stdio();
         let (capabilities, embedded) = capabilities_of(&init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
@@ -1448,7 +1459,7 @@ impl Task {
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
             let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": [] }), None).await;
+                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }), None).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1461,14 +1472,13 @@ impl Task {
             Some(s) => s,
             None => {
                 let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": [] }), None)
+                    .request(
+                        "session/new",
+                        json!({ "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }),
+                        None,
+                    )
                     .await
-                    .map_err(|e| match e {
-                        RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {
-                            sign_in_message.clone()
-                        }
-                        e => self.describe(e),
-                    })?;
+                    .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
                 (id, v)
             }
@@ -1557,7 +1567,8 @@ impl Task {
         }
         self.persist();
         self.emit_task();
-        let live = Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load };
+        let live =
+            Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load, mcp_stdio };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }
@@ -2211,3 +2222,20 @@ mod replay;
 mod replay_tests;
 #[cfg(test)]
 mod tests;
+
+// The desktop advertises its relay only while the built-in server is listening.
+static MCP_EXECUTABLE: parking_lot::RwLock<Option<std::path::PathBuf>> = parking_lot::RwLock::new(None);
+
+pub fn set_mcp_executable(executable: Option<std::path::PathBuf>) {
+    *MCP_EXECUTABLE.write() = executable;
+}
+
+fn mcp_servers_for(supported: bool, root: &std::path::Path) -> Vec<Value> {
+    stdio_mcp_servers(MCP_EXECUTABLE.read().as_deref(), supported, root)
+}
+
+fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
+    let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
+    let command = ide_mcp::stdio_command(executable, root);
+    vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+}

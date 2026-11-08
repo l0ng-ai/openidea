@@ -8,6 +8,7 @@ mod translate;
 mod tests;
 
 use super::Shim;
+use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::Mutex;
@@ -27,8 +28,6 @@ const OUTPUT_EVERY: Duration = Duration::from_millis(200);
 const EARLY_CANCEL: Duration = Duration::from_secs(1);
 /// How long the client's connection outlives codex.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
-/// ACP's error code for a request that needs the user to sign in.
-const AUTH_REQUIRED: i64 = -32000;
 
 pub(crate) fn connect(
     spec: &ProviderSpec,
@@ -204,7 +203,7 @@ fn from_codex(e: RpcError) -> ResponseError {
                 code,
                 codes::PARSE_ERROR | codes::INVALID_REQUEST | codes::METHOD_NOT_FOUND | codes::INVALID_PARAMS
             );
-            let code = if !protocol && message.to_lowercase().contains("auth") { AUTH_REQUIRED } else { code };
+            let code = if !protocol && crate::acp::auth_required(code, &message) { AUTH_REQUIRED } else { code };
             ResponseError { code, message, data }
         }
         RpcError::Closed => error(codes::INTERNAL_ERROR, "Codex exited"),
@@ -264,7 +263,7 @@ impl CodexShim {
             "agentCapabilities": {
                 "loadSession": true,
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
-                "mcpCapabilities": { "http": false, "sse": false },
+                "mcpCapabilities": { "http": false, "sse": false, "stdio": true },
                 "sessionCapabilities": { "fork": {}, "close": {} },
                 "_meta": { "openidea": { "rollback": true, "steer": true } },
             },
@@ -318,7 +317,11 @@ impl CodexShim {
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let models = self.models().await;
-        let result = self.call("thread/start", json!({ "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/start", request).await?;
         let (id, options) = self.open_thread(&result, &models, None);
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
@@ -330,7 +333,11 @@ impl CodexShim {
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
         let models = self.models().await;
-        let result = self.call("thread/resume", json!({ "threadId": id, "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/resume", request).await?;
         let (_, options) = self.open_thread(&result, &models, None);
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
         let thread = result.get("thread").unwrap_or(&Value::Null);
@@ -345,6 +352,9 @@ impl CodexShim {
         let models = self.models().await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
         if let Some(s) = &settings {
             request["model"] = json!(s.model_slug(&models));
             request["approvalPolicy"] = json!(s.mode.approval_policy());
