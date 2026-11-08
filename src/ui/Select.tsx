@@ -268,7 +268,9 @@ export function Select<V extends string = string>({
               >
                 <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
                 {o.icon && <Icon name={o.icon} size={14} />}
-                <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)}>{given(o.label)}</span>
+                <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={given(o.label)}>
+                  {given(o.label)}
+                </span>
                 {o.detail && (
                   <span className={styles.detail} title={o.detail}>
                     {given(o.detail)}
