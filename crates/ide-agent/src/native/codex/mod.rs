@@ -53,6 +53,7 @@ fn attach(
         client: OnceLock::new(),
         state: Mutex::new(State::default()),
         models: tokio::sync::Mutex::new(None),
+        skills: tokio::sync::Mutex::new(()),
     });
     let codex = connect_codex(Arc::new(CodexEvents(Arc::downgrade(&shim))))?;
     let _ = shim.codex.set(codex.clone());
@@ -82,6 +83,8 @@ struct CodexShim {
     state: Mutex<State>,
     /// `model/list`, fetched once.
     models: tokio::sync::Mutex<Option<Arc<Vec<ModelInfo>>>>,
+    /// Keep skill snapshots in request order, including invalidations during session setup.
+    skills: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -300,6 +303,20 @@ impl CodexShim {
         models
     }
 
+    async fn publish_skills(&self, session: &str) {
+        let _listing = self.skills.lock().await;
+        let cwd = self.state.lock().threads.get(session).and_then(|t| t.cwd.clone());
+        let Some(cwd) = cwd else { return };
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), self.call("skills/list", json!({ "cwds": [cwd] }))).await;
+        if let Ok(Ok(result)) = result
+            && let Some(update) = translate::skill_commands(&result)
+            && self.state.lock().threads.contains_key(session)
+        {
+            self.emit(session, update);
+        }
+    }
+
     /// Registers a thread codex opened for a session of its own; returns its `configOptions`.
     fn open_thread(&self, result: &Value, models: &[ModelInfo], settings: Option<Settings>) -> (String, Value) {
         let thread = result.get("thread").unwrap_or(&Value::Null);
@@ -326,6 +343,7 @@ impl CodexShim {
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
         }
+        self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }
 
@@ -344,6 +362,7 @@ impl CodexShim {
         for update in translate::history(thread, cwd.as_deref()) {
             self.emit(id, update);
         }
+        self.publish_skills(id).await;
         Ok(json!({ "configOptions": options }))
     }
 
@@ -362,6 +381,7 @@ impl CodexShim {
         }
         let result = self.call("thread/fork", request).await?;
         let (id, options) = self.open_thread(&result, &models, settings);
+        self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }
 
@@ -551,9 +571,25 @@ impl CodexShim {
         }
     }
 
-    fn on_codex_notification(&self, method: &str, params: &Value) {
+    fn on_codex_notification(self: &Arc<Self>, method: &str, params: &Value) {
         let thread = params.get("threadId").and_then(Value::as_str).unwrap_or_default();
         match method {
+            "skills/changed" => {
+                let shim = self.clone();
+                let sessions: Vec<String> = self
+                    .state
+                    .lock()
+                    .threads
+                    .iter()
+                    .filter(|(_, t)| t.settings.is_some() && t.parent.is_none())
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                self.runtime.spawn(async move {
+                    for session in sessions {
+                        shim.publish_skills(&session).await;
+                    }
+                });
+            }
             "turn/started" => {
                 if let Some(turn) = params.pointer("/turn/id").and_then(Value::as_str) {
                     self.turn_known(thread, turn, true);
