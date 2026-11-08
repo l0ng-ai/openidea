@@ -1,4 +1,6 @@
 {
+  "Delete Remote Branches": "Delete Remote Branches",
+  "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.": "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.",
   "Select Python Environment Folder": "Select Python Environment Folder",
   "Checking interpreter": "Checking interpreter",
   "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.",

@@ -118,7 +118,7 @@ export function branchMenu(
       danger: true,
       icon: "trash",
       run: run(() =>
-        selected.length > 1 ? deleteBranches(selected) : b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name),
+        selected.length ? deleteBranches(selected) : b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name),
       ),
     },
   );

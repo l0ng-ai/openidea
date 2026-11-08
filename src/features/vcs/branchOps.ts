@@ -10,7 +10,7 @@ import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { runOp, runRemote, saveAll } from "./ops";
-import { conflictedFiles, currentRepo, focusRepo, refreshNow, repoName, useVcs } from "./store";
+import { conflictedFiles, currentRepo, currentRepoRoot, focusRepo, refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 const recentKey = () => `openidea.vcs.recentBranches:${useVcs.getState().root ?? ""}`;
@@ -309,7 +309,7 @@ export async function deleteBranch(name: string) {
         },
       },
       ...(deleted.unmerged
-        ? [{ label: "View Commits", run: () => showCommitRange(`Commits of ${name}`, "HEAD", deleted.tip) }]
+        ? [{ label: "View Commits", run: () => showCommitRange(`Commits of ${name}`, "HEAD", deleted.tip, repo) }]
         : []),
       ...(tracked && !otherTracking
         ? [
@@ -317,7 +317,7 @@ export async function deleteBranch(name: string) {
               label: "Delete Tracked Branch",
               run: () => {
                 done();
-                void deleteRemoteBranch(tracked);
+                void deleteRemoteBranch(tracked, repo);
               },
             },
           ]
@@ -386,7 +386,7 @@ export async function pushTag(tag: string, remote: string) {
 }
 
 /** Deletes a branch on its remote (`git push <remote> --delete <name>`); `name` is e.g. `origin/feature`. */
-export async function deleteRemoteBranch(name: string) {
+export async function deleteRemoteBranch(name: string, repo = currentRepo()) {
   const ok = await confirmDialog({
     title: "Delete Remote Branch",
     message: tx`Delete branch '${shortRemoteName(name)}' on the remote? The remote-tracking branch '${name}' is removed as well.`,
@@ -394,35 +394,49 @@ export async function deleteRemoteBranch(name: string) {
     danger: true,
   });
   if (!ok) return;
-  await runRemote({ op: "deleteBranch", branch: name }, name);
+  await runRemote({ op: "deleteBranch", branch: name }, name, [repo]);
 }
 
-/** Delete Branches for a multi-selection: the current branch is skipped, every repository is
- * focused before its branches go, and several remote branches share a single confirmation. */
-export async function deleteBranches(targets: readonly { repo?: string; branch?: Branch }[]) {
-  const list = targets.filter((t): t is { repo?: string; branch: Branch } => !!t.branch && !t.branch.current);
-  if (!list.length) return;
-  const remote = list.filter((t) => t.branch.remote);
-  if (remote.length > 1) {
-    const names = remote.map((t) => shortRemoteName(t.branch.name)).join("', '");
-    const ok = await confirmDialog({
-      title: "Delete Remote Branches",
-      message: tx`Delete the ${remote.length} branches '${names}' on the remote? The remote-tracking branches are removed as well.`,
+/** Delete is offered for branches other than the current one in their repository. */
+export function canDeleteBranch(t: { ref?: string; repo?: string; branch?: Branch } | null): boolean {
+  return !!t?.branch && !t.branch.current;
+}
+
+async function confirmRemoteBranches(remote: readonly { branch: Branch }[]): Promise<boolean> {
+  if (remote.length === 1) {
+    const name = remote[0]!.branch.name;
+    return confirmDialog({
+      title: "Delete Remote Branch",
+      message: tx`Delete branch '${shortRemoteName(name)}' on the remote? The remote-tracking branch '${name}' is removed as well.`,
       okLabel: "Delete",
       danger: true,
     });
-    if (!ok) return;
   }
-  let repo: string | undefined;
-  for (const t of list) {
-    if (t.repo !== repo) {
-      repo = t.repo;
-      if (repo) await focusRepo(repo);
+  const names = remote.map((t) => shortRemoteName(t.branch.name)).join("', '");
+  return confirmDialog({
+    title: "Delete Remote Branches",
+    message: tx`Delete the ${remote.length} branches '${names}' on the remote? The remote-tracking branches are removed as well.`,
+    okLabel: "Delete",
+    danger: true,
+  });
+}
+
+/** Deletes selected branches, skipping current branches and restoring the focused repository. */
+export async function deleteBranches(targets: readonly { ref?: string; repo?: string; branch?: Branch }[]) {
+  const list = targets.filter((t): t is { repo?: string; branch: Branch } => canDeleteBranch(t));
+  if (!list.length) return;
+  const previous = currentRepoRoot();
+  const remote = list.filter((t) => t.branch.remote);
+  if (remote.length && !(await confirmRemoteBranches(remote))) return;
+  try {
+    for (const t of list) {
+      const repo = t.repo ?? previous;
+      if (repo && repo !== currentRepo()) await focusRepo(repo);
+      if (t.branch.remote) await runRemote({ op: "deleteBranch", branch: t.branch.name }, t.branch.name);
+      else await deleteBranch(t.branch.name);
     }
-    if (t.branch.remote) {
-      if (remote.length > 1) await runRemote({ op: "deleteBranch", branch: t.branch.name }, t.branch.name);
-      else await deleteRemoteBranch(t.branch.name);
-    } else await deleteBranch(t.branch.name);
+  } finally {
+    if (previous && previous !== currentRepo()) await focusRepo(previous);
   }
 }
 

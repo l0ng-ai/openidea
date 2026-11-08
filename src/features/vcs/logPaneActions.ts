@@ -41,8 +41,8 @@ function branchArg(arg: unknown): BranchTarget | null {
 /** The action's branches: an array argument as a whole, otherwise the single one or the pane's selection. */
 function branchTargets(arg: unknown): BranchTarget[] {
   if (Array.isArray(arg)) return arg.filter((t): t is BranchTarget => !!t && typeof t === "object" && "ref" in t);
-  const t = branchArg(arg);
-  return t ? [t] : useBranchesPane.getState().selected;
+  if (arg && typeof arg === "object" && "ref" in arg) return [arg as BranchTarget];
+  return useBranchesPane.getState().selected;
 }
 
 const withBranch =
@@ -53,11 +53,6 @@ const withBranch =
     const b = target?.branch;
     if (b) void fn(b);
   };
-
-/** Delete is offered for branches other than the current one. */
-export function canDeleteBranch(t: BranchTarget | null): boolean {
-  return !!t?.branch && !t.branch.current;
-}
 
 /** Update fast-forwards a local branch with an upstream (or updates the project for the current one). */
 export function canUpdateBranch(t: BranchTarget | null): boolean {
@@ -124,7 +119,7 @@ export function registerLogPaneActions(): () => void {
       icon: "trash",
       when: VCS,
       hidden: true,
-      run: ({ arg }) => void deleteBranches(branchTargets(arg)),
+      run: ({ arg }) => deleteBranches(branchTargets(arg)),
     },
     {
       id: "vcs.log.branches.toggleFavorite",
