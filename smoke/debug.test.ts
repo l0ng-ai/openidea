@@ -19,7 +19,7 @@ import { activate as activateBuildTools } from "@/features/build-tools";
 import { useBuild } from "@/features/build-tools/store";
 import { activate as activateDebugger } from "@/features/debugger";
 import { addBreakpoint } from "@/features/debugger/breakpoints/store";
-import { activeSession, evaluate, useDebug } from "@/features/debugger/state";
+import { activeSession, evaluate, sessionSupports, useDebug } from "@/features/debugger/state";
 import { activate as activateRun } from "@/features/run";
 import { resetRuns, useRun } from "@/features/run/store";
 import { activateWorkbench } from "@/workbench/activate";
@@ -43,6 +43,8 @@ interface Case {
   request?: string;
   /** JVM languages: the live instances of a class the paused program holds (Memory tab). */
   memory?: { className: string; instances: number };
+  /** JVM languages: that class's instances, a field of the first one and its referrers (Show Instances). */
+  instances?: { className: string; count: number; field: string };
 }
 
 const CASES: Record<string, Case> = {
@@ -84,6 +86,7 @@ const CASES: Record<string, Case> = {
     variable: "book",
     evaluate: ["book.size()", /^3$/],
     memory: { className: "com.example.orders.OrderBook", instances: 1 },
+    instances: { className: "com.example.orders.OrderBook", count: 1, field: "orders" },
   },
   kotlin: {
     fixture: "kotlin-gradle",
@@ -93,6 +96,7 @@ const CASES: Record<string, Case> = {
     evaluate: ["library", /Library/],
     // Gradle forks the JVM and the debugger attaches to it: the attach-session path.
     memory: { className: "com.example.library.Book", instances: 3 },
+    instances: { className: "com.example.library.Book", count: 3, field: "title" },
   },
 };
 
@@ -244,6 +248,35 @@ async function smoke(language: string) {
       const refused = reason.kind === "unsafeWhileSuspended" && reason.javaMajor < 17;
       expect(refused, `memory unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
     }
+  }
+
+  if (c.instances) {
+    const { className, count, field } = c.instances;
+    // The inspector comes up beside the session (jdtls bundle, Kotlin JDWP link).
+    await until("the JVM inspector", () => {
+      const session = useDebug.getState().sessions[s.id] ?? null;
+      const backend = session?.jvmBackend;
+      if (backend && backend.kind !== "ready") throw new Error(`JVM inspector ${JSON.stringify(backend)}\n${shown()}`);
+      return sessionSupports("jvmInstances", session);
+    });
+    const ready = <T extends { status: string }>(what: string, r: T) => {
+      expect(r.status, `${what}: ${JSON.stringify(r)}\n${shown()}`).toBe("ready");
+      return r as Extract<T, { status: "ready" }>;
+    };
+    const listed = ready("instances", await call(commands.debugJvmMemoryInstances(s.id, className, 1000)));
+    expect(listed.instances, `${className} instances`).toHaveLength(count);
+    const first = listed.instances[0]!;
+    if (!("id" in first)) throw new Error(`${className} instance without an id: ${JSON.stringify(first)}`);
+    const object = { generation: listed.generation, id: first.id };
+    const fields = ready("fields", await call(commands.debugJvmMemoryFields(s.id, object)));
+    const held = fields.fields.find((f) => f.name === field)?.value;
+    if (!held || !("id" in held)) throw new Error(`${className}.${field}: ${JSON.stringify(fields.fields)}`);
+    // Only objects count as referrers, not stack frames: Java's `OrderBook` is held by a local alone.
+    ready("referrers", await call(commands.debugJvmMemoryReferrers(s.id, object, 50)));
+    const heldRef = { generation: listed.generation, id: held.id };
+    const referrers = ready("referrers", await call(commands.debugJvmMemoryReferrers(s.id, heldRef, 50)));
+    const back = referrers.referrers.find((r) => "id" in r.value && r.value.id === first.id);
+    expect(back?.via, `referrers of ${className}.${field}: ${JSON.stringify(referrers)}`).toContain(field);
   }
 
   // Python 3.12 reports a conditional expression's line twice: Step Over may stop on it
