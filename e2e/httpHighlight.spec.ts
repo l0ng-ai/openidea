@@ -8,7 +8,7 @@ for (const theme of ["light", "dark"] as const) {
       await page.goto(`/e2e/httpHighlight.html?theme=${theme}${extension === "rest" ? "&rest" : ""}`);
       const token = (text: string) =>
         page
-          .locator(".cm-line span")
+          .locator("#http .cm-line span")
           .filter({ hasText: new RegExp(`^${text}$`) })
           .first();
       const keyword = theme === "light" ? "rgb(0, 51, 179)" : "rgb(207, 142, 109)";
@@ -20,6 +20,28 @@ for (const theme of ["light", "dark"] as const) {
       await expect(token("12")).toHaveCSS("color", theme === "light" ? "rgb(23, 80, 235)" : "rgb(42, 172, 184)");
       for (const literal of ["true", "false", "null"]) await expect(token(literal)).toHaveCSS("color", keyword);
       await expect(token("Content-Type")).toHaveCSS("color", property);
+      for (const text of ['"name"', '"World"', "12", "true", "false", "null", "{", "[", ":", ","]) {
+        const color = async (editor: string) =>
+          page.locator(`${editor} .cm-line`).evaluateAll((lines, target) => {
+            for (const line of lines) {
+              if (!/^\s*["{[]/.test(line.textContent ?? "")) continue;
+              const index = line.textContent?.indexOf(target) ?? -1;
+              if (index < 0) continue;
+              const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+              let offset = 0;
+              while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (offset + (node.textContent?.length ?? 0) > index)
+                  return getComputedStyle(node.parentElement!).color;
+                offset += node.textContent?.length ?? 0;
+              }
+            }
+            return null;
+          }, text);
+        const jsonColor = await color("#json");
+        expect(jsonColor, `JSON color for ${text}`).not.toBeNull();
+        expect(await color("#http"), `HTTP color for ${text}`).toBe(jsonColor);
+      }
       expect(errors).toEqual([]);
     });
   }

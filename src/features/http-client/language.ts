@@ -12,6 +12,8 @@ interface State {
   phase: "preamble" | "headers" | "body";
   /** Inside a `> {% … %}` handler script. */
   handler: boolean;
+  json: boolean | null;
+  string: "propertyName" | "string" | null;
   /** Position within the current line's structure. */
   part: "start" | "url" | "headerValue" | "rest";
 }
@@ -27,7 +29,7 @@ function variable(stream: Parameters<StreamParser<State>["token"]>[0]): string |
 
 export const httpParser: StreamParser<State> = {
   name: "http",
-  startState: () => ({ phase: "preamble", handler: false, part: "start" }),
+  startState: () => ({ phase: "preamble", handler: false, json: null, string: null, part: "start" }),
   copyState: (s) => ({ ...s }),
   blankLine(state) {
     if (state.phase === "headers" || (state.phase === "preamble" && state.part === "url")) state.phase = "body";
@@ -37,10 +39,12 @@ export const httpParser: StreamParser<State> = {
       // The line after the request line starts the headers.
       if (state.phase === "preamble" && state.part === "url") state.phase = "headers";
       state.part = "start";
+      state.string = null;
       if (stream.match(/^\s*###/)) {
         stream.skipToEnd();
         state.phase = "preamble";
         state.handler = false;
+        state.json = null;
         return "heading";
       }
     }
@@ -73,7 +77,9 @@ export const httpParser: StreamParser<State> = {
           state.part = "rest";
           return "variableName.definition";
         }
-        const method = stream.match(/^[A-Z][A-Z0-9_-]*(?=\s)/);
+        const method =
+          stream.match(new RegExp(`^(${METHODS.join("|")})(?=\\s)`)) ||
+          stream.match(/^[A-Z][A-Z0-9_-]*(?=\s+(?:[\w+.-]+:\/\/|[\w.-]+:\d+(?:[/?#]|\s|$)|\/|\{\{))/);
         if (method) {
           state.part = "url";
           return "keyword";
@@ -106,6 +112,8 @@ export const httpParser: StreamParser<State> = {
           stream.skipToEnd();
           return "comment";
         }
+        const contentType = /^Content-Type:\s*([^;\s]+)/i.exec(stream.string.slice(stream.pos));
+        if (contentType) state.json = /(?:\/|\+)json$/i.test(contentType[1]!);
         if (stream.match(/^[^:\s]+(?=:)/)) {
           state.part = "headerValue";
           return "propertyName";
@@ -136,7 +144,29 @@ export const httpParser: StreamParser<State> = {
         return "meta";
       }
     }
-    if (stream.match(/^"(?:[^"\\]|\\.)*"/)) return stream.match(/^\s*:/, false) ? "propertyName" : "string";
+    if (state.json === null) {
+      if (stream.eatSpace()) return null;
+      const start = stream.string.slice(stream.pos);
+      state.json = /^(?:\[|\{\s*(?:"|}|$)|"|(?:true|false|null|-?\d[\d.eE+-]*)\s*$)/.test(start);
+    }
+    if (!state.json) {
+      if (stream.match(/^"(?:[^"\\]|\\.)*"/)) return "string";
+      if (stream.match(/^-?\d+(\.\d+)?([eE][+-]?\d+)?\b/)) return "number";
+      if (stream.match(/^(true|false|null)\b/)) return "atom";
+      if (!stream.match(/^[^"{\d\-tfn]+/)) stream.next();
+      return null;
+    }
+    if (!state.string && stream.peek() === '"') {
+      state.string = stream.match(/^"(?:[^"\\]|\\.)*"\s*:/, false) ? "propertyName" : "string";
+      stream.next();
+    }
+    if (state.string) {
+      const style = state.string;
+      stream.match(/^(?:[^"\\{]|\\.|{(?!{))*/);
+      if (stream.eat('"')) state.string = null;
+      if (stream.pos === stream.start) stream.next();
+      return style;
+    }
     if (stream.match(/^[{}]/)) return "brace";
     if (stream.match(/^[[\]]/)) return "squareBracket";
     if (stream.match(/^[,:]/)) return "separator";

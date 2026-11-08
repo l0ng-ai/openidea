@@ -133,6 +133,83 @@ describe("http highlighting", () => {
     expect(t.some(([name, text]) => name === "separator" && text.includes(":"))).toBe(true);
   });
 
+  it.each(["TODO something", "HOST: x", "WORD", "TODO", "TODO ", "TODO something\nHOST: x"])(
+    "ignores non-request preamble lines: %s",
+    (preamble) => {
+      const t = tokens(
+        `${preamble}\nPOST https://example.test/items HTTP/1.1\nContent-Type: application/json\n\n{"ok": true}`,
+      );
+      expect(t).toContainEqual(["keyword", "POST"]);
+      expect(t).not.toContainEqual(["keyword", "TODO"]);
+      expect(t).toContainEqual(["meta", " HTTP/1.1"]);
+      expect(t).toContainEqual(["propertyName", "Content-Type"]);
+      expect(t).toContainEqual(["propertyName", '"ok"']);
+    },
+  );
+
+  it("keeps comments, continued queries and separator resets", () => {
+    const t = tokens(
+      "TODO something\n### Request\n# comment\n// comment\n{{host}}/items HTTP/1.1\n  ?q={{query}}\n  &limit=12\n# header comment\nAccept: application/json\n\n{}\n### Next\nGET /next\n\n[]",
+    );
+    expect(t).toContainEqual(["meta", " HTTP/1.1"]);
+    expect(t).toContainEqual(["link", "/items"]);
+    expect(t.some(([name, text]) => name === "link" && text.includes("&limit=12"))).toBe(true);
+    expect(t).toContainEqual(["comment", "# header comment"]);
+    expect(t).toContainEqual(["propertyName", "Accept"]);
+    expect(t).toContainEqual(["keyword", "GET"]);
+    expect(t).toContainEqual(["link", "/next"]);
+  });
+
+  it("highlights variables inside JSON strings and unquoted values", () => {
+    const t = tokens('POST /items\n\n{"name": "Hello {{name}}!", "count": {{count}}, "escaped": "a\\\"b"}');
+    for (const name of ["name", "count"]) expect(t).toContainEqual(["variableName.special", `{{${name}}}`]);
+    expect(t).toContainEqual(["string", '!"']);
+    expect(t).toContainEqual(["propertyName", '"escaped"']);
+  });
+
+  it("keeps advancing while a JSON string ends with an unfinished escape", () => {
+    expect(() => tokens('POST /items\n\n{"name": "unfinished' + "\\")).not.toThrow();
+  });
+
+  it.each([
+    ["application/x-www-form-urlencoded", "name=World&items=[one,two]&enabled=true"],
+    ["application/xml", '<item name="World">text: [one,two]</item>'],
+    ["text/plain", "text: [one,two]"],
+    ["application/graphql", "{\n  user(id: 12) { name }\n}"],
+    ["", "query { user(id: 12) { name } }"],
+  ])("keeps non-JSON %s bodies out of JSON punctuation highlighting", (type, body) => {
+    const headers = type ? `Content-Type: ${type}\n` : "";
+    const t = tokens(`POST /items\n${headers}\n${body}`);
+    expect(t.filter(([name]) => ["brace", "squareBracket", "separator"].includes(name))).toEqual([]);
+  });
+
+  it.each(["GET relative/path", "OPTIONS *", "CONNECT example.test:443"])(
+    "preserves standard request targets: %s",
+    (request) => expect(tokens(`${request}\n\n{}`).some(([name]) => name === "keyword")).toBe(true),
+  );
+
+  it.each(["application/json", "application/problem+json; charset=utf-8"])(
+    "recognizes JSON content type %s and resets it at separators",
+    (type) => {
+      const t = tokens(
+        `POST /one\ncontent-type: ${type}\n\ntrue\n### Two\nPOST /two\nContent-Type: text/plain\n\ntext: [one,two]`,
+      );
+      expect(t).toContainEqual(["bool", "true"]);
+      expect(t.filter(([name]) => ["brace", "squareBracket", "separator"].includes(name))).toEqual([]);
+    },
+  );
+
+  it("keeps input files and response scripts out of JSON highlighting", () => {
+    const t = tokens(
+      'POST /items\n\n< ./payload.json\n> {%\nclient.test("status", function () { client.assert(true); });\n%}\n### Next\nPOST /next\n\n{"ok": true}',
+    );
+    expect(t).toContainEqual(["meta", "< ./payload.json"]);
+    expect(t).toContainEqual(["meta", "> {%"]);
+    expect(t).toContainEqual(["comment", 'client.test("status", function () { client.assert(true); });']);
+    expect(t).toContainEqual(["meta", "%}"]);
+    expect(t).toContainEqual(["propertyName", '"ok"']);
+  });
+
   it("tags separators, methods, URLs, headers, variables and comments", () => {
     const t = tokens('### Users\n# @name list\nGET https://{{host}}/users\nAccept: json\n\n{"a": 1}\n');
     const has = (name: string, text: string) => t.some(([n, s]) => n.includes(name) && s === text);

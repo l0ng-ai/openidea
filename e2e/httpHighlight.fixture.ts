@@ -13,8 +13,11 @@ document.body.style.color = "var(--fg-editor)";
 registerLanguageMode(httpLanguageDescription);
 const file = params.has("rest") ? "requests.rest" : "requests.http";
 const support = await loadSupport(findLanguageDescription("HTTP", file)!);
+const http = document.createElement("div");
+http.id = "http";
+document.body.append(http);
 new EditorView({
-  parent: document.body,
+  parent: http,
   doc: `### gRPC request with a JSON body
 GRPC localhost:9003/example.Greeter/SayHello
 Content-Type: application/json
@@ -37,4 +40,16 @@ POST https://example.test/messages
 
 {"message": "HTTP still works", "count": 1}`,
   extensions: [support!, syntaxHighlighting(openideaHighlightStyle)],
+});
+
+const json = document.createElement("div");
+json.id = "json";
+document.body.append(json);
+new EditorView({
+  parent: json,
+  doc: '{"name": "World", "count": 12, "enabled": true, "ready": false, "empty": null, "items": [1]}',
+  extensions: [
+    await loadSupport(findLanguageDescription("JSON", "body.json")!),
+    syntaxHighlighting(openideaHighlightStyle),
+  ],
 });
