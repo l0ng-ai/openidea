@@ -1706,3 +1706,28 @@ export function registerDocumentIndexSync(sync: (path: string) => Promise<void>)
 export async function synchronizeDocumentIndexes(path: string): Promise<void> {
   await Promise.all([...documentIndexSync].map((sync) => sync(path)));
 }
+
+/** Font zoom for non-CodeMirror surfaces, owned and released by their features. */
+const fontZoomSurfaces = new Map<Element, (delta: number) => void>();
+
+export function registerFontZoomSurface(host: Element, step: (delta: number) => void): () => void {
+  fontZoomSurfaces.set(host, step);
+  return () => {
+    fontZoomSurfaces.delete(host);
+  };
+}
+
+export function stepFocusedSurfaceFontZoom(delta: number): boolean {
+  const focused = document.activeElement;
+  for (const [host, step] of fontZoomSurfaces) {
+    if (focused && host.contains(focused)) {
+      step(delta);
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resetSurfaceFontZoom(): void {
+  for (const step of fontZoomSurfaces.values()) step(0);
+}
