@@ -125,6 +125,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
   syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
+  syn("packageReference", "Identifiers › Package reference", [LD], "namespace"),
   syn("constant", "Identifiers › Constant", [LD], "constant", { defaultItalic: true }),
   syn("field", "Identifiers › Instance field", [LD], "property"),
   { id: "staticSymbol", name: "Identifiers › Static symbol", path: [LD], token: "static", italicOnly: true },
