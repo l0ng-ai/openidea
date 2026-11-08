@@ -3,6 +3,20 @@
 use super::*;
 use tokio::io::duplex;
 
+#[test]
+fn permission_uses_its_own_command_payload() {
+    let command = "python3 -c 'import pathlib\npathlib.Path(\"a.txt\").touch()'";
+    let mut request = json!({"toolCall": {"toolCallId": "write", "kind": "execute",
+        "title": "Run List .", "rawInput": {"command": command}}});
+    assert_eq!(permission_title(&request), format!("Run {command}"));
+    request["toolCall"]["title"] = json!("Allow network access to example.com");
+    assert_eq!(permission_title(&request), "Allow network access to example.com");
+    request["toolCall"].as_object_mut().unwrap().remove("title");
+    request["toolCall"].as_object_mut().unwrap().remove("rawInput");
+    request["toolCall"]["content"] = json!([{ "type": "content", "content": {"type": "text", "text": command}}]);
+    assert_eq!(permission_title(&request), format!("Run {command}"));
+}
+
 /// Says "Hi", edits a file, asks to run a command and reports what it was allowed.
 #[derive(Default)]
 struct FakeAgent {

@@ -6756,5 +6756,18 @@
   "Running an action applies pending settings first.": "运行动作前会先应用待保存的设置。",
   "Could not apply settings.": "无法应用设置。",
   "The value exceeds this setting’s limits.": "该值超出了此设置的限制。",
-  "Log tabs opened by plugin code are not available in remote projects yet.": "插件代码打开的日志标签页暂不支持远程项目。"
+  "Log tabs opened by plugin code are not available in remote projects yet.": "插件代码打开的日志标签页暂不支持远程项目。",
+  "{0} wants to run a command": "{0} 想要运行命令",
+  "Allow tool call?": "允许工具调用？",
+  "Allow Once": "允许一次",
+  "Always Allow": "始终允许",
+  "Allow for This Session": "在此会话中允许",
+  "Decline": "拒绝",
+  "Decline and Stop": "拒绝并停止",
+  "Always Decline": "始终拒绝",
+  "Allowed once": "已允许一次",
+  "Allowed for this session": "已在此会话中允许",
+  "Always allowed": "已设为始终允许",
+  "Declined": "已拒绝",
+  "Always declined": "已设为始终拒绝"
 }

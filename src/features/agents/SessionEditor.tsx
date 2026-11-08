@@ -67,7 +67,14 @@ import {
 import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
-import { AgentReply, ReplyActions } from "./AgentReply";
+import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
+import {
+  commandPrefix,
+  permissionDetails,
+  permissionOption,
+  permissionResult,
+  type PermissionEntry,
+} from "./permission";
 import { Markdown } from "./Markdown";
 import { useAgentErrorText } from "./loginHint";
 import {
@@ -182,7 +189,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           docked={docked}
         />
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
-        <PermissionBanner task={task} entries={entries ?? null} />
         <Stream
           key={view ?? ""}
           task={task}
@@ -597,6 +603,18 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const times = useMemo(() => (entries && !subagent ? replyTimes(entries) : null), [entries, subagent]);
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
+  const authorHeaders = useMemo(() => {
+    const headers = new Set<number>();
+    let first = true;
+    entries?.slice(start).forEach((entry, i) => {
+      if (entry.type === "user") first = true;
+      if (entry.type === "agent" && first) {
+        headers.add(start + i);
+        first = false;
+      }
+    });
+    return headers;
+  }, [entries, start]);
   const renderRow = useCallback(
     (row: EntryRow) => (
       <Entry
@@ -608,11 +626,12 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         reply={replies?.get(row.index)}
         time={times?.get(row.index) ?? null}
         working={row.index === lastIndex && busy}
+        showAuthor={authorHeaders.has(row.index)}
         onOpenSubagent={onOpenSubagent}
         onDiagramDrawn={onDiagramDrawn}
       />
     ),
-    [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
+    [task, turns, replies, times, lastIndex, busy, authorHeaders, onOpenSubagent, onDiagramDrawn],
   );
   // Only the tail is built while following the end; `start` moves earlier as batches load.
   const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
@@ -945,6 +964,7 @@ const Entry = memo(function Entry({
   reply,
   time,
   working,
+  showAuthor,
   onOpenSubagent,
   onDiagramDrawn,
 }: {
@@ -957,6 +977,7 @@ const Entry = memo(function Entry({
   /** When the turn this reply answered was asked and finished. */
   time?: ReplyTimes | null;
   working: boolean;
+  showAuthor: boolean;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
 }) {
@@ -965,13 +986,15 @@ const Entry = memo(function Entry({
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
     case "agent":
       return (
-        <div className={styles.agentMessage}>
-          <div className={styles.messageHead}>
-            <div className={styles.role}>
-              <Icon name={providerIcon(task.provider)} size={13} />
-              <span>{providerName(task.provider)}</span>
+        <div className={styles.agentMessage} data-continuation={!showAuthor || undefined}>
+          {showAuthor && (
+            <div className={styles.messageHead}>
+              <div className={styles.role}>
+                <Icon name={providerIcon(task.provider)} size={13} />
+                <span>{providerName(task.provider)}</span>
+              </div>
             </div>
-          </div>
+          )}
           <div className={styles.agentCard}>
             <AgentReply
               text={entry.text}
@@ -1128,11 +1151,14 @@ function UserMessage({
         )}
       </div>
       <div className={styles.messageFooter}>
-        <span className={styles.messageActions}>
-          <IconButton icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
-          {inPlace && entry.text && <IconButton icon="edit" title="Edit" onClick={() => setEditing(true)} />}
+        <MessageActions>
+          <IconButton size="small" icon="copy" title="Copy" onClick={() => void copyText(entry.text)} />
+          {inPlace && entry.text && (
+            <IconButton size="small" icon="edit" title="Edit" onClick={() => setEditing(true)} />
+          )}
           {inPlace && (
             <IconButton
+              size="small"
               icon="diff-revert"
               title="Retract Message"
               action="agents.retractMessage"
@@ -1141,6 +1167,7 @@ function UserMessage({
           )}
           {!archived && entry.text && entry.attachments.length === 0 && (
             <IconButton
+              size="small"
               icon="refresh"
               title={inPlace ? "Run Again From Here" : "Send Again"}
               onClick={() =>
@@ -1152,12 +1179,13 @@ function UserMessage({
           )}
           {canFork && (
             <IconButton
+              size="small"
               icon="branch"
               title="Copy to a New Task From Here"
               onClick={() => void forkTask(task.id, turn + 1).catch(failed("Couldn't copy the task"))}
             />
           )}
-        </span>
+        </MessageActions>
         <MessageTime sentMs={entry.sentMs ?? null} doneMs={entry.doneMs ?? null} />
       </div>
     </div>
@@ -1386,7 +1414,9 @@ const ToolEntry = memo(function ToolEntry({
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={styles.toolTitle}>{shortTitle(task, entry.title || entry.kind)}</span>
+      <span className={styles.toolTitle} title={entry.title || entry.kind}>
+        {shortTitle(task, entry.title || entry.kind)}
+      </span>
       {entry.diffs.map((d) => (
         <button
           key={d.path}
@@ -1414,7 +1444,10 @@ const ToolEntry = memo(function ToolEntry({
   return (
     <div className={styles.process}>
       <details className={styles.toolDetails} open={liveTool(entry) || undefined}>
-        <summary className={styles.tool}>{head}</summary>
+        <summary className={styles.tool}>
+          <Icon name="chevron-right" size={12} className={styles.toolChevron} />
+          {head}
+        </summary>
         <pre className={styles.output}>{entry.output}</pre>
       </details>
     </div>
@@ -1546,8 +1579,6 @@ function WorkingSubagents({ entries, onOpen }: { entries: AgentEntry[] | null; o
 /** Agent-written titles with the task's own folder dropped from paths. */
 const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
 
-type PermissionEntry = Extract<AgentEntry, { type: "permission" }>;
-
 /**
  * The answers to an open permission request. A request without options (some agents send
  * none) can still be cancelled, so the agent doesn't wait for an answer it can't get.
@@ -1562,52 +1593,105 @@ function PermissionAnswers({
   className?: string;
 }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(false);
+  const { command } = permissionDetails(entry);
   const answer = (option: string | null) => {
+    if (pending.current) return;
+    pending.current = true;
     setBusy(true);
-    void respond(task.id, entry.id, option).finally(() => setBusy(false));
+    setError(null);
+    void respond(task.id, entry.id, option)
+      .catch((e: unknown) => setError(String(e)))
+      .finally(() => {
+        pending.current = false;
+        setBusy(false);
+      });
   };
   return (
     <span className={className}>
       {entry.options.length ? (
-        entry.options.map((o) => (
-          <button key={o.id} type="button" className={styles.bannerLink} disabled={busy} onClick={() => answer(o.id)}>
-            {o.name}
-          </button>
-        ))
+        entry.options.map((o) => {
+          const { label, variant } = permissionOption(o, !!command);
+          return (
+            <Button
+              key={o.id}
+              variant={variant}
+              className={styles.permissionOption}
+              size="small"
+              aria-label={label}
+              title={o.name}
+              disabled={busy}
+              onClick={() => answer(o.id)}
+            >
+              <span className={styles.permissionOptionLabel}>{label}</span>
+            </Button>
+          );
+        })
       ) : (
-        <IconButton icon="close" title="Cancel" disabled={busy} onClick={() => answer(null)} />
+        <Button variant="ghost" disabled={busy} onClick={() => answer(null)}>
+          Cancel
+        </Button>
+      )}
+      {error && (
+        <span className={styles.error} role="alert">
+          {error}
+        </span>
       )}
     </span>
   );
 }
 
-/** A permission request in the conversation; while open, answered right there as in the banner. */
+/** A single inline decision, reduced to a compact record after it is answered. */
 function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEntry }) {
+  const tx = useTx();
+  const ref = useRef<HTMLDivElement>(null);
+  const hadFocus = useRef(false);
+  const { title, detail, command } = permissionDetails(entry, providerName(task.provider));
+  const result = permissionResult(entry);
+  useLayoutEffect(() => {
+    if (entry.chosen && hadFocus.current && document.activeElement === document.body)
+      ref.current?.focus({ preventScroll: true });
+  }, [entry.chosen]);
   return (
-    <div className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}>
-      <Icon name={!entry.chosen ? "warning" : entry.chosen === "Cancelled" ? "minus" : "check"} size={13} />
+    <div
+      ref={ref}
+      role="region"
+      aria-label={title}
+      tabIndex={entry.chosen ? -1 : undefined}
+      onFocusCapture={() => {
+        hadFocus.current = true;
+      }}
+      onBlurCapture={(e) => {
+        if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) hadFocus.current = false;
+      }}
+      className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}
+    >
+      <Icon name={!entry.chosen ? "warning" : result.allowed ? "check" : "minus"} size={14} />
       <div className={styles.permissionBody}>
-        <span className={styles.permissionTitle} title={shortTitle(task, entry.title)}>
-          {shortTitle(task, entry.title)}
-        </span>
-        <span className={styles.muted}>{entry.chosen ?? <T>Waiting for your answer</T>}</span>
-        {!entry.chosen && !entry.questions?.length && (
-          <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
+        {entry.chosen ? (
+          <span className={styles.permissionRecord} title={detail}>
+            {result.label}:{" "}
+            <span className={command ? styles.permissionPrefix : undefined}>
+              {command ? commandPrefix(command) : shortTitle(task, detail)}
+            </span>
+          </span>
+        ) : (
+          <>
+            <span className={styles.permissionTitle}>{title}</span>
+            {command ? (
+              <pre className={styles.permissionCommand} tabIndex={0} aria-label={tx("Command")}>
+                <code>{command}</code>
+              </pre>
+            ) : (
+              <span className={styles.permissionDetail}>{shortTitle(task, detail)}</span>
+            )}
+            {!entry.questions?.length && (
+              <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
+            )}
+          </>
         )}
       </div>
-    </div>
-  );
-}
-
-/** The open permission request, as an editor notification banner above the conversation. */
-function PermissionBanner({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
-  const entry = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen);
-  if (!entry || entry.questions?.length) return null;
-  return (
-    <div className={styles.banner} role="alert" aria-label={entry.title}>
-      <Icon name="warning" size={16} />
-      <span className={styles.bannerText}>{shortTitle(task, entry.title)}</span>
-      <PermissionAnswers task={task} entry={entry} className={styles.bannerActions} />
     </div>
   );
 }

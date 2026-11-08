@@ -1756,12 +1756,7 @@ impl Task {
     fn ask_permission(self: &Arc<Self>, params: &Value) -> Value {
         let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
         let (questions, by_index) = asked_questions(params);
-        let title = params
-            .pointer("/toolCall/title")
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .unwrap_or("The agent asks for permission")
-            .to_owned();
+        let title = permission_title(params);
         // An agent that answers by index titles its request "Ask user N question(s)"; its
         // first question says what it wants, as the Claude Code adapter titles its own.
         let title =
@@ -1933,6 +1928,26 @@ impl Handler for Client {
 fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
     prompt.text = prompt.text.trim().to_owned();
     (!prompt.text.is_empty() || !prompt.images.is_empty() || !prompt.files.is_empty()).then_some(prompt)
+}
+
+fn permission_title(params: &Value) -> String {
+    let call = &params["toolCall"];
+    let title = call.get("title").and_then(Value::as_str).filter(|t| !t.is_empty());
+    if call.get("kind").and_then(Value::as_str) == Some("execute") {
+        if let Some(command) = call.pointer("/rawInput/command").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+            // Network approvals describe the host rather than approving command execution.
+            if !title.is_some_and(|t| t.starts_with("Allow network access to ")) {
+                return format!("Run {command}");
+            }
+        }
+        if title.is_none()
+            && let Some(content) = call.get("content").and_then(Value::as_array)
+            && let Some(text) = content.iter().find_map(|c| c.pointer("/content/text").and_then(Value::as_str))
+        {
+            return format!("Run {text}");
+        }
+    }
+    title.unwrap_or("The agent asks for permission").to_owned()
 }
 
 /// The questions a permission request asks, and whether they answer by question index.
