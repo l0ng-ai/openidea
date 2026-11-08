@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { Profile, RunConfig } from "@/platform/ipc";
-import { colorSlot, flameLayout, formatWeight, frameLocation, matchingFrames, profilerSupports, share } from "./model";
+import {
+  allocationProfilerSupports,
+  colorSlot,
+  flameLayout,
+  formatWeight,
+  frameLocation,
+  matchingFrames,
+  profilerSupports,
+  share,
+} from "./model";
 
 // all(10) → main(10, self 2) → [work(6), io(2)]
 const profile: Profile = {
@@ -47,6 +56,13 @@ describe("profiler model", () => {
     expect(profilerSupports(cfg("cargo", ["run"]), true)).toBe(true);
     expect(profilerSupports(cfg("./app", [], "native"), true)).toBe(true);
     expect(profilerSupports(cfg("make", []), true)).toBe(false);
+  });
+
+  it("offers allocation profiling only for JVM programs", () => {
+    expect(allocationProfilerSupports(cfg("java", ["-cp", "x", "A"]))).toBe(true);
+    expect(allocationProfilerSupports(cfg("/opt/jdk/bin/java", ["-jar", "a.jar"]))).toBe(true);
+    expect(allocationProfilerSupports(cfg("node", ["a.js"]))).toBe(false);
+    expect(allocationProfilerSupports(cfg("python", ["main.py"]))).toBe(false);
   });
 
   it("lays out the flame graph and zooms into a node", () => {

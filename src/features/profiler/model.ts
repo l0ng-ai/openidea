@@ -6,6 +6,11 @@ function programName(command: string): string {
   return name.replace(/\.(exe|cmd|bat)$/i, "");
 }
 
+/** Whether async-profiler's allocation and live-object modes apply: JVM programs only. */
+export function allocationProfilerSupports(config: Pick<RunConfig, "command">): boolean {
+  return programName(config.command) === "java";
+}
+
 /**
  * Whether a profiler is known for `config` (cheap; the backend decides for real):
  * Node.js programs and npm scripts, Python, JVM applications, and on Linux native
