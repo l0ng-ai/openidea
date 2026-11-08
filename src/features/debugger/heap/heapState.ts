@@ -129,7 +129,8 @@ export async function openHeapFile(path: string): Promise<HeapOpenResult | null>
   const request = nextRequestId();
   useHeap.setState({ opening: { request, progress: null } });
   const channel = new Channel<HeapProgress>();
-  channel.onmessage = (progress) => useHeap.setState({ opening: { request, progress } });
+  channel.onmessage = (progress) =>
+    useHeap.setState((s) => (s.opening?.request === request ? { opening: { request, progress } } : s));
   try {
     const result = await call(commands.debugHeapOpen(path, request, channel));
     if (result.status === "ready") await adopt(result.snapshot, null);

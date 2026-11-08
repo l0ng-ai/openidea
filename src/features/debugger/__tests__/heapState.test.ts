@@ -259,6 +259,30 @@ describe("forgetHeapCapture", () => {
     await done;
     expect(useHeap.getState().captures).toEqual({});
   });
+
+  it("lets a reply of a forgotten capture leave the session's next capture alone", async () => {
+    const first = captureHeap(SESSION);
+    const firstReply = capture;
+    forgetHeapCapture(SESSION);
+    capture = deferred();
+    const second = captureHeap(SESSION);
+    const secondRequest = useHeap.getState().captures[SESSION]!.request;
+
+    firstReply.resolve({
+      status: "ok",
+      data: { status: "unavailable", reason: { kind: "dumpTimedOut", seconds: 30 } },
+    });
+    await first;
+    expect(useHeap.getState().captures[SESSION]).toEqual({
+      request: secondRequest,
+      progress: null,
+      error: null,
+      unavailable: null,
+    });
+
+    capture.resolve({ status: "ok", data: { status: "cancelled" } });
+    await second;
+  });
 });
 
 describe("retainedForSession", () => {
@@ -381,6 +405,38 @@ describe("openHeapFile", () => {
     await expect(second).resolves.toEqual({ status: "notEnoughDiskSpace", needed: 5, available: 1 });
     expect(useHeap.getState().opening).toBeNull();
     expect(openInput).not.toHaveBeenCalled();
+  });
+
+  it("drops progress that arrives after the open ended, so the next open can start", async () => {
+    const done = openHeapFile("/tmp/a.hprof");
+    const late = channel!;
+    open.resolve({ status: "ok", data: { status: "cancelled" } });
+    await done;
+
+    late.onmessage({ type: "dumping" });
+    expect(useHeap.getState().opening).toBeNull();
+
+    open = deferred();
+    const next = openHeapFile("/tmp/b.hprof");
+    expect(ipc.debugHeapOpen).toHaveBeenCalledTimes(2);
+    open.resolve({ status: "ok", data: { status: "cancelled" } });
+    await next;
+  });
+
+  it("drops progress of a failed open without touching the open that follows", async () => {
+    let late!: FakeChannel;
+    ipc.debugHeapOpen.mockImplementationOnce((_p: string, _r: number, ch: FakeChannel) => {
+      late = ch;
+      return fail("bad file");
+    });
+    await expect(openHeapFile("/tmp/a.hprof")).rejects.toThrow("bad file");
+
+    const next = openHeapFile("/tmp/b.hprof");
+    const nextRequest = useHeap.getState().opening!.request;
+    late.onmessage({ type: "dumping" });
+    expect(useHeap.getState().opening).toEqual({ request: nextRequest, progress: null });
+    open.resolve({ status: "ok", data: { status: "cancelled" } });
+    await next;
   });
 
   it("clears the progress and rejects when the request fails", async () => {
