@@ -1,15 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
+import * as ipc from "@/platform/ipc";
 import { applicationConfig } from "./application";
 import {
   DELEGATED_DEBUG,
   delegatedGradleConfig,
   gradleDelegation,
+  gradleBootLaunch,
+  gradleTestLaunch,
   withTestEvents,
   wrapperGradleVersion,
 } from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
 import { isJvmApplication } from "@/platform/javaLaunch";
+import TESTS_SCRIPT from "./gradleTests.gradle?raw";
+import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
 
@@ -135,6 +140,16 @@ describe("Build and run using: Gradle", () => {
     expect(run.params).toBeUndefined();
   });
 
+  it("gives Gradle BootRun a dynamic JDWP port when debugging", () => {
+    expect(BOOT_SCRIPT).toContain("openidea.run.debug");
+    expect(BOOT_SCRIPT).toContain("address=127.0.0.1:0");
+  });
+
+  it("gives Gradle test workers a dynamic JDWP port when debugging", () => {
+    expect(TESTS_SCRIPT).toContain("openidea.run.debug");
+    expect(TESTS_SCRIPT).toContain("address=127.0.0.1:0");
+  });
+
   it("debugs the forked JVM: the init script adds the agent", () => {
     const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
     const run = delegatedGradleConfig(app, "app", ctx)!;
@@ -163,6 +178,40 @@ describe("Gradle test runs", () => {
     expect(withTestEvents(maven, script)).toBe(maven);
     const twice = withTestEvents({ kind: "gradle", command: "gradle", args: ["test"] }, script);
     expect(withTestEvents(twice, script)).toBe(twice);
+  });
+});
+
+describe("Gradle launch routing", () => {
+  const boot = {
+    kind: "gradle",
+    command: "./gradlew",
+    args: [":module:bootRun"],
+  } as RunConfig;
+  const test = { ...boot, args: [":module:test"], isTest: true };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("leaves non-desktop launches alone", async () => {
+    vi.spyOn(ipc, "isTauri").mockReturnValue(false);
+    expect(await gradleBootLaunch(boot)).toBe(boot);
+    expect(await gradleTestLaunch(test)).toBe(test);
+  });
+
+  it("keeps the configuration when the host cannot write the init script", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(ipc.commands, "runGradleInitScript").mockRejectedValue(new Error("host unavailable"));
+    expect(await gradleBootLaunch(boot)).toBe(boot);
+    expect(await gradleTestLaunch(test)).toBe(test);
+  });
+
+  it("adds reporting scripts without enabling JDWP for plain Run", async () => {
+    for (const config of [await gradleBootLaunch(boot), await gradleTestLaunch(test)]) {
+      expect(config.args.slice(0, 2)).toEqual(["--init-script", "/tmp/openidea-gradle-run.gradle"]);
+      expect(config.args).not.toContain(DELEGATED_DEBUG);
+      expect(config.args).not.toContain("--debug-jvm");
+    }
+    expect(boot.args).toEqual([":module:bootRun"]);
+    expect(test.args).toEqual([":module:test"]);
   });
 });
 

@@ -76,7 +76,7 @@ pub fn load_linked(
     gradle_settings: &ide_core::settings::GradleSettings,
 ) -> BuildModel {
     let maven = maven::has_projects(root, settings).then(|| {
-        let profiles = sync::maven_profiles(cache_dir);
+        let profiles = settings.profiles(&sync::maven_profiles(cache_dir));
         let repo = maven_repo.or_else(maven::default_local_repo);
         let mut m = maven::load_with_linked(root, repo, &profiles, &settings.linked_projects);
         maven::UnlinkedProjects::from_model(&m, settings).filter(&mut m);
@@ -220,6 +220,30 @@ mod tests {
         );
         settings.linked_projects = Some(vec![]);
         assert!(gradle_external_roots(&root, &temp.path().join("cache"), &settings).is_empty());
+    }
+
+    #[test]
+    fn settings_profiles_and_checkbox_choices_control_modules_before_sync() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("extra")).unwrap();
+        std::fs::write(root.join("extra/pom.xml"), "<project><artifactId>extra</artifactId></project>").unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><artifactId>root</artifactId><packaging>pom</packaging>
+            <profiles><profile><id>extra</id><modules><module>extra</module></modules></profile></profiles></project>"#,
+        )
+        .unwrap();
+        let cache = root.join("cache");
+        let settings = ide_core::settings::MavenSettings { active_profiles: "extra".into(), ..Default::default() };
+        let modules = |settings: &ide_core::settings::MavenSettings| {
+            load_linked(root, &cache, None, settings, &Default::default()).maven.unwrap().projects[0].modules.clone()
+        };
+        assert!(modules(&Default::default()).is_empty());
+        assert_eq!(modules(&settings), ["extra/pom.xml"]);
+        assert_eq!(maven::load_linked(root, &settings).projects[0].modules, ["extra/pom.xml"]);
+        save_maven_profiles(&cache, &["!extra".into()]).unwrap();
+        assert!(modules(&settings).is_empty());
     }
 
     #[test]
