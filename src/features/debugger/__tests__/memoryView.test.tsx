@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const ipc = vi.hoisted(() => ({ debugJvmMemoryClasses: vi.fn(), debugJvmMemoryInstances: vi.fn() }));
 
@@ -332,6 +333,20 @@ describe("MemoryView", () => {
       fireEvent.keyDown(body(), { key: "Enter" });
       await waitFor(() => expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledWith(1, "com.x.Order", 1000));
       expect(await screen.findByText("Instances of com.x.Order")).toBeTruthy();
+    });
+
+    it("Enter on a row's Show Instances button opens that row's class, not the selected one", async () => {
+      const user = userEvent.setup();
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(ORDERS));
+      ipc.debugJvmMemoryInstances.mockReturnValue(ok(NO_INSTANCES));
+      render(<MemoryView session={withInstances} />);
+      await screen.findByText("com.x.Order");
+      fireEvent.mouseDown(rowOf("com.x.Order"), { button: 0 });
+      expect(useMemory.getState().bySession[1]!.selected).toBe("com.x.Order");
+      within(rowOf("com.x.Line")).getByRole("button", { name: "Show Instances" }).focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledWith(1, "com.x.Line", 1000));
+      expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledTimes(1);
     });
 
     it("opens the instances of a class with a double-click or its row button", async () => {

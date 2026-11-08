@@ -31,7 +31,7 @@ import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { reloadChangedClasses } from "./hotswap";
 import { refreshMemory, useMemory } from "./memory/memoryState";
-import { showInstances, useInstances } from "./memory/instancesState";
+import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
@@ -474,6 +474,33 @@ export function registerDebugActions(): () => void {
             : s &&
               (useInstances.getState().bySession[s.id]?.className ?? useMemory.getState().bySession[s.id]?.selected);
         if (name) void jumpToClass(name);
+      },
+    },
+    {
+      // Runs for the lead object row of the open instances list.
+      id: "debug.memory.showReferrers",
+      title: "Show Referrers",
+      category: "Debug",
+      icon: "hierarchy",
+      keywords: ["memory", "instances", "references", "referring objects"],
+      when: "debugSessionPaused",
+      run: () => {
+        const s = activeSession();
+        const entry = s && useInstances.getState().bySession[s.id];
+        if (!s || !entry?.lead || !sessionSupports("jvmInstances", s) || instancesOutdated(entry, s.stops)) return;
+        showReferrers(s.id, entry.lead.key, entry.lead.ref);
+      },
+    },
+    {
+      id: "debug.memory.closeInstances",
+      title: "Close Instances",
+      category: "Debug",
+      icon: "close",
+      keywords: ["memory", "instances"],
+      when: "debugHasJvmMemory",
+      run: () => {
+        const s = activeSession();
+        if (s && useInstances.getState().bySession[s.id]) closeInstances(s.id);
       },
     },
     {

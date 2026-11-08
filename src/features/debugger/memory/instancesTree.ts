@@ -1,7 +1,7 @@
 /** Rows of the instances tree, built from what `instancesState` has loaded so far. */
 import type { JvmBackendState, JvmInspectUnavailable, JvmObjectRef, JvmValue } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import type { NodeEntry } from "./instancesState";
+import { referrersKey, type NodeEntry } from "./instancesState";
 import { formatJvmValue, objectRef, refKey } from "./values";
 
 export type Retry = { what: "fields" | "referrers"; ref: JvmObjectRef };
@@ -114,7 +114,7 @@ export function childrenOf(node: PaneNode, nodes: Readonly<Record<string, NodeEn
   } else if (n.error) {
     out.push(message(`${node.key}/!error`, n.error, { what: "fields", ref }));
   }
-  if (n.referrers || n.loadingReferrers) out.push({ kind: "referrers", key: `${node.key}/referrers`, ref });
+  if (n.referrers || n.loadingReferrers) out.push({ kind: "referrers", key: referrersKey(node.key), ref });
   return fields || out.length ? out : undefined;
 }
 

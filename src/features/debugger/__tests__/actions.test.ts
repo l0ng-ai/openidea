@@ -21,6 +21,8 @@ const ipc = vi.hoisted(() => {
     debugThreads: vi.fn(() => ok([])),
     debugJvmMemoryClasses: vi.fn(() => ok({ status: "unavailable", reason: { kind: "programExited" } })),
     debugJvmMemoryInstances: vi.fn(() => ok({ status: "ready", generation: 1, instances: [], truncated: false })),
+    debugJvmMemoryFields: vi.fn(() => ok({ status: "ready", fields: [] })),
+    debugJvmMemoryReferrers: vi.fn(() => ok({ status: "ready", referrers: [], truncated: false })),
     lspWorkspaceSymbols: vi.fn(() =>
       ok([
         {
@@ -83,7 +85,7 @@ import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
 import { useOverlays } from "../ui/popoverStore";
 import { forgetMemory, selectMemoryClass } from "../memory/memoryState";
-import { forgetInstances, showInstances } from "../memory/instancesState";
+import { forgetInstances, setInstancesLead, showInstances, useInstances } from "../memory/instancesState";
 
 const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   restartFrame: false,
@@ -176,6 +178,8 @@ describe("debugger actions (IDEA parity)", () => {
       "debug.memory.refresh": undefined,
       "debug.memory.showInstances": undefined,
       "debug.memory.jumpToSource": undefined,
+      "debug.memory.showReferrers": undefined,
+      "debug.memory.closeInstances": undefined,
       "debug.toggleMethodBreakpoint": undefined,
       "debug.toggleFieldWatchpoint": undefined,
     };
@@ -286,6 +290,44 @@ describe("debugger actions (IDEA parity)", () => {
     expect(ipc.debugJvmMemoryInstances).toHaveBeenLastCalledWith(3, "com.x.Line", 1000);
     forgetInstances(3);
     forgetMemory(3);
+  });
+
+  it("Show Referrers runs for the lead row of the open instances list", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.showReferrers");
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    ipc.debugJvmMemoryInstances.mockReturnValueOnce(
+      ipc.ok({
+        status: "ready",
+        generation: 4,
+        instances: [{ kind: "object", id: 9, typeName: "com.x.Order" }],
+        truncated: false,
+      }) as never,
+    );
+    await showInstances(3, "com.x.Order");
+    // No lead row yet.
+    await executeAction("debug.memory.showReferrers");
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    setInstancesLead(3, { key: "#0", ref: { generation: 4, id: 9 } });
+    await executeAction("debug.memory.showReferrers");
+    await settle();
+    expect(ipc.debugJvmMemoryReferrers).toHaveBeenCalledWith(3, { generation: 4, id: 9 }, 50);
+    expect(useInstances.getState().bySession[3]!.expanded).toEqual(["#0", "#0/referrers"]);
+    // Objects from before the last stop cannot be read.
+    ipc.debugJvmMemoryReferrers.mockClear();
+    paused({ stops: 1, caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.showReferrers");
+    expect(ipc.debugJvmMemoryReferrers).not.toHaveBeenCalled();
+    forgetInstances(3);
+  });
+
+  it("Close Instances closes the open instances list", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.closeInstances");
+    await showInstances(3, "com.x.Order");
+    expect(useInstances.getState().bySession[3]).toBeTruthy();
+    await executeAction("debug.memory.closeInstances");
+    expect(useInstances.getState().bySession[3]).toBeUndefined();
   });
 
   it("Jump to Source opens the class of the open instances list", async () => {

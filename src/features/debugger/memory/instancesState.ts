@@ -32,7 +32,19 @@ export interface InstancesEntry {
   takenAtStop: number;
   /** Opened objects by `refKey`. */
   nodes: Record<string, NodeEntry>;
+  /** Tree keys of the open rows; kept here so actions can open rows too. */
+  expanded: string[];
+  /** The tree's lead row when it is an object; the Show Referrers action runs for it. */
+  lead: InstancesLead | null;
 }
+
+export interface InstancesLead {
+  key: string;
+  ref: JvmObjectRef;
+}
+
+/** Tree key of the "Referrers" group under the row `key`. */
+export const referrersKey = (key: string) => `${key}/referrers`;
 
 const emptyNode = (): NodeEntry => ({
   fields: null,
@@ -75,7 +87,16 @@ export async function showInstances(id: DebugSessionId, className: string): Prom
   useInstances.setState((s) => ({
     bySession: {
       ...s.bySession,
-      [id]: { className, result: null, loading: true, error: null, takenAtStop: stop, nodes: {} },
+      [id]: {
+        className,
+        result: null,
+        loading: true,
+        error: null,
+        takenAtStop: stop,
+        nodes: {},
+        expanded: [],
+        lead: null,
+      },
     },
   }));
   try {
@@ -132,6 +153,31 @@ async function loadNode(
   } finally {
     patchNode(id, token, ref, { [flag]: false });
   }
+}
+
+/** Loads the object's fields unless they are loaded or loading. */
+export function ensureFields(id: DebugSessionId, ref: JvmObjectRef): void {
+  const n = useInstances.getState().bySession[id]?.nodes[refKey(ref)];
+  if (!n?.fields && !n?.loadingFields) void loadFields(id, ref);
+}
+
+export function setInstancesExpanded(id: DebugSessionId, keys: Iterable<string>): void {
+  const token = current.get(id);
+  if (token) patchEntry(id, token, () => ({ expanded: [...keys] }));
+}
+
+export function setInstancesLead(id: DebugSessionId, lead: InstancesLead | null): void {
+  const token = current.get(id);
+  if (token) patchEntry(id, token, () => ({ lead }));
+}
+
+/** Opens the row `key` of `ref` with its fields and its "Referrers" group, loading both. */
+export function showReferrers(id: DebugSessionId, key: string, ref: JvmObjectRef): void {
+  const token = current.get(id);
+  if (!token) return;
+  void loadReferrers(id, ref);
+  ensureFields(id, ref);
+  patchEntry(id, token, (e) => ({ expanded: [...new Set([...e.expanded, key, referrersKey(key)])] }));
 }
 
 export function instancesOutdated(entry: InstancesEntry, sessionStops: number): boolean {

@@ -9,6 +9,7 @@ import { sessionSupports, type DebugSession } from "../state";
 import { DEFAULT_QUERY, isOutdated, refreshMemory, selectMemoryClass, setMemoryQuery, useMemory } from "./memoryState";
 import { InstancesPane } from "./InstancesPane";
 import { backendText } from "./instancesTree";
+import { keepKeysOnButton } from "./rowButtonKeys";
 import { columnsOf, formatBytes, formatCount, formatDelta, queryFor, visibleRows, type SortKey } from "./rows";
 import styles from "./MemoryView.module.css";
 
@@ -88,6 +89,7 @@ function ClassRow({
             size="small"
             className={styles.rowButton}
             disabled={!paused}
+            onKeyDown={keepKeysOnButton}
           />
         )}
       </span>

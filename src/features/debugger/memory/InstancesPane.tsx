@@ -1,15 +1,18 @@
 /** Instances of one class under the Memory table: each opens into its fields and the objects that refer to it. */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { Button, IconButton, Spinner, T, Tree } from "@/ui";
 import { tx } from "@/platform/i18n";
 import type { DebugSessionId, JvmValue } from "@/platform/ipc";
 import type { DebugSession } from "../state";
 import {
-  closeInstances,
+  ensureFields,
   instancesOutdated,
   loadFields,
   loadReferrers,
+  setInstancesExpanded,
+  setInstancesLead,
   showInstances,
+  showReferrers,
   useInstances,
   type NodeEntry,
 } from "./instancesState";
@@ -22,8 +25,8 @@ import {
   type PaneNode,
   type Retry,
 } from "./instancesTree";
+import { keepKeysOnButton } from "./rowButtonKeys";
 import { formatCount } from "./rows";
-import { refKey } from "./values";
 import styles from "./InstancesPane.module.css";
 
 export function InstancesPane({ session }: { session: DebugSession }) {
@@ -45,7 +48,7 @@ export function InstancesPane({ session }: { session: DebugSession }) {
           title="Jump to Source"
           size="small"
         />
-        <IconButton icon="close" title="Close Instances" size="small" onClick={() => closeInstances(id)} />
+        <IconButton icon="close" action="debug.memory.closeInstances" title="Close Instances" size="small" />
       </div>
       {entry.loading && (
         <div className={styles.note} role="status">
@@ -90,6 +93,7 @@ export function InstancesPane({ session }: { session: DebugSession }) {
             instances={result.instances}
             generation={result.generation}
             nodes={entry.nodes}
+            expandedKeys={entry.expanded}
             outdated={outdated}
           />
         </>
@@ -109,6 +113,7 @@ function InstanceTree({
   instances,
   generation,
   nodes,
+  expandedKeys,
   outdated,
 }: {
   id: DebugSessionId;
@@ -116,10 +121,13 @@ function InstanceTree({
   instances: JvmValue[];
   generation: number;
   nodes: Record<string, NodeEntry>;
+  expandedKeys: string[];
   outdated: boolean;
 }) {
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const expanded = useMemo(() => new Set(expandedKeys), [expandedKeys]);
   const roots = useMemo(() => instanceNodes(generation, instances), [generation, instances]);
+  // The lead row only means something while this tree shows it.
+  useEffect(() => () => setInstancesLead(id, null), [id]);
   const getChildren = useCallback((n: PaneNode) => childrenOf(n, nodes), [nodes]);
   // Objects of an earlier stop cannot be read any more; what was already loaded stays open.
   const isExpandable = useCallback(
@@ -128,17 +136,8 @@ function InstanceTree({
     [nodes, outdated],
   );
 
-  const ensureFields = (n: PaneNode) => {
-    if (n.kind !== "value" || !n.ref) return;
-    const loaded = nodes[refKey(n.ref)];
-    if (!loaded?.fields && !loaded?.loadingFields) void loadFields(id, n.ref);
-  };
-
-  const showReferrers = (n: PaneNode) => {
-    if (n.kind !== "value" || !n.ref) return;
-    void loadReferrers(id, n.ref);
-    ensureFields(n);
-    setExpanded((prev) => new Set([...prev, n.key, `${n.key}/referrers`]));
+  const onReferrers = (n: PaneNode) => {
+    if (n.kind === "value" && n.ref) showReferrers(id, n.key, n.ref);
   };
 
   const retry = ({ what, ref }: Retry) => void (what === "fields" ? loadFields(id, ref) : loadReferrers(id, ref));
@@ -154,11 +153,14 @@ function InstanceTree({
       isExpandable={isExpandable}
       expanded={expanded}
       onExpandedChange={(next, n, open) => {
-        setExpanded(next);
-        if (open) ensureFields(n);
+        setInstancesExpanded(id, next);
+        if (open && n.kind === "value" && n.ref) ensureFields(id, n.ref);
       }}
+      onSelectionChange={(_selected, lead) =>
+        setInstancesLead(id, lead?.kind === "value" && lead.ref ? { key: lead.key, ref: lead.ref } : null)
+      }
       rowClassName={() => styles.row}
-      renderNode={(n) => <NodeRow node={n} outdated={outdated} onReferrers={showReferrers} onRetry={retry} />}
+      renderNode={(n) => <NodeRow node={n} outdated={outdated} onReferrers={onReferrers} onRetry={retry} />}
       empty={
         <span className={styles.note}>
           <T>Nothing to show</T>
@@ -197,6 +199,7 @@ function NodeRow({
               size="small"
               className={styles.rowButton}
               disabled={outdated}
+              onKeyDown={keepKeysOnButton}
               onClick={() => onReferrers(node)}
             />
           )}
@@ -213,7 +216,13 @@ function NodeRow({
         <span className={styles.message}>
           {node.text}
           {node.retry && (
-            <Button size="small" variant="ghost" className={styles.retry} onClick={() => onRetry(node.retry!)}>
+            <Button
+              size="small"
+              variant="ghost"
+              className={styles.retry}
+              onKeyDown={keepKeysOnButton}
+              onClick={() => onRetry(node.retry!)}
+            >
               Retry
             </Button>
           )}

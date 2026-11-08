@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const ipc = vi.hoisted(() => ({
   debugJvmMemoryInstances: vi.fn(),
@@ -25,7 +26,7 @@ import { registerActions } from "@/platform/actions";
 import { setLocale } from "@/platform/i18n";
 import { provideEditorService, provideNotificationService, type EditorService } from "@/workbench/contributions";
 import { useDebug, type DebugSession } from "../state";
-import { showInstances, useInstances } from "../memory/instancesState";
+import { closeInstances, showInstances, showReferrers, useInstances } from "../memory/instancesState";
 import { InstancesPane } from "../memory/InstancesPane";
 import { jumpToClass } from "../memory/jumpToClass";
 
@@ -101,6 +102,7 @@ beforeEach(() => {
       run: ({ arg }) => void showInstances(1, arg as string),
     },
     { id: "debug.memory.jumpToSource", title: "Jump to Source", run: () => {} },
+    { id: "debug.memory.closeInstances", title: "Close Instances", run: () => closeInstances(1) },
   ]);
 });
 
@@ -221,6 +223,46 @@ describe("InstancesPane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("ArrayList@15")).toBeTruthy();
     expect(ipc.debugJvmMemoryFields).toHaveBeenCalledTimes(2);
+  });
+
+  it("Enter on a row's Show Referrers button shows that row's referrers, not the lead row's", async () => {
+    const user = userEvent.setup();
+    ipc.debugJvmMemoryReferrers.mockReturnValue(ok({ ...REFERRERS, referrers: [] }));
+    ipc.debugJvmMemoryFields.mockReturnValue(ok({ status: "ready", fields: [] }));
+    await open();
+    fireEvent.mouseDown(item("Order@12"), { button: 0 });
+    within(item('"hi"')).getByRole("button", { name: "Show Referrers" }).focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(ipc.debugJvmMemoryReferrers).toHaveBeenCalledWith(1, { generation: 2, id: 13 }, 50));
+    expect(ipc.debugJvmMemoryReferrers).toHaveBeenCalledTimes(1);
+    expect(item("Order@12").getAttribute("aria-expanded")).toBe("false");
+    expect(item('"hi"').getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("Enter on the tree still opens the lead row", async () => {
+    ipc.debugJvmMemoryFields.mockReturnValue(ok(FIELDS));
+    await open();
+    fireEvent.mouseDown(item("Order@12"), { button: 0 });
+    fireEvent.keyDown(screen.getByRole("tree"), { key: "Enter" });
+    expect(await screen.findByText("ArrayList@15")).toBeTruthy();
+    expect(item("Order@12").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps the lead object row in the store for the Show Referrers action", async () => {
+    await open();
+    expect(useInstances.getState().bySession[1]!.lead).toBeNull();
+    fireEvent.mouseDown(item('"hi"'), { button: 0 });
+    expect(useInstances.getState().bySession[1]!.lead).toEqual({ key: "#1", ref: { generation: 2, id: 13 } });
+  });
+
+  it("opens the referrers the store was asked to show", async () => {
+    ipc.debugJvmMemoryReferrers.mockReturnValue(ok(REFERRERS));
+    ipc.debugJvmMemoryFields.mockReturnValue(ok(FIELDS));
+    await open();
+    showReferrers(1, "#0", { generation: 2, id: 12 });
+    expect(await screen.findByText("Book@3 · orders")).toBeTruthy();
+    expect(item("Order@12").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("ArrayList@15")).toBeTruthy();
   });
 
   it("closes", async () => {
