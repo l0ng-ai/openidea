@@ -121,7 +121,7 @@ beforeEach(() => {
 });
 
 describe("conversation rows", () => {
-  it("groups agent authors by turn and uses matching icon-only message action rows", async () => {
+  it("keeps authors above messages and their folded work with matching icon-only actions", async () => {
     const user = (text: string): AgentEntry => ({
       type: "user",
       text,
@@ -136,12 +136,17 @@ describe("conversation rows", () => {
       tool("read"),
       { type: "agent", text: "More detail" },
       user("Next question"),
+      { type: "thought", text: "Considering the next question" },
+      tool("next"),
       { type: "agent", text: "Next reply" },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("More detail");
-    expect(stream().querySelectorAll(`.${styles.agentMessage} .${styles.role}`)).toHaveLength(2);
+    expect(stream().querySelectorAll(`.${styles.agentAuthor} .${styles.role}`)).toHaveLength(2);
+    const author = stream().querySelectorAll(`.${styles.agentAuthor}`)[1]!;
+    expect(author.nextElementSibling).toHaveClass(styles.processRun!);
+    expect(author.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
     const quote = within(stream()).getAllByRole("button", { name: "Quote Reply" });
     const copy = within(stream()).getAllByRole("button", { name: "Copy Markdown" });
     expect(quote).toHaveLength(3);
@@ -153,6 +158,69 @@ describe("conversation rows", () => {
     expect(stream()).not.toHaveTextContent("66");
     expect(quote[0]?.className).toBe(copy[0]?.className);
     expect(within(stream()).getAllByRole("button", { name: "Copy" })[0]?.className).toBe(copy[0]?.className);
+  });
+
+  it.each([null, "allow"])("keeps tool, reasoning, plan and approval rows in one author run (%s)", async (chosen) => {
+    backend.entries.set("A", [
+      { type: "agent", text: "I’ll read package.json…" },
+      tool("one"),
+      tool("two"),
+      { type: "agent", text: "More detail" },
+      tool("List .", { status: "running" }),
+      { type: "permission", id: 1, title: "Run python3", options: [], chosen },
+      { type: "plan", items: [{ content: "Check files", status: "in_progress" }] },
+      { type: "thought", text: "Consider the result" },
+      { type: "agent", text: "Done" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Done");
+    expect(stream().querySelectorAll(`.${styles.agentAuthor}`)).toHaveLength(1);
+    expect(stream().firstElementChild?.firstElementChild).toHaveClass(styles.agentAuthor!);
+  });
+
+  it.each<AgentEntry>([subagent, { type: "message", incoming: true, text: "Parent request" }])(
+    "starts another author run after $type entries",
+    async (other) => {
+      backend.entries.set("A", [
+        { type: "agent", text: "Before the switch" },
+        other,
+        { type: "thought", text: "After the switch" },
+        tool("read"),
+        { type: "agent", text: "After the work" },
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      await screen.findByText("After the work");
+      const authors = stream().querySelectorAll(`.${styles.agentAuthor}`);
+      expect(authors).toHaveLength(2);
+      expect(stream().children[1]?.querySelector(`.${styles.agentAuthor}`)).toBeNull();
+      expect(authors[1]?.nextElementSibling).toHaveClass(styles.processRun!);
+      expect(authors[1]?.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
+    },
+  );
+
+  it("anchors every agent footer with its time before the hover actions", async () => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
+      { type: "agent", text: "First reply" },
+      tool("read"),
+      { type: "agent", text: "Final reply" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Final reply");
+    const messages = stream().querySelectorAll(`.${styles.agentMessage}`);
+    expect(messages).toHaveLength(2);
+    for (const message of messages) {
+      const [card, footer] = message.children;
+      expect(card).toHaveClass(styles.agentCard!);
+      expect(footer).toHaveClass(styles.messageFooter!);
+      expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
+      expect(footer?.firstElementChild).toHaveTextContent("12s");
+      expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
+    }
+    expect(stream().querySelector(`.${styles.userMessage} > .${styles.messageFooter}`)).not.toBeNull();
   });
 
   it("builds only the requested tail, with absolute indexes", () => {
