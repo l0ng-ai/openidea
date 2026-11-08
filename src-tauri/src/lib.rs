@@ -73,6 +73,10 @@ pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
+    if let Some(project) = ide_mcp::stdio_request(&std::env::args().collect::<Vec<_>>()) {
+        let app_data = dirs::data_dir().unwrap_or_default().join(&context.config().identifier);
+        std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&app_data), project));
+    }
     // The `openidea` command: answer and exit, no UI.
     if let Some(code) = cli::run(&context.config().identifier) {
         std::process::exit(code);
@@ -190,6 +194,7 @@ pub fn run() {
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
+        commands::mcp::apply(&app.state::<AppState>());
         app.manage(windows);
         app.manage(application_focus::ApplicationFocus::default());
         #[cfg(target_os = "macos")]
@@ -268,6 +273,7 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.stop_processes_on_exit();
+                commands::mcp::stop(&state);
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }

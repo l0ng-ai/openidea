@@ -70,6 +70,8 @@ const NOTIFY = new Set(["notify"]);
 
 /** Code templates shown as written, and the in-memory backends of plain-browser development. */
 const UNCHECKED_FILES = new Set([
+  // Pre-module failure UI carries its own English/Chinese text when catalogs cannot load.
+  "public/boot.js",
   "src/editor/core/backend.ts",
   "src/features/plugins/backend.ts",
   "src/features/tools/backend.ts",
@@ -490,7 +492,10 @@ function scanTypeScript(): Scan {
   const spliced: Use[] = [];
   const keys: Use[] = [];
   const literals = new Set<string>();
-  const files = walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts"));
+  const files = [
+    ...walk(`${ROOT}src`, (p) => /\.tsx?$/.test(p) && !isTest(p) && !p.endsWith("/bindings.ts")),
+    `${ROOT}public/boot.js`,
+  ];
   for (const file of files) {
     const path = file.slice(ROOT.length);
     const source = readFileSync(file, "utf8");
@@ -534,6 +539,8 @@ function scanTypeScript(): Scan {
         for (const text of texts) {
           literals.add(shape(text));
           literals.add(shape(text.trim()));
+          // Color scheme trees display the individual segments of grouped attribute names.
+          for (const part of text.split(" › ")) literals.add(shape(part));
         }
         const sink = checked ? sinkOf(node, exact, template) : undefined;
         if (sink) {

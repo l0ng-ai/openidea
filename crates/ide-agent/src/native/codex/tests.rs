@@ -1044,3 +1044,15 @@ fn v_method(line: &str) -> Option<&str> {
     let at = line.find("\"method\":\"")? + 10;
     line[at..].split('"').next()
 }
+
+#[test]
+fn session_mcp_servers_become_thread_configuration() {
+    assert!(mcp_config(&json!({"mcpServers":[]})).is_none());
+    assert_eq!(
+        mcp_config(&json!({"mcpServers":[{"name":"OpenIDEA","command":"/app/openidea",
+        "args":["--mcp-stdio","--project","/project"],"env":[{"name":"K","value":"V"}]}]})),
+        Some(
+            json!({"mcp_servers":{"OpenIDEA":{"command":"/app/openidea","args":["--mcp-stdio","--project","/project"],"env":{"K":"V"}}}})
+        )
+    );
+}

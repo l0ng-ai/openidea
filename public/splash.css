@@ -67,10 +67,10 @@ body,
     var(--splash-progress-easing, cubic-bezier(0.1, 0.7, 0.3, 1)) both;
 }
 /* Settings window: a dialog, not a launch. Only the bar, and only if loading takes a while. */
-:root[data-window="settings"] .splash {
+:root[data-window="settings"] .splash:not(.boot-error) {
   animation-delay: 400ms;
 }
-:root[data-window="settings"] .splash > :not(.splash-bar) {
+:root[data-window="settings"] .splash:not(.boot-error) > :not(.splash-bar) {
   display: none;
 }
 @keyframes splash-in {
@@ -91,4 +91,64 @@ body,
   .splash {
     animation: none;
   }
+}
+
+.splash.boot-error {
+  align-items: stretch;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px max(24px, calc((100vw - 560px) / 2));
+  overflow: auto;
+  animation: none;
+  font: var(--fs-ui, 13px) / 1.5 var(--font-ui, system-ui, sans-serif);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.boot-error h1 {
+  margin: 0;
+  color: var(--fg, inherit);
+  font-size: 20px;
+  font-weight: 600;
+}
+.boot-error p {
+  margin: 0;
+}
+.boot-error textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 140px;
+  height: 180px;
+  padding: 12px;
+  resize: vertical;
+  border: 1px solid var(--border-strong, currentColor);
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-input, transparent);
+  color: inherit;
+  font: 12px / 1.5 var(--font-mono, monospace);
+}
+.boot-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+.boot-error button {
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong, currentColor);
+  border-radius: var(--radius-control, 4px);
+  background: var(--bg-elev, transparent);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.boot-error button:hover {
+  background: var(--bg-hover, transparent);
+}
+.boot-error a {
+  color: var(--link, inherit);
+  text-underline-offset: 3px;
+}
+.boot-error :is(button, a, textarea):focus-visible {
+  outline: 2px solid var(--focus-ring, var(--boot-accent, currentColor));
+  outline-offset: 2px;
 }

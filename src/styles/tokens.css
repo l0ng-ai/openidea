@@ -123,6 +123,7 @@ html {
   --syn-punct: #bcbec4;
   --syn-variable: #bcbec4;
   --syn-global: var(--syn-variable);
+  --syn-namespace: var(--fg-editor);
   --syn-param: #bcbec4;
   --syn-property: #c77dbb;
   --syn-constant: #c77dbb;
@@ -299,6 +300,10 @@ html {
   --dur: 140ms;
 
   /* additive: overlays, layers, controls */
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
   --bg-tooltip: #33353b;
   --fg-tooltip: #d1d3d9;
   --border-tooltip: #33353b;
@@ -336,7 +341,6 @@ html {
   --fg-stripe-label: #9fa2a8;
   --fs-stripe-label: 11px;
   --stripe-button-w: 58px;
-  --stripe-button-radius: 6px;
   --bg-tab-selected: #233558;
   --border-tab-selected: #2e4d89;
   --bg-tab-selected-inactive: #26282c;
@@ -524,6 +528,7 @@ html {
   --syn-punct: #080808;
   --syn-variable: #080808;
   --syn-global: var(--syn-variable);
+  --syn-namespace: var(--fg-editor);
   --syn-param: #080808;
   --syn-property: #871094;
   --syn-constant: #871094;
@@ -648,6 +653,10 @@ html {
   --traffic-off-border: #c8c8c8;
 
   /* additive */
+  --bg-stripe-tooltip: #27282e;
+  --fg-stripe-tooltip: #ffffff;
+  --border-stripe-tooltip: #383a42;
+  --shadow-stripe-tooltip: 0 2px 8px rgba(0, 0, 0, 0.24);
   --bg-tooltip: #ffffff;
   --fg-tooltip: #000000;
   --border-tooltip: #d1d3d9;
@@ -797,6 +806,7 @@ html {
   --syn-punct: #e3e4e8;
   --syn-variable: #e3e4e8;
   --syn-global: var(--syn-variable);
+  --syn-namespace: var(--fg-editor);
   --syn-param: #e3e4e8;
   --syn-property: #e0a0d6;
   --syn-constant: #e0a0d6;
@@ -906,6 +916,10 @@ html {
   --terminal-ansi-bright-cyan: var(--ansi-bright-cyan);
   --terminal-ansi-bright-white: var(--ansi-bright-white);
 
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
   --bg-tooltip: #24262b;
   --fg-tooltip: #ffffff;
   --border-tooltip: #6f737a;
@@ -982,6 +996,10 @@ html {
  * Keep before appearance options so accessibility preferences still win.
  */
 :root[data-color-theme] {
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
   --bg-app: var(--palette-bg);
   --bg-island: var(--palette-bg);
   --bg-input: var(--palette-bg);
@@ -1155,6 +1173,7 @@ html {
   --syn-punct: var(--palette-fg);
   --syn-variable: var(--palette-variable);
   --syn-global: var(--syn-variable);
+  --syn-namespace: var(--fg-editor);
   --syn-param: var(--palette-fg);
   --syn-property: var(--palette-property);
   --syn-constant: var(--palette-number);
@@ -1224,6 +1243,14 @@ html {
   --terminal-ansi-bright-magenta: var(--ansi-bright-magenta);
   --terminal-ansi-bright-cyan: var(--ansi-bright-cyan);
   --terminal-ansi-bright-white: var(--ansi-bright-white);
+}
+
+/* Plugin themes can opt into stripe colours; otherwise their base tooltip tokens win. */
+:root[data-plugin-theme] {
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
 }
 
 :root[data-color-theme="solarized-light"] {
