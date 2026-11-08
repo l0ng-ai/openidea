@@ -99,6 +99,16 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
           setContext("debugHotSwapBuilding", false);
         }
         if (compile.cancelled || status === "cancelled") {
+          // JDT can write class files before cancellation without publishing their
+          // build deltas. java-debug cannot recover those classes on the next build.
+          useDebug.setState((state) => ({
+            sessions: Object.fromEntries(
+              Object.entries(state.sessions).map(([id, s]) => [
+                id,
+                isLive(s) && s.caps?.hotCodeReplace ? { ...s, hotSwapNeedsRestart: true } : s,
+              ]),
+            ),
+          }));
           notifications().notify({ group: "run", level: "info", key: KEY, title: "Hot Swap cancelled" });
           return;
         }
@@ -113,6 +123,16 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
           return;
         }
       }
+    }
+    if (sessions.some((s) => useDebug.getState().sessions[s.id]?.hotSwapNeedsRestart)) {
+      notifications().notify({
+        group: "run",
+        level: "error",
+        key: KEY,
+        title: "Hot Swap failed",
+        body: "A cancelled build may have left classes out of the reload. Restart the debug session to apply all changes.",
+      });
+      return;
     }
     const changed = new Set<string>();
     const errors: string[] = [];

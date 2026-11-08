@@ -518,5 +518,6 @@
   "Cancel Hot Swap Build": "Cancel Hot Swap Build",
   "Stop the compile a Reload Changed Classes action is waiting on": "Stop the compile a Reload Changed Classes action is waiting on",
   "Hot Swap cancelled": "Hot Swap cancelled",
-  "Compiling changed classes…": "Compiling changed classes…"
+  "Compiling changed classes…": "Compiling changed classes…",
+  "A cancelled build may have left classes out of the reload. Restart the debug session to apply all changes.": "A cancelled build may have left classes out of the reload. Restart the debug session to apply all changes."
 }
