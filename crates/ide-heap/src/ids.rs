@@ -7,172 +7,16 @@
 //! bits below it in the word. Ids that are not multiples of 8, or that span too wide an address
 //! range for the table, use a sorted array and binary search instead.
 
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
-use std::io;
+mod builder;
 
-use crate::column::{Column, NONE, Store};
+pub use builder::IdMapBuilder;
+
+use crate::column::{Column, NONE};
 
 const SLOT_SHIFT: u32 = 3;
 const CHUNK_SLOT_BITS: u32 = 17;
 const WORD_BITS: u64 = 64;
 const WORDS_PER_CHUNK: usize = (1 << CHUNK_SLOT_BITS) / WORD_BITS as usize;
-/// Widest chunk range the dense table covers (256 MiB of table at most).
-const MAX_CHUNK_SPAN: u64 = 1 << 26;
-/// Chunks whose first word index still fits in the table's `u32`.
-const MAX_CHUNKS: usize = (NONE as usize - 1) / WORDS_PER_CHUNK;
-/// Largest object count: `NONE` and the one after it stay free as sentinels for the columns above.
-const MAX_IDS: u64 = NONE as u64 - 2;
-
-const BITS_FILE: &str = "ids.bits.u64";
-const WRANK_FILE: &str = "ids.wrank.u32";
-const TABLE_FILE: &str = "ids.table.u32";
-const CHUNKS_FILE: &str = "ids.chunks.u32";
-const SORTED_FILE: &str = "ids.sorted.u64";
-
-/// Chunk numbers are already well spread by a multiplicative hash; SipHash would dominate the
-/// per-insert cost on a 100M-object heap.
-#[derive(Default)]
-struct ChunkHasher(u64);
-
-impl Hasher for ChunkHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u64(self.0.rotate_left(8) ^ u64::from(b));
-        }
-    }
-
-    fn write_u64(&mut self, n: u64) {
-        self.0 = n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    }
-}
-
-enum Collected {
-    Bits(BitChunks),
-    Sorted(Vec<u64>),
-}
-
-struct BitChunks {
-    /// Chunk number → position in `words`.
-    index: HashMap<u64, usize, BuildHasherDefault<ChunkHasher>>,
-    words: Vec<Box<[u64]>>,
-    min: u64,
-    max: u64,
-    /// The chunk of the previous insert; ids usually arrive in runs.
-    last: Option<(u64, usize)>,
-}
-
-impl BitChunks {
-    fn new() -> Self {
-        Self { index: HashMap::default(), words: Vec::new(), min: u64::MAX, max: 0, last: None }
-    }
-
-    /// `false` when the chunk would not fit the dense table; the caller then switches to the
-    /// sorted layout.
-    fn insert(&mut self, id: u64) -> bool {
-        let slot = id >> SLOT_SHIFT;
-        let chunk = slot >> CHUNK_SLOT_BITS;
-        let at = match self.last {
-            Some((c, at)) if c == chunk => at,
-            _ => match self.index.get(&chunk) {
-                Some(&at) => at,
-                None => {
-                    let (min, max) = (self.min.min(chunk), self.max.max(chunk));
-                    if self.words.len() >= MAX_CHUNKS || max - min >= MAX_CHUNK_SPAN {
-                        return false;
-                    }
-                    (self.min, self.max) = (min, max);
-                    self.words.push(vec![0u64; WORDS_PER_CHUNK].into_boxed_slice());
-                    self.index.insert(chunk, self.words.len() - 1);
-                    self.words.len() - 1
-                }
-            },
-        };
-        self.last = Some((chunk, at));
-        let word = (slot >> 6) as usize % WORDS_PER_CHUNK;
-        self.words[at][word] |= 1 << (slot & 63);
-        true
-    }
-
-    fn into_ids(self) -> Vec<u64> {
-        let mut chunks: Vec<(u64, usize)> = self.index.into_iter().collect();
-        chunks.sort_unstable();
-        let mut ids = Vec::new();
-        for (chunk, at) in chunks {
-            for (w, &word) in self.words[at].iter().enumerate() {
-                let base = (chunk << CHUNK_SLOT_BITS) + w as u64 * WORD_BITS;
-                let mut bits = word;
-                while bits != 0 {
-                    ids.push((base + u64::from(bits.trailing_zeros())) << SLOT_SHIFT);
-                    bits &= bits - 1;
-                }
-            }
-        }
-        ids
-    }
-}
-
-pub struct IdMapBuilder {
-    collected: Collected,
-}
-
-impl Default for IdMapBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl IdMapBuilder {
-    pub fn new() -> Self {
-        Self { collected: Collected::Bits(BitChunks::new()) }
-    }
-
-    /// Inserting an id twice is the same as once.
-    pub fn insert(&mut self, id: u64) {
-        match &mut self.collected {
-            Collected::Bits(bits) => {
-                if id & 7 == 0 && bits.insert(id) {
-                    return;
-                }
-                let Collected::Bits(bits) = std::mem::replace(&mut self.collected, Collected::Sorted(Vec::new()))
-                else {
-                    unreachable!()
-                };
-                let mut ids = bits.into_ids();
-                ids.push(id);
-                self.collected = Collected::Sorted(ids);
-            }
-            Collected::Sorted(ids) => ids.push(id),
-        }
-    }
-
-    /// Fails with `InvalidInput` when there are more than `u32::MAX - 2` distinct ids.
-    pub fn build(self, store: &Store) -> io::Result<IdMap> {
-        let sorted = match self.collected {
-            Collected::Bits(bits) if !bits.words.is_empty() => return IdMap::from_bits(bits, store),
-            Collected::Bits(_) => Vec::new(),
-            Collected::Sorted(mut ids) => {
-                ids.sort_unstable();
-                ids.dedup();
-                ids
-            }
-        };
-        if sorted.len() as u64 > MAX_IDS {
-            return Err(too_many());
-        }
-        let mut column = store.column(SORTED_FILE, sorted.len(), 0u64)?;
-        column.copy_from_slice(&sorted);
-        Ok(IdMap { repr: Repr::Sorted(column) })
-    }
-}
-
-fn too_many() -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidInput, "too many object ids for 32-bit indices")
-}
 
 enum Repr {
     Bits {
@@ -196,33 +40,6 @@ pub struct IdMap {
 }
 
 impl IdMap {
-    fn from_bits(bits: BitChunks, store: &Store) -> io::Result<Self> {
-        let total: u64 = bits.words.iter().flat_map(|w| w.iter()).map(|w| u64::from(w.count_ones())).sum();
-        if total > MAX_IDS {
-            return Err(too_many());
-        }
-        let mut chunks: Vec<(u64, usize)> = bits.index.into_iter().collect();
-        chunks.sort_unstable();
-        let span = (bits.max - bits.min + 1) as usize;
-        let mut words = store.column(BITS_FILE, chunks.len() * WORDS_PER_CHUNK, 0u64)?;
-        let mut wrank = store.column(WRANK_FILE, chunks.len() * WORDS_PER_CHUNK, 0u32)?;
-        let mut table = store.column(TABLE_FILE, span, NONE)?;
-        let mut chunk_offsets = store.column(CHUNKS_FILE, chunks.len(), 0u32)?;
-        let mut before = 0u32;
-        for (ordinal, &(chunk, at)) in chunks.iter().enumerate() {
-            let first = ordinal * WORDS_PER_CHUNK;
-            let offset = (chunk - bits.min) as usize;
-            table[offset] = first as u32;
-            chunk_offsets[ordinal] = offset as u32;
-            for (w, &word) in bits.words[at].iter().enumerate() {
-                words[first + w] = word;
-                wrank[first + w] = before;
-                before += word.count_ones();
-            }
-        }
-        Ok(Self { repr: Repr::Bits { min_chunk: bits.min, words, wrank, table, chunk_offsets, len: before } })
-    }
-
     pub fn len(&self) -> u32 {
         match &self.repr {
             Repr::Bits { len, .. } => *len,
@@ -338,7 +155,10 @@ impl Iterator for Ids<'_> {
 
 #[cfg(test)]
 mod tests {
+    use ide_core::CancellationToken;
+
     use super::*;
+    use crate::column::Store;
 
     /// Deterministic generator so failures replay; the crate has no `rand`.
     struct XorShift(u64);
@@ -357,7 +177,7 @@ mod tests {
         for &id in ids {
             builder.insert(id);
         }
-        builder.build(store).unwrap()
+        builder.build(store, &CancellationToken::new()).unwrap()
     }
 
     fn assert_matches_model(map: &IdMap, model: &[u64]) {
@@ -414,7 +234,7 @@ mod tests {
         for i in 0..10_000_000u64 {
             builder.insert(0x7_0000_0000 + i * 32);
         }
-        let map = builder.build(&Store::Ram).unwrap();
+        let map = builder.build(&Store::Ram, &CancellationToken::new()).unwrap();
         assert_eq!(map.len(), 10_000_000);
         assert!(map.column_bytes() < 16_000_000, "{} bytes", map.column_bytes());
         assert_eq!(map.rank(0x7_0000_0000 + 9_999_999 * 32), Some(9_999_999));
@@ -439,6 +259,20 @@ mod tests {
         model.sort_unstable();
         let map = build(&ids, &Store::Ram);
         assert_matches_model(&map, &model);
+    }
+
+    #[test]
+    fn ids_outside_the_populated_chunks_are_absent() {
+        let ids = [0x30_0000, 0x30_0008, 0x70_0000];
+        let map = build(&ids, &Store::Ram);
+        assert_matches_model(&map, &ids);
+        // Chunk 5 lies between the lowest and highest chunk but holds nothing.
+        assert_eq!(map.rank(0x50_0000), None);
+        // Chunk 1 is below the lowest populated chunk.
+        assert_eq!(map.rank(0x10_0000), None);
+        // Chunk 9 is past the last table entry.
+        assert_eq!(map.rank(0x900_0000), None);
+        assert_eq!(map.rank(u64::MAX - 7), None);
     }
 
     #[test]

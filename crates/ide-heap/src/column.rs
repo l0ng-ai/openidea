@@ -90,9 +90,8 @@ impl<T: Pod> Column<T> {
                 return Err(err);
             }
         };
-        if cfg!(unix) {
-            std::fs::remove_file(&path)?;
-        } else {
+        // If the unlink fails the drop-time delete is the fallback, so the file is never left behind.
+        if !cfg!(unix) || std::fs::remove_file(&path).is_err() {
             column.delete_on_drop = Some(path);
         }
         Ok(column)
