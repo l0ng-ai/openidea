@@ -39,6 +39,13 @@ interface ImeComposition {
 }
 
 const imeCompositions = new WeakMap<EditorView, ImeComposition>();
+/** Views with a Normal-mode IME composition in progress (`imeCompositions` can't be iterated). */
+const composingViews = new Set<EditorView>();
+
+function endComposition(view: EditorView) {
+  imeCompositions.delete(view);
+  composingViews.delete(view);
+}
 
 /**
  * codemirror-vim only discards single-character IME commits in Normal mode, so
@@ -51,7 +58,7 @@ const imeCompositions = new WeakMap<EditorView, ImeComposition>();
 function finishImeComposition(view: EditorView) {
   const composition = imeCompositions.get(view);
   if (!composition) return;
-  imeCompositions.delete(view);
+  endComposition(view);
   clearTimeout(composition.timer);
   const cm = getCM(view);
   if (!cm) return;
@@ -84,6 +91,7 @@ const imeHandlers = EditorView.domEventHandlers({
     const previous = imeCompositions.get(view);
     if (previous) clearTimeout(previous.timer);
     const range = view.state.selection.main;
+    composingViews.add(view);
     imeCompositions.set(view, {
       from: range.from,
       to: range.to,
@@ -142,19 +150,29 @@ const imeTracker = ViewPlugin.define((view) => ({
   },
 }));
 
-/** Composition changes are temporary: no undo entry, no document/backend sync. */
+/**
+ * Composition changes are temporary: no undo entry, no document/backend sync. Only those of a
+ * composition the IME started: codemirror-vim labels its own edits (`x`, `dd`, `ciw`…)
+ * `input.type.compose` too, to group them for undo, and those are real edits.
+ */
 const imeTransactions = EditorState.transactionExtender.of((tr) =>
-  !tr.startState.field(vimInsert) && tr.isUserEvent("input.type.compose")
+  !tr.startState.field(vimInsert) && tr.isUserEvent("input.type.compose") && composingState(tr.startState)
     ? { annotations: [Transaction.addToHistory.of(false), transientChange.of(true)] }
     : null,
 );
+
+/** Whether `state` is the current state of a view with an IME composition in progress. */
+function composingState(state: EditorState): boolean {
+  for (const view of composingViews) if (view.state === state) return true;
+  return false;
+}
 
 const imeCleanup = ViewPlugin.define((view) => ({
   destroy() {
     const composition = imeCompositions.get(view);
     if (composition) {
       clearTimeout(composition.timer);
-      imeCompositions.delete(view);
+      endComposition(view);
     }
   },
 }));

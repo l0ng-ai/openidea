@@ -369,6 +369,8 @@ pub enum ReferencesIncomplete {
     TooManyFiles,
     /// Files that mention the name were too large or unreadable to check.
     FilesSkipped,
+    /// A native query failed; indexed anchors are still available.
+    ServerFailed,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -380,11 +382,19 @@ pub struct References {
     pub classified: Vec<ClassifiedReference>,
     pub locations: Vec<Location>,
     pub incomplete: Option<ReferencesIncomplete>,
+    /// The dependencies and the JDK were not searched (asked for without `libraries`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub libraries_skipped: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Renamed {
+    /// Indexed names always require preview, including a single-file rename.
+    #[serde(default)]
+    #[specta(optional)]
+    pub preview: bool,
     pub edit: WorkspaceEdit,
     pub incomplete: Option<ReferencesIncomplete>,
 }
@@ -503,4 +513,8 @@ pub struct ClassifiedReference {
     pub access: Option<ReferenceAccess>,
     pub location: Location,
     pub kind: ReferenceKind,
+    /// The usage's line, when the server has it at hand (a library class's).
+    #[serde(default)]
+    #[specta(optional)]
+    pub text: Option<String>,
 }

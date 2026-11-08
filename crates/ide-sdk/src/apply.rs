@@ -2,7 +2,7 @@
 //! language servers, run configurations and terminals.
 
 use crate::discover::{project_venv_python, workspace_tsdk};
-use crate::exec::{path_with, search_path};
+use crate::exec::{path_with, search_path, which};
 use crate::{angular, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
@@ -11,6 +11,7 @@ use ide_core::{IdeError, IdeResult};
 use ide_language::{LanguageConfig, LanguageServerConfig};
 use ide_run::RunConfig;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -63,11 +64,24 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 }
 
 /// The project interpreter: the configured one, else a project virtualenv
-/// (`.venv`, `venv`, …) in the project root, else the Python the project pins for mise / asdf.
+/// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
+/// root, else the Python the project pins for mise / asdf.
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     setting_path(root, &s.languages.python.interpreter)
         .or_else(|| project_venv_python(root))
         .or_else(|| pinned::pinned_python(root))
+}
+
+/// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
+pub fn python_interpreter_near(root: &Path, near: Option<&Path>, s: &Settings) -> Option<PathBuf> {
+    if let Some(python) = setting_path(root, &s.languages.python.interpreter) {
+        return Some(python);
+    }
+    let near = near.filter(|dir| dir.starts_with(root)).unwrap_or(root);
+    near.ancestors()
+        .take_while(|dir| dir.starts_with(root))
+        .find_map(project_venv_python)
+        .or_else(|| pinned::pinned_python(near))
 }
 
 /// The project Ruby: the configured one, else the `.ruby-version` / mise / asdf
@@ -130,6 +144,24 @@ pub fn project_jdk(root: &Path, s: &Settings) -> Option<crate::java::Jdk> {
     }
 }
 
+/// Module-specific JDK from `projectStructure.modules`, falling back to [`project_jdk`].
+pub fn module_jdk(root: &Path, module: &Path, s: &Settings) -> Option<crate::java::Jdk> {
+    let module_cfg = s.project_structure.module_settings(root, module);
+    if let Some(cfg) = module_cfg
+        && let Some(jdk) = jdk_setting(root, &cfg.jdk)
+    {
+        return jdk.inspect_err(|p| tracing::warn!("module JDK {}", not_a_jdk(p))).ok();
+    }
+    project_jdk(root, s)
+}
+
+/// Effective Java language level (`8`, `11`, `17`, `21`, `25`) for `module`, checking
+/// `projectStructure.modules` first, then `languages.java.languageLevel`.
+pub fn effective_java_language_level<'a>(root: &Path, module: &Path, s: &'a Settings) -> Option<&'a str> {
+    let module_level = s.project_structure.module_settings(root, module).and_then(|m| non_empty(&m.language_level));
+    module_level.or_else(|| non_empty(&s.languages.java.language_level))
+}
+
 /// The JDK chosen to run jdtls (`languages.java.jdtlsJdk`): `Ok(None)` when not
 /// set, `Err` (the message) when it is not a JDK home.
 pub fn jdtls_jdk(root: &Path, s: &Settings) -> Result<Option<crate::java::Jdk>, String> {
@@ -155,19 +187,37 @@ fn not_a_jdk(p: &Path) -> String {
     }
 }
 
+/// Maven runner JRE, falling back to the project JDK and then the POM's Java version.
+pub fn maven_jdk(root: &Path, s: &Settings, release: Option<u32>) -> Option<crate::java::Jdk> {
+    match jdk_setting(root, &s.languages.java.maven.runner_jre) {
+        Some(jdk) => jdk.inspect_err(|p| tracing::warn!("Maven runner JRE {}", not_a_jdk(p))).ok(),
+        None => project_jdk(root, s).or_else(|| {
+            let installed = crate::java::installed_jdks();
+            release.and_then(|r| crate::java::pick_jdk(&installed, Some(r))).cloned()
+        }),
+    }
+}
+
+/// Default environment shared by Maven sync, builds and run configurations.
+pub fn maven_build_env(root: &Path, s: &Settings, release: Option<u32>) -> std::collections::BTreeMap<String, String> {
+    maven_jdk(root, s, release)
+        .map(|jdk| std::collections::BTreeMap::from([("JAVA_HOME".into(), jdk.home.to_string_lossy().into_owned())]))
+        .unwrap_or_default()
+}
+
 /// `mvn` of the configured Maven home (`languages.java.maven.home`): the
 /// executable itself, `<home>/bin/mvn` or `<bin>/mvn`; else of the Maven the project
 /// pins for mise / asdf when it has no Maven wrapper. With `maven.daemon` on, the
 /// Maven Daemon (`mvnd`) replaces all of that — it embeds its own Maven — unless
-/// it is not installed or the project JDK is older than the Java 17 its daemon
+/// it is not installed or the runner JRE is older than the Java 17 its daemon
 /// needs, in which case the build stays on mvn (with a logged warning).
 pub fn maven_command(root: &Path, s: &Settings) -> Option<PathBuf> {
     if s.languages.java.maven.daemon {
         match mvnd_command(root, s) {
-            // No project JDK at all lets mvnd pick its own Java, which may still be new enough.
-            Some(mvnd) if project_jdk(root, s).is_none_or(|j| j.major >= 17) => return Some(mvnd),
+            // Without a selected JDK, mvnd picks its own Java, which may still be new enough.
+            Some(mvnd) if maven_jdk(root, s, None).is_none_or(|j| j.major >= 17) => return Some(mvnd),
             Some(_) => tracing::warn!(
-                "Maven daemon: the project JDK is older than the Java 17 its daemon needs; building with mvn"
+                "Maven daemon: the runner JRE is older than the Java 17 its daemon needs; building with mvn"
             ),
             None => tracing::warn!("Maven daemon is enabled but mvnd was not found; building with mvn"),
         }
@@ -245,6 +295,103 @@ fn resolve_gradle_command(root: &Path, build_dir: &Path, s: &Settings, use_wrapp
         .unwrap_or_else(|| name.into())
 }
 
+fn gradle_run_jdk<'a>(
+    release: Option<u32>,
+    configured: Option<&'a crate::java::Jdk>,
+    installed: &'a [crate::java::Jdk],
+    gradle: Option<(u32, u32)>,
+) -> Option<&'a crate::java::Jdk> {
+    configured.or_else(|| {
+        let release = release?;
+        // An unknown Gradle version cannot narrow the choice: the release alone decides.
+        let Some(gradle) = gradle else { return crate::java::pick_jdk(installed, Some(release)) };
+        let compatible: Vec<_> = installed.iter().filter(|jdk| gradle_supports_java(gradle, jdk.major)).collect();
+        compatible
+            .iter()
+            .copied()
+            .find(|jdk| jdk.major == release)
+            .or_else(|| compatible.iter().copied().filter(|jdk| jdk.major > release).min_by_key(|jdk| jdk.major))
+            .or_else(|| compatible.iter().copied().max_by_key(|jdk| jdk.major))
+    })
+}
+
+/// Default environment shared by Gradle model builds and Run configurations.
+pub fn gradle_build_env(
+    root: &Path,
+    build_dir: &Path,
+    command: &str,
+    settings: &Settings,
+    release: Option<u32>,
+) -> std::collections::BTreeMap<String, String> {
+    let configured = project_jdk(root, settings);
+    let installed = crate::java::installed_jdks();
+    let jdk = gradle_run_jdk(
+        release.or_else(|| crate::java::project_java_version(build_dir)),
+        configured.as_ref(),
+        &installed,
+        gradle_distribution_version(build_dir, command),
+    );
+    let env = jdk
+        .map(|jdk| std::collections::BTreeMap::from([("JAVA_HOME".into(), jdk.home.to_string_lossy().into_owned())]))
+        .unwrap_or_default();
+    gradle_env(root, settings, env)
+}
+
+fn gradle_supports_java(gradle: (u32, u32), java: u32) -> bool {
+    // https://docs.gradle.org/current/userguide/compatibility.html#java_runtime
+    let minimum = match java {
+        8 => (2, 0),
+        9 => (4, 3),
+        10 => (4, 7),
+        11 => (5, 0),
+        12 => (5, 4),
+        13 => (6, 0),
+        14 => (6, 3),
+        15 => (6, 7),
+        16 => (7, 0),
+        17 => (7, 3),
+        18 => (7, 5),
+        19 => (7, 6),
+        20 => (8, 3),
+        21 => (8, 5),
+        22 => (8, 8),
+        23 => (8, 10),
+        24 => (8, 14),
+        25 => (9, 1),
+        26 => (9, 4),
+        27 => (9, 8),
+        _ => return false,
+    };
+    gradle >= minimum && (java >= 17 || gradle < (9, 0))
+}
+
+fn gradle_distribution_version(build_dir: &Path, command: &str) -> Option<(u32, u32)> {
+    let version = |text: &str| {
+        let mut parts = text.split('.');
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    };
+    if Path::new(command).file_stem().is_some_and(|name| name == "gradlew") {
+        let properties = std::fs::read_to_string(build_dir.join("gradle/wrapper/gradle-wrapper.properties")).ok()?;
+        let url = properties.lines().find_map(|line| line.trim().strip_prefix("distributionUrl="))?;
+        return version(url.rsplit_once("gradle-")?.1.split('-').next()?);
+    }
+    let path = Path::new(command);
+    let path = if path.is_absolute() { path.to_path_buf() } else { crate::exec::which(command)? };
+    let path = dunce::canonicalize(path).ok()?;
+    let home = path.parent()?.parent()?;
+    for lib in [home.join("lib"), home.join("libexec/lib")] {
+        let Ok(entries) = std::fs::read_dir(lib) else { continue };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if let Some(v) = name.strip_prefix("gradle-launcher-").and_then(|name| name.strip_suffix(".jar")) {
+                return version(v);
+            }
+        }
+    }
+    None
+}
+
 /// Gradle JVM overrides Project JDK; model callers supply the module's fallback environment.
 pub fn gradle_env(
     root: &Path,
@@ -260,8 +407,8 @@ pub fn gradle_env(
     env
 }
 
-/// Maven options from settings, placed before the goals: `-s <settings.xml>`
-/// and `-Dmaven.repo.local=<dir>`.
+/// Maven options from settings, placed before the goals: `-s <settings.xml>`,
+/// `-Dmaven.repo.local=<dir>` and `-T <count>` (the thread count).
 pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     let m = &s.languages.java.maven;
     let mut out = Vec::new();
@@ -271,6 +418,9 @@ pub fn maven_options(root: &Path, s: &Settings) -> Vec<String> {
     if let Some(dir) = setting_path(root, &m.local_repository) {
         out.push(format!("-Dmaven.repo.local={}", dir.to_string_lossy()));
     }
+    if let Some(threads) = m.thread_count() {
+        out.extend(["-T".to_owned(), threads.to_owned()]);
+    }
     out
 }
 
@@ -278,7 +428,7 @@ fn maven_settings_prefixes(args: &[String]) -> Vec<usize> {
     let mut prefixes = vec![0];
     let mut i = 0;
     while let Some(arg) = args.get(i) {
-        if arg == "-s" && args.get(i + 1).is_some() {
+        if (arg == "-s" || arg == "-T") && args.get(i + 1).is_some() {
             i += 2;
         } else if arg.starts_with("-Dmaven.repo.local=") {
             i += 1;
@@ -526,16 +676,43 @@ fn missing_serial_version(inspections: &InspectionSettings) -> Option<&'static s
 /// Workspace compiler defaults; Eclipse project preferences still take precedence.
 /// Each variant has its own file, so changing an inspection restarts the server with it.
 pub fn configure_java_compiler(cfg: &mut LanguageServerConfig, data_dir: &Path, inspections: &InspectionSettings) {
+    configure_java_compiler_with_level(cfg, data_dir, inspections, None);
+}
+
+/// Like [`configure_java_compiler`], also applying the Project Structure Java language level
+/// (`source`, `compliance`, `codegen.targetPlatform`) when configured.
+pub fn configure_java_compiler_with_level(
+    cfg: &mut LanguageServerConfig,
+    data_dir: &Path,
+    inspections: &InspectionSettings,
+    language_level: Option<&str>,
+) {
     const DEFAULTS: &str = "org.eclipse.jdt.core.compiler.problem.forbiddenReference=warning\n\
 org.eclipse.jdt.core.compiler.problem.discouragedReference=warning\n";
     let serial = missing_serial_version(inspections);
-    let (name, content) = match serial {
-        None => ("compiler-defaults.prefs".to_owned(), DEFAULTS.to_owned()),
-        Some(level) => (
-            format!("compiler-defaults-serial-{level}.prefs"),
-            format!("{DEFAULTS}org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"),
-        ),
-    };
+    let normalized_level = language_level.map(str::trim).and_then(|l| match l {
+        "8" | "1.8" => Some(("8", "1.8")),
+        "11" => Some(("11", "11")),
+        "17" => Some(("17", "17")),
+        "21" => Some(("21", "21")),
+        "25" => Some(("25", "25")),
+        _ => None,
+    });
+    let mut stem = "compiler-defaults".to_owned();
+    let mut content = DEFAULTS.to_owned();
+    if let Some(level) = serial {
+        stem.push_str(&format!("-serial-{level}"));
+        content.push_str(&format!("org.eclipse.jdt.core.compiler.problem.missingSerialVersion={level}\n"));
+    }
+    if let Some((tag, jdt_ver)) = normalized_level {
+        stem.push_str(&format!("-level-{tag}"));
+        content.push_str(&format!(
+            "org.eclipse.jdt.core.compiler.source={jdt_ver}\n\
+org.eclipse.jdt.core.compiler.compliance={jdt_ver}\n\
+org.eclipse.jdt.core.compiler.codegen.targetPlatform={jdt_ver}\n"
+        ));
+    }
+    let name = format!("{stem}.prefs");
     let file = data_dir.join("lsp/jdtls").join(name);
     let write = || -> ide_core::IdeResult<()> {
         std::fs::create_dir_all(file.parent().expect("compiler preferences directory"))?;
@@ -688,6 +865,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 json!({ "settings": { "java": { "configuration": { "maven": { "userSettings": file } } } } }),
             );
         }
+        // m2e resolves and downloads into `maven.repo.local`; without it the
+        // embedded Maven falls back to ~/.m2 even when the IDE's own `mvn`
+        // runs honor the configured local repository. A `-Dmaven.repo.local`
+        // the user put in their own jdtls VM options wins.
+        if let Some(repo) = maven_local_repository(root, s) {
+            let arg = format!("-Dmaven.repo.local={}", repo.to_string_lossy());
+            let taken = cfg.args.iter().enumerate().any(|(i, a)| {
+                let value = a
+                    .strip_prefix("--jvm-arg=")
+                    .or_else(|| (i > 0 && cfg.args[i - 1] == "--jvm-arg").then_some(a.as_str()));
+                value.is_some_and(|a| a.split('=').next() == Some("-Dmaven.repo.local"))
+            });
+            if !taken {
+                cfg.args.push(format!("--jvm-arg={arg}"));
+            }
+        }
     }
 
     if let Some(lib) = tsdk(server_root, s).or_else(|| tsdk(root, s)) {
@@ -707,6 +900,14 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
+        cfg.tsserver_project_extras.extensions = vec![vue::EXTENSION.into()];
+    }
+    if name == "vtsls"
+        && cfg.tsserver_project
+        && !server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file())
+    {
+        let node = node_dir(root, s).map(|d| d.join(exe("node"))).filter(|p| p.is_file()).or_else(|| which("node"));
+        cfg.tsserver_project_extras.paths = vue::cli_paths(server_root, node.as_deref());
     }
     if name == vue::SERVER {
         configure_vue_typescript(cfg, root, server_root, s);
@@ -806,6 +1007,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
@@ -908,22 +1110,28 @@ fn is_python_command(cmd: &str) -> bool {
 
 const PY_RUNNERS: [&str; 3] = ["uv", "poetry", "pdm"];
 
-/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`).
+/// [`maven_options`] as the groups they are passed in (`-s <file>`, `-Dmaven.repo.local=…`,
+/// `-T <count>`).
 fn maven_option_groups(options: &[String]) -> Vec<&[String]> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < options.len() {
-        let n = if options[i] == "-s" { 2.min(options.len() - i) } else { 1 };
+        let n = if options[i] == "-s" || options[i] == "-T" { 2.min(options.len() - i) } else { 1 };
         groups.push(&options[i..i + n]);
         i += n;
     }
     groups
 }
 
-/// Whether `args` set what `group` sets: a user settings file, or the local repository.
+/// Whether `args` set what `group` sets: a user settings file, the local
+/// repository, or the thread count.
 fn sets_maven_option(args: &[String], group: &[String]) -> bool {
     match group.first().map(String::as_str) {
         Some("-s") => args.iter().any(|a| a == "-s" || a == "--settings" || a.starts_with("--settings=")),
+        // `-T 4`, `--threads 4`, `-T4` and `--threads=4` all set the thread count.
+        Some("-T") => args.iter().any(|a| {
+            a == "-T" || a == "--threads" || a.starts_with("--threads=") || (a.starts_with("-T") && a.len() > 2)
+        }),
         Some(flag) => {
             let key = flag.split_once('=').map_or(flag, |(k, _)| k);
             args.iter().any(|a| a.split_once('=').map_or(a.as_str(), |(k, _)| k) == key)
@@ -944,23 +1152,42 @@ fn add_maven_options(args: &mut Vec<String>, options: &[String]) {
 
 /// Points run configurations at the selected toolchains: Python configs use the
 /// project interpreter, npm scripts the chosen package manager and Node.js,
-/// cargo / go configs the selected toolchain, Maven / Gradle the project JDK
+/// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
 /// (and Maven the configured home and options).
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
     let explicit_python = setting_path(root, &s.languages.python.interpreter);
-    let python = python_interpreter(root, s);
     let pm = non_empty(&s.languages.node.package_manager);
-    let node = node_dir(root, s);
     let php = setting_path(root, &s.languages.php.interpreter);
     let rust = rust_bin(root, s);
-    let go = goroot(root, s);
     let gopath = setting_path(root, &s.languages.go.gopath);
     let jdk = project_jdk(root, s);
     let mvn = maven_command(root, s);
     let mvn_options = maven_options(root, s);
-    let ruby = ruby_interpreter(root, s);
+
+    // Module-local toolchains, looked up once per owning module and only for the kinds using them.
+    let mut toolchains: HashMap<(&'static str, PathBuf), Option<PathBuf>> = HashMap::new();
+    let mut toolchain = |tool: &'static str, owner: &Path| {
+        toolchains
+            .entry((tool, owner.to_path_buf()))
+            .or_insert_with(|| {
+                // A module outside the project (an external linked build) keeps the project's choices.
+                let near = if owner.starts_with(root) { owner } else { root };
+                match tool {
+                    "python" => python_interpreter_near(root, Some(near), s),
+                    "node" if non_empty(&s.languages.node.interpreter).is_none() => {
+                        node_dir(near, s).or_else(|| node_dir(root, s))
+                    }
+                    "node" => node_dir(root, s),
+                    "go" if non_empty(&s.languages.go.goroot).is_none() => goroot(near, s).or_else(|| goroot(root, s)),
+                    "go" => goroot(root, s),
+                    _ => setting_path(root, &s.languages.ruby.interpreter).or_else(|| ruby_interpreter(near, s)),
+                }
+            })
+            .clone()
+    };
 
     for c in configs.iter_mut() {
+        let owner = ide_run::scope::owner(root, c);
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
@@ -984,6 +1211,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                         c.args = ["-m".to_owned(), "pytest".to_owned()].into_iter().chain(rest).collect();
                     }
                 }
+                let python = toolchain("python", &owner);
                 if let Some(venv) = python.as_deref().and_then(venv_of)
                     && !c.env.contains_key("VIRTUAL_ENV")
                 {
@@ -991,8 +1219,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     path_dirs.push(venv.join(bin_dir()));
                 }
             }
-            "npm" => {
+            "npm" | "node" | "deno" | "bun" => {
                 if let Some(pm) = pm
+                    && c.kind == "npm"
                     && c.detected
                     && matches!(c.command.as_str(), "npm" | "pnpm" | "yarn" | "bun")
                 {
@@ -1000,7 +1229,9 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 }
                 // The configuration's own Node interpreter, else the project's.
                 let own = c.extras.params.get("nodeInterpreter").and_then(|p| setting_path(root, p));
-                if let Some(dir) = own.and_then(|p| p.parent().map(Path::to_path_buf)).or_else(|| node.clone()) {
+                if let Some(dir) =
+                    own.and_then(|p| p.parent().map(Path::to_path_buf)).or_else(|| toolchain("node", &owner))
+                {
                     path_dirs.push(dir);
                 }
             }
@@ -1027,7 +1258,7 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 for (key, value) in crate::go::module_environment(root, &s.languages.go.modules) {
                     c.env.entry(key).or_insert(value);
                 }
-                if let Some(goroot) = &go {
+                if let Some(goroot) = &toolchain("go", &owner) {
                     let bin = goroot.join("bin");
                     if c.command == "go" && bin.join(exe("go")).is_file() {
                         c.command = bin.join(exe("go")).to_string_lossy().into_owned();
@@ -1044,18 +1275,12 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                 if matches!(c.command.as_str(), "gradle" | "gradle.bat") {
                     c.command = resolve_gradle_command(root, &build_dir, s, false).to_string_lossy().into_owned();
                 }
-                let defaults = jdk
-                    .as_ref()
-                    .map(|j| {
-                        std::collections::BTreeMap::from([("JAVA_HOME".into(), j.home.to_string_lossy().into_owned())])
-                    })
-                    .unwrap_or_default();
-                for (key, value) in gradle_env(root, s, defaults) {
+                for (key, value) in gradle_build_env(root, &build_dir, &c.command, s, None) {
                     c.env.entry(key).or_insert(value);
                 }
             }
             "ruby" | "rake" | "rspec" => {
-                if let Some(ruby) = &ruby
+                if let Some(ruby) = &toolchain("ruby", &owner)
                     && let Some(bin) = crate::ruby::bin_dir_of(ruby)
                 {
                     // `ruby`, `bundle`, `rake`, `rspec` of the chosen interpreter when installed
@@ -1074,20 +1299,23 @@ pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings
                     path_dirs.push(bin);
                 }
             }
-            "maven" | "tomcat" => {
+            "tomcat" => {
                 if let Some(jdk) = &jdk {
                     c.env.entry("JAVA_HOME".into()).or_insert_with(|| jdk.home.to_string_lossy().into_owned());
                 }
-                if c.kind == "maven" {
-                    if let Some(mvn) = &mvn
-                        && (c.detected
-                            || generated_maven_goal(c)
-                            || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
-                    {
-                        c.command = mvn.to_string_lossy().into_owned();
-                    }
-                    add_maven_options(&mut c.args, &mvn_options);
+            }
+            "maven" => {
+                for (key, value) in maven_build_env(root, s, None) {
+                    c.env.entry(key).or_insert(value);
                 }
+                if let Some(mvn) = &mvn
+                    && (c.detected
+                        || generated_maven_goal(c)
+                        || matches!(c.command.as_str(), "mvn" | "mvn.cmd" | "mvn.bat"))
+                {
+                    c.command = mvn.to_string_lossy().into_owned();
+                }
+                add_maven_options(&mut c.args, &mvn_options);
             }
             _ => {}
         }
@@ -1299,6 +1527,69 @@ mod java_compiler_tests {
         );
         server_protocol_overrides(&mut cfg, &s);
         assert_eq!(options(&cfg).pointer("/settings/java/settings/url"), Some(&json!("user.prefs")));
+    }
+}
+
+#[cfg(test)]
+mod gradle_runtime_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn gradle_runs_use_the_builds_toolchain_without_overriding_user_choices() {
+        let temp = tempfile::tempdir().unwrap();
+        let installed =
+            [25, 21, 17, 11, 8].map(|major| crate::java::Jdk { major, home: temp.path().join(format!("jdk{major}")) });
+        for (name, script, expected) in [
+            ("kotlin", "kotlin { jvmToolchain(21) }", Some(21)),
+            ("java", "java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }", Some(17)),
+            ("unspecified", "plugins { id 'java' }", None),
+        ] {
+            let dir = temp.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("build.gradle.kts"), script).unwrap();
+            let picked = gradle_run_jdk(crate::java::project_java_version(&dir), None, &installed, Some((9, 0)));
+            assert_eq!(picked.map(|jdk| jdk.major), expected);
+            assert_eq!(gradle_run_jdk(expected, Some(&installed[0]), &installed, Some((9, 0))), Some(&installed[0]));
+            let mut settings = Settings::default();
+            settings.languages.java.gradle.jvm = "custom-gradle-jdk".into();
+            let env = gradle_env(temp.path(), &settings, BTreeMap::from([("JAVA_HOME".into(), "/fallback".into())]));
+            assert_eq!(env["JAVA_HOME"], temp.path().join("custom-gradle-jdk").to_string_lossy());
+        }
+        let dir = temp.path().join("kotlin");
+        for (gradle, target, expected) in
+            [((9, 0), 8, 17), ((8, 4), 21, 17), ((8, 5), 21, 21), ((7, 2), 21, 11), ((9, 0), 25, 21), ((9, 1), 25, 25)]
+        {
+            std::fs::write(dir.join("build.gradle.kts"), format!("kotlin {{ jvmToolchain({target}) }}")).unwrap();
+            assert_eq!(gradle_run_jdk(Some(target), None, &installed, Some(gradle)).unwrap().major, expected);
+        }
+        assert_eq!(gradle_run_jdk(Some(21), None, &installed, None).unwrap().major, 21);
+        assert_eq!(gradle_run_jdk(Some(19), None, &installed, None).unwrap().major, 21);
+        assert!(gradle_run_jdk(None, None, &installed, None).is_none());
+    }
+
+    #[test]
+    fn reads_wrapper_and_local_gradle_versions_without_running_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+        std::fs::write(
+            root.join("gradle/wrapper/gradle-wrapper.properties"),
+            "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.4.0-bin.zip\n",
+        )
+        .unwrap();
+        for command in ["./gradlew", "gradlew.bat"] {
+            assert_eq!(gradle_distribution_version(root, command), Some((8, 4)));
+        }
+        for layout in ["lib", "libexec/lib"] {
+            let home = root.join(layout.replace('/', "-"));
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::create_dir_all(home.join(layout)).unwrap();
+            let command = home.join("bin/gradle");
+            std::fs::write(&command, "").unwrap();
+            std::fs::write(home.join(layout).join("gradle-launcher-9.0.0.jar"), "").unwrap();
+            assert_eq!(gradle_distribution_version(root, &command.to_string_lossy()), Some((9, 0)));
+        }
     }
 }
 

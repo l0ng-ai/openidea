@@ -11,6 +11,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "general.reopenLastProject",
   "general.confirmExit",
   "general.openProjectIn",
+  "general.updateSource",
   "general.dateFormat",
   "editor.fontFamily",
   "editor.fontSize",

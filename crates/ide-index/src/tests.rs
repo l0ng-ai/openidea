@@ -632,3 +632,100 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     assert!(idx.wait_idle(WAIT));
     assert!(idx.find_files("", 100).is_empty());
 }
+
+#[test]
+fn plugin_inventory_respects_excludes_and_symbols_require_matching_text() {
+    let java = "package demo; interface UserMapper { void find(); }";
+    let f = Fixture::new(&[
+        ("src/UserMapper.java", java),
+        ("src/mapper.xml", "<mapper/>"),
+        ("target/Generated.java", "class Generated {}"),
+        ("other.txt", "ignored"),
+    ]);
+    let index = f.open();
+    let paths = index.files_with_extensions(&["java".into(), "xml".into()], 100);
+    assert_eq!(paths.len(), 2);
+    assert!(paths.iter().all(|p| p.starts_with(f.root.join("src"))));
+    assert_eq!(index.files_with_extensions(&["java".into(), "xml".into()], 1).len(), 1);
+    let path = f.root.join("src/UserMapper.java");
+    let symbols = index.symbols_for_text(&path, java).unwrap();
+    assert!(symbols.iter().any(|s| s.name == "find"));
+    assert!(index.symbols_for_text(&path, &java.replace("find", "renamed")).is_none());
+}
+
+#[test]
+fn symbol_search_can_stop_during_scanning_and_lock_waits() {
+    use std::sync::atomic::AtomicUsize;
+    let fx = sample();
+    let idx = fx.open();
+    let calls = AtomicUsize::new(0);
+    let stopped = || calls.fetch_add(1, Ordering::Relaxed) >= 5;
+    assert!(idx.find_symbols_until("a", SymbolFilter::All, 20, &|_| true, &stopped).is_none());
+    assert!(calls.load(Ordering::Relaxed) > 5);
+    for recent in [false, true] {
+        let _data = (!recent).then(|| idx.shared.data.write());
+        let _recent = recent.then(|| idx.shared.recent.lock());
+        let deadline = std::time::Instant::now() + Duration::from_millis(10);
+        assert!(
+            idx.find_symbols_until("a", SymbolFilter::All, 20, &|_| true, &|| std::time::Instant::now() >= deadline)
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn scoped_symbol_search_preserves_fuzzy_ranking_within_allowed_paths() {
+    let fx = sample();
+    let idx = fx.open();
+    let allowed = fx.root.join("src/order");
+    let symbols =
+        idx.find_symbols_until("OCo", SymbolFilter::All, 1, &|path| path.starts_with(&allowed), &|| false).unwrap();
+    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols[0].name, "OrderController");
+    assert!(
+        idx.find_symbols_until("OtherCollection", SymbolFilter::All, 1, &|path| path.starts_with(&allowed), &|| false)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn incremental_symbols_resolve_symlink_ancestors_before_scope_checks() {
+    let fx = Fixture::new(&[("src/inside.rs", "fn inside_symbol() {}\n")]);
+    let outside = fx._dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("secret.rs"), "fn secret_symbol() {}\n").unwrap();
+    std::os::unix::fs::symlink(&outside, fx.root.join("escape")).unwrap();
+    std::os::unix::fs::symlink(fx.root.join("src"), fx.root.join("alias")).unwrap();
+    let idx = fx.open();
+    idx.update(&[fx.root.join("escape/secret.rs"), fx.root.join("alias/inside.rs")], &[]);
+    assert!(idx.wait_idle(WAIT));
+    assert!(symbols(&idx, "secret_symbol", SymbolFilter::All).is_empty());
+    let inside = idx.find_symbols("inside_symbol", SymbolFilter::All, 10);
+    assert_eq!(inside.len(), 1);
+    assert_eq!(inside[0].path.0, fx.root.join("src/inside.rs"));
+}
+
+#[cfg(unix)]
+#[test]
+fn persisted_symbols_do_not_load_through_escaping_symlink_ancestors() {
+    let fx = Fixture::new(&[("src/old.rs", "fn old_symbol() {}\n")]);
+    drop(fx.open());
+    let outside = fx._dir.path().join("outside");
+    std::fs::rename(fx.root.join("src"), &outside).unwrap();
+    std::os::unix::fs::symlink(outside, fx.root.join("src")).unwrap();
+    let initial = Arc::new(Mutex::new(Vec::new()));
+    let events = initial.clone();
+    let sink: SharedSink = Arc::new(move |event: IdeEvent| {
+        if let IdeEvent::IndexState { symbols, .. } = event {
+            events.lock().push(symbols);
+        }
+    });
+    let languages = Arc::new(LanguageRegistry::load(None).unwrap());
+    let idx = ProjectIndex::open(&fx.root, &fx.cache, Vec::new(), Vec::new(), languages, Arc::new(Syntax::new()), sink)
+        .unwrap();
+    assert!(idx.wait_idle(WAIT));
+    assert!(symbols(&idx, "old_symbol", SymbolFilter::All).is_empty());
+    assert_eq!(initial.lock()[0], 0, "unsafe cached symbols must never be published");
+}

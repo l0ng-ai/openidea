@@ -14,11 +14,13 @@ mod process;
 pub mod python_path;
 pub mod ruby_preload;
 pub mod ruby_reporter;
+pub mod scope;
 pub mod tomcat;
 mod utf8;
 pub mod which;
 pub mod wrap;
 
+pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
 pub use process::{ProcessManager, StartOptions};
 
 use ide_core::{IdeResult, RunId};
@@ -58,7 +60,8 @@ pub struct RunConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct BeforeLaunchTask {
-    /// `run` (another configuration, `target` = its id) | `build` | `tool` (external tool id) |
+    /// `run` (another configuration id) | `build` (project, or `target` = CMake build id) |
+    /// `tool` (external tool id) |
     /// `command` (a shell command line) | `toolWindow` (tool window id).
     pub kind: String,
     #[serde(default)]
@@ -76,7 +79,8 @@ fn is_true(b: &bool) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunExtras {
-    /// Module supplying a JVM application's classpath; empty means the project root.
+    /// Owning module, independent of the working directory; also supplies a JVM application's classpath.
+    /// Empty means the project root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub module: Option<String>,

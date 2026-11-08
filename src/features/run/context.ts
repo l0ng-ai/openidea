@@ -7,7 +7,11 @@ import type { RunConfig } from "@/platform/ipc";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { phpunitArgs } from "./testing/phpunit";
 import { goTestParts } from "./goArguments";
+import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
+import { typeFor } from "./types";
+import { runTemplate } from "./runTemplates";
+import { appendScriptArgs } from "./scriptArgs";
 
 export type FileRole = "test" | "main" | "script" | null;
 
@@ -51,16 +55,28 @@ function testKinds(relPath: string): string[] {
   return [];
 }
 
+/** The module owning a configuration's targets, relative to the project root. */
+export function configScope(config: RunConfig): string {
+  return (
+    config.kind === "go"
+      ? (config.params?.module ?? config.module ?? config.cwd ?? "")
+      : (config.module ?? config.cwd ?? "")
+  )
+    .replace(/^\.(?:\/|$)/, "")
+    .replace(/\/+$/, "");
+}
+
 /** Configs whose working directory most specifically contains `relPath` (ties in their original order). */
-function allClosest(configs: RunConfig[], relPath: string): RunConfig[] {
+export function allClosest(configs: readonly RunConfig[], relPath: string): RunConfig[] {
   const score = (c: RunConfig) => {
-    const cwd = (c.kind === "go" ? (c.params?.module ?? c.cwd ?? "") : (c.cwd ?? ""))
-      .replace(/^\.\/?/, "")
-      .replace(/\/+$/, "");
+    const cwd = configScope(c);
     if (!cwd) return 0;
     return relPath === cwd || relPath.startsWith(cwd + "/") ? cwd.length : -1;
   };
-  const scored = configs.map((c) => [c, score(c)] as const).filter(([, s]) => s >= 0);
+  const scored = configs
+    .filter((c) => !c.id.startsWith("context:"))
+    .map((c) => [c, score(c)] as const)
+    .filter(([, s]) => s >= 0);
   const best = Math.max(...scored.map(([, s]) => s));
   return scored.filter(([, s]) => s === best).map(([c]) => c);
 }
@@ -72,10 +88,10 @@ function closest(configs: RunConfig[], relPath: string): RunConfig | undefined {
 
 /** `relPath` relative to the working directory of `config`. */
 export function relToCwd(relPath: string, config: RunConfig): string {
-  const cwd = (config.kind === "go" ? (config.params?.module ?? config.cwd ?? "") : (config.cwd ?? ""))
-    .replace(/^\.\/?/, "")
+  const cwd = (config.kind === "go" ? configScope(config) : (config.cwd ?? ""))
+    .replace(/^\.(?:\/|$)/, "")
     .replace(/\/+$/, "");
-  return cwd && relPath.startsWith(cwd + "/") ? relPath.slice(cwd.length + 1) : relPath;
+  return relPath === cwd ? "" : cwd && relPath.startsWith(cwd + "/") ? relPath.slice(cwd.length + 1) : relPath;
 }
 
 function derived(base: RunConfig, relPath: string, patch: Partial<RunConfig>): RunConfig {
@@ -94,14 +110,22 @@ function derived(base: RunConfig, relPath: string, patch: Partial<RunConfig>): R
  * The project's Python interpreter as `(command, leading args)`, derived from
  * detected configs (venv / uv / poetry), or null when none says.
  */
-export function projectPython(configs: RunConfig[]): { command: string; prefix: string[] } | null {
+export function projectPython(configs: RunConfig[], relPath?: string): { command: string; prefix: string[] } | null {
+  if (relPath !== undefined)
+    configs = allClosest(
+      configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+      relPath,
+    );
   const py = configs.find((c) => c.kind === "python");
   if (py) {
     // The interpreter part ends where the program starts: `-m`, or the script (`manage.py`). What follows
     // (`runserver`, `test`…) belongs to that program, never to the interpreter.
     const end = py.args.findIndex((a) => a === "-m" || a.endsWith(".py"));
     const python = py.args.findIndex((a) => /^python[\d.]*$/.test(a));
-    return { command: py.command, prefix: py.args.slice(0, end >= 0 ? end : python + 1) };
+    return {
+      command: py.command,
+      prefix: py.args.slice(0, end >= 0 ? end : python + 1),
+    };
   }
   const pytest = configs.find((c) => c.kind === "pytest");
   if (!pytest) return null;
@@ -114,25 +138,56 @@ export function projectPython(configs: RunConfig[]): { command: string; prefix: 
   return null;
 }
 
+/** `python` on Windows (where `python3` is not a command), `python3` elsewhere. */
+function systemPython(): string {
+  return isWindows() ? "python" : "python3";
+}
+
 /**
  * PyCharm runs pytest for a `test_*.py` file even when the project declares no
  * test setup: `python -m pytest`, with the project's interpreter when detected.
+ * The "Edit configuration templates…" › pytest values win over both the
+ * interpreter and the runner arguments, like a template a new config inherits.
  */
 function implicitPytest(relPath: string, configs: RunConfig[]): RunConfig | null {
   if (!relPath.endsWith(".py")) return null;
-  const py = projectPython(configs);
-  return {
+  const owners = allClosest(
+    configs.filter((c) => ["python", "pytest", "django-test"].includes(c.kind)),
+    relPath,
+  );
+  const py = projectPython(owners);
+  const base: RunConfig = {
     id: "pytest:implicit",
     name: "pytest",
     kind: "pytest",
-    command: py?.command ?? "python3",
+    command: py?.command ?? systemPython(),
     args: [...(py?.prefix ?? []), "-m", "pytest"],
-    cwd: null,
-    env: {},
+    cwd: owners[0]?.cwd ?? null,
+    module: owners[0]?.module,
+    env: { ...owners[0]?.env },
     detected: true,
     isTest: true,
     debugAdapter: "debugpy",
   };
+  return applyPytestTemplate(base);
+}
+
+/**
+ * "Edit configuration templates…" › pytest applied to a gutter/context pytest
+ * configuration: its Command and Runner arguments replace the detected
+ * interpreter (`pixi` + `run pytest`, a venv's `pytest`, …) while the file the
+ * context adds stays the target — a target stored on the template itself is
+ * dropped, or the run would execute both it and the file. Without a template
+ * the config is unchanged.
+ */
+function applyPytestTemplate(config: RunConfig): RunConfig {
+  const type = typeFor("pytest");
+  const template = runTemplate("pytest");
+  const params = type && template ? { ...type.defaults, ...template.params, target: "" } : null;
+  if (!type || !params) return config;
+  const line = type.commandLine(params);
+  if (!line) return config;
+  return { ...config, command: line.command, args: line.args };
 }
 
 /**
@@ -147,7 +202,7 @@ export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[]
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
   if (best.length) return best;
-  const fallback = candidates[0] ?? implicitPytest(relPath, configs);
+  const fallback = implicitPytest(relPath, configs);
   return fallback ? [fallback] : [];
 }
 
@@ -162,8 +217,7 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
   switch (base.kind) {
     case "npm":
     case "bun": {
-      // `npm run test -- file` works for npm, pnpm, yarn and bun.
-      const args = base.args.includes("--") ? [...base.args, file] : [...base.args, "--", file];
+      const args = appendScriptArgs(base.command, base.args, [file]);
       return derived(base, relPath, { args });
     }
     case "deno":
@@ -213,21 +267,47 @@ export function testConfigFor(relPath: string, configs: RunConfig[], base?: RunC
 function mainConfigFor(relPath: string, configs: RunConfig[]): RunConfig | null {
   if (relPath.endsWith(".rs")) {
     const bin = /src\/bin\/([^/]+)\.rs$/.exec(relPath)?.[1];
-    const runs = configs.filter((c) => c.kind === "cargo" && c.id.startsWith("cargo:run"));
+    const runs = allClosest(
+      configs.filter((c) => c.kind === "cargo" && c.args[0] === "run"),
+      relPath,
+    );
     const byBin = bin ? runs.find((c) => c.id === `cargo:run:${bin}` || c.args.includes(bin)) : undefined;
-    return byBin ?? closest(runs, relPath) ?? runs[0] ?? null;
+    return byBin ?? runs[0] ?? null;
   }
   if (relPath.endsWith(".go")) {
-    const gos = configs.filter((c) => c.kind === "go");
-    const runs = gos.filter((c) => c.args[0] === "run");
+    const gos = allClosest(
+      configs.filter((c) => c.kind === "go" && !c.id.startsWith("context:")),
+      relPath,
+    );
+    const runs = gos.filter((c) => c.args[0] === "run" || c.params?.goKind === "build");
     // The module containing the file (nested modules run from their own directory).
-    const base = closest(runs, relPath) ?? closest(gos, relPath) ?? runs[0] ?? gos[0];
+    const base = runs[0] ?? gos[0];
     if (!base) return null;
     const dir = dirOf(relToCwd(relPath, base));
     const target = dir ? `./${dir}` : ".";
-    const hit = runs.find((c) => (c.cwd ?? "") === (base.cwd ?? "") && c.args[1] === target);
+    if (base.params?.goKind === "build") {
+      const params = {
+        ...base.params,
+        goKind: "build",
+        scope: "package",
+        target,
+        runAfterBuild: "true",
+      };
+      return derived(base, relPath, {
+        ...goBuildType.commandLine(params),
+        params,
+        name: `go run ${target}`,
+        isTest: false,
+      });
+    }
+    const hit = runs.find((c) => configScope(c) === configScope(base) && c.args[1] === target);
     if (hit) return hit;
-    return derived(base, relPath, { args: ["run", target], name: `go run ${target}`, isTest: false });
+    return derived(base, relPath, {
+      args: ["run", target],
+      name: `go run ${target}`,
+      isTest: false,
+      ...(base.params?.goKind === "test" ? { params: undefined, cwd: base.params.module ?? base.cwd } : {}),
+    });
   }
   if (/\.(kt|java)$/.test(relPath)) {
     // The build containing the file (builds nested in a folder of repositories carry a `:<dir>` suffix).
@@ -295,7 +375,7 @@ function scriptConfigFor(
   };
   if (relPath.endsWith(".py")) {
     // Reuse the project's interpreter (venv / uv / poetry) when detected.
-    const py = projectPython(configs) ?? { command: "python3", prefix: [] };
+    const py = projectPython(configs) ?? { command: systemPython(), prefix: [] };
     const module = pythonModuleRun(relPath, content, configs);
     if (module)
       return {

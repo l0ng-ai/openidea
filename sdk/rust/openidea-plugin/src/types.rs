@@ -102,6 +102,16 @@ pub struct TextEdit {
     pub text: String,
 }
 
+/// A symbol from the host's current in-memory project index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolInfo {
+    pub name: String,
+    /// Host symbol kind in camelCase (`class`, `method`, `enumMember`, …).
+    pub kind: String,
+    pub container: Option<String>,
+    pub location: Location,
+}
+
 /// An editor's document at one version.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Document {
@@ -143,12 +153,67 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// An entry of [`crate::host::pick`] and [`crate::host::pick_many`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickItem {
+    /// Returned when the item is chosen.
+    pub key: String,
+    pub label: String,
+    pub description: Option<String>,
+}
+
+impl PickItem {
+    pub fn new(key: &str, label: &str) -> Self {
+        Self { key: key.to_owned(), label: label.to_owned(), description: None }
+    }
+
+    pub fn description(mut self, description: &str) -> Self {
+        self.description = Some(description.to_owned());
+        self
+    }
+}
+
+/// A context key's value, as `when` clauses compare it ([`crate::host::set_context`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContextValue {
+    Flag(bool),
+    /// A finite number.
+    Number(f64),
+    /// At most 1024 bytes.
+    Text(String),
+}
+
+impl From<bool> for ContextValue {
+    fn from(value: bool) -> Self {
+        Self::Flag(value)
+    }
+}
+
+impl From<f64> for ContextValue {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<&str> for ContextValue {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_owned())
+    }
+}
+
+impl From<String> for ContextValue {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
 /// Kinds of workbench events; later SDKs add more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum EventKind {
     FileOpened,
     FileSaved,
+    FilesChanged,
     EditorFocused,
     /// Needs `events.input`.
     ActionPerformed,
@@ -162,6 +227,7 @@ impl EventKind {
         match self {
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
+            Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
@@ -206,12 +272,21 @@ pub struct ActionPerformed {
     pub shortcut: Option<String>,
 }
 
+/// Debounced changes in an open project, delivered with the `events` capability.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FilesChanged {
+    pub created: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+}
+
 /// A workbench event (see [`crate::host::subscribe`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
     FileOpened(String),
     FileSaved(String),
+    FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     /// A repository (its root) changed.
@@ -238,6 +313,55 @@ pub struct RepositoryStatus {
     /// Merge / rebase / cherry-pick in progress.
     pub operation: Option<String>,
     pub changed_files: u32,
+}
+
+/// What a path inside a project is, as [`crate::host::Project::stat`] reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileKind {
+    File,
+    Directory,
+    Symlink,
+    #[default]
+    Other,
+}
+
+/// Metadata of a path inside a project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileStat {
+    pub kind: FileKind,
+    /// Bytes, for a file.
+    pub size: u64,
+    /// Seconds since the Unix epoch; `None` when the file system does not track it.
+    pub modified: Option<u64>,
+}
+
+/// A file the commit being prepared changes ([`crate::host::pending_commit`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitChange {
+    /// Absolute path of the working tree root of its repository.
+    pub repository: String,
+    /// Absolute path (after a rename, the new one).
+    pub path: String,
+    /// The path before a rename or copy.
+    pub old_path: Option<String>,
+    /// `added`, `modified`, `deleted`, `renamed`, `copied` or `type-changed`.
+    pub status: String,
+    /// The included changes in `git diff` format against HEAD; `None` for binary content.
+    pub diff: Option<String>,
+    /// `diff` was cut at the size limit (1 MiB for all the changes).
+    pub truncated: bool,
+}
+
+/// What Commit would commit right now.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommitDraft {
+    /// Changes with the message, the included changes or Amend; pass it to
+    /// [`crate::host::set_commit_message`].
+    pub revision: u64,
+    pub message: String,
+    /// The commit replaces the last one; `changes` are still against HEAD.
+    pub amend: bool,
+    pub changes: Vec<CommitChange>,
 }
 
 /// A range in a file.
@@ -360,5 +484,36 @@ mod tests {
         assert_eq!(ActionSource::parse("pen"), ActionSource::Other, "a source of a newer IDE");
         let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
         assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
+    }
+}
+
+/// A notification button invoking a command declared by this plugin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationAction {
+    pub label: String,
+    pub command: String,
+    pub argument: Option<String>,
+}
+impl NotificationAction {
+    /// A button labelled `label`, invoking the plugin command `command`.
+    pub fn new(label: impl Into<String>, command: impl Into<String>) -> Self {
+        Self { label: label.into(), command: command.into(), argument: None }
+    }
+    /// Passes this text to the command when selected.
+    pub fn argument(mut self, argument: impl Into<String>) -> Self {
+        self.argument = Some(argument.into());
+        self
+    }
+}
+
+impl Event {
+    /// Decodes additive events while preserving unknown or malformed payloads.
+    pub fn from_other(kind: String, data: String) -> Self {
+        if kind == "files-changed"
+            && let Ok(batch) = serde_json::from_str(&data)
+        {
+            return Self::FilesChanged(batch);
+        }
+        Self::Other { kind, data }
     }
 }

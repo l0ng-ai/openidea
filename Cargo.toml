@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.37"
+version = "0.1.39"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -45,6 +45,7 @@ ide-host = { path = "crates/ide-host" }
 ide-notebook = { path = "crates/ide-notebook" }
 ide-extension = { path = "crates/ide-extension" }
 ide-plugin = { path = "crates/ide-plugin" }
+ide-cli = { path = "crates/ide-cli" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
@@ -103,6 +104,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-platform-verifier = "0.7"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "sqlite", "postgres", "mysql"] }
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "rustls", "sql-browser-tokio"] }
+oracle = { version = "0.6", default-features = false }
 bb8 = "0.9"
 uuid = { version = "1", features = ["v4"] }
 # OS credential stores

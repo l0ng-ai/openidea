@@ -20,7 +20,6 @@ import {
   nameOf,
   packageSegments,
   parentOf,
-  relativeTo,
   uniqueName,
   validateName,
   type PackageKind,
@@ -39,8 +38,11 @@ import {
   useProjectTree,
 } from "./store";
 import { tx } from "@/platform/i18n";
-import { hostOs, isRemoteWindow } from "@/platform/remote";
+import { hostOs, isRemoteWindow, useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
+import { pathToCopy, type PathKind } from "@/platform/copyPath";
+import { projectFolder, useProject } from "@/platform/project";
+export type { PathKind } from "@/platform/copyPath";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
 const mutable = (n: ProjectNode) => !n.root && !n.placeholder && !n.readOnly;
@@ -802,13 +804,12 @@ export async function importExternal(paths: string[], target: string) {
 // ---------------------------------------------------------------------------
 // Paths / external
 
-export type PathKind = "absolute" | "relative" | "name";
-
 export function pathsFor(kind: PathKind, nodes: ProjectNode[] = selectedNodes()): string[] {
   const { root } = get();
-  return nodes.map((n) =>
-    kind === "absolute" ? n.path : kind === "name" ? nameOf(n.path) : relativeTo(root ?? "", n.path) || ".",
-  );
+  const project = useProject.getState().project;
+  return nodes
+    .map((n) => pathToCopy(kind, n.path, project ? (projectFolder(project, n.path)?.root ?? null) : root))
+    .filter((p): p is string => p !== null);
 }
 
 export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedNodes()) {
@@ -816,19 +817,35 @@ export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedN
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
+    void executeAction("editor.showHint", { text: tx`Copied ${text}` });
   } catch (e) {
     fail(tx("Cannot access the clipboard"), e);
   }
 }
 
+/**
+ * The path the local OS's file manager can open: in a WSL session the node
+ * paths are inside the distro (`/home/…`), which `revealItemInDir` reads as
+ * local paths — translate them to `\\wsl.localhost\<distro>\…` UNC shares.
+ */
+export function revealablePath(path: string): string {
+  const session = useRemote.getState().session;
+  if (session?.target.kind !== "wsl" || usePlatform.getState().os !== "windows") return path;
+  if (!path.startsWith("/")) return path;
+  return `\\\\wsl.localhost\\${session.target.distro}${path.replaceAll("/", "\\")}`;
+}
+
 export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
-  const paths = nodes.map((n) => n.path);
+  const paths = nodes.map((n) => revealablePath(n.path));
   if (!paths.length) return;
   try {
     const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
     await revealItemInDir(paths.length === 1 ? paths[0]! : paths);
   } catch (e) {
-    fail("Cannot reveal in Finder", e);
+    // Same names as contextMenu.revealLabel (kept local: contextMenu imports
+    // this module, so importing it back would be a cycle).
+    const desktop = usePlatform.getState().os;
+    fail(`Cannot reveal in ${desktop === "windows" ? "Explorer" : desktop === "linux" ? "Files" : "Finder"}`, e);
   }
 }
 

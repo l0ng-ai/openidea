@@ -400,8 +400,15 @@
   text-overflow: ellipsis;
 }
 
+/* Dialog bodies get no padding of their own; wrap the groups like Analysis dialogs' .form. */
+.reformatBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
 .reformatGroup {
-  margin: 0 0 10px;
+  margin: 0;
   padding: 0;
   border: 0;
   display: flex;
@@ -419,4 +426,20 @@
   align-items: center;
   gap: 6px;
   font-size: var(--fs-ui);
+}
+
+.pasteImports {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  font-size: var(--fs-ui);
+}
+.pasteImportList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }

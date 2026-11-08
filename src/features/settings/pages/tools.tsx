@@ -7,6 +7,7 @@
 import { FontPicker } from "../components/FontPicker";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
+import { quotePath } from "@/platform/commandLine";
 import { commands, isTauri } from "@/platform/ipc";
 import {
   DEFAULT_EXTERNAL_TOOL,
@@ -110,7 +111,7 @@ function ShellPathRow() {
     const { open: pick } = await import("@tauri-apps/plugin-dialog");
     const picked = await pick({ multiple: false, title: "Shell Path" });
     const path = Array.isArray(picked) ? picked[0] : picked;
-    if (path) set(path);
+    if (path) set(quotePath(path));
   };
   return (
     <Row
@@ -142,7 +143,7 @@ function ShellPathRow() {
         anchor={menuRef}
         placement="bottom-end"
         aria-label="Installed shells"
-        items={shells.map((p) => ({ id: p, label: p, checked: p === value, run: () => set(p) }))}
+        items={shells.map((p) => ({ id: p, label: p, checked: quotePath(p) === value, run: () => set(quotePath(p)) }))}
       />
       <IconButton
         icon="folder-open"
@@ -479,8 +480,12 @@ function ExternalToolsEditor() {
                 checked={t.enabled}
                 onChange={(on) => setTools(tools.map((x) => (x.id === t.id ? { ...x, enabled: on } : x)))}
               />
-              <span>{t.name}</span>
-              <span className={styles.toolGroup}>{t.group}</span>
+              <span className={styles.toolName} title={t.name}>
+                {t.name}
+              </span>
+              <span className={styles.toolGroup} title={t.group}>
+                {t.group}
+              </span>
             </div>
           ))}
         </div>

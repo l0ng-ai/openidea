@@ -60,10 +60,14 @@ export function detectSdks(kind: SdkKind, force = false): Promise<Sdk[]> {
 
 /** Adds an SDK (e.g. a just-created virtualenv) to the cached list. */
 export function rememberSdk(kind: SdkKind, sdk: Sdk) {
-  useSdks.setState((s) => {
-    const list = s.byKind[kind] ?? [];
-    return { byKind: { ...s.byKind, [kind]: [sdk, ...list.filter((x) => x.path !== sdk.path)] } };
-  });
+  const remember = () =>
+    useSdks.setState((s) => {
+      const list = s.byKind[kind] ?? [];
+      return { byKind: { ...s.byKind, [kind]: [sdk, ...list.filter((x) => x.path !== sdk.path)] } };
+    });
+  remember();
+  // An already-running scan may not include this newly added environment.
+  void inflight.get(kind)?.then(remember);
 }
 
 export interface Streamed<T> {
@@ -81,8 +85,21 @@ function streamed<T>(
   return { promise: run(request, channel), cancel: () => void commands.cancelRequest(request) };
 }
 
-export function createVenv(base: string, location: string, onLine: (line: string) => void): Streamed<Sdk> {
-  return streamed((req, ch) => call(commands.sdkPythonCreateVenv(base, location, req, ch)), onLine);
+/** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
+export type VenvTool = "venv" | "uv" | "poetry" | "conda";
+
+export function createVenv(
+  tool: VenvTool,
+  base: string,
+  location: string,
+  onLine: (line: string) => void,
+): Streamed<Sdk> {
+  return streamed((req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, req, ch)), onLine);
+}
+
+/** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
+export function pythonInterpreter(path: string): Promise<Sdk | null> {
+  return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
 }
 
 export function listPackages(python: string): Promise<PythonPackage[]> {
@@ -103,7 +120,7 @@ export function pip(
 
 /** Interpreter the project uses when none is configured (its virtualenv). */
 export function effectivePython(): Promise<string | null> {
-  return isTauri() ? call(commands.sdkPythonEffective()) : Promise.resolve(null);
+  return isTauri() ? call(commands.sdkPythonEffective(null)) : Promise.resolve(null);
 }
 
 /** The PHP language level of the project `path` belongs to; null outside Tauri. */

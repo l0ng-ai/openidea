@@ -27,6 +27,7 @@
 /* Inline option groups, with custom font controls wrapping together. */
 .fontRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   min-height: 28px;
@@ -37,17 +38,30 @@
 .fontInput {
   width: 220px;
 }
+/* Custom font block (IDEA Appearance): labels share one column, so the UI font,
+   fallback and Size controls all start at the same x. */
 .customFontRow {
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+  row-gap: 4px;
+  min-height: 28px;
+  padding: 2px 6px;
+  margin: 0 -6px;
+  border-radius: var(--radius-row);
 }
-.fontOption {
-  display: inline-flex;
+.customFontRow > .fontLabel {
+  padding-top: 3px;
+  white-space: nowrap;
+}
+.customFontRow > .fontCheck {
+  white-space: nowrap;
+}
+.fontControl {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  max-width: 100%;
-}
-.fontOption > label {
-  flex-shrink: 0;
+  min-width: 0;
 }
 .sizeInput {
   width: 64px;
@@ -80,11 +94,14 @@
 
 .radios {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 16px;
 }
 .radio {
   display: inline-flex;
+  flex: none;
+  white-space: nowrap;
   align-items: center;
   gap: 6px;
 }
@@ -98,6 +115,7 @@
   border-collapse: collapse;
 }
 .table th {
+  white-space: nowrap;
   text-align: left;
   font-weight: normal;
   color: var(--fg-muted);
@@ -106,6 +124,7 @@
   border-bottom: 1px solid var(--border);
 }
 .table td {
+  white-space: nowrap;
   height: 32px;
   padding: 0 8px;
 }

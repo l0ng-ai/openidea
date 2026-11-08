@@ -219,7 +219,7 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
       dlvCwd: module,
       ...(p.scope === "file" ? { __goFiles: target.split("|").map((f) => join(module, f.trim())) } : {}),
       __goToolArgs: toolArgs,
-      __goUseTags: p.useTags === "true",
+      __goUseTags: p.useTags !== "false",
       ...(p.outputDir ? { output: join(root, `${p.outputDir}/go-debug`) } : {}),
     });
     return out;
@@ -276,6 +276,8 @@ function delveLaunch(rc: RunConfig, cwd: string, root: string): LaunchConfig {
   out.extraJson = JSON.stringify({
     mode: test ? "test" : "debug",
     ...(flags.length ? { buildFlags: formatArgs(flags) } : {}),
+    __goToolArgs: flags,
+    __goUseTags: rc.params?.useTags !== "false",
   });
   return out;
 }
@@ -356,11 +358,44 @@ function flutterAttach(rc: RunConfig, cwd: string, adapter: string): LaunchConfi
   };
 }
 
+const PHP_NAME = /^php(\d+(\.\d+)*)?(\.exe)?$/i;
+
+/**
+ * php-debug runs `runtimeExecutable runtimeArgs program args` and doesn't enable Xdebug: debug mode and
+ * the connection back come from `-d` options, to the free port php-debug picks for `port: 0` (another
+ * IDE may listen on 9003). `php` is the PHP chosen in Settings, used when the command doesn't name one.
+ */
+function phpDebugLaunch(rc: RunConfig, cwd: string, php: string | null): LaunchConfig {
+  const name = rc.command.split(/[\\/]/).pop() ?? rc.command;
+  const runtimeArgs = ["-dxdebug.mode=debug", "-dxdebug.start_with_request=yes", "-dxdebug.client_port=${port}"];
+  let runtime = php;
+  let program: string;
+  let args: string[];
+  if (PHP_NAME.test(name)) {
+    // `php [options] script args`: the options stay with PHP; the script is a file (`artisan`).
+    if (name !== rc.command) runtime = resolveCommand(rc.command, cwd);
+    const at = rc.args.findIndex((a) => !a.startsWith("-"));
+    runtimeArgs.push(...(at < 0 ? rc.args : rc.args.slice(0, at)));
+    program = at < 0 ? "" : join(cwd, rc.args[at]!);
+    args = at < 0 ? [] : rc.args.slice(at + 1);
+  } else {
+    // A PHP script run directly (`vendor/bin/phpunit`; on Windows its `.bat` shim sits beside it).
+    program = resolveCommand(rc.command.replace(/\.bat$/i, ""), cwd);
+    args = [...rc.args];
+  }
+  return {
+    ...base(rc, "php-debug", cwd),
+    program,
+    args,
+    extraJson: JSON.stringify({ port: 0, runtimeArgs, ...(runtime ? { runtimeExecutable: runtime } : {}) }),
+  };
+}
+
 /**
  * The launch configuration that debugs `rc`, or `null` when it has no adapter.
  * `root` is the project root (default working directory).
  */
-export function launchConfigFor(rc: RunConfig, root: string): LaunchConfig | null {
+export function launchConfigFor(rc: RunConfig, root: string, php: string | null = null): LaunchConfig | null {
   const adapter = rc.debugAdapter;
   if (!adapter || debugUnsupportedReason(rc)) return null;
   const cwd = rc.cwd ? join(root, rc.cwd) : root;
@@ -374,6 +409,7 @@ export function launchConfigFor(rc: RunConfig, root: string): LaunchConfig | nul
   if (adapter === "js-debug") return jsDebugLaunch(rc, cwd);
   if (adapter === "delve") return delveLaunch(rc, cwd, root);
   if (adapter === "godot") return godotLaunch(rc, cwd);
+  if (adapter === "php-debug") return phpDebugLaunch(rc, cwd, php);
   if (adapter === "netcoredbg" && rc.kind === "dotnet") {
     if (!rc.params?.targetPath) return null;
     return {

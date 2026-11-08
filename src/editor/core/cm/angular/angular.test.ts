@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EditorState } from "@codemirror/state";
-import { ensureSyntaxTree, foldable, matchBrackets } from "@codemirror/language";
-import { NodeProp, type Tree } from "@lezer/common";
+import { foldable, matchBrackets } from "@codemirror/language";
+import { IterMode, NodeProp, type Tree } from "@lezer/common";
 import { buildParserFile } from "@lezer/generator";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
+import { completedSyntaxState, completedSyntaxTree } from "@/test/syntax";
 import { findLanguageDescription, loadSupport } from "../languages";
 import { angular, angularLanguage } from "./index";
 
@@ -38,9 +39,7 @@ function tokens(doc: string, tree: Tree = angularLanguage.parser.parse(doc)): st
 
 /** The tree of `state`, parsed to the end. */
 function stateTree(state: EditorState): Tree {
-  const tree = ensureSyntaxTree(state, state.doc.length, 5000);
-  if (!tree) throw new Error("parse did not finish");
-  return tree;
+  return completedSyntaxTree(state, 5000);
 }
 
 /** A ~6 KB template starting with an element, with blocks and `@let` at the top level. */
@@ -192,8 +191,7 @@ describe("Angular templates", () => {
 
   it("matches a block's braces around its elements", () => {
     const doc = `@if (a) {\n  <p>{{ a }}</p>\n}`;
-    const state = EditorState.create({ doc, extensions: angular() });
-    ensureSyntaxTree(state, doc.length, 5000);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: angular() }));
     expect(matchBrackets(state, doc.indexOf("{"), 1)).toMatchObject({
       matched: true,
       end: { from: doc.lastIndexOf("}") },
@@ -220,8 +218,7 @@ describe("Angular templates", () => {
       "  }",
       "}",
     ].join("\n");
-    const state = EditorState.create({ doc, extensions: angular() });
-    stateTree(state);
+    const state = completedSyntaxState(EditorState.create({ doc, extensions: angular() }));
     const folds = [];
     for (let n = 1; n <= state.doc.lines; n++) {
       const line = state.doc.line(n);
@@ -554,6 +551,39 @@ describe("Angular templates", () => {
       const text = state.doc.toString();
       expect(tokens(text, stateTree(state))).toEqual(tokens(text));
     }
+  });
+
+  it("reuses the trees of identical text and attributes wherever they are", () => {
+    const part = '<p [title]="t">{{ a + 1 }} @if (b) {</p>\n';
+    tokens(part);
+    // The same nodes at other offsets come from the memo; tokens are sliced at their positions.
+    const doc = `<div>${part}</div>\n${part}<span>x</span>${part}`;
+    const all = tokens(doc);
+    expect(all.filter((tok) => tok == "a:var")).toHaveLength(3);
+    expect(all.filter((tok) => tok == "title:attr")).toHaveLength(3);
+    expect(all.filter((tok) => tok == "@if:control")).toHaveLength(3);
+    const mounts: unknown[] = [];
+    angularLanguage.parser.parse(doc).iterate({
+      mode: IterMode.IgnoreMounts,
+      enter: (n) => {
+        const mount = n.name == "Text" && n.tree?.prop(NodeProp.mounted);
+        if (mount) mounts.push(mount.tree);
+      },
+    });
+    expect(mounts).toHaveLength(3);
+    expect(new Set(mounts).size).toBe(1);
+  });
+
+  it("parses only text with Angular syntax as Angular", () => {
+    const doc = "<ul>\n  <li>Tom &amp; Jerry</li>\n  <li>{{ a }} &amp; {{ b }}</li>\n</ul>\n@if (x) {\n}";
+    const tree = angularLanguage.parser.parse(doc);
+    const parentAt = (text: string) => tree.resolveInner(doc.indexOf(text) + 1, 1).parent?.name;
+    // Plain text and the whitespace between tags stay HTML text.
+    expect(parentAt("Tom")).toBe("Element");
+    expect(parentAt("\n  <li>")).toBe("Element");
+    expect(parentAt("{{ a")).toBe("Interpolation");
+    expect(tokens(doc)).toContain("@if:control");
+    expect(tokens(doc)).toContain("b:var");
   });
 
   it("is generated from angular.grammar", () => {

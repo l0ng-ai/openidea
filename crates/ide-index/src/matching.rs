@@ -121,22 +121,35 @@ fn scan(
     tiebreak: &(impl Fn(&Cand, &Cand) -> Ordering + Sync),
     per_file: impl Fn(u32, &FileEntry, &mut Vec<Cand>) + Sync,
 ) -> Vec<Cand> {
+    scan_until(data, pool, tiebreak, &|| false, per_file).unwrap_or_default()
+}
+
+fn scan_until(
+    data: &IndexData,
+    pool: usize,
+    tiebreak: &(impl Fn(&Cand, &Cand) -> Ordering + Sync),
+    stopped: &(impl Fn() -> bool + Sync),
+    per_file: impl Fn(u32, &FileEntry, &mut Vec<Cand>) + Sync,
+) -> Option<Vec<Cand>> {
     data.files
         .par_iter()
         .enumerate()
         .with_min_len(256)
-        .fold(Vec::new, |mut acc, (slot, e)| {
+        .try_fold(Vec::new, |mut acc, (slot, e)| {
+            if stopped() {
+                return None;
+            }
             if let Some(e) = e {
                 per_file(slot as u32, e, &mut acc);
                 if acc.len() >= pool * 2 {
                     acc = keep_best(acc, pool, tiebreak);
                 }
             }
-            acc
+            Some(acc)
         })
-        .reduce(Vec::new, |mut a, b| {
+        .try_reduce(Vec::new, |mut a, b| {
             a.extend(b);
-            if a.len() >= pool * 2 { keep_best(a, pool, tiebreak) } else { a }
+            Some(if a.len() >= pool * 2 { keep_best(a, pool, tiebreak) } else { a })
         })
 }
 
@@ -423,9 +436,21 @@ pub(crate) fn find_symbols(
     filter: SymbolFilter,
     limit: usize,
 ) -> Vec<SymbolMatch> {
+    find_symbols_until(data, recents, query, filter, limit, &|_| true, &|| false).unwrap_or_default()
+}
+
+pub(crate) fn find_symbols_until(
+    data: &IndexData,
+    recents: &Recents,
+    query: &str,
+    filter: SymbolFilter,
+    limit: usize,
+    include: &(impl Fn(&Path) -> bool + Sync),
+    stopped: &(impl Fn() -> bool + Sync),
+) -> Option<Vec<SymbolMatch>> {
     let q: String = query.trim().chars().filter(|c| !c.is_whitespace()).collect();
     if q.is_empty() || limit == 0 {
-        return Vec::new();
+        return Some(Vec::new());
     }
     let (container_q, name_q) = split_symbol_query(&q);
     let name = Needle::new(name_q);
@@ -436,13 +461,16 @@ pub(crate) fn find_symbols(
         sa.name.len().cmp(&sb.name.len()).then_with(|| file(data, a.slot).rel.cmp(&file(data, b.slot).rel))
     };
     let pool = limit * 4 + 64;
-    let cands = scan(data, pool, &tiebreak, |slot, e, acc| {
-        if e.symbols.is_empty() {
+    let cands = scan_until(data, pool, &tiebreak, stopped, |slot, e, acc| {
+        if e.symbols.is_empty() || !include(&e.path) {
             return;
         }
         with_matcher(|m| {
             let mut buf = Vec::new();
             for (i, s) in e.symbols.iter().enumerate() {
+                if stopped() {
+                    break;
+                }
                 if filter == SymbolFilter::Types && !s.kind.is_type_like() {
                     continue;
                 }
@@ -451,11 +479,15 @@ pub(crate) fn find_symbols(
                 }
             }
         });
-    });
+    })?;
+    if stopped() {
+        return None;
+    }
     let mut out: Vec<(u32, Cand, Vec<u32>)> = with_matcher(|m| {
         let mut buf = Vec::new();
         cands
             .into_iter()
+            .take_while(|_| !stopped())
             .filter_map(|c| {
                 let s = sym(&c);
                 let e = file(data, c.slot);
@@ -472,7 +504,8 @@ pub(crate) fn find_symbols(
         b.0.cmp(&a.0).then_with(|| tiebreak(&a.1, &b.1)).then_with(|| sym(&a.1).range.cmp(&sym(&b.1).range))
     });
     out.truncate(limit);
-    out.into_iter()
+    let results = out
+        .into_iter()
         .map(|(score, c, indices)| {
             let e = file(data, c.slot);
             let s = &e.symbols[c.sym as usize];
@@ -487,7 +520,8 @@ pub(crate) fn find_symbols(
                 indices,
             }
         })
-        .collect()
+        .collect();
+    (!stopped()).then_some(results)
 }
 
 /// Symbols named exactly `name` (and of `kind`, when given), by path then position.

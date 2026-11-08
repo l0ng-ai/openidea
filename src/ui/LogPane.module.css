@@ -1,0 +1,54 @@
+.pane {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.toolbar {
+  height: 32px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+.flex {
+  flex: 1;
+}
+.output {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+.log {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 10px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  color: var(--fg-editor);
+  background: var(--bg-editor);
+  white-space: pre;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: default;
+}
+.log > div {
+  cursor: text;
+}
+.wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.stderr {
+  color: var(--danger);
+}
+.dim {
+  color: var(--fg-subtle);
+}

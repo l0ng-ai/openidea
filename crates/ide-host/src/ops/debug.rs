@@ -28,9 +28,11 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         let settings = settings.clone();
         config = host
             .blocking(move || {
-                ide_sdk::go::debug_environment(&root, &settings, &mut config.env);
+                ide_sdk::go::configure_environment(&root, &settings, &mut config.env);
                 ide_sdk::go::apply_to_debug(
                     &mut config.env,
+                    &mut config.program,
+                    &mut config.args,
                     &mut config.extra_json,
                     &settings.languages.go.build_tags,
                 )?;
@@ -160,6 +162,11 @@ pub async fn debug_resume(host: &Host, _window: &str, session: DebugSessionId, t
 
 pub async fn debug_pause(host: &Host, _window: &str, session: DebugSessionId, thread_id: i64) -> IdeResult<()> {
     host.debugger.pause(session, thread_id).await
+}
+
+/// Types `text` into the session's program (a `runInTerminal` program).
+pub async fn debug_send_input(host: &Host, _window: &str, session: DebugSessionId, text: String) -> IdeResult<()> {
+    host.debugger.send_input(session, &text)
 }
 
 pub async fn debug_hot_reload(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
@@ -381,6 +388,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         "debug_pause",
         |c| async move { debug_pause(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?).await },
     );
+    d.add("debug_send_input", |c| async move {
+        debug_send_input(&c.host, &c.window, c.arg("session")?, c.arg("text")?).await
+    });
     d.add("debug_step", |c| async move {
         debug_step(&c.host, &c.window, c.arg("session")?, c.arg("threadId")?, c.arg("kind")?).await
     });

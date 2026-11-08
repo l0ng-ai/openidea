@@ -25,7 +25,9 @@ OpenIDEA brings the IntelliJ IDEA way of working — its keymap, its tool window
 its search-everything habits — to a native app with a Rust core.
 
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
-for 60+ languages. Builds for macOS, Windows and Linux.
+for 60+ languages. Builds for macOS, Windows and Linux. On Windows, if you'd
+rather skip the installer, each release also ships a portable zip — unpack it
+and run `openidea.exe`.
 
 ## Benchmark
 
@@ -63,6 +65,12 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 - WeChat group — scan to join:
 
   <img src="docs/assets/wechat-group.png" alt="WeChat group QR code" width="200">
+
+### Contributors
+
+<a href="https://github.com/l0ng-ai/openidea/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=100" alt="OpenIDEA contributors">
+</a>
 
 ## License
 

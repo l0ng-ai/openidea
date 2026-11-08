@@ -2,12 +2,14 @@
  * `openidea-server --stdio`, spoken to as the desktop app does in remote development:
  * JSON-RPC with `Content-Length` framing over the server's stdin / stdout.
  */
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const PROTOCOL_VERSION = 2;
 const WINDOW = "main";
+// Allow the server's ten-second host shutdown plus scheduling and I/O overhead.
+const SHUTDOWN_TIMEOUT_MS = 15_000;
 
 // Not `new URL(…, import.meta.url)`: the jsdom environment's `URL` isn't Node's.
 export const repoRoot = join(dirname(import.meta.filename), "..");
@@ -23,6 +25,91 @@ interface Pending {
   reject: (error: unknown) => void;
 }
 
+/** `taskkill /T /F`: the tree rooted at `pid` (see `Server.close`). Always resolves. */
+function treeKill(pid: number | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    if (pid === undefined) return resolve();
+    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { timeout: 5000 }, () => resolve());
+  });
+}
+
+/** Poll for group/leader disappearance until timeoutMs elapses. */
+async function waitForGroupExit(pid: number, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    const alive = [pid, -pid].some((target) => {
+      try {
+        process.kill(target, 0);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        return false;
+      }
+    });
+    if (!alive || Date.now() - start > timeoutMs) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+interface ProcessInfo {
+  pid: number;
+  parent: number;
+  group: number;
+  started: string;
+}
+
+function processTable(): Promise<ProcessInfo[]> {
+  return new Promise((resolve) => {
+    execFile("ps", ["-axo", "pid=,ppid=,pgid=,lstart="], { timeout: 1000 }, (error, stdout) => {
+      if (error) return resolve([]);
+      const rows: ProcessInfo[] = [];
+      for (const line of stdout.split("\n")) {
+        const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+        if (match)
+          rows.push({ pid: Number(match[1]), parent: Number(match[2]), group: Number(match[3]), started: match[4]! });
+      }
+      resolve(rows);
+    });
+  });
+}
+
+/** Snapshot owned group members before EOF can orphan them. */
+async function ownedProcesses(pid: number): Promise<ProcessInfo[]> {
+  const rows = await processTable();
+  const descendants = new Set([pid]);
+  for (;;) {
+    const size = descendants.size;
+    for (const row of rows) {
+      if (descendants.has(row.parent)) descendants.add(row.pid);
+    }
+    if (size === descendants.size) break;
+  }
+  return rows.filter((row) => descendants.has(row.pid) && descendants.has(row.group));
+}
+
+/** Revalidate identities so a group id reused during shutdown is never signalled. */
+async function killOwnedGroups(owned: ProcessInfo[], errors: Set<unknown>): Promise<number[]> {
+  const current = await processTable();
+  const identities = new Map(owned.map((row) => [row.pid, row]));
+  const groups = new Set<number>();
+  for (const row of current) {
+    const old = identities.get(row.pid);
+    if (old?.group === row.group && old.started === row.started) {
+      groups.add(row.group);
+    }
+  }
+  const killed: number[] = [];
+  for (const group of groups) {
+    try {
+      process.kill(-group, "SIGKILL");
+      killed.push(group);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") errors.add(error);
+    }
+  }
+  return killed;
+}
+
 export class Server {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -33,13 +120,26 @@ export class Server {
   /** `event` notifications: an `IdeEvent` for a window (`null`: every window). */
   onEvent: (window: string | null, event: unknown) => void = () => {};
 
-  private constructor(private readonly child: ChildProcessWithoutNullStreams) {
+  private closing: Promise<void> | undefined;
+  private readonly child: ChildProcessWithoutNullStreams;
+
+  private constructor(child: ChildProcessWithoutNullStreams) {
+    this.child = child;
     child.stdout.on("data", (chunk: Buffer) => this.receive(chunk));
     child.stderr.on("data", (chunk: Buffer) => {
       // The whole log, when asked for (OPENIDEA_SMOKE_LOG=<file>; OPENIDEA_LOG sets its level).
       if (process.env.OPENIDEA_SMOKE_LOG) appendFileSync(process.env.OPENIDEA_SMOKE_LOG, chunk);
       this.stderr.push(chunk.toString());
       if (this.stderr.length > 200) this.stderr.shift();
+    });
+    child.on("error", (error) => {
+      for (const p of this.pending.values()) p.reject(error);
+      this.pending.clear();
+    });
+    // A process exiting during a request can close its stdin before the exit event.
+    child.stdin.on("error", (error) => {
+      for (const p of this.pending.values()) p.reject(error);
+      this.pending.clear();
     });
     child.on("exit", (code) => {
       for (const p of this.pending.values()) p.reject(new Error(`openidea-server exited (${code}): ${this.log()}`));
@@ -52,10 +152,17 @@ export class Server {
     const child = spawn(serverBinary(), ["--stdio"], {
       env: { ...process.env, OPENIDEA_SERVER_HOME: home, ...env },
       stdio: ["pipe", "pipe", "pipe"],
+      // A dedicated group for forced cleanup; LSPs may create groups of their own.
+      detached: true,
     });
     const server = new Server(child);
-    await server.request("initialize", { version: PROTOCOL_VERSION });
-    return server;
+    try {
+      await server.request("initialize", { version: PROTOCOL_VERSION });
+      return server;
+    } catch (error) {
+      await server.close();
+      throw error;
+    }
   }
 
   /** The tail of the server's log, for failure messages. */
@@ -78,9 +185,76 @@ export class Server {
     }
   }
 
-  close() {
-    this.child.stdin.end();
-    this.child.kill();
+  /** Let EOF shut down and reap tools before falling back to forced cleanup. */
+  close(): Promise<void> {
+    return (this.closing ??= this.shutdown());
+  }
+
+  private async shutdown(): Promise<void> {
+    const pid = this.child.pid;
+    const owned = process.platform !== "win32" && pid !== undefined ? await ownedProcesses(pid) : [];
+    const killedGroups = new Set<number>();
+    const errors = new Set<unknown>();
+    const running = () => pid !== undefined && this.child.exitCode === null && this.child.signalCode === null;
+    if (running()) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const exited = new Promise<void>((resolve) => this.child.once("exit", () => resolve()));
+      this.child.stdin.end();
+      try {
+        await Promise.race([
+          exited,
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, SHUTDOWN_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (running()) {
+        if (process.platform === "win32") {
+          // Enumerate the tree while its root is still alive.
+          await treeKill(pid);
+        } else {
+          if (pid !== undefined) owned.push(...(await ownedProcesses(pid)));
+          for (const group of await killOwnedGroups(owned, errors)) killedGroups.add(group);
+        }
+        // While the handle is running, its dedicated group cannot have been reused.
+        // Preserve inherited-group cleanup even when ps is unavailable.
+        if (running()) {
+          if (process.platform !== "win32" && pid !== undefined && !killedGroups.has(pid)) {
+            try {
+              process.kill(-pid, "SIGKILL");
+              killedGroups.add(pid);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ESRCH") errors.add(error);
+            }
+          }
+          try {
+            this.child.kill("SIGKILL");
+          } catch (error) {
+            errors.add(error);
+          }
+        }
+        try {
+          await Promise.race([
+            exited,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, 5000);
+            }),
+          ]);
+          if (running()) errors.add(new Error(`openidea-server (${pid}) did not exit after forced cleanup`));
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+    }
+    if (process.platform !== "win32") {
+      for (const group of await killOwnedGroups(owned, errors)) killedGroups.add(group);
+    }
+    const waits = await Promise.allSettled([...killedGroups].map((group) => waitForGroupExit(group)));
+    for (const result of waits) if (result.status === "rejected") errors.add(result.reason);
+    if (errors.size === 1) throw [...errors][0];
+    if (errors.size > 1) throw new AggregateError(errors, "Smoke server cleanup failed");
   }
 
   private request(method: string, params: unknown): Promise<unknown> {

@@ -15,9 +15,10 @@ import {
   useChangelists,
   validateListName,
 } from "./changelists";
+import { groupOf } from "./changes";
 import { useCommit } from "./commitStore";
 import { confirmDialog, openDialog } from "./dialogs";
-import { fileCount } from "./model";
+import { fileCount, stripSlash } from "./model";
 import { useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -184,6 +185,15 @@ export function commitChangelist(id: string) {
   useCommit.setState((s) => ({ checks, tab: "changes", focusTick: s.focusTick + 1 }));
 }
 
+/** Commit File…: include exactly these changes (absolute paths) and focus the message. */
+export function commitFiles(paths: readonly string[]) {
+  const chosen = new Set(paths.map(stripSlash));
+  const checks = new Map<string, "all" | "none">();
+  for (const f of useVcs.getState().status)
+    if (groupOf(f) === "changes") checks.set(f.path, chosen.has(stripSlash(f.path)) ? "all" : "none");
+  useCommit.setState((s) => ({ checks, tab: "changes", focusTick: s.focusTick + 1 }));
+}
+
 /** Moves files (absolute paths) to a list. */
 export function moveToChangelist(paths: readonly string[], id: string) {
   const rels = paths.map(relOf);
@@ -196,43 +206,94 @@ export function showMoveToChangelist(paths: readonly string[]) {
     notifications().notify({ group: "vcs", level: "info", title: "Select changes to move" });
     return;
   }
-  openDialog((close) => <MoveDialog paths={paths} onClose={close} />);
+  const rels = paths.map(relOf);
+  openDialog((close) => (
+    <TargetListDialog
+      title="Move Changes to Another Changelist"
+      hint={fileCount(paths.length)}
+      exclude={paths.map(
+        (p) => useChangelists.getState().state.files?.[relOf(p)] ?? useChangelists.getState().state.active,
+      )}
+      onClose={close}
+      onChoose={(id) => updateChangelists((s) => moveFiles(s, rels, id))}
+    />
+  ));
 }
 
-function MoveDialog({ paths, onClose }: { paths: readonly string[]; onClose: () => void }) {
+/**
+ * Select Target Changelist (Undo Commit): an existing list, or a new one named
+ * `suggestedName`. Resolves the chosen list's id (created if new), or null.
+ */
+export function chooseTargetChangelist(suggestedName: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    let chosen: string | null = null;
+    openDialog((close) => (
+      <TargetListDialog
+        title="Select Target Changelist"
+        suggestedName={suggestedName}
+        onClose={() => {
+          close();
+          resolve(chosen);
+        }}
+        onChoose={(id) => {
+          chosen = id;
+        }}
+      />
+    ));
+  });
+}
+
+function TargetListDialog({
+  title,
+  hint,
+  exclude = [],
+  suggestedName = "",
+  onChoose,
+  onClose,
+}: {
+  title: string;
+  hint?: string;
+  /** Lists the changes are all in already (not offered). */
+  exclude?: readonly string[];
+  suggestedName?: string;
+  onChoose: (id: string) => void;
+  onClose: () => void;
+}) {
   const state = useChangelists((s) => s.state);
-  const currentLists = new Set(paths.map((p) => state.files?.[relOf(p)] ?? state.active));
+  const [currentLists] = useState(() => new Set(exclude));
   const others = state.lists.filter((l) => !(currentLists.size === 1 && currentLists.has(l.id)));
   const [mode, setMode] = useState<"existing" | "new">(others.length ? "existing" : "new");
-  const [target, setTarget] = useState(others[0]?.id ?? state.active);
-  const [value, setValue] = useState<FormValue>({ name: "", comment: "", active: false });
+  const [target, setTarget] = useState((others.find((l) => l.id === state.active) ?? others[0])?.id ?? state.active);
+  const [value, setValue] = useState<FormValue>({ name: suggestedName, comment: "", active: false });
   const error = mode === "new" ? validateListName(state, value.name) : null;
-  const move = () => {
+  const choose = () => {
     if (error) return;
-    onClose();
-    const rels = paths.map(relOf);
     if (mode === "new") {
+      let id = "";
       updateChangelists((s) => {
         const r = addList(s, value.name, { comment: value.comment, makeActive: value.active });
-        return moveFiles(r.state, rels, r.id);
+        id = r.id;
+        return r.state;
       });
+      onChoose(id);
     } else {
-      updateChangelists((s) => moveFiles(s, rels, target));
+      onChoose(target);
     }
+    onClose();
   };
   return (
     <Dialog
       open
-      title="Move Changes to Another Changelist"
+      title={title}
       onClose={onClose}
       width={440}
       buttons={[
-        { label: "OK", role: "default", disabled: !!error, onClick: move },
+        { label: "OK", role: "default", disabled: !!error, onClick: choose },
         { label: "Cancel", role: "cancel" },
       ]}
     >
       <div className={styles.form} role="radiogroup" aria-label={tx("Target changelist")}>
-        <div className={styles.hint}>{fileCount(paths.length)}</div>
+        {hint && <div className={styles.hint}>{hint}</div>}
         <label className={styles.radioRow}>
           <input
             type="radio"

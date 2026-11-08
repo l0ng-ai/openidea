@@ -197,10 +197,20 @@ const AUTO_IMPORT = editorPage({
   id: "editor.general.autoImport",
   title: "Auto Import",
   order: 0,
-  keywords: ["import", "organize imports", "unambiguous"],
+  keywords: ["import", "organize imports", "unambiguous", "paste"],
   sections: [
     {
       items: [
+        {
+          t: "select",
+          key: `${P}.autoImport.importsOnPaste`,
+          label: "Insert imports on paste",
+          options: [
+            { value: "always", label: "Always" },
+            { value: "ask", label: "Ask" },
+            { value: "never", label: "Never" },
+          ],
+        },
         {
           t: "check",
           key: `${P}.autoImport.addUnambiguous`,
@@ -673,11 +683,19 @@ const SMART_KEYS = editorPage({
             { value: "indentEachLine", label: "Indent Each Line" },
           ],
         },
+        {
+          t: "check",
+          key: `${P}.smartKeys.escapeOnPaste`,
+          label: "Escape text on paste in string literals",
+        },
       ],
     },
     {
       title: "Enter",
-      items: [{ t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" }],
+      items: [
+        { t: "check", key: `${P}.smartKeys.smartIndent`, label: "Smart indent" },
+        { t: "check", key: `${P}.smartKeys.insertDocStub`, label: "Insert documentation comment stub" },
+      ],
     },
     {
       title: "Backspace",

@@ -5,6 +5,7 @@
 mod clickhouse;
 pub mod conn;
 pub mod history;
+mod oracle;
 pub mod plan;
 pub mod secrets;
 pub mod source;
@@ -303,7 +304,7 @@ fn keep_alive(pool: &Arc<Pool>, every: Duration) {
         loop {
             tick.tick().await;
             let Some(p) = pool.upgrade().filter(|p| !p.is_closed()) else { break };
-            if let Err(e) = p.rows("SELECT 1", 1).await {
+            if let Err(e) = p.rows(p.ping_sql(), 1).await {
                 tracing::debug!("keep-alive: {}", e.message);
             }
         }
@@ -314,7 +315,7 @@ fn keep_alive(pool: &Arc<Pool>, every: Duration) {
 async fn end_session(session: &Session) {
     let held = session.lock().await.take();
     if let Some(mut conn) = held
-        && conn.command("ROLLBACK").await.is_err()
+        && (conn.command("ROLLBACK").await.is_err() || conn.restore_default().await.is_err())
     {
         conn.discard().await;
     }
@@ -614,6 +615,7 @@ impl DbManager {
             DbDriver::Postgres | DbDriver::Clickhouse => "SELECT version()",
             DbDriver::Mysql => "SELECT CONCAT(@@version_comment, ' ', VERSION())",
             DbDriver::SqlServer => "SELECT @@VERSION",
+            DbDriver::Oracle => "SELECT banner FROM v$version WHERE banner LIKE 'Oracle%' AND ROWNUM = 1",
         };
         let result = pool.rows(version, 1).await;
         pool.close().await;
@@ -702,8 +704,15 @@ impl DbManager {
         let introspection = self.source(id)?.introspection;
         let system = introspection.show_system;
         let pool = self.pool(id).await?;
+        if pool.driver() == DbDriver::SqlServer {
+            let first =
+                |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
+            let current = first(pool.rows("SELECT DB_NAME()", 1).await?).next().unwrap_or_default();
+            let names = first(pool.rows(sql::sqlserver_databases(), MAX_META_ROWS).await?).collect();
+            return Ok(Databases { current, names });
+        }
         if pool.driver() != DbDriver::Postgres {
-            return Err(IdeError::invalid("only PostgreSQL data sources list databases"));
+            return Err(IdeError::invalid("this data source does not list databases"));
         }
         let first = |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
         let current = first(pool.rows("SELECT current_database()", 1).await?).next().unwrap_or_default();
@@ -905,6 +914,33 @@ impl DbManager {
                     .next();
                 ddl.map(|d| format!("{d};\n")).ok_or_else(missing)
             }
+            DbDriver::Oracle => {
+                let (s, n) = (sql::quote_literal(driver, schema), sql::quote_literal(driver, name));
+                let kind = pool
+                    .rows(
+                        &format!(
+                            "SELECT object_type FROM all_objects WHERE owner = {s} AND object_name = {n} \
+                             AND object_type IN ('TABLE', 'VIEW') AND ROWNUM = 1"
+                        ),
+                        1,
+                    )
+                    .await?
+                    .into_iter()
+                    .next()
+                    .and_then(|r| r.into_iter().next().flatten())
+                    .ok_or_else(missing)?;
+                let ddl = cells(
+                    pool.rows(
+                        &format!("SELECT DBMS_METADATA.GET_DDL('{}', {n}, {s}) FROM DUAL", kind.replace('\'', "''")),
+                        1,
+                    )
+                    .await?,
+                    0,
+                )
+                .into_iter()
+                .next();
+                ddl.map(|d| format!("{};\n", d.trim_end().trim_end_matches(';'))).ok_or_else(missing)
+            }
             DbDriver::Postgres => {
                 let rel = pool.rows(&sql::postgres_relation(schema, name), 1).await?.into_iter().next();
                 let (oid, kind) = match rel.as_deref() {
@@ -1009,11 +1045,13 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        self.execute_from(id, statement, 0, max_rows, cancel).await
+        self.execute_from(id, statement, 0, max_rows, cancel, None).await
     }
 
     /// [`execute`](Self::execute), reading past the first `skip` rows without keeping
     /// them: a later page of a result, where only that page is decoded and returned.
+    /// `schema` is a query console's active context: the connection that runs the
+    /// statement is put in it first, so unqualified names resolve there.
     pub async fn execute_from(
         &self,
         id: &str,
@@ -1021,8 +1059,9 @@ impl DbManager {
         skip: usize,
         max_rows: usize,
         cancel: &CancellationToken,
+        schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
-        let r = self.run(id, statement, skip, max_rows, cancel).await;
+        let r = self.run(id, statement, skip, max_rows, cancel, schema).await;
         let ran = match &r {
             Ok(_) => true,
             Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
@@ -1054,10 +1093,42 @@ impl DbManager {
             .map_err(|e| IdeError::internal(e.to_string()))?
     }
 
-    /// The execution plan of `statement` (explained, not run).
-    pub async fn explain(&self, id: &str, statement: &str, cancel: &CancellationToken) -> IdeResult<Vec<PlanNode>> {
+    /// The execution plan of `statement` (explained, not run), in the console's
+    /// active `schema` when it has one.
+    pub async fn explain(
+        &self,
+        id: &str,
+        statement: &str,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+    ) -> IdeResult<Vec<PlanNode>> {
         let driver = self.pool(id).await?.driver();
-        let result = self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel).await?;
+        if driver == DbDriver::Oracle {
+            // EXPLAIN PLAN writes PLAN_TABLE; the plan is read (and cleaned up) separately.
+            let plan_id = format!(
+                "OPENIDEA{}",
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos())
+            );
+            self.run(
+                id,
+                &format!(
+                    "EXPLAIN PLAN SET STATEMENT_ID = '{}' FOR {}",
+                    plan_id,
+                    statement.trim().trim_end_matches(';')
+                ),
+                0,
+                MAX_META_ROWS,
+                cancel,
+                schema,
+            )
+            .await?;
+            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel, None).await?;
+            let nodes = plan::parse(driver, &result);
+            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel, None).await;
+            return nodes;
+        }
+        let result =
+            self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel, schema).await?;
         plan::parse(driver, &result)
     }
 
@@ -1068,11 +1139,25 @@ impl DbManager {
         skip: usize,
         max_rows: usize,
         cancel: &CancellationToken,
+        schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else {
-            return pool.execute_from(statement, skip, max_rows, cancel).await;
+            if schema.is_none() {
+                return pool.execute_from(statement, skip, max_rows, cancel).await;
+            }
+            // Like `Pool::execute_from`, with the schema applied to the connection first.
+            let mut conn = Held::acquire(&pool).await?;
+            let r = match conn.apply_context(schema).await {
+                Ok(()) => conn.execute_from(&pool, statement, skip, max_rows, cancel).await,
+                Err(e) => Err(e),
+            };
+            if cancel.is_cancelled() {
+                conn.discard().await;
+                return Err(IdeError::cancelled());
+            }
+            return r;
         };
         if pool.driver() == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
@@ -1080,10 +1165,12 @@ impl DbManager {
         let mut held = session.lock().await;
         if held.is_none() {
             let mut conn = Held::acquire(&pool).await?;
+            conn.apply_context(schema).await?;
             conn.command(conn::begin_statement(pool.driver())).await?;
             *held = Some(conn);
         }
         let conn = held.as_mut().expect("opened above");
+        conn.apply_context(schema).await?;
         let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
         if cancel.is_cancelled() {
             // The server rolls the transaction back with the connection.
@@ -1119,7 +1206,12 @@ impl DbManager {
         let Some(session) = session else { return Ok(()) };
         let mut held = session.lock().await;
         let Some(mut conn) = held.take() else { return Ok(()) };
-        match conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await {
+        let result = async {
+            conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await?;
+            conn.restore_default().await
+        }
+        .await;
+        match result {
             Ok(()) => Ok(()),
             Err(e) => {
                 conn.discard().await;

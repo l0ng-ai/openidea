@@ -152,6 +152,55 @@ mod tests {
     }
 
     #[test]
+    fn laravel_lsp_assets() {
+        let names = [
+            "server-v0.0.32-arm64-darwin",
+            "server-v0.0.32-x64-darwin",
+            "server-v0.0.32-arm64-linux",
+            "server-v0.0.32-x64-linux",
+            "server-v0.0.32-x64-win32.exe",
+        ];
+        let rules = crate::registry::find("laravel-lsp").unwrap().asset_rules();
+        assert_eq!(select_asset(&names, rules, MAC_ARM), Some(names[0]));
+        assert_eq!(select_asset(&names, rules, MAC_X64), Some(names[1]));
+        assert_eq!(select_asset(&names, rules, LINUX_ARM), Some(names[2]));
+        assert_eq!(select_asset(&names, rules, LINUX_X64), Some(names[3]));
+        assert_eq!(select_asset(&names, rules, WIN), Some(names[4]));
+        // The composer-installed helper is not a release asset.
+        assert_eq!(select_asset(&["laravel-lsp"], rules, LINUX_X64), None);
+    }
+
+    #[test]
+    fn kmp_lsp_assets_include_the_native_jar_indexer() {
+        let names = [
+            "kmp-lsp-darwin-aarch64.gz",
+            "kmp-lsp-darwin-aarch64.tar.gz",
+            "kmp-lsp-darwin-x86_64.tar.gz",
+            "kmp-lsp-linux-aarch64.tar.gz",
+            "kmp-lsp-linux-x86_64.tar.gz",
+            "kmp-lsp-windows-x86_64.zip",
+            "kmp-lsp-windows-aarch64.zip",
+            "kmp-lsp-v0.27.0.vsix",
+            "kmp-lsp-win32-x64-v0.27.0.vsix",
+            "kmp-lsp-win32-arm64-v0.27.0.vsix",
+        ];
+        let rules = crate::registry::find("kmp-lsp").unwrap().asset_rules();
+        for (os, arch, expected) in [
+            (Os::Mac, Arch::Arm64, names[1]),
+            (Os::Mac, Arch::X64, names[2]),
+            (Os::Linux, Arch::Arm64, names[3]),
+            (Os::Linux, Arch::X64, names[4]),
+            (Os::Windows, Arch::X64, names[8]),
+            (Os::Windows, Arch::Arm64, names[9]),
+        ] {
+            assert_eq!(select_asset(&names, rules, Platform { os, arch }), Some(expected));
+        }
+        // The plain gzip, Windows zip and universal VSIX omit the sidecar or server.
+        assert_eq!(select_asset(&[names[0]], rules, MAC_ARM), None);
+        assert_eq!(select_asset(&names[5..8], rules, WIN), None);
+    }
+
+    #[test]
     fn rosetta_fallback_and_missing() {
         let names = ["zls-x86_64-macos.tar.xz", "zls-x86_64-linux.tar.xz", "zls-x86_64-windows.zip"];
         let rules = crate::registry::find("zls").unwrap().asset_rules();

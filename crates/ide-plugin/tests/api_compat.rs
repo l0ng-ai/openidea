@@ -23,9 +23,17 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Every component the repository builds for users: the official plugins with code, plus the `hello` fixture.
+/// Official components plus fixtures for the base and optional indexing exports.
 fn components() -> Vec<PathBuf> {
-    let mut out = vec![repo().join("crates/ide-plugin/tests/fixtures/hello/dist/plugin.wasm")];
+    let mut out = vec![
+        repo().join("crates/ide-plugin/tests/fixtures/hello/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/indexer/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/semantic-tokens/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/hover/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/diagnostics/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/inlay-hints/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/symbols/dist/plugin.wasm"),
+    ];
     let official = repo().join("plugins/official");
     let mut dirs: Vec<_> = std::fs::read_dir(&official).unwrap().map(|e| e.unwrap().path()).collect();
     dirs.sort();

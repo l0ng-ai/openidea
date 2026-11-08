@@ -65,6 +65,47 @@ export interface EditorContribution {
   embedded?: boolean;
 }
 
+/**
+ * Editor extensions whose code loads with the first editor that wants them: `wants`
+ * decides synchronously, `load` resolves the real `extensions`. Until it has, the editor
+ * runs without them and reconfigures once loaded.
+ */
+export function lazyEditorExtension(
+  wants: (ctx: EditorDocContext) => boolean,
+  load: () => Promise<(ctx: EditorDocContext) => Extension>,
+): (ctx: EditorDocContext) => Extension {
+  let loaded: ((ctx: EditorDocContext) => Extension) | null = null;
+  let pending: Promise<(ctx: EditorDocContext) => Extension> | null = null;
+  const get = () =>
+    (pending ??= load().then(
+      (f) => (loaded = f),
+      (e: unknown) => {
+        pending = null;
+        throw e;
+      },
+    ));
+  return (ctx) => {
+    if (!wants(ctx)) return [];
+    if (loaded) return loaded(ctx);
+    const slot = new Compartment();
+    return [
+      slot.of([]),
+      ViewPlugin.define((view) => {
+        let live = true;
+        get().then(
+          (f) => live && view.dispatch({ effects: slot.reconfigure(f(ctx)) }),
+          (e: unknown) => console.error("could not load editor extensions", e),
+        );
+        return {
+          destroy: () => {
+            live = false;
+          },
+        };
+      }),
+    ];
+  };
+}
+
 export interface TextEditorHandle {
   view: EditorView;
   ctx: EditorDocContext;
@@ -586,7 +627,8 @@ export function isLibraryPath(path: string): boolean {
  * A live view of an open document for a CodeMirror view that is not an editor
  * tab (e.g. the editable side of a diff). Edits sync both ways with the
  * document shared by all editors of the file, go to the backend, and are saved
- * by Save All; the view keeps its own undo history, like a split pane.
+ * by Save All. With `sharedHistory`, typing uses the text tab's history;
+ * otherwise the view keeps its own history, like a split pane.
  */
 export interface DocumentAttachment {
   path: string;
@@ -597,6 +639,10 @@ export interface DocumentAttachment {
   /** The document's language mode name (backend-assigned, as the editor tabs use). */
   uiMode(): string | null;
   readOnly: boolean;
+  /** Last view state, kept current while unmounted; use it when remounting this attachment. */
+  editorState(): EditorState | null;
+  /** Dispatch typing through the document history when `sharedHistory` was requested. */
+  dispatchTransactions(transactions: readonly Transaction[], view: EditorView): void;
   /** Add to the view (one view at a time). */
   extension: Extension;
   save(options?: { exact?: boolean }): Promise<void>;
@@ -622,16 +668,22 @@ export interface DocumentAttachment {
   release(): void;
 }
 
-let documentAttacher: ((path: string) => Promise<DocumentAttachment>) | null = null;
+export interface DocumentAttachmentOptions {
+  /** Record typing in the text tab's history when one exists. Use `dispatchTransactions` on the view. */
+  sharedHistory?: boolean;
+}
+
+let documentAttacher: ((path: string, options?: DocumentAttachmentOptions) => Promise<DocumentAttachment>) | null =
+  null;
 
 /** Opens (or joins) the document of `path` for a non-tab view. */
-export function attachDocument(path: string): Promise<DocumentAttachment> {
+export function attachDocument(path: string, options?: DocumentAttachmentOptions): Promise<DocumentAttachment> {
   if (!documentAttacher) return Promise.reject(new Error("editor not started"));
-  return documentAttacher(path);
+  return documentAttacher(path, options);
 }
 
 /** Called by editor/core only. */
-export function _provideDocumentAttacher(attacher: ((path: string) => Promise<DocumentAttachment>) | null) {
+export function _provideDocumentAttacher(attacher: typeof documentAttacher) {
   documentAttacher = attacher;
 }
 
@@ -657,21 +709,22 @@ export function _languageMode(name: string): LanguageDescription | undefined {
   return languageModes.get(name);
 }
 
-// --- read-only code previews ------------------------------------------------------
+// --- code previews ------------------------------------------------------
 
-let codePreviewProvider: ((path: string) => Promise<Extension>) | null = null;
+let codePreviewProvider: ((path: string, editable?: boolean) => Promise<Extension>) | null = null;
 
 /**
- * Extensions for a read-only CodeMirror view showing `path` like an editor tab
+ * Extensions for a CodeMirror view showing `path` like an editor tab
  * (editor font and colours, line numbers, syntax highlighting): previews
- * outside editor tabs such as Find in Files. Empty before editor/core starts.
+ * outside editor tabs such as Find in Files. Read-only unless `editable` is true.
+ * Empty before editor/core starts.
  */
-export function codePreviewExtensions(path: string): Promise<Extension> {
-  return codePreviewProvider ? codePreviewProvider(path) : Promise.resolve([]);
+export function codePreviewExtensions(path: string, editable = false): Promise<Extension> {
+  return codePreviewProvider ? codePreviewProvider(path, editable) : Promise.resolve([]);
 }
 
 /** @internal editor/core only. */
-export function _provideCodePreview(provider: ((path: string) => Promise<Extension>) | null) {
+export function _provideCodePreview(provider: typeof codePreviewProvider) {
   codePreviewProvider = provider;
 }
 

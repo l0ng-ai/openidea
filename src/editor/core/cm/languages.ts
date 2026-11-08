@@ -19,6 +19,7 @@ import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
+import { JS_TAGS } from "./jsTags";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -112,6 +113,10 @@ const OWN_MODES = [
       },
     }),
   ),
+  LanguageDescription.of({
+    name: "Angular TypeScript",
+    load: () => import("./angular/inline").then((m) => m.angularTypescript()),
+  }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
   LanguageDescription.of({
     name: "ERB",
@@ -120,6 +125,11 @@ const OWN_MODES = [
     load: () => import("./erb").then((m) => m.erb()),
   }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
+  LanguageDescription.of({
+    name: "Astro",
+    extensions: ["astro"],
+    load: () => import("./astro").then((m) => m.astro()),
+  }),
   LanguageDescription.of({
     name: "YAML",
     alias: ["yml"],
@@ -134,6 +144,13 @@ const OWN_MODES = [
         support.support,
       );
     },
+  }),
+  LanguageDescription.of({
+    name: "GoMod",
+    alias: ["gomod", "gowork"],
+    extensions: ["mod", "work"],
+    filename: /^(?:go\.mod|go\.work)$/,
+    load: async () => new LanguageSupport((await import("./gomod")).goModLanguage),
   }),
 ];
 
@@ -218,9 +235,9 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
     const loose = LanguageDescription.matchLanguageName(BUILTIN_MODES, uiMode, false);
     if (loose) return OWN_MODES.find((l) => l.name === loose.name) ?? loose;
   }
-  if (uiMode === null && infos) return null;
   const own = LanguageDescription.matchFilename(OWN_MODES, path.slice(path.lastIndexOf("/") + 1));
   if (own) return own;
+  if (uiMode === null && infos) return null;
   const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
   return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }
@@ -252,9 +269,6 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
-// @lezer/javascript styles `.` as a deref operator, but not `?.`.
-const JS_TAGS: Parameters<typeof styleTags>[0] = { "?.": t.derefOperator };
-
 // @lezer/java tags annotations as plain identifiers.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
@@ -264,6 +278,7 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
   TypeScript: JS_TAGS,
+  "Angular TypeScript": JS_TAGS,
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,

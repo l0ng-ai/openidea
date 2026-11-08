@@ -64,13 +64,13 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "codelldb",
             &["--port", PORT_PLACEHOLDER],
             "tcp",
-            "Install the CodeLLDB adapter (https://github.com/vadimcn/codelldb/releases) and put `codelldb` on PATH",
+            "Install CodeLLDB in Settings › Languages & Frameworks › Language Servers",
         ),
         "kotlin-debug-adapter" => cfg(
             "kotlin-debug-adapter",
             &[],
             "stdio",
-            "Install the Kotlin Debug Adapter from Settings > Language Servers",
+            "Install Kotlin Debug Adapter in Settings › Languages & Frameworks › Language Servers",
         ),
         // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
         "debugpy" => cfg(
@@ -84,7 +84,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             // Without a host it listens on `localhost`, which may resolve to ::1 only.
             &[PORT_PLACEHOLDER, "127.0.0.1"],
             "tcp",
-            "Install vscode-js-debug's DAP server (js-debug-dap-*.tar.gz from https://github.com/microsoft/vscode-js-debug/releases) as `js-debug-adapter`",
+            "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers",
         ),
         "delve" => cfg(
             "dlv",
@@ -96,7 +96,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "netcoredbg",
             &["--interpreter=vscode"],
             "stdio",
-            "Install Samsung netcoredbg (https://github.com/Samsung/netcoredbg/releases)",
+            "Install netcoredbg (.NET debugger) in Settings › Languages & Frameworks › Language Servers",
         ),
         "lldb-dap" => {
             cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
@@ -196,10 +196,18 @@ fn managed_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// The `PATH` an adapter runs with, unless its launch sets one: the search path language servers
+/// get, so what it starts in turn (js-debug's wrapper runs `node`, Delve runs `go build`) is
+/// found like Run finds it, even when the login shell's `PATH` didn't reach the app.
+fn adapter_path(env: &[(String, String)]) -> Option<std::ffi::OsString> {
+    let own = env.iter().any(|(k, _)| if cfg!(windows) { k.eq_ignore_ascii_case("PATH") } else { k == "PATH" });
+    (!own).then(ide_core::tool_path::search_path)
+}
+
 /// Directories searched for adapter binaries: managed tools first, then `PATH` and the usual install spots.
 fn search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = tools_root().map(|r| managed_dirs(&r)).unwrap_or_default();
-    dirs.extend(std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default());
+    dirs.extend(std::env::split_paths(&ide_core::tool_path::search_path()));
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         for rel in [".cargo/bin", ".local/bin", "go/bin", ".dotnet/tools", ".bun/bin", ".npm-global/bin", ".volta/bin"]
         {
@@ -464,6 +472,9 @@ impl AdapterLauncher for ProcessLauncher {
                 None => args,
             };
             let mut cmd = Command::new(&binary);
+            if let Some(path) = adapter_path(&spec.env) {
+                cmd.env("PATH", path);
+            }
             ide_core::process::prepare(cmd.as_std_mut());
             cmd.args(&args)
                 .envs(spec.env.iter().map(|(k, v)| (k, v)))
@@ -592,6 +603,21 @@ async fn connect_with_retries(
 mod tests {
     use super::*;
 
+    #[test]
+    fn adapters_run_on_the_tool_search_path() {
+        let search = ide_core::tool_path::search_path();
+        assert_eq!(adapter_path(&[]), Some(search.clone()));
+        assert_eq!(adapter_path(&[("GOFLAGS".into(), "-mod=mod".into())]), Some(search));
+        // A launch that sets its own (a selected Go SDK's bin first) keeps it.
+        assert_eq!(adapter_path(&[("PATH".into(), "/sdk/go/bin:/usr/bin".into())]), None);
+        // The search path reaches the usual install spots even when this process's `PATH` doesn't.
+        #[cfg(unix)]
+        {
+            let dirs: Vec<PathBuf> = std::env::split_paths(&ide_core::tool_path::search_path()).collect();
+            assert!(dirs.contains(&PathBuf::from("/usr/local/bin")), "{dirs:?}");
+        }
+    }
+
     #[tokio::test]
     async fn program_output_is_forwarded_without_the_adapter_banner() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -668,7 +694,7 @@ mod tests {
         assert!(find_binary("definitely-not-a-real-binary-openidea", &spec.cwd).is_none());
         let err = missing(&spec);
         assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
-        assert!(err.message.contains("netcoredbg/releases"));
+        assert!(err.message.contains("Settings › Languages & Frameworks › Language Servers"));
     }
 
     #[tokio::test]

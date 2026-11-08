@@ -1,7 +1,10 @@
 //! Remote work over SSH: SFTP deployment ([`deploy`], [`mapping`]) and run
-//! configurations on run targets ([`target`]).
+//! configurations on run targets ([`target`]; Docker and Compose ones in [`docker`]).
 
+pub mod container_tunnel;
 pub mod deploy;
+pub mod devcontainer;
+pub mod docker;
 pub mod import;
 pub mod mapping;
 pub mod service;

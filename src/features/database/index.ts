@@ -4,8 +4,8 @@
  * results grids, and a table data editor. Connections, introspection and
  * statements run in Rust (`ide-db`).
  */
-import { lazyComponent } from "@/ui";
-import { activeEditor, registerEditorContribution } from "@/editor/api";
+import { lazyComponent, lazyWhen } from "@/ui";
+import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
@@ -17,8 +17,7 @@ import {
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
-import { SQL_LANGUAGE, consoleExtension, executeInView, explainInView } from "./console";
-import { DatabaseDialogs } from "./Dialogs";
+import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
@@ -34,6 +33,8 @@ import {
   useDatabase,
   watchIdleConnections,
 } from "./store";
+
+const useDialogOpen = () => useDatabase((s) => !!s.dialog);
 
 export function activate(): () => void {
   const disposers = [
@@ -60,8 +61,18 @@ export function activate(): () => void {
       title: tableTitle,
       icon: () => "database",
     }),
-    registerOverlay({ id: "database.dialogs", component: DatabaseDialogs }),
-    registerEditorContribution({ id: "database.console", order: 57, extensions: consoleExtension }),
+    registerOverlay({
+      id: "database.dialogs",
+      component: lazyWhen(useDialogOpen, () => import("./Dialogs").then((m) => m.DatabaseDialogs)),
+    }),
+    registerEditorContribution({
+      id: "database.console",
+      order: 57,
+      extensions: lazyEditorExtension(
+        (ctx) => ctx.language === SQL_LANGUAGE && !ctx.virtual && !ctx.readOnly,
+        () => import("./console").then((m) => m.consoleExtension),
+      ),
+    }),
     // A reopened project starts with a fresh backend: forget the old one's state.
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
@@ -151,7 +162,7 @@ export function activate(): () => void {
             openSourceDialog(null);
             return;
           }
-          await executeInView(e.view, e.ctx.path);
+          await (await import("./console")).executeInView(e.view, e.ctx.path);
         },
       },
       {
@@ -189,7 +200,7 @@ export function activate(): () => void {
           const e = activeEditor();
           if (!e || e.ctx.language !== SQL_LANGUAGE) return;
           if (!useDatabase.getState().loaded) await loadSources();
-          await explainInView(e.view, e.ctx.path);
+          await (await import("./console")).explainInView(e.view, e.ctx.path);
         },
       },
       {

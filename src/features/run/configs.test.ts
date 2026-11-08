@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import {
   commandLine,
   duplicateConfig,
@@ -14,6 +15,8 @@ import {
   validateConfig,
 } from "./configs";
 import { contextConfig, fileRole } from "./context";
+import { cacheRunTemplates } from "./runTemplates";
+import { registerBuiltinTypes } from "./types";
 import { envFromRows } from "./EnvDialog";
 import { configRemoved, defaultSelection, rerunConfig, useRun, type RunSession } from "./store";
 
@@ -40,6 +43,16 @@ describe("config merge / override", () => {
       ["npm:test", "npm:test"],
       ["npm:dev", "dev (custom)"],
     ]);
+  });
+
+  it("keeps saved CMake names when generated context changes", () => {
+    const id = "cmake:build:Debug:hello";
+    const saved = cfg({ id, kind: "cmake-application", name: "My hello (build)", detected: false });
+    for (const name of ["hello", "hello [Debug · build/]"]) {
+      const generated = cfg({ id, kind: "cmake-application", name });
+      const merged = mergeConfigs([generated], [saved]);
+      expect(merged).toEqual([saved]);
+    }
   });
 
   it("editing a detected config creates a user copy with the same id", () => {
@@ -180,13 +193,32 @@ describe("context configuration", () => {
   it("runs a JS test file through the closest test script", () => {
     const c = contextConfig("web/src/cart.test.ts", configs)!;
     expect(c).toMatchObject({
-      args: ["run", "test", "--", "src/cart.test.ts"],
+      args: ["run", "test", "src/cart.test.ts"],
       cwd: "web",
       isTest: true,
       name: "cart.test.ts",
     });
     expect(c.id).toBe("context:npm:web:test:web/src/cart.test.ts");
-    expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "--", "src/a.spec.js"]);
+    expect(contextConfig("src/a.spec.js", configs)!.args).toEqual(["run", "test", "src/a.spec.js"]);
+  });
+
+  it.each([
+    ["npm", ["--"]],
+    ["pnpm", []],
+    ["/opt/bin/pnpm", []],
+    ["C:\\tools\\pnpm.CMD", []],
+    ["yarn", ["--"]],
+    ["bun", ["--"]],
+  ])("forwards test files through %s", (command, separator) => {
+    const base = cfg({ id: "js:test", kind: "npm", command, args: ["run", "test"], isTest: true });
+    expect(contextConfig("tests/cart.test.ts", [base])!.args).toEqual([
+      "run",
+      "test",
+      ...separator,
+      "tests/cart.test.ts",
+    ]);
+    const explicit = { ...base, args: ["run", "test", "--", "--reporter=verbose"] };
+    expect(contextConfig("tests/cart.test.ts", [explicit])!.args).toEqual([...explicit.args, "tests/cart.test.ts"]);
   });
 
   it("narrows rspec and rake test runs to the file", () => {
@@ -233,6 +265,43 @@ describe("context configuration", () => {
       "--tests",
       "*OrderControllerTest",
     ]);
+  });
+
+  it("does not borrow another Go module's run or test configuration", () => {
+    const go = [
+      cfg({ id: "go:run:api", kind: "go", command: "go", args: ["run", "."], cwd: "api" }),
+      cfg({ id: "go:test:api", kind: "go", command: "go", args: ["test", "./..."], cwd: "api", isTest: true }),
+    ];
+    expect(contextConfig("other/main.go", go, "package main\nfunc main() {}")).toBeNull();
+    expect(contextConfig("other/main_test.go", go, "package main")).toBeNull();
+  });
+
+  it("uses a nested Go module even when only the parent has a run configuration", () => {
+    const go = [
+      cfg({ id: "go:run", kind: "go", command: "go", args: ["run", "."] }),
+      cfg({ id: "go:test:api", kind: "go", command: "go", args: ["test", "./..."], cwd: "api", isTest: true }),
+    ];
+    expect(contextConfig("api/tool/main.go", go, "package main\nfunc main() {}")).toMatchObject({
+      cwd: "api",
+      args: ["run", "./tool"],
+    });
+  });
+
+  it("does not pass typed Go test flags to an application build", () => {
+    const go = cfg({
+      id: "user:go-test",
+      kind: "go",
+      command: "go",
+      args: ["test", "-count=1", "./..."],
+      isTest: true,
+      params: { goKind: "test", module: "api", toolArgs: "-count=1" },
+    });
+    expect(contextConfig("api/cmd/server/main.go", [go], "package main\nfunc main() {}")).toMatchObject({
+      cwd: "api",
+      args: ["run", "./cmd/server"],
+      params: undefined,
+      isTest: false,
+    });
   });
 
   it("finds run targets and script invocations", () => {
@@ -342,6 +411,85 @@ describe("context configuration", () => {
     const plain = [cfg({ id: "python:module:app", kind: "python", command: "python3", args: ["-m", "app"] })];
     expect(contextConfig("tools/gen.py", plain)).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
     expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+  });
+
+  describe("system python per OS (#1885)", () => {
+    const os = usePlatform.getState().os;
+    afterEach(() => {
+      usePlatform.setState({ os });
+      cacheRunTemplates([]);
+    });
+
+    it("falls back to `python` on Windows, `python3` elsewhere", () => {
+      usePlatform.setState({ os: "windows" });
+      // `python3` is not a command on Windows.
+      expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python", args: ["tools/gen.py"] });
+      expect(contextConfig("worker/test_worker.py", [])).toMatchObject({
+        command: "python",
+        args: ["-m", "pytest", "worker/test_worker.py"],
+      });
+      usePlatform.setState({ os: "linux" });
+      expect(contextConfig("tools/gen.py", [])).toMatchObject({ command: "python3", args: ["tools/gen.py"] });
+      expect(contextConfig("worker/test_worker.py", [])).toMatchObject({
+        command: "python3",
+        args: ["-m", "pytest", "worker/test_worker.py"],
+      });
+    });
+
+    it("seeds gutter pytest configs from the pytest template", () => {
+      const dispose = registerBuiltinTypes();
+      try {
+        cacheRunTemplates([
+          cfg({ id: "template:pytest", kind: "pytest", params: { command: "pixi", runnerArgs: "run pytest" } }),
+        ]);
+        expect(contextConfig("worker/test_worker.py", [])).toMatchObject({
+          command: "pixi",
+          args: ["run", "pytest", "worker/test_worker.py"],
+          isTest: true,
+        });
+        // Template options come along; the file stays the target.
+        cacheRunTemplates([
+          cfg({
+            id: "template:pytest",
+            kind: "pytest",
+            params: { command: "uv", runnerArgs: "run pytest", options: "-x" },
+          }),
+        ]);
+        expect(contextConfig("worker/test_worker.py", [])!.args).toEqual([
+          "run",
+          "pytest",
+          "-x",
+          "worker/test_worker.py",
+        ]);
+        // A target stored on the template itself is dropped: the gutter file is
+        // the target, or the run would execute both.
+        cacheRunTemplates([
+          cfg({
+            id: "template:pytest",
+            kind: "pytest",
+            params: { command: "pixi", runnerArgs: "run pytest", target: "tests", options: "-x" },
+          }),
+        ]);
+        expect(contextConfig("worker/test_worker.py", [])!.args).toEqual([
+          "run",
+          "pytest",
+          "-x",
+          "worker/test_worker.py",
+        ]);
+        // No template: the detected interpreter / system python as before.
+        cacheRunTemplates([]);
+        const venv = [
+          cfg({ id: "python:module:app", kind: "python", command: ".venv/bin/python", args: ["-m", "app"] }),
+        ];
+        expect(contextConfig("worker/test_worker.py", venv)).toMatchObject({
+          command: ".venv/bin/python",
+          args: ["-m", "pytest", "worker/test_worker.py"],
+        });
+      } finally {
+        dispose();
+        cacheRunTemplates([]);
+      }
+    });
   });
 });
 

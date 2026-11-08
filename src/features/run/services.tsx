@@ -31,6 +31,7 @@ import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import {
   configRemoved,
+  debugSession,
   loadConfigs,
   persistTemporary,
   rerunConfig,
@@ -38,6 +39,7 @@ import {
   stopSession,
   useRun,
   type RunSession,
+  isLive,
 } from "./store";
 import {
   currentServiceSession,
@@ -208,7 +210,7 @@ export async function cleanupRemovedProject(removedRoot: string): Promise<void> 
 // ---------------------------------------------------------------------------
 // Tree
 
-const busy = (s: RunSession) => s.status === "running" || s.status === "starting";
+const busy = (s: RunSession) => isLive(s);
 
 export function sessionStatus(s: RunSession | undefined): string | undefined {
   if (!s) return undefined;
@@ -227,12 +229,14 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
   if (!s) return undefined;
   const debug = serviceDebugger(s);
   if (debug?.status === "paused") return "Suspended";
-  if (debug)
-    return s.run && busy(s.run) && s.run.httpPort
-      ? `:${s.run.httpPort}`
-      : debug.status === "starting"
-        ? "Starting"
-        : "Debugging";
+  if (debug) {
+    // The app's HTTP port: a Run owns the console for an attached debugger, a direct
+    // debug launch announces it on the debug session's own console (#1718).
+    const run = s.run && busy(s.run) ? s.run : undefined;
+    const port = run?.httpPort ?? debug.httpPort;
+    if (port) return `:${port}`;
+    return debug.status === "starting" ? "Starting" : "Debugging";
+  }
   return s.run ? sessionDetail(s.run) : "Finished";
 }
 
@@ -352,7 +356,7 @@ function showOutput(s: RunSession) {
 /** Runs (or reruns, in its tab) a configuration; the output stays in Services instead of opening Run. */
 function run(r: Resolved) {
   const debug = serviceDebugger(r.session);
-  if (debug) debug.rerun?.();
+  if (debug) (debug.rerunInPlace ?? debug.rerun)?.();
   else if (r.session?.run) {
     const s = r.session.run;
     void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
@@ -361,8 +365,8 @@ function run(r: Resolved) {
 
 function debug(r: Resolved) {
   const session = serviceDebugger(r.session);
-  if (session) session.rerun?.();
-  else if (r.config) void executeAction("run.debugConfig", r.config);
+  if (session) (session.rerunInPlace ?? session.rerun)?.();
+  else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false });
 }
 
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
@@ -461,12 +465,13 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   if (r.session?.run) {
     const execution = r.session;
     const d = serviceDebugger(execution);
+    const rerun = d ? (d.rerunInPlace ?? d.rerun) : undefined;
     return (
       <SessionPanel
         key={execution.run!.id}
         session={execution.run!}
-        onRerun={d ? d.rerun : undefined}
-        onDebug={d ? d.rerun : undefined}
+        onRerun={d ? rerun : () => run(r)}
+        onDebug={d ? rerun : () => debugSession(execution.run!.id, { show: false })}
         onStop={d ? () => void stopServiceSessions([execution]) : undefined}
       />
     );

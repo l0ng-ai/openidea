@@ -14,6 +14,7 @@
 }
 .split {
   flex: 1;
+  min-width: 520px;
   min-height: 320px;
   display: flex;
   border: 1px solid var(--border-strong);
@@ -80,6 +81,8 @@
   color: var(--fg-emphasis);
 }
 .itemDetail {
+  min-width: 0;
+  white-space: nowrap;
   color: var(--fg-subtle);
   overflow: hidden;
   text-overflow: ellipsis;

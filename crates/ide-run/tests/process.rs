@@ -204,6 +204,9 @@ fn stop_kills_whole_process_group() {
     let grandchild: i32 = out.trim().parse().expect("pid");
     assert!(alive(grandchild));
 
+    // The first Stop only asks the group to exit (and waits); the second one kills it.
+    h.pm.stop(id).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
     h.pm.stop(id).unwrap();
     wait_exit(&h, id, Duration::from_secs(10));
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -529,6 +532,30 @@ fn revoking_one_project_stops_only_its_runs() {
     h.pm.stop(theirs.id).unwrap();
 }
 
+/// Quitting the app kills what every project's runs started, forked children included (#1691).
+#[test]
+fn kill_all_stops_every_projects_process_trees() {
+    let h = harness();
+    let other = tempfile::tempdir().unwrap();
+    let (mine, chunks) = start(&h, &cfg("mine", "/bin/sh", &["-c", "sleep 30 & echo $!; wait"]));
+    let grandchild: i32 = wait_for(&chunks, "\n").trim().parse().expect("pid");
+    let theirs =
+        h.pm.start(
+            other.path(),
+            &cfg("theirs", "/bin/sh", &["-c", "sleep 30"]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(|_| {}),
+        )
+        .unwrap();
+    h.pm.kill_all();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while alive(grandchild) || h.pm.list().iter().any(|r| (r.id == mine || r.id == theirs.id) && r.running) {
+        assert!(Instant::now() < deadline, "a run survived kill_all");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 #[ignore = "requires CMake, CTest and a C++ compiler"]
 fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
@@ -545,7 +572,7 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
     assert!(h.root.path().join("build/.cmake/api/v1/query/client-openidea/codemodel-v2").exists());
     let root = h.root.path().canonicalize().unwrap();
     let configs = ide_run::detect(&root);
-    let target = configs.iter().find(|c| c.kind == "native").expect("File API executable");
+    let target = configs.iter().find(|c| c.kind == "cmake-application").expect("File API executable");
     assert_eq!(target.debug_adapter.as_deref(), Some("lldb-dap"));
     let sources = &target.extras.params["cmakeSources"];
     assert!(sources.lines().any(|s| s.ends_with("/main.cpp")));
@@ -605,6 +632,50 @@ fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
 }
 
 #[test]
+fn go_build_only_supports_multiple_packages_and_explicit_output() {
+    let h = harness();
+    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+        return;
+    };
+    std::fs::write(h.root.path().join("go.mod"), "module example.com/buildall\ngo 1.22\n").unwrap();
+    for name in ["one", "two"] {
+        let dir = h.root.path().join("cmd").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.go"), "package main\nfunc main() {}\n").unwrap();
+    }
+    let mut config = cfg("go-build-only", &go.to_string_lossy(), &["build", "./..."]);
+    config.kind = "go".into();
+    config.extras.params = BTreeMap::from([
+        ("goKind".into(), "build".into()),
+        ("scope".into(), "package".into()),
+        ("target".into(), "./...".into()),
+        ("runAfterBuild".into(), "false".into()),
+        ("outputDir".into(), "compiled output".into()),
+    ]);
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("compiled output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    std::fs::create_dir_all(h.root.path().join("explicit output")).unwrap();
+    config.args = vec!["build".into(), "-o=explicit output/".into(), "./...".into()];
+    let plan = ide_run::go::plan(h.root.path(), &config).unwrap().unwrap();
+    assert_eq!(plan.build.args, config.args);
+    assert!(plan.run.is_none());
+    let (id, output) = start(&h, &config);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&output, stderr));
+    for name in ["one", "two"] {
+        assert!(
+            h.root.path().join("explicit output").join(format!("{name}{}", std::env::consts::EXE_SUFFIX)).is_file()
+        );
+    }
+    config.args = vec!["build".into(), "-o".into(), "one-binary".into(), "./cmd/one".into()];
+    assert_eq!(ide_run::go::plan(h.root.path(), &config).unwrap().unwrap().build.args, config.args);
+}
+
+#[test]
 fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     let h = harness();
     let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
@@ -616,12 +687,12 @@ fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     std::fs::write(h.root.path().join("generate.go"), "//go:build ignore\n\npackage main\nfunc main() {}\n").unwrap();
     std::fs::write(
         h.root.path().join("demo_test.go"),
-        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if value()!=2 { t.Fatal(\"bad\") } }\n",
+        "package filetests\nimport \"testing\"\nfunc TestChosen(t *testing.T) { if helper()!=2 { t.Fatal(\"bad\") } }\n",
     )
     .unwrap();
     std::fs::write(
         h.root.path().join("other_test.go"),
-        "package filetests\nimport \"testing\"\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
+        "package filetests\nimport (\"testing\"; \"os\")\nvar initialized int\nfunc TestMain(m *testing.M) { initialized=value(); os.Exit(m.Run()) }\nfunc helper() int { return initialized }\nfunc TestOther(t *testing.T) { t.Fatal(\"must not run\") }\n",
     )
     .unwrap();
     let mut c = cfg("go-file", &go.to_string_lossy(), &["test", "-json", "demo_test.go"]);
@@ -634,7 +705,30 @@ fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
     assert!(!c.args.iter().any(|a| a.ends_with("generate.go") || a.ends_with("other_test.go")));
     let (id, out) = start(&h, &c);
-    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{}", text(&out, stderr));
+    assert_eq!(
+        wait_exit(&h, id, Duration::from_secs(60)),
+        Some(0),
+        "{} {} {:?}",
+        text(&out, stderr),
+        text(&out, stdout),
+        c.args
+    );
     assert!(text(&out, stdout).contains("TestChosen"));
     assert!(!text(&out, stdout).contains("TestOther"));
+    std::fs::write(
+        h.root.path().join("external_test.go"),
+        "package filetests_test\nimport t \"testing\"\nfunc TestExternal(\n t *t.T,\n) { if externalHelper()!=3 {t.Fail()} }\n",
+    ).unwrap();
+    std::fs::write(
+        h.root.path().join("external_helpers_test.go"),
+        "package filetests_test\nimport \"testing\"\nfunc externalHelper() int {return 3}\nfunc TestOutside(t *testing.T) {t.Fatal(\"must not run\")}\n",
+    ).unwrap();
+    c.args = vec!["test".into(), "-json".into(), "external_test.go".into()];
+    c.extras.params.insert("target".into(), "external_test.go".into());
+    ide_run::go::prepare_test_file(h.root.path(), &mut c).unwrap();
+    let (id, out) = start(&h, &c);
+    assert_eq!(wait_exit(&h, id, Duration::from_secs(60)), Some(0), "{} {}", text(&out, stderr), text(&out, stdout));
+    assert!(text(&out, stdout).contains("TestExternal"));
+    assert!(!text(&out, stdout).contains("TestChosen"));
+    assert!(!text(&out, stdout).contains("TestOutside"));
 }

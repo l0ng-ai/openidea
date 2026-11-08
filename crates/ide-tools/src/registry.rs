@@ -13,6 +13,8 @@ pub enum ToolKind {
     /// Loaded into another tool's process, e.g. a jdtls agent.
     Plugin,
     Formatter,
+    /// A command the IDE itself runs, e.g. the Dev Containers CLI.
+    Cli,
 }
 
 /// Where release archives come from.
@@ -112,7 +114,7 @@ impl ToolSpec {
 
 use Arch::{Arm64, X64};
 use Os::{Linux, Mac, Windows};
-use ToolKind::{Debugger, Formatter, LanguageServer, Plugin};
+use ToolKind::{Cli, Debugger, Formatter, LanguageServer, Plugin};
 
 const V: Option<(&str, &[&str])> = None;
 const JAVA: &[(&str, &str)] = &[("java", "Java is required (https://adoptium.net)")];
@@ -139,6 +141,17 @@ pub static TOOLS: &[ToolSpec] = &[
         version: ver("prettier"),
         needs: NODE,
         homepage: "https://prettier.io",
+    },
+    ToolSpec {
+        name: "devcontainer",
+        display: "Dev Containers CLI",
+        kind: Cli,
+        commands: &["devcontainer"],
+        method: Method::Npm { packages: &["@devcontainers/cli"] },
+        fallback: None,
+        version: ver("devcontainer"),
+        needs: NODE,
+        homepage: "https://github.com/devcontainers/cli",
     },
     ToolSpec {
         name: "oxfmt",
@@ -384,6 +397,35 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "laravel-lsp",
+        display: "Laravel LSP",
+        kind: LanguageServer,
+        commands: &["laravel-lsp"],
+        // Plain binaries per platform (`server-v*-<arch>-<os>[.exe]`).
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "laravel/lsp" },
+            assets: &[
+                rule(Mac, Arm64, "server-v*-arm64-darwin"),
+                rule(Mac, X64, "server-v*-x64-darwin"),
+                rule(Linux, Arm64, "server-v*-arm64-linux"),
+                rule(Linux, X64, "server-v*-x64-linux"),
+                rule(Windows, X64, "server-v*-x64-win32.exe"),
+            ],
+            locate: &[
+                "laravel-lsp",
+                "server-v*-arm64-darwin",
+                "server-v*-x64-darwin",
+                "server-v*-arm64-linux",
+                "server-v*-x64-linux",
+                "server-v*-x64-win32",
+            ],
+        },
+        fallback: None,
+        version: ver("laravel-lsp"),
+        homepage: "https://github.com/laravel/lsp",
+        needs: &[],
+    },
+    ToolSpec {
         name: "gopls",
         display: "gopls",
         kind: LanguageServer,
@@ -619,6 +661,30 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "kmp-lsp",
+        display: "kmp-lsp",
+        kind: LanguageServer,
+        commands: &["kmp-lsp"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "Hessesian/kmp-lsp" },
+            // These distributions include the native JAR indexer next to the server.
+            // The single-binary .gz and Windows .zip assets do not.
+            assets: &[
+                rule(Mac, Arm64, "kmp-lsp-darwin-aarch64.tar.gz"),
+                rule(Mac, X64, "kmp-lsp-darwin-x86_64.tar.gz"),
+                rule(Linux, Arm64, "kmp-lsp-linux-aarch64.tar.gz"),
+                rule(Linux, X64, "kmp-lsp-linux-x86_64.tar.gz"),
+                rule(Windows, Arm64, "kmp-lsp-win32-arm64-*.vsix"),
+                rule(Windows, X64, "kmp-lsp-win32-x64-*.vsix"),
+            ],
+            locate: &["kmp-lsp"],
+        },
+        fallback: None,
+        version: ver("kmp-lsp"),
+        homepage: "https://github.com/Hessesian/kmp-lsp",
+        needs: &[],
+    },
+    ToolSpec {
         name: "java-debug",
         display: "Java Debugger (Microsoft java-debug)",
         kind: Debugger,
@@ -646,12 +712,13 @@ pub static TOOLS: &[ToolSpec] = &[
         // Equinox removed getModuleClassLoader(boolean), breaking lombok.config lookup (lombok#4059);
         // ECJ 3.46.200 keeps the constructor call in a constructor's statements, which
         // @SneakyThrows / @NonNull must not wrap or precede (lombok#4089).
-        // Return to Maven Central once an official release includes both.
+        // Builders on compact record constructors need the patch in java/lombok/patches.
+        // Return to Maven Central once an official release includes all of these fixes.
         // Source commit, build instructions and checksum: java/lombok/README.md.
         method: Method::Bundled {
-            filename: "lombok-1.18.48-openidea.2.jar",
-            version: "1.18.48-openidea.2",
-            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.2.jar"),
+            filename: "lombok-1.18.48-openidea.3.jar",
+            version: "1.18.48-openidea.3",
+            bytes: include_bytes!("../../../java/lombok/lombok-1.18.48-openidea.3.jar"),
         },
         fallback: None,
         version: V,
@@ -1019,8 +1086,8 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        // The host selects the formatter of each file (Prettier or oxfmt).
-        for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter)) {
+        // The host selects the formatter of each file (Prettier or oxfmt) and runs its own CLIs.
+        for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter | Cli)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
                 "{} / {} is not referenced by languages/*.toml",

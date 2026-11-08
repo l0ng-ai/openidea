@@ -8,6 +8,7 @@ activation = ["on-command:*"]
 
 [capabilities]
 required = ["project.read"]
+optional = ["process:git"]
 
 [[contributes.commands]]
 id = "echo"
@@ -34,6 +35,22 @@ id = "root"
 title = "root"
 
 [[contributes.commands]]
+id = "fsread"
+title = "fsread"
+
+[[contributes.commands]]
+id = "read-dir"
+title = "List a directory outside the project"
+
+[[contributes.commands]]
+id = "fswrite"
+title = "fswrite"
+
+[[contributes.commands]]
+id = "projwrite"
+title = "projwrite"
+
+[[contributes.commands]]
 id = "insert"
 title = "insert"
 
@@ -48,3 +65,43 @@ title = "subscribe"
 [[contributes.commands]]
 id = "diagnose"
 title = "diagnose"
+
+[[contributes.commands]]
+id = "child"
+title = "child"
+
+[[contributes.commands]]
+id = "envrun"
+title = "envrun"
+
+[[contributes.commands]]
+id = "envstart"
+title = "envstart"
+
+[[contributes.commands]]
+id = "envdeny-run"
+title = "envdeny-run"
+
+[[contributes.commands]]
+id = "envdeny-start"
+title = "envdeny-start"
+
+[[contributes.commands]]
+id = "childkeep"
+title = "childkeep"
+
+[[contributes.commands]]
+id = "childpoll"
+title = "childpoll"
+
+[[contributes.commands]]
+id = "childdrop"
+title = "childdrop"
+
+[[contributes.commands]]
+id = "childtrap"
+title = "childtrap"
+
+[[contributes.commands]]
+id = "patient"
+title = "patient"

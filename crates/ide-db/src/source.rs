@@ -20,6 +20,8 @@ pub enum DbDriver {
     /// Microsoft SQL Server.
     SqlServer,
     Clickhouse,
+    /// Oracle Database (via Oracle Instant Client).
+    Oracle,
 }
 
 impl DbDriver {
@@ -30,6 +32,7 @@ impl DbDriver {
             DbDriver::Mysql => Some(3306),
             DbDriver::SqlServer => Some(1433),
             DbDriver::Clickhouse => Some(8123),
+            DbDriver::Oracle => Some(1521),
         }
     }
 }
@@ -85,6 +88,8 @@ pub struct DbOptions {
     pub auto_disconnect_secs: Option<u32>,
     /// PostgreSQL: show only the configured database, its schemas right under the data source.
     pub single_database: bool,
+    /// Oracle: directory of the Oracle Instant Client (empty: `ORACLE_HOME` / system search path).
+    pub instant_client: String,
 }
 
 /// Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`.
@@ -261,6 +266,7 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
         "sqlserver" | "mssql" | "mssqlserver" => Some(DbDriver::SqlServer),
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
         "clickhouse" | "http" | "https" => Some(DbDriver::Clickhouse),
+        "oracle" | "oracledb" => Some(DbDriver::Oracle),
         _ => None,
     }
 }
@@ -273,6 +279,12 @@ pub fn parse_url(raw: &str) -> IdeResult<ParsedUrl> {
     let url = url.strip_prefix("jdbc:").or_else(|| url.strip_prefix("JDBC:")).unwrap_or(url);
     let (scheme, rest) = url.split_once(':').ok_or_else(bad)?;
     let driver = scheme_driver(scheme).ok_or_else(bad)?;
+    // JDBC thin URLs: `jdbc:oracle:thin:@//host:port/service` (after the `jdbc:` prefix).
+    let rest = if driver == DbDriver::Oracle {
+        rest.strip_prefix("thin:@").or_else(|| rest.strip_prefix("thin:/@")).unwrap_or(rest)
+    } else {
+        rest
+    };
     if driver == DbDriver::Sqlite {
         let file = rest.strip_prefix("//").unwrap_or(rest);
         let file = file.split('?').next().unwrap_or_default();
@@ -540,7 +552,11 @@ mod tests {
         assert_eq!(parse_url("jdbc:redshift://r:5439/dev").unwrap().driver, Some(DbDriver::Postgres));
         assert_eq!(parse_url("tidb://h:4000").unwrap().driver, Some(DbDriver::Mysql));
         assert_eq!(parse_url("sqlite:/tmp/a.db").unwrap().file.as_deref(), Some("/tmp/a.db"));
-        assert!(parse_url("oracle://x").is_err());
+        let u = parse_url("oracle://scott:tiger@db.local:1521/ORCLPDB1").unwrap();
+        assert_eq!(u.driver, Some(DbDriver::Oracle));
+        assert_eq!((u.host.as_str(), u.port, u.database.as_str()), ("db.local", Some(1521), "ORCLPDB1"));
+        assert_eq!((u.user.as_str(), u.password.as_deref()), ("scott", Some("tiger")));
+        assert_eq!(parse_url("oracledb://hr@db.local/hrdb").unwrap().driver, Some(DbDriver::Oracle));
         assert!(parse_url("postgres://h:99999/db").is_err());
     }
 

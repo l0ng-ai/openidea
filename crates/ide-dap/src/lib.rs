@@ -19,6 +19,7 @@ mod session;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
+use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
 use parking_lot::Mutex;
@@ -300,6 +301,8 @@ pub struct DebugManager {
     exception_choices: Mutex<BTreeMap<String, bool>>,
     function_breakpoints: Mutex<Vec<FunctionBreakpoint>>,
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
+    /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
+    stopping: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
 }
 
 /// Whether the debugged project depends on the Flutter SDK, so it must go
@@ -510,11 +513,51 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
     }
 }
 
+/// States of a file's line breakpoints that no session has been sent.
+fn unsent(breakpoints: &[Breakpoint]) -> Vec<BreakpointState> {
+    breakpoints
+        .iter()
+        .map(|b| BreakpointState {
+            line: b.line,
+            verified: false,
+            message: (!b.enabled).then(|| "Disabled".to_owned()),
+        })
+        .collect()
+}
+
 /// States for breakpoints no session has verified yet.
 fn unverified(enabled: impl Iterator<Item = bool>) -> Vec<BreakpointState> {
     enabled
         .map(|e| BreakpointState { line: 0, verified: false, message: (!e).then(|| "Disabled".to_owned()) })
         .collect()
+}
+
+/// Delve compiles the debuggee to `__debug_bin` in the session's cwd (on Windows
+/// `__debug_bin.exe` plus `__debug_bin.exe<digits>` in DAP mode) and removes it on a
+/// graceful exit — a shutdown it doesn't always reach, so the files pile up. Sweep
+/// the leftovers once the session is down. Runs after `session_closed`, so Delve
+/// has already exited or been killed and holds no file locks; a leftover of a
+/// still-building run is removed on that run's own shutdown.
+fn remove_delve_binaries(cwd: &Path) {
+    let Ok(entries) = std::fs::read_dir(cwd) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        // Windows writes `__debug_bin.exe` (and `.exe<digits>` in DAP mode); other
+        // platforms keep the bare name. Suffixes like `.go` are user files.
+        let suffix = name.strip_prefix("__debug_bin");
+        let leftover = suffix.is_some_and(|s| {
+            s.is_empty()
+                || s == ".exe"
+                || (s.starts_with(".exe") && s[".exe".len()..].chars().all(|c| c.is_ascii_digit()))
+        });
+        if leftover
+            && entry.file_type().is_ok_and(|t| t.is_file())
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            tracing::debug!("could not remove Delve leftover {}: {e}", entry.path().display());
+        }
+    }
 }
 
 pub(crate) fn variable_from(v: &Value) -> Variable {
@@ -546,6 +589,7 @@ impl DebugManager {
             exception_choices: Mutex::default(),
             function_breakpoints: Mutex::default(),
             data_breakpoints: Mutex::default(),
+            stopping: Mutex::default(),
         })
     }
 
@@ -877,12 +921,20 @@ impl DebugManager {
             let _ = tokio::time::timeout(INIT_TIMEOUT, initialized.wait_for(|v| *v)).await;
         }
 
-        let files: Vec<(PathBuf, Vec<Breakpoint>)> =
-            self.breakpoints.lock().iter().map(|(p, b)| (p.clone(), b.clone())).collect();
+        // A fresh adapter has no breakpoints, so a file with none enabled needs no request; the
+        // others go out together, as VS Code sends them, instead of one round trip per file.
+        let (files, idle): (Vec<_>, Vec<_>) = self
+            .breakpoints
+            .lock()
+            .iter()
+            .map(|(p, b)| (p.clone(), b.clone()))
+            .partition(|(_, b)| b.iter().any(|b| b.enabled));
+        let sent = join_all(files.iter().map(|(path, bps)| s.send_breakpoints(path, bps, None))).await;
         // Breakpoint states follow the owner's first session.
         let first = self.live_sessions().into_iter().find(|f| f.owner.key == s.owner.key).map(|f| f.id) == Some(s.id);
-        for (path, bps) in files {
-            match s.send_breakpoints(&path, &bps, None).await {
+        let idle = idle.into_iter().map(|(path, bps)| (path, Ok(unsent(&bps))));
+        for (path, result) in files.into_iter().map(|(path, _)| path).zip(sent).chain(idle) {
+            match result {
                 Ok(states) => {
                     if first {
                         self.states.lock().insert(path.clone(), states);
@@ -945,21 +997,72 @@ impl DebugManager {
 
     /// Ends a session: `terminate` (when asked and supported) → `disconnect` → kill.
     pub(crate) async fn shutdown(&self, s: &Arc<Session>, terminate: bool) {
+        // java-debug runs the program itself and pipes its stdout over DAP. A `disconnect`
+        // ends that DAP session, so every line the program writes while shutting down is lost.
+        // Ask the program to exit ourselves and keep the adapter attached until it has drained
+        // the console (`terminated`), as IDEA does with the process it owns.
+        let pid = s.debuggee_pid.load(Ordering::Acquire);
+        let own_terminate = terminate && s.request == "launch" && pid > 0;
+        let graceful = terminate && s.request == "launch" && s.supports("supportsTerminateRequest");
         if !s.conn.is_closed() {
-            if terminate && s.request == "launch" && s.supports("supportsTerminateRequest") {
+            if graceful {
                 let _ = s.conn.request_timeout("terminate", json!({ "restart": false }), SHUTDOWN_TIMEOUT).await;
             }
+            if !graceful && !own_terminate {
+                let _ = s
+                    .conn
+                    .request_timeout(
+                        "disconnect",
+                        json!({ "restart": false, "terminateDebuggee": s.request == "launch" }),
+                        SHUTDOWN_TIMEOUT,
+                    )
+                    .await;
+            }
+        }
+        if own_terminate && !graceful {
+            // Signal before anything else: waiting on a request the adapter may not answer
+            // would delay the shutdown the console is supposed to show.
+            crate::session::signal_debuggee(s, false);
+        }
+        if graceful {
+            // java-debug sends `terminated` only after it has drained the program's console
+            // (it waits up to 5 s for the output pump). Close on the process id alone and the
+            // last shutdown lines are dropped, so wait for that event here.
+            let deadline = std::time::Instant::now() + crate::session::DEBUGGEE_EXIT_WAIT;
+            while !s.terminated.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        // An adapter answers `disconnect` before the program it launched has exited, and that
+        // program keeps its port until it is gone. Reporting the session as terminated then
+        // lets Run start again into an occupied port, so wait for the program first — with the
+        // connection still open, so a second Stop can find the session and kill it.
+        crate::session::wait_for_debuggee(s, terminate).await;
+        if terminate && s.request == "launch" {
+            // The adapter reports `terminated` only after it has drained the program's console
+            // (java-debug waits up to 5 s for the pump): closing before that drops the last
+            // shutdown lines from the console.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            while !s.terminated.load(Ordering::Acquire) && !s.conn.is_closed() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+        if graceful && !s.conn.is_closed() {
             let _ = s
                 .conn
                 .request_timeout(
                     "disconnect",
-                    json!({ "restart": false, "terminateDebuggee": s.request == "launch" }),
+                    json!({ "restart": false, "terminateDebuggee": false }),
                     SHUTDOWN_TIMEOUT,
                 )
                 .await;
         }
         s.conn.close();
         self.session_closed(s);
+        if s.adapter == "delve" && s.spec.server_host.is_none() {
+            let cwd = s.spec.cwd.clone();
+            tokio::task::spawn_blocking(move || remove_delve_binaries(&cwd));
+        }
     }
 
     /// Breakpoints are kept per file even without a session and sent on start.
@@ -990,16 +1093,7 @@ impl DebugManager {
                 Err(e) => tracing::debug!("setBreakpoints on session {} failed: {e}", s.id.0),
             }
         }
-        let states = result.unwrap_or_else(|| {
-            breakpoints
-                .iter()
-                .map(|b| BreakpointState {
-                    line: b.line,
-                    verified: false,
-                    message: (!b.enabled).then(|| "Disabled".to_owned()),
-                })
-                .collect()
-        });
+        let states = result.unwrap_or_else(|| unsent(&breakpoints));
         self.states.lock().insert(path, states.clone());
         Ok(states)
     }
@@ -1266,6 +1360,16 @@ impl DebugManager {
         Ok(())
     }
 
+    /// Types `text` into the terminal the session's program runs in (see [`ide_core::event::DebugEvent::ProgramInput`]).
+    pub fn send_input(&self, s: DebugSessionId, text: &str) -> IdeResult<()> {
+        let session = self.session(s)?;
+        let mut program = session.program.lock();
+        let program = program
+            .as_mut()
+            .ok_or_else(|| IdeError::invalid("The program doesn't read input from the debug console"))?;
+        program.write(text).map_err(|e| IdeError::internal(format!("cannot write to the program: {e}")))
+    }
+
     /// Flutter's DAP adapter: injects the changed sources into the running app.
     /// Not part of the DAP standard; adapters that do not know the request reject it.
     pub async fn hot_reload(&self, s: DebugSessionId) -> IdeResult<()> {
@@ -1317,13 +1421,26 @@ impl DebugManager {
     /// Sends empty breakpoint lists (line, function, data) to `session` until its next
     /// stop, when the stored ones are restored. `except` is left to the caller.
     async fn suspend_breakpoints(&self, session: &Arc<Session>, except: Option<&Path>) -> IdeResult<()> {
-        let files: Vec<PathBuf> = self.breakpoints.lock().keys().cloned().collect();
-        for path in files {
-            if Some(path.as_path()) == except {
-                continue;
+        // While paused the adapter holds the stored lists: only files with something enabled change.
+        let files: Vec<PathBuf> = self
+            .breakpoints
+            .lock()
+            .iter()
+            .filter(|(path, bps)| Some(path.as_path()) != except && bps.iter().any(|b| b.enabled))
+            .map(|(path, _)| path.clone())
+            .collect();
+        let sent = join_all(files.iter().map(|path| session.send_breakpoints(path, &[], None))).await;
+        let mut failed = None;
+        for (path, result) in files.into_iter().zip(sent) {
+            match result {
+                Ok(_) => {
+                    session.pending_restore.lock().files.insert(path);
+                }
+                Err(e) => failed = failed.or(Some(e)),
             }
-            session.send_breakpoints(&path, &[], None).await?;
-            session.pending_restore.lock().files.insert(path);
+        }
+        if let Some(e) = failed {
+            return Err(e.into());
         }
         if !self.function_breakpoints.lock().is_empty() && session.supports("supportsFunctionBreakpoints") {
             session.send_function_breakpoints(&[]).await?;
@@ -1339,9 +1456,11 @@ impl DebugManager {
     /// Re-sends what [`suspend_breakpoints`](Self::suspend_breakpoints) / run to cursor replaced.
     pub(crate) async fn restore_breakpoints(&self, session: &Arc<Session>) {
         let pending = std::mem::take(&mut *session.pending_restore.lock());
-        for path in pending.files {
-            let bps = self.stored_breakpoints(&path);
-            if let Err(e) = session.send_breakpoints(&path, &bps, None).await {
+        let files: Vec<(PathBuf, Vec<Breakpoint>)> =
+            pending.files.into_iter().map(|path| (path.clone(), self.stored_breakpoints(&path))).collect();
+        let sent = join_all(files.iter().map(|(path, bps)| session.send_breakpoints(path, bps, None))).await;
+        for ((path, _), result) in files.iter().zip(sent) {
+            if let Err(e) = result {
                 tracing::debug!("restoring breakpoints of {} failed: {e}", path.display());
             }
         }
@@ -1508,10 +1627,40 @@ impl DebugManager {
         }
     }
 
-    /// Stops a session and its child sessions.
+    /// Stops every debug session started from `root` or below — closing a project stops the
+    /// programs it launched even when the session's owner key does not name the window doing
+    /// the closing (window groups, auxiliary windows).
+    pub async fn stop_under(&self, root: &Path) {
+        let ids: Vec<DebugSessionId> =
+            self.live_sessions().into_iter().filter(|s| s.spec.cwd.starts_with(root)).map(|s| s.id).collect();
+        tracing::info!(root = %root.display(), sessions = ids.len(), "closing project: stopping debug sessions");
+        for id in ids {
+            if let Err(e) = self.stop(id).await {
+                tracing::debug!("debug session {id:?} did not stop: {e}");
+            }
+        }
+    }
+
+    /// Stops a session and its child sessions. A second Stop while the first one waits kills
+    /// the program instead of waiting for it — even after the adapter dropped the session.
     pub async fn stop(&self, s: DebugSessionId) -> IdeResult<()> {
+        {
+            let in_flight = self.stopping.lock();
+            if let Some(session) = in_flight.get(&s) {
+                session.stop_force.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
         let session = self.session(s)?;
-        let children: Vec<Arc<Session>> = self.live_sessions().into_iter().filter(|c| c.parent == Some(s)).collect();
+        self.stopping.lock().insert(s, session.clone());
+        let result = self.stop_tree(session).await;
+        self.stopping.lock().remove(&s);
+        result
+    }
+
+    async fn stop_tree(&self, session: Arc<Session>) -> IdeResult<()> {
+        let children: Vec<Arc<Session>> =
+            self.live_sessions().into_iter().filter(|c| c.parent == Some(session.id)).collect();
         for child in children {
             self.shutdown(&child, true).await;
         }

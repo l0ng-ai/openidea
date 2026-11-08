@@ -1,15 +1,16 @@
 /** "New ▸ <template>" dialog: template chooser, then name + kind (IDEA's New Class dialog). */
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import { relativePath, useProject } from "@/platform/project";
+import { isImeKey } from "@/platform/ime";
 import { notifications } from "@/workbench/contributions";
 import { Dialog, Icon, Input, List, listNavigate } from "@/ui";
-import { createFromTemplate, packageFor } from "./create";
+import { createFromTemplate, packageFor, packageStyleFor } from "./create";
 import { planFile, withKind, type FileTemplate } from "./model";
 import { useFileTemplates } from "./store";
 import styles from "./NewFileDialog.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 
 interface Request {
   directory: string;
@@ -70,6 +71,7 @@ function TemplateStep({
   const [active, setActive] = useState(0);
   const root = useProject((s) => s.project?.root ?? "");
   const onKeyDown = (e: KeyboardEvent) => {
+    if (isImeKey(e.nativeEvent)) return;
     const next = listNavigate(e.key, { items: templates, active, wrap: true });
     if (next !== null) {
       e.preventDefault();
@@ -117,7 +119,19 @@ function NameStep({
   initialName?: string;
   initialKind?: string;
 }) {
-  const [name, setName] = useState(initialName ?? "");
+  const [name, setName] = useState(template.fileName ?? initialName ?? "");
+  const variables = template.variables ?? [];
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(variables.map((v) => [v.name, ""])),
+  );
+  const active = useRef(true);
+  const submitting = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
   const [kind, setKind] = useState(() =>
     Math.max(
       0,
@@ -129,30 +143,46 @@ function NameStep({
   const [pkg, setPkg] = useState("");
   const root = useProject((s) => s.project?.root ?? "");
   const effective = withKind(template, template.kinds[kind]);
-  const plan = name.trim() ? planFile(effective, directory, name) : null;
+  const plan = planFile(effective, directory, name);
+  const packageStyle = packageStyleFor(effective);
 
   useEffect(() => {
-    if (!template.packageStyle) return;
+    if (!packageStyle) return;
     let live = true;
-    void packageFor(template, plan?.directory ?? directory).then((p) => live && setPkg(p));
+    void packageFor(withKind(template, template.kinds[kind]), plan?.directory ?? directory).then(
+      (p) => live && setPkg(p),
+    );
     return () => {
       live = false;
     };
-  }, [template, directory, plan?.directory]);
+  }, [template, kind, directory, plan?.directory, packageStyle]);
 
   const submit = async () => {
-    if (busy) return;
+    if (submitting.current) return;
     if (!plan) {
-      setError(name.trim() ? "Invalid name" : "Enter a name");
+      setError(tx(name.trim() ? "Invalid name" : "Enter a name"));
       return;
     }
+    if (variables.some((v) => !values[v.name]?.trim())) {
+      setError(tx("Enter a value for each variable"));
+      return;
+    }
+    submitting.current = true;
     setBusy(true);
     let created = false;
     try {
-      await createFromTemplate(template, template.kinds[kind] ?? template.kinds[0]!, directory, name, () => {
-        created = true;
-        close();
-      });
+      await createFromTemplate(
+        template,
+        template.kinds[kind] ?? template.kinds[0]!,
+        directory,
+        name,
+        () => {
+          created = true;
+          if (active.current) close();
+        },
+        values,
+        () => !active.current,
+      );
     } catch (e) {
       if (created) {
         notifications().notify({
@@ -163,11 +193,20 @@ function NameStep({
         return;
       }
       setError(e instanceof Error ? e.message : String(e));
+      submitting.current = false;
       setBusy(false);
     }
   };
 
+  const autoCreate = useEffectEvent(submit);
+  useEffect(() => {
+    if (template.fileName === undefined || variables.length) return;
+    const timer = setTimeout(() => void autoCreate(), 0);
+    return () => clearTimeout(timer);
+  }, [template.fileName, variables.length]);
+
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (isImeKey(e.nativeEvent)) return;
     if (template.kinds.length > 1) {
       const next = listNavigate(e.key === "ArrowUp" || e.key === "ArrowDown" ? e.key : "", {
         items: template.kinds,
@@ -195,20 +234,50 @@ function NameStep({
       width={380}
       position="top"
       aria-label={tx`New ${template.name}`}
+      className={variables.length ? styles.variableDialog : undefined}
+      buttons={
+        variables.length
+          ? [
+              { label: "Cancel", role: "cancel" },
+              { label: "Create", role: "default", onClick: () => void submit(), disabled: busy },
+            ]
+          : undefined
+      }
     >
       <div className={styles.form}>
-        <Input
-          data-autofocus
-          value={name}
-          invalid={!!error}
-          placeholder={effective.extension ? tx`Name (.${effective.extension})` : "File name with extension"}
-          aria-label="Name"
-          onChange={(e) => {
-            setName(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={onKeyDown}
-        />
+        {template.fileName === undefined && (
+          <Input
+            disabled={busy}
+            data-autofocus
+            value={name}
+            invalid={!!error}
+            placeholder={effective.extension ? tx`Name (.${effective.extension})` : "File name with extension"}
+            aria-label="Name"
+            onChange={(e) => {
+              setName(e.target.value);
+              setError(null);
+            }}
+            onKeyDown={onKeyDown}
+          />
+        )}
+        {variables.map((v, i) => (
+          <VerbatimTextContext.Provider key={v.name} value={true}>
+            <label className={styles.field}>
+              {v.prompt}
+              <Input
+                data-autofocus={template.fileName !== undefined && i === 0 ? true : undefined}
+                aria-label={v.prompt}
+                value={values[v.name] ?? ""}
+                disabled={busy}
+                onChange={(e) => {
+                  setValues((s) => ({ ...s, [v.name]: e.target.value }));
+                  setError(null);
+                }}
+                onKeyDown={onKeyDown}
+              />
+            </label>
+          </VerbatimTextContext.Provider>
+        ))}
         {template.kinds.length > 1 && (
           <div className={styles.kinds} role="listbox" aria-label={tx("Kind")}>
             {template.kinds.map((k, i) => (
@@ -233,7 +302,7 @@ function NameStep({
           {error ?? (
             <>
               {where}
-              {template.packageStyle && pkg ? ` · package ${pkg}` : ""}
+              {packageStyle && pkg ? (packageStyle === "php" ? ` · namespace ${pkg}` : ` · package ${pkg}`) : ""}
             </>
           )}
         </div>

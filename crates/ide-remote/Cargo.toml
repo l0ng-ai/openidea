@@ -1,6 +1,6 @@
 [package]
 name = "ide-remote"
-description = "Remote work over SSH: SFTP deployment (mappings, upload, download, sync) and run targets"
+description = "Remote work over SSH: SFTP deployment (mappings, upload, download, sync) and run targets (SSH, Docker, Compose)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,6 +10,7 @@ ide-core.workspace = true
 ide-ssh.workspace = true
 ide-run.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 specta.workspace = true
 tokio.workspace = true
 tracing.workspace = true

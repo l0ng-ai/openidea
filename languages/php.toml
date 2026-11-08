@@ -26,7 +26,18 @@ args = ["language-server"]
 root-markers = ["composer.json", ".phpactor.json"]
 install-hint = "Install phpactor (https://phpactor.readthedocs.io/en/master/usage/standalone.html)"
 
+# Laravel projects only: hover, definition and completion inside
+# config('…'), route('…') and view('…'). Last: Intelephense keeps PHP hover,
+# rename and symbols. https://github.com/laravel/lsp
+[[language-servers]]
+name = "laravel-lsp"
+command = "laravel-lsp"
+args = ["--stdio"]
+root-markers = ["artisan"]
+require-root-marker = true
+install-hint = "composer global require laravel/lsp"
+
 [debugger]
 adapter = "php-debug"
 command = "php-debug-adapter"
-install-hint = "Install vscode-php-debug (Xdebug) as `php-debug-adapter` (e.g. via mason.nvim) and enable Xdebug"
+install-hint = "Install PHP Debug (Xdebug) in Settings › Languages & Frameworks › Language Servers, and enable Xdebug"

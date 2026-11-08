@@ -1,14 +1,18 @@
 .session {
+  --session-content-width: var(--agent-conversation-width);
+  --session-card-width: 80%;
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  background: var(--bg-editor);
+  background: var(--bg-app);
   color: var(--fg);
+  font-size: var(--fs-ui);
 }
 
 .conversation {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -28,13 +32,6 @@
 }
 .docked .changes {
   width: auto;
-}
-
-/* The conversation hugs its content; spare space stays below the composer
-   instead of inside the chat. */
-.streamArea,
-.stream {
-  flex: 0 1 auto;
 }
 
 .header {
@@ -61,83 +58,37 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.headerDetail {
+.header > .headerSpacer {
   flex: 1 1 0;
-  min-width: 0;
+}
+.providerIcon {
+  color: var(--fg-muted);
+}
+
+/* The task's state, just above the composer; the header keeps only the actions. */
+.statusBar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 2px;
   color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
-.headerText {
+.statusText {
+  flex: 1 1 0;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.providerIcon {
-  color: var(--fg-muted);
-}
 .muted {
   color: var(--fg-subtle);
 }
 
-/* Pending permission: an editor notification banner. A long question (AskUserQuestion) wraps,
-   scrolling past a third of the height; the answers follow it, wrapping too. */
-.banner {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 4px 8px;
-  min-height: 36px;
-  padding: 9px 12px;
-  background: var(--bg-feedback-warning);
-  border-bottom: 1px solid var(--border-feedback-warning);
-  color: var(--fg-strong);
-}
-.banner > svg {
-  flex: none;
-  margin-top: 1px;
-}
-.bannerText {
-  flex: 1 1 240px;
-  min-width: 0;
-  max-height: 33vh;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.bannerSpacer {
-  flex: 1;
-}
-.bannerActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin-left: auto;
-}
-.bannerLink {
-  flex: none;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.bannerLink:hover:not(:disabled) {
-  color: var(--link-hover);
-  text-decoration: underline;
-}
-.bannerLink:disabled {
-  color: var(--fg-subtle);
-  cursor: default;
-}
-
 /* The conversation with its find bar. */
 .streamArea {
+  min-width: 0;
   position: relative;
   flex: 1;
   min-height: 0;
@@ -148,45 +99,206 @@
 .stream {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 14px 16px 8px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-anchor: none;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+}
+/* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
+.stream > * {
+  flex: none;
+  min-width: 0;
+  width: min(100%, var(--session-content-width));
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+.conversationRow {
+  min-width: 0;
+}
+/* Keep turns distinct and the work within a turn close to its author. */
+.stream > * + * {
+  margin-top: var(--space-4);
+}
+.stream > [data-process] + [data-process] {
+  margin-top: var(--space-2);
 }
 .stream:focus {
   outline: none;
 }
-/* Skip off-screen output layout; editable messages must repaint immediately when focus/content changes. */
-.stream > :not(.message):not(details) {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 80px;
+/* Scrolled up: one click back to the latest message, floating over the stream's end. */
+.jumpToLatest {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-2);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-small);
+  height: var(--h-control-small);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-toolbar-button);
+  background: var(--bg-app);
+  color: var(--fg-muted);
+  cursor: pointer;
 }
-
+.jumpToLatest:hover {
+  background: var(--bg-hover);
+}
 /* Your message with its actions, shown on hover. */
 .message {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
-.messageMeta {
+/* Keep the author attached to the message. */
+.messageHead {
   display: flex;
   align-items: center;
-  min-height: 20px;
-  padding-left: 12px;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  min-height: var(--h-control-small);
+  margin-bottom: calc(var(--space-2) / 2);
+}
+.messageTime {
+  -webkit-user-select: none;
+  user-select: none;
+  color: var(--fg-subtle);
   font-size: var(--fs-small);
+  white-space: nowrap;
+}
+.messageHead > .role {
+  margin-bottom: 0;
+}
+/* User cards and their footers share a right edge. */
+.userMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.userMessage > .user {
+  width: fit-content;
+  max-width: min(var(--session-card-width), 720px);
+}
+.userMessage > .messageHead,
+.userMessage > .messageFooter {
+  justify-content: flex-end;
+}
+/* The actions and time below a message, in flow so they never cover the next entry. */
+.messageFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--h-control-small);
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+/* Who wrote the message. */
+.role {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.agentMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.agentAuthor {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-control-small);
+}
+.agentAuthor > .role {
+  margin-bottom: 0;
+}
+.agentAuthor + * {
+  margin-top: calc(var(--space-2) / 2);
+}
+.conversationRow > .process,
+.conversationRow > .permissionLine {
+  max-width: 100%;
+}
+/* Replies read as plain text on the panel, like other tool-window content. */
+.agentCard {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 640px) {
+  .stream {
+    --session-card-width: 96%;
+  }
 }
 .messageActions {
   display: inline-flex;
-  gap: 2px;
-  margin-left: 6px;
+  gap: 4px;
+  max-width: 100%;
+  flex-wrap: wrap;
   opacity: 0;
   pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
 }
+.messageFooter > .messageTime {
+  opacity: 0;
+}
+.conversationRow:nth-last-child(1 of [data-message]) .messageFooter > .messageTime,
+.message:hover .messageFooter > .messageTime,
+.agentMessage:hover .messageFooter > .messageTime,
+.message:focus-within .messageFooter > .messageTime,
+.agentMessage:focus-within .messageFooter > .messageTime,
+.conversationRow:nth-last-child(1 of [data-message]) .messageActions,
 .message:hover .messageActions,
+.reply:hover .messageActions,
+.agentMessage:hover .messageActions,
+.agentMessage:focus-within .messageActions,
+.message:focus-within .messageActions,
+.reply:focus-within .messageActions,
+.messageActions[data-copied],
 .messageActions:focus-within {
   opacity: 1;
   pointer-events: auto;
+}
+
+.reply {
+  position: relative;
+}
+.replyFooter {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  min-height: 24px;
+  padding-top: 2px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (hover: none) {
+  .messageActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .replyFooter {
+    position: static;
+    margin-top: 4px;
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .findBar {
@@ -215,9 +327,13 @@
 }
 
 .user {
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--accent);
-  color: var(--fg-strong);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: var(--radius-tab);
+  background: var(--bg-hover);
+  color: var(--fg);
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -250,7 +366,7 @@
 }
 
 .markdown {
-  line-height: 1.55;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .markdown :global(p) {
@@ -274,11 +390,16 @@
   overflow: auto;
 }
 .markdown :global(pre code) {
+  display: block;
   padding: 0;
   background: none;
 }
-.markdown :global(pre) {
+.codeBlock {
   position: relative;
+  margin: 0 0 8px;
+}
+.codeBlock > :global(pre) {
+  margin: 0;
 }
 .codeCopy {
   position: absolute;
@@ -296,13 +417,45 @@
   color: var(--fg-secondary);
   cursor: pointer;
   opacity: 0;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.markdown :global(pre:hover) .codeCopy,
+.codeBlock:hover > .codeCopy,
+.markdown :global([data-mermaid]:hover) .codeCopy,
 .codeCopy:focus-visible {
   opacity: 1;
 }
 .codeCopy:hover {
   background: var(--bg-hover);
+}
+/* Mermaid diagrams: the source stays until the diagram is drawn (and next to an
+   error), and the Copy button lives on the block — the drawn diagram hides the
+   code block that would otherwise carry it. */
+.markdown :global([data-mermaid]) {
+  position: relative;
+  margin: 0 0 8px;
+}
+.markdown :global([data-mermaid] > pre) {
+  margin: 0;
+}
+.markdown :global([data-mermaid-state="ok"] > pre) {
+  display: none;
+}
+.markdown :global(.mermaid-output) {
+  overflow: hidden;
+  text-align: center;
+}
+.markdown :global([data-mermaid-state="error"] > .mermaid-output) {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  text-align: left;
+  white-space: pre-wrap;
 }
 .fileLink {
   color: var(--link);
@@ -385,8 +538,28 @@
   display: none;
 }
 .thought summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--h-row);
   color: var(--fg-muted);
   font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.thought summary:hover {
+  color: var(--fg);
+}
+.thoughtChevron {
+  flex: none;
+}
+.thought[open] .thoughtChevron {
+  transform: rotate(90deg);
+}
+.thoughtBody {
+  margin-top: var(--space-2);
+  color: var(--fg-secondary);
 }
 .thoughtText {
   margin-top: 4px;
@@ -401,23 +574,33 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 2px 8px;
-  margin-left: -8px;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
   border-radius: var(--radius-row);
   color: var(--fg-secondary);
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
 }
 .toolDetails > summary.tool:hover {
   background: var(--bg-hover);
   color: var(--fg);
 }
+.tool > svg {
+  flex: none;
+}
 .toolTitle {
-  font-family: var(--font-mono);
+  min-width: 0;
   font-size: var(--fs-small);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.toolChevron {
+  flex: none;
+}
+.toolDetails[open] > summary .toolChevron {
+  transform: rotate(90deg);
 }
 .toolDiff {
   font: inherit;
@@ -432,6 +615,53 @@
 .toolDiff:hover {
   background: var(--bg-hover);
 }
+
+/* Reasoning and tool calls between messages, folded as one block per turn. */
+.processRun > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.processRun > summary::-webkit-details-marker {
+  display: none;
+}
+.processSummary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
+  border-radius: var(--radius-row);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.processSummary:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.processChevron {
+  flex: none;
+  transition: transform 120ms ease;
+}
+.processRun[open] .processChevron {
+  transform: rotate(90deg);
+}
+.processRun:not([open]) > .processBody {
+  min-width: 0;
+  display: none;
+}
+.processBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
 .output {
   margin: 4px 0 0;
   max-height: 240px;
@@ -443,6 +673,7 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--fg-secondary);
 }
 
@@ -465,33 +696,102 @@
 }
 
 .permissionLine {
+  box-sizing: border-box;
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-feedback-warning);
+  border-radius: var(--radius-small);
+  background: var(--bg-feedback-warning);
   color: var(--fg-secondary);
 }
-/* Up to three lines; the full text is its tooltip. */
-.permissionTitle {
-  display: -webkit-box;
+.permissionLine > svg {
+  flex: none;
+  margin-top: calc(var(--space-2) / 4);
+}
+.permissionAsking > svg {
+  color: var(--warning);
+}
+.permissionBody {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.permissionTitle {
+  color: var(--fg-strong);
+  font-weight: 400;
+}
+.permissionCommand {
+  min-width: 0;
+  max-width: 100%;
+  max-height: calc(var(--lh-code) * 6);
+  box-sizing: border-box;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+.permissionCommand:focus-visible,
+.permissionDone:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.permissionDetail {
+  max-height: 33vh;
+  overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.permissionLine > svg,
-.permissionLine > .muted {
-  flex: none;
-}
 .permissionAnswers {
-  flex: 1 1 160px;
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 12px;
-  margin-left: 6px;
+  gap: var(--space-2);
+}
+.permissionOption {
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: var(--space-3);
+}
+.permissionOptionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.permissionPrefix {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.permissionDone {
+  padding: calc(var(--space-2) / 2) 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.permissionRecord {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .error {
@@ -519,7 +819,36 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 12px 12px;
+  align-self: center;
+  width: 100%;
+  max-width: calc(var(--session-content-width) + var(--space-3) * 2);
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3) var(--space-4);
+}
+
+.background {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backgroundTask {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-row);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.backgroundText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .queue {
@@ -531,7 +860,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
+  min-height: 28px;
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
   background: var(--bg-elev);
@@ -622,9 +951,8 @@
 .attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 4px 6px;
   margin-top: 4px;
-  color: var(--fg-muted);
   font-size: var(--fs-small);
 }
 .attachment {
@@ -904,8 +1232,8 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 6px;
+  height: var(--h-control);
+  padding: 0 8px;
   border: 0;
   border-radius: var(--radius-small);
   background: transparent;
@@ -925,4 +1253,174 @@
 .changesToggle:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* An open AskUserQuestion: every question with its options, answered at once above the composer. */
+.questionCard {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 50vh;
+  overflow-y: auto;
+  /* The composer's width, so the card sits exactly over the box it belongs to. */
+  width: 100%;
+  max-width: var(--session-content-width);
+  margin: 0 auto 8px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  container: question-card / inline-size;
+}
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.questionText {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.questionTag {
+  margin: 0 8px 0 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.questionLabel .questionTag {
+  margin: 0 0 0 8px;
+}
+.question .questionOption {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius-row);
+}
+/* Each option is a card of its own: separate targets, not one list with hairlines. */
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question .questionChoices > * {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-row);
+}
+.question .questionChoices > *:hover {
+  border-color: var(--border-strong);
+}
+.question .questionChoices > *:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+.question .questionOption:hover {
+  background: var(--bg-hover);
+}
+.questionOption > :first-child {
+  margin-top: 1px;
+}
+.questionOption > :last-child {
+  flex: 1;
+}
+.questionChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.questionOptionText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.questionLabel {
+  flex: 1;
+  color: var(--fg);
+}
+.questionDescription {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.questionKey {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.questionOther {
+  margin: 2px 0 0 30px;
+}
+.questionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+@container question-card (min-width: 640px) {
+  .questionBodyWithPreview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+  .questionBodyWithPreview .questionPreview {
+    margin: 0;
+  }
+}
+.questionPreview {
+  display: grid;
+  min-width: 0;
+  margin: 0 0 0 30px;
+}
+.questionPreviewItem {
+  display: flex;
+  flex-direction: column;
+  grid-area: 1 / 1;
+  gap: 4px;
+  min-width: 0;
+  visibility: hidden;
+}
+.questionPreviewActive {
+  visibility: visible;
+}
+.questionPreviewCaption {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.questionPreviewBody {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.questionPreviewEmpty {
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.questionActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

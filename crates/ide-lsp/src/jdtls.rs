@@ -41,6 +41,12 @@ const ACCESS_OPTIONS: [&str; 2] = [
     "org.eclipse.jdt.core.compiler.problem.discouragedReference",
 ];
 
+const LEVEL_OPTIONS: [&str; 3] = [
+    "org.eclipse.jdt.core.compiler.source",
+    "org.eclipse.jdt.core.compiler.compliance",
+    "org.eclipse.jdt.core.compiler.codegen.targetPlatform",
+];
+
 /// Keep the source model in protocol settings so jdtls's invisible-project
 /// initialization and configuration use the same roots as workspace builds.
 pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, paths: Option<Vec<String>>) {
@@ -52,6 +58,115 @@ pub fn configure_source_paths(cfg: &mut ide_language::LanguageServerConfig, path
         settings["java"]["project"]["sourcePaths"] = json!(paths);
         cfg.settings = Some(settings);
     }
+}
+
+/// Applies Project Structure compiler output path, project libraries (and source attachments),
+/// and Web facet `WEB-INF/lib` directories to jdtls `java.project.*` settings.
+pub fn configure_project_structure(
+    cfg: &mut ide_language::LanguageServerConfig,
+    root: &Path,
+    server_root: &Path,
+    structure: &ide_core::settings::ProjectStructureSettings,
+) {
+    if cfg.name != SERVER {
+        return;
+    }
+    let module_cfg = structure.module_settings(root, server_root);
+    let module_output = module_cfg.map(|m| m.compiler_output.trim()).filter(|s| !s.is_empty());
+    let output_path = if let Some(output) = module_output {
+        // The dialog stores paths relative to the project, JDT expects the server root.
+        let path = root.join(output);
+        match path.strip_prefix(server_root) {
+            Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+            Err(_) => {
+                cfg.launch_error = Some(format!("Java compiler output must be inside its module: {}", path.display()));
+                None
+            }
+        }
+    } else {
+        let output = structure.compiler_output.trim();
+        if output.is_empty() {
+            None
+        } else if Path::new(output).is_absolute() {
+            match Path::new(output).strip_prefix(server_root) {
+                Ok(relative) => Some(relative.to_string_lossy().replace('\\', "/")),
+                Err(_) => {
+                    cfg.launch_error = Some(format!("Java compiler output must be inside its module: {output}"));
+                    None
+                }
+            }
+        } else {
+            Some(output.replace('\\', "/"))
+        }
+    };
+
+    let normalize = |entry: &str| -> Option<String> {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // JDT resolves relative library globs against its own root, which may be a submodule.
+        Some(root.join(trimmed).to_string_lossy().replace('\\', "/"))
+    };
+    let mut include: Vec<String> = Vec::new();
+    let mut sources = serde_json::Map::new();
+    for lib in &structure.libraries {
+        let class_entries: Vec<String> = lib.classes.iter().filter_map(|c| normalize(c)).collect();
+        let source_entries: Vec<String> = lib.sources.iter().filter_map(|s| normalize(s)).collect();
+        for c in &class_entries {
+            if !include.contains(c) {
+                include.push(c.clone());
+            }
+        }
+        for (class, source) in class_entries.iter().zip(&source_entries) {
+            sources.insert(class.clone(), json!(source));
+        }
+    }
+    for facet in &structure.facets {
+        if facet.kind == "web" && root.join(&facet.module) == server_root {
+            let web_root = facet.web_root.trim();
+            let web_root = if web_root.is_empty() { "src/main/webapp" } else { web_root };
+            if let Some(path) = normalize(web_root) {
+                let glob = format!("{}/WEB-INF/lib/**/*.jar", path.trim_end_matches('/'));
+                if !include.contains(&glob) {
+                    include.push(glob);
+                }
+            }
+        }
+    }
+
+    if output_path.is_none() && include.is_empty() {
+        return;
+    }
+    let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
+    if let Some(output) = output_path {
+        settings["java"]["project"]["outputPath"] = json!(output);
+    }
+    if !include.is_empty() {
+        let existing = &settings["java"]["project"]["referencedLibraries"];
+        let mut libraries = if existing.is_object() {
+            existing.clone()
+        } else if existing.is_array() {
+            json!({ "include": existing })
+        } else {
+            json!({ "include": ["lib/**/*.jar"] })
+        };
+        let mut entries = libraries["include"].as_array().cloned().unwrap_or_default();
+        for path in include {
+            let path = json!(path);
+            if !entries.contains(&path) {
+                entries.push(path);
+            }
+        }
+        libraries["include"] = json!(entries);
+        if !sources.is_empty() {
+            let mut attachments = libraries["sources"].as_object().cloned().unwrap_or_default();
+            attachments.extend(sources);
+            libraries["sources"] = json!(attachments);
+        }
+        settings["java"]["project"]["referencedLibraries"] = libraries;
+    }
+    cfg.settings = Some(settings);
 }
 
 pub(crate) fn source_paths_removed(
@@ -104,11 +219,13 @@ fn compiler_defaults(cfg: &ide_language::LanguageServerConfig) -> Value {
     let Ok(prefs) = std::fs::read_to_string(path) else { return json!({}) };
     let mut options = serde_json::Map::new();
     for line in prefs.lines() {
-        if let Some((key, value)) = line.split_once('=')
-            && ACCESS_OPTIONS.contains(&key.trim())
-            && ["error", "warning", "info", "ignore"].contains(&value.trim())
-        {
-            options.insert(key.trim().into(), json!(value.trim()));
+        if let Some((key, value)) = line.split_once('=') {
+            let (k, v) = (key.trim(), value.trim());
+            if (ACCESS_OPTIONS.contains(&k) && ["error", "warning", "info", "ignore"].contains(&v))
+                || (LEVEL_OPTIONS.contains(&k) && ["1.8", "11", "17", "21", "25"].contains(&v))
+            {
+                options.insert(k.into(), json!(v));
+            }
         }
     }
     Value::Object(options)
@@ -327,12 +444,68 @@ impl LspManager {
         Ok(changed)
     }
 
+    /// Start Java in trusted build-root projects during idle startup, so configuration
+    /// navigation can warm after import even when no Java editor has been opened.
+    pub fn prewarm_java_configuration(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        self.runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let Some(mgr) = weak.upgrade() else { return };
+            if mgr.shutting_down.load(std::sync::atomic::Ordering::Acquire)
+                || !mgr.execution_allowed.load(std::sync::atomic::Ordering::Acquire)
+            {
+                return;
+            }
+            let root = mgr.project_root.clone();
+            let java_project = tokio::task::spawn_blocking(move || {
+                ["pom.xml", "build.gradle", "build.gradle.kts", ".classpath"]
+                    .iter()
+                    .any(|name| root.join(name).is_file())
+            })
+            .await
+            .unwrap_or(false);
+            if java_project {
+                for server in mgr.servers_for(&LanguageId::new("java"), &mgr.project_root) {
+                    if server.name == SERVER {
+                        mgr.ensure_started(&server);
+                    }
+                }
+            }
+        });
+    }
+
     pub(crate) fn java_import_ready(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let mgr = self.clone();
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
             if let Err(e) = mgr.java_configure_compiler(&server, &run).await {
                 tracing::warn!("jdtls: cannot apply compiler defaults: {e}");
+            }
+            // The extension only queues bounded, low-priority work; this request
+            // never waits for the configuration index itself to be built.
+            const WARMUP: &str = "openidea.java.configuration.warmup";
+            if server.running_gen(generation).is_some()
+                && run.caps.read().commands().iter().any(|command| command == WARMUP)
+            {
+                let preferred: Vec<_> = mgr
+                    .docs
+                    .lock()
+                    .values()
+                    .filter(|doc| matches!(doc.language.as_str(), "yaml" | "properties"))
+                    .map(|doc| doc.uri.to_string())
+                    .collect();
+                let result = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    run.peer.request::<_, Value>(
+                        "workspace/executeCommand",
+                        json!({"command": WARMUP, "arguments": ["start", preferred]}),
+                        None,
+                    ),
+                )
+                .await;
+                if !matches!(result, Ok(Ok(_))) {
+                    tracing::debug!("jdtls: configuration warmup unavailable; retaining on-demand navigation");
+                }
             }
         });
     }
@@ -758,7 +931,7 @@ mod tests {
         for wrapped in [false, true] {
             let mut cfg = java_config();
             let settings = json!({"java": {"project": {"referencedLibraries": ["vendor/*.jar"]}}});
-            cfg.settings = Some(if wrapped { json!({"settings": settings}) } else { settings });
+            cfg.settings = Some(if wrapped { json!({ "settings": settings }) } else { settings });
             configure_source_paths(&mut cfg, Some(vec!["custom".into()]));
             let settings = crate::handler::all_settings(&cfg);
             assert_eq!(settings["java"]["project"]["referencedLibraries"], json!(["vendor/*.jar"]));
@@ -921,5 +1094,111 @@ mod tests {
         assert!(not_imported(&e));
         assert!(missing_bundle(&IdeError::invalid("No delegateCommandHandler for vscode.java.startDebugSession")));
         assert!(!missing_bundle(&e));
+    }
+
+    #[test]
+    fn configure_project_structure_sets_output_referenced_libraries_and_web_facets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let lib_dir = root.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        let jar_path = lib_dir.join("helper.jar");
+        let src_path = lib_dir.join("helper-sources.jar");
+        std::fs::write(&jar_path, b"").unwrap();
+        std::fs::write(&src_path, b"").unwrap();
+
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: "out/production".into(),
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                name: "helper".into(),
+                classes: vec!["lib/helper.jar".into()],
+                sources: vec!["lib/helper-sources.jar".into()],
+                javadocs: vec![],
+                scope: ide_core::settings::DependencyScope::Compile,
+            }],
+            facets: vec![ide_core::settings::FacetConfig {
+                kind: "web".into(),
+                module: ".".into(),
+                descriptor: "src/main/webapp/WEB-INF/web.xml".into(),
+                web_root: "src/main/webapp".into(),
+            }],
+            ..Default::default()
+        };
+        structure.modules.insert(
+            "submod".into(),
+            ide_core::settings::ModuleStructureSettings {
+                compiler_output: "submod/classes".into(),
+                ..Default::default()
+            },
+        );
+
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut cfg, root, root, &structure);
+
+        let settings = cfg.settings.as_ref().unwrap();
+        assert_eq!(settings.pointer("/java/project/outputPath").and_then(Value::as_str), Some("out/production"));
+        let include = settings
+            .pointer("/java/project/referencedLibraries/include")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(include.iter().any(|p| p.ends_with("lib/helper.jar")));
+        assert!(include.iter().any(|p| p.ends_with("src/main/webapp/WEB-INF/lib/**/*.jar")));
+        let sources = settings.pointer("/java/project/referencedLibraries/sources").and_then(Value::as_object).unwrap();
+        assert!(sources.values().any(|v| v.as_str().is_some_and(|s| s.ends_with("lib/helper-sources.jar"))));
+
+        // Module-specific compiler output overrides project-wide compiler output.
+        let mut sub_cfg: ide_language::LanguageServerConfig =
+            toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        configure_project_structure(&mut sub_cfg, root, &root.join("submod"), &structure);
+        assert_eq!(
+            sub_cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath").and_then(Value::as_str),
+            Some("classes")
+        );
+        let sub_settings = sub_cfg.settings.as_ref().unwrap();
+        let libs = sub_settings.pointer("/java/project/referencedLibraries/include").unwrap().as_array().unwrap();
+        assert!(libs.contains(&json!(root.join("lib/helper.jar").to_string_lossy().replace('\\', "/"))));
+        assert!(!libs.iter().any(|v| v.as_str().is_some_and(|p| p.contains("WEB-INF"))));
+    }
+
+    #[test]
+    fn project_libraries_preserve_existing_globs_exclusions_and_source_attachments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        cfg.settings = Some(json!({"java": {"project": {"referencedLibraries": {
+            "include": ["vendor/**/*.jar"], "exclude": ["vendor/old.jar"],
+            "sources": {"vendor/base.jar": "vendor/base-sources.jar"}
+        }}}}));
+        let structure = ide_core::settings::ProjectStructureSettings {
+            libraries: vec![ide_core::settings::ProjectLibrary {
+                classes: vec!["lib/new.jar".into()],
+                sources: vec!["lib/new-sources.jar".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        let libraries = cfg.settings.as_ref().unwrap().pointer("/java/project/referencedLibraries").unwrap();
+        assert_eq!(libraries["include"][0], "vendor/**/*.jar");
+        assert_eq!(libraries["exclude"], json!(["vendor/old.jar"]));
+        assert_eq!(libraries["sources"]["vendor/base.jar"], "vendor/base-sources.jar");
+        assert_eq!(libraries["sources"].as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn absolute_output_inside_the_module_becomes_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
+        let mut structure = ide_core::settings::ProjectStructureSettings {
+            compiler_output: tmp.path().join("out").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert_eq!(cfg.settings.as_ref().unwrap().pointer("/java/project/outputPath"), Some(&json!("out")));
+        structure.compiler_output = tmp.path().parent().unwrap().join("elsewhere").to_string_lossy().into_owned();
+        configure_project_structure(&mut cfg, tmp.path(), tmp.path(), &structure);
+        assert!(cfg.launch_error.as_deref().unwrap().contains("inside its module"));
     }
 }

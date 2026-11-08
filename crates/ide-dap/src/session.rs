@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
@@ -43,10 +43,20 @@ pub(crate) struct Session {
     pub adapter_process: Mutex<Option<Child>>,
     /// Processes started for `runInTerminal`.
     pub debuggees: Mutex<Vec<Child>>,
+    /// The terminal a `runInTerminal` program runs in: typed input goes to it.
+    pub program: Mutex<Option<ProgramTerminal>>,
     /// Set once `configurationDone` was sent; breakpoint updates go out live after that.
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
     pub terminated: AtomicBool,
+    /// Set by a second Stop: the one waiting for the program kills it instead.
+    pub stop_force: AtomicBool,
+    /// `systemProcessId` from the adapter's `process` event: the program being debugged.
+    pub debuggee_pid: AtomicI64,
+    /// Pids signalled for the current stop: the reported pid and everything it started (an
+    /// adapter may report the launcher shell, whose child is the program).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub stop_pids: parking_lot::Mutex<Vec<i32>>,
     /// Breakpoints replaced for run to cursor / force stepping, restored on the next stop.
     pub pending_restore: Mutex<PendingRestore>,
     /// Adapter breakpoint id → (file, index in the stored list).
@@ -90,9 +100,13 @@ impl Session {
             caps: Mutex::new(Value::Null),
             adapter_process: Mutex::new(child),
             debuggees: Mutex::new(Vec::new()),
+            program: Mutex::new(None),
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
             terminated: AtomicBool::new(false),
+            stop_force: AtomicBool::new(false),
+            debuggee_pid: AtomicI64::new(0),
+            stop_pids: parking_lot::Mutex::new(Vec::new()),
             pending_restore: Mutex::default(),
             breakpoint_ids: Mutex::new(HashMap::new()),
             resolved_paths: Mutex::new(HashMap::new()),
@@ -266,6 +280,111 @@ impl Session {
         for mut c in std::mem::take(&mut *self.debuggees.lock()) {
             let _ = c.start_kill();
         }
+        if let Some(mut program) = self.program.lock().take() {
+            let _ = program.child.kill();
+        }
+    }
+}
+
+/// How long Stop waits for a launched program to exit before reporting the session ended.
+pub(crate) const DEBUGGEE_EXIT_WAIT: Duration = Duration::from_secs(10);
+
+/// The program and everything it started: an adapter may report the launcher shell, whose
+/// child is the debugged program, so stopping only the reported pid leaves the program alive.
+#[cfg(unix)]
+fn process_tree(pid: i32) -> Vec<i32> {
+    use std::collections::HashMap;
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else {
+        return vec![pid];
+    };
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let (Some(p), Some(parent)) = (it.next(), it.next()) else { continue };
+        let (Ok(p), Ok(parent)) = (p.parse::<i32>(), parent.parse::<i32>()) else { continue };
+        children.entry(parent).or_default().push(p);
+    }
+    let mut tree = vec![pid];
+    let mut at = 0;
+    while at < tree.len() {
+        if let Some(kids) = children.get(&tree[at]) {
+            tree.extend(kids.iter().copied());
+        }
+        at += 1;
+    }
+    tree
+}
+
+/// Asks the program itself to exit (`force` = SIGKILL) without ending the adapter session:
+/// its output keeps flowing over DAP while it shuts down. The first call remembers the pid
+/// tree, because the reported pid may die before its program does.
+pub(crate) fn signal_debuggee(s: &Arc<Session>, force: bool) {
+    let pid = s.debuggee_pid.load(Ordering::Acquire);
+    if pid <= 0 {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let mut known = s.stop_pids.lock();
+        if known.is_empty() {
+            *known = process_tree(pid as i32);
+        }
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // Children first: the shell that started the program would otherwise reparent it.
+        for p in known.iter().rev() {
+            // SAFETY: plain syscall on the processes this session started.
+            unsafe {
+                libc::kill(*p, signal);
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T"]);
+        if force {
+            cmd.arg("/F");
+        }
+        let _ = cmd.status();
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (pid, force);
+}
+
+/// Waits until the program a `launch` session started is gone; a second Stop kills it.
+pub(crate) async fn wait_for_debuggee(s: &Arc<Session>, terminate: bool) {
+    if !terminate || s.request != "launch" {
+        return;
+    }
+    let pid = s.debuggee_pid.load(Ordering::Acquire);
+    if pid <= 0 {
+        return;
+    }
+    tracing::info!(session = s.id.0, pid, "stop: waiting for the debugged program to exit");
+    #[cfg(unix)]
+    {
+        use std::time::Instant;
+        let targets = {
+            let known = s.stop_pids.lock();
+            if known.is_empty() { process_tree(pid as i32) } else { known.clone() }
+        };
+        let alive = || targets.iter().any(|p| unsafe { libc::kill(*p, 0) } == 0);
+        let deadline = Instant::now() + DEBUGGEE_EXIT_WAIT;
+        while alive() {
+            if s.stop_force.swap(false, Ordering::AcqRel) {
+                signal_debuggee(s, true);
+            }
+            if Instant::now() >= deadline {
+                // The program ignored the terminate: do not leave it running.
+                signal_debuggee(s, true);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
     }
 }
 
@@ -364,7 +483,17 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                 return;
             }
             let output = str_("output").unwrap_or_default();
+            if tracing::enabled!(tracing::Level::DEBUG) && mgr.stopping.lock().contains_key(&s.id) {
+                tracing::debug!(session = ?s.id, bytes = output.len(), "output during stop");
+            }
             s.emit(DebugEvent::Output { category, output });
+        }
+        // The program the adapter started: Stop must wait for it, not for the adapter's reply.
+        // `process` is the DAP event; java-debug announces the same thing as `processid`.
+        "process" | "processid" => {
+            if let Some(pid) = int("systemProcessId").or_else(|| int("processId")).filter(|p| *p > 0) {
+                s.debuggee_pid.store(pid, Ordering::Release);
+            }
         }
         "thread" => s.emit(DebugEvent::Thread {
             thread_id: int("threadId").unwrap_or(0),
@@ -384,12 +513,18 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         }
         "exited" => {}
         "terminated" => {
-            if !s.terminated.swap(true, Ordering::AcqRel) {
-                s.emit(DebugEvent::Terminated);
-            }
+            let first = !s.terminated.swap(true, Ordering::AcqRel);
             let mgr = mgr.clone();
             let s = s.clone();
-            tokio::spawn(async move { mgr.shutdown(&s, false).await });
+            // Waiting here would stop reading the adapter: it keeps sending the program's last
+            // output while the program exits. Wait off the reader task, then report the end.
+            tokio::spawn(async move {
+                if first {
+                    wait_for_debuggee(&s, true).await;
+                    s.emit(DebugEvent::Terminated);
+                }
+                mgr.shutdown(&s, false).await;
+            });
         }
         "capabilities" => {
             if let Some(new) = body.get("capabilities").and_then(Value::as_object) {
@@ -451,8 +586,25 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
     }
 }
 
-/// `runInTerminal`: spawns the debuggee directly and forwards its output to the console.
+/// A `runInTerminal` program and the pseudo-terminal it runs in.
+pub(crate) struct ProgramTerminal {
+    writer: Box<dyn std::io::Write + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    _master: Box<dyn portable_pty::MasterPty + Send>,
+}
+
+impl ProgramTerminal {
+    pub(crate) fn write(&mut self, text: &str) -> std::io::Result<()> {
+        self.writer.write_all(text.as_bytes())?;
+        self.writer.flush()
+    }
+}
+
+/// `runInTerminal`: starts the debuggee on a pseudo-terminal, as an IDE terminal would (CodeLLDB
+/// starts a launcher that gives the program its terminal, and the program reads input only from
+/// a terminal), forwards its output to the console, and keeps the terminal for typed input.
 pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, String> {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     let argv: Vec<String> = args
         .get("args")
         .and_then(Value::as_array)
@@ -461,16 +613,25 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     let Some((program, rest)) = argv.split_first() else {
         return Err("runInTerminal without args".into());
     };
-    let mut cmd = tokio::process::Command::new(program);
-    ide_core::process::prepare(cmd.as_std_mut());
-    cmd.args(rest)
-        .envs(ide_core::process::shell_env())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    if let Some(cwd) = args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
-        cmd.current_dir(cwd);
+    let pair = native_pty_system()
+        .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| format!("cannot open a terminal for {program}: {e}"))?;
+    let mut cmd = CommandBuilder::new(program);
+    // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
+    cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
+    for (k, v) in ide_core::process::host_env_fixes() {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        }
+    }
+    for (k, v) in ide_core::process::shell_env() {
+        cmd.env(k, v);
+    }
+    cmd.env("TERM", "xterm-256color");
+    match args.get("cwd").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+        Some(cwd) => cmd.cwd(cwd),
+        None => cmd.cwd(&s.spec.cwd),
     }
     if let Some(env) = args.get("env").and_then(Value::as_object) {
         for (k, v) in env {
@@ -480,16 +641,51 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
             };
         }
     }
-    let mut child = cmd.spawn().map_err(|e| format!("failed to start {program}: {e}"))?;
-    let pid = child.id();
-    if let Some(out) = child.stdout.take() {
-        forward_output(s, out, "stdout");
+    let child = pair.slave.spawn_command(cmd).map_err(|e| format!("failed to start {program}: {e}"))?;
+    drop(pair.slave);
+    let reader = pair.master.try_clone_reader().map_err(|e| format!("terminal of {program}: {e}"))?;
+    let writer = pair.master.take_writer().map_err(|e| format!("terminal of {program}: {e}"))?;
+    let pid = child.process_id();
+    forward_terminal_output(s, reader);
+    if let Some(mut previous) = s.program.lock().replace(ProgramTerminal { writer, child, _master: pair.master }) {
+        let _ = previous.child.kill();
     }
-    if let Some(err) = child.stderr.take() {
-        forward_output(s, err, "stderr");
-    }
-    s.debuggees.lock().push(child);
+    s.owner.sink.emit(IdeEvent::Debug { session: s.id, event: DebugEvent::ProgramInput });
     Ok(json!({ "processId": pid }))
+}
+
+/// The program's terminal output, as stdout lines (`\r\n` as `\n`; colours are kept).
+fn forward_terminal_output(s: &Session, mut reader: Box<dyn std::io::Read + Send>) {
+    let session = s.id;
+    let sink = s.owner.sink.clone();
+    let _ = std::thread::Builder::new().name(format!("openidea-debuggee-{}", session.0)).spawn(move || {
+        let mut buf = vec![0u8; 8192];
+        let mut pending: Vec<u8> = Vec::new();
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => pending.extend_from_slice(&buf[..n]),
+            }
+            // Keep incomplete UTF-8 sequences, and a `\r` that may start a `\r\n`, for the next chunk.
+            let mut valid = match std::str::from_utf8(&pending) {
+                Ok(_) => pending.len(),
+                Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                Err(_) => pending.len(),
+            };
+            if valid > 0 && pending[valid - 1] == b'\r' {
+                valid -= 1;
+            }
+            let output = String::from_utf8_lossy(&pending[..valid]).replace("\r\n", "\n");
+            pending.drain(..valid);
+            if !output.is_empty() {
+                sink.emit(IdeEvent::Debug { session, event: DebugEvent::Output { category: "stdout".into(), output } });
+            }
+        }
+        if !pending.is_empty() {
+            let output = String::from_utf8_lossy(&pending).replace("\r\n", "\n");
+            sink.emit(IdeEvent::Debug { session, event: DebugEvent::Output { category: "stdout".into(), output } });
+        }
+    });
 }
 
 fn forward_output<R: AsyncRead + Unpin + Send + 'static>(s: &Session, mut stream: R, category: &'static str) {

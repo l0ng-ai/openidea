@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 const ipc = vi.hoisted(() => ({
   runStart: vi.fn(),
+  runStop: vi.fn(() => Promise.resolve({ status: "ok" as const, data: null })),
   runSaveConfigs: vi.fn((_configs: unknown) => Promise.resolve({ status: "ok" as const, data: null })),
   runConfigs: vi.fn(() => Promise.resolve({ status: "ok" as const, data: [] as unknown[] })),
   sshTrustHost: vi.fn((_id: string) => Promise.resolve({ status: "ok" as const, data: null })),
@@ -40,7 +41,7 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { IpcError, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import type { RunTargetValid } from "@/platform/remoteSettings";
+import { DEFAULT_RUN_TARGET, type RunTargetValid } from "@/platform/remoteSettings";
 import {
   provideNotificationService,
   provideToolWindowService,
@@ -50,8 +51,16 @@ import {
 import { ConfigForm } from "./ConfigForm";
 import { duplicateConfig, upsertConfig, userConfigs } from "./configs";
 import { activate } from "./index";
-import { remoteDebugBlocked, remoteLabel, startRemedy, startWithRemedies, withTarget, type RemedyDeps } from "./remote";
-import { resetRuns, saveUserConfigs, startRun, useRun } from "./store";
+import {
+  containerExecutorBlocked,
+  remoteDebugBlocked,
+  remoteLabel,
+  startRemedy,
+  startWithRemedies,
+  withTarget,
+  type RemedyDeps,
+} from "./remote";
+import { onRunExited, resetRuns, saveUserConfigs, startRun, useRun } from "./store";
 import { newConfigOfType } from "./types";
 import { readRan } from "./services";
 
@@ -70,6 +79,7 @@ const cfg = (id: string, extra: Partial<RunConfig> = {}): RunConfig => ({
 });
 
 const box: RunTargetValid = {
+  ...DEFAULT_RUN_TARGET,
   id: "box",
   name: "Build box",
   sshConfig: "ssh1",
@@ -172,6 +182,138 @@ describe("remote debugging", () => {
     );
   });
 
+  describe("in containers", () => {
+    const container: RunTargetValid = { ...DEFAULT_RUN_TARGET, kind: "docker", id: "py", name: "Python", image: "x" };
+    const attach = vi.fn();
+    let unregisterAttach: () => void;
+    beforeEach(() => {
+      useProject.setState({ settings: { runTargets: [box, container], ssh: { configs: [] } } as never });
+      unregisterAttach = registerActions([{ id: "debug.attach", title: "Attach", run: ({ arg }) => attach(arg) }]);
+      attach.mockClear();
+    });
+    afterEach(() => unregisterAttach());
+
+    it("stops a container that never announces debugpy", async () => {
+      vi.useFakeTimers();
+      try {
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        useRun.setState({ configs: [py], loaded: true });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await executeAction("run.debugConfig", py.id);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(ipc.runStop).toHaveBeenCalledWith(3);
+        expect(attach).not.toHaveBeenCalled();
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: "Cannot start container debugging",
+            body: expect.stringContaining("120 seconds"),
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reports an early container exit and cancels the readiness timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        useRun.setState({ configs: [py], loaded: true });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await executeAction("run.debugConfig", py.id);
+        onRunExited(3, 1);
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(attach).not.toHaveBeenCalled();
+        expect(ipc.runStop).not.toHaveBeenCalled();
+        expect(notify).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            title: "Cannot start container debugging",
+            body: expect.stringContaining("exited before debugpy"),
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cleans up the readiness wait when the user stops the run", async () => {
+      vi.useFakeTimers();
+      try {
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        useRun.setState({ configs: [py], loaded: true });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await executeAction("run.debugConfig", py.id);
+        useRun.setState((s) => ({ sessions: s.sessions.map((s) => ({ ...s, stopped: true })) }));
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(attach).not.toHaveBeenCalled();
+        expect(notify).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("records debugger-requested stops before a signalled container exit", async () => {
+      vi.useFakeTimers();
+      try {
+        provideToolWindowService({ show: vi.fn(), isVisible: () => false } as unknown as ToolWindowService);
+        const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+        ipc.runStart.mockResolvedValueOnce(ok);
+        await startRun(py);
+        await executeAction("run.stopProcess", 3);
+        expect(useRun.getState().sessions[0]?.stopped).toBe(true);
+        expect(ipc.runStop).toHaveBeenCalledWith(3);
+        onRunExited(3, 143);
+        await vi.advanceTimersByTimeAsync(100);
+        expect(notify).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("runs Python under debugpy and attaches once it listens", async () => {
+      const py = cfg("app", { target: "py", debugAdapter: "debugpy" });
+      useRun.setState({ configs: [py], loaded: true });
+      ipc.runStart.mockResolvedValueOnce(ok);
+      await executeAction("run.debugConfig", py.id);
+      expect(startConfig).not.toHaveBeenCalled();
+      expect(ipc.runStart).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "app", params: { containerDebug: "true" } }),
+        expect.anything(),
+      );
+      const channel = ipc.runStart.mock.calls.at(-1)![1] as { onmessage: (m: unknown) => void };
+      channel.onmessage({
+        kind: "stderr",
+        text: "debugpy is waiting for the debugger on port 41234, project folder /app\n",
+      });
+      await vi.waitFor(() => expect(attach).toHaveBeenCalled());
+      channel.onmessage({
+        kind: "stderr",
+        text: "debugpy is waiting for the debugger on port 41234, project folder /app\n",
+      });
+      expect(attach).toHaveBeenCalledTimes(1);
+      expect(attach).toHaveBeenCalledWith(
+        expect.objectContaining({
+          adapter: "debugpy",
+          hostName: "127.0.0.1",
+          port: 41234,
+          remoteRoot: "/app",
+          process: 3,
+        }),
+      );
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("refuses other debuggers", async () => {
+      const go = cfg("app", { target: "py", debugAdapter: "delve" });
+      useRun.setState({ configs: [go], loaded: true });
+      await executeAction("run.debugConfig", go.id);
+      expect(ipc.runStart).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Only Python can be debugged in containers", level: "warning" }),
+      );
+    });
+  });
+
   it("still debugs local configurations", async () => {
     const local = cfg("app", { debugAdapter: "debugpy" });
     useRun.setState({ configs: [local], loaded: true });
@@ -186,6 +328,29 @@ describe("remote debugging", () => {
     useRun.setState({ configs: [local], loaded: true });
     await executeAction("run.debugConfig", local.id);
     expect(readRan("/remember-debug")).toContain(local.id);
+  });
+});
+
+describe("coverage and profiling", () => {
+  const container: RunTargetValid = {
+    ...DEFAULT_RUN_TARGET,
+    kind: "docker",
+    id: "py",
+    name: "Python",
+    image: "python:3.12",
+  };
+
+  it("are refused in containers, with a notification", () => {
+    expect(containerExecutorBlocked(cfg("app", { target: "py" }), [box, container])).toBe(true);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Coverage and profiling are not supported in containers", level: "warning" }),
+    );
+  });
+
+  it("are left alone locally and over SSH", () => {
+    expect(containerExecutorBlocked(cfg("app"), [box, container])).toBe(false);
+    expect(containerExecutorBlocked(cfg("app", { target: "box" }), [box, container])).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
   });
 });
 

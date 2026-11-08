@@ -47,7 +47,7 @@ import { reverseLines, sortLines } from "./cm/lines";
 import { customRegions } from "./cm/regions";
 import { enclosingHeaders } from "./cm/stickyScroll";
 import { moveElementLeft, moveElementRight } from "./cm/moveElement";
-import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
+import { caretAnchor, openPopup, updatePopup, useLspPopup, type LspPopup } from "@/editor/lsp/popupStore";
 import {
   cursorCodeBlockEnd,
   cursorCodeBlockStart,
@@ -62,7 +62,7 @@ import { isColumnMode, toggleColumnMode } from "./cm/columnMode";
 import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
-import { copyReferenceToClipboard, qualifiedReference, referenceOffset } from "./copyReference";
+import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
@@ -86,6 +86,8 @@ import { structure } from "@/editor/structure";
 import { tx } from "@/platform/i18n";
 import { lspRequest } from "@/editor/lsp/lsp";
 import { readFileLines, withDocument } from "@/editor/lsp/files";
+import { pathToCopy } from "@/platform/copyPath";
+import { shortcutLabel } from "@/platform/keymap";
 
 /** Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. */
 export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen";
@@ -439,7 +441,7 @@ async function resolveReference(view: EditorView, slot: EditorSlot): Promise<str
         path: slot.model.path,
         root,
         text: state.doc.toString(),
-        chain: localChain.map((item) => item.name),
+        chain: localChain.map(declaredName),
         line: position.number - 1,
       });
     } else {
@@ -462,7 +464,7 @@ async function resolveReference(view: EditorView, slot: EditorSlot): Promise<str
               path: target.path,
               root,
               text: lines.join("\n"),
-              chain: chain.map((item) => item.name),
+              chain: chain.map(declaredName),
               line: pos.line,
             });
           }
@@ -475,8 +477,7 @@ async function resolveReference(view: EditorView, slot: EditorSlot): Promise<str
   return reference;
 }
 
-function copyReference(view: EditorView, slot: EditorSlot) {
-  const reference = resolveReference(view, slot);
+function copyReference(reference: Promise<string>) {
   const failed = (error: unknown) => {
     notifications().notify({
       level: "error",
@@ -494,6 +495,93 @@ function copyReference(view: EditorView, slot: EditorSlot) {
   } catch (error) {
     failed(error);
   }
+}
+
+function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
+  const path = slot.model.path;
+  const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const flavours = [
+    { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
+    { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
+    { id: "project.copyRelativePath", label: "Path From Content Root", value: pathToCopy("relative", path) },
+    { id: "project.copySourceRootPath", label: "Path From Source Root", value: pathToCopy("source", path) },
+    {
+      id: "editor.copyPathWithLineNumber",
+      label: "Path with line number",
+      value: `${pathToCopy("relative", path)}:${line}`,
+    },
+  ];
+  const popup: Extract<LspPopup, { kind: "list" }> = {
+    kind: "list",
+    title: tx("Copy Path/Reference…"),
+    anchor: caretAnchor(view, view.state.selection.main.head),
+    items: [
+      ...flavours
+        .filter((f) => f.value !== null)
+        .map((f) => ({
+          id: f.id,
+          label: tx(f.label),
+          preview: f.value!,
+          shortcut: shortcutLabel(f.id),
+          run: () => {
+            void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
+          },
+        })),
+      {
+        id: "editor.copyReference",
+        label: tx("Reference"),
+        preview: tx("Resolving reference…"),
+        disabled: tx("Resolving reference…"),
+        shortcut: shortcutLabel("editor.copyReference"),
+        run: () => {},
+      },
+    ],
+  };
+  openPopup(popup);
+  void resolveReference(view, slot)
+    .then((reference) => {
+      if (useLspPopup.getState().popup !== popup) return;
+      updatePopup("list", {
+        items: popup.items.map((item) =>
+          item.id === "editor.copyReference"
+            ? {
+                ...item,
+                preview: reference,
+                disabled: null,
+                run: () => {
+                  void executeAction(item.id, reference);
+                },
+              }
+            : item,
+        ),
+      });
+    })
+    .catch(() => {
+      if (useLspPopup.getState().popup === popup)
+        updatePopup("list", {
+          items: popup.items.map((item) =>
+            item.id === "editor.copyReference"
+              ? { ...item, preview: undefined, disabled: tx("Cannot copy reference") }
+              : item,
+          ),
+        });
+    });
+}
+
+function copyEditorPath(text: string) {
+  void navigator.clipboard
+    .writeText(text)
+    .then(() => {
+      recordClipboard(text);
+      void executeAction("editor.showHint", { text: tx`Copied ${text}` });
+    })
+    .catch((error: unknown) => {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot access the clipboard"),
+        body: error instanceof Error ? error.message : String(error),
+      });
+    });
 }
 
 /** ⌃G; when nothing more is found, a hint first and the search from the top on the next press (IDEA). */
@@ -606,10 +694,17 @@ export function registerEditorActions(): () => void {
         keywords: ["hippie", "complete word", "dabbrev"],
       },
     ),
-    text("editor.copyReference", "Copy Reference", (v, slot) => copyReference(v, slot), {
+    {
+      id: "editor.copyReference",
+      title: "Copy Reference",
+      when: TEXT_WHEN,
+      run: ({ arg }) => {
+        if (typeof arg === "string") copyReference(Promise.resolve(arg));
+        else withView((v, slot) => copyReference(resolveReference(v, slot)))();
+      },
       category: "Edit",
       keywords: ["fully qualified name", "fqn", "copy path"],
-    }),
+    },
     text("code.pasteAsPlainText", "Paste as Plain Text", (v) => pasteAsPlainText(v), {
       category: "Edit",
       icon: "paste",
@@ -1026,7 +1121,7 @@ export function registerEditorActions(): () => void {
     },
     {
       id: "editor.copyPath",
-      title: "Copy Path",
+      title: "Absolute Path",
       category: "Edit",
       icon: "copy",
       when: "textEditorActive",
@@ -1034,7 +1129,31 @@ export function registerEditorActions(): () => void {
       keyWhen: "editorFocus || !toolWindowFocus",
       run: () => {
         const p = ctrl.activePath();
-        if (p) void navigator.clipboard?.writeText(p);
+        if (p) copyEditorPath(p);
+      },
+    },
+    {
+      id: "editor.copyPathReference",
+      title: "Copy Path/Reference…",
+      category: "Edit",
+      icon: "copy",
+      when: "textEditorActive",
+      keyWhen: "editorFocus || !toolWindowFocus",
+      run: withView(copyPathReferencePopup),
+    },
+    {
+      id: "editor.copyPathWithLineNumber",
+      title: "Copy Path with Line Number",
+      category: "Edit",
+      when: TEXT_WHEN,
+      run: ({ arg }) => {
+        if (typeof arg === "string") copyEditorPath(arg);
+        else
+          withView((view, slot) =>
+            copyEditorPath(
+              `${pathToCopy("relative", slot.model.path)}:${view.state.doc.lineAt(view.state.selection.main.head).number}`,
+            ),
+          )();
       },
     },
     {

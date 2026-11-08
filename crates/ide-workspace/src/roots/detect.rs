@@ -32,6 +32,7 @@ const BUILD_FILES: &[&str] = &[
     "Pipfile",
     "requirements.txt",
     "package.json",
+    "composer.json",
 ];
 
 /// Folder names that are (or contain) conventional roots.
@@ -214,6 +215,15 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
         }
     }
 
+    // Before `package.json`: a Laravel app's `tests/` is the PHP test root.
+    if has("composer.json")
+        && let Ok(text) = std::fs::read_to_string(dir.join("composer.json"))
+    {
+        for (sub, kind) in composer_roots(&text) {
+            add(&sub, kind, "composer.json");
+        }
+    }
+
     if has("package.json") {
         // A JVM build's `src` holds source sets, not JavaScript.
         if !has("pom.xml") && !GRADLE_FILES.iter().any(|f| has(f)) {
@@ -228,6 +238,37 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
             add(ex, RootKind::Excluded, "package.json");
         }
     }
+}
+
+/// `autoload.psr-4` folders as Source roots and `autoload-dev.psr-4` ones as Test roots, relative to
+/// the `composer.json` folder; paths that leave it or point into `vendor/` are left out.
+fn composer_roots(text: &str) -> Vec<(String, RootKind)> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (section, kind) in [("autoload", RootKind::Source), ("autoload-dev", RootKind::Test)] {
+        let Some(map) = json.get(section).and_then(|a| a.get("psr-4")).and_then(|m| m.as_object()) else { continue };
+        for value in map.values() {
+            let paths: Vec<&str> = match value {
+                serde_json::Value::String(p) => vec![p.as_str()],
+                serde_json::Value::Array(a) => a.iter().filter_map(|p| p.as_str()).collect(),
+                _ => Vec::new(),
+            };
+            for path in paths {
+                let parts: Vec<&str> = path.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").collect();
+                if path.starts_with(['/', '\\'])
+                    || parts.iter().any(|c| *c == ".." || c.contains(':'))
+                    || parts.first() == Some(&"vendor")
+                {
+                    continue;
+                }
+                let sub = parts.join("/");
+                if !out.iter().any(|(p, _)| *p == sub) {
+                    out.push((sub, kind));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Gradle's conventional `src/<set>/<lang>` folders that exist: `(set, lang)`.
@@ -305,6 +346,47 @@ mod tests {
         assert!(roots.excluded_globs().contains(&"/game/Library".to_owned()));
         assert!(!roots.excluded_globs().contains(&"/Library".to_owned()));
         assert!(roots.roots.iter().any(|r| r.path == "server/src" && r.kind == RootKind::Source));
+    }
+
+    #[test]
+    fn composer_psr4_folders_are_source_and_test_roots() {
+        let dir = tree(&[
+            "app/",
+            "database/factories/",
+            "database/seeders/",
+            "lib/",
+            "tests/",
+            "vendor/acme/src/",
+            "package.json",
+        ]);
+        fs::write(
+            dir.path().join("composer.json"),
+            r#"{
+                "autoload": { "psr-4": {
+                    "App\\": "app/",
+                    "Database\\Factories\\": "database/factories/",
+                    "Database\\Seeders\\": ["database/seeders/", "lib", "missing/"],
+                    "Vendored\\": "vendor/acme/src/",
+                    "Outside\\": "../elsewhere/"
+                } },
+                "autoload-dev": { "psr-4": { "Tests\\": "tests/" } }
+            }"#,
+        )
+        .unwrap();
+        let mut roots = summary(&detect(dir.path()));
+        roots.sort();
+        assert_eq!(
+            roots,
+            [
+                "app=Source@composer.json",
+                "database/factories=Source@composer.json",
+                "database/seeders=Source@composer.json",
+                "lib=Source@composer.json",
+                "tests=Test@composer.json",
+            ]
+        );
+        assert!(affects_roots(Path::new("composer.json")));
+        assert!(composer_roots("not json").is_empty());
     }
 
     #[test]

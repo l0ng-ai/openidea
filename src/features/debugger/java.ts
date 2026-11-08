@@ -30,6 +30,37 @@ function join(base: string, p: string) {
   return rel === "." || rel === "" ? base : `${base.replace(/\/$/, "")}/${rel}`;
 }
 
+/** Last path segment: jdtls names a Java project after the folder it imported. */
+function baseName(p: string): string {
+  const s = p.replace(/[\\/]+$/, "");
+  const cut = Math.max(s.lastIndexOf("/"), s.lastIndexOf("\\"));
+  return cut >= 0 ? s.slice(cut + 1) : s;
+}
+/** The name jdtls knows this folder's Java project by: Eclipse's project descriptor for an Eclipse
+ * project, the Maven artifactId for a module (jdtls names those after the artifact, not the
+ * folder), and the folder name when neither says anything.
+ */
+export async function javaProjectName(root: string): Promise<string> {
+  const descriptor = await readText(join(root, ".project"));
+  const eclipse = /<name>([^<]+)<\/name>/.exec(descriptor)?.[1]?.trim();
+  if (eclipse) return eclipse;
+  const pom = await readText(join(root, "pom.xml"));
+  // A child module's own <artifactId> follows the <parent> block, which names the parent.
+  const own = pom.replace(/<parent>[\s\S]*?<\/parent>/, "");
+  const artifact = /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(own)?.[1];
+  if (artifact && !artifact.includes("${")) return artifact;
+  return baseName(root);
+}
+
+/** A file of the project, or "" when it is missing (or when there is no filesystem bridge). */
+async function readText(path: string): Promise<string> {
+  try {
+    return await call(commands.fsReadText(path));
+  } catch {
+    return "";
+  }
+}
+
 /** Conventional JVM source sets, including Kotlin kept in a Java source directory.
  * A mixed module uses Kotlin's adapter, which also accepts Java line breakpoints.
  */
@@ -125,6 +156,10 @@ export async function javaLaunchConfig(
   }
   const port = await debugServer(module, preparation?.signal);
   preparation?.signal.throwIfAborted();
+  // java-debug resolves the Java project for Evaluate on its own from `mainClass` only when
+  // the class belongs to a project it knows; name the project it imported so that works for
+  // classes compiled outside the language server's build (plain folders, custom outputs).
+  const project = await javaProjectName(info.projectRoot ?? root);
   return {
     name: rc.name,
     adapter: JAVA_ADAPTER,
@@ -139,6 +174,7 @@ export async function javaLaunchConfig(
       mainClass: parsed.mainClass,
       classPaths,
       modulePaths: info.modulePaths,
+      projectName: project,
       javaExec: resolved.command === "java" ? undefined : resolved.command,
       vmArgs: joinJavaArgs([...consoleVmArgs(rc), ...parsed.vmArgs]),
       args: joinJavaArgs(parsed.programArgs),
@@ -180,6 +216,10 @@ export async function javaAttachConfig(target: JavaAttachTarget, root: string): 
     };
   }
   const port = await debugServer(target.module);
+  // java-debug resolves the Java project for Evaluate from `mainClass` only when the class is in
+  // a project it imported; a JDWP attach cannot even see the main class, so name the project the
+  // language server imported (the directory name of the module it opened).
+  const project = await javaProjectName(cwd);
   return {
     name: target.name,
     adapter: JAVA_ADAPTER,
@@ -188,6 +228,12 @@ export async function javaAttachConfig(target: JavaAttachTarget, root: string): 
     args: [],
     cwd: target.module ? join(root, target.module) : root,
     env: {},
-    extraJson: JSON.stringify({ debugServer: port, hostName: target.hostName, port: target.port, timeout: 30_000 }),
+    extraJson: JSON.stringify({
+      debugServer: port,
+      hostName: target.hostName,
+      port: target.port,
+      timeout: 30_000,
+      projectName: project,
+    }),
   };
 }

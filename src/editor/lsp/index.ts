@@ -27,6 +27,8 @@ import { inlineCompletionExtension, registerInlineCompletionActions } from "./in
 import { semanticExtension } from "./semantic";
 import { usagesLensExtension } from "./codeLens";
 import { autoImportExtension } from "./autoImport";
+import { importsOnPasteExtension, registerImportsOnPasteActions } from "./importsOnPaste";
+import { installConfigurationNavigationEvents } from "./configurationNavigation";
 import { installAvailabilityEvents } from "./availability";
 import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from "./actions";
 import { lspTheme } from "./theme";
@@ -59,6 +61,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     semanticExtension(),
     usagesLensExtension(),
     autoImportExtension(),
+    importsOnPasteExtension(),
     unresolvedReferences(),
     syntaxErrorsExtension(),
     spellingExtension(),
@@ -69,6 +72,7 @@ export function activate(): () => void {
   const disposers = [
     installDiagnosticsEvents(),
     installAvailabilityEvents(),
+    installConfigurationNavigationEvents(),
     registerEditorContribution({ id: "lsp", order: 50, extensions: lspExtensions }),
     // After the run icons (order 55), as their own gutter column.
     registerEditorContribution({ id: "lsp.lineMarkers", order: 56, extensions: implementationGutter }),
@@ -90,6 +94,7 @@ export function activate(): () => void {
       component: DocumentationWindow,
     }),
     registerLspActions(),
+    registerImportsOnPasteActions(),
     registerInlineCompletionActions(),
     registerNavigationActions(),
     registerFormatOnSave(),

@@ -2,13 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { EditorShownProvider } from "@/workbench/contributions";
 import type { AgentChange, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
-import { SessionEditor } from "./SessionEditor";
+import { SessionEditor, conversationRows } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import { disconnect, useAgents } from "./store";
 import { taskActions } from "./taskActions";
+import { replyActions } from "./replyActions";
 import styles from "./Session.module.css";
+import tagStyles from "@/ui/InlineTag.module.css";
 
 const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
@@ -77,15 +80,29 @@ const subagent: SubagentEntry = {
 };
 const input = (id: string) => ({ kind: SESSION_KIND, key: sessionKey(id), data: { task: id } });
 const stream = () => document.querySelector<HTMLDivElement>(`.${styles.stream}`)!;
+const tool = (id: string, overrides: Partial<Extract<AgentEntry, { type: "tool" }>> = {}): AgentEntry => ({
+  type: "tool",
+  id,
+  title: id,
+  kind: "read",
+  status: "completed",
+  locations: [],
+  output: null,
+  diffs: [],
+  ...overrides,
+});
 
+let disposeActions: () => void;
 const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop");
 afterEach(() => {
+  disposeActions();
   vi.restoreAllMocks();
   if (scrollTopDescriptor) Object.defineProperty(HTMLElement.prototype, "scrollTop", scrollTopDescriptor);
   else Reflect.deleteProperty(HTMLElement.prototype, "scrollTop");
 });
 
 beforeEach(() => {
+  disposeActions = registerActions(replyActions);
   disconnect();
   localStorage.clear();
   backend.changes = [];
@@ -103,8 +120,258 @@ beforeEach(() => {
   });
 });
 
+describe("conversation rows", () => {
+  it("keeps authors above messages and their folded work with matching icon-only actions", async () => {
+    const user = (text: string): AgentEntry => ({
+      type: "user",
+      text,
+      attachments: [],
+      steered: false,
+      sentMs: null,
+      doneMs: null,
+    });
+    backend.entries.set("A", [
+      user("First question"),
+      { type: "agent", text: "First reply" },
+      tool("read"),
+      { type: "agent", text: "More detail" },
+      user("Next question"),
+      { type: "thought", text: "Considering the next question" },
+      tool("next"),
+      { type: "agent", text: "Next reply" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("More detail");
+    expect(stream().querySelectorAll(`.${styles.agentAuthor} .${styles.role}`)).toHaveLength(2);
+    const author = stream().querySelectorAll(`.${styles.agentAuthor}`)[1]!;
+    expect(author.nextElementSibling).toHaveClass(styles.processRun!);
+    expect(author.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
+    const quote = within(stream()).getAllByRole("button", { name: "Quote Reply" });
+    const copy = within(stream()).getAllByRole("button", { name: "Copy Markdown" });
+    expect(quote).toHaveLength(3);
+    for (const button of [...quote, ...copy]) {
+      expect(button.textContent).toBe("");
+      expect(button.querySelector("svg path")).not.toBeNull();
+      expect(button.parentElement).toHaveClass(styles.messageActions!);
+    }
+    expect(stream()).not.toHaveTextContent("66");
+    expect(quote[0]?.className).toBe(copy[0]?.className);
+    expect(within(stream()).getAllByRole("button", { name: "Copy" })[0]?.className).toBe(copy[0]?.className);
+  });
+
+  it.each([null, "allow"])("keeps tool, reasoning, plan and approval rows in one author run (%s)", async (chosen) => {
+    backend.entries.set("A", [
+      { type: "agent", text: "I’ll read package.json…" },
+      tool("one"),
+      tool("two"),
+      { type: "agent", text: "More detail" },
+      tool("List .", { status: "running" }),
+      { type: "permission", id: 1, title: "Run python3", options: [], chosen },
+      { type: "plan", items: [{ content: "Check files", status: "in_progress" }] },
+      { type: "thought", text: "Consider the result" },
+      { type: "agent", text: "Done" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Done");
+    expect(stream().querySelectorAll(`.${styles.agentAuthor}`)).toHaveLength(1);
+    expect(stream().firstElementChild?.firstElementChild).toHaveClass(styles.agentAuthor!);
+  });
+
+  it.each<AgentEntry>([subagent, { type: "message", incoming: true, text: "Parent request" }])(
+    "starts another author run after $type entries",
+    async (other) => {
+      backend.entries.set("A", [
+        { type: "agent", text: "Before the switch" },
+        other,
+        { type: "thought", text: "After the switch" },
+        tool("read"),
+        { type: "agent", text: "After the work" },
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      await screen.findByText("After the work");
+      const authors = stream().querySelectorAll(`.${styles.agentAuthor}`);
+      expect(authors).toHaveLength(2);
+      expect(stream().children[1]?.querySelector(`.${styles.agentAuthor}`)).toBeNull();
+      expect(authors[1]?.nextElementSibling).toHaveClass(styles.processRun!);
+      expect(authors[1]?.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
+    },
+  );
+
+  it("anchors every agent footer with its time before the hover actions", async () => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
+      { type: "agent", text: "First reply" },
+      tool("read"),
+      { type: "agent", text: "Final reply" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Final reply");
+    const messages = stream().querySelectorAll(`.${styles.agentMessage}`);
+    expect(messages).toHaveLength(2);
+    for (const message of messages) {
+      const [card, footer] = message.children;
+      expect(card).toHaveClass(styles.agentCard!);
+      expect(footer).toHaveClass(styles.messageFooter!);
+      expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
+      expect(footer?.firstElementChild).toHaveTextContent("12s");
+      expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
+    }
+    expect(stream().querySelector(`.${styles.userMessage} > .${styles.messageFooter}`)).not.toBeNull();
+  });
+
+  it("builds only the requested tail, with absolute indexes", () => {
+    const entries = Array.from({ length: 45 }, (_, i) => ({ type: "agent", text: `reply ${i}` }) as AgentEntry);
+    const rows = conversationRows(entries, 40);
+    expect(rows).toHaveLength(5);
+    expect(rows.map((row) => row.index)).toEqual([40, 41, 42, 43, 44]);
+  });
+});
+
+describe("process folding", () => {
+  it("folds reasoning and tool calls into one block", async () => {
+    backend.entries.set("A", [
+      { type: "thought", text: "think one" },
+      tool("one"),
+      { type: "thought", text: "think two" },
+      tool("two"),
+      { type: "agent", text: "Answer A" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = await screen.findByText("Reasoning · 2 tool calls");
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(screen.getByText("think one")).toBeInTheDocument();
+  });
+});
+
+describe("message tags", () => {
+  it("shows file references and skills as distinct tags", async () => {
+    backend.entries.set("A", [
+      {
+        type: "user",
+        text: "fix @src/a.ts and run /triage",
+        attachments: ["a.ts"],
+        images: [],
+        sentMs: 1,
+        doneMs: 2,
+        steered: false,
+      },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("@src/a.ts")).toHaveClass(tagStyles.tag!);
+    expect(screen.getByText("/triage")).toHaveClass(tagStyles.accent!);
+  });
+});
+
+describe("scrolling", () => {
+  it("hides Jump to Latest and follows new replies after retracting the conversation", async () => {
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+    height = 400;
+    act(() => useAgents.setState({ entries: new Map([["A", []]]) }));
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+    height = 1400;
+    act(() => useAgents.setState({ entries: new Map([["A", [{ type: "agent", text: "New reply" }]]]) }));
+    expect(el.scrollTop).toBe(1400);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+
+  it("defers prepending during a pointer drag and preserves the first row's viewport position", async () => {
+    const entries = Array.from({ length: 90 }, (_, i): AgentEntry => ({ type: "agent", text: `History ${i}` }));
+    useAgents.setState({ entries: new Map([["A", entries]]) });
+    // Mount hidden so the initial batch hasn't yet restored the bottom offset.
+    const view = render(
+      <EditorShownProvider value={false}>
+        <SessionEditor input={input("A")} />
+      </EditorShownProvider>,
+    );
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 3000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    // Give the conversation a new tail while the scrollbar is held.
+    fireEvent.pointerDown(el);
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [...entries, ...entries.map((e, i) => ({ ...e, text: `New ${i}` }))]]]),
+      }),
+    );
+    el.scrollTop = 20;
+    fireEvent.scroll(el);
+    const count = el.children.length;
+    const first = el.firstElementChild!;
+    const top = vi.spyOn(first, "getBoundingClientRect");
+    top.mockReturnValue({ top: 100 } as DOMRect);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+    });
+    expect(el.children.length).toBe(count);
+    // Its old top is measured at release, then shifts down when rows are inserted.
+    top.mockReturnValueOnce({ top: 100 } as DOMRect).mockReturnValue({ top: 500 } as DOMRect);
+    fireEvent.pointerUp(window);
+    await waitFor(() => expect(el.children.length).toBeGreaterThan(count));
+    expect(el.scrollTop).toBe(420);
+    view.unmount();
+  });
+
+  it("offers one click back to the latest message after scrolling up", async () => {
+    render(<SessionEditor input={input("A")} />);
+    expect(await screen.findByText("Answer A")).toBeInTheDocument();
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 100;
+    fireEvent.scroll(el);
+    const jump = await screen.findByRole("button", { name: "Jump to Latest" });
+    Object.defineProperty(el, "scrollTo", { configurable: true, value: vi.fn() });
+    fireEvent.click(jump);
+    expect(el.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+  });
+});
+
+describe("tool calls", () => {
+  it.each(["pending", "running"] as const)(
+    "keeps %s tools outside folds with their output expanded",
+    async (status) => {
+      backend.entries.set("A", [
+        tool("done one"),
+        tool("done two"),
+        tool("live", { status, output: "Reading files…" }),
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      const output = await screen.findByText("Reading files…");
+      expect(output.closest("details")!.open).toBe(true);
+      expect(output.closest(`.${styles.processRun}`)).toBeNull();
+      expect(screen.getByText("2 tool calls").closest("details")!.open).toBe(false);
+    },
+  );
+
+  it("folds consecutive finished tool calls into one collapsed row", async () => {
+    const edit = (id: string) => tool(id, { kind: "edit", diffs: [{ path: "/project/a.ts", added: 2, removed: 1 }] });
+    backend.entries.set("A", [edit("one"), edit("two"), { type: "agent", text: "Answer A" }]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const summary = await screen.findByText("2 tool calls");
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(screen.getByText("+4")).toBeInTheDocument();
+    expect(screen.getByText("−2")).toBeInTheDocument();
+  });
+});
+
 describe("a pending question", () => {
-  it("shows the whole question in the banner, with every answer, and sends the chosen one", async () => {
+  it("shows the whole question once inline, with every answer, and sends the chosen one", async () => {
     const question =
       'Scenario 4 ("follows the TR") still leaves the "About your request" section empty after two rewrites.\nHow should we continue?';
     const entries: AgentEntry[] = [
@@ -124,9 +391,10 @@ describe("a pending question", () => {
     backend.answers = [];
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const banner = await screen.findByRole("alert", { name: question });
-    expect(banner.querySelector(`.${styles.bannerText}`)?.textContent).toBe(question);
-    const answers = within(banner.querySelector<HTMLElement>(`.${styles.bannerActions}`)!).getAllByRole("button");
+    const card = await screen.findByRole("region", { name: "Allow tool call?" });
+    expect(within(card).getByText(question.replaceAll("\n", " "))).toBeInTheDocument();
+    expect(screen.getAllByText(question.replaceAll("\n", " "))).toHaveLength(1);
+    const answers = within(card).getAllByRole("button");
     expect(answers.map((b) => b.textContent)).toEqual([
       "Ship it as is and record it (Recommended)",
       "Detect the request in code",
@@ -137,15 +405,208 @@ describe("a pending question", () => {
   });
 });
 
+describe("a pending AskUserQuestion", () => {
+  it("keeps separate answers for Codex question ids with identical wording", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 11,
+        title: "Which?",
+        chosen: null,
+        options: [],
+        questions: ["first", "second"].map((answerKey, index) => ({
+          answerKey,
+          header: answerKey,
+          question: "Which?",
+          multiSelect: false,
+          options: [{ label: index === 0 ? "One" : "Two", description: "", preview: null }],
+        })),
+      },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Which?" });
+    fireEvent.click(within(card).getByRole("radio", { name: /^One/ }));
+    fireEvent.click(within(card).getByRole("radio", { name: /^Two/ }));
+    fireEvent.click(within(card).getByRole("button", { name: "Submit" }));
+    await waitFor(() =>
+      expect(backend.answers).toEqual([["A", 11, JSON.stringify({ first: ["One"], second: ["Two"] })]]),
+    );
+  });
+
+  it("shows every question with its descriptions in a card and sends all answers at once", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 9,
+        title: "Which layout?",
+        options: [{ id: "reject", name: "Skip", kind: "reject_once" }],
+        questions: [
+          {
+            header: "Layout",
+            question: "Which layout?",
+            multiSelect: false,
+            options: [
+              { label: "Table (Recommended)", description: "One row per check", preview: null },
+              { label: "List", description: "Grouped under headings", preview: null },
+            ],
+          },
+          {
+            header: "Checks",
+            question: "Which checks?",
+            multiSelect: true,
+            options: [
+              { label: "Disk", description: "", preview: null },
+              { label: "Updates", description: "", preview: null },
+            ],
+          },
+        ],
+        chosen: null,
+      },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Which layout?" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(within(card).getByText("One row per check")).toBeTruthy();
+    expect(within(card).getByText("Recommended")).toBeTruthy();
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    fireEvent.click(within(card).getByRole("radio", { name: /^List/ }));
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Disk/ }));
+    const others = within(card).getAllByRole("checkbox", { name: /^Other/ });
+    fireEvent.click(others[0]!);
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(within(card).getByPlaceholderText("Type your answer"), { target: { value: "GPU temps" } });
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 9, JSON.stringify({ "Which layout?": ["List"], "Which checks?": ["Disk", "GPU temps"] })],
+      ]),
+    );
+  });
+
+  it("picks options with number keys, previews the picked or hovered one, and skips with Escape", async () => {
+    backend.entries.set("A", [
+      {
+        type: "permission",
+        id: 10,
+        title: "Which layout?",
+        options: [{ id: "reject", name: "Skip", kind: "reject_once" }],
+        questions: [
+          {
+            header: "",
+            question: "Which layout?",
+            multiSelect: false,
+            options: [
+              { label: "Table", description: "", preview: "| a | b |" },
+              { label: "List", description: "", preview: null },
+            ],
+          },
+        ],
+        chosen: null,
+      },
+    ]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("form", { name: "Which layout?" });
+    const table = within(card).getByRole("radio", { name: /^Table/ });
+    const list = within(card).getByRole("radio", { name: /^List/ });
+    fireEvent.focus(table);
+    fireEvent.keyDown(table, { key: "2" });
+    expect(list).toHaveProperty("checked", true);
+    const shown = () => card.querySelector<HTMLElement>(`.${styles.questionPreviewActive}`)!;
+    const caption = () => shown().querySelector(`.${styles.questionPreviewCaption}`)?.textContent;
+    expect(card.querySelectorAll(`.${styles.questionPreviewActive}`)).toHaveLength(1);
+    expect(caption()).toBe("List");
+    expect(within(shown()).getByText("No preview")).toBeTruthy();
+    expect(within(shown()).queryByText("| a | b |")).toBeNull();
+    fireEvent.mouseEnter(table.closest("label")!.parentElement!);
+    expect(caption()).toBe("Table");
+    expect(within(shown()).getByText("| a | b |")).toBeTruthy();
+    fireEvent.mouseLeave(table.closest("label")!.parentElement!);
+    fireEvent.keyDown(table, { key: "3" });
+    expect(caption()).toBe("Other");
+    expect(within(shown()).queryByText("| a | b |")).toBeNull();
+    fireEvent.keyDown(table, { key: "Escape" });
+    await waitFor(() => expect(backend.answers).toEqual([["A", 10, "reject"]]));
+  });
+});
+
 describe("a pending permission request in the conversation", () => {
+  const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
+  const options = [
+    { id: "opaque-once", name: "Allow Once", kind: "allow_once" },
+    { id: "opaque-policy", name: `Always Allow \`${command}\``, kind: "allow_always" },
+    { id: "opaque-no", name: "Decline", kind: "reject_once" },
+    { id: "opaque-stop", name: "Decline and Stop", kind: "reject_always" },
+  ];
+
+  it("shows the requested command while another read tool is pending, with one card and short buttons", async () => {
+    backend.entries.set("A", [
+      {
+        type: "tool",
+        id: "pending-read",
+        title: "List .",
+        kind: "search",
+        status: "running",
+        output: null,
+        diffs: [],
+        locations: [],
+      },
+      { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("region", { name: "codex wants to run a command" });
+    expect(screen.getAllByRole("region", { name: "codex wants to run a command" })).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(stream()).toContainElement(card);
+    expect(card.querySelector("pre")?.textContent).toBe(command);
+    const buttons = within(card).getAllByRole("button");
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Allow Once",
+      "Always Allow",
+      "Decline",
+      "Decline and Stop",
+    ]);
+    expect(buttons.every((b) => b.tabIndex === 0)).toBe(true);
+    expect(buttons[1]?.textContent).toBe("Always Allow");
+    expect(buttons[1]?.title).toBe(options[1]?.name);
+  });
+
+  it.each(options)("sends the original $kind option id, then collapses the resolved card", async (option) => {
+    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
+    backend.answers = [];
+    backend.entries.set("A", [pending]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("region", { name: "codex wants to run a command" });
+    const button = within(card).getAllByRole("button")[options.indexOf(option)]!;
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, option.id]]));
+    act(() =>
+      useAgents.setState({ entries: new Map(backend.entries).set("A", [{ ...pending, chosen: option.name }]) }),
+    );
+    expect(card.querySelector("pre")).toBeNull();
+    expect(within(card).queryByRole("button")).toBeNull();
+    expect(card.textContent).toContain("python3 …");
+    expect(card.textContent).not.toContain("write_text");
+    expect(card).toHaveFocus();
+  });
+
   it("is answered from its line too, and one without options can be cancelled", async () => {
     backend.entries.set("A", [
       {
         type: "permission",
         id: 3,
-        title: "ls d:/project",
+        title: "Run ls d:/project",
         options: [
-          { id: "once", name: "Allow once", kind: "allow_once" },
+          { id: "once", name: "Allow Once", kind: "allow_once" },
           { id: "reject", name: "Reject", kind: "reject_once" },
         ],
         chosen: null,
@@ -157,18 +618,16 @@ describe("a pending permission request in the conversation", () => {
     backend.answers = [];
     useAgents.setState({ entries: new Map(backend.entries) });
     const { unmount } = render(<SessionEditor input={input("A")} />);
-    const line = (await screen.findAllByText("ls d:/project")).find((e) =>
-      e.classList.contains(styles.permissionTitle!),
-    )!.parentElement!;
+    const line = await screen.findByRole("region", { name: "codex wants to run a command" });
     const answers = within(line.querySelector<HTMLElement>(`.${styles.permissionAnswers}`)!).getAllByRole("button");
-    expect(answers.map((b) => b.textContent)).toEqual(["Allow once", "Reject"]);
+    expect(answers.map((b) => b.textContent)).toEqual(["Allow Once", "Decline"]);
     fireEvent.click(answers[0]!);
     await waitFor(() => expect(backend.answers).toEqual([["A", 3, "once"]]));
     unmount();
 
     render(<SessionEditor input={input("B")} />);
-    const banner = await screen.findByRole("alert", { name: "The agent asks for permission" });
-    fireEvent.click(within(banner).getByRole("button", { name: "Cancel" }));
+    const card = await screen.findByRole("region", { name: "Allow tool call?" });
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
     await waitFor(() =>
       expect(backend.answers).toEqual([
         ["A", 3, "once"],
@@ -179,6 +638,20 @@ describe("a pending permission request in the conversation", () => {
 });
 
 describe("session state across tasks and hosts", () => {
+  it("leaves a task unread while its kept-alive tab is hidden, and reads it once shown", () => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    useAgents.setState({ unread: new Set(["A"]) });
+    const session = (shown: boolean) => (
+      <EditorShownProvider value={shown}>
+        <SessionEditor input={input("A")} />
+      </EditorShownProvider>
+    );
+    const { rerender } = render(session(false));
+    expect(useAgents.getState().unread.has("A")).toBe(true);
+    rerender(session(true));
+    expect(useAgents.getState().unread.has("A")).toBe(false);
+  });
+
   it("fetches a conversation once and shows it again from the store when its tab reopens", async () => {
     const entries = new Map(useAgents.getState().entries);
     entries.delete("A");

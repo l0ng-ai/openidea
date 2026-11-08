@@ -40,6 +40,7 @@ const KIND_LABEL: Record<ToolInfo["kind"], string> = {
   debugger: "Debugger",
   plugin: "Plugin",
   formatter: "Formatter",
+  cli: "Command-line tool",
 };
 
 export function filterTools(tools: readonly ToolInfo[], query: string, filter: Filter): ToolInfo[] {

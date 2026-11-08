@@ -164,6 +164,9 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     let kinds = invoke(&peer, "plugin_event_kinds", json!({})).await.unwrap();
     assert!(kinds.as_array().unwrap().contains(&json!("file-saved")), "{kinds}");
 
+    invoke(&peer, "plugin_set_ui_locale", json!({ "tag": "fr" })).await.unwrap();
+    assert_eq!(plugins.host().ui_locale(), "fr");
+
     // Saving a file that exists only on the server: Checkstyle reads that file.
     let java = project.join("src/A.java");
     std::fs::write(&java, "class A {\n\tint x;\n}\n").unwrap();
@@ -230,7 +233,7 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
         PluginHost::new(tmp.path().join("desktop/plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default())
             .unwrap();
     desktop.set_program_path(path_var.clone());
-    for dir in [official("csv-editor"), fixture("jobs")] {
+    for dir in [official("csv-editor"), fixture("jobs"), fixture("settings-pages")] {
         let info = desktop.install_from_dir(&dir, &Consent::all()).unwrap();
         assert_eq!(info.status, PluginStatus::Inactive, "{:?}", info.error);
     }
@@ -266,8 +269,8 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     let _: Value = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
     invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
     invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
-    let report = sync(&peer, &desktop, &["openidea.csv-editor", "jobs"]).await;
-    assert_eq!(report.installed.len(), 2, "{report:?}");
+    let report = sync(&peer, &desktop, &["openidea.csv-editor", "jobs", "settings-pages"]).await;
+    assert_eq!(report.installed.len(), 3, "{report:?}");
 
     // CSV Editor: the document is the server's.
     let opened = invoke(&peer, "doc_open", json!({ "path": project.join("people.csv") })).await.unwrap();
@@ -300,5 +303,50 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
         })
     })
     .await;
+
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "jobs", "commandId": "context", "arg": "mode=true", "editor": null }),
+    )
+    .await
+    .unwrap();
+    until("the context key's event", 5, || {
+        client.plugin_events.lock().iter().any(|m| {
+            m.window.as_deref() == Some("main")
+                && matches!(&m.event, PluginEvent::ContextChanged { key, value, .. } if key == "mode" && value.as_deref() == Some("true"))
+        })
+    })
+    .await;
+    let keys = invoke(&peer, "plugin_context_keys", json!({})).await.unwrap();
+    assert_eq!(keys, json!([{ "pluginId": "jobs", "key": "mode", "value": "true" }]), "{keys}");
+
+    let selected = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "jobs", "commandId": "selection", "arg": null, "editor": null, "paths": ["/srv/src/a.txt"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(selected, "/srv/src/a.txt");
+    for (scope, name) in [("global", "Global"), ("project", "Project")] {
+        let values = json!({ "settings-pages": { "profiles": [{ "name": name, "provider": "local", "baseUrl": "http://localhost", "model": "test", "enabled": true, "temperature": 0.7, "limit": 100 }] } });
+        invoke(&peer, "settings_set", json!({ "scope": scope, "key": "plugins", "value": values.to_string() }))
+            .await
+            .unwrap();
+    }
+    for (scope, name) in
+        [(None, "Project"), (Some("global"), "Global"), (Some("project"), "Project"), (None, "Project")]
+    {
+        let mut args = json!({ "pluginId": "settings-pages", "commandId": "test", "arg": null, "editor": null });
+        if let Some(scope) = scope {
+            args["settingsScope"] = json!(scope);
+        }
+        let result = invoke(&peer, "plugin_run_command", args).await.unwrap();
+        let result: Value = serde_json::from_str(result.as_str().unwrap()).unwrap();
+        assert_eq!(result["profiles"][0]["name"], name);
+        assert_eq!(result["hasProject"], true);
+    }
+
     plugins.host().shutdown();
 }

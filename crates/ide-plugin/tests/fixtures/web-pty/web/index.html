@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>PTY Probe</title>
+<style>
+body { background: var(--openidea-bg); color: var(--openidea-fg); font-family: var(--openidea-font-mono, monospace); font-size: var(--openidea-font-size, 13px); padding: 12px; }
+button, input { font: inherit; padding: 6px; } pre { white-space: pre-wrap; overflow-wrap: anywhere; } form { display: flex; gap: 4px; } input { flex: 1; min-width: 0; }
+</style></head><body>
+<h2>Web PTY Probe</h2><p id="isolation"></p>
+<button id="start">Start bash</button> <button id="stop">Stop</button> <button id="resize">Resize to 100 × 30</button>
+<pre id="output" aria-live="polite"></pre>
+<form id="input"><input id="command" aria-label="Terminal input" placeholder="Type a shell command"><button>Send</button></form>
+<script>
+const output = document.querySelector('#output');
+const send = (op, args = {}) => openidea.postMessage(JSON.stringify({ op, sessionId: 'probe', ...args }));
+document.querySelector('#isolation').textContent = `IPC globals: ${typeof window.__TAURI_INTERNALS__}; parent access: ` + (() => { try { return parent.document.title; } catch { return 'blocked'; } })();
+openidea.onMessage(text => {
+  let m; try { m = JSON.parse(text); } catch { return; }
+  if (m.op === 'pty-data') {
+    output.textContent = (output.textContent + m.data).slice(-65536);
+    send('pty-ack', { sequence: m.sequence });
+  } else if (m.op === 'pty-error') output.textContent += '\nERROR: ' + m.error + '\n';
+  else if (m.op === 'pty-exit') output.textContent += '\nEXIT: ' + m.exitCode + '\n';
+});
+document.querySelector('#start').onclick = () => send('pty-spawn', { program: 'bash', args: ['--noprofile', '--norc', '-i'], cols: 100, rows: 30 });
+document.querySelector('#stop').onclick = () => send('pty-kill');
+document.querySelector('#resize').onclick = () => send('pty-resize', { cols: 100, rows: 30 });
+document.querySelector('#input').onsubmit = e => { e.preventDefault(); send('pty-input', { data: document.querySelector('#command').value + '\r' }); document.querySelector('#command').value = ''; };
+</script></body></html>

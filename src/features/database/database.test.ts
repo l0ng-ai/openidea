@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { exportData, type ExportData } from "./export";
 import {
+  activeSchema,
   buildRowEdits,
   colorVar,
   connectRemedy,
@@ -9,6 +10,8 @@ import {
   idleTargets,
   matchesPattern,
   parseSourceUrl,
+  passesTreeFilter,
+  schemaSwitchable,
   shownNames,
   sourceLabel,
   splitTarget,
@@ -171,13 +174,24 @@ describe("parseSourceUrl", () => {
     });
   });
 
-  it("reads SQLite files and rejects other drivers", () => {
+  it("reads SQLite and Oracle URLs and rejects other drivers", () => {
     expect(parseSourceUrl("jdbc:sqlite:C:/data/shop.db")?.source).toEqual({
       driver: "sqlite",
       file: "C:/data/shop.db",
       name: "shop",
     });
-    expect(parseSourceUrl("oracle://x")).toBeNull();
+    expect(parseSourceUrl("oracle://scott:tiger@db.local:1521/ORCLPDB1")).toEqual({
+      source: { driver: "oracle", host: "db.local", port: 1521, user: "scott", database: "ORCLPDB1" },
+      password: "tiger",
+    });
+    expect(parseSourceUrl("jdbc:oracle:thin:@//db.local:1521/ORCL")?.source).toEqual({
+      driver: "oracle",
+      host: "db.local",
+      port: 1521,
+      user: "",
+      database: "ORCL",
+    });
+    expect(parseSourceUrl("unknown://x")).toBeNull();
   });
 });
 
@@ -190,9 +204,10 @@ describe("data source types", () => {
     });
     expect(vendorPreset(vendorById("postgres")!)).toEqual({ driver: "postgres", vendor: "", port: 5432 });
     expect(vendorPreset(vendorById("supabase")!).ssl).toBe("require");
-    expect(VENDORS.every((v) => ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse"].includes(v.driver))).toBe(
-      true,
-    );
+    expect(vendorPreset(vendorById("oracle")!)).toEqual({ driver: "oracle", vendor: "", port: 1521 });
+    expect(
+      VENDORS.every((v) => ["postgres", "mysql", "sqlite", "sqlServer", "clickhouse", "oracle"].includes(v.driver)),
+    ).toBe(true);
     const labels = VENDORS.map((v) => v.label);
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
@@ -281,6 +296,33 @@ describe("Schemas tab", () => {
     expect(shownNames(names, true, ["billing"])).toEqual(names);
     expect(shownNames(names, false, ["app*"], "postgres")).toEqual(["app", "app_test", "postgres"]);
     expect(shownNames(names, false, [])).toEqual([]);
+  });
+
+  it("quick-filters tree objects by a case-insensitive substring", () => {
+    expect(passesTreeFilter("users", "user")).toBe(true);
+    expect(passesTreeFilter("Users", "user")).toBe(true);
+    expect(passesTreeFilter("order_items", "  IT  ")).toBe(true);
+    expect(passesTreeFilter("users", "orders")).toBe(false);
+    expect(passesTreeFilter("users", "")).toBe(true);
+    expect(passesTreeFilter("users", "   ")).toBe(true);
+    expect(passesTreeFilter("users", null)).toBe(true);
+  });
+});
+
+describe("active schema", () => {
+  it("follows the console's pick, then the connection default", () => {
+    expect(activeSchema("app", "public")).toBe("app");
+    expect(activeSchema(undefined, "public")).toBe("public");
+    expect(activeSchema("", "public")).toBe("public");
+    expect(activeSchema(undefined, undefined)).toBe("");
+    expect(activeSchema(null, null)).toBe("");
+  });
+
+  it("offers the schema dropdown to multi-schema drivers only", () => {
+    for (const driver of ["postgres", "mysql", "sqlServer", "oracle"] as const)
+      expect(schemaSwitchable(driver)).toBe(true);
+    for (const driver of ["sqlite", "clickhouse"] as const) expect(schemaSwitchable(driver)).toBe(false);
+    expect(schemaSwitchable(undefined)).toBe(false);
   });
 });
 

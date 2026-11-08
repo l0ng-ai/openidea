@@ -13,35 +13,8 @@
 import { formatDate, pascalCase, snakeCase, kebabCase } from "../live/model";
 import { BUILTIN_CODE_TEMPLATES, BUILTIN_INCLUDES } from "./builtins";
 
-export type NameStyle = "asis" | "snake" | "pascal" | "kebab";
-
-export interface FileTemplateKind {
-  id: string;
-  label: string;
-  body: string;
-  /** Overrides the template's extension (Stylesheet › CSS / SCSS / Less). */
-  extension?: string;
-}
-
-export interface FileTemplate {
-  id: string;
-  /** Menu label, e.g. "Rust File". */
-  name: string;
-  icon: string;
-  /** Without the dot; empty for "File…" (the name carries the extension). */
-  extension: string;
-  nameStyle: NameStyle;
-  /** Package inference: `jvm` (Java/Kotlin source roots) or `go` (directory). */
-  packageStyle?: "jvm" | "go";
-  /** Dotted names (`com.acme.Foo`) create package directories. */
-  dottedPackages?: boolean;
-  kinds: FileTemplateKind[];
-  enabled?: boolean;
-  /** Prefilled name for fixed-name files (`Dockerfile`, `.editorconfig`). */
-  defaultName?: string;
-  /** Reformat according to style: run Reformat Code on the new file (unset: on, as IDEA). */
-  reformat?: boolean;
-}
+import type { FileTemplate, FileTemplateKind, NameStyle } from "@/platform/fileTemplates";
+export type { FileTemplate, FileTemplateKind, NameStyle } from "@/platform/fileTemplates";
 
 /** A fragment for `#parse` (Includes tab: "File Header") or a Code tab template. */
 export interface TemplateFragment {
@@ -133,10 +106,27 @@ export interface PlannedFile {
  * template's naming style.
  */
 export function planFile(
-  t: Pick<FileTemplate, "extension" | "nameStyle" | "dottedPackages">,
+  t: Pick<FileTemplate, "extension" | "nameStyle" | "dottedPackages" | "fileName">,
   directory: string,
   input: string,
 ): PlannedFile | null {
+  if (t.fileName !== undefined) {
+    const fileName = t.fileName;
+    const stem = fileName.split(".")[0]!.trimEnd();
+    if (
+      !fileName ||
+      new TextEncoder().encode(fileName).length > 255 ||
+      fileName.trim() !== fileName ||
+      fileName.endsWith(".") ||
+      /[\\/<>:"|?*]/.test(fileName) ||
+      Array.from(fileName).some((c) => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) <= 159)) ||
+      /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)
+    )
+      return null;
+    const dir = directory.replace(/\/+$/, "");
+    const dot = fileName.lastIndexOf(".");
+    return { path: `${dir}/${fileName}`, directory: dir, name: dot > 0 ? fileName.slice(0, dot) : fileName, fileName };
+  }
   let raw = input
     .trim()
     .replace(/\\/g, "/")
@@ -223,6 +213,47 @@ export function inferGoPackage(directory: string, projectRoot: string | null, si
 
 export const GO_PACKAGE_RE = /^\s*package\s+([A-Za-z_]\w*)/m;
 
+/** `autoload.psr-4` and `autoload-dev.psr-4` of a composer.json: `[namespace prefix, folder]` (folder relative to it). */
+export function composerPsr4(json: string): Array<[string, string]> {
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const out: Array<[string, string]> = [];
+  for (const section of ["autoload", "autoload-dev"]) {
+    const map = (data as Record<string, { "psr-4"?: Record<string, unknown> } | undefined> | null)?.[section]?.[
+      "psr-4"
+    ];
+    if (!map || typeof map !== "object") continue;
+    for (const [prefix, value] of Object.entries(map)) {
+      for (const dir of Array.isArray(value) ? value : [value])
+        if (typeof dir === "string")
+          out.push([prefix, dir.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "")]);
+    }
+  }
+  return out;
+}
+
+/**
+ * PHP namespace for `directory` (relative to the composer.json folder): the PSR-4 prefix of the
+ * longest mapped folder that contains it, then the folders below it (`App\\` + `src/` → `src/Http`
+ * gives `App\Http`). Outside every mapping: no namespace.
+ */
+export function inferPhpNamespace(directory: string, psr4: ReadonlyArray<readonly [string, string]>): string {
+  const rel = directory.split("/").filter(Boolean);
+  let best: { prefix: string; depth: number } | null = null;
+  for (const [prefix, dir] of psr4) {
+    const segs = dir.split("/").filter((s) => s && s !== ".");
+    if (segs.length > rel.length || segs.some((s, i) => s !== rel[i])) continue;
+    if (!best || segs.length > best.depth) best = { prefix, depth: segs.length };
+  }
+  if (!best) return "";
+  const parts = [...best.prefix.split("\\").filter(Boolean), ...rel.slice(best.depth)];
+  return parts.every((p) => /^[A-Za-z_\x80-\uffff][\w\x80-\uffff]*$/.test(p)) ? parts.join("\\") : "";
+}
+
 export interface FileTemplateVars {
   name: string;
   fileName: string;
@@ -230,6 +261,7 @@ export interface FileTemplateVars {
   projectName?: string;
   user?: string;
   now?: Date;
+  variables?: Readonly<Record<string, string>>;
 }
 
 /** Renders a body; returns the text and the caret offset (`$END$`, else the end). */
@@ -240,6 +272,7 @@ export function renderFileTemplate(
 ): { text: string; caret: number } {
   const now = vars.now ?? new Date();
   const values: Record<string, string> = {
+    ...vars.variables,
     NAME: vars.name,
     FILE_NAME: vars.fileName,
     PACKAGE: vars.packageName ?? "",

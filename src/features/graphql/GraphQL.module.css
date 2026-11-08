@@ -196,7 +196,7 @@
 }
 .variables::selection {
   background: var(--bg-editor-selection);
-  color: transparent;
+  color: var(--fg);
 }
 
 /*
@@ -219,9 +219,6 @@
   justify-content: center;
   border-radius: var(--radius-small);
   cursor: pointer;
-}
-.runMarker:hover {
-  background: var(--bg-hover);
 }
 
 /* Query result and variables: JSON in the editor's syntax colours. */

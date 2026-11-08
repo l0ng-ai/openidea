@@ -5,11 +5,16 @@ use crate::adapter::{AdapterIo, LaunchFuture};
 use ide_core::IdeEvent;
 use ide_core::event::DebugEvent;
 use ide_jsonrpc::framing;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 type Log = Arc<Mutex<Vec<Value>>>;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Script {
     /// Send a `runInTerminal` reverse request when `launch` arrives.
     run_in_terminal: Option<Vec<String>>,
@@ -17,6 +22,33 @@ struct Script {
     start_debugging: bool,
     ignore_configuration_done: bool,
     source_path: Option<String>,
+    /// Report this process id in the adapter's `process` event (the program being debugged).
+    debuggee_pid: Option<u32>,
+    /// java-debug's spelling of the same event.
+    java_process_id: bool,
+    /// Send one more output event right after the `terminated` event (a program still logging
+    /// while it shuts down).
+    output_after_terminate: bool,
+    /// Advertise `supportsTerminateRequest` (java-debug does not, so Stop signals the program).
+    supports_terminate: bool,
+    /// Answer `setBreakpoints` only once this many are waiting (a client that waits for each never gets one).
+    hold_set_breakpoints: usize,
+}
+
+impl Default for Script {
+    fn default() -> Self {
+        Self {
+            run_in_terminal: None,
+            start_debugging: false,
+            ignore_configuration_done: false,
+            source_path: None,
+            debuggee_pid: None,
+            java_process_id: false,
+            output_after_terminate: false,
+            supports_terminate: true,
+            hold_set_breakpoints: 0,
+        }
+    }
 }
 
 struct FakeLauncher {
@@ -49,6 +81,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut r = BufReader::new(r);
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
+    let mut held: Vec<Value> = Vec::new();
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -74,7 +107,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 json!({
                     "supportsConfigurationDoneRequest": true,
                     "supportsCompletionsRequest": true,
-                    "supportsTerminateRequest": true,
+                    "supportsTerminateRequest": script.supports_terminate,
                     "supportsSetVariable": true,
                     "supportsFunctionBreakpoints": true,
                     "supportsDataBreakpoints": true,
@@ -101,14 +134,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(json!({"type": "event", "event": "initialized"}));
             }
             "setBreakpoints" => {
-                let bps: Vec<Value> = msg["arguments"]["breakpoints"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, b)| json!({"id": i + 1, "verified": true, "line": b["line"]}))
-                    .collect();
-                ok!(msg, json!({"breakpoints": bps}));
+                held.push(msg);
+                if held.len() < script.hold_set_breakpoints {
+                    continue;
+                }
+                for msg in std::mem::take(&mut held) {
+                    let bps: Vec<Value> = msg["arguments"]["breakpoints"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| json!({"id": i + 1, "verified": true, "line": b["line"]}))
+                        .collect();
+                    ok!(msg, json!({"breakpoints": bps}));
+                }
             }
             "setExceptionBreakpoints" => ok!(msg, json!({})),
             "setFunctionBreakpoints" | "setDataBreakpoints" => {
@@ -145,6 +184,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 }
                 if let Some(l) = pending_launch.take() {
                     send!(json!({"type": "response", "request_seq": l, "command": "launch", "success": true}));
+                }
+                if let Some(pid) = script.debuggee_pid {
+                    let event = if script.java_process_id {
+                        json!({"type": "event", "event": "processid", "body": {"processId": pid, "shellProcessId": pid}})
+                    } else {
+                        json!({"type": "event", "event": "process", "body": {"name": "prog", "systemProcessId": pid}})
+                    };
+                    send!(event);
                 }
                 send!(json!({"type": "event", "event": "output", "body": {"category": "stdout", "output": "hello\n"}}));
                 send!(
@@ -199,6 +246,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "terminate" => {
                 ok!(msg, Value::Null);
                 send!(json!({"type": "event", "event": "terminated"}));
+                if script.output_after_terminate {
+                    send!(
+                        json!({"type": "event", "event": "output", "body": {"category": "stdout", "output": "late\n"}})
+                    );
+                }
             }
             "disconnect" => {
                 ok!(msg, Value::Null);
@@ -466,6 +518,40 @@ async fn run_in_terminal_spawns_debuggee() {
         h.log.lock().iter().find(|m| m["type"] == "response" && m["command"] == "runInTerminal").cloned().unwrap();
     assert_eq!(response["success"], true);
     assert!(response["body"]["processId"].as_u64().unwrap() > 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn run_in_terminal_program_reads_typed_input() {
+    let h = harness(Script {
+        // CodeLLDB's launcher asks to clear the terminal; the console keeps its output.
+        run_in_terminal: Some(vec![
+            "sh".into(),
+            "-c".into(),
+            "[ -t 0 ] && echo 'name?' && read name && echo \"hello $name\"".into(),
+            "--clear-screen".into(),
+        ]),
+        ..Script::default()
+    });
+    let session = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::ProgramInput)).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("name?"))).await;
+    h.manager.send_input(session, "Bob\n").unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output.contains("hello Bob"))).await;
+    let output: String = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Debug { event: DebugEvent::Output { category, output }, .. } if category == "stdout" => {
+                Some(output.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(!output.contains('\r'), "{output:?}");
+    h.manager.stop(session).await.unwrap();
+    assert!(h.manager.send_input(session, "x\n").is_err());
 }
 
 #[test]
@@ -887,6 +973,7 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
     let b = PathBuf::from("/p/b.py");
     h.manager.set_breakpoints(a.clone(), vec![bp(1)]).await.unwrap();
     h.manager.set_breakpoints(b.clone(), vec![bp(3)]).await.unwrap();
+    h.manager.set_breakpoints(PathBuf::from("/p/off.py"), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
     h.manager.set_function_breakpoints(vec![function_bp("run", true)]).await.unwrap();
     let id = h.start(config()).await.unwrap();
     h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
@@ -915,6 +1002,24 @@ async fn force_stepping_suspends_breakpoints_until_the_next_stop() {
     h.manager.run_to(id, 1, a.clone(), 9, true).await.unwrap();
     assert_eq!(sent_for("/p/a.py").last().unwrap(), &json!([{"line": 10}]));
     assert_eq!(sent_for("/p/b.py").last().unwrap(), &json!([]));
+    assert!(sent_for("/p/off.py").is_empty(), "nothing enabled there, nothing to suspend or restore");
+}
+
+#[tokio::test]
+async fn startup_sends_every_file_at_once_and_skips_files_with_nothing_enabled() {
+    let h = harness(Script { hold_set_breakpoints: 2, ..Script::default() });
+    h.manager.set_breakpoints(PathBuf::from("/p/a.py"), vec![bp(1)]).await.unwrap();
+    h.manager.set_breakpoints(PathBuf::from("/p/b.py"), vec![bp(3)]).await.unwrap();
+    let off = PathBuf::from("/p/off.py");
+    h.manager.set_breakpoints(off.clone(), vec![Breakpoint { enabled: false, ..bp(5) }]).await.unwrap();
+    // Waiting for each answer before the next request would stall until the request timeout.
+    tokio::time::timeout(Duration::from_secs(5), h.start(config())).await.expect("requests pipelined").unwrap();
+    let paths: Vec<Value> = requests(&h, "setBreakpoints").into_iter().map(|r| r["source"]["path"].clone()).collect();
+    assert_eq!(paths, [json!("/p/a.py"), json!("/p/b.py")]);
+    assert_eq!(
+        h.manager.breakpoint_states(&off),
+        [BreakpointState { line: 5, verified: false, message: Some("Disabled".into()) }]
+    );
 }
 
 #[tokio::test]
@@ -1284,4 +1389,222 @@ fn flutter_projects_are_found_from_the_program_or_the_working_directory() {
     assert!(!is_flutter_project(&tool, Some(&tool.join("bin/main.dart"))));
     assert!(!is_flutter_project(&root, None));
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_waits_for_the_launched_program_to_exit() {
+    // The adapter answers `disconnect` at once; the program it started is still alive and
+    // holds its port for a while. Stop must not report the session as over before it exits.
+    // Reaped by a waiting thread: a zombie still "exists" for `kill(pid, 0)`, unlike the
+    // program an adapter starts and reaps.
+    // Ignores SIGTERM: Stop must wait for the program, not assume the signal ended it.
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    let h = harness(Script { debuggee_pid: Some(pid), ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await; // let the program install its trap
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_millis(800), "stop returned after {elapsed:?}, before the program exited");
+    assert!(elapsed < Duration::from_secs(5), "stop waited {elapsed:?} for a program that ended after a second");
+    h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_second_stop_kills_the_program_instead_of_waiting() {
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let exited = Arc::new(AtomicBool::new(false));
+    {
+        let exited = exited.clone();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            exited.store(true, Ordering::Release);
+        });
+    }
+    let h = harness(Script { debuggee_pid: Some(pid), ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let first = tokio::spawn({
+        let manager = h.manager.clone();
+        async move { manager.stop(id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!exited.load(Ordering::Acquire), "the program is still alive while the first Stop waits");
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    let first_result = tokio::time::timeout(Duration::from_secs(5), first).await.expect("the first Stop returns");
+    first_result.unwrap().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "a second Stop does not wait out the program");
+    for _ in 0..100 {
+        if exited.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(exited.load(Ordering::Acquire), "the second Stop killed the program");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_waits_for_the_program_when_the_adapter_uses_javas_processid_event() {
+    // Ignores SIGTERM: Stop must wait for the program, not assume the signal ended it.
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    let h = harness(Script { debuggee_pid: Some(pid), java_process_id: true, ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(800),
+        "stop returned after {:?}, before the program exited",
+        started.elapsed()
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn output_keeps_arriving_while_a_stopped_program_is_exiting() {
+    // Ignores SIGTERM: Stop must wait for the program, not assume the signal ended it.
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    let h = harness(Script { debuggee_pid: Some(pid), output_after_terminate: true, ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = Instant::now();
+    let stop = tokio::spawn({
+        let manager = h.manager.clone();
+        async move { manager.stop(id).await }
+    });
+    // The last line must reach the console while Stop still waits for the program.
+    h.wait_event(|e| matches!(e, DebugEvent::Output { output, .. } if output == "late\n")).await;
+    assert!(started.elapsed() < Duration::from_millis(800), "output arrived only after the program was gone");
+    stop.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn closing_a_project_stops_the_debug_sessions_it_started() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    // The session's cwd is /p, whatever key it was started under.
+    h.manager.stop_under(Path::new("/p")).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+    assert!(h.manager.sessions(None).is_empty(), "session {id:?} is gone");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_kills_the_program_started_by_the_reported_launcher() {
+    use std::io::BufRead;
+    // java-debug reports the launcher shell; the JVM is its child. Stopping only the reported
+    // pid orphans the program, which keeps running (and keeps its ports).
+    let mut launcher = std::process::Command::new("sh")
+        .args(["-c", "python3 -c 'import time; time.sleep(30)' & echo $!; wait"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let launcher_pid = launcher.id();
+    let mut line = String::new();
+    std::io::BufReader::new(launcher.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    let program: i32 = line.trim().parse().expect("child pid");
+    // Reap the launcher: a zombie still "exists" for `kill(pid, 0)`, unlike the shell jdtls reaps.
+    std::thread::spawn(move || {
+        let _ = launcher.wait();
+    });
+
+    let h = harness(Script {
+        debuggee_pid: Some(launcher_pid),
+        supports_terminate: false, // java-debug does not advertise it
+        ..Default::default()
+    });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Initialized)).await;
+    for _ in 0..100 {
+        if h.manager.session(id).map(|s| s.debuggee_pid.load(Ordering::Acquire)).ok() == Some(i64::from(launcher_pid)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    h.manager.stop(id).await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while unsafe { libc::kill(program, 0) } == 0 {
+        assert!(Instant::now() < deadline, "the program the launcher started survived stop");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[test]
+fn delve_leftovers_are_removed_without_touching_other_files() {
+    let dir = std::env::temp_dir().join(format!("openidea-delve-bin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in ["__debug_bin", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
+        std::fs::write(dir.join(name), b"bin").unwrap();
+    }
+    // Lookalikes that are not Delve's own binaries stay: sources, a future
+    // in-progress build, and a directory that happens to share the name.
+    for name in ["__debug_bin.go", "__debug_bin.go.exe", "main.go"] {
+        std::fs::write(dir.join(name), b"keep").unwrap();
+    }
+    std::fs::create_dir(dir.join("__debug_bin.dir")).unwrap();
+    remove_delve_binaries(&dir);
+    for name in ["__debug_bin", "__debug_bin.exe", "__debug_bin.exe3323301925"] {
+        assert!(!dir.join(name).exists(), "{name} should be gone");
+    }
+    for name in ["__debug_bin.go", "__debug_bin.go.exe", "main.go", "__debug_bin.dir"] {
+        assert!(dir.join(name).exists(), "{name} should stay");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

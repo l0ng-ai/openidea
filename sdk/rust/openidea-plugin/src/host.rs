@@ -60,6 +60,28 @@ mod imp {
         wit::ui::show_notification(level, title, body)
     }
 
+    pub fn notify_with_actions(
+        level: NotificationLevel,
+        title: &str,
+        body: &str,
+        actions: &[NotificationAction],
+    ) -> Result<(), Error> {
+        let level = match level {
+            NotificationLevel::Info => wit::types::NotificationLevel::Info,
+            NotificationLevel::Warning => wit::types::NotificationLevel::Warning,
+            NotificationLevel::Error => wit::types::NotificationLevel::Error,
+        };
+        let actions: Vec<_> = actions
+            .iter()
+            .map(|a| wit::ui::NotificationAction {
+                label: a.label.clone(),
+                command: a.command.clone(),
+                argument: a.argument.clone(),
+            })
+            .collect();
+        wit::ui::notify(level, title, body, &actions).map_err(error)
+    }
+
     pub fn set_status_item(id: &str, item: &StatusItem) {
         let item = wit::ui::StatusItem {
             text: item.text.clone(),
@@ -73,12 +95,71 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
+        let value = match value {
+            ContextValue::Flag(b) => wit::ui::ContextValue::Flag(b),
+            ContextValue::Number(n) => wit::ui::ContextValue::Number(n),
+            ContextValue::Text(t) => wit::ui::ContextValue::Text(t),
+        };
+        wit::ui::set_context(key, &value).map_err(error)
+    }
+
+    pub fn remove_context(key: &str) {
+        wit::ui::remove_context(key)
+    }
+
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         wit::ui::copy_to_clipboard(text).map_err(error)
     }
 
     pub fn open_url(url: &str) -> Result<(), Error> {
         wit::ui::open_url(url).map_err(error)
+    }
+
+    fn pick_items(items: &[PickItem]) -> Vec<wit::ui::PickItem> {
+        items
+            .iter()
+            .map(|i| wit::ui::PickItem {
+                key: i.key.clone(),
+                label: i.label.clone(),
+                description: i.description.clone(),
+            })
+            .collect()
+    }
+
+    pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+        wit::ui::pick(title, &pick_items(items)).map_err(error)
+    }
+
+    pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::pick_directory(title, initial).map_err(error)
+    }
+    pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+        wit::workspace::open_project(path, new_window).map_err(error)
+    }
+
+    pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+        wit::ui::pick_many(title, &pick_items(items)).map_err(error)
+    }
+
+    pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::input(prompt, value).map_err(error)
+    }
+
+    pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+        wit::ui::input_multiline(prompt, value).map_err(error)
+    }
+
+    pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
+        wit::ui::confirm(title, body).map_err(error)
+    }
+
+    pub fn reveal_view(view: &str) -> Result<(), Error> {
+        wit::views::reveal(view).map_err(error)
+    }
+
+    pub fn locale() -> String {
+        wit::ui::locale()
     }
 
     pub fn storage_get(key: &str) -> Result<Option<String>, Error> {
@@ -101,6 +182,10 @@ mod imp {
         wit::workspace::projects().map_err(error)
     }
 
+    pub fn project_of(path: &str) -> Option<ProjectRes> {
+        wit::workspace::project_of(path)
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         p.root().map_err(error)
     }
@@ -109,12 +194,20 @@ mod imp {
         p.read_file(path).map_err(error)
     }
 
+    pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
+        p.write_file(path, text).map_err(error)
+    }
+
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
         i.project()
     }
 
     pub fn invocation_editor(i: InvocationRef<'_>) -> Option<EditorRes> {
         i.editor()
+    }
+
+    pub fn invocation_selected_paths(i: InvocationRef<'_>) -> Vec<String> {
+        i.selected_paths()
     }
 
     pub fn editor_path(e: &EditorRes) -> String {
@@ -164,6 +257,39 @@ mod imp {
         wit::vcs::remotes(p).map_err(error)
     }
 
+    pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+        wit::commit::pending_commit().map(|d| d.map(__draft_in)).map_err(error)
+    }
+
+    pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+        wit::commit::set_commit_message(revision, message).map_err(error)
+    }
+
+    #[doc(hidden)]
+    pub fn __draft_in(d: wit::commit::CommitDraft) -> CommitDraft {
+        CommitDraft {
+            revision: d.revision,
+            message: d.message,
+            amend: d.amend,
+            changes: d
+                .changes
+                .into_iter()
+                .map(|c| CommitChange {
+                    repository: c.repository,
+                    path: c.path,
+                    old_path: c.old_path,
+                    status: c.status,
+                    diff: c.diff,
+                    truncated: c.truncated,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+        wit::events::subscribe_paths(kind, &globs.iter().map(|g| (*g).to_owned()).collect::<Vec<_>>()).map_err(error)
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
     }
@@ -184,43 +310,111 @@ mod imp {
         t.is_cancelled()
     }
 
+    pub fn project_symbols(p: &ProjectRes, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        p.symbols(query, limit)
+            .map(|symbols| {
+                symbols
+                    .into_iter()
+                    .map(|s| SymbolInfo {
+                        name: s.name,
+                        kind: s.kind,
+                        container: s.container,
+                        location: Location { path: s.location.path, range: range_from(s.location.range) },
+                    })
+                    .collect()
+            })
+            .map_err(error)
+    }
+
     pub fn project_find(p: &ProjectRes, glob: &str, limit: u32) -> Result<Vec<String>, Error> {
         p.find_files(glob, limit).map_err(error)
     }
 
-    pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
+    pub fn project_exists(p: &ProjectRes, path: &str) -> Result<bool, Error> {
+        p.exists(path).map_err(error)
+    }
+
+    pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
+        p.stat(path).map(file_stat).map_err(error)
+    }
+
+    fn file_kind(kind: wit::workspace::FileKind) -> FileKind {
+        use wit::workspace::FileKind as K;
+        match kind {
+            K::File => FileKind::File,
+            K::Directory => FileKind::Directory,
+            K::Symlink => FileKind::Symlink,
+            K::Other => FileKind::Other,
+        }
+    }
+
+    fn file_stat(s: wit::workspace::FileStat) -> FileStat {
+        FileStat { kind: file_kind(s.kind), size: s.size, modified: s.modified }
+    }
+
+    pub fn fs_read_file(path: &str) -> Result<String, Error> {
+        wit::fs::read_file(path).map_err(error)
+    }
+
+    pub fn fs_read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        wit::fs::read_bytes(path).map_err(error)
+    }
+
+    pub fn fs_stat(path: &str) -> Result<FileStat, Error> {
+        wit::fs::stat(path).map(file_stat).map_err(error)
+    }
+
+    pub fn fs_read_dir(path: &str) -> Result<Vec<super::fs::DirEntry>, Error> {
+        let entries = wit::fs::read_dir(path).map_err(error)?;
+        Ok(entries.into_iter().map(|e| super::fs::DirEntry { name: e.name, kind: file_kind(e.kind) }).collect())
+    }
+
+    pub fn fs_plugin_dir() -> Result<String, Error> {
+        wit::fs::plugin_dir().map_err(error)
+    }
+
+    pub fn fs_write_file(path: &str, text: &str) -> Result<(), Error> {
+        wit::fs::write_file(path, text).map_err(error)
+    }
+
+    pub fn fs_write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        wit::fs::write_bytes(path, bytes).map_err(error)
+    }
+
+    pub fn diagnostic_to(d: &Diagnostic) -> wit::diagnostics::Diagnostic {
         use wit::diagnostics::{Diagnostic as D, RelatedInformation as R, Severity as S};
-        let items: Vec<D> = items
-            .iter()
-            .map(|d| D {
-                range: range_out(d.range),
-                severity: match d.severity {
-                    Severity::Error => S::Error,
-                    Severity::Warning => S::Warning,
-                    Severity::Info => S::Info,
-                    Severity::Hint => S::Hint,
-                },
-                message: d.message.clone(),
-                code: d.code.clone(),
-                source: d.source.clone(),
-                tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
-                    .into_iter()
-                    .filter(|(on, _)| *on)
-                    .map(|(_, tag)| tag.to_owned())
-                    .collect(),
-                related: d
-                    .related
-                    .iter()
-                    .map(|r| R {
-                        location: wit::types::Location {
-                            path: r.location.path.clone(),
-                            range: range_out(r.location.range),
-                        },
-                        message: r.message.clone(),
-                    })
-                    .collect(),
-            })
-            .collect();
+        D {
+            range: range_out(d.range),
+            severity: match d.severity {
+                Severity::Error => S::Error,
+                Severity::Warning => S::Warning,
+                Severity::Info => S::Info,
+                Severity::Hint => S::Hint,
+            },
+            message: d.message.clone(),
+            code: d.code.clone(),
+            source: d.source.clone(),
+            tags: [(d.unnecessary, "unnecessary"), (d.deprecated, "deprecated")]
+                .into_iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, tag)| tag.to_owned())
+                .collect(),
+            related: d
+                .related
+                .iter()
+                .map(|r| R {
+                    location: wit::types::Location {
+                        path: r.location.path.clone(),
+                        range: range_out(r.location.range),
+                    },
+                    message: r.message.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error> {
+        let items: Vec<_> = items.iter().map(diagnostic_to).collect();
         wit::diagnostics::publish(path, &items).map_err(error)
     }
 
@@ -257,6 +451,14 @@ mod imp {
         wit::views::open_terminal(title, program, args).map_err(error)
     }
 
+    pub fn open_log_tab(key: &str, title: &str, log: &crate::details::ProcessLog) -> Result<(), Error> {
+        use wit::detail_types::{LogToggle, ProcessLog};
+        let toggles =
+            log.toggles.iter().map(|t| LogToggle { id: t.id.clone(), label: t.label.clone(), args: t.args.clone() });
+        let log = ProcessLog { program: log.program.clone(), args: log.args.clone(), toggles: toggles.collect() };
+        wit::views::open_log_tab(key, title, &log).map_err(error)
+    }
+
     pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
         wit::views::open_location(path, line, column).map_err(error)
     }
@@ -274,6 +476,48 @@ mod imp {
         wit::process::run(program, args, cwd, stdin)
             .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
             .map_err(error)
+    }
+
+    pub type ChildRes = wit::process::Child;
+
+    pub fn run_command(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+    ) -> Result<ProcessOutput, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        wit::process::run_command(&c, cwd, stdin)
+            .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
+            .map_err(error)
+    }
+
+    pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        wit::process::start(&c, cwd).map_err(error)
+    }
+
+    pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
+        child.poll(max).map(chunk_in).map_err(error)
+    }
+
+    pub fn child_write(child: &ChildRes, text: &str) -> Result<(), Error> {
+        child.write(text).map_err(error)
+    }
+
+    pub fn child_close_stdin(child: &ChildRes) -> Result<(), Error> {
+        child.close_stdin().map_err(error)
+    }
+
+    pub fn child_kill(child: &ChildRes) -> Result<(), Error> {
+        child.kill().map_err(error)
+    }
+
+    pub fn child_wait(child: &ChildRes, timeout_ms: u32) -> Result<crate::host::Chunk, Error> {
+        child.wait(timeout_ms).map(chunk_in).map_err(error)
+    }
+
+    fn chunk_in(c: wit::process::Chunk) -> crate::host::Chunk {
+        crate::host::Chunk { stdout: c.stdout, stderr: c.stderr, status: c.status }
     }
 
     pub fn range_from(r: wit::types::Range) -> Range {
@@ -298,7 +542,7 @@ mod imp {
                 source: ActionSource::parse(&a.source),
                 shortcut: a.shortcut,
             }),
-            E::Other(x) => Event::Other { kind: x.kind, data: x.data },
+            E::Other(x) => Event::from_other(x.kind, x.data),
         }
     }
 }
@@ -327,6 +571,12 @@ impl<'a> Invocation<'a> {
     pub fn editor(&self) -> Option<TextEditor> {
         imp::invocation_editor(self.inner).map(|inner| TextEditor { inner })
     }
+
+    /// The files and folders the command was run on, as absolute paths. Empty when it was not
+    /// run on any, or when the menu was for a tab without a file (a virtual document).
+    pub fn selected_paths(&self) -> Vec<String> {
+        imp::invocation_selected_paths(self.inner)
+    }
 }
 
 /// A project open in the IDE.
@@ -341,9 +591,32 @@ impl Project {
     }
 
     /// Reads a UTF-8 file inside the project (absolute or root-relative);
-    /// unsaved editor contents win. Needs `project.read`.
+    /// unsaved editor contents win. A missing path is `Error::NotFound`.
+    /// Needs `project.read`.
     pub fn read_file(&self, path: &str) -> Result<String, Error> {
         imp::project_read(&self.inner, path)
+    }
+
+    /// Replaces the text of a file inside the project (absolute or
+    /// root-relative), or creates it with the directories it needs, at most
+    /// 16 MiB: in one step, keeping the file's encoding and BOM (a new file is
+    /// UTF-8). An editor holding unsaved changes for the file makes it
+    /// [`Error::Invalid`]. Needs `project.write`.
+    pub fn write_file(&self, path: &str, text: &str) -> Result<(), Error> {
+        imp::project_write(&self.inner, path, text)
+    }
+
+    /// Whether `path` names an existing file or directory inside the project
+    /// — including hidden and ignored ones — without reading any content.
+    /// Needs `project.read`.
+    pub fn exists(&self, path: &str) -> Result<bool, Error> {
+        imp::project_exists(&self.inner, path)
+    }
+
+    /// Metadata of an existing path inside the project; a missing path is
+    /// `Error::NotFound`. Needs `project.read`.
+    pub fn stat(&self, path: &str) -> Result<FileStat, Error> {
+        imp::project_stat(&self.inner, path)
     }
 
     /// The repository containing the project (`None`: not under git). Needs `vcs.read`.
@@ -367,10 +640,42 @@ impl Project {
         imp::project_find(&self.inner, glob, limit)
     }
 
+    /// Fuzzy search of this project's current in-memory index. Needs `project.read`.
+    /// Never waits for LSP or reads file contents. Only paths inside this project's
+    /// root are returned, including when the index has external content roots.
+    /// Search honours the current call's cancellation and deadline. Empty queries return no symbols;
+    /// queries over 256 UTF-8 bytes are invalid and limits are capped at 1000.
+    /// Results may be incomplete during indexing or lag unsaved edits. A closed
+    /// project returns `Error::NotFound`. Locations use UTF-16 columns.
+    pub fn symbols(&self, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
+        imp::project_symbols(&self.inner, query, limit)
+    }
+
     /// Runs the approved `process:<program>` in this project's root.
     pub fn run_process(&self, program: &str, args: &[String], stdin: Option<&str>) -> Result<ProcessOutput, Error> {
         imp::run_process(program, args, Some(&self.inner), stdin)
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub use imp::__draft_in;
+
+/// The commit being prepared in the window the command or event came from:
+/// the included files and changed blocks only, as Commit would commit them
+/// (unsaved editors of those files are saved first). `None` when the window's
+/// project has no repository. Only from a command or event of a window, in a
+/// trusted project. Needs `vcs.read`.
+pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
+    imp::pending_commit()
+}
+
+/// Replaces the commit message of that window, only while its draft is still
+/// at `revision` ([`CommitDraft::revision`]); [`Error::Stale`] when the user
+/// changed the message or the included changes meanwhile, and nothing changes.
+/// Needs `vcs.write`.
+pub fn set_commit_message(revision: u64, message: &str) -> Result<(), Error> {
+    imp::set_commit_message(revision, message)
 }
 
 /// Replaces the plugin's diagnostics for `path` (absolute, in an open
@@ -408,6 +713,14 @@ pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), 
     imp::open_terminal(title, program, args)
 }
 
+/// Opens (or focuses) the read-only log tab `key` in the invoking window,
+/// following `log`'s program (the approved `process:<program>`) in the project
+/// root, with its toggles above the output. Only from a command or event of a
+/// window; `title` at most 256 characters, `key` 128, at most 32 toggles.
+pub fn open_log_tab(key: &str, title: &str, log: &crate::details::ProcessLog) -> Result<(), Error> {
+    imp::open_log_tab(key, title, log)
+}
+
 pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
     imp::open_location(path, line, column)
 }
@@ -441,9 +754,113 @@ pub fn run_process(program: &str, args: &[String], stdin: Option<&str>) -> Resul
     imp::run_process(program, args, None, stdin)
 }
 
+/// A program with its arguments and the environment added to the inherited one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Command {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Variables added to the inherited environment: at most 64, names at most
+    /// 256 bytes, values at most 4 KiB, no NUL or '=' in names, no NUL in values.
+    /// Existing names in the prepared child environment (including login-shell
+    /// PATH) fail with an error naming the key. Windows names compare without
+    /// case. Variables are never replaced or removed.
+    pub env: Vec<(String, String)>,
+}
+
+impl Command {
+    /// Selects the program approved by a `process:<program>` grant.
+    pub fn new(program: &str) -> Self {
+        Self { program: program.to_owned(), args: Vec::new(), env: Vec::new() }
+    }
+
+    /// Appends one argument.
+    pub fn arg(mut self, arg: &str) -> Self {
+        self.args.push(arg.to_owned());
+        self
+    }
+
+    /// Appends arguments in order.
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.args.extend(args.into_iter().map(|a| a.as_ref().to_owned()));
+        self
+    }
+
+    /// Adds a variable; an inherited or duplicate name is an error at spawn.
+    pub fn env(mut self, name: &str, value: &str) -> Self {
+        self.env.push((name.to_owned(), value.to_owned()));
+        self
+    }
+}
+
+/// What a kept-running program printed since the last read, and its exit status
+/// once it ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Chunk {
+    pub stdout: String,
+    pub stderr: String,
+    pub status: Option<i32>,
+}
+
+/// A program kept running behind a handle ([`start`]). Dropping it ends the
+/// program, as the host does when the plugin instance goes away.
+pub struct Child {
+    inner: imp::ChildRes,
+}
+
+impl Child {
+    /// What it printed since the last read, up to 1 MiB per stream, or one
+    /// whole character when `max_bytes` is smaller;
+    /// `status` is `Some` once it ended.
+    pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
+        imp::child_poll(&self.inner, max_bytes)
+    }
+
+    /// Writes `text` to its stdin.
+    pub fn write(&self, text: &str) -> Result<(), Error> {
+        imp::child_write(&self.inner, text)
+    }
+
+    /// Closes its stdin, so a program reading it sees the end.
+    pub fn close_stdin(&self) -> Result<(), Error> {
+        imp::child_close_stdin(&self.inner)
+    }
+
+    /// Ends it; `status` becomes known right away (-1 when a signal ended it).
+    pub fn kill(&self) -> Result<(), Error> {
+        imp::child_kill(&self.inner)
+    }
+
+    /// Waits up to `timeout_ms` for it to end (0 only checks), then reads it.
+    pub fn wait(&self, timeout_ms: u32) -> Result<Chunk, Error> {
+        imp::child_wait(&self.inner, timeout_ms)
+    }
+}
+
+/// Runs a [`Command`] to its end (API 1.3). Its environment only adds new
+/// variables; an existing key fails with an error naming it.
+pub fn run_command(cmd: &Command, project: Option<&Project>, stdin: Option<&str>) -> Result<ProcessOutput, Error> {
+    imp::run_command(cmd, project.map(|p| &p.inner), stdin)
+}
+
+/// Starts a [`Command`] and keeps it running behind a [`Child`] (at most 8 per
+/// plugin instance, API 1.3). Closing the invoking window ends its processes.
+pub fn start(cmd: &Command, project: Option<&Project>) -> Result<Child, Error> {
+    imp::start(cmd, project.map(|p| &p.inner)).map(|inner| Child { inner })
+}
+
 /// Projects open in any window. Needs `project.read`.
 pub fn projects() -> Result<Vec<Project>, Error> {
     Ok(imp::projects()?.into_iter().map(|inner| Project { inner }).collect())
+}
+
+/// The deepest open project containing an absolute document path, including in providers.
+/// Obtaining the handle needs no capability; reading it still needs `project.read`.
+pub fn project_of(path: &str) -> Option<Project> {
+    imp::project_of(path).map(|inner| Project { inner })
 }
 
 /// A file open in an editor.
@@ -545,6 +962,19 @@ pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
 }
 
+/// Sets the plugin's context key that `when` clauses test as `plugin.<id>.<key>`, in
+/// the window the current command or event came from (every window when there is
+/// none): `set_context("connected", true)`. A window's value takes precedence over
+/// the global one. The key is 1-64 of `A-Za-z0-9_-`; at most 100 keys.
+pub fn set_context(key: &str, value: impl Into<ContextValue>) -> Result<(), Error> {
+    imp::set_context(key, value.into())
+}
+
+/// Removes the key [`set_context`] set in the same scope.
+pub fn remove_context(key: &str) {
+    imp::remove_context(key)
+}
+
 /// Copies `text` to the system clipboard. Needs `clipboard`.
 pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
     imp::copy_to_clipboard(text)
@@ -553,6 +983,61 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
 /// Opens an `http://` or `https://` URL in the user's default browser.
 pub fn open_url(url: &str) -> Result<(), Error> {
     imp::open_url(url)
+}
+
+/// Shows a list and waits for the chosen key, or `None` when dismissed.
+/// Works in a command/event of a window, or while resolving a selected code
+/// or file action in its editor's window; [`Error::Invalid`] otherwise.
+/// Needs no capability. Waiting doesn't count against the call's budget,
+/// but the plugin handles nothing else meanwhile.
+pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
+    imp::pick(title, items)
+}
+
+/// Like [`pick`], with any number of items chosen.
+pub fn pick_many(title: &str, items: &[PickItem]) -> Result<Option<Vec<String>>, Error> {
+    imp::pick_many(title, items)
+}
+
+/// Asks for a line of text, pre-filled with `value`; `None` when dismissed.
+/// Same rules as [`pick`].
+pub fn input(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    imp::input(prompt, value)
+}
+
+/// Asks for text over several lines, pre-filled with `value`; `None` when
+/// dismissed. Only from a command or event of a window; the dialog confirms
+/// on Cmd/Ctrl+Enter.
+pub fn input_multiline(prompt: &str, value: Option<&str>) -> Result<Option<String>, Error> {
+    imp::input_multiline(prompt, value)
+}
+
+/// Asks for confirmation: `true` on OK, `false` on Cancel or Escape.
+/// Same rules as [`pick`].
+pub fn confirm(title: &str, body: &str) -> Result<bool, Error> {
+    imp::confirm(title, body)
+}
+
+/// Brings one of the plugin's declared views to the front in the window the
+/// current command or event came from.
+pub fn reveal_view(view: &str) -> Result<(), Error> {
+    imp::reveal_view(view)
+}
+
+/// The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`, …), for the
+/// text the plugin builds itself (notifications, error messages, HTML). The
+/// strings of the manifest and of views are translated by the IDE from the
+/// package's `locales/<tag>.json`. Read it when the text is made: it follows
+/// a change of language.
+pub fn locale() -> String {
+    imp::locale()
+}
+
+/// Subscribe to project-relative path globs for file-opened, file-saved or files-changed.
+/// Replaces the previous filter. Empty globs pause delivery; `subscribe` restores all paths.
+/// Requires `events`. Register during activation before the events you want to observe.
+pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
+    imp::subscribe_paths(kind, globs)
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
@@ -566,7 +1051,75 @@ pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
 }
 
-/// The plugin's persistent key-value store (≤ 1 MiB). Needs `storage`.
+/// Files outside the open projects, for a program the plugin integrates with
+/// or a tool installed elsewhere. Outside [`fs::plugin_dir`], paths need an
+/// `fs.read:<path>` (reading) or `fs.write:<path>` (writing) grant covering it;
+/// without one a
+/// call returns [`Error::Denied`] naming the capability the manifest has to
+/// declare. Paths are absolute, or start with `~/` for the user's home. A file
+/// inside a project is [`Project::read_file`] / [`Project::write_file`].
+pub mod fs {
+    use super::imp;
+    use crate::types::{Error, FileKind, FileStat};
+
+    /// The plugin's private persistent directory (0700, owner-only ACL on
+    /// Windows), removed on uninstall. Files created here are owner-only and
+    /// need no `fs.*` grants. Suitable for editor content and large caches;
+    /// retained across idle reclaim, reload, and application restarts.
+    pub fn plugin_dir() -> Result<String, Error> {
+        imp::fs_plugin_dir()
+    }
+
+    /// An entry of a directory ([`read_dir`]).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct DirEntry {
+        /// The entry's name, without its directory.
+        pub name: String,
+        pub kind: FileKind,
+    }
+
+    /// A text file, decoded as the editor decodes it (BOM and encoding
+    /// detection), at most 16 MiB; unsaved editor contents win.
+    pub fn read_file(path: &str) -> Result<String, Error> {
+        imp::fs_read_file(path)
+    }
+
+    /// The bytes of a file (images, class files, archives), at most 16 MiB.
+    pub fn read_bytes(path: &str) -> Result<Vec<u8>, Error> {
+        imp::fs_read_bytes(path)
+    }
+
+    /// Metadata of an existing path; a missing path is [`Error::NotFound`].
+    pub fn stat(path: &str) -> Result<FileStat, Error> {
+        imp::fs_stat(path)
+    }
+
+    /// The entries directly under a directory, sorted by name, at most 4096;
+    /// a file is [`Error::Invalid`].
+    pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, Error> {
+        imp::fs_read_dir(path)
+    }
+
+    /// Replaces the text of a file, or creates it, at most 16 MiB: in one step,
+    /// keeping the file's encoding and BOM (a new file is UTF-8). Needs an
+    /// `fs.write:<path>` grant, which doesn't imply reading.
+    ///
+    /// [`Error::Invalid`] when the text can't be written in the file's
+    /// encoding, the directory is missing, the path is a directory, or an
+    /// editor holds unsaved changes for the file (save them first).
+    pub fn write_file(path: &str, text: &str) -> Result<(), Error> {
+        imp::fs_write_file(path, text)
+    }
+
+    /// Replaces the bytes of a file, or creates it, at most 16 MiB, in one
+    /// step; fails like [`write_file`].
+    pub fn write_bytes(path: &str, bytes: &[u8]) -> Result<(), Error> {
+        imp::fs_write_bytes(path, bytes)
+    }
+}
+
+/// The plugin's persistent key-value store (≤ 64 MiB of UTF-8 keys and values).
+/// Needs `storage`; rejected writes preserve the stored data.
 pub mod storage {
     use super::imp;
     use crate::types::Error;
@@ -592,3 +1145,35 @@ pub mod storage {
 #[cfg(target_arch = "wasm32")]
 #[doc(hidden)]
 pub use imp::{event as __event, range_from as __range_from, range_to as __range_to};
+
+/// Chooses a directory on the UI machine. `None` when dismissed; no capability.
+/// Only from a command or event of a window; waiting is excluded from the budget.
+pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
+    imp::pick_directory(title, initial)
+}
+
+/// Requests the normal File > Open flow, including project trust, in the
+/// invoking window (`false`) or a new window (`true`). No capability.
+/// Only commands/events of a window can request this; errors opening the
+/// project are shown by that window. `path` belongs to the UI machine.
+pub fn open_project(path: &str, new_window: bool) -> Result<(), Error> {
+    imp::open_project(path, new_window)
+}
+
+/// [`notify`] with up to three buttons; each runs one of this plugin's
+/// declared commands in the balloon's window and dismisses the balloon. An
+/// invalid action or an undeclared command is an error and nothing is shown.
+pub fn notify_with_actions(
+    level: NotificationLevel,
+    title: &str,
+    body: &str,
+    actions: &[NotificationAction],
+) -> Result<(), Error> {
+    imp::notify_with_actions(level, title, body, actions)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub fn __diagnostic_to(d: &Diagnostic) -> crate::bindings::openidea::plugin::diagnostics::Diagnostic {
+    imp::diagnostic_to(d)
+}

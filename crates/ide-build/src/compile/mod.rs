@@ -67,6 +67,11 @@ impl BuildStep {
         }
     }
 
+    /// A CMake configure/build invocation, parsed as compiler output in the Build view.
+    pub fn cmake(program: &str, args: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> Self {
+        Self { program: program.into(), args, cwd, env, format: Format::Gcc }
+    }
+
     /// The command line as echoed in the console.
     pub fn display(&self) -> String {
         let program = Path::new(&self.program).file_name().map_or(self.program.clone(), |n| n.to_string_lossy().into());
@@ -153,7 +158,7 @@ fn detect_dir(dir: &Path, model: &BuildModel, root: &Path) -> Option<BuildSystem
         Some(BuildSystem::Gradle)
     } else if has(dir, &["Cargo.toml"]) {
         Some(BuildSystem::Cargo)
-    } else if has(dir, &["go.mod"]) {
+    } else if has(dir, &["go.mod", "go.work"]) {
         Some(BuildSystem::Go)
     } else if has(dir, &["tsconfig.json", "package.json"]) {
         Some(BuildSystem::TypeScript)
@@ -227,14 +232,19 @@ pub fn plan(
         BuildSystem::Gradle => gradle_steps(root, model, kind, module_dir.as_deref())?,
         BuildSystem::Cargo => cargo_steps(&dir, kind),
         // Go builds the file's package (a module holds many).
-        BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind),
+        BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind)?,
         BuildSystem::TypeScript => ts_steps(&dir, kind),
         BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
     };
     Ok(BuildPlan { system, title, steps })
 }
 
-fn maven_steps(root: &Path, model: &BuildModel, kind: BuildKind, module: Option<&Path>) -> IdeResult<Vec<BuildStep>> {
+pub(super) fn maven_steps(
+    root: &Path,
+    model: &BuildModel,
+    kind: BuildKind,
+    module: Option<&Path>,
+) -> IdeResult<Vec<BuildStep>> {
     let fallback;
     let m = match &model.maven {
         Some(m) => m,
@@ -369,7 +379,33 @@ fn cmake_steps(dir: &Path, kind: BuildKind, profile: Option<&CMakeProfile>) -> V
     steps
 }
 
-fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
+fn go_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
+    if dir.join("go.work").is_file() {
+        let work_file = dunce::canonicalize(dir.join("go.work"))?;
+        let modules = ide_core::go::work_modules(&std::fs::read_to_string(dir.join("go.work"))?);
+        if modules.is_empty() {
+            return Err(IdeError::invalid("The Go workspace contains no modules"));
+        }
+        let mut steps = Vec::new();
+        for module in modules {
+            let module = dir.join(module);
+            if !module.join("go.mod").is_file() {
+                return Err(IdeError::not_found(format!("Go workspace module has no go.mod: {}", module.display())));
+            }
+            // Go compares workspace membership against cwd paths lexically.
+            let module = dunce::canonicalize(module)?;
+            let mut module_steps = go_module_steps(&module, kind);
+            for step in &mut module_steps {
+                step.env.insert("GOWORK".into(), work_file.to_string_lossy().into_owned());
+            }
+            steps.extend(module_steps);
+        }
+        return Ok(steps);
+    }
+    Ok(go_module_steps(dir, kind))
+}
+
+fn go_module_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     let module_root = dir.ancestors().find(|d| d.join("go.mod").is_file()).unwrap_or(dir);
     let target = if module_root == dir { "./...".to_owned() } else { format!("./{}/...", rel_str(module_root, dir)) };
     let mut args = vec!["build"];
@@ -383,18 +419,7 @@ fn go_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
 
 /// `pnpm` / `yarn` / `bun` / `npm`, from the lock file next to `package.json` or above it.
 fn package_manager(dir: &Path) -> &'static str {
-    for d in dir.ancestors() {
-        if d.join("pnpm-lock.yaml").is_file() {
-            return "pnpm";
-        } else if d.join("yarn.lock").is_file() {
-            return "yarn";
-        } else if d.join("bun.lockb").is_file() || d.join("bun.lock").is_file() {
-            return "bun";
-        } else if d.join("package-lock.json").is_file() {
-            return "npm";
-        }
-    }
-    "npm"
+    ide_core::project_roots::package_manager(dir)
 }
 
 fn has_build_script(dir: &Path) -> bool {
@@ -820,6 +845,79 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
 #[cfg(test)]
 mod tests {
     #[test]
+    fn go_workspace_build_commands_compile_members_with_local_dependencies() {
+        let Some(go) = ide_core::process::find_executable("go", &ide_core::tool_path::search_path()) else {
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let root = &tmp.path().join("workspace");
+        write(root, "go.work", "go 1.22\nuse (\n ./app\n ./lib\n ../external\n)\n");
+        write(root, "lib/go.mod", "module example.com/lib\ngo 1.22\n");
+        write(root, "lib/lib.go", "package lib\nfunc Value() int { return 1 }\n");
+        write(root, "app/go.mod", "module example.com/app\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "app/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        write(root, "../external/go.mod", "module example.com/external\ngo 1.22\nrequire example.com/lib v0.0.0\n");
+        write(root, "../external/main.go", "package main\nimport \"example.com/lib\"\nfunc main(){_ = lib.Value()}\n");
+        // std canonicalization also exercises verbatim paths on Windows.
+        for root in [root.to_path_buf(), std::fs::canonicalize(root).unwrap()] {
+            let plan = plan(&root, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+            for step in plan.steps {
+                let result = std::process::Command::new(&go)
+                    .args(&step.args)
+                    .envs(&step.env)
+                    .env("GOPROXY", "off")
+                    .current_dir(&step.cwd)
+                    .output()
+                    .unwrap();
+                assert!(result.status.success(), "{step:?}: {}", String::from_utf8_lossy(&result.stderr));
+            }
+        }
+    }
+
+    #[test]
+    fn go_workspace_builds_every_use_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("workspace");
+        write(&root, "go.work", "go 1.22\nuse (\n  ./api\n  \"./lib with spaces\"\n  ../shared\n)\n");
+        for module in ["api", "lib with spaces", "../shared"] {
+            write(&root.join(module), "go.mod", "module example.com/p\ngo 1.22\n");
+        }
+        // Cover native paths, Windows verbatim paths and non-normalized module paths.
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        for root in [&root, &canonical, &canonical.join("..").join("workspace")] {
+            for kind in [BuildKind::Build, BuildKind::Rebuild, BuildKind::Artifacts] {
+                let p = plan(root, &BuildModel::default(), kind, None, None).unwrap();
+                assert_eq!(p.system, BuildSystem::Go);
+                assert_eq!(p.steps.len(), 3);
+                for (step, module) in p.steps.iter().zip(["api", "lib with spaces", "../shared"]) {
+                    assert_eq!(step.cwd, dunce::canonicalize(root.join(module)).unwrap());
+                    assert_eq!(
+                        step.env["GOWORK"],
+                        dunce::canonicalize(root.join("go.work")).unwrap().to_string_lossy()
+                    );
+                    let expected =
+                        if kind == BuildKind::Rebuild { vec!["build", "-a", "./..."] } else { vec!["build", "./..."] };
+                    assert_eq!(step.args, expected);
+                }
+            }
+        }
+        let member =
+            plan(&root, &BuildModel::default(), BuildKind::Build, Some(&root.join("api/pkg/a.go")), None).unwrap();
+        assert_eq!(member.steps.len(), 1);
+        assert_eq!(member.steps[0].cwd, root.join("api"));
+        assert_eq!(member.steps[0].args, ["build", "./pkg/..."]);
+        write(&root, "go.work", "use ./missing\n");
+        assert!(
+            plan(&root, &BuildModel::default(), BuildKind::Build, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("go.mod")
+        );
+        write(&root, "go.work", "go 1.22\n");
+        assert!(plan(&root, &BuildModel::default(), BuildKind::Build, None, None).is_err());
+    }
+
+    #[test]
     fn independent_gradle_builds_keep_their_launchers_and_task_paths() {
         let wrapper = if cfg!(windows) { "gradlew.bat" } else { "gradlew" };
         let temp = tempfile::tempdir().unwrap();
@@ -882,7 +980,8 @@ mod tests {
         model.gradle[0].env.insert("JAVA_HOME".into(), "/external-jdk".into());
         let all = super::plan(&root, &model, super::BuildKind::Build, None, None).unwrap();
         assert_eq!(all.steps[0].cwd, external);
-        assert_eq!(all.steps[0].program, external.join(wrapper).to_string_lossy());
+        // Linked roots are saved with forward slashes, so on Windows the program mixes separators.
+        assert_eq!(std::path::Path::new(&all.steps[0].program), external.join(wrapper));
         let module = super::plan(&root, &model, super::BuildKind::Rebuild, Some(&source), None).unwrap();
         assert_eq!(module.steps[0].cwd, external);
         assert_eq!(module.steps[0].env["JAVA_HOME"], "/external-jdk");

@@ -733,18 +733,19 @@ pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> 
 }
 
 /// The ACP title of a command approval.
-pub(super) fn command_approval_title(params: &Value, item: Option<&Value>, cwd: Option<&str>) -> String {
+pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> String {
     if let Some(host) = params.pointer("/networkApprovalContext/host").and_then(Value::as_str) {
         return format!("Allow network access to {host}");
     }
-    let from_item = item.and_then(|i| tool_call(i, false, cwd, None)).and_then(|c| str_of(&c, "title"));
-    let title = from_item.or_else(|| {
-        let synthetic = json!({ "id": "", "type": "commandExecution", "command": params.get("command"),
-            "commandActions": params.get("commandActions").cloned().unwrap_or(json!([])) });
-        tool_call(&synthetic, false, cwd, None).and_then(|c| str_of(&c, "title"))
-    });
-    match title.filter(|t| !t.is_empty()) {
-        Some(t) => format!("Run {t}"),
+    // Approval payloads can describe a different command from the item's earlier summary.
+    let item = item.filter(|i| i.get("id") == params.get("itemId"));
+    let command = params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()));
+    match command {
+        Some(command) => format!("Run {}", crate::shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }
 }

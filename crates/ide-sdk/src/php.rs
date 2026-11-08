@@ -1,14 +1,16 @@
 //! The PHP language level: the one chosen in Settings › PHP, else the one the root
 //! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
 //! the Intelephense storage that goes with it; the stub sets and include paths Intelephense indexes;
-//! and the PHPStan run that checks saved files.
+//! the PHPStan run that checks saved files; and whether an interpreter loads Xdebug.
 
 use crate::apply::{merge, merge_init_options, setting_path};
 use ide_core::settings::Settings;
+use ide_core::{IdeError, IdeResult};
 use ide_language::LanguageServerConfig;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 /// A PHP version and where it comes from.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
@@ -50,6 +52,43 @@ pub fn composer_level(root: &Path) -> Option<PhpLanguageLevel> {
     }
     lowest_allowed(composer.pointer("/require/php")?.as_str()?)
         .map(|v| PhpLanguageLevel::new(v, PhpLevelSource::Require))
+}
+
+/// Why `composer install` is due in a Composer project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ComposerInstall {
+    /// No `vendor/autoload.php`.
+    Missing,
+    /// A package of `composer.lock` is not installed, or at another version.
+    Outdated,
+}
+
+/// The Composer project `file` belongs to (the nearest `composer.json` at or below `root`), and
+/// whether its dependencies need `composer install`.
+pub fn composer_install(file: &Path, root: &Path) -> Option<(PathBuf, ComposerInstall)> {
+    let dir = file.ancestors().filter(|d| d.starts_with(root)).find(|d| d.join("composer.json").is_file())?;
+    let composer: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("composer.json")).ok()?).ok()?;
+    let vendor = dir.join(composer.pointer("/config/vendor-dir").and_then(Value::as_str).unwrap_or("vendor"));
+    if !vendor.join("autoload.php").is_file() {
+        return Some((dir.to_path_buf(), ComposerInstall::Missing));
+    }
+    let read = |path: PathBuf| std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let lock = read(dir.join("composer.lock"))?;
+    let installed = read(vendor.join("composer/installed.json")).unwrap_or(Value::Null);
+    // Composer 2 writes `{"packages": [...], "dev": bool}`, Composer 1 the list itself.
+    let packages = installed.get("packages").unwrap_or(&installed).as_array().cloned().unwrap_or_default();
+    let versions: std::collections::HashMap<&str, &str> =
+        packages.iter().filter_map(|p| Some((p.get("name")?.as_str()?, p.get("version")?.as_str()?))).collect();
+    let dev = installed.get("dev").and_then(Value::as_bool).unwrap_or(true);
+    let sections: &[&str] = if dev { &["packages", "packages-dev"] } else { &["packages"] };
+    let outdated = sections
+        .iter()
+        .filter_map(|section| lock.get(*section).and_then(Value::as_array))
+        .flatten()
+        .filter_map(|p| Some((p.get("name")?.as_str()?, p.get("version")?.as_str()?)))
+        .any(|(name, version)| versions.get(name) != Some(&version));
+    outdated.then(|| (dir.to_path_buf(), ComposerInstall::Outdated))
 }
 
 /// Gives each PHP version its own Intelephense workspace storage (below `data_dir`).
@@ -168,6 +207,60 @@ pub fn phpstan_command(root: &Path, s: &Settings, files: &[PathBuf]) -> Option<C
     Some(cmd)
 }
 
+/// A PHP interpreter's version and the Xdebug it loads.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PhpXdebug {
+    pub php: ide_core::IpcPath,
+    /// `PHP_VERSION`.
+    pub php_version: String,
+    /// The Xdebug version; `None`: not loaded, so PHP ignores the `xdebug.*` options a debug session sets.
+    pub xdebug: Option<String>,
+}
+
+const XDEBUG_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// `php` printing its version and the loaded Xdebug's (nothing without one), with Xdebug off: a
+/// php.ini with `xdebug.start_with_request=yes` would connect to a listening debugger. Xdebug stays
+/// loaded in mode `off`, so it still reports its version. Run in `cwd`, where a version manager's
+/// `php` shim (asdf, mise, phpenv) picks the PHP it starts.
+fn xdebug_command(php: &Path, cwd: Option<&Path>) -> Command {
+    let mut cmd = Command::new(php);
+    cmd.args(["-r", r#"echo PHP_VERSION, "\n", phpversion("xdebug") ?: "";"#]).env("XDEBUG_MODE", "off");
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd
+}
+
+/// The version of `php` and of the Xdebug it loads, run in `cwd`. An error when `php` doesn't run,
+/// times out or prints something else.
+pub fn xdebug(php: &Path, cwd: Option<&Path>) -> IdeResult<PhpXdebug> {
+    let out = crate::exec::query_command(xdebug_command(php, cwd), XDEBUG_TIMEOUT)
+        .ok_or_else(|| IdeError::unavailable(format!("cannot run {}", php.display())))?;
+    let (php_version, xdebug) = parse_xdebug(&out)
+        .ok_or_else(|| IdeError::invalid(format!("{} printed no PHP version: {out}", php.display())))?;
+    Ok(PhpXdebug { php: php.to_path_buf().into(), php_version, xdebug })
+}
+
+/// The PHP version, then the Xdebug version when one is loaded: the last lines of the output, after
+/// the startup warnings PHP prints first with `display_startup_errors` (as a broken Xdebug build does).
+fn parse_xdebug(out: &str) -> Option<(String, Option<String>)> {
+    let lines: Vec<&str> = out.lines().map(str::trim).collect();
+    match lines[..] {
+        [.., php, xdebug] if is_version(php) && is_version(xdebug) => Some((php.into(), Some(xdebug.into()))),
+        [.., php] if is_version(php) => Some((php.into(), None)),
+        _ => None,
+    }
+}
+
+/// `8.3.14`, `8.1.2-1ubuntu2.14`, `3.5.0alpha3`.
+fn is_version(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_digit())
+        && s.contains('.')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || ".-+~_".contains(c))
+}
+
 type Version = (u32, u32, u32);
 
 impl PhpLanguageLevel {
@@ -225,6 +318,39 @@ fn lower_bound(alternative: &str) -> Option<Version> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composer_install_is_due_without_vendor_or_when_the_lock_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let app = root.join("app");
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        let file = app.join("src/Kernel.php");
+        assert_eq!(composer_install(&file, root), None, "not a Composer project");
+        std::fs::write(app.join("composer.json"), r#"{"config": {"vendor-dir": "lib"}}"#).unwrap();
+        assert_eq!(composer_install(&file, root), Some((app.clone(), ComposerInstall::Missing)));
+        std::fs::create_dir_all(app.join("lib/composer")).unwrap();
+        std::fs::write(app.join("lib/autoload.php"), "<?php").unwrap();
+        assert_eq!(composer_install(&file, root), None, "installed, no lock to compare with");
+        let lock = r#"{"packages": [{"name": "a/a", "version": "v1.2.0"}], "packages-dev": [{"name": "t/t", "version": "10.0.0"}]}"#;
+        std::fs::write(app.join("composer.lock"), lock).unwrap();
+        let installed = |packages: &str, dev: bool| {
+            let json = format!(r#"{{"packages": [{packages}], "dev": {dev}}}"#);
+            std::fs::write(app.join("lib/composer/installed.json"), json).unwrap();
+            composer_install(&file, root)
+        };
+        let a = r#"{"name": "a/a", "version": "v1.2.0"}"#;
+        let t = r#"{"name": "t/t", "version": "10.0.0"}"#;
+        assert_eq!(installed(&format!("{a},{t}"), true), None);
+        assert_eq!(installed(a, false), None, "`--no-dev` leaves out the dev packages");
+        assert_eq!(installed(a, true), Some((app.clone(), ComposerInstall::Outdated)), "a dev package is missing");
+        let old = r#"{"name": "a/a", "version": "v1.1.0"}"#;
+        assert_eq!(installed(&format!("{old},{t}"), true), Some((app.clone(), ComposerInstall::Outdated)));
+        // Composer 1 lists the packages at the top level.
+        std::fs::write(app.join("lib/composer/installed.json"), format!("[{a},{t}]")).unwrap();
+        assert_eq!(composer_install(&file, root), None);
+        assert_eq!(composer_install(&root.join("other.php"), root), None, "outside the Composer project");
+    }
 
     fn level(composer: Option<&str>, explicit: &str) -> Option<String> {
         levels(composer, explicit).0.map(|l| l.version)
@@ -449,6 +575,43 @@ mod tests {
         assert_eq!(args(absolute)[4..6], ["--configuration", absolute]);
         // Empty: PHPStan finds phpstan.neon, phpstan.neon.dist or phpstan.dist.neon itself.
         assert!(!args(" ").iter().any(|a| a.starts_with("--configuration")));
+    }
+
+    #[test]
+    fn the_xdebug_probe_runs_with_xdebug_off() {
+        let php = Path::new("/opt/homebrew/opt/php@8.1/bin/php");
+        let project = Path::new("/work/app");
+        let cmd = xdebug_command(php, Some(project));
+        assert_eq!(cmd.get_program(), php.as_os_str());
+        assert_eq!(cmd.get_current_dir(), Some(project), "where a php shim picks the version");
+        assert_eq!(
+            cmd.get_args().map(text).collect::<Vec<_>>(),
+            ["-r", r#"echo PHP_VERSION, "\n", phpversion("xdebug") ?: "";"#]
+        );
+        assert_eq!(env(&cmd), [("XDEBUG_MODE".to_string(), Some("off".to_string()))]);
+        assert_eq!(xdebug_command(php, None).get_current_dir(), None);
+    }
+
+    #[test]
+    fn the_xdebug_probe_reads_both_versions() {
+        let found = |php: &str, xdebug: Option<&str>| Some((php.to_string(), xdebug.map(str::to_string)));
+        assert_eq!(parse_xdebug("8.3.14\n3.4.7"), found("8.3.14", Some("3.4.7")));
+        assert_eq!(parse_xdebug("8.1.33"), found("8.1.33", None));
+        assert_eq!(parse_xdebug("8.1.2-1ubuntu2.14\r\n3.5.0alpha3"), found("8.1.2-1ubuntu2.14", Some("3.5.0alpha3")));
+        assert_eq!(parse_xdebug("5.6.40\n2.5.5"), found("5.6.40", Some("2.5.5")));
+        // display_startup_errors prints startup warnings before the script's output.
+        let warning = "\nWarning: PHP Startup: Unable to load dynamic library 'xdebug.so' in Unknown on line 0";
+        assert_eq!(parse_xdebug(&format!("{warning}\n8.1.33")), found("8.1.33", None));
+        assert_eq!(parse_xdebug(&format!("{warning}\n8.3.14\n3.4.7")), found("8.3.14", Some("3.4.7")));
+    }
+
+    #[test]
+    fn the_xdebug_probe_fails_on_other_output() {
+        for out in ["", "  ", "Could not open input file: -r", "8.3.14\nnot a version", "PHP", "8"] {
+            assert_eq!(parse_xdebug(out), None, "{out:?}");
+        }
+        let missing = Path::new("/nonexistent/bin/php");
+        assert!(xdebug(missing, None).is_err(), "no PHP is an error, not a PHP without Xdebug");
     }
 
     #[test]

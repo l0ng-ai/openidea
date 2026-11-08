@@ -1221,10 +1221,26 @@ impl Tools {
         cancel: &CancellationToken,
     ) -> IdeResult<sources::Download> {
         match source {
-            ReleaseSource::GitHub { repo } => {
-                let json = http.get_text(&sources::github_latest_url(repo), cancel)?;
-                sources::github_pick(&json, assets, self.platform)
-            }
+            ReleaseSource::GitHub { repo } => match http.get_text(&sources::github_latest_url(repo), cancel) {
+                Ok(json) => sources::github_pick(&json, assets, self.platform),
+                Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+                // Without a token the API allows 60 requests an hour per IP address, often used
+                // up behind a shared one (403/429); the release's web pages have no such limit.
+                Err(api) => self.resolve_github_web(http, repo, assets, cancel).map_err(|web| {
+                    if web.kind == ErrorKind::Cancelled {
+                        return web;
+                    }
+                    tracing::warn!("GitHub release lookup for {repo} failed: {api}; web pages: {web}");
+                    IdeError::new(
+                        api.kind,
+                        format!(
+                            "{}\nDownload it from {} and set its Path in Settings › Languages & Frameworks › Language Servers.",
+                            api.message,
+                            sources::github_latest_page(repo)
+                        ),
+                    )
+                }),
+            },
             ReleaseSource::HashiCorp { product } => {
                 let json = http.get_text(&sources::hashicorp_latest_url(product), cancel)?;
                 sources::hashicorp_pick(&json, assets, self.platform)
@@ -1248,6 +1264,27 @@ impl Tools {
                 let xml = http.get_text(&sources::maven_metadata_url(group, artifact), cancel)?;
                 sources::maven_pick(group, artifact, &xml)
             }
+        }
+    }
+
+    /// [`resolve_release`](Self::resolve_release) for a GitHub release, from its web pages.
+    fn resolve_github_web(
+        &self,
+        http: &Http,
+        repo: &str,
+        assets: &[platform::AssetRule],
+        cancel: &CancellationToken,
+    ) -> IdeResult<sources::Download> {
+        let page = http.effective_url(&sources::github_latest_page(repo), cancel)?;
+        let tag = sources::github_tag_from_url(&page)
+            .ok_or_else(|| IdeError::unavailable(format!("{repo} has no published release")))?;
+        let list = http.get_text(&sources::github_assets_page(repo, &tag), cancel)?;
+        match sources::github_pick_web(repo, &tag, &list, None, assets, self.platform) {
+            Err(e) if e.kind == ErrorKind::Unavailable => {
+                let notes = http.get_text(&sources::github_tag_page(repo, &tag), cancel)?;
+                sources::github_pick_web(repo, &tag, &list, Some(&notes), assets, self.platform)
+            }
+            result => result,
         }
     }
 

@@ -5,7 +5,9 @@ import { structure } from "@/editor/structure";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
 import { executeAction } from "@/platform/actions";
-import { clipLabel, clipboardHistory, recordClipboard } from "./clipboardHistory";
+import { clipboardHistory, isLinewiseClipboardText, recordClipboard } from "./clipboardHistory";
+import { openPasteHistory } from "./view/PasteHistoryDialog";
+import { dispatchPaste } from "./cm/clipboard";
 import { unwrapOptions, type ChainNode, type UnwrapOption } from "./cm/unwrap";
 import type { EditorSlot } from "./model/slot";
 
@@ -13,7 +15,7 @@ const hint = (text: string) => void executeAction("editor.showHint", { text });
 
 export function pasteText(view: EditorView, text: string) {
   if (view.state.readOnly) return;
-  view.dispatch(view.state.replaceSelection(text), { userEvent: "input.paste", scrollIntoView: true });
+  dispatchPaste(view, text);
   view.focus();
 }
 
@@ -24,29 +26,10 @@ export function pasteFromHistory(view: EditorView) {
     hint("Nothing to paste: the clipboard history is empty");
     return;
   }
-  openPopup({
-    kind: "list",
-    anchor: caretAnchor(view, view.state.selection.main.head),
-    title: "Choose Content to Paste",
-    items: items.map((text, i) => {
-      const { label, detail } = clipLabel(text);
-      return {
-        id: `${i}`,
-        label,
-        detail,
-        preview:
-          text
-            .split(/\r\n?|\n/)
-            .slice(1, 4)
-            .join("  ⏎  ")
-            .trim() || undefined,
-        run: () => {
-          recordClipboard(text);
-          void navigator.clipboard?.writeText(text).catch(() => {});
-          pasteText(view, text);
-        },
-      };
-    }),
+  openPasteHistory(view, (text, linewise) => {
+    recordClipboard(text, linewise);
+    void navigator.clipboard?.writeText(text).catch(() => {});
+    pasteText(view, text);
   });
 }
 
@@ -124,7 +107,7 @@ export async function pasteAsPlainText(view: EditorView) {
     hint("Cannot read the clipboard");
     return;
   }
-  if (!text) return;
-  view.dispatch(view.state.replaceSelection(text), { userEvent: "input.pastePlain", scrollIntoView: true });
+  if (!text && !isLinewiseClipboardText(text)) return;
+  dispatchPaste(view, text, "input.pastePlain");
   view.focus();
 }

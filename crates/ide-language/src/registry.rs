@@ -9,7 +9,9 @@ use std::sync::{Arc, OnceLock};
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("arduino", include_str!("../../../languages/arduino.toml")),
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
+    ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -600,8 +602,11 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "Angular TypeScript",
         "ERB",
         "JSP",
+        "Astro",
+        "GoMod",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -637,6 +642,7 @@ mod tests {
         for (lang, servers) in [
             ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
+            ("java", vec!["jdtls", "kmp-lsp"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let got: Vec<(&str, bool)> = cfg
@@ -675,7 +681,7 @@ mod tests {
         let root = tmp.path();
         std::fs::create_dir_all(root.join("apps/web/src")).unwrap();
         std::fs::write(root.join("apps/web/.oxlintrc.json"), "{}").unwrap();
-        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"] {
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte", "astro"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let oxlint = cfg.language_servers.iter().find(|s| s.name == "oxlint").unwrap();
             assert_eq!((oxlint.command.as_str(), oxlint.args.as_slice()), ("oxlint", ["--lsp".to_string()].as_slice()));
@@ -684,6 +690,27 @@ mod tests {
             assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
             assert_eq!(served("apps/api/main.ts"), None, "{lang}");
         }
+    }
+
+    #[test]
+    fn laravel_lsp_serves_php_files_only_below_artisan() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("php")).unwrap();
+        let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
+        // After the fallback: hover, rename and symbols stay with Intelephense.
+        assert_eq!(names, ["intelephense", "phpactor", "laravel-lsp"]);
+        let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
+        assert_eq!(lsp.command.as_str(), "laravel-lsp");
+        assert!(lsp.require_root_marker && !lsp.fallback);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["shop", "lib"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("shop/artisan"), "").unwrap();
+        let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &lsp.root_markers);
+        assert_eq!(served("shop/app/Models/Order.php"), Some(root.join("shop")));
+        assert_eq!(served("lib/src/Parser.php"), None);
     }
 
     #[test]
@@ -713,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn html_of_angular_projects_is_an_angular_template() {
+    fn angular_projects_use_framework_modes() {
         let reg = reg();
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -724,7 +751,12 @@ mod tests {
         assert_eq!(mode("html", "apps/web/src/app/app.html").as_deref(), Some("Angular Template"));
         assert_eq!(mode("html", "apps/admin/src/index.html").as_deref(), Some("Angular Template"));
         assert_eq!(mode("html", "docs/index.html"), None);
-        assert_eq!(mode("typescript", "apps/web/src/app/app.ts"), None);
+        for file in ["apps/web/src/app/app.ts", "apps/admin/src/app.mts", "apps/admin/src/app.cts"] {
+            assert_eq!(mode("typescript", file).as_deref(), Some("Angular TypeScript"), "{file}");
+        }
+        assert_eq!(mode("typescript", "docs/example.ts"), None);
+        assert_eq!(mode("javascript", "apps/web/src/app/app.js"), None);
+        assert_eq!(mode("typescriptreact", "apps/web/src/app/app.tsx"), None);
         assert!(reg.is_framework_marker(&root.join("apps/admin/angular.json")));
         assert!(!reg.is_framework_marker(&root.join("apps/admin/package.json")));
     }
@@ -857,6 +889,7 @@ mod tests {
             ("x.h", "c"),
             ("x.hpp", "cpp"),
             ("x.cc", "cpp"),
+            ("blink.ino", "arduino"),
             ("P.cs", "csharp"),
             ("V.swift", "swift"),
             ("AppDelegate.m", "objective-c"),
@@ -889,6 +922,7 @@ mod tests {
             ("App.svelte", "svelte"),
             ("index.jsp", "jsp"),
             ("WEB-INF/tags/card.tag", "jsp"),
+            ("index.astro", "astro"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),
             ("tsconfig.app.json", "jsonc"),
@@ -948,6 +982,14 @@ mod tests {
         assert!(dbg.args.iter().any(|a| a == "--dap-port"));
         let res = reg.get(&LanguageId::new("godot-resource")).unwrap();
         assert_eq!(res.line_comment.as_deref(), Some(";"));
+    }
+
+    #[test]
+    fn astro_server_reads_the_project_typescript() {
+        let reg = reg();
+        let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];
+        let tsdk = ls.initialization_options.as_ref().and_then(|o| o.get("typescript")?.get("tsdk")?.as_str());
+        assert_eq!(tsdk, Some("node_modules/typescript/lib"));
     }
 
     #[test]

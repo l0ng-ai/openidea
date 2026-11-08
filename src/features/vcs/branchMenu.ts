@@ -4,6 +4,7 @@ import { executeAction } from "@/platform/actions";
 import type { MenuItem } from "@/ui";
 import { isFavoriteBranch } from "./branches";
 import {
+  branchRef,
   checkoutAndRebase,
   checkoutBranch,
   checkoutDetached,
@@ -11,6 +12,9 @@ import {
   deleteBranch,
   deleteInRepos,
   deleteRemoteBranch,
+  deleteTag,
+  knownRemotes,
+  pushTag,
   mergeInRepos,
   newBranchInRepos,
   rebaseInRepos,
@@ -27,7 +31,7 @@ import { showCompareBranches } from "./CompareBranches";
 import { showDiffWithWorkingTree } from "./operations";
 import type { CommonBranch } from "./repoBranches";
 import { runRemote, saveAll } from "./ops";
-import { focusRepo, useVcs } from "./store";
+import { currentRepo, focusRepo, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 /** `git pull <remote> <branch>` into the current branch (`origin/feat/x` → origin, feat/x). */
@@ -81,8 +85,11 @@ export function branchMenu(b: Branch, current: string | null, done: () => void =
     { label: "Show Diff with Working Tree", run: run(() => showDiffWithWorkingTree(b.name)) },
     history,
     { kind: "separator" },
-    { label: tx`Rebase '${cur}' onto '${b.name}'`, run: run(() => rebaseOnto(b.name)) },
-    { label: tx`Merge '${b.name}' into '${cur}'`, run: run(() => mergeIntoCurrent(b.name)) },
+    { label: tx`Rebase '${cur}' onto '${b.name}'`, run: run(() => rebaseOnto(b.name, branchRef(b.name, b.remote))) },
+    {
+      label: tx`Merge '${b.name}' into '${cur}'`,
+      run: run(() => mergeIntoCurrent(b.name, undefined, branchRef(b.name, b.remote))),
+    },
   ];
   if (b.remote)
     items.push(
@@ -122,6 +129,12 @@ export function tagMenu(tag: string, done: () => void = () => {}): MenuItem[] {
     { label: "Compare with Current", icon: "diff", run: run(() => showCompareBranches(tag)) },
     { label: "Show Diff with Working Tree", run: run(() => showDiffWithWorkingTree(tag)) },
     { label: "Show History", icon: "history", run: run(() => executeAction("vcs.showLog", { branch: tag })) },
+    ...knownRemotes().flatMap((remote, i): MenuItem[] => [
+      ...(i === 0 ? [{ kind: "separator" } as const] : []),
+      { label: tx`Push to ${remote}`, icon: "git-push", run: run(() => pushTag(tag, remote)) },
+    ]),
+    { kind: "separator" },
+    { label: "Delete", danger: true, icon: "trash", run: run(() => deleteTag(tag)) },
   ];
 }
 
@@ -160,6 +173,10 @@ export function commonBranchMenu(b: CommonBranch, roots: readonly string[], done
 
 /** `items` acting on repository `root`: it is selected (with its branches loaded) before each entry runs. */
 export function inRepo(root: string, items: MenuItem[]): MenuItem[] {
+  const runInRepo = (run: () => unknown) => () =>
+    void focusRepo(root).then(() => {
+      if (currentRepo() === root) return run();
+    });
   return items.map((item): MenuItem => {
     if (item.kind === "separator" || item.kind === "header") return item;
     if (item.kind === "action")
@@ -167,12 +184,12 @@ export function inRepo(root: string, items: MenuItem[]): MenuItem[] {
         label: item.label ?? item.action,
         icon: item.icon,
         disabled: item.disabled,
-        run: () => void focusRepo(root).then(() => executeAction(item.action, item.arg)),
+        run: runInRepo(() => executeAction(item.action, item.arg)),
       };
     const run = item.run;
     return {
       ...item,
-      run: run && (() => void focusRepo(root).then(run)),
+      run: run && runInRepo(run),
       submenu: item.submenu && inRepo(root, item.submenu),
     };
   });
