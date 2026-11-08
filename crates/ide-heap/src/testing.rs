@@ -386,3 +386,27 @@ pub fn sample() -> MiniHeap {
         .root(HeapRootKind::JniGlobal, 0x1600);
     heap
 }
+
+/// Seeded xorshift64 numbers for reproducible random test data (the workspace has no `rand`).
+pub struct XorShift(u64);
+
+impl XorShift {
+    pub fn new(seed: u64) -> Self {
+        // Zero is xorshift's one fixed point.
+        Self(seed.max(1))
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    /// A number in `0..bound`; `bound` must not be 0.
+    pub fn below(&mut self, bound: u32) -> u32 {
+        (self.next_u64() % u64::from(bound)) as u32
+    }
+}

@@ -1,6 +1,7 @@
 //! HotSpot `.hprof` heap-dump reading and analysis for the debugger's JVM Memory view.
 
 mod column;
+mod dominators;
 mod error;
 mod graph;
 mod hprof;
@@ -12,6 +13,7 @@ mod reader;
 pub mod testing;
 
 pub use column::{Column, NONE, Pod, Store};
+pub use dominators::{Dominators, dominators};
 pub use error::HeapError;
 pub use graph::{ClassInfo, HeapGraph, PRIM_SLOTS, build_graph};
 pub use hprof::{

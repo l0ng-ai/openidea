@@ -258,7 +258,7 @@ pub fn build_graph(
 
 /// Turns per-node counts into running totals in place (`counts[k]` becomes the sum of
 /// `counts[..=k]`) and returns the last one; past `u32::MAX` the graph is `TooLarge`.
-fn accumulate(counts: &mut [u32], cancel: &CancellationToken) -> Result<u32, HeapError> {
+pub(crate) fn accumulate(counts: &mut [u32], cancel: &CancellationToken) -> Result<u32, HeapError> {
     let mut sum = 0u32;
     for chunk in counts.chunks_mut(CHECK_EVERY as usize) {
         if cancel.is_cancelled() {
