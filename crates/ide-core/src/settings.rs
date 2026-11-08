@@ -386,6 +386,8 @@ pub struct AppearanceSettings {
     pub menu_icons: bool,
     /// `hamburger` | `merged`: main menu presentation in the frameless title bar.
     pub main_menu_style: String,
+    /// A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`).
+    pub main_menu_alt: bool,
     /// `subpixel` | `greyscale` | `none`
     pub ide_antialiasing: String,
     pub editor_antialiasing: String,
@@ -456,6 +458,7 @@ impl Default for AppearanceSettings {
             dnd_with_alt_only: false,
             menu_icons: true,
             main_menu_style: "hamburger".into(),
+            main_menu_alt: true,
             ide_antialiasing: "greyscale".into(),
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
@@ -1248,9 +1251,13 @@ mod tests {
     fn main_menu_style_defaults_and_round_trips() {
         let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
         assert_eq!(old.appearance.main_menu_style, "hamburger");
+        assert!(old.appearance.main_menu_alt);
         let merged: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuStyle":"merged"}}"#).unwrap();
         assert_eq!(merged.appearance.main_menu_style, "merged");
         assert_eq!(serde_json::to_value(merged).unwrap()["appearance"]["mainMenuStyle"], "merged");
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuAlt":false}}"#).unwrap();
+        assert!(!off.appearance.main_menu_alt);
+        assert_eq!(serde_json::to_value(off).unwrap()["appearance"]["mainMenuAlt"], false);
     }
 
     #[test]

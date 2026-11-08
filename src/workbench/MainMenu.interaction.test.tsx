@@ -108,6 +108,35 @@ describe("main menu presentation", () => {
     expect(expanded).not.toHaveBeenCalledWith(true);
   });
 
+  it.each(["hamburger", "merged"])("%s ignores a lone Alt press when the setting is off", async (style) => {
+    setStyle(style);
+    const setAltMenu = (on: boolean) =>
+      act(() =>
+        useProject.setState({ settings: { appearance: { mainMenuStyle: style, mainMenuAlt: on } } as Settings }),
+      );
+    await setAltMenu(false);
+    render(
+      <>
+        <button>Editor</button>
+        <MainMenu />
+      </>,
+    );
+    if (style === "merged") await screen.findByRole("menubar");
+    const editor = screen.getByRole("button", { name: "Editor" });
+    editor.focus();
+    alt();
+    await act(() => new Promise((resolve) => setTimeout(resolve)));
+    expect(screen.queryByRole("menu")).toBeNull();
+    if (style === "hamburger") expect(screen.queryByRole("menubar")).toBeNull();
+    else expect(editor).toHaveFocus();
+    // Turning it back on restores the behavior without a remount.
+    await setAltMenu(true);
+    alt();
+    await act(() => new Promise((resolve) => setTimeout(resolve)));
+    if (style === "hamburger") expect(await screen.findByRole("menu", { name: "File" })).toBeInTheDocument();
+    else expect(titles().getByRole("menuitem", { name: "File" })).toHaveFocus();
+  });
+
   it.each(["hamburger", "merged"])(
     "%s switches on title clicks without an outside dismissal, then closes for toolbar clicks",
     async (style) => {

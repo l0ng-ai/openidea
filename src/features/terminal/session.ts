@@ -9,7 +9,7 @@ import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
-import { editorService, notifications } from "@/workbench/contributions";
+import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
 import { fitScheduler, settledResize } from "./fit";
 import { installTerminalDrop } from "./drop";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
@@ -211,6 +211,8 @@ export class TerminalSession {
   /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
   private lastSize = { cols: 0, rows: 0 };
+  /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
+  private fontZoom = 0;
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -308,6 +310,7 @@ export class TerminalSession {
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
+    this.disposables.push({ dispose: registerFontZoomSurface(this.host, (delta) => this.stepFontSize(delta)) });
   }
 
   private onMiddleClick = (e: MouseEvent) => {
@@ -352,7 +355,8 @@ export class TerminalSession {
           () => this.scheduleFit(),
         );
     }
-    if (o.fontSize !== font.size) o.fontSize = font.size;
+    const targetSize = Math.max(8, Math.min(36, font.size + this.fontZoom));
+    if (o.fontSize !== targetSize) o.fontSize = targetSize;
     if (o.lineHeight !== font.lineHeight) o.lineHeight = font.lineHeight;
     if (o.letterSpacing !== font.letterSpacing) o.letterSpacing = font.letterSpacing;
     if (o.fontWeight !== font.weight) o.fontWeight = font.weight;
@@ -361,6 +365,22 @@ export class TerminalSession {
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
     this.scheduleFit();
+  }
+
+  /** Steps this terminal tab's font size by `delta` px (or resets to 0 when `delta === 0`). */
+  stepFontSize(delta: number) {
+    const base = fontFor(workflowSettings().terminal).size;
+    if (delta === 0) {
+      this.fontZoom = 0;
+    } else {
+      const nextSize = Math.max(8, Math.min(36, base + this.fontZoom + delta));
+      this.fontZoom = nextSize - base;
+    }
+    const targetSize = Math.max(8, Math.min(36, base + this.fontZoom));
+    if (this.term.options.fontSize !== targetSize) {
+      this.term.options.fontSize = targetSize;
+      this.refit();
+    }
   }
 
   get state(): SessionSnapshot {
