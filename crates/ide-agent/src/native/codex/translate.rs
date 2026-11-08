@@ -745,9 +745,48 @@ pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> St
         .filter(|c| !c.is_empty())
         .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()));
     match command {
-        Some(command) => format!("Run {command}"),
+        Some(command) => format!("Run {}", shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }
+}
+
+/// The script of a `<shell> -c <quoted script>` command line, when the whole line is exactly that.
+fn shell_script(command: &str) -> Option<String> {
+    let (shell, rest) = command.split_once(' ')?;
+    if !matches!(shell.rsplit('/').next(), Some("sh" | "bash" | "zsh")) {
+        return None;
+    }
+    let quoted = rest.strip_prefix("-lc ").or_else(|| rest.strip_prefix("-c "))?;
+    let mut out = String::new();
+    let mut chars = quoted.chars();
+    // Adjacent quoted words, e.g. 'a'\''b' or "a \"b\"".
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    c => out.push(c),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '\\' => match chars.next()? {
+                        c @ ('"' | '\\' | '$' | '`') => out.push(c),
+                        '\n' => {}
+                        c => {
+                            out.push('\\');
+                            out.push(c);
+                        }
+                    },
+                    c => out.push(c),
+                }
+            },
+            '\\' => out.push(chars.next()?),
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// The ACP title of a file-change approval, from the item it is about.

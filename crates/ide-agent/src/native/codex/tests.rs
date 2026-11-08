@@ -249,8 +249,21 @@ fn approvals_offer_what_codex_offers_and_always_a_decline() {
             &json!({"command": "/bin/zsh -lc 'ls'", "commandActions": [{"type": "unknown", "command": "touch b"}]}),
             None
         ),
-        "Run /bin/zsh -lc 'ls'"
+        "Run ls"
     );
+}
+
+#[test]
+fn approval_title_shows_the_script_inside_a_shell_wrapper() {
+    let title = |command: &str| command_approval_title(&json!({ "command": command }), None);
+    assert_eq!(
+        title(r#"/bin/zsh -lc "python3 -c 'import pathlib\np = pathlib.Path(\"a.txt\")'""#),
+        "Run python3 -c 'import pathlib\\np = pathlib.Path(\"a.txt\")'"
+    );
+    assert_eq!(title(r#"bash -lc 'echo '\''hi'\'''"#), "Run echo 'hi'");
+    assert_eq!(title("/bin/zsh -lc ls"), "Run /bin/zsh -lc ls");
+    assert_eq!(title("/bin/zsh -lc 'ls' && rm x"), "Run /bin/zsh -lc 'ls' && rm x");
+    assert_eq!(title("python3 -c 'print(1)'"), "Run python3 -c 'print(1)'");
 }
 
 #[test]
@@ -793,7 +806,7 @@ async fn approvals_are_asked_and_answered() {
     assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({"stopReason": "end_turn"}));
     let asked = client.asked.lock().clone();
     assert_eq!(asked.len(), 2);
-    assert_eq!(asked[0]["toolCall"]["title"], "Run /bin/zsh -lc 'touch b.txt'");
+    assert_eq!(asked[0]["toolCall"]["title"], "Run touch b.txt");
     let ids: Vec<&str> =
         asked[0]["options"].as_array().unwrap().iter().map(|o| o["optionId"].as_str().unwrap()).collect();
     assert_eq!(ids, ["accept", "acceptWithExecpolicyAmendment", "decline", "cancel"]);
