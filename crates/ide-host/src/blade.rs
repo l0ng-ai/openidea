@@ -6,7 +6,8 @@
 //! component attributes; in a Laravel project, custom directives, section
 //! and stack names, component tags and attributes (completion and goto),
 //! and Find Usages of a view (the one named at the caret, else the
-//! view itself) in PHP files and templates. [`BladeObserver`] publishes the
+//! view itself) in PHP files and templates, and "Create translation key…"
+//! on a translation key. [`BladeObserver`] publishes the
 //! template's own problems (unclosed sections) for open views. The engine
 //! holds the PHP compiled from the open view as an embedded document under
 //! the view's id; `PhpObserver` drops it when the view closes.
@@ -14,9 +15,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ide_core::{CancellationToken, DocId, IdeEvent, Location, Pos, SharedSink};
+use ide_core::{CancellationToken, DocId, IdeEvent, Location, Pos, Range, SharedSink};
 use ide_lsp::types::{
-    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, References, Signature, SignatureHelp,
+    CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, References,
+    Signature, SignatureHelp,
 };
 use ide_php::blade::structure::DIAGNOSTIC_SOURCE;
 use ide_php::blade::views::{ViewPaths, ViewRef, goto_view, view_ref_at};
@@ -45,6 +47,16 @@ impl BladeService {
     fn info(&self, doc: DocId) -> Option<DocumentInfo> {
         let info = self.documents.snapshot(doc).ok()?;
         (info.language.as_str() == "blade" && info.uri.is_none() && !info.large).then_some(info)
+    }
+
+    /// The "Create translation key…" action at `range`, while the engine
+    /// runs.
+    fn translation_action(&self, doc: DocId, range: Range, only: &[String]) -> Option<CodeAction> {
+        let info = self.info(doc)?;
+        let engine = self.php.engine()?;
+        crate::php::translation_action(only, engine.server_id(), || {
+            engine.blade_translation_request(&blade(&info), range.start)
+        })
     }
 }
 
@@ -152,6 +164,24 @@ impl LanguageService for BladeService {
         }
         locations.extend(usages.into_iter().map(|usage| Location::file(usage.path, usage.range)));
         Some(Ok(References { locations, ..References::default() }))
+    }
+
+    /// Laravel's "Create translation key…" on a translation key in the
+    /// template's PHP (`@lang('…')`, `{{ __('…') }}`); left to the other
+    /// services everywhere else.
+    fn code_actions(&self, doc: DocId, range: Range, only: &[String]) -> Answer<Vec<CodeAction>> {
+        Some(Ok(vec![self.translation_action(doc, range, only)?]))
+    }
+
+    fn code_action_query(
+        &self,
+        doc: DocId,
+        range: Range,
+        only: &[String],
+        _cancel: &CancellationToken,
+    ) -> Answer<CodeActionQuery> {
+        let action = self.translation_action(doc, range, only)?;
+        Some(Ok(CodeActionQuery { actions: vec![action], advertised_kinds: None }))
     }
 
     /// The views and components the view names, else the PHP's targets.

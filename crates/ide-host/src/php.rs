@@ -206,8 +206,9 @@ impl DocumentObserver for PhpObserver {
 /// references, the Laravel route lenses and URI hints, the reference
 /// updates of file moves, the
 /// code actions (inspection quick-fixes, auto-import fixes, Optimize
-/// Imports, the refactorings, and Change Signature resolved with the
-/// dialog's new signature), Pull Members Up / Push Members Down and
+/// Imports, the refactorings, Change Signature resolved with the
+/// dialog's new signature, and Laravel's "Create translation key…" whose
+/// dialog the client runs), Pull Members Up / Push Members Down and
 /// Reformat Code. Diagnostics don't go through it: the engine inspects open
 /// documents in the background and publishes them itself.
 pub(crate) struct PhpService(pub(crate) Arc<PhpEngineSlot>);
@@ -486,7 +487,9 @@ impl crate::language_service::LanguageService for PhpService {
         let engine = self.0.engine()?;
         let server = engine.server_id();
         let actions = engine.code_actions(doc, range, only)?;
-        Some(Ok(actions.into_iter().map(|action| code_action(action, server)).collect()))
+        let mut actions: Vec<CodeAction> = actions.into_iter().map(|action| code_action(action, server)).collect();
+        actions.extend(translation_action(only, server, || engine.laravel_translation_request(doc, range.start)));
+        Some(Ok(actions))
     }
 
     fn code_action_query(
@@ -500,6 +503,7 @@ impl crate::language_service::LanguageService for PhpService {
         let server = engine.server_id();
         let actions = engine.code_actions(doc, range, only)?;
         let mut actions: Vec<CodeAction> = actions.into_iter().map(|action| code_action(action, server)).collect();
+        actions.extend(translation_action(only, server, || engine.laravel_translation_request(doc, range.start)));
         // Change signature: the editor's dialog asks for the new signature,
         // then resolves the action (`resolve_code_action`).
         let wanted = only.is_empty()
@@ -650,6 +654,42 @@ fn route_command(title: String, routes: &[ide_php::frameworks::laravel::RouteInf
         title,
         command: ide_php::frameworks::laravel::route_hints::ROUTE_ACTIONS_COMMAND.to_owned(),
         arguments: vec![serde_json::Value::String(json)],
+    })
+}
+
+/// Laravel's "Create translation key…" on a translation key string (in PHP
+/// or a Blade template), when `only` asks for `refactor.rewrite` actions: the
+/// client command opening the dialog that asks for the text per locale,
+/// with the [`TranslationRequest`](ide_php::frameworks::laravel::refs::translation_key::TranslationRequest)
+/// as its JSON argument.
+pub(crate) fn translation_action(
+    only: &[String],
+    server: ide_core::ServerId,
+    request: impl FnOnce() -> Option<ide_php::frameworks::laravel::refs::translation_key::TranslationRequest>,
+) -> Option<CodeAction> {
+    use ide_php::frameworks::laravel::refs::translation_key::{CREATE_TRANSLATION_COMMAND, create_translation_title};
+    use ide_php::imports::REWRITE;
+    let wanted = only.is_empty()
+        || only.iter().any(|o| REWRITE == o || REWRITE.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('.')));
+    if !wanted {
+        return None;
+    }
+    let request = request()?;
+    let json = serde_json::to_string(&request).ok()?;
+    let title = create_translation_title(&request.key);
+    Some(CodeAction {
+        title: title.clone(),
+        kind: Some(REWRITE.to_owned()),
+        is_preferred: false,
+        disabled_reason: None,
+        edit: None,
+        command: Some(Command {
+            title,
+            command: CREATE_TRANSLATION_COMMAND.to_owned(),
+            arguments: vec![serde_json::Value::String(json)],
+        }),
+        data: None,
+        server,
     })
 }
 

@@ -8,6 +8,7 @@ use ide_core::{Severity, TextEdit};
 use super::*;
 use crate::blade::BladeDocument;
 use crate::frameworks::laravel::config::value_type;
+use crate::frameworks::laravel::refs::translation_key::{LocaleText, TranslationRequest, create_translation_title};
 
 /// One problem: `(line, code, message, severity)`.
 type Found = (u32, String, String, Severity);
@@ -383,6 +384,74 @@ fn reports_undefined_translations_with_a_create_fix() {
     // A key every locale has adds nothing.
     let edit = project.engine.laravel_create_translation("messages.welcome", &[("en".to_owned(), "x".to_owned())]);
     assert_eq!(edit.map(|edit| edit.files.len()), Some(0));
+}
+
+impl Project {
+    /// The "Create translation key…" request at the caret of a PHP file.
+    fn translation_request(&mut self, source: &str) -> Option<TranslationRequest> {
+        let (doc, pos) = self.open("app/Http/Probe.php", source);
+        let found = self.engine.laravel_translation_request(doc, pos);
+        self.engine.document_closed(doc);
+        found
+    }
+}
+
+fn locale(locale: &str, text: &str, exists: bool) -> LocaleText {
+    LocaleText { locale: locale.to_owned(), text: text.to_owned(), exists }
+}
+
+#[test]
+fn create_translation_key_action_asks_about_every_locale() {
+    let mut project = Project::app();
+    // An undefined key: every locale gets the suggested text.
+    let request = project.translation_request("<?php\n__('messages.no/*|*/pe');\n").expect("the request");
+    assert_eq!(
+        request,
+        TranslationRequest {
+            key: "messages.nope".into(),
+            locales: vec![locale("en", "Nope", false), locale("fr", "Nope", false)]
+        }
+    );
+    // Whole strings go to the JSON files.
+    let request = project.translation_request("<?php\ntrans('Some/*|*/ sentence');\n").expect("the JSON request");
+    assert_eq!(request.locales, [locale("en", "Some sentence", false), locale("fr", "Some sentence", false)]);
+    // A known key some locale lacks: the others show their text.
+    project.write("lang/en/extra.php", "<?php\n\nreturn [\n    'only_en' => 'Only English',\n];\n");
+    let request =
+        project.translation_request("<?php\nLang::get('extra.only/*|*/_en');\n").expect("the partial request");
+    assert_eq!(request.locales, [locale("en", "Only English", true), locale("fr", "Only en", false)]);
+    // Not offered: a key every locale has, other strings, unknown namespaces,
+    // dynamic keys, a group key whose place holds a string.
+    for source in [
+        "<?php\n__('messages.wel/*|*/come');\n",
+        "<?php\nconfig('app./*|*/name');\n",
+        "<?php\n__('pkg::x./*|*/y');\n",
+        "<?php\n__(\"messages.{$x}/*|*/\");\n",
+        "<?php\n__('messages.welcome.ne/*|*/sted');\n",
+    ] {
+        assert_eq!(project.translation_request(source), None, "{source}");
+    }
+    // The action's edit writes the dialog's answers.
+    let edit = project.engine.laravel_create_translation("extra.only_en", &[("fr".to_owned(), "Seulement".to_owned())]);
+    assert_eq!(
+        text_edits(&project, &edit.unwrap()),
+        [("lang/fr/extra.php".to_owned(), 0, "<?php\n\nreturn [\n    'only_en' => 'Seulement',\n];\n".to_owned())]
+    );
+    assert_eq!(create_translation_title("messages.nope"), "Create translation key 'messages.nope'…");
+
+    // In Blade: `@lang` and echoes.
+    let path = project.root.join("resources/views/probe.blade.php");
+    for source in ["@lang('messages.ne/*|*/w_key')\n", "<p>{{ __('messages.ne/*|*/w_key') }}</p>\n"] {
+        let (text, pos) = caret(source);
+        let blade = BladeDocument { doc: DocId(92), path: &path, version: 1, text: &text };
+        let request = project.engine.blade_translation_request(&blade, pos).expect(source);
+        assert_eq!(request.key, "messages.new_key");
+        assert_eq!(request.locales, [locale("en", "New key", false), locale("fr", "New key", false)]);
+    }
+    let (text, pos) = caret("<p>/*|*/{{ __('messages.new_key') }}</p>\n");
+    let blade = BladeDocument { doc: DocId(92), path: &path, version: 1, text: &text };
+    assert_eq!(project.engine.blade_translation_request(&blade, pos), None);
+    project.engine.document_closed(DocId(92));
 }
 
 // --------------------------------------------------------------- vite

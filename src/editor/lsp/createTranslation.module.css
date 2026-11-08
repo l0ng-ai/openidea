@@ -1,0 +1,37 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+.key {
+  overflow-wrap: anywhere;
+}
+.label {
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.locale {
+  min-width: 0;
+}
+.hint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.error {
+  color: var(--danger);
+  font-size: var(--fs-small);
+}

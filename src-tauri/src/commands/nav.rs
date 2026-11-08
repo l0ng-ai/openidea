@@ -57,6 +57,19 @@ pub async fn php_laravel_routes(
     ide_host::ops::routes::php_laravel_routes(&state.host, window.label(), query).await
 }
 
+/// The edit adding Laravel translation `key` with each locale's text (the
+/// "Create translation key…" dialog), from the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_create_translation(
+    window: Window,
+    state: State<'_, AppState>,
+    key: String,
+    texts: Vec<ide_host::ops::laravel::TranslationText>,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_create_translation(&state.host, window.label(), key, texts).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn find_symbols(

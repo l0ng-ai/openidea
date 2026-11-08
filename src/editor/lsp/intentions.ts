@@ -32,6 +32,7 @@ import { inspectionsAt } from "./diagnostics";
 import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
+import { isClientCommand, runCommand } from "./clientCommands";
 import { tx } from "@/platform/i18n";
 
 const codeActionBackoff = featureBackoff();
@@ -185,6 +186,16 @@ export async function applyCodeAction(view: EditorView, action: EditorQuickFix) 
   if (!doc) return;
   if (action.disabledReason) {
     showHint(view, action.disabledReason);
+    return;
+  }
+  // An action whose command the client runs (Laravel's "Create translation
+  // key…"): its dialog applies the edit.
+  if (!action.edit && isClientCommand(action.command)) {
+    try {
+      await runCommand(view, action.command);
+    } catch (e) {
+      reportLspError(view, e, true);
+    }
     return;
   }
   const before = view.state.doc;

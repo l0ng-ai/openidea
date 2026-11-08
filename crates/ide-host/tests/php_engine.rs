@@ -412,3 +412,71 @@ async fn pull_members_up_is_answered_by_the_native_engine() {
     assert!(animal.contains("public function bark(): string"), "{animal}");
     host.close_project("main");
 }
+
+/// Laravel's "Create translation key…": the code action on a translation key
+/// (PHP and Blade) carries the request of the client's dialog, and the
+/// command writes the texts the dialog asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laravel_create_translation_key_action_and_command() {
+    use ide_core::{FileEdit, Pos, Range};
+    use ide_host::ops::laravel::{TranslationText, php_laravel_create_translation};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("blog");
+    write(&root.join("composer.json"), r#"{"require": {"laravel/framework": "^11.0"}}"#);
+    write(&root.join("lang/en/messages.php"), "<?php\n\nreturn [\n    'welcome' => 'Welcome',\n];\n");
+    write(&root.join("lang/fr/messages.php"), "<?php\n\nreturn [\n    'welcome' => 'Bienvenue',\n];\n");
+    write(&root.join("app/Probe.php"), "<?php\n__('messages.saved');\n");
+    write(&root.join("resources/views/page.blade.php"), "<p>@lang('messages.saved')</p>\n");
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(WAIT));
+
+    let action_at = |path: PathBuf, pos: Pos, only: Vec<String>| {
+        let host = host.clone();
+        async move {
+            let doc = ops::doc::open(&host, "main", path).await.unwrap();
+            // Without the action, a template has no server answering code actions (an error).
+            let actions = ops::lsp::lsp_code_actions(&host, "main", doc.id, Range::new(pos, pos), only).await;
+            actions
+                .unwrap_or_default()
+                .into_iter()
+                .find(|a| a.title.starts_with("Create translation key 'messages.saved'…"))
+        }
+    };
+    for (path, pos) in
+        [(root.join("app/Probe.php"), Pos::new(1, 8)), (root.join("resources/views/page.blade.php"), Pos::new(0, 14))]
+    {
+        let action = action_at(path.clone(), pos, Vec::new()).await.unwrap_or_else(|| panic!("{path:?}"));
+        assert_eq!(action.kind.as_deref(), Some("refactor.rewrite"));
+        assert!(action.edit.is_none(), "the dialog asks for the texts first");
+        let command = action.command.expect("the client command");
+        assert_eq!(command.command, "laravel.createTranslation");
+        let [serde_json::Value::String(json)] = command.arguments.as_slice() else { panic!("{:?}", command.arguments) };
+        let request: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(request["key"], "messages.saved");
+        assert_eq!(request["locales"][0], serde_json::json!({"locale": "en", "text": "Saved", "exists": false}));
+        assert_eq!(request["locales"][1]["locale"], "fr");
+        // Not among the quick-fixes.
+        assert!(action_at(path, pos, vec!["quickfix".into()]).await.is_none());
+    }
+
+    let edit = php_laravel_create_translation(
+        &host,
+        "main",
+        "messages.saved".into(),
+        vec![TranslationText { locale: "fr".into(), text: "Enregistré".into() }],
+    )
+    .await
+    .unwrap();
+    let [FileEdit::Edit { path, edits, .. }] = edit.files.as_slice() else { panic!("{edit:?}") };
+    assert_eq!(PathBuf::from(path.clone()), root.join("lang/fr/messages.php"));
+    assert_eq!(edits[0].new_text, "\n    'saved' => 'Enregistré',");
+    let err = php_laravel_create_translation(&host, "main", "unknown::x.y".into(), Vec::new()).await.unwrap_err();
+    assert!(err.message.contains("can't be added"), "{err:?}");
+    host.close_project("main");
+}

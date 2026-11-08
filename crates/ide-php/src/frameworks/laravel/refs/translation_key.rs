@@ -11,10 +11,20 @@
 //! (group keys always, whole strings when the project has JSON
 //! translations), with the quick-fix "Create translation key", which adds
 //! it to every locale.
+//!
+//! On any key some locale lacks, the action "Create translation key…"
+//! ([`PhpEngine::laravel_translation_request`], also in Blade) runs the
+//! client command [`CREATE_TRANSLATION_COMMAND`]: the front end asks for the
+//! text per locale, then writes it with
+//! [`PhpEngine::laravel_create_translation`].
 
 use std::path::Path;
 
+use ide_core::{DocId, Pos};
+
 use super::{CalleePattern, Declared, PlacePattern, RefContext, RefItem, ReferenceKind, Undefined};
+use crate::blade::BladeDocument;
+use crate::engine::PhpEngine;
 use crate::frameworks::laravel::config::declared_key_at;
 use crate::frameworks::laravel::lang::{Translations, is_group_key};
 use crate::navigate::Target;
@@ -169,4 +179,85 @@ impl ReferenceKind for TranslationKey {
             _ => Some(problem),
         }
     }
+}
+
+/// The command of the "Create translation key…" action. Its one argument is
+/// the JSON of a [`TranslationRequest`]; the front end asks for the text
+/// per locale, then has [`PhpEngine::laravel_create_translation`] write it.
+pub const CREATE_TRANSLATION_COMMAND: &str = "laravel.createTranslation";
+
+/// What the "Create translation key…" dialog asks about: the key and every
+/// locale of the project.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationRequest {
+    pub key: String,
+    pub locales: Vec<LocaleText>,
+}
+
+/// One locale of a [`TranslationRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocaleText {
+    pub locale: String,
+    /// The locale's text when it has the key, else the suggested one
+    /// ([`default_text`]).
+    pub text: String,
+    /// The locale has the key already (it is left as it is).
+    pub exists: bool,
+}
+
+impl PhpEngine {
+    /// The "Create translation key…" request of the `translationKey` string
+    /// at `pos` of the document (known or not): `None` elsewhere, outside
+    /// Laravel projects, and when every locale has the key or it can't be
+    /// added (an unknown namespace, a group key whose place holds a string).
+    pub fn laravel_translation_request(&self, doc: DocId, pos: Pos) -> Option<TranslationRequest> {
+        let parsed = self.parsed_document(doc)?;
+        let path = self.document_path(doc)?;
+        let offset = parsed.line_index().byte(pos);
+        let (cx, subject) = self.ref_subject(&parsed, &path, offset)?;
+        if subject.declaration || subject.kind.id() != TranslationKey.id() {
+            return None;
+        }
+        let key = subject.value;
+        if key.trim().is_empty() || key.contains(['$', '\\', '{']) {
+            return None;
+        }
+        let translations = TranslationKey::translations(&cx);
+        if !translations.knows_namespace_of(&key) {
+            return None;
+        }
+        let locales: Vec<LocaleText> = translations
+            .locales()
+            .iter()
+            .map(|locale| match translations.get(&key).find(|entry| entry.locale == *locale) {
+                Some(entry) => {
+                    LocaleText { locale: locale.clone(), text: entry.text.clone().unwrap_or_default(), exists: true }
+                }
+                None => LocaleText { locale: locale.clone(), text: default_text(&key), exists: false },
+            })
+            .collect();
+        let missing: Vec<(String, String)> = locales
+            .iter()
+            .filter(|locale| !locale.exists)
+            .map(|locale| (locale.locale.clone(), locale.text.clone()))
+            .collect();
+        match translations.create(&key, &missing) {
+            Some(edit) if !edit.files.is_empty() => Some(TranslationRequest { key, locales }),
+            _ => None,
+        }
+    }
+
+    /// [`Self::laravel_translation_request`] in the PHP of a Blade template
+    /// (`{{ __('…') }}`, `@lang('…')`).
+    pub fn blade_translation_request(&self, blade: &BladeDocument, pos: Pos) -> Option<TranslationRequest> {
+        let compiled = self.blade_sync(blade);
+        self.laravel_translation_request(blade.doc, compiled.to_php(pos)?)
+    }
+}
+
+/// The title of the "Create translation key…" action.
+pub fn create_translation_title(key: &str) -> String {
+    format!("Create translation key '{key}'…")
 }

@@ -25,6 +25,11 @@ export function registerClientCommand(name: string, handler: ClientCommandHandle
   };
 }
 
+/** Whether the client runs `command` itself (a code action carrying it opens a client dialog). */
+export function isClientCommand(command: Command | null | undefined): command is Command {
+  return !!command && handlers.has(command.command);
+}
+
 /** Runs a lens's or hint's command: a client handler, else the document's language server. */
 export async function runCommand(view: EditorView, command: Command, event?: MouseEvent): Promise<void> {
   const handler = handlers.get(command.command);

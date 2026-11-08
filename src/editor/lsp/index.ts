@@ -27,6 +27,7 @@ import { inlineCompletionExtension, registerInlineCompletionActions } from "./in
 import { semanticExtension } from "./semantic";
 import { usagesLensExtension } from "./codeLens";
 import { serverLensExtension } from "./serverLens";
+import { CreateTranslationDialog, registerCreateTranslation } from "./createTranslation";
 import { autoImportExtension } from "./autoImport";
 import { installAvailabilityEvents } from "./availability";
 import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from "./actions";
@@ -79,6 +80,9 @@ export function activate(): () => void {
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
     registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
+    // Laravel: "Create translation key…" asks for the text per locale.
+    registerOverlay({ id: "editor-lsp.createTranslationDialog", component: CreateTranslationDialog }),
+    registerCreateTranslation(),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.

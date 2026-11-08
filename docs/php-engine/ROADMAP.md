@@ -567,7 +567,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: caret fixtures and quick-fix tests.
 
-- [ ] Phase 8.8.b: Create translation key dialog
+- [x] Phase 8.8.b: Create translation key dialog
       Phase 8.8 added the engine query `PhpEngine::laravel_create_translation(key, [(locale, text)])` (and `laravel_locales()`) and a quick-fix that writes a default text to every locale. Add the asking UI on top: a code action (PHP and Blade, on any `translationKey` string, known or not) running a client command that opens a dialog asking for the text per locale and which locales to write, then applies the query's edit. Expose the query as a Tauri/remote command (regenerate bindings). Dialog text in `en` and `zh`. Tests: engine test of the code action, a host test of the command, and frontend tests for the dialog.
 
 - [ ] Phase 8.9: Validation

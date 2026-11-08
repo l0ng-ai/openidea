@@ -333,6 +333,11 @@ export const commands = {
 	 *  Search Everywhere's Routes scope, from the native PHP engine.
 	 */
 	phpLaravelRoutes: (query: string) => typedError<LaravelRoute[], IdeError>(__TAURI_INVOKE("php_laravel_routes", { query })),
+	/**
+	 *  The edit adding Laravel translation `key` with each locale's text (the
+	 *  "Create translation key…" dialog), from the native PHP engine.
+	 */
+	phpLaravelCreateTranslation: (key: string, texts: TranslationText[]) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_create_translation", { key, texts })),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
 	/**  Folders holding indexed files, for `@` references. */
 	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
@@ -7272,6 +7277,12 @@ export type TransferReport = {
 	/**  Files left alone: excluded, or outside every mapping. */
 	skipped: number,
 	errors: TransferError[],
+};
+
+/**  One locale's text for a new translation key. */
+export type TranslationText = {
+	locale: string,
+	text: string,
 };
 
 export type TrustDecisions = {
