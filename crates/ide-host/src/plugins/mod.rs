@@ -16,6 +16,7 @@
 //! projects) and folders linked with `openidea-plugin link` (`links.json`).
 
 mod api;
+mod auth;
 pub mod commit;
 pub(crate) mod diagnostics;
 pub mod endpoints;
@@ -30,6 +31,7 @@ pub mod index_ops;
 mod inlay_hints;
 mod install;
 pub mod intellij;
+mod ipc;
 mod market;
 pub mod navigation;
 mod points;
@@ -1080,7 +1082,9 @@ impl PluginHost {
             ledger.set(&subject, &cap, granted);
             if granted
                 && let Capability::Process(program) = &cap
-                && let Some(bin) = self.resolve_binary(program)
+                && let Some(bin) = ledger
+                    .program_choice(&subject, &cap)
+                    .map_or_else(|| self.resolve_binary(program), |path| ledger::approve_program(path).ok())
             {
                 ledger.set_binary(&subject, &cap, bin);
             }
@@ -1097,12 +1101,72 @@ impl PluginHost {
     /// The program a `process:` grant allows, checked against the file
     /// approved for it. Errors ask the user to confirm again.
     pub fn program_for(&self, id: &str, program: &str) -> IdeResult<PathBuf> {
+        self.program_for_project(id, program, None)
+    }
+
+    /// Resolves the approved executable for the invoking project, verifying its pinned content.
+    pub fn program_for_project(&self, id: &str, program: &str, root: Option<&Path>) -> IdeResult<PathBuf> {
         let plugin = self.get(id)?;
-        let cap = Capability::Process(program.to_owned());
         self.ledger
             .lock()
-            .check_binary(&plugin.subject(), &cap)
+            .check_binary_in_project(&plugin.subject(), &Capability::Process(program.into()), root)
             .map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))
+    }
+
+    /// Records a user-approved executable choice; removing it revalidates the fallback or revokes the grant.
+    pub fn choose_program(
+        &self,
+        id: &str,
+        capability: &str,
+        root: Option<&Path>,
+        path: Option<&Path>,
+    ) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        let cap: Capability = capability.parse().map_err(IdeError::invalid)?;
+        let Capability::Process(program) = &cap else {
+            return Err(IdeError::invalid("expected a process capability"));
+        };
+        if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
+            return Err(IdeError::invalid("undeclared process capability"));
+        }
+        let binary = if let Some(path) = path {
+            Some(ledger::approve_program(path).map_err(IdeError::invalid)?)
+        } else if root.is_none() {
+            self.resolve_binary(program)
+        } else {
+            None
+        };
+        {
+            let mut ledger = self.ledger.lock();
+            let subject = plugin.subject();
+            if ledger.get(&subject).is_none() {
+                return Err(IdeError::invalid("confirm this plugin's permissions first"));
+            }
+            if let Some(root) = root {
+                ledger.set_project_binary(&subject, &cap, root, binary);
+                if path.is_some() {
+                    ledger.set(&subject, &cap, true);
+                } else if ledger.check_binary(&subject, &cap).is_err() {
+                    ledger.set(&subject, &cap, false);
+                }
+            } else if let Some(binary) = binary {
+                ledger.set_program_choice(&subject, &cap, path);
+                ledger.set(&subject, &cap, true);
+                ledger.set_binary(&subject, &cap, binary);
+            } else {
+                ledger.set_program_choice(&subject, &cap, None);
+                ledger.set(&subject, &cap, false);
+            }
+            self.save_ledger(&ledger);
+        }
+        self.stop(&plugin);
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        self.changed();
+        self.info_of(id)
     }
 
     fn check_uninstall_pending(&self, id: &str) -> IdeResult<()> {
@@ -1457,7 +1521,11 @@ impl PluginHost {
 
     /// Plugins' `runDetectors`, for [`ide_run::set_external_detection`].
     pub fn run_detection(&self) -> Arc<dyn ide_run::ExternalDetection> {
-        Arc::new(run_detectors::PluginRunDetection { store: self.run_detectors.clone(), pins: self.pins.clone() })
+        Arc::new(run_detectors::PluginRunDetection {
+            store: self.run_detectors.clone(),
+            pins: self.pins.clone(),
+            project_pins: self.shared.project_pins.clone(),
+        })
     }
 
     /// The syntax of plugin languages, for [`ide_language::set_external_syntax`].
@@ -1513,6 +1581,10 @@ impl PluginHost {
     }
 
     /// Plugin context keys in effect for window `client`: global keys overlaid with its own.
+    pub fn status_snapshot(&self, client: &str) -> Vec<PluginStatusItem> {
+        self.shared.status_snapshot(client)
+    }
+
     pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
         self.shared.context_keys(client)
     }
@@ -1543,6 +1615,10 @@ impl PluginHost {
 
     /// A window answered a plugin's `CommitRequested`; false when the call no
     /// longer waits.
+    pub fn answer_command(&self, client: &str, request: &str, answer: CommandAnswer) -> bool {
+        request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
+    }
+
     pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
         request_id.parse().is_ok_and(|id| self.shared.answer_commit(id, answer))
     }
@@ -1632,6 +1708,17 @@ impl PluginHost {
 
     /// Queues workbench events from window `client` for the plugins that want
     /// them; [`flush_events`](Self::flush_events) delivers them in batches.
+    pub fn post_window_events(&self, client: &str, events: Vec<WorkbenchEvent>, editor: Option<PluginEditor>) {
+        let mut editors = self.shared.event_editors.write();
+        if let Some(editor) = editor {
+            editors.insert(client.into(), editor.context());
+        } else {
+            editors.remove(client);
+        }
+        drop(editors);
+        self.post_events(Some(client), events);
+    }
+
     pub fn post_events(&self, client: Option<&str>, events: Vec<WorkbenchEvent>) {
         self.post_events_from(client, events, None);
     }
@@ -1661,7 +1748,13 @@ impl PluginHost {
                             .as_ref()
                             .is_none_or(|root| client.and_then(|c| self.shared.project_of(c)).as_ref() == Some(root))
                 })
-                .cloned()
+                .filter_map(|e| match e {
+                    WorkbenchEvent::SettingsChanged(_) => {
+                        let keys = self.shared.changed_settings(&p.pkg, client);
+                        (!keys.is_empty()).then_some(WorkbenchEvent::SettingsChanged(keys))
+                    }
+                    _ => Some(e.clone()),
+                })
                 .collect();
             let wanted = Self::filter_path_events(&self.shared, &p, client, &wanted, &subs);
             if wanted.is_empty() {
@@ -1809,9 +1902,10 @@ impl PluginHost {
         let invocation = Invocation {
             workspace_root: client.as_deref().and_then(|c| self.shared.project_of(c)),
             client: client.clone(),
-            editor: None,
+            editor: client.as_deref().and_then(|c| self.shared.event_editors.read().get(c).cloned()),
             selected_paths: Vec::new(),
             global_settings: false,
+            command_chain: Vec::new(),
         };
         let kinds: BTreeSet<EventKind> = queue.events.iter().map(WorkbenchEvent::kind).collect();
         let filesystem = kinds.contains(&EventKind::FilesChanged);
@@ -2599,8 +2693,21 @@ impl PluginHost {
     /// pick up a change on their next lookup.
     fn refresh_pins(&self, ledger: &Ledger) {
         let mut pins = HashMap::new();
+        let mut project_pins = HashMap::new();
         for plugin in self.plugins.read().values() {
             let subject = plugin.subject();
+            if let Some(grant) = ledger.get(&subject) {
+                for (root, binaries) in &grant.project_binaries {
+                    for (cap, bin) in binaries {
+                        if grant.granted.contains(cap) {
+                            project_pins.insert(
+                                (plugin.id().to_owned(), cap.clone(), root.clone()),
+                                ProgramPin { path: bin.path.clone(), hash: bin.hash.clone() },
+                            );
+                        }
+                    }
+                }
+            }
             let declared =
                 plugin.manifest().capabilities.all().cloned().chain(plugin.meta.lock().declared_extra.clone());
             for cap in declared.filter(|c| matches!(c, Capability::Process(_))) {
@@ -2612,6 +2719,7 @@ impl PluginHost {
                 }
             }
         }
+        *self.shared.project_pins.write() = project_pins;
         let mut current = self.pins.write();
         if *current != pins {
             *current = pins;
@@ -2665,12 +2773,26 @@ impl PluginHost {
 
     fn record_consent(&self, request: &Request<'_>, consent: &Consent) {
         let accepted: Vec<Capability> = request.optional.iter().filter(|c| consent.accepts(c)).cloned().collect();
+        let choices: BTreeMap<_, _> = {
+            let ledger = self.ledger.lock();
+            request
+                .required
+                .iter()
+                .chain(&accepted)
+                .filter_map(|cap| {
+                    ledger.program_choice(&request.subject, cap).map(|p| (cap.to_string(), p.to_path_buf()))
+                })
+                .collect()
+        };
         let binaries: BTreeMap<String, BinaryGrant> = request
             .required
             .iter()
             .chain(&accepted)
             .filter_map(|c| match c {
-                Capability::Process(program) => self.resolve_binary(program).map(|b| (c.to_string(), b)),
+                Capability::Process(program) => choices
+                    .get(&c.to_string())
+                    .map_or_else(|| self.resolve_binary(program), |path| ledger::approve_program(path).ok())
+                    .map(|b| (c.to_string(), b)),
                 _ => None,
             })
             .collect();

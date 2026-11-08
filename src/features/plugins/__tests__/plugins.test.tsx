@@ -502,6 +502,60 @@ describe("bridge events", () => {
     expect(useTasks.getState().tasks.find((t) => t.id === "plugin:7")?.done).toBe(true);
   });
 
+  it("keeps a window status override above global updates and falls back on removal", () => {
+    const global = { text: "global", tooltip: null, command: null };
+    const local = { text: "window", tooltip: null, command: null };
+    handleRuntimeEvent({ type: "statusItemChanged", pluginId: "scope", id: "state", item: global });
+    handleRuntimeEvent({ type: "windowStatusItemChanged", pluginId: "scope", id: "state", item: local });
+    handleRuntimeEvent({
+      type: "statusItemChanged",
+      pluginId: "scope",
+      id: "state",
+      item: { ...global, text: "updated" },
+    });
+    expect(usePluginStatusItems.getState().items.get("scope/state")?.item.text).toBe("window");
+    handleRuntimeEvent({ type: "windowStatusItemChanged", pluginId: "scope", id: "state", item: null });
+    expect(usePluginStatusItems.getState().items.get("scope/state")?.item.text).toBe("updated");
+    handleRuntimeEvent({ type: "statusItemChanged", pluginId: "scope", id: "state", item: null });
+  });
+
+  it("executes host command requests through actions and returns plugin command results", async () => {
+    const answerCommand = vi.fn().mockResolvedValue(undefined);
+    const runCommand = vi.fn().mockResolvedValue("plugin result");
+    setPluginsBackend({ ...backend, answerCommand, runCommand });
+    const run = vi.fn();
+    const dispose = registerAction({ id: "test.host-command", title: "Test", run });
+    try {
+      handleRuntimeEvent({
+        type: "executeCommand",
+        requestId: "ide",
+        id: "test.host-command",
+        arg: "argument",
+        chain: ["caller"],
+      });
+      await waitFor(() => expect(answerCommand).toHaveBeenCalledWith("ide", { kind: "value", value: null }));
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ arg: "argument" }));
+      usePlugins.setState({
+        ui: [{ pluginId: "other", point: "commands", key: "test", decl: { id: "test", title: "Test" } }],
+      });
+      handleRuntimeEvent({
+        type: "executeCommand",
+        requestId: "plugin",
+        id: "plugin.other.test",
+        arg: "argument",
+        chain: ["caller"],
+      });
+      await waitFor(() =>
+        expect(answerCommand).toHaveBeenCalledWith("plugin", { kind: "value", value: "plugin result" }),
+      );
+      expect(runCommand).toHaveBeenCalledWith("other", "test", "argument", null, [], undefined, ["caller"]);
+      handleRuntimeEvent({ type: "executeCommand", requestId: "missing", id: "unknown", arg: null, chain: ["caller"] });
+      await waitFor(() => expect(answerCommand).toHaveBeenCalledWith("missing", { kind: "notFound" }));
+    } finally {
+      dispose();
+    }
+  });
+
   it("runs notification buttons as commands of the publishing plugin with their arguments", async () => {
     const runCommand = vi.fn().mockResolvedValue(null);
     setPluginsBackend({ ...backend, runCommand });

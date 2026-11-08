@@ -9,6 +9,7 @@ import type {
   CapabilityInfo,
   CatalogPlugin,
   CommitAnswer,
+  CommandAnswer,
   CommitSelection,
   Consent,
   EventKind,
@@ -35,6 +36,7 @@ import type {
   WorkbenchEvent,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
+import { useRemote } from "@/platform/remote";
 import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorContext } from "./editorContext";
 
@@ -46,6 +48,14 @@ export interface PluginsBackend {
   installDir(path: string, consent: Consent): Promise<PluginInfo>;
   /** Confirms a plugin waiting for consent. */
   grant(id: string, consent: Consent): Promise<PluginInfo>;
+  chooseProgram(
+    pluginId: string,
+    capability: string,
+    scope: "global" | "project",
+    path: string | null,
+  ): Promise<PluginInfo>;
+  program(pluginId: string, program: string, scope: "global" | "project"): Promise<string>;
+  pickProgram(): Promise<string | null>;
   setCapability(id: string, capability: string, granted: boolean): Promise<PluginInfo>;
   /** Validated assets (icon theme mapping and SVGs) whose id starts with `prefix`. */
   assets(pluginId: string, prefix: string): Promise<[string, string][]>;
@@ -63,6 +73,7 @@ export interface PluginsBackend {
     editor: PluginEditor | null,
     paths: string[],
     settingsScope?: "global" | "project",
+    commandChain?: string[],
   ): Promise<string | null>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
@@ -75,6 +86,7 @@ export interface PluginsBackend {
   /** Reports the answer to a plugin's `promptRequested`: keys, `[text]`, anything for OK, `null` when dismissed. */
   answerPrompt(promptId: string, answer: string[] | null): Promise<void>;
   /** This window's answer to a plugin's `commitRequested`. */
+  answerCommand(requestId: string, answer: CommandAnswer): Promise<void>;
   answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
   /** Runs plugins' before-commit checks on what `selection` commits. */
   commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
@@ -175,6 +187,20 @@ export const tauriPluginsBackend: PluginsBackend = {
   previewInstall: (path) => call(commands.pluginPreviewInstall(path)),
   installDir: (path, consent) => call(commands.pluginInstallDir(path, consent)),
   grant: (id, consent) => call(commands.pluginGrant(id, consent)),
+  chooseProgram: async (id, cap, scope, path) => {
+    const remote = !!useRemote.getState().session;
+    if (remote && path !== null) await call(commands.pluginSetCapability(id, cap, true));
+    const chosen = await call(commands.pluginChooseProgram(id, cap, scope, path));
+    if (remote && !chosen.capabilities.some((c) => c.id === cap && c.granted))
+      await call(commands.pluginSetCapability(id, cap, false));
+    return chosen;
+  },
+  program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
+  pickProgram: async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const picked = await open({ directory: false, multiple: false, title: tx("Choose plugin executable") });
+    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+  },
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
   activationEvent: async (kind, value) => {
@@ -185,10 +211,12 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor, paths, settingsScope) =>
-    call(commands.pluginRunCommand(pluginId, commandId, arg, editor, paths, settingsScope ?? null)),
+  runCommand: (pluginId, commandId, arg, editor, paths, settingsScope, commandChain) =>
+    call(
+      commands.pluginRunCommand(pluginId, commandId, arg, editor, paths, settingsScope ?? null, commandChain ?? null),
+    ),
   postEvents: async (events) => {
-    await commands.pluginPostEvents(events);
+    await commands.pluginPostEvents(events, editorContext());
   },
   eventKinds: () => commands.pluginEventKinds(),
   statusItems: () => commands.pluginStatusItems(),
@@ -198,6 +226,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   },
   answerPrompt: async (promptId, answer) => {
     await commands.pluginAnswerPrompt(promptId, answer);
+  },
+  answerCommand: async (requestId, answer) => {
+    await call(commands.pluginAnswerCommand(requestId, answer));
   },
   answerCommit: async (requestId, answer) => {
     await commands.pluginAnswerCommit(requestId, answer);
@@ -520,6 +551,11 @@ export function createMemoryPluginsBackend(
       emit({ type: "commandsChanged" });
       return { ...p };
     },
+    chooseProgram: async (id) => {
+      return { ...find(id) };
+    },
+    program: async (_id, program) => program,
+    pickProgram: async () => null,
     setCapability: async (id, capability, granted) => {
       const p = find(id);
       p.capabilities = p.capabilities.map((c) => (c.id === capability ? { ...c, granted } : c));
@@ -594,6 +630,7 @@ export function createMemoryPluginsBackend(
     viewEvent: async () => {},
     serviceDetail: async () => [],
     endpoints: async () => [],
+    answerCommand: async () => {},
     answerCommit: async () => {},
     commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {

@@ -338,10 +338,12 @@ pub async fn plugin_run_command(
     editor: Option<PluginEditor>,
     paths: Option<Vec<PathBuf>>,
     settings_scope: Option<SettingsScope>,
+    command_chain: Option<Vec<String>>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
     let invocation = Invocation {
+        command_chain: command_chain.unwrap_or_default(),
         client: Some(window.label().to_owned()),
         workspace_root: project.as_ref().map(|p| p.root.clone()),
         editor: editor.map(PluginEditor::context),
@@ -354,8 +356,13 @@ pub async fn plugin_run_command(
 /// Workbench events from this window (only the kinds of `plugin_event_kinds`).
 #[tauri::command]
 #[specta::specta]
-pub fn plugin_post_events(window: Window, state: State<'_, AppState>, events: Vec<WorkbenchEvent>) {
-    state.plugins.post_events(Some(window.label()), events);
+pub fn plugin_post_events(
+    window: Window,
+    state: State<'_, AppState>,
+    events: Vec<WorkbenchEvent>,
+    editor: Option<PluginEditor>,
+) {
+    state.plugins.post_window_events(window.label(), events, editor);
 }
 
 /// Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`).
@@ -375,13 +382,8 @@ pub async fn plugin_event_kinds(app: tauri::AppHandle) -> Vec<EventKind> {
 /// Every plugin status bar item (later changes arrive as `statusItemChanged`).
 #[tauri::command]
 #[specta::specta]
-pub fn plugin_status_items(state: State<'_, AppState>) -> Vec<PluginStatusItem> {
-    state
-        .plugins
-        .status_items()
-        .into_iter()
-        .map(|(plugin_id, id, item)| PluginStatusItem { plugin_id, id, item })
-        .collect()
+pub fn plugin_status_items(window: Window, state: State<'_, AppState>) -> Vec<PluginStatusItem> {
+    state.plugins.status_snapshot(window.label())
 }
 
 /// Plugin context keys in effect for this window (later changes arrive as `contextChanged`).
@@ -875,4 +877,53 @@ pub async fn plugin_navigation_markers(
 ) -> IdeResult<Vec<ide_plugin::indexing::FileMarkers>> {
     ide_host::plugins::index_ops::plugin_navigation_markers(&state.host, state.plugins.clone(), window.label(), paths)
         .await
+}
+
+/// The invoking window's reply to a plugin command request.
+#[tauri::command]
+#[specta::specta]
+pub fn plugin_answer_command(
+    window: Window,
+    state: State<'_, AppState>,
+    request_id: String,
+    answer: ide_host::plugins::CommandAnswer,
+) -> IdeResult<bool> {
+    Ok(state.plugins.answer_command(window.label(), &request_id, answer))
+}
+
+/// Re-approves a plugin's executable, globally or for this window's project.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_choose_program(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    capability: String,
+    scope: SettingsScope,
+    path: Option<PathBuf>,
+) -> IdeResult<PluginInfo> {
+    let host = state.plugins.clone();
+    let root = match scope {
+        SettingsScope::Global => None,
+        SettingsScope::Project => Some(state.project(window.label())?.root.clone()),
+    };
+    blocking(move || host.choose_program(&plugin_id, &capability, root.as_deref(), path.as_deref())).await
+}
+
+/// The currently approved executable in the selected scope, after revalidating its pin.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_program(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    program: String,
+    scope: SettingsScope,
+) -> IdeResult<ide_core::IpcPath> {
+    let host = state.plugins.clone();
+    let root = match scope {
+        SettingsScope::Global => None,
+        SettingsScope::Project => Some(state.project(window.label())?.root.clone()),
+    };
+    blocking(move || host.program_for_project(&plugin_id, &program, root.as_deref()).map(Into::into)).await
 }

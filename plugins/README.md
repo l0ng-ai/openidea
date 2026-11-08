@@ -37,7 +37,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.3.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.4.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -299,10 +299,12 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                     |
 | `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                 |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                                                                 |
-| `events.input`      | medium | `action-performed` events (which actions you run, and how)                                                                   |
+| `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                           |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                               |
-| `net:<host>`        | medium | `host::fetch` to that host (`*.example.com`: its subdomains)                                                                 |
-| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`                                                                |
+| `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                            |
+| `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                        |
+| `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                    |
+| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                 |
 | `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                    |
 
 `process:` capabilities are also derived from what the contributions start: a
@@ -438,45 +440,51 @@ then run `openidea-plugin check`.
 
 ### The API
 
-| Rust SDK                                                                 | WIT                              | Notes                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Plugin::run_command(id, ctx, arg)`                                      | export `commands.run`            | `ctx` is the window: `ctx.project()`, `ctx.editor()`. An error shows _"<title> failed: …"_; the plugin keeps running. `"msg".into()` is `Error::Failed`; `Cancelled` and `Denied` don't count as the plugin failing. |
-| `Plugin::handle_events(events, ctx)`                                     | export `event-handler.handle`    | Batches of subscribed events, oldest first, per window.                                                                                                                                                              |
-| `Plugin::activate` / `deactivate`                                        | export `lifecycle`               | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                  |
-| `TextEditor::document()` → `{version, text}`                             | `editor.text-editor.document`    | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                       |
-| `TextEditor::apply_edits(version, edits)`                                | `editor.text-editor.apply-edits` | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                      |
-| `Project::root()`, `read_file(path)`                                     | `workspace.project`              | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win; a missing path is `Error::NotFound`.                                                  |
-| `Project::exists(path)`, `stat(path)`                                    | `workspace.project`              | `exists` covers files and directories, hidden and ignored included, without reading content; `stat` gives kind, size and modified time (`Error::NotFound` for a missing path).                                       |
-| `host::projects()`                                                       | `workspace.projects`             | Every open project (for scheduled work without a window).                                                                                                                                                            |
-| `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                  | `vcs`                            | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                      |
-| `host::pending_commit()`, `host::set_commit_message(revision, text)`     | `commit`                         | The commit being prepared in the calling window and its message; see _Commits_.                                                                                                                                      |
-| `host::subscribe(kind)`                                                  | `events.subscribe`               | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                                                                                  |
-| `host::begin_task(title, cancellable)` → `Task`                          | `tasks.begin`                    | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                               |
-| `host::storage::{get, set, delete, keys}`                                | `storage`                        | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                             |
-| `host::set_status_item(id, item)`, `remove_status_item`                  | `ui`                             | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                 |
-| `host::set_context(key, value)`, `remove_context`                        | `ui.{set,remove}-context`        | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                       |
-| `host::notify(level, title, body)`                                       | `ui.show-notification`           | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                      |
-| `host::copy_to_clipboard(text)`                                          | `ui.copy-to-clipboard`           | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                            |
-| `host::open_url(url)`                                                    | `ui.open-url`                    | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                  |
-| `host::pick(title, items)`, `pick_many`                                  | `ui.pick`, `ui.pick-many`        | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                  |
-| `host::input(prompt, value)`                                             | `ui.input`                       | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                            |
-| `host::input_multiline(prompt, value)`                                   | `ui.input-multiline`             | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Only from a command or event of a window.                                                                             |
-| `host::confirm(title, body)`                                             | `ui.confirm`                     | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                     |
-| `host::locale()`                                                         | `ui.locale`                      | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                      |
-| `host::log(level, msg)`                                                  | `log`                            | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                              |
-| `Project::find_files(glob, limit)`                                       | `workspace.project.find-files`   | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                               |
-| `Project::symbols(query, limit)`                                         | `workspace.symbols`              | New in 1.3; `project.read`. Fuzzy in-memory search (no LSP): name, camelCase kind, container and UTF-16 location. Queries ≤ 256 UTF-8 bytes; limits capped at 1000. Snapshot notes below.                            |
-| `host::publish_diagnostics(path, items)`                                 | `diagnostics.publish`            | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                    |
-| `host::fetch(request)` → `{status, headers, body}`                       | `net.fetch`                      | See _Network_.                                                                                                                                                                                                       |
-| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`  | `process.run`                    | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                       |
-| `host::run_command(cmd, project, stdin)` → `{code, stdout, stderr}`      | `process.run-command`            | API 1.3: same limits as `run_process`, with append-only environment variables; needs the pinned `process:<program>` grant.                                                                                           |
-| `host::start(cmd, project)` → `Child`                                    | `process.start`                  | API 1.3: `poll(max_bytes)`, `write(text)`, `close_stdin()`, `wait(timeout_ms)`, `kill()`; at most 8 handles; dropping one kills its process.                                                                         |
-| `host::refresh_view(view)`                                               | `views.refresh`                  | The view (or custom editors) render again; call it when the content changed.                                                                                                                                         |
-| `host::reveal_view(view)`                                                | `views.reveal`                   | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                              |
-| `host::post_view_message(view, text)`                                    | `views.post-message`             | To the script of the view's `html` body.                                                                                                                                                                             |
-| `host::open_terminal(title, program, args)`                              | `views.open-terminal`            | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                  |
-| `host::open_location(path, line, column)`                                | `views.open-location`            | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                   |
-| `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number` | `settings.get`                   | The user's value (project over global) or the schema's default.                                                                                                                                                      |
+| Rust SDK                                                                  | WIT                                  | Notes                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Plugin::run_command(id, ctx, arg)`                                       | export `commands.run`                | `ctx` is the window: `ctx.project()`, `ctx.editor()`. An error shows _"<title> failed: …"_; the plugin keeps running. `"msg".into()` is `Error::Failed`; `Cancelled` and `Denied` don't count as the plugin failing.                          |
+| `Plugin::handle_events(events, ctx)`                                      | export `event-handler.handle`        | Batches of subscribed events, oldest first, per window.                                                                                                                                                                                       |
+| `Plugin::activate` / `deactivate`                                         | export `lifecycle`                   | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                                           |
+| `TextEditor::document()` → `{version, text}`                              | `editor.text-editor.document`        | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                                                |
+| `TextEditor::apply_edits(version, edits)`                                 | `editor.text-editor.apply-edits`     | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                                               |
+| `Project::root()`, `read_file(path)`                                      | `workspace.project`                  | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win; a missing path is `Error::NotFound`.                                                                           |
+| `Project::exists(path)`, `stat(path)`                                     | `workspace.project`                  | `exists` covers files and directories, hidden and ignored included, without reading content; `stat` gives kind, size and modified time (`Error::NotFound` for a missing path).                                                                |
+| `host::projects()`                                                        | `workspace.projects`                 | Every open project (for scheduled work without a window).                                                                                                                                                                                     |
+| `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                   | `vcs`                                | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                                               |
+| `host::pending_commit()`, `host::set_commit_message(revision, text)`      | `commit`                             | The commit being prepared in the calling window and its message; see _Commits_.                                                                                                                                                               |
+| `host::subscribe(kind)`                                                   | `events.subscribe`                   | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                                                                                                           |
+| `host::begin_task(title, cancellable)` → `Task`                           | `tasks.begin`                        | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                                                        |
+| `host::storage::{get, set, delete, keys}`                                 | `storage`                            | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                                                      |
+| `host::set_status_item(id, item)`, `remove_status_item`                   | `ui`                                 | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                                          |
+| `host::set_window_status_item(id, item)`, `remove_window_status_item(id)` | `ui.{set,remove}-window-status-item` | API 1.4: window-only override; removed on window close or plugin stop; removing falls back to the global item. Click runs its command in that window.                                                                                         |
+| `host::execute_command(id, arg)` → `Option<String>`                       | `command-runner.execute`             | API 1.4: stable IDE action or `plugin.<plugin-id>.<command-id>` in the invoking window. IDE actions return none; plugin commands return their result. Unknown ids are not-found; at most 8 nested calls, no re-entry into a waiting instance. |
+| `host::ipc_connect(name)` → `Connection`                                  | `ipc.connect`                        | API 1.4: `write(bytes)`, `read(max_bytes, timeout_ms)`, `close()`; requires `ipc:<path>`, at most 8 connections, closed on drop or plugin stop. Runs on the project server in remote projects.                                                |
+| `host::secret_set(name, value)`, `secret_delete(name)`                    | `secrets.{set,delete}`               | API 1.4: requires `secrets` and a declared name. Never returns the value.                                                                                                                                                                     |
+| `host::begin_loopback(path)` → `Loopback`                                 | `auth.begin-loopback`                | API 1.4: `redirect_uri()`, `wait(timeout_ms)` → raw query or none on timeout. Desktop-only, even for remote projects; no capability. At most 2 listeners; one-shot, closed on timeout, drop or stop. Waiting excludes the call budget.        |
+| `host::output_append(channel, text)`, `output_clear`, `output_reveal`     | `output.{append,clear,reveal}`       | API 1.4: read-only Output tabs; 32 named channels per plugin, each a 1 MiB UTF-8 ring buffer. Reveal requires the invoking window.                                                                                                            |
+| `host::set_context(key, value)`, `remove_context`                         | `ui.{set,remove}-context`            | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                                                |
+| `host::notify(level, title, body)`                                        | `ui.show-notification`               | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                                               |
+| `host::copy_to_clipboard(text)`                                           | `ui.copy-to-clipboard`               | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                                                     |
+| `host::open_url(url)`                                                     | `ui.open-url`                        | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                                           |
+| `host::pick(title, items)`, `pick_many`                                   | `ui.pick`, `ui.pick-many`            | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                                           |
+| `host::input(prompt, value)`                                              | `ui.input`                           | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                                                     |
+| `host::input_multiline(prompt, value)`                                    | `ui.input-multiline`                 | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Only from a command or event of a window.                                                                                                      |
+| `host::confirm(title, body)`                                              | `ui.confirm`                         | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                                              |
+| `host::locale()`                                                          | `ui.locale`                          | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                                               |
+| `host::log(level, msg)`                                                   | `log`                                | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                                                       |
+| `Project::find_files(glob, limit)`                                        | `workspace.project.find-files`       | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                                                        |
+| `Project::symbols(query, limit)`                                          | `workspace.symbols`                  | New in 1.3; `project.read`. Fuzzy in-memory search (no LSP): name, camelCase kind, container and UTF-16 location. Queries ≤ 256 UTF-8 bytes; limits capped at 1000. Snapshot notes below.                                                     |
+| `host::publish_diagnostics(path, items)`                                  | `diagnostics.publish`                | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                                             |
+| `host::fetch(request)` → `{status, headers, body}`                        | `net.fetch`                          | See _Network_.                                                                                                                                                                                                                                |
+| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`   | `process.run`                        | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; 4 MiB of output; killed when the call is cancelled or times out.                                                                                |
+| `host::run_command(cmd, project, stdin)` → `{code, stdout, stderr}`       | `process.run-command`                | API 1.3: same limits as `run_process`, with append-only environment variables; needs the pinned `process:<program>` grant.                                                                                                                    |
+| `host::start(cmd, project)` → `Child`                                     | `process.start`                      | API 1.3: `poll(max_bytes)`, `write(text)`, `close_stdin()`, `wait(timeout_ms)`, `kill()`; at most 8 handles; dropping one kills its process.                                                                                                  |
+| `host::refresh_view(view)`                                                | `views.refresh`                      | The view (or custom editors) render again; call it when the content changed.                                                                                                                                                                  |
+| `host::reveal_view(view)`                                                 | `views.reveal`                       | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                                                       |
+| `host::post_view_message(view, text)`                                     | `views.post-message`                 | To the script of the view's `html` body.                                                                                                                                                                                                      |
+| `host::open_terminal(title, program, args)`                               | `views.open-terminal`                | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                                           |
+| `host::open_location(path, line, column)`                                 | `views.open-location`                | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                            |
+| `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number`  | `settings.get`                       | The user's value (project over global) or the schema's default.                                                                                                                                                                               |
 
 `Project::symbols` reads the current in-memory index: results may be partial
 while indexing, and locations can lag unsaved edits. Normal saves and filesystem
@@ -507,15 +515,18 @@ from another feature, or nothing when run from Search Everywhere / a shortcut. `
 
 ### Events
 
-| Kind               | Capability     | Delivered                                                                 |
-| ------------------ | -------------- | ------------------------------------------------------------------------- |
-| `file-opened`      | `events`       | a file opens in an editor                                                 |
-| `files-changed`    | `events`       | debounced created, modified and removed paths in open projects (API 1.3)  |
-| `file-saved`       | `events`       | after the file is written                                                 |
-| `editor-focused`   | `events`       | the focused editor changes (path, or none)                                |
-| `vcs-changed`      | `events`       | a repository's state changed (commit, checkout, fetch…; its root)         |
-| `action-performed` | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut |
-| `scheduled`        | —              | the `on-schedule` period elapsed                                          |
+| Kind                 | Capability     | Delivered                                                                                                                                  |
+| -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
+| `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
+| `settings-changed`   | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
+| `input-mode-changed` | `events.input` | API 1.4, `Event::Other`: JSON `{path, mode, sub}` on focused Vim mode changes; `ctx.editor()` includes the document and current selections |
+| `files-changed`      | `events`       | debounced created, modified and removed paths in open projects (API 1.3)                                                                   |
+| `file-saved`         | `events`       | after the file is written                                                                                                                  |
+| `editor-focused`     | `events`       | the focused editor changes (path, or none)                                                                                                 |
+| `vcs-changed`        | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
+| `action-performed`   | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
+| `scheduled`          | —              | the `on-schedule` period elapsed                                                                                                           |
 
 Events are batched: a running plugin gets them within a fraction of a second,
 an idle one collects them for 2 s before it is woken, so frequent events
@@ -807,16 +818,46 @@ scrolling. Labels are cut at 256 bytes and tooltips at 1 KiB.
 
 ### Network and secrets
 
-`host::fetch` makes an HTTPS request (plain HTTP only to `localhost`) to a host
-the plugin was granted with `net:<host>`; redirects to another host are
-refused and responses are limited to 8 MiB. Requests are made from the
-machine the project is on.
+`host::fetch` requires `net:<host>` for HTTPS and loopback HTTP. API 1.4 adds
+`net.http:<host>` for unencrypted HTTP to other hosts; it does not imply an
+HTTPS grant. Both use the same wildcard rules. Each redirect is checked before
+connecting to the destination; HTTPS → HTTP also requires `net.http:<host>`,
+even on loopback. Responses are limited to 8 MiB. Requests run on the project
+machine. A manifest using `net.http:` or `ipc:` declares `engines.openidea = "^1.4"`.
+
+`ipc:<path>` grants a local byte stream: an absolute Unix socket path (the host
+expands `~/`, `$TMPDIR/` and `$XDG_RUNTIME_DIR/`) or `\\.\pipe\<name>` on Windows.
+Only a grant's last path segment may contain `*`, for example
+`ipc:$TMPDIR/discord-ipc-*`. It never grants TCP. A remote project's connection
+runs on the server. Reads and writes honor cancellation and the call budget;
+reads return empty bytes on timeout or EOF, and each operation is capped at 1 MiB.
 
 Secrets declared under `[[contributes.secrets]]` are entered by the user in
 Settings › Plugins and kept in the system keychain. The plugin never reads
 them: it writes `{{secret:<name>}}` in a request header and the host fills it
 in on the way out (`secrets` capability). `host::secret_is_set(name)` tells
 whether the user has entered one.
+
+API 1.4 can also store or delete declared secrets with `host::secret_set` and
+`host::secret_delete`; the plugin still cannot read them. An OAuth flow uses
+`begin_loopback("oauth/callback")`, `ui.open-url` with its `redirect_uri()`,
+`wait`, an authorized `net.fetch` code exchange and `secrets.set` for the token.
+The listener binds only `127.0.0.1` on a random port on the **desktop**, including
+for remote projects, serves "You can close this tab", then closes. There are
+no OS URI callbacks or `on-uri` activation. Validate OAuth state in the plugin.
+
+Window status overrides, command execution, loopback creation/waiting and
+output reveal are valid only in a command or event from a window. The Vim
+context key `vim.mode` is `normal`, `insert`, `visual` or `replace`, and empty
+when Vim is disabled. Subscribing to the three new event kinds, including
+`on-event:<kind>` activation, requires `engines.openidea = "^1.4"`.
+
+Settings › Plugins lets the user choose the executable of a `process:<name>`
+grant globally or for the current project. The native chooser's selection is
+approved again and pinned by path and content hash. Project choices override
+the global choice for runs, process handles, terminals and log panes. Resetting
+a choice verifies its fallback, or revokes the grant if that is unavailable.
+The plugin continues to call its declared program name.
 
 ### Views and custom editors
 
@@ -1753,7 +1794,7 @@ the API itself follows _Evolving the plugin API_ below.
 ## 10. Evolving the plugin API
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
-with 0.1.37 and 1.2.0 with 0.1.38. wasmtime decides what stays compatible: it resolves interface names
+with 0.1.37, 1.2.0 with 0.1.38 and 1.3.0 with 0.1.39. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

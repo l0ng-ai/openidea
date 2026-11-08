@@ -36,6 +36,8 @@ pub struct MockTask {
     pub ended: bool,
 }
 
+type CommandHandler = dyn Fn(Option<&str>) -> Result<Option<String>, Error>;
+
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
 
@@ -94,6 +96,13 @@ struct State {
     action_notifications: Vec<ActionNotification>,
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
+    window_status: BTreeMap<String, StatusItem>,
+    ipc: BTreeMap<u64, VecDeque<u8>>,
+    next_ipc: u64,
+    loopbacks: BTreeSet<u64>,
+    next_loopback: u64,
+    output: BTreeMap<String, String>,
+    revealed_output: Vec<String>,
     context: BTreeMap<String, ContextValue>,
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
@@ -112,6 +121,10 @@ struct State {
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     provider_diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     secrets: BTreeMap<String, String>,
+    declared_secrets: BTreeSet<String>,
+    commands: BTreeMap<String, Rc<CommandHandler>>,
+    command_depth: usize,
+    loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
     processes: BTreeMap<String, ProcessHandler>,
@@ -274,7 +287,8 @@ impl MockHost {
     }
 
     pub fn status_items(&self) -> BTreeMap<String, StatusItem> {
-        self.state.borrow().status.clone()
+        let s = self.state.borrow();
+        s.status.iter().chain(&s.window_status).map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
@@ -431,8 +445,27 @@ impl MockHost {
         self.state.borrow_mut().locale = Some(tag.into());
     }
 
+    /// Registers the result of a stable action or plugin command.
+    pub fn on_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
+        self.state.borrow_mut().commands.insert(id.into(), Rc::new(handler));
+    }
+    /// Queues the raw browser query returned by the next loopback wait.
+    pub fn queue_loopback_query(&self, query: Option<&str>) {
+        self.state.borrow_mut().loopback_queries.push_back(query.map(str::to_owned));
+    }
+
+    /// Declares a secret the plugin is allowed to store (the mock has no manifest).
+    pub fn declare_secret(&self, name: &str) {
+        self.state.borrow_mut().declared_secrets.insert(name.into());
+    }
+    /// The plugin's read-only output buffers.
+    pub fn output(&self) -> BTreeMap<String, String> {
+        self.state.borrow().output.clone()
+    }
+
     /// A secret the user stored.
     pub fn set_secret(&self, name: &str, value: &str) {
+        self.state.borrow_mut().declared_secrets.insert(name.into());
         self.state.borrow_mut().secrets.insert(name.into(), value.into());
     }
 
@@ -663,6 +696,82 @@ pub mod current {
         with(|s| s.status.insert(id.to_owned(), item.clone()));
     }
 
+    pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {
+        with(|s| {
+            s.window_status.insert(id.into(), item.clone());
+        });
+        Ok(())
+    }
+    pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
+        with(|s| {
+            s.window_status.remove(id);
+        });
+        Ok(())
+    }
+    pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
+        let handler = with(|s| {
+            if s.command_depth >= 8 {
+                return Err(Error::Invalid("command nesting limit (8)".into()));
+            }
+            let handler = s.commands.get(id).cloned().ok_or_else(|| Error::NotFound(id.into()))?;
+            s.command_depth += 1;
+            Ok(handler)
+        })?;
+        let result = handler(arg);
+        with(|s| s.command_depth -= 1);
+        result
+    }
+    pub struct ConnectionRes {
+        id: u64,
+        owner: Rc<RefCell<State>>,
+    }
+    impl Drop for ConnectionRes {
+        fn drop(&mut self) {
+            self.owner.borrow_mut().ipc.remove(&self.id);
+        }
+    }
+    pub fn ipc_connect(name: &str) -> Result<ConnectionRes, Error> {
+        with(|s| {
+            let cap = format!("ipc:{name}");
+            let granted = s.capabilities.iter().any(|g| {
+                g == &cap
+                    || g.strip_prefix("ipc:").is_some_and(|pattern| {
+                        let Some((base, tail)) = pattern.rsplit_once('/') else { return false };
+                        let Some((parent, file)) = name.rsplit_once('/') else { return false };
+                        base == parent && tail.strip_suffix('*').is_some_and(|prefix| file.starts_with(prefix))
+                    })
+            });
+            if !granted {
+                return Err(Error::Denied(cap));
+            }
+            if s.ipc.len() >= 8 {
+                return Err(Error::Invalid("at most eight IPC connections".into()));
+            }
+            s.next_ipc += 1;
+            s.ipc.insert(s.next_ipc, VecDeque::new());
+            let owner = CURRENT.with(|c| c.borrow().as_ref().unwrap().clone());
+            Ok(ConnectionRes { id: s.next_ipc, owner })
+        })
+    }
+    pub fn ipc_write(c: &ConnectionRes, bytes: &[u8]) -> Result<(), Error> {
+        if bytes.len() > 1 << 20 {
+            return Err(Error::Invalid("at most 1 MiB".into()));
+        }
+        let mut s = c.owner.borrow_mut();
+        let data = s.ipc.get_mut(&c.id).ok_or_else(|| Error::NotFound("connection".into()))?;
+        data.extend(bytes);
+        Ok(())
+    }
+    pub fn ipc_read(c: &ConnectionRes, max: u32, _timeout: u32) -> Result<Vec<u8>, Error> {
+        let mut s = c.owner.borrow_mut();
+        let data = s.ipc.get_mut(&c.id).ok_or_else(|| Error::NotFound("connection".into()))?;
+        let count = data.len().min(max as usize).min(1 << 20);
+        Ok(data.drain(..count).collect())
+    }
+    pub fn ipc_close(c: &ConnectionRes) -> Result<(), Error> {
+        c.owner.borrow_mut().ipc.remove(&c.id);
+        Ok(())
+    }
     pub fn remove_status_item(id: &str) {
         with(|s| s.status.remove(id));
     }
@@ -1181,7 +1290,7 @@ pub mod current {
     pub fn subscribe(kind: EventKind) -> Result<(), Error> {
         with(|s| {
             let cap = match kind {
-                EventKind::ActionPerformed => Some("events.input"),
+                EventKind::ActionPerformed | EventKind::InputModeChanged => Some("events.input"),
                 EventKind::Scheduled => None,
                 _ => Some("events"),
             };
@@ -1242,8 +1351,18 @@ pub mod current {
     pub fn fetch(req: &HttpRequest) -> Result<HttpResponse, Error> {
         with(|s| {
             let host = net_host(&req.url).ok_or_else(|| Error::Invalid(format!("{:?} is not a URL", req.url)))?;
-            let cap = format!("net:{host}");
-            if !s.capabilities.iter().any(|c| *c == cap || c == "net:*") {
+            let kind = if req.url.starts_with("http://") && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+            {
+                "net.http"
+            } else {
+                "net"
+            };
+            let cap = format!("{kind}:{host}");
+            if !s.capabilities.iter().any(|c| {
+                *c == cap
+                    || c == &format!("{kind}:*")
+                    || c.strip_prefix(&format!("{kind}:*.")).is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
+            }) {
                 return Err(Error::Denied(cap));
             }
             let mut sent = req.clone();
@@ -1265,6 +1384,87 @@ pub mod current {
         })
     }
 
+    pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "secrets")?;
+            if !s.declared_secrets.contains(name) {
+                return Err(Error::NotFound(name.into()));
+            }
+            s.secrets.insert(name.into(), value.into());
+            Ok(())
+        })
+    }
+    pub fn secret_delete(name: &str) -> Result<(), Error> {
+        with(|s| {
+            require(s, "secrets")?;
+            if !s.declared_secrets.contains(name) {
+                return Err(Error::NotFound(name.into()));
+            }
+            s.secrets.remove(name);
+            Ok(())
+        })
+    }
+    pub struct LoopbackRes {
+        id: u64,
+        owner: Rc<RefCell<State>>,
+        uri: String,
+    }
+    impl Drop for LoopbackRes {
+        fn drop(&mut self) {
+            self.owner.borrow_mut().loopbacks.remove(&self.id);
+        }
+    }
+    pub fn begin_loopback(path: &str) -> Result<LoopbackRes, Error> {
+        with(|s| {
+            if s.loopbacks.len() >= 2 {
+                return Err(Error::Invalid("at most two loopbacks".into()));
+            }
+            s.next_loopback += 1;
+            s.loopbacks.insert(s.next_loopback);
+            Ok(LoopbackRes {
+                id: s.next_loopback,
+                owner: CURRENT.with(|c| c.borrow().as_ref().unwrap().clone()),
+                uri: format!("http://127.0.0.1:{}/{}", 49152 + s.next_loopback, path.trim_start_matches('/')),
+            })
+        })
+    }
+    pub fn loopback_uri(l: &LoopbackRes) -> String {
+        l.uri.clone()
+    }
+    pub fn loopback_wait(l: &LoopbackRes, _timeout_ms: u32) -> Result<Option<String>, Error> {
+        if !l.owner.borrow_mut().loopbacks.remove(&l.id) {
+            return Err(Error::Invalid("loopback already awaited".into()));
+        }
+        Ok(l.owner.borrow_mut().loopback_queries.pop_front().flatten())
+    }
+    pub fn output_append(channel: &str, text: &str) -> Result<(), Error> {
+        with(|s| {
+            if channel.is_empty() || channel.len() > 128 || channel.chars().any(char::is_control) {
+                return Err(Error::Invalid("invalid channel".into()));
+            }
+            if !s.output.contains_key(channel) && s.output.len() >= 32 {
+                return Err(Error::Invalid("at most 32 channels".into()));
+            }
+            let buffer = s.output.entry(channel.into()).or_default();
+            buffer.push_str(text);
+            let mut remove = buffer.len().saturating_sub(1 << 20);
+            while !buffer.is_char_boundary(remove) {
+                remove += 1;
+            }
+            buffer.drain(..remove);
+            Ok(())
+        })
+    }
+    pub fn output_clear(channel: &str) -> Result<(), Error> {
+        output_append(channel, "")?;
+        with(|s| s.output.get_mut(channel).unwrap().clear());
+        Ok(())
+    }
+    pub fn output_reveal(channel: &str) -> Result<(), Error> {
+        output_append(channel, "")?;
+        with(|s| s.revealed_output.push(channel.into()));
+        Ok(())
+    }
     pub fn secret_is_set(name: &str) -> bool {
         with(|s| s.capabilities.iter().any(|c| c == "secrets") && s.secrets.contains_key(name))
     }

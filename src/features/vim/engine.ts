@@ -6,7 +6,8 @@
 import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, runScopeHandlers } from "@codemirror/view";
 import { Vim, getCM, vim } from "@replit/codemirror-vim";
-import { transientChange } from "@/editor/api";
+import { transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
+import { setContext } from "@/platform/context";
 import { executeAction, getAction } from "@/platform/actions";
 import { showStatusInfo } from "@/workbench/contributions";
 import { VIM_EDITOR_ATTR } from "./conflicts";
@@ -190,27 +191,32 @@ const escapeClosesPopupsFirst = EditorView.domEventHandlers({
   },
 });
 
-const modeTracker = ViewPlugin.define((view) => {
-  const cm = getCM(view);
-  let state: VimModeState = { mode: cm?.state.vim?.insertMode ? "insert" : "normal", sub: null };
-  const publish = () => useVimMode.setState(state);
-  // Not `view.hasFocus`: that also needs the window focused, and this editor stays the last focused one.
-  const focused = () => view.root.activeElement === view.contentDOM;
-  const onModeChange = (e: { mode: string; subMode?: string }) => {
-    state = { mode: e.mode, sub: e.subMode === "linewise" || e.subMode === "blockwise" ? e.subMode : null };
-    queueMicrotask(() => view.dispatch({ effects: setVimInsert.of(e.mode === "insert" || e.mode === "replace") }));
+const modeTracker = (ctx?: EditorDocContext) =>
+  ViewPlugin.define((view) => {
+    const cm = getCM(view);
+    let state: VimModeState = { mode: cm?.state.vim?.insertMode ? "insert" : "normal", sub: null };
+    const publish = () => {
+      useVimMode.setState(state);
+      setContext("vim.mode", state.mode);
+      if (ctx) reportInputMode(ctx.path, state.mode, state.sub);
+    };
+    // Not `view.hasFocus`: that also needs the window focused, and this editor stays the last focused one.
+    const focused = () => view.root.activeElement === view.contentDOM;
+    const onModeChange = (e: { mode: string; subMode?: string }) => {
+      state = { mode: e.mode, sub: e.subMode === "linewise" || e.subMode === "blockwise" ? e.subMode : null };
+      queueMicrotask(() => view.dispatch({ effects: setVimInsert.of(e.mode === "insert" || e.mode === "replace") }));
+      if (focused()) publish();
+    };
+    cm?.on("vim-mode-change", onModeChange);
+    view.contentDOM.addEventListener("focus", publish);
     if (focused()) publish();
-  };
-  cm?.on("vim-mode-change", onModeChange);
-  view.contentDOM.addEventListener("focus", publish);
-  if (focused()) publish();
-  return {
-    destroy() {
-      cm?.off("vim-mode-change", onModeChange);
-      view.contentDOM.removeEventListener("focus", publish);
-    },
-  };
-});
+    return {
+      destroy() {
+        cm?.off("vim-mode-change", onModeChange);
+        view.contentDOM.removeEventListener("focus", publish);
+      },
+    };
+  });
 
 const caret = "var(--caret, var(--fg-strong))";
 
@@ -237,7 +243,7 @@ const vimTheme = EditorView.theme({
 });
 
 /** Vim for one editor. Highest precedence: Vim sees keys before the editor's keymaps. */
-export function vimExtension(): Extension {
+export function vimExtension(ctx?: EditorDocContext): Extension {
   defineExCommands();
   return [
     Prec.highest([
@@ -248,7 +254,7 @@ export function vimExtension(): Extension {
       imeTransactions,
       escapeClosesPopupsFirst,
       vim(),
-      modeTracker,
+      modeTracker(ctx),
     ]),
     imeCleanup,
     vimTheme,

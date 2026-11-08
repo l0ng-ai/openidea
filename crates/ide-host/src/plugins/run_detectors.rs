@@ -115,6 +115,7 @@ type Pins = Arc<RwLock<HashMap<(String, String), ProgramPin>>>;
 pub struct PluginRunDetection {
     pub(crate) store: Arc<RunDetectors>,
     pub(crate) pins: Pins,
+    pub(crate) project_pins: super::api::ProjectPins,
 }
 
 fn config_id(plugin: &str, detector: &str) -> String {
@@ -122,9 +123,10 @@ fn config_id(plugin: &str, detector: &str) -> String {
 }
 
 impl PluginRunDetection {
-    fn pin(&self, plugin: &str, d: &Detector) -> Option<ProgramPin> {
+    fn pin(&self, plugin: &str, d: &Detector, root: Option<&Path>) -> Option<ProgramPin> {
         let cap = Capability::Process(d.command.trim().to_owned());
-        self.pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
+        root.and_then(|root| self.project_pins.read().get(&(plugin.into(), cap.to_string(), root.into())).cloned())
+            .or_else(|| self.pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned())
     }
 }
 
@@ -133,14 +135,16 @@ impl ExternalDetection for PluginRunDetection {
         let items = self.store.items.read().clone();
         items
             .into_iter()
-            .filter(|(_, plugin, d)| self.pin(plugin, d).is_some() && d.files.iter().any(|f| root.join(f).exists()))
+            .filter(|(_, plugin, d)| {
+                self.pin(plugin, d, Some(root)).is_some() && d.files.iter().any(|f| root.join(f).exists())
+            })
             .map(|(_, plugin, d)| RunConfig {
                 id: config_id(&plugin, &d.id),
                 name: d.name.clone(),
                 kind: "plugin".into(),
                 command: d.command.trim().to_owned(),
                 args: d.args.clone(),
-                cwd: None,
+                cwd: Some(root.to_path_buf().into()),
                 env: Default::default(),
                 detected: true,
                 is_test: d.test,
@@ -159,7 +163,7 @@ impl ExternalDetection for PluginRunDetection {
             .map(|(_, p, d)| (p.clone(), d.clone()))
             .ok_or_else(|| "the plugin that detected this configuration is no longer enabled".to_owned())?;
         drop(items);
-        let pin = self.pin(&plugin, &d).ok_or_else(|| {
+        let pin = self.pin(&plugin, &d, config.cwd.as_ref().map(|p| p.as_ref())).ok_or_else(|| {
             format!("allow process:{} for plugin {plugin} in Settings › Plugins to run this configuration", d.command)
         })?;
         pin.verify().map(Path::to_path_buf)

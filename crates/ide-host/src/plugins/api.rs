@@ -4,6 +4,7 @@
 use super::{CommitAnswer, CommitRequest, CommitSelection, PluginContextKey, PluginEvent, PluginEventSink};
 use ide_core::ipc_path::to_ipc;
 use ide_core::{CancellationToken, TextEdit};
+use ide_extension::Capability;
 use ide_extension::Package;
 use ide_language::ProgramPin;
 use ide_plugin::{
@@ -157,6 +158,34 @@ pub(super) fn net_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+#[derive(Debug)]
+struct RedirectDenied(String);
+impl std::fmt::Display for RedirectDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is not granted for this redirect", self.0)
+    }
+}
+impl std::error::Error for RedirectDenied {}
+
+fn network_error(error: reqwest::Error) -> HostError {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(e) = source {
+        if let Some(denied) = e.downcast_ref::<RedirectDenied>() {
+            return HostError::Denied(denied.0.clone());
+        }
+        source = e.source();
+    }
+    HostError::Failed(error.to_string())
+}
+
+fn redirect_capability(from: &reqwest::Url, to: &reqwest::Url) -> Result<Capability, String> {
+    if from.scheme() == "https" && to.scheme() == "http" {
+        ide_plugin::net_host(to.as_str()).map(Capability::NetHttp)
+    } else {
+        ide_plugin::net_capability(to.as_str())
+    }
+}
+
 /// Replaces `{{secret:<name>}}` in `value` with the plugin's secrets.
 fn fill_secrets(value: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<String, HostError> {
     let mut out = String::with_capacity(value.len());
@@ -191,6 +220,7 @@ struct PromptEntry {
 enum Waiter {
     Prompt(std::sync::mpsc::SyncSender<Option<Vec<String>>>),
     Commit(std::sync::mpsc::SyncSender<CommitAnswer>),
+    Command(std::sync::mpsc::SyncSender<super::CommandAnswer>),
 }
 
 /// A process a plugin started and has not released (API 1.3 `process.start`).
@@ -405,6 +435,11 @@ fn append_process_env(command: &mut StdCommand, env: &[(String, String)]) -> Res
     Ok(())
 }
 
+/// Approved project-specific programs.
+pub(super) type ProjectPins = Arc<RwLock<HashMap<(String, String, PathBuf), ProgramPin>>>;
+
+type SettingSnapshots = BTreeMap<(Option<String>, String), BTreeMap<String, String>>;
+
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
@@ -416,13 +451,18 @@ pub(super) struct Shared {
     /// (plugin, handle id) → the processes it started and has not released.
     processes: Mutex<HashMap<(String, u64), Arc<Proc>>>,
     next_process: AtomicU64,
+    connections: super::ipc::Connections,
+    pub loopbacks: RwLock<Arc<dyn super::auth::Service>>,
     process_shutdowns: Mutex<Vec<std::thread::JoinHandle<()>>>,
     prompts: Mutex<HashMap<u64, PromptEntry>>,
     /// Plugins being stopped: their calls may not open new prompts (taken before `prompts`).
     prompts_blocked: Mutex<BTreeSet<String>>,
     next_prompt: AtomicU64,
     /// (plugin, item id) → item, for windows opened later.
+    output: Mutex<BTreeMap<(String, String), String>>,
     status: Mutex<BTreeMap<(String, String), StatusItem>>,
+    setting_snapshots: Mutex<SettingSnapshots>,
+    window_status: Mutex<BTreeMap<(String, String, String), StatusItem>>,
     /// (scope, plugin, key) → JSON value.
     contexts: Mutex<BTreeMap<ContextKey, String>>,
     closed_clients: Mutex<BTreeSet<String>>,
@@ -433,6 +473,8 @@ pub(super) struct Shared {
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
+    pub project_pins: ProjectPins,
+    pub event_editors: RwLock<HashMap<String, ide_plugin::EditorContext>>,
     /// Validated UI declarations (settings schemas, declared views).
     pub ui: Arc<ide_extension::UiStore>,
     /// The UI language the windows report (BCP 47).
@@ -463,16 +505,23 @@ impl Shared {
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
+            project_pins: Arc::default(),
+            event_editors: RwLock::default(),
             data_dir,
             tasks: Mutex::default(),
             next_task: AtomicU64::new(1),
             processes: Mutex::default(),
             next_process: AtomicU64::new(1),
+            connections: super::ipc::Connections::default(),
+            loopbacks: RwLock::new(Arc::new(super::auth::Loopbacks::default())),
             process_shutdowns: Mutex::default(),
             prompts: Mutex::default(),
             prompts_blocked: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             status: Mutex::default(),
+            output: Mutex::default(),
+            window_status: Mutex::default(),
+            setting_snapshots: Mutex::default(),
             contexts: Mutex::default(),
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
@@ -518,6 +567,45 @@ impl Shared {
         self.status.lock().iter().map(|((p, id), item)| (p.clone(), id.clone(), item.clone())).collect()
     }
 
+    pub fn changed_settings(self: &Arc<Self>, pkg: &Package, client: Option<&str>) -> Vec<String> {
+        let root = client.and_then(|c| self.project_of(c));
+        let api = PluginApi { pkg: pkg.clone(), shared: self.clone() };
+        let mut current = BTreeMap::new();
+        for item in self.ui.items(super::ui_points::SETTINGS, Some(pkg.id())) {
+            if let Some(properties) = item.decl.get("properties").and_then(|p| p.as_array()) {
+                for property in properties {
+                    if let Some(key) = property.get("key").and_then(|k| k.as_str())
+                        && let Some(value) = api.setting(root.as_deref(), key)
+                    {
+                        current.insert(key.into(), value);
+                    }
+                }
+            }
+        }
+        let previous =
+            self.setting_snapshots.lock().insert((client.map(str::to_owned), pkg.id().into()), current.clone());
+        previous
+            .map(|old| current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn status_snapshot(&self, client: &str) -> Vec<super::PluginStatusItem> {
+        let mut items: Vec<_> = self
+            .status_items()
+            .into_iter()
+            .map(|(plugin_id, id, item)| super::PluginStatusItem { plugin_id, id, item, window: false })
+            .collect();
+        items.extend(self.window_status.lock().iter().filter(|((w, ..), _)| w == client).map(
+            |((_, plugin_id, id), item)| super::PluginStatusItem {
+                plugin_id: plugin_id.clone(),
+                id: id.clone(),
+                item: item.clone(),
+                window: true,
+            },
+        ));
+        items
+    }
+
     pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
         let contexts = self.contexts.lock();
         let mut keys: BTreeMap<(&str, &str), &str> = BTreeMap::new();
@@ -542,6 +630,10 @@ impl Shared {
         self.prompts.lock().retain(|_, entry| entry.client != client);
         drop(closed);
         self.contexts.lock().retain(|(scope, ..), _| scope.as_deref() != Some(client));
+        self.loopbacks.read().forget_window(client);
+        self.window_status.lock().retain(|(window, ..), _| window != client);
+        self.event_editors.write().remove(client);
+        self.setting_snapshots.lock().retain(|(window, _), _| window.as_deref() != Some(client));
         let mine: Vec<_> = {
             let mut processes = self.processes.lock();
             let keys: Vec<_> = processes
@@ -598,6 +690,21 @@ impl Shared {
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
         self.kill_processes(plugin);
+        self.connections.clear(plugin);
+        self.setting_snapshots.lock().retain(|(_, p), _| p != plugin);
+        let channels: Vec<_> = {
+            let mut output = self.output.lock();
+            let keys: Vec<_> = output.keys().filter(|(p, _)| p == plugin).cloned().collect();
+            for key in &keys {
+                output.remove(key);
+            }
+            keys
+        };
+        for (_, channel) in channels {
+            self.sink.emit(None, PluginEvent::OutputChanged { plugin_id: plugin.into(), channel, text: None });
+        }
+
+        self.loopbacks.read().clear(plugin);
         let removed: Vec<String> = {
             let mut status = self.status.lock();
             let ids: Vec<String> = status.keys().filter(|(p, _)| p == plugin).map(|(_, id)| id.clone()).collect();
@@ -608,6 +715,18 @@ impl Shared {
         };
         for id in removed {
             self.sink.emit(None, PluginEvent::StatusItemChanged { plugin_id: plugin.to_owned(), id, item: None });
+        }
+        let removed: Vec<_> = {
+            let mut items = self.window_status.lock();
+            let keys: Vec<_> = items.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
+            for key in &keys {
+                items.remove(key);
+            }
+            keys
+        };
+        for (window, _, id) in removed {
+            self.sink
+                .emit(Some(&window), PluginEvent::WindowStatusItemChanged { plugin_id: plugin.into(), id, item: None });
         }
         self.withdraw_prompts(plugin);
         let removed: Vec<(Option<String>, String)> = {
@@ -699,6 +818,16 @@ impl Shared {
     }
 
     /// A window answered a [`CommitRequest`].
+    pub fn answer_command(&self, client: &str, id: u64, answer: super::CommandAnswer) -> bool {
+        let mut prompts = self.prompts.lock();
+        if !matches!(prompts.get(&id), Some(PromptEntry { client: window, answer: Waiter::Command(_), .. }) if window == client)
+        {
+            return false;
+        }
+        let Some(PromptEntry { answer: Waiter::Command(tx), .. }) = prompts.remove(&id) else { return false };
+        tx.try_send(answer).is_ok()
+    }
+
     pub fn answer_commit(&self, id: u64, answer: CommitAnswer) -> bool {
         let mut prompts = self.prompts.lock();
         if !matches!(prompts.get(&id), Some(PromptEntry { answer: Waiter::Commit(_), .. })) {
@@ -802,7 +931,17 @@ impl PluginApi {
 
     /// The program approved for the (already checked) `process:` grant,
     /// verified right before it starts.
+    #[cfg(test)]
     fn approved_program(&self, program: &str) -> Result<PathBuf, HostError> {
+        self.approved_program_in_project(program, None)
+    }
+
+    fn approved_program_in_project(&self, program: &str, root: Option<&Path>) -> Result<PathBuf, HostError> {
+        if let Some(pin) = root.and_then(|root| {
+            self.shared.project_pins.read().get(&(self.id().into(), format!("process:{program}"), root.into())).cloned()
+        }) {
+            return pin.verify().map(Path::to_path_buf).map_err(|e| HostError::Denied(e.to_string()));
+        }
         let cap = format!("process:{program}");
         // Granted without a pinned file: the program wasn't found when it was
         // allowed, and installing it later approves nothing by itself.
@@ -828,7 +967,7 @@ impl PluginApi {
         cancel: &CancellationToken,
         on_line: &dyn Fn(super::PluginOutputLine),
     ) -> Result<Option<i32>, HostError> {
-        let binary = self.approved_program(program)?;
+        let binary = self.approved_program_in_project(program, cwd)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
         let mut cmd = std::process::Command::new(&binary);
@@ -1051,6 +1190,108 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
+    fn execute_command(
+        &self,
+        invocation: &ide_plugin::Invocation,
+        id: &str,
+        arg: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Option<String>, HostError> {
+        let client = from_window(invocation.client.as_deref(), "execute commands")?;
+        let mut chain = invocation.command_chain.clone();
+        chain.push(self.id().into());
+        if chain.len() > 8 {
+            return Err(HostError::Invalid("command nesting limit (8)".into()));
+        }
+        for command in self.shared.ui.items(super::COMMANDS, None) {
+            if id == format!("plugin.{}.{}", command.plugin_id, command.key) && chain.contains(&command.plugin_id) {
+                return Err(HostError::Invalid("recursive plugin command".into()));
+            }
+        }
+        let request = self.shared.next_prompt.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        {
+            let closed = self.shared.closed_clients.lock();
+            let blocked = self.shared.prompts_blocked.lock();
+            if closed.contains(client) || blocked.contains(self.id()) {
+                return Err(HostError::Cancelled);
+            }
+            self.shared.prompts.lock().insert(
+                request,
+                PromptEntry { plugin: self.id().into(), client: client.into(), answer: Waiter::Command(tx) },
+            );
+        }
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::ExecuteCommand { request_id: request.to_string(), id: id.into(), arg, chain },
+        );
+        let deadline = Instant::now() + timeout;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(super::CommandAnswer::Value(value)) => return Ok(value),
+                Ok(super::CommandAnswer::NotFound) => return Err(HostError::NotFound(id.into())),
+                Ok(super::CommandAnswer::Failed(error)) => return Err(HostError::Failed(error)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if !cancel.is_cancelled() && Instant::now() < deadline => {}
+                Err(_) => {
+                    self.shared.prompts.lock().remove(&request);
+                    return Err(HostError::Cancelled);
+                }
+            }
+        }
+    }
+    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError> {
+        if channel.is_empty() || channel.len() > 128 || channel.chars().any(char::is_control) {
+            return Err(HostError::Invalid("output channel must be 1-128 bytes without control characters".into()));
+        }
+        let key = (self.id().to_owned(), channel.to_owned());
+        let mut channels = self.shared.output.lock();
+        if !channels.contains_key(&key) && channels.keys().filter(|(p, _)| p == self.id()).count() >= 32 {
+            return Err(HostError::Invalid("at most 32 output channels".into()));
+        }
+        let buffer = channels.entry(key).or_default();
+        if let Some(text) = text {
+            let mut start = text.len().saturating_sub(1 << 20);
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            buffer.push_str(&text[start..]);
+        } else {
+            buffer.clear();
+        }
+        let mut remove = buffer.len().saturating_sub(1 << 20);
+        while !buffer.is_char_boundary(remove) {
+            remove += 1;
+        }
+        buffer.drain(..remove);
+        let text = buffer.clone();
+        drop(channels);
+        self.shared.sink.emit(
+            None,
+            PluginEvent::OutputChanged { plugin_id: self.id().into(), channel: channel.into(), text: Some(text) },
+        );
+        Ok(())
+    }
+    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError> {
+        let key = (self.id().to_owned(), channel.to_owned());
+        if !self.shared.output.lock().contains_key(&key) {
+            self.output_write(channel, None)?;
+        }
+        if self.shared.client_closed(client) {
+            return Err(HostError::Cancelled);
+        }
+        let text = self.shared.output.lock().get(&key).cloned().unwrap_or_default();
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::RevealOutput { plugin_id: self.id().into(), channel: channel.into(), text },
+        );
+        Ok(())
+    }
+    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError> {
+        self.pkg.manifest.needs_api(what, minor).map_err(HostError::Invalid)
+    }
+
     fn notify(
         &self,
         client: Option<&str>,
@@ -1200,6 +1441,32 @@ impl HostApi for PluginApi {
         self.shared
             .sink
             .emit(None, PluginEvent::StatusItemChanged { plugin_id: self.id().to_owned(), id: id.to_owned(), item });
+    }
+
+    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
+        let closed = self.shared.closed_clients.lock();
+        let blocked = self.shared.prompts_blocked.lock();
+        if closed.contains(client) || blocked.contains(self.id()) {
+            return Err(HostError::Cancelled);
+        }
+        let key = (client.to_owned(), self.id().to_owned(), id.to_owned());
+        let mut items = self.shared.window_status.lock();
+        if let Some(item) = &item {
+            if !items.contains_key(&key)
+                && items.keys().filter(|(w, p, _)| w == client && p == self.id()).count() >= MAX_STATUS_ITEMS
+            {
+                return Err(HostError::Invalid("too many window status items".into()));
+            }
+            items.insert(key, item.clone());
+        } else {
+            items.remove(&key);
+        }
+        drop(items);
+        self.shared.sink.emit(
+            Some(client),
+            PluginEvent::WindowStatusItemChanged { plugin_id: self.id().into(), id: id.into(), item },
+        );
+        Ok(())
     }
 
     fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
@@ -1419,25 +1686,32 @@ impl HostApi for PluginApi {
         }
         let method = reqwest::Method::from_bytes(request.method.to_ascii_uppercase().as_bytes())
             .map_err(|_| HostError::Invalid(format!("method {:?}", request.method)))?;
-        let client = ide_http::client::shared().map_err(|e| HostError::Failed(e.message))?;
-        // A redirect to another host is refused after the fact (the shared
-        // client follows redirects).
+        let grants = request.grants.clone();
+        let policy = reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            let wanted = attempt.previous().last().map_or_else(
+                || ide_plugin::net_capability(attempt.url().as_str()),
+                |from| redirect_capability(from, attempt.url()),
+            );
+            match wanted {
+                Ok(wanted) if grants.iter().any(|g| g.covers(&wanted)) => attempt.follow(),
+                Ok(wanted) => attempt.error(RedirectDenied(wanted.to_string())),
+                Err(error) => attempt.error(error),
+            }
+        });
+        let client = ide_http::client::build_with_redirect(&ide_core::proxy_settings::proxy(), policy)
+            .map_err(|e| HostError::Failed(e.message))?;
         let builder = client.request(method, &request.url).headers(headers).timeout(request.timeout);
         let builder = match request.body {
             Some(body) => builder.body(body),
             None => builder,
         };
         let cancel = cancel.clone();
-        let host = ide_plugin::net_host(&request.url).map_err(HostError::Invalid)?;
         net_runtime().block_on(async move {
             let send = async {
-                let response = builder.send().await.map_err(|e| HostError::Failed(e.to_string()))?;
-                if ide_plugin::net_host(response.url().as_str()).ok().as_deref() != Some(host.as_str()) {
-                    return Err(HostError::Denied(format!(
-                        "net:{} (redirected)",
-                        response.url().host_str().unwrap_or("?")
-                    )));
-                }
+                let response = builder.send().await.map_err(network_error)?;
                 let status = response.status().as_u16();
                 let headers = response
                     .headers()
@@ -1465,6 +1739,55 @@ impl HostApi for PluginApi {
         self.shared.secrets.read().get(self.id(), name).is_some()
     }
 
+    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError> {
+        if !self.shared.ui.items(super::providers::SECRETS_POINT, Some(self.id())).iter().any(|s| s.key == name) {
+            return Err(HostError::NotFound(format!("undeclared secret {name:?}")));
+        }
+        self.shared.secrets.read().set(self.id(), name, value).map_err(HostError::Failed)
+    }
+    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError> {
+        let closed = self.shared.closed_clients.lock();
+        let blocked = self.shared.prompts_blocked.lock();
+        if closed.contains(client) || blocked.contains(self.id()) {
+            return Err(HostError::Cancelled);
+        }
+        self.shared.loopbacks.read().begin(self.id(), client, path)
+    }
+    fn wait_loopback(
+        &self,
+        id: u64,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        self.shared.loopbacks.read().clone().wait(self.id(), id, timeout, cancel)
+    }
+    fn close_loopback(&self, id: u64) {
+        self.shared.loopbacks.read().close(self.id(), id);
+    }
+    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError> {
+        self.shared.connections.connect(self.id(), name, cancel, timeout)
+    }
+    fn ipc_write(
+        &self,
+        id: u64,
+        bytes: Vec<u8>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        self.shared.connections.write(self.id(), id, bytes, cancel, timeout)
+    }
+    fn ipc_read(
+        &self,
+        id: u64,
+        max: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<u8>, HostError> {
+        self.shared.connections.read(self.id(), id, max, timeout, cancel)
+    }
+    fn ipc_close(&self, id: u64) {
+        self.shared.connections.close(self.id(), id);
+    }
     fn run_process(
         &self,
         cmd: ProcessCommand,
@@ -1473,7 +1796,7 @@ impl HostApi for PluginApi {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError> {
-        let binary = self.approved_program(&cmd.program)?;
+        let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         let mut command = StdCommand::new(&binary);
         ide_core::process::prepare(&mut command);
@@ -1554,7 +1877,7 @@ impl HostApi for PluginApi {
         }
     }
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError> {
-        let binary = self.approved_program(&cmd.program)?;
+        let binary = self.approved_program_in_project(&cmd.program, cwd.or(cmd.approval_root.as_deref()))?;
         let cwd = self.spawn_dir(cwd);
         if client.is_some_and(|c| self.shared.closed_clients.lock().contains(c)) {
             return Err(HostError::Cancelled);
@@ -1777,7 +2100,7 @@ impl HostApi for PluginApi {
         args: Vec<String>,
         cwd: Option<&Path>,
     ) -> Result<(), HostError> {
-        let binary = self.approved_program(program)?;
+        let binary = self.approved_program_in_project(program, cwd)?;
         let cwd = cwd.map(Path::to_path_buf).unwrap_or_else(|| self.shared.data_dir.join(self.id()));
         let _ = std::fs::create_dir_all(&cwd);
         let event = PluginEvent::OpenTerminal {
@@ -1810,7 +2133,7 @@ impl HostApi for PluginApi {
         log: ide_plugin::ServiceLog,
     ) -> Result<(), HostError> {
         // Fails now, rather than in the tab, when the approved file is gone or changed.
-        self.approved_program(&log.program)?;
+        self.approved_program_in_project(&log.program, self.shared.project_of(client).as_deref())?;
         {
             let mut all = self.shared.log_tabs.lock();
             let tabs = all.entry((self.id().to_owned(), client.to_owned())).or_default();
@@ -2338,7 +2661,12 @@ mod tests {
 
     #[cfg(unix)]
     fn shell(script: &str) -> ProcessCommand {
-        ProcessCommand { program: "sh".into(), args: vec!["-c".into(), script.into()], env: Vec::new() }
+        ProcessCommand {
+            program: "sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: Vec::new(),
+            approval_root: None,
+        }
     }
 
     #[cfg(unix)]
@@ -2450,6 +2778,58 @@ mod tests {
         assert!(
             matches!(api.approved_program("lint"), Err(HostError::Denied(e)) if e.contains("changed since it was approved"))
         );
+    }
+    #[test]
+    fn redirects_check_grants_before_connecting_and_downgrades_require_http() {
+        assert_eq!(
+            redirect_capability(&"https://localhost/start".parse().unwrap(), &"http://localhost/end".parse().unwrap())
+                .unwrap(),
+            Capability::NetHttp("localhost".into())
+        );
+        let source = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        target.set_nonblocking(true).unwrap();
+        let source_port = source.local_addr().unwrap().port();
+        let target_port = target.local_addr().unwrap().port();
+        let worker = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = source.accept().unwrap();
+            let mut buf = [0; 4096];
+            let _ = stream.read(&mut buf);
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), Arc::default());
+        let result = api.fetch(
+            HttpRequest {
+                method: "GET".into(),
+                url: format!("http://localhost:{source_port}/"),
+                headers: Vec::new(),
+                body: None,
+                timeout: Duration::from_secs(2),
+                grants: vec![Capability::Net("localhost".into())],
+            },
+            &CancellationToken::new(),
+        );
+        assert!(matches!(result, Err(HostError::Denied(cap)) if cap == "net:127.0.0.1"));
+        assert!(target.accept().is_err(), "ungranted target must never receive a connection");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn output_ring_keeps_utf8_and_is_withdrawn_on_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), Arc::default());
+        api.output_write("build", Some(&"😀".repeat(300_000))).unwrap();
+        let buffer = api.shared.output.lock().get(&(api.id().into(), "build".into())).cloned().unwrap();
+        assert_eq!(buffer.len(), 1 << 20);
+        api.output_write("build", Some("x")).unwrap();
+        let buffer = api.shared.output.lock().get(&(api.id().into(), "build".into())).cloned().unwrap();
+        assert!(buffer.len() <= 1 << 20 && buffer.ends_with('x'));
+        api.output_write("build", None).unwrap();
+        assert!(api.shared.output.lock().get(&(api.id().into(), "build".into())).unwrap().is_empty());
+        api.shared.clear_plugin(api.id(), true);
+        assert!(api.shared.output.lock().is_empty());
     }
 }
 

@@ -16,6 +16,7 @@ thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 semver = "1"
+url = "2"
 wasmtime = { version = "49.0.4", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "parallel-compilation", "async"] }
 wasmtime-wasi = { version = "49.0.4", default-features = false, features = ["p2"] }
 

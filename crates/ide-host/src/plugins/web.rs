@@ -309,7 +309,7 @@ impl PluginHost {
         if !workspace.trusted(&cwd) {
             return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, "project is not trusted"));
         }
-        let program = self.program_for(plugin_id, &command.program)?;
+        let program = self.program_for_project(plugin_id, &command.program, Some(&cwd))?;
         Ok(ide_terminal::TerminalOptions {
             cwd: cwd.into(),
             shell: Some(program.to_string_lossy().into_owned()),

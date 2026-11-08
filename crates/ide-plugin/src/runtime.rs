@@ -50,7 +50,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.3";
+pub const API_VERSION: &str = "1.4";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -101,8 +101,40 @@ pub trait HostApi: Send + Sync {
         let _ = (client, view);
         Ok(())
     }
+    /// Executes a stable command in the invoking window and waits for its result.
+    fn execute_command(
+        &self,
+        invocation: &Invocation,
+        id: &str,
+        arg: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Option<String>, HostError> {
+        let _ = (invocation, id, arg, cancel, timeout);
+        Err(HostError::NotFound("command".into()))
+    }
+    /// Appends text, or clears (`None`), in a plugin-owned output channel.
+    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError> {
+        let _ = (channel, text);
+        Err(HostError::Failed("output unavailable".into()))
+    }
+    /// Reveals an output channel in the invoking window.
+    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError> {
+        let _ = (client, channel);
+        Err(HostError::Failed("output unavailable".into()))
+    }
+    /// Checks manifest minimum API requirements for new declarations or subscriptions.
+    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError> {
+        let _ = (what, minor);
+        Ok(())
+    }
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Sets or removes the status override in the invoking window.
+    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
+        let _ = (client, id, item);
+        Err(HostError::Invalid("window status unavailable".into()))
+    }
     /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
     /// for window `client` (every window if `None`).
     fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
@@ -181,6 +213,62 @@ pub trait HostApi: Send + Sync {
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
     fn secret_is_set(&self, name: &str) -> bool;
+
+    /// Stores or deletes a secret declared by this plugin; never returns its value.
+    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError> {
+        let _ = (name, value);
+        Err(HostError::NotFound("secret".into()))
+    }
+    /// Creates a desktop loopback listener and returns its handle and redirect URI.
+    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError> {
+        let _ = (client, path);
+        Err(HostError::Failed("loopback unavailable".into()))
+    }
+    /// Awaits a browser redirect, excluded from the caller's execution budget.
+    fn wait_loopback(
+        &self,
+        id: u64,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, HostError> {
+        let _ = (id, timeout, cancel);
+        Err(HostError::NotFound("loopback".into()))
+    }
+    /// Releases a desktop listener when its resource or plugin stops.
+    fn close_loopback(&self, id: u64) {
+        let _ = id;
+    }
+    /// Connects to an approved host-local socket; owned by this plugin instance.
+    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError> {
+        let _ = (name, cancel, timeout);
+        Err(HostError::Failed("IPC unavailable".into()))
+    }
+    /// Writes to an owned IPC connection.
+    fn ipc_write(
+        &self,
+        id: u64,
+        bytes: Vec<u8>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<(), HostError> {
+        let _ = (id, bytes, cancel, timeout);
+        Err(HostError::NotFound("connection".into()))
+    }
+    /// Reads from an owned IPC connection, empty on timeout or EOF.
+    fn ipc_read(
+        &self,
+        id: u64,
+        max: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<u8>, HostError> {
+        let _ = (id, max, timeout, cancel);
+        Err(HostError::NotFound("connection".into()))
+    }
+    /// Closes an owned IPC connection, including when its resource is dropped.
+    fn ipc_close(&self, id: u64) {
+        let _ = id;
+    }
     /// Runs the approved file of `process:<program>` with `cmd.env` added to
     /// the inherited environment, and waits.
     fn run_process(
@@ -653,6 +741,18 @@ const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
+        WorkbenchEvent::FileClosed(p) => wit_events::Event::Other(wit_types::Extension {
+            kind: "file-closed".into(),
+            data: serde_json::to_string(&p).expect("path serializes"),
+        }),
+        WorkbenchEvent::SettingsChanged(keys) => wit_events::Event::Other(wit_types::Extension {
+            kind: "settings-changed".into(),
+            data: serde_json::to_string(&keys).expect("keys serialize"),
+        }),
+        WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
+            kind: "input-mode-changed".into(),
+            data: serde_json::to_string(&mode).expect("mode serializes"),
+        }),
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
         WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {

@@ -211,6 +211,9 @@ impl From<String> for ContextValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum EventKind {
+    FileClosed,
+    SettingsChanged,
+    InputModeChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -225,6 +228,9 @@ impl EventKind {
     /// The name the IDE knows it by.
     pub fn name(self) -> &'static str {
         match self {
+            Self::FileClosed => "file-closed",
+            Self::SettingsChanged => "settings-changed",
+            Self::InputModeChanged => "input-mode-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",

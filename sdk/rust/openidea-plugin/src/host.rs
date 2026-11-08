@@ -91,6 +91,37 @@ mod imp {
         wit::ui::set_status_item(id, &item)
     }
 
+    pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {
+        wit::ui::set_window_status_item(
+            id,
+            &wit::ui::StatusItem {
+                text: item.text.clone(),
+                tooltip: item.tooltip.clone(),
+                command: item.command.clone(),
+            },
+        )
+        .map_err(error)
+    }
+    pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
+        wit::ui::remove_window_status_item(id).map_err(error)
+    }
+    pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
+        wit::command_runner::execute(id, arg).map_err(error)
+    }
+    pub type ConnectionRes = wit::ipc::Connection;
+    pub fn ipc_connect(name: &str) -> Result<ConnectionRes, Error> {
+        wit::ipc::connect(name).map_err(error)
+    }
+    pub fn ipc_write(c: &ConnectionRes, bytes: &[u8]) -> Result<(), Error> {
+        c.write(bytes).map_err(error)
+    }
+    pub fn ipc_read(c: &ConnectionRes, max: u32, timeout: u32) -> Result<Vec<u8>, Error> {
+        c.read(max, timeout).map_err(error)
+    }
+    pub fn ipc_close(c: &ConnectionRes) -> Result<(), Error> {
+        c.close().map_err(error)
+    }
+
     pub fn remove_status_item(id: &str) {
         wit::ui::remove_status_item(id)
     }
@@ -435,6 +466,31 @@ mod imp {
             .map_err(error)
     }
 
+    pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
+        wit::secrets::set(name, value).map_err(error)
+    }
+    pub fn secret_delete(name: &str) -> Result<(), Error> {
+        wit::secrets::delete(name).map_err(error)
+    }
+    pub type LoopbackRes = wit::auth::Loopback;
+    pub fn begin_loopback(path: &str) -> Result<LoopbackRes, Error> {
+        wit::auth::begin_loopback(path).map_err(error)
+    }
+    pub fn loopback_uri(l: &LoopbackRes) -> String {
+        l.redirect_uri()
+    }
+    pub fn loopback_wait(l: &LoopbackRes, timeout_ms: u32) -> Result<Option<String>, Error> {
+        l.wait(timeout_ms).map_err(error)
+    }
+    pub fn output_append(channel: &str, text: &str) -> Result<(), Error> {
+        wit::output::append(channel, text).map_err(error)
+    }
+    pub fn output_clear(channel: &str) -> Result<(), Error> {
+        wit::output::clear(channel).map_err(error)
+    }
+    pub fn output_reveal(channel: &str) -> Result<(), Error> {
+        wit::output::reveal(channel).map_err(error)
+    }
     pub fn secret_is_set(name: &str) -> bool {
         wit::secrets::is_set(name)
     }
@@ -684,8 +740,8 @@ pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error
     imp::publish_diagnostics(path, items)
 }
 
-/// HTTP(S) to a host granted with `net:<host>` (plain http only to
-/// localhost). `{{secret:<name>}}` in a header is filled in by the IDE (needs
+/// HTTPS with `net:<host>`; unencrypted HTTP with `net.http:<host>`
+/// (loopback HTTP retains `net:<host>`). `{{secret:<name>}}` in a header is filled in by the IDE (needs
 /// `secrets`). `Error::Cancelled` when the call was superseded.
 pub fn fetch(request: &HttpRequest) -> Result<HttpResponse, Error> {
     imp::fetch(request)
@@ -1176,4 +1232,82 @@ pub fn notify_with_actions(
 #[doc(hidden)]
 pub fn __diagnostic_to(d: &Diagnostic) -> crate::bindings::openidea::plugin::diagnostics::Diagnostic {
     imp::diagnostic_to(d)
+}
+
+/// Overrides an item in the invoking window, until removed or the window/plugin closes.
+pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {
+    imp::set_window_status_item(id, item)
+}
+/// Removes this window's status override, exposing the global item.
+pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
+    imp::remove_window_status_item(id)
+}
+
+/// An approved byte stream on the project machine (the server in remote projects).
+pub struct Connection {
+    inner: imp::ConnectionRes,
+}
+impl Connection {
+    /// Writes at most 1 MiB.
+    pub fn write(&self, bytes: &[u8]) -> Result<(), Error> {
+        imp::ipc_write(&self.inner, bytes)
+    }
+    /// Reads up to 1 MiB; empty on timeout or EOF.
+    pub fn read(&self, max_bytes: u32, timeout_ms: u32) -> Result<Vec<u8>, Error> {
+        imp::ipc_read(&self.inner, max_bytes, timeout_ms)
+    }
+    /// Closes this stream. Dropping it also closes it.
+    pub fn close(&self) -> Result<(), Error> {
+        imp::ipc_close(&self.inner)
+    }
+}
+/// Connects to a granted absolute socket path or Windows named pipe (API 1.4).
+pub fn ipc_connect(name: &str) -> Result<Connection, Error> {
+    imp::ipc_connect(name).map(|inner| Connection { inner })
+}
+
+/// Executes a stable action or another plugin's command in the invoking window.
+/// IDE actions return `None`; plugin commands return their result (API 1.4).
+pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
+    imp::execute_command(id, arg)
+}
+
+/// Stores a declared secret in the desktop keychain; requires `secrets`.
+pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
+    imp::secret_set(name, value)
+}
+/// Deletes a declared secret; requires `secrets`.
+pub fn secret_delete(name: &str) -> Result<(), Error> {
+    imp::secret_delete(name)
+}
+/// A one-shot browser redirect on the desktop, including for remote projects.
+pub struct Loopback {
+    inner: imp::LoopbackRes,
+}
+impl Loopback {
+    /// The authorization flow's loopback redirect URI.
+    pub fn redirect_uri(&self) -> String {
+        imp::loopback_uri(&self.inner)
+    }
+    /// Awaits the raw query string; `None` on timeout. Waiting excludes the call budget.
+    pub fn wait(&self, timeout_ms: u32) -> Result<Option<String>, Error> {
+        imp::loopback_wait(&self.inner, timeout_ms)
+    }
+}
+/// Begins an OAuth redirect listener in the invoking window (no capability).
+pub fn begin_loopback(path: &str) -> Result<Loopback, Error> {
+    imp::begin_loopback(path).map(|inner| Loopback { inner })
+}
+
+/// Appends to a plugin-owned Output tab's 1 MiB ring buffer.
+pub fn output_append(channel: &str, text: &str) -> Result<(), Error> {
+    imp::output_append(channel, text)
+}
+/// Clears a plugin-owned output channel.
+pub fn output_clear(channel: &str) -> Result<(), Error> {
+    imp::output_clear(channel)
+}
+/// Reveals a read-only Output tab in the invoking window.
+pub fn output_reveal(channel: &str) -> Result<(), Error> {
+    imp::output_reveal(channel)
 }

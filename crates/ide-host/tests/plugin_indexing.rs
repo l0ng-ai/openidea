@@ -194,6 +194,7 @@ fn two_windows_of_same_root_keep_unsaved_snapshots_isolated() {
                     &f.root,
                     Snapshot { path, version: Some(1), text, symbols: &symbols, scope: "" },
                     Invocation {
+                        command_chain: Vec::new(),
                         client: Some(client.into()),
                         workspace_root: Some(f.root.clone()),
                         editor: None,

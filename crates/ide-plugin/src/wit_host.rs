@@ -6,7 +6,7 @@ use crate::runtime::{MAX_TITLE, StoreData, clip};
 use crate::sandbox;
 use crate::types::{
     EditorContext, EventKind, HostError, HttpRequest, NotificationLevel, PickItem, ProcessChunk, ProcessCommand,
-    Prompt, StatusItem, net_host,
+    Prompt, StatusItem, net_capability,
 };
 use ide_core::ipc_path::to_ipc;
 use ide_extension::Capability;
@@ -25,6 +25,8 @@ pub(crate) mod bindings {
             "openidea:plugin/invocation.invocation": super::InvocationRes,
             "openidea:plugin/tasks.task": super::TaskRes,
             "openidea:plugin/process.child": super::ChildRes,
+            "openidea:plugin/ipc.connection": super::ConnectionRes,
+            "openidea:plugin/auth.loopback": super::LoopbackRes,
         },
     });
 }
@@ -51,6 +53,10 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
@@ -80,6 +86,10 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
@@ -109,6 +119,10 @@ pub(crate) mod views_bindings {
             "openidea:plugin/net": super::bindings::openidea::plugin::net,
             "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
             "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
@@ -117,8 +131,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, detail_types, diagnostics, editor, events, fs, invocation, log, net, process, secrets, settings, storage,
-    tasks, types as wit, ui, vcs, views, workspace,
+    commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets, settings,
+    storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -319,6 +333,14 @@ impl StoreData {
         self.ask(Prompt::QuickPick { title: clip(title, MAX_TITLE), items, multiple })
     }
 
+    fn require_window(&self) -> Result<(), wit::Error> {
+        self.require_interactive()?;
+        if self.invocation.client.is_none() {
+            return Err(wit::Error::Invalid("requires an invoking window".into()));
+        }
+        Ok(())
+    }
+
     /// APIs reserved for commands and events exclude code-action resolution.
     fn require_interactive(&self) -> Result<(), wit::Error> {
         if self.interactive {
@@ -381,6 +403,29 @@ impl ui::Host for StoreData {
         Ok(())
     }
 
+    fn set_window_status_item(&mut self, id: String, item: ui::StatusItem) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let item = StatusItem {
+            text: clip(item.text, MAX_STATUS_TEXT),
+            tooltip: item.tooltip.map(|t| clip(t, 1024)),
+            command: item.command.map(|c| clip(c, 128)),
+        };
+        Ok(self
+            .host
+            .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), Some(item))
+            .map_err(to_wit))
+    }
+    fn remove_window_status_item(&mut self, id: String) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .window_status_item(self.invocation.client.as_deref().expect("checked"), &clip(id, 64), None)
+            .map_err(to_wit))
+    }
     fn set_context(&mut self, key: String, value: ui::ContextValue) -> Fallible<()> {
         let valid_key =
             (1..=64).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'));
@@ -850,6 +895,11 @@ impl events::Host for StoreData {
         let Some(kind) = EventKind::parse(&kind) else {
             return Ok(Err(wit::Error::Invalid(format!("no event kind {kind:?} in this OpenIDEA"))));
         };
+        if matches!(kind, EventKind::FileClosed | EventKind::SettingsChanged | EventKind::InputModeChanged)
+            && let Err(e) = self.host.require_api(kind.name(), 4)
+        {
+            return Ok(Err(to_wit(e)));
+        }
         if let Some(cap) = kind.capability()
             && let Err(e) = self.require(cap)
         {
@@ -952,11 +1002,11 @@ impl diagnostics::Host for StoreData {
 
 impl net::Host for StoreData {
     fn fetch(&mut self, req: net::Request) -> Fallible<net::Response> {
-        let host = match net_host(&req.url) {
+        let capability = match net_capability(&req.url) {
             Ok(h) => h,
             Err(e) => return Ok(Err(wit::Error::Invalid(e))),
         };
-        if let Err(e) = self.require(Capability::Net(host)) {
+        if let Err(e) = self.require(capability) {
             return Ok(Err(e));
         }
         if req.headers.iter().any(|h| h.value.contains("{{secret:"))
@@ -974,6 +1024,7 @@ impl net::Host for StoreData {
             headers: req.headers.into_iter().map(|h| (h.name, h.value)).collect(),
             body: req.body,
             timeout: wanted.min(self.remaining()),
+            grants: self.granted.clone(),
         };
         let token = self.cancel.token();
         Ok(self
@@ -989,6 +1040,21 @@ impl net::Host for StoreData {
 }
 
 impl secrets::Host for StoreData {
+    fn set(&mut self, name: String, value: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Secrets) {
+            return Ok(Err(e));
+        }
+        if name.len() > 128 || value.len() > 64 << 10 {
+            return Ok(Err(wit::Error::Invalid("secret name or value too long".into())));
+        }
+        Ok(self.host.secret_set(&name, Some(&value)).map_err(to_wit))
+    }
+    fn delete(&mut self, name: String) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Secrets) {
+            return Ok(Err(e));
+        }
+        Ok(self.host.secret_set(&name, None).map_err(to_wit))
+    }
     fn is_set(&mut self, name: String) -> wasmtime::Result<bool> {
         Ok(self.granted.iter().any(|g| g.covers(&Capability::Secrets)) && self.host.secret_is_set(&name))
     }
@@ -1013,7 +1079,12 @@ impl StoreData {
                 return Err(wit::Error::Invalid(format!("the value of {name:?} is too long or holds a NUL")));
             }
         }
-        Ok(ProcessCommand { program: cmd.program, args: cmd.args, env: cmd.env })
+        Ok(ProcessCommand {
+            program: cmd.program,
+            args: cmd.args,
+            env: cmd.env,
+            approval_root: self.invocation.workspace_root.clone(),
+        })
     }
 
     /// The project a call runs in, when it named one.
@@ -1488,4 +1559,130 @@ pub(crate) fn diagnostics_from_wit(items: Vec<diagnostics::Diagnostic>, source: 
             server: Some(source.to_owned()),
         })
         .collect()
+}
+
+/// An IPC connection owned by this plugin instance.
+pub struct ConnectionRes {
+    id: u64,
+    host: std::sync::Arc<dyn crate::HostApi>,
+}
+impl Drop for ConnectionRes {
+    fn drop(&mut self) {
+        self.host.ipc_close(self.id);
+    }
+}
+impl ipc::Host for StoreData {
+    fn connect(&mut self, name: String) -> Fallible<Resource<ConnectionRes>> {
+        if let Err(e) = ide_extension::validate_ipc_name(&name, false) {
+            return Ok(Err(wit::Error::Invalid(e)));
+        }
+        if let Err(e) = self.require(Capability::Ipc(name.clone())) {
+            return Ok(Err(e));
+        }
+        let name = match ide_extension::expand_ipc_name(&name) {
+            Ok(name) => name,
+            Err(e) => return Ok(Err(wit::Error::Invalid(e))),
+        };
+        match self.host.ipc_connect(&name, &self.cancel.token(), self.remaining()) {
+            Ok(id) => self.push(ConnectionRes { id, host: self.host.clone() }).map(Ok),
+            Err(e) => Ok(Err(to_wit(e))),
+        }
+    }
+}
+impl ipc::HostConnection for StoreData {
+    fn write(&mut self, this: Resource<ConnectionRes>, bytes: Vec<u8>) -> Fallible<()> {
+        if bytes.len() > 1 << 20 {
+            return Ok(Err(wit::Error::Invalid("at most 1 MiB per write".into())));
+        }
+        let id = self.table.get(&this)?.id;
+        Ok(self.host.ipc_write(id, bytes, &self.cancel.token(), self.remaining()).map_err(to_wit))
+    }
+    fn read(&mut self, this: Resource<ConnectionRes>, max_bytes: u32, timeout_ms: u32) -> Fallible<Vec<u8>> {
+        let id = self.table.get(&this)?.id;
+        let timeout = Duration::from_millis(u64::from(timeout_ms)).min(self.remaining());
+        Ok(self.host.ipc_read(id, (max_bytes as usize).min(1 << 20), timeout, &self.cancel.token()).map_err(to_wit))
+    }
+    fn close(&mut self, this: Resource<ConnectionRes>) -> Fallible<()> {
+        let id = self.table.get(&this)?.id;
+        self.host.ipc_close(id);
+        Ok(Ok(()))
+    }
+    fn drop(&mut self, this: Resource<ConnectionRes>) -> wasmtime::Result<()> {
+        self.table.delete(this)?;
+        Ok(())
+    }
+}
+
+impl bindings::openidea::plugin::command_runner::Host for StoreData {
+    fn execute(&mut self, id: String, arg: Option<String>) -> Fallible<Option<String>> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        if id.len() > 256 || arg.as_ref().is_some_and(|a| a.len() > 64 << 10) {
+            return Ok(Err(wit::Error::Invalid("command id or argument too long".into())));
+        }
+        Ok(self
+            .host
+            .execute_command(&self.invocation, &id, arg, &self.cancel.token(), self.remaining())
+            .map_err(to_wit))
+    }
+}
+
+/// A desktop OAuth listener; its URI remains available after the one-shot wait.
+pub struct LoopbackRes {
+    id: u64,
+    uri: String,
+    host: std::sync::Arc<dyn crate::HostApi>,
+}
+impl Drop for LoopbackRes {
+    fn drop(&mut self) {
+        self.host.close_loopback(self.id);
+    }
+}
+impl bindings::openidea::plugin::auth::Host for StoreData {
+    fn begin_loopback(&mut self, path: String) -> Fallible<Resource<LoopbackRes>> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        match self.host.begin_loopback(self.invocation.client.as_deref().expect("checked"), &path) {
+            Ok((id, uri)) => self.push(LoopbackRes { id, uri, host: self.host.clone() }).map(Ok),
+            Err(e) => Ok(Err(to_wit(e))),
+        }
+    }
+}
+impl bindings::openidea::plugin::auth::HostLoopback for StoreData {
+    fn redirect_uri(&mut self, this: Resource<LoopbackRes>) -> wasmtime::Result<String> {
+        Ok(self.table.get(&this)?.uri.clone())
+    }
+    fn wait(&mut self, this: Resource<LoopbackRes>, timeout_ms: u32) -> Fallible<Option<String>> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let id = self.table.get(&this)?.id;
+        let started = Instant::now();
+        let result = self.host.wait_loopback(id, Duration::from_millis(u64::from(timeout_ms)), &self.cancel.token());
+        let waited = started.elapsed();
+        self.deadline += waited;
+        self.call_started += waited;
+        Ok(result.map_err(to_wit))
+    }
+    fn drop(&mut self, this: Resource<LoopbackRes>) -> wasmtime::Result<()> {
+        self.table.delete(this)?;
+        Ok(())
+    }
+}
+
+impl bindings::openidea::plugin::output::Host for StoreData {
+    fn append(&mut self, channel: String, text: String) -> Fallible<()> {
+        Ok(self.host.output_write(&channel, Some(&text)).map_err(to_wit))
+    }
+    fn clear(&mut self, channel: String) -> Fallible<()> {
+        Ok(self.host.output_write(&channel, None).map_err(to_wit))
+    }
+    fn reveal(&mut self, channel: String) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        Ok(self.host.output_reveal(self.invocation.client.as_deref().expect("checked"), &channel).map_err(to_wit))
+    }
 }

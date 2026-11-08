@@ -25,6 +25,8 @@ pub struct EditorContext {
 /// Where a command or event batch comes from: the window and its project.
 #[derive(Clone, Debug, Default)]
 pub struct Invocation {
+    /// Plugin instances waiting on this command chain; never re-enter one.
+    pub command_chain: Vec<String>,
     pub client: Option<String>,
     pub workspace_root: Option<PathBuf>,
     /// Settings actions can read the global layer while retaining their project context.
@@ -35,7 +37,7 @@ pub struct Invocation {
 }
 
 /// A failed host call, as the plugin sees it (WIT `types.error`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HostError {
     /// Not granted; names the capability.
     Denied(String),
@@ -98,6 +100,9 @@ pub enum Prompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    FileClosed,
+    SettingsChanged,
+    InputModeChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
@@ -108,7 +113,10 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
+        Self::FileClosed,
+        Self::SettingsChanged,
+        Self::InputModeChanged,
         Self::FileOpened,
         Self::FileSaved,
         Self::FilesChanged,
@@ -120,6 +128,9 @@ impl EventKind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::FileClosed => "file-closed",
+            Self::SettingsChanged => "settings-changed",
+            Self::InputModeChanged => "input-mode-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
@@ -138,7 +149,7 @@ impl EventKind {
     /// manifest declares).
     pub fn capability(self) -> Option<ide_extension::Capability> {
         match self {
-            Self::ActionPerformed => Some(ide_extension::Capability::InputEvents),
+            Self::ActionPerformed | Self::InputModeChanged => Some(ide_extension::Capability::InputEvents),
             Self::Scheduled => None,
             _ => Some(ide_extension::Capability::Events),
         }
@@ -188,10 +199,21 @@ pub struct FilesChanged {
     pub removed: Vec<String>,
 }
 
+/// The focused editor's input mode and optional visual sub-mode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct InputMode {
+    pub path: String,
+    pub mode: String,
+    pub sub: Option<String>,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    FileClosed(String),
+    SettingsChanged(Vec<String>),
+    InputModeChanged(InputMode),
     FileOpened(String),
     FileSaved(String),
     FilesChanged(FilesChanged),
@@ -204,6 +226,9 @@ pub enum WorkbenchEvent {
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::FileClosed(_) => EventKind::FileClosed,
+            Self::SettingsChanged(_) => EventKind::SettingsChanged,
+            Self::InputModeChanged(_) => EventKind::InputModeChanged,
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,
             Self::FilesChanged(_) => EventKind::FilesChanged,
@@ -350,6 +375,8 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     pub body: Option<Vec<u8>>,
     pub timeout: Duration,
+    /// Grants checked again before following a redirect.
+    pub grants: Vec<ide_extension::Capability>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -371,6 +398,8 @@ pub struct ProcessOutput {
 /// the environment to add to the inherited one (WIT `process.command`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessCommand {
+    /// The invoking project whose executable override applies, independent of cwd.
+    pub approval_root: Option<PathBuf>,
     pub program: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -388,23 +417,27 @@ pub struct ProcessChunk {
 /// Where `net:` requests may go: the URL's host when it is `https`, or
 /// `http` to the loopback interface.
 pub fn net_host(url: &str) -> Result<String, String> {
-    let (scheme, rest) = url.split_once("://").ok_or_else(|| format!("{url:?} is not an absolute URL"))?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(v6) = authority.strip_prefix('[') {
-        v6.split(']').next().unwrap_or_default().to_owned()
-    } else {
-        authority.split(':').next().unwrap_or_default().to_ascii_lowercase()
-    };
-    if host.is_empty() {
-        return Err(format!("{url:?} has no host"));
+    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("unsupported scheme {:?}", parsed.scheme()));
     }
-    let loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1");
-    match scheme.to_ascii_lowercase().as_str() {
-        "https" => Ok(host),
-        "http" if loopback => Ok(host),
-        "http" => Err(format!("{url:?}: plain http is only allowed to localhost")),
-        other => Err(format!("{url:?}: unsupported scheme {other:?}")),
+    match parsed.host() {
+        Some(url::Host::Domain(host)) => Ok(host.trim_end_matches('.').to_ascii_lowercase()),
+        Some(url::Host::Ipv4(host)) => Ok(host.to_string()),
+        Some(url::Host::Ipv6(host)) => Ok(host.to_string()),
+        None => Err("URL has no host".into()),
+    }
+}
+
+/// The grant required by a URL; loopback HTTP retains the original `net:` rule.
+pub fn net_capability(url: &str) -> Result<ide_extension::Capability, String> {
+    let host = net_host(url)?;
+    if url::Url::parse(url).is_ok_and(|u| u.scheme() == "http")
+        && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1")
+    {
+        Ok(ide_extension::Capability::NetHttp(host))
+    } else {
+        Ok(ide_extension::Capability::Net(host))
     }
 }
 
@@ -427,7 +460,10 @@ mod tests {
         assert_eq!(net_host("https://API.example.com:8443/v1?x").unwrap(), "api.example.com");
         assert_eq!(net_host("http://localhost:11434/api").unwrap(), "localhost");
         assert_eq!(net_host("https://user:pw@h.io/").unwrap(), "h.io");
-        assert!(net_host("http://example.com/").is_err());
+        assert_eq!(
+            net_capability("http://example.com/").unwrap(),
+            ide_extension::Capability::NetHttp("example.com".into())
+        );
         assert!(net_host("file:///etc/passwd").is_err());
         assert!(net_host("example.com").is_err());
     }

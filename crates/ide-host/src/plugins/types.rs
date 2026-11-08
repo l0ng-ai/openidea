@@ -166,6 +166,15 @@ pub struct PluginUpdate {
 pub enum PluginEvent {
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
+    /// A bounded output channel snapshot, or withdrawal when the plugin stops.
+    #[serde(rename_all = "camelCase")]
+    OutputChanged { plugin_id: String, channel: String, text: Option<String> },
+    /// Reveal a read-only Output tab in the receiving window.
+    #[serde(rename_all = "camelCase")]
+    RevealOutput { plugin_id: String, channel: String, text: String },
+    /// Execute an action through the receiving window and answer over IPC.
+    #[serde(rename_all = "camelCase")]
+    ExecuteCommand { request_id: String, id: String, arg: Option<String>, chain: Vec<String> },
     /// Cached document associations were disposed (reload, disable or failure).
     DocumentIndexesChanged,
     /// The routes `plugin_id` reports for the project `root` may have changed:
@@ -187,6 +196,9 @@ pub enum PluginEvent {
     /// A plugin's status bar item was set (`item`) or removed.
     #[serde(rename_all = "camelCase")]
     StatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },
+    /// An override in the receiving window; removal exposes the global item.
+    #[serde(rename_all = "camelCase")]
+    WindowStatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },
     /// A plugin's context key was set (`value`: JSON text) or removed, in the
     /// emitted window (every window when the client is `None`).
     #[serde(rename_all = "camelCase")]
@@ -340,6 +352,8 @@ pub struct PackageFile {
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginStatusItem {
+    /// Whether this item overrides the global item in the requesting window.
+    pub window: bool,
     pub plugin_id: String,
     pub id: String,
     pub item: StatusItem,
@@ -387,4 +401,13 @@ pub struct PluginCommitCheckResult {
     pub problems: Vec<ide_plugin::CommitProblem>,
     /// The check could not run (the plugin failed, timed out or lacks `vcs.read`).
     pub error: Option<String>,
+}
+
+/// The invoking window's response to a command request.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum CommandAnswer {
+    Value(Option<String>),
+    NotFound,
+    Failed(String),
 }

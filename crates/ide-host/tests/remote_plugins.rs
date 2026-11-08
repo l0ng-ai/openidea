@@ -27,6 +27,7 @@ struct Client {
     events: Mutex<Vec<EventMessage>>,
     plugin_events: Mutex<Vec<PluginEventMessage>>,
     secret_requests: Mutex<Vec<SecretRequest>>,
+    desktop: Option<Arc<PluginHost>>,
 }
 
 impl Handler for Client {
@@ -44,6 +45,19 @@ impl Handler for Client {
             let value = (r.name == "api-key").then(|| "sk-desktop".to_owned());
             self.secret_requests.lock().push(r);
             return Ok(serde_json::to_value(value).unwrap());
+        }
+        if let Some(desktop) = &self.desktop {
+            use ide_host::plugins::remote_host::{AUTH_REQUEST, SECRET_WRITE};
+            if method == AUTH_REQUEST {
+                return Ok(
+                    serde_json::to_value(desktop.remote_auth("main", serde_json::from_value(params).unwrap())).unwrap()
+                );
+            }
+            if method == SECRET_WRITE {
+                return Ok(
+                    serde_json::to_value(desktop.remote_secret_write(serde_json::from_value(params).unwrap())).unwrap()
+                );
+            }
         }
         Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, method.to_owned()))
     }
@@ -349,4 +363,91 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     }
 
     plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let tmp = tempfile::tempdir().unwrap();
+    let desktop = Arc::new(
+        PluginHost::new(tmp.path().join("desktop/plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default())
+            .unwrap(),
+    );
+    desktop.install_from_dir(&fixture("api14"), &Consent::all()).unwrap();
+    let project = tmp.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    let project = project.canonicalize().unwrap();
+    let base = tmp.path().join("server");
+    let peer_slot = Arc::new(OnceLock::new());
+    let sink_peer = peer_slot.clone();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
+    let mut dispatcher = Dispatcher::standard();
+    plugins.register(&mut dispatcher);
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, dispatcher, peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let client = Arc::new(Client { desktop: Some(desktop.clone()), ..Client::default() });
+    let peer = Peer::connect(cr, cw, client.clone());
+    let _: Value = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
+    invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
+    invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
+    sync(&peer, &desktop, &[]).await;
+    let report = sync(&peer, &desktop, &["api14"]).await;
+    assert!(report.failed.is_empty(), "{report:?}");
+    let run = |command: &str, arg: Option<&str>| json!({ "pluginId": "api14", "commandId": command, "arg": arg, "editor": null });
+    invoke(&peer, "plugin_run_command", run("secret", Some("remote-token"))).await.unwrap();
+    assert_eq!(desktop.declared_secret("api14", "token").as_deref(), Some("remote-token"));
+    invoke(&peer, "plugin_run_command", run("delete-secret", None)).await.unwrap();
+    assert_eq!(desktop.declared_secret("api14", "token"), None);
+    invoke(&peer, "plugin_run_command", run("window-status", Some("remote"))).await.unwrap();
+    let status = invoke(&peer, "plugin_status_items", json!({})).await.unwrap();
+    assert!(status.as_array().unwrap().iter().any(|s| s["window"] == true && s["item"]["text"] == "remote"));
+    let oauth_peer = peer.clone();
+    let oauth = tokio::spawn(async move {
+        invoke(
+            &oauth_peer,
+            "plugin_run_command",
+            json!({ "pluginId": "api14", "commandId": "oauth", "arg": null, "editor": null }),
+        )
+        .await
+    });
+    until("remote OAuth URI", 5, || {
+        client
+            .plugin_events
+            .lock()
+            .iter()
+            .any(|m| matches!(&m.event, PluginEvent::OutputChanged { channel, .. } if channel == "oauth"))
+    })
+    .await;
+    let uri = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            PluginEvent::OutputChanged { channel, text: Some(text), .. } if channel == "oauth" => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let authority = uri.strip_prefix("http://").unwrap().split('/').next().unwrap();
+    let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+    stream.write_all(b"GET /oauth/callback?code=desktop%2Bcode HTTP/1.1\r\nHost: localhost\r\n\r\n").await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.contains("You can close this tab"));
+    assert_eq!(oauth.await.unwrap().unwrap(), json!("code=desktop%2Bcode"));
+    plugins.host().shutdown();
+    desktop.shutdown();
+    peer.kill();
 }

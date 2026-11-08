@@ -32,8 +32,12 @@ pub enum Capability {
     InputEvents,
     /// The system clipboard, from the plugin's web views.
     Clipboard,
-    /// HTTP(S) to one host (`*.example.com` matches subdomains).
+    /// HTTPS (and loopback HTTP) to one host (`*.example.com` matches subdomains).
     Net(String),
+    /// Unencrypted HTTP to one host.
+    NetHttp(String),
+    /// A local socket or named pipe on the project machine.
+    Ipc(String),
     /// Run one external program. Full code execution: never fine-grained.
     Process(String),
     /// Read files outside the project under one path.
@@ -62,10 +66,11 @@ impl Capability {
             | Self::ProjectWrite
             | Self::VcsWrite
             | Self::Net(_)
+            | Self::NetHttp(_)
             | Self::Secrets
             | Self::InputEvents
             | Self::Clipboard => Risk::Medium,
-            Self::Process(_) | Self::FsRead(_) | Self::FsWrite(_) => Risk::High,
+            Self::Ipc(_) | Self::Process(_) | Self::FsRead(_) | Self::FsWrite(_) => Risk::High,
         }
     }
 
@@ -92,6 +97,12 @@ impl Capability {
                 "Copy to the clipboard from its commands, and read and write it from its web views".into()
             }
             Self::Net(host) => format!("Connect to {host} (from the machine the project is on)"),
+            Self::NetHttp(host) => {
+                format!("Connect to {host} over unencrypted HTTP (from the machine the project is on)")
+            }
+            Self::Ipc(path) => {
+                format!("Connect to local socket {path} — equivalent to running arbitrary code on the project machine")
+            }
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
@@ -100,8 +111,14 @@ impl Capability {
 
     /// Whether `self`, granted, also covers `wanted` (`net:*.x.com` covers `net:a.x.com`).
     pub fn covers(&self, wanted: &Capability) -> bool {
+        if self == wanted {
+            return true;
+        }
         match (self, wanted) {
-            (Self::Net(pattern), Self::Net(host)) => host_matches(pattern, host),
+            (Self::Ipc(pattern), Self::Ipc(path)) => ipc_matches(pattern, path),
+            (Self::Net(pattern), Self::Net(host)) | (Self::NetHttp(pattern), Self::NetHttp(host)) => {
+                host_matches(pattern, host)
+            }
             (Self::FsRead(base), Self::FsRead(path)) | (Self::FsWrite(base), Self::FsWrite(path)) => {
                 std::path::Path::new(path).starts_with(std::path::Path::new(base))
             }
@@ -120,6 +137,75 @@ pub fn host_matches(pattern: &str, host: &str) -> bool {
     }
 }
 
+/// Validates a socket path; a grant may use `*` in its last segment only.
+pub fn validate_ipc_name(name: &str, pattern: bool) -> Result<(), String> {
+    let pipe = name.starts_with(r"\\.\pipe\");
+    let unix = name.starts_with('/')
+        || name.starts_with("~/")
+        || name.starts_with("$TMPDIR/")
+        || name.starts_with("$XDG_RUNTIME_DIR/");
+    let parts: Vec<_> = name.strip_prefix(r"\\.\pipe\").unwrap_or(name).split(if pipe { '\\' } else { '/' }).collect();
+    if !(pipe || unix)
+        || name.contains(['\0', '?'])
+        || name.len() > 4096
+        || parts.last().is_none_or(|p| p.is_empty())
+        || parts.iter().any(|p| matches!(*p, "." | ".."))
+        || parts[..parts.len().saturating_sub(1)].iter().any(|p| p.contains('*'))
+        || (!pattern && name.contains('*'))
+    {
+        return Err(
+            "ipc: use an absolute socket path or \\\\.\\pipe\\name; only the last grant segment may contain '*'".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Expands the three supported host-local prefixes; no shell is involved.
+pub fn expand_ipc_name(name: &str) -> Result<String, String> {
+    validate_ipc_name(name, true)?;
+    for (prefix, key) in [("~/", "HOME"), ("$TMPDIR/", "TMPDIR"), ("$XDG_RUNTIME_DIR/", "XDG_RUNTIME_DIR")] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            let base = std::env::var(key).map_err(|_| format!("{key} is not set"))?;
+            let expanded = format!("{}/{rest}", base.trim_end_matches('/'));
+            validate_ipc_name(&expanded, true)?;
+            return Ok(expanded);
+        }
+    }
+    Ok(name.into())
+}
+
+fn ipc_matches(pattern: &str, name: &str) -> bool {
+    let (Ok(pattern), Ok(name)) = (expand_ipc_name(pattern), expand_ipc_name(name)) else { return false };
+    if validate_ipc_name(&name, false).is_err() {
+        return false;
+    }
+    let separator = if pattern.starts_with(r"\\.\pipe\") { '\\' } else { '/' };
+    let (Some((parent, pattern)), Some((other, name))) = (pattern.rsplit_once(separator), name.rsplit_once(separator))
+    else {
+        return false;
+    };
+    if parent != other {
+        return false;
+    }
+    let mut rest = name;
+    let mut pieces = pattern.split('*');
+    let first = pieces.next().unwrap_or_default();
+    let Some(tail) = rest.strip_prefix(first) else { return false };
+    rest = tail;
+    let pieces: Vec<_> = pieces.collect();
+    if pieces.is_empty() {
+        return rest.is_empty();
+    }
+    for (i, piece) in pieces.iter().enumerate() {
+        if i + 1 == pieces.len() {
+            return rest.ends_with(piece);
+        }
+        let Some(at) = rest.find(piece) else { return false };
+        rest = &rest[at + piece.len()..];
+    }
+    true
+}
+
 impl fmt::Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -135,6 +221,8 @@ impl fmt::Display for Capability {
             Self::InputEvents => f.write_str("events.input"),
             Self::Clipboard => f.write_str("clipboard"),
             Self::Net(h) => write!(f, "net:{h}"),
+            Self::NetHttp(h) => write!(f, "net.http:{h}"),
+            Self::Ipc(p) => write!(f, "ipc:{p}"),
             Self::Process(b) => write!(f, "process:{b}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
@@ -153,7 +241,7 @@ impl FromStr for Capability {
                 return Err(format!("capability {s:?} needs a value after ':'"));
             }
             return match kind {
-                "net" => {
+                "net" | "net.http" => {
                     let host = arg.strip_prefix("*.").unwrap_or(arg);
                     let valid = !host.is_empty()
                         && host.len() <= 253
@@ -162,7 +250,19 @@ impl FromStr for Capability {
                                 && label.len() <= 63
                                 && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
                         });
-                    if valid { Ok(Self::Net(arg.to_ascii_lowercase())) } else { Err(format!("invalid host in {s:?}")) }
+                    if valid {
+                        Ok(if kind == "net" {
+                            Self::Net(arg.to_ascii_lowercase())
+                        } else {
+                            Self::NetHttp(arg.to_ascii_lowercase())
+                        })
+                    } else {
+                        Err(format!("invalid host in {s:?}"))
+                    }
+                }
+                "ipc" => {
+                    validate_ipc_name(arg, true)?;
+                    Ok(Self::Ipc(arg.to_owned()))
                 }
                 "process" => {
                     if arg.contains(['/', '\\']) && !std::path::Path::new(arg).is_absolute() {
@@ -290,5 +390,37 @@ mod tests {
         assert!(any_gh.covers(&"net:api.github.com".parse().unwrap()));
         assert!(Capability::FsRead("/etc".into()).covers(&Capability::FsRead("/etc/hosts".into())));
         assert!(!Capability::FsRead("/etc".into()).covers(&Capability::FsRead("/etcx".into())));
+    }
+}
+
+#[cfg(test)]
+mod api14_tests {
+    use super::*;
+    #[test]
+    fn http_grants_do_not_imply_https_and_socket_patterns_stay_in_one_directory() {
+        let http: Capability = "net.http:*.example.com".parse().unwrap();
+        assert_eq!(http.to_string(), "net.http:*.example.com");
+        assert_eq!(http.risk(), Risk::Medium);
+        assert!(http.describe().contains("unencrypted"));
+        assert!(http.covers(&"net.http:a.example.com".parse().unwrap()));
+        assert!(!http.covers(&"net:a.example.com".parse().unwrap()));
+        assert!(!"net:*.example.com".parse::<Capability>().unwrap().covers(&"net.http:a.example.com".parse().unwrap()));
+        let socket: Capability = "ipc:/tmp/discord-ipc-*-socket".parse().unwrap();
+        assert_eq!(socket.risk(), Risk::High);
+        assert!(socket.covers(&Capability::Ipc("/tmp/discord-ipc-42-socket".into())));
+        assert!(!socket.covers(&Capability::Ipc("/tmp/discord-ipc-dir/evil-socket".into())));
+        assert!(!socket.covers(&Capability::Ipc("/tmp/../tmp/discord-ipc-42-socket".into())));
+        assert_eq!("ipc:$TMPDIR/discord-ipc-*".parse::<Capability>().unwrap().to_string(), "ipc:$TMPDIR/discord-ipc-*");
+        assert!(
+            r"ipc:\\.\pipe\discord-*"
+                .parse::<Capability>()
+                .unwrap()
+                .covers(&Capability::Ipc(r"\\.\pipe\discord-0".into()))
+        );
+        for invalid in
+            ["ipc:relative", "ipc:/tmp/*/socket", "ipc:/tmp/../socket", "ipc:/tmp/", "ipc:/tmp/socket?", "net.http:a b"]
+        {
+            assert!(invalid.parse::<Capability>().is_err(), "{invalid}");
+        }
     }
 }

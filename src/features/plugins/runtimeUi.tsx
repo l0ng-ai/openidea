@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import type {
   CommitAnswer,
+  CommandAnswer,
   CommitRequest,
   EventKind,
   PluginContextKey,
@@ -29,8 +30,10 @@ import { notifications, maybeCommitService, maybeEditorService, registerStatusIt
 import { pickItems, promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
 import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
+import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
 import { usePluginT } from "./pluginText";
+import { setPluginOutput } from "./views/outputStore";
 import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
 import type { PluginLogEditorData } from "./views/logTab";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
@@ -45,11 +48,22 @@ export const usePluginStatusItems = create<{ items: Map<ItemKey, { pluginId: str
   items: new Map(),
 }));
 
-function setStatusItem(pluginId: string, id: string, item: StatusItem | null) {
+let statusRevision = 0;
+let statusRequest = 0;
+const globalStatus = new Map<ItemKey, { pluginId: string; item: StatusItem }>();
+const windowStatus = new Map<ItemKey, { pluginId: string; item: StatusItem }>();
+
+function setStatusItem(pluginId: string, id: string, item: StatusItem | null, window = false) {
+  statusRevision++;
+  const key: ItemKey = `${pluginId}/${id}`;
+  const scope = window ? windowStatus : globalStatus;
+  if (item) scope.set(key, { pluginId, item });
+  else scope.delete(key);
+  const effective = windowStatus.get(key) ?? globalStatus.get(key);
   usePluginStatusItems.setState((s) => {
     const items = new Map(s.items);
-    if (item) items.set(`${pluginId}/${id}`, { pluginId, item });
-    else items.delete(`${pluginId}/${id}`);
+    if (effective) items.set(key, effective);
+    else items.delete(key);
     return { items };
   });
 }
@@ -161,9 +175,21 @@ function projectStatusItems(): () => void {
  * window's project is open and trusted, so call it again when that happens.
  */
 function refreshStatusItems() {
+  const request = ++statusRequest;
+  const revision = statusRevision;
   void pluginsBackend()
     .statusItems()
-    .then((items) => items.forEach((i) => setStatusItem(i.pluginId, i.id, i.item)))
+    .then((items) => {
+      if (request !== statusRequest) return;
+      if (revision !== statusRevision) {
+        refreshStatusItems();
+        return;
+      }
+      globalStatus.clear();
+      windowStatus.clear();
+      usePluginStatusItems.setState({ items: new Map() });
+      items.forEach((i) => setStatusItem(i.pluginId, i.id, i.item, i.window));
+    })
     .catch(() => {});
 }
 
@@ -271,7 +297,10 @@ let postTimer: ReturnType<typeof setTimeout> | null = null;
 export function refreshEventKinds() {
   void pluginsBackend()
     .eventKinds()
-    .then((kinds) => (wanted = new Set(kinds)))
+    .then((kinds) => {
+      wanted = new Set(kinds);
+      if (wanted.has("settings-changed")) post({ kind: "settingsChanged", value: [] });
+    })
     .catch(() => {});
 }
 
@@ -293,6 +322,9 @@ function trackWorkbenchEvents(): () => void {
   refreshEventKinds();
   const offEditor = onEditorEvent((e) => {
     if (e.type === "docOpened" && wanted.has("file-opened")) post({ kind: "fileOpened", value: e.path });
+    if (e.type === "docClosed" && wanted.has("file-closed")) post({ kind: "fileClosed", value: e.path });
+    if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
+      post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
@@ -303,6 +335,9 @@ function trackWorkbenchEvents(): () => void {
       value: { action: id, title: action?.title ?? id, source, shortcut: shortcutLabel(id) ?? null },
     });
   });
+  const offSettings = onIdeEvent("settingsChanged", () => {
+    if (wanted.has("settings-changed")) post({ kind: "settingsChanged", value: [] });
+  });
   const offVcs = onIdeEvent("vcsChanged", (e) => {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
@@ -310,6 +345,7 @@ function trackWorkbenchEvents(): () => void {
     offEditor();
     offActions();
     offVcs();
+    offSettings();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
     queue = [];
@@ -395,11 +431,46 @@ async function answerCommit(requestId: string, request: CommitRequest) {
     .catch(() => {});
 }
 
+async function answerCommand(e: Extract<PluginEvent, { type: "executeCommand" }>) {
+  let answer: CommandAnswer;
+  try {
+    const command = usePlugins
+      .getState()
+      .ui.find((c) => c.point === "commands" && e.id === `plugin.${c.pluginId}.${(c.decl as { id: string }).id}`);
+    if (command) {
+      const value = await pluginsBackend().runCommand(
+        command.pluginId,
+        (command.decl as { id: string }).id,
+        e.arg,
+        editorContext(),
+        [],
+        undefined,
+        e.chain,
+      );
+      answer = { kind: "value", value };
+    } else if (getAction(e.id)) {
+      await executeAction(e.id, e.arg);
+      answer = { kind: "value", value: null };
+    } else answer = { kind: "notFound" };
+  } catch (error) {
+    answer = { kind: "failed", value: error instanceof Error ? error.message : String(error) };
+  }
+  await pluginsBackend()
+    .answerCommand(e.requestId, answer)
+    .catch(() => {});
+}
+
 /** Handles the runtime UI events; returns whether `e` was one. */
 export function handleRuntimeEvent(e: PluginEvent): boolean {
   switch (e.type) {
+    case "executeCommand":
+      void answerCommand(e);
+      return true;
     case "contextChanged":
       refreshContextKeys();
+      return true;
+    case "windowStatusItemChanged":
+      setStatusItem(e.pluginId, e.id, e.item, true);
       return true;
     case "statusItemChanged":
       setStatusItem(e.pluginId, e.id, e.item);
@@ -421,6 +492,26 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
       void executeAction("terminal.runCommand", { program: e.program, args: e.args, name: e.title, cwd: e.cwd });
+      return true;
+    case "outputChanged":
+      setPluginOutput(e.pluginId, e.channel, e.text);
+      return true;
+    case "revealOutput":
+      setPluginOutput(e.pluginId, e.channel, e.text);
+      void maybeEditorService()?.openInput({
+        kind: PLUGIN_LOG_EDITOR_KIND,
+        key: `pluginOutput:${JSON.stringify([e.pluginId, e.channel])}`,
+        data: {
+          pluginId: e.pluginId,
+          view: "",
+          key: e.channel,
+          title: tx`Output: ${e.channel}`,
+          program: "",
+          args: [],
+          toggles: [],
+          origin: "output",
+        } satisfies PluginLogEditorData,
+      });
       return true;
     case "openLogTab":
       void maybeEditorService()?.openInput({
@@ -477,6 +568,10 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
 function refreshOnProjectChange(): () => void {
   return useProject.subscribe((s, prev) => {
     if (s.project === prev.project) return;
+    statusRevision++;
+    globalStatus.clear();
+    windowStatus.clear();
+    usePluginStatusItems.setState({ items: new Map() });
     refreshEventKinds();
     refreshStatusItems();
     refreshContextKeys();

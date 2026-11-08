@@ -1103,9 +1103,13 @@ export const commands = {
 	path: string,
 	language: string,
 	selections: Range[],
-} | null, paths: string[] | null, settingsScope: "global" | "project" | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope })),
+} | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
-	pluginPostEvents: (events: WorkbenchEvent[]) => __TAURI_INVOKE<void>("plugin_post_events", { events }),
+	pluginPostEvents: (events: WorkbenchEvent[], editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => __TAURI_INVOKE<void>("plugin_post_events", { events, editor }),
 	/**  Kinds of workbench events plugins want (re-fetch on `subscriptionsChanged`). */
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
@@ -1124,6 +1128,12 @@ export const commands = {
 	 *  longer waits.
 	 */
 	pluginAnswerCommit: (requestId: string, answer: CommitAnswer) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
+	/**  The invoking window's reply to a plugin command request. */
+	pluginAnswerCommand: (requestId: string, answer: CommandAnswer) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_answer_command", { requestId, answer })),
+	/**  Re-approves a plugin's executable, globally or for this window's project. */
+	pluginChooseProgram: (pluginId: string, capability: string, scope: SettingsScope, path: string | null) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_choose_program", { pluginId, capability, scope, path })),
+	/**  The currently approved executable in the selected scope, after revalidating its pin. */
+	pluginProgram: (pluginId: string, program: string, scope: SettingsScope) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("plugin_program", { pluginId, program, scope })),
 	/**
 	 *  Runs plugins' before-commit checks on what `selection` commits, until
 	 *  `request` is cancelled.
@@ -2428,6 +2438,9 @@ export type Command = {
 	command: string,
 	arguments: string[],
 };
+
+/**  The invoking window's response to a command request. */
+export type CommandAnswer = { kind: "value"; value: string | null } | { kind: "notFound" } | { kind: "failed"; value: string };
 
 export type CommandForm = {
 	command: Command,
@@ -3785,7 +3798,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "file-closed" | "settings-changed" | "input-mode-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -4806,6 +4819,13 @@ export type InlineCompletionSettings = {
 	onlyOnPause?: boolean,
 	pauseMs?: number,
 	disabledLanguages?: string[],
+};
+
+/**  The focused editor's input mode and optional visual sub-mode. */
+export type InputMode = {
+	path: string,
+	mode: string,
+	sub: string | null,
 };
 
 export type InspectEvent = 
@@ -6125,6 +6145,12 @@ export type PluginEndpoint = {
 export type PluginEvent = 
 /**  Plugins, their status or their contributions changed: re-fetch `plugin_list`. */
 { type: "commandsChanged" } | 
+/**  A bounded output channel snapshot, or withdrawal when the plugin stops. */
+{ type: "outputChanged"; pluginId: string; channel: string; text: string | null } | 
+/**  Reveal a read-only Output tab in the receiving window. */
+{ type: "revealOutput"; pluginId: string; channel: string; text: string } | 
+/**  Execute an action through the receiving window and answer over IPC. */
+{ type: "executeCommand"; requestId: string; id: string; arg: string | null; chain: string[] } | 
 /**  Cached document associations were disposed (reload, disable or failure). */
 { type: "documentIndexesChanged" } | 
 /**
@@ -6141,6 +6167,8 @@ export type PluginEvent =
 actions: NotificationAction[] } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
 { type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
+/**  An override in the receiving window; removal exposes the global item. */
+{ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
@@ -6285,6 +6313,8 @@ export type PluginStatus =
 
 /**  A plugin's status bar item. */
 export type PluginStatusItem = {
+	/**  Whether this item overrides the global item in the requesting window. */
+	window: boolean,
 	pluginId: string,
 	id: string,
 	item: StatusItem,
@@ -8483,7 +8513,7 @@ export type WindowTab = {
 };
 
 /**  A workbench event delivered to plugins. */
-export type WorkbenchEvent = { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+export type WorkbenchEvent = { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,
