@@ -164,8 +164,8 @@ const CAPTURES: &[(&str, Paint)] = {
         ("variable.member", Kind(K::Property)),
         ("variable.field", Kind(K::Property)),
         ("variable", Kind(K::Variable)),
-        ("variable.parameter", Kind(K::Parameter)),
-        ("parameter", Kind(K::Parameter)),
+        ("parameter.kotlin", Kind(K::Parameter)),
+        ("parameter", Kind(K::Variable)),
         ("property", Kind(K::Property)),
         ("field", Kind(K::Property)),
         ("attribute", Kind(K::Attribute)),
@@ -364,6 +364,9 @@ mod tests {
         assert_eq!(paint_for("string.special.path"), Some(Paint::Kind(K::StringSpecial)));
         assert_eq!(paint_for("comment.doc.__attribute__"), Some(Paint::Kind(K::DocComment)));
         assert_eq!(paint_for("punctuation.bracket"), Some(Paint::Kind(K::Punctuation)));
+        assert_eq!(paint_for("parameter.kotlin"), Some(Paint::Kind(K::Parameter)));
+        assert_eq!(paint_for("parameter"), Some(Paint::Kind(K::Variable)));
+        assert_eq!(paint_for("variable.parameter"), Some(Paint::Kind(K::Variable)));
         assert_eq!(paint_for("embedded"), Some(Paint::Clear));
         assert_eq!(paint_for("__name__"), None);
         assert_eq!(paint_for("spell"), None);
@@ -402,6 +405,33 @@ mod tests {
                 got.iter().any(|(word, kind)| word == text && *kind == expected),
                 "missing {text}: {expected:?} in {got:?}"
             );
+        }
+    }
+
+    #[test]
+    fn non_kotlin_parameters_keep_variable_highlighting() {
+        for (lang, src) in [
+            ("graphql", "query Hero { hero(id: 1) { name } }"),
+            ("gdscript", "func greet(id: int):\n\tpass\n"),
+            ("zig", "fn greet(id: u32) void {}"),
+            ("nix", "{ id }: id"),
+        ] {
+            let got = spans(lang, src);
+            assert!(
+                got.iter().any(|(text, kind)| text == "id" && *kind == SyntaxHighlightKind::Variable),
+                "{lang}: {got:?}"
+            );
+            assert!(!got.iter().any(|(_, kind)| *kind == SyntaxHighlightKind::Parameter), "{lang}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn kotlin_constructor_defaults_are_not_declarations() {
+        let got = spans("kotlin", "class Example(val name: String = fallback, count: Int = defaultCount)");
+        assert!(got.iter().any(|(text, kind)| text == "name" && *kind == SyntaxHighlightKind::Property));
+        assert!(got.iter().any(|(text, kind)| text == "count" && *kind == SyntaxHighlightKind::Parameter));
+        for reference in ["fallback", "defaultCount"] {
+            assert!(!got.iter().any(|(text, _)| text == reference), "{got:?}");
         }
     }
 

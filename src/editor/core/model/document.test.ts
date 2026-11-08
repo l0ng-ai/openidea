@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { indentUnit, language as languageFacet } from "@codemirror/language";
-import { registerSaveParticipant, remoteChange } from "@/editor/api";
+import { HEAVY_LIMIT, registerSaveParticipant, remoteChange } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
@@ -47,6 +47,30 @@ describe("DocumentManager + slots", () => {
     expect(model.getMeta().language).toBe("kotlin");
     await vi.waitFor(() => expect(highlights).toHaveBeenCalledWith(model.doc));
     manager.stop();
+  });
+
+  it.each([
+    ["Palette.kt", "fun greet() {}", 1],
+    ["demo.py", "def greet(): pass", 0],
+    ["demo.ex", "defmodule Demo do\nend", 1],
+    ["Large.kt", " ".repeat(HEAVY_LIMIT + 1), 1],
+  ])("debounces backend highlights after an edit burst in %s", async (name, text, requests) => {
+    const { backend, manager, frame } = setup({ [`/p/${name}`]: text });
+    const highlights = vi.spyOn(backend, "highlights");
+    try {
+      const model = await manager.acquire(`/p/${name}`);
+      const slot = new EditorSlot(model, name, host);
+      await frame();
+      expect(highlights).toHaveBeenCalledTimes(requests);
+      highlights.mockClear();
+      for (let i = 0; i < 5; i++) slot.dispatchLocal({ changes: { from: 0, insert: " " } });
+      await frame();
+      expect(highlights).not.toHaveBeenCalled();
+      await new Promise((resolve) => setTimeout(resolve, 550));
+      expect(highlights).toHaveBeenCalledTimes(requests);
+    } finally {
+      manager.stop();
+    }
   });
 
   it("gives a new slot the Code Style indent for Reformat Code, not the detected one", async () => {
