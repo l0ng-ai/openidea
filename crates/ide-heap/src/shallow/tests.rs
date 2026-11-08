@@ -61,62 +61,87 @@ fn shape_sizes(layout: VmLayout) -> Vec<u64> {
     (0..SHAPES.len() as u64).map(|i| size_at(&g, &m, 0x1000 + i * 0x100)).collect()
 }
 
+// `jcmd <pid> VM.flags` of `-Xmx1g` and `-Xmx40g` runs (the flags that matter here).
+const J8_11_1G: &str = "-XX:MaxHeapSize=1073741824 -XX:+UseCompressedClassPointers -XX:+UseCompressedOops";
+const J8_11_40G: &str = "-XX:MaxHeapSize=42949672960";
+const J21_25_1G: &str = "-XX:MaxHeapSize=1073741824 -XX:SoftMaxHeapSize=1073741824 -XX:+UseCompressedOops";
+const J21_25_40G: &str = "-XX:MaxHeapSize=42949672960 -XX:SoftMaxHeapSize=42949672960";
+/// `-Xmx40g -XX:+UseCompressedOops`: the JVM warns and turns them off.
+const J21_40G_OFF: &str = "-XX:MaxHeapSize=42949672960 -XX:SoftMaxHeapSize=42949672960 -XX:-UseCompressedOops";
+const J25_COMPACT: &str = "-XX:MaxHeapSize=1073741824 -XX:+UseCompressedOops -XX:+UseCompactObjectHeaders";
+
 #[test]
 fn layout_from_flags() {
     let legacy = VmLayout { legacy_array_base: true, ..VmLayout::DEFAULT };
-    assert_eq!(flags("-XX:+UseCompressedOops -XX:+UseG1GC", 21), legacy);
-    assert_eq!(flags("-XX:-UseCompressedOops", 21), VmLayout { ref_size: 8, ..legacy });
-    assert_eq!(
-        flags("-XX:+UseCompactObjectHeaders", 25),
-        VmLayout { header: 8, length_offset: 8, ..VmLayout::DEFAULT }
-    );
-    assert_eq!(
-        flags("-XX:-UseCompressedOops", 11),
-        VmLayout { header: 16, ref_size: 8, length_offset: 16, legacy_array_base: true, alignment: 8 }
-    );
-    assert_eq!(flags("-XX:ObjectAlignmentInBytes=16", 21), VmLayout { alignment: 16, ..legacy });
+    assert_eq!(flags(J8_11_1G, 8), legacy);
+    assert_eq!(flags(J8_11_1G, 11), legacy);
+    assert_eq!(flags(J21_25_1G, 21), legacy);
+    assert_eq!(flags(J21_25_1G, 25), VmLayout::DEFAULT);
+    assert_eq!(flags(J25_COMPACT, 25), VmLayout { header: 8, length_offset: 8, ..VmLayout::DEFAULT });
+    assert_eq!(flags(&format!("{J21_25_1G} -XX:+UseG1GC"), 21), legacy);
+    assert_eq!(flags(&format!("{J21_25_1G} -XX:ObjectAlignmentInBytes=16"), 21), VmLayout { alignment: 16, ..legacy });
+}
+
+#[test]
+fn heaps_too_big_for_compressed_oops_print_no_flag() {
+    let wide_legacy = VmLayout { header: 16, ref_size: 8, length_offset: 16, legacy_array_base: true, alignment: 8 };
+    assert_eq!(flags(J8_11_40G, 8), wide_legacy);
+    assert_eq!(flags(J8_11_40G, 11), wide_legacy);
+    // From JDK 15 compressed class pointers stay on without compressed oops.
+    assert_eq!(flags(J21_25_40G, 21), VmLayout { ref_size: 8, legacy_array_base: true, ..VmLayout::DEFAULT });
+    assert_eq!(flags(J21_25_40G, 25), VmLayout { ref_size: 8, ..VmLayout::DEFAULT });
+    assert_eq!(flags(J21_40G_OFF, 21), flags(J21_25_40G, 21));
 }
 
 #[test]
 fn layout_flag_edge_cases() {
     let legacy = VmLayout { legacy_array_base: true, ..VmLayout::DEFAULT };
+    // No VM.flags (an external dump): the default layout.
     assert_eq!(flags("", 25), VmLayout::DEFAULT);
     assert_eq!(flags("", 21), legacy);
-    // Compressed class pointers only need compressed oops before JDK 15.
-    assert_eq!(
-        flags("-XX:-UseCompressedOops", 15),
-        VmLayout { ref_size: 8, legacy_array_base: true, ..VmLayout::DEFAULT }
-    );
-    assert_eq!(flags("-XX:-UseCompressedOops -XX:+UseCompressedClassPointers", 11).header, 16);
-    assert_eq!(flags("-XX:+UseCompressedOops", 11).header, 12);
-    let no_ccp = flags("-XX:-UseCompressedClassPointers", 21);
+    assert_eq!(flags("-Xmx1g --add-opens=x -XX:Foo", 25), VmLayout::DEFAULT);
+    // Before JDK 15 compressed class pointers are on only when the flags say so.
+    assert_eq!(flags("-XX:+UseCompressedOops", 11).header, 16);
+    assert_eq!(flags("-XX:+UseCompressedOops -XX:+UseCompressedClassPointers", 11).header, 12);
+    assert_eq!(flags("-XX:+UseCompressedOops -XX:-UseCompressedClassPointers", 11).header, 16);
+    assert_eq!(flags("-XX:+UseCompressedOops", 15).header, 12);
+    let no_ccp = flags("-XX:+UseCompressedOops -XX:-UseCompressedClassPointers", 21);
     assert_eq!((no_ccp.header, no_ccp.length_offset, no_ccp.ref_size), (16, 16, 4));
     // Compact headers win over the class pointer flag; the last mention of a flag wins.
     assert_eq!(flags("-XX:-UseCompressedClassPointers -XX:+UseCompactObjectHeaders", 25).header, 8);
     assert_eq!(flags("-XX:-UseCompressedOops -XX:+UseCompressedOops", 21).ref_size, 4);
-    // Other tokens are ignored; so are alignments the JVM would reject.
-    assert_eq!(flags("-Xmx1g -XX:MaxHeapSize=4294967296 --add-opens=x -XX:Foo", 25), VmLayout::DEFAULT);
-    for bad in ["0", "7", "12", "abc", "", "256", "999999999999"] {
+    assert_eq!(flags("-XX:+UseCompressedOops -XX:-UseCompressedOops", 21).ref_size, 8);
+}
+
+#[test]
+fn object_alignment_accepts_powers_of_two_from_8_to_256() {
+    for good in [8u16, 16, 32, 64, 128, 256] {
+        assert_eq!(flags(&format!("-XX:ObjectAlignmentInBytes={good}"), 25).alignment, good);
+    }
+    for bad in ["0", "4", "7", "12", "255", "512", "abc", "", "999999999999"] {
         assert_eq!(flags(&format!("-XX:ObjectAlignmentInBytes={bad}"), 25).alignment, 8, "{bad:?}");
     }
-    assert_eq!(flags("-XX:ObjectAlignmentInBytes=128", 25).alignment, 128);
+    let wide = flags("-XX:+UseCompressedOops -XX:ObjectAlignmentInBytes=256", 21);
+    assert_eq!(wide.instance_size(1), 256);
+    assert_eq!(wide.instance_size(300), 512);
+    assert_eq!(wide.array_size(BasicType::Byte, 1), 256);
 }
 
 #[test]
 fn instance_sizes_match_the_jvm() {
     let at = |sizes: &[u64], name: &str| sizes[SHAPES.iter().position(|n| *n == name).unwrap()];
 
-    let coops = shape_sizes(flags("-XX:+UseCompressedOops", 21));
+    let coops = shape_sizes(flags(J21_25_1G, 21));
     for (name, size) in
         [("A", 16), ("B", 24), ("C", 32), ("D", 32), ("E", 24), ("F", 16), ("G", 16), ("H", 24), ("Node", 32)]
     {
         assert_eq!(at(&coops, name), size, "{name} with compressed oops");
     }
-    let wide = shape_sizes(flags("-XX:-UseCompressedOops", 21));
+    let wide = shape_sizes(flags(J21_25_40G, 21));
     for (name, size) in [("D", 40), ("E", 40), ("Node", 40)] {
         assert_eq!(at(&wide, name), size, "{name} without compressed oops");
     }
-    let compact = shape_sizes(flags("-XX:+UseCompactObjectHeaders", 25));
+    let compact = shape_sizes(flags(J25_COMPACT, 25));
     for (name, size) in [("G", 8), ("B", 16), ("C", 24), ("D", 32), ("Node", 24)] {
         assert_eq!(at(&compact, name), size, "{name} with compact headers");
     }
@@ -337,16 +362,19 @@ fn address_gaps_are_taken_within_layout_and_layout_plus_64() {
     }
 }
 
-/// `used` types with two instances 16 bytes apart and `single` types with one.
-fn types_by_gap_use(used: usize, single: usize) -> SizeSource {
+/// `used` types with two instances 16 bytes apart (the layout size), `far` types with two
+/// instances 0x1000 apart (a gap that is no object size) and `single` types with one instance.
+fn types_by_gap_use(used: usize, far: usize, single: usize) -> SizeSource {
     let mut heap = MiniHeap::new();
-    for i in 0..used + single {
+    for i in 0..used + far + single {
         let name = format!("T{i}");
         heap.class(&name, ROOT, &[("f", BasicType::Byte)]);
-        let base = 0x10000 * (i as u64 + 1);
+        let base = 0x10_0000 * (i as u64 + 1);
         heap.object(base, &name, &[]);
         if i < used {
             heap.object(base + 16, &name, &[]);
+        } else if i < used + far {
+            heap.object(base + 0x1000, &name, &[]);
         }
     }
     let g = graph_of(&heap);
@@ -354,12 +382,119 @@ fn types_by_gap_use(used: usize, single: usize) -> SizeSource {
 }
 
 #[test]
-fn address_gap_source_needs_ninety_percent_of_the_types() {
-    assert_eq!(types_by_gap_use(10, 0), SizeSource::AddressGaps);
-    assert_eq!(types_by_gap_use(9, 1), SizeSource::AddressGaps);
-    assert_eq!(types_by_gap_use(8, 2), SizeSource::Layout);
-    assert_eq!(types_by_gap_use(0, 3), SizeSource::Layout);
-    assert_eq!(types_by_gap_use(0, 0), SizeSource::Layout, "nothing to size");
+fn address_gap_source_needs_ninety_percent_of_the_types_that_have_a_gap() {
+    assert_eq!(types_by_gap_use(10, 0, 0), SizeSource::AddressGaps);
+    assert_eq!(types_by_gap_use(9, 1, 0), SizeSource::AddressGaps);
+    assert_eq!(types_by_gap_use(8, 2, 0), SizeSource::Layout);
+    // Types with one instance have no gap: they count neither for nor against.
+    assert_eq!(types_by_gap_use(9, 1, 5), SizeSource::AddressGaps);
+    assert_eq!(types_by_gap_use(8, 2, 5), SizeSource::Layout);
+    assert_eq!(types_by_gap_use(10, 0, 400), SizeSource::AddressGaps);
+    assert_eq!(types_by_gap_use(0, 0, 3), SizeSource::Layout, "no type has a gap");
+    assert_eq!(types_by_gap_use(0, 2, 0), SizeSource::Layout);
+    assert_eq!(types_by_gap_use(0, 0, 0), SizeSource::Layout, "nothing to size");
+}
+
+/// A dump of `java.lang.Class` (three reference fields, so 24 bytes of layout) and one class per
+/// entry of `statics`: `(reference statics, primitive static bytes)`. Class `i` is at `0x1000 + 0x100 × i`.
+fn mirror_heap(statics: &[(usize, u64)]) -> (HeapGraph, Vec<u64>) {
+    use BasicType::Object;
+    let mut w = HprofWriter::new();
+    w.string(1, "java/lang/Class").load_class(0x100, 1).class(
+        0x100,
+        0,
+        &[(10, Object), (11, Object), (12, Object)],
+        &[],
+    );
+    let mut addrs = Vec::new();
+    for (i, &(refs, _)) in statics.iter().enumerate() {
+        let (addr, name_id) = (0x1000 + 0x100 * i as u64, 100 + i as u64);
+        w.string(name_id, &format!("C{i}")).load_class(addr, name_id).class(addr, 0, &[], &vec![(13, 0); refs]);
+        addrs.push(addr);
+    }
+    let mut g = build_graph(&w.finish(), &Store::Ram, &no_progress, &CancellationToken::new()).unwrap();
+    for (i, &(_, bytes)) in statics.iter().enumerate() {
+        let class = g.classes.iter().position(|c| c.name == format!("C{i}")).unwrap();
+        g.classes[class].static_bytes = bytes;
+    }
+    (g, addrs)
+}
+
+/// What HotSpot would make of those classes if it added `injected` bytes to every mirror.
+fn expected_mirrors(statics: &[(usize, u64)], injected: u64) -> Vec<u64> {
+    statics.iter().map(|&(refs, bytes)| (24 + bytes + 4 * refs as u64 + injected).next_multiple_of(8)).collect()
+}
+
+const MIRROR_STATICS: [(usize, u64); 8] = [(0, 0), (3, 0), (1, 12), (6, 8), (2, 0), (9, 24), (0, 4), (4, 1)];
+
+#[test]
+fn class_objects_get_the_injected_bytes_the_histogram_implies() {
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    // java.lang.Class itself and the eight classes.
+    let mut sizes = expected_mirrors(&MIRROR_STATICS, 36);
+    let java_lang_class = 24 + 36;
+    let total = sizes.iter().sum::<u64>() + (java_lang_class as u64).next_multiple_of(8);
+    sizes.insert(0, (java_lang_class as u64).next_multiple_of(8));
+    let histogram = [entry("java.lang.Class", 9, total)];
+    let m = model(&g, VmLayout::DEFAULT, Some(&histogram));
+    assert_eq!(m.source, SizeSource::Jvm);
+    assert_eq!(size_at(&g, &m, 0x100), sizes[0]);
+    for (i, &addr) in addrs.iter().enumerate() {
+        assert_eq!(size_at(&g, &m, addr), sizes[i + 1], "class {i}");
+    }
+    let spread: Vec<_> = addrs.iter().map(|&a| size_at(&g, &m, a)).collect();
+    assert!(spread.iter().any(|&s| s != spread[0]), "statics still make the mirrors differ: {spread:?}");
+}
+
+#[test]
+fn injected_bytes_are_found_for_every_multiple_of_four() {
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    for injected in (0..=128).step_by(4) {
+        let total =
+            expected_mirrors(&MIRROR_STATICS, injected).iter().sum::<u64>() + (24 + injected).next_multiple_of(8);
+        let histogram = [entry("java.lang.Class", 9, total)];
+        let m = model(&g, VmLayout::DEFAULT, Some(&histogram));
+        let got: Vec<_> = addrs.iter().map(|&a| size_at(&g, &m, a)).collect();
+        assert_eq!(got, expected_mirrors(&MIRROR_STATICS, injected), "injected {injected}");
+    }
+}
+
+#[test]
+fn the_fit_tolerates_mirrors_the_dump_has_no_class_for() {
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    // The histogram counts the same average mirror 90 times more often (CDS-archived classes).
+    let total = expected_mirrors(&MIRROR_STATICS, 28).iter().sum::<u64>() + (24u64 + 28).next_multiple_of(8);
+    let histogram = [entry("java.lang.Class", 9 * 91, total * 91)];
+    let m = model(&g, VmLayout::DEFAULT, Some(&histogram));
+    let got: Vec<_> = addrs.iter().map(|&a| size_at(&g, &m, a)).collect();
+    assert_eq!(got, expected_mirrors(&MIRROR_STATICS, 28));
+}
+
+#[test]
+fn a_histogram_row_that_cannot_describe_these_mirrors_adds_nothing() {
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    let plain = expected_mirrors(&MIRROR_STATICS, 0);
+    for row in [
+        entry("java.lang.Class", 9, 9 * 5000),
+        entry("java.lang.Class", 9, 9),
+        entry("java.lang.Class", 0, 0),
+        entry("Something.Else", 9, 9 * 100),
+    ] {
+        let m = model(&g, VmLayout::DEFAULT, Some(std::slice::from_ref(&row)));
+        let got: Vec<_> = addrs.iter().map(|&a| size_at(&g, &m, a)).collect();
+        assert_eq!(got, plain, "{row:?}");
+    }
+    let twice = [entry("java.lang.Class", 9, 9 * 60), entry("java.lang.Class", 9, 9 * 60)];
+    let m = model(&g, VmLayout::DEFAULT, Some(&twice));
+    assert_eq!(size_at(&g, &m, addrs[0]), plain[0], "two rows of the name cannot be told apart");
+}
+
+#[test]
+fn without_a_histogram_class_objects_get_no_injected_bytes() {
+    let (g, addrs) = mirror_heap(&MIRROR_STATICS);
+    let m = model(&g, VmLayout::DEFAULT, None);
+    let got: Vec<_> = addrs.iter().map(|&a| size_at(&g, &m, a)).collect();
+    assert_eq!(got, expected_mirrors(&MIRROR_STATICS, 0));
 }
 
 #[test]

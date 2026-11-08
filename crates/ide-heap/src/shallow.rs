@@ -1,11 +1,16 @@
 //! Shallow sizes: the bytes each object takes in the JVM heap, from the object layout rules, the
 //! JVM's own class histogram, or the distances between object addresses in the dump.
 
+mod layout;
+mod mirrors;
+
 use std::collections::HashMap;
 
 use ide_core::CancellationToken;
 use serde::{Deserialize, Serialize};
 
+pub use self::layout::VmLayout;
+use self::mirrors::Mirrors;
 use crate::error::HeapError;
 use crate::graph::{ClassInfo, HeapGraph};
 use crate::hprof::BasicType;
@@ -14,97 +19,16 @@ use crate::progress::CHECK_EVERY;
 
 /// How far past the layout size an address gap may be and still count as an object size.
 const GAP_SLACK: u64 = 64;
-/// Share of instance types (in tenths) that must take their size from address gaps for the
-/// sizes to be reported as coming from them.
+/// Share of the instance types that can have a gap (two or more instances), in tenths, that must
+/// take their size from address gaps for the sizes to be reported as coming from them.
 const GAP_TRUST_TENTHS: usize = 9;
 
-/// Object layout of the JVM that wrote the dump.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct VmLayout {
-    pub header: u8,
-    /// Bytes of a reference: 4 with compressed oops.
-    pub ref_size: u8,
-    /// Offset of the length field of an array.
-    pub length_offset: u8,
-    /// JDK 21 and older put array elements at the next 8-byte boundary after the length, later
-    /// JDKs at the next boundary of the element size.
-    pub legacy_array_base: bool,
-    pub alignment: u8,
-}
-
-impl VmLayout {
-    pub const DEFAULT: VmLayout =
-        VmLayout { header: 12, ref_size: 4, length_offset: 12, legacy_array_base: false, alignment: 8 };
-
-    /// `flags` is the output of `VM.flags`. An `ObjectAlignmentInBytes` that does not fit `u8` or
-    /// is not a power of two of at least 8 is ignored: the JVM allows 256, which no dump this
-    /// code has met uses.
-    pub fn from_vm_flags(flags: &str, java_major: u32) -> Self {
-        let flags = parse_flags(flags);
-        let enabled = |name: &str, default: bool| flags.get(name).map_or(default, |&v| v == "true");
-        let compressed_oops = enabled("UseCompressedOops", true);
-        let compressed_classes = enabled("UseCompressedClassPointers", true) && (java_major >= 15 || compressed_oops);
-        let (header, length_offset) = if enabled("UseCompactObjectHeaders", false) {
-            (8, 8)
-        } else if compressed_classes {
-            (12, 12)
-        } else {
-            (16, 16)
-        };
-        let alignment = flags
-            .get("ObjectAlignmentInBytes")
-            .and_then(|v| v.parse::<u8>().ok())
-            .filter(|a| *a >= 8 && a.is_power_of_two())
-            .unwrap_or(Self::DEFAULT.alignment);
-        VmLayout {
-            header,
-            ref_size: if compressed_oops { 4 } else { 8 },
-            length_offset,
-            legacy_array_base: java_major <= 21,
-            alignment,
-        }
-    }
-
-    /// Size of an instance whose fields (its class and every superclass) take `field_bytes`.
-    pub fn instance_size(&self, field_bytes: u64) -> u64 {
-        let smallest = if self.header == 8 { 8 } else { 16 };
-        self.align(u64::from(self.header) + field_bytes).max(smallest)
-    }
-
-    pub fn array_size(&self, ty: BasicType, len: u64) -> u64 {
-        let element = ty.heap_size(self.ref_size);
-        let base_alignment = if self.legacy_array_base { 8 } else { element };
-        let base = align_to(u64::from(self.length_offset) + 4, base_alignment);
-        self.align(base + element * len)
-    }
-
-    fn align(&self, value: u64) -> u64 {
-        align_to(value, u64::from(self.alignment))
-    }
-}
-
-fn align_to(value: u64, to: u64) -> u64 {
-    value.div_ceil(to.max(1)) * to.max(1)
-}
-
-/// `-XX:+Name` / `-XX:-Name` / `-XX:Name=value` tokens by name; booleans become `"true"` / `"false"`.
-/// A flag given twice keeps its last value, as in the JVM.
-fn parse_flags(flags: &str) -> HashMap<&str, &str> {
-    let mut parsed = HashMap::new();
-    for token in flags.split_whitespace() {
-        let Some(body) = token.strip_prefix("-XX:") else { continue };
-        if let Some(name) = body.strip_prefix('+') {
-            parsed.insert(name, "true");
-        } else if let Some(name) = body.strip_prefix('-') {
-            parsed.insert(name, "false");
-        } else if let Some((name, value)) = body.split_once('=') {
-            parsed.insert(name, value);
-        }
-    }
-    parsed
-}
-
 /// Where the sizes of instances came from.
+///
+/// Class objects (mirrors) are approximate in every case: HotSpot leaves the fields it injects
+/// into `java.lang.Class` out of the dump, so their layout size is short by a fixed amount per
+/// mirror. With a histogram that amount is fitted to its `java.lang.Class` row; without one it is
+/// 0, because it differs between JDK versions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SizeSource {
@@ -153,7 +77,7 @@ impl ShallowModel {
     /// A name shared by several classes (several class loaders) never takes a histogram size,
     /// since the name is the only link between the dump and the histogram; see
     /// [`Self::is_ambiguous`]. `java.lang.Class` never does either, because mirror sizes vary with
-    /// their statics.
+    /// their statics; the histogram only tells how many bytes HotSpot adds to each mirror.
     pub fn new(
         graph: &HeapGraph,
         layout: VmLayout,
@@ -170,6 +94,17 @@ impl ShallowModel {
         let ambiguous = ambiguous_names(&names);
 
         let class_slot = graph.class_slot as usize;
+        let mirrors = Mirrors::collect(graph, by_layout[class_slot], layout);
+        let mut injected = 0;
+        if let Some(rows) = histogram
+            && !ambiguous[class_slot]
+        {
+            let mut class_rows = rows.iter().filter(|row| row.name == names[class_slot]);
+            if let (Some(row), None) = (class_rows.next(), class_rows.next()) {
+                injected = mirrors.fit_injected(graph, layout, by_layout[class_slot], row, cancel)?;
+            }
+        }
+
         let mut types: Vec<TypeSize> = classes
             .iter()
             .enumerate()
@@ -177,13 +112,12 @@ impl ShallowModel {
                 if class.name.starts_with('[') {
                     TypeSize::ObjectArray
                 } else if slot == class_slot {
-                    TypeSize::ClassObject(by_layout[slot])
+                    TypeSize::ClassObject(layout.align(by_layout[slot] + injected))
                 } else {
                     TypeSize::Fixed(by_layout[slot])
                 }
             })
             .collect();
-
         let source = match histogram {
             Some(rows) => {
                 apply_histogram(&mut types, &names, &ambiguous, rows);
@@ -191,17 +125,7 @@ impl ShallowModel {
             }
             None => apply_address_gaps(&mut types, graph, &by_layout, cancel)?,
         };
-
-        let mut class_objects: Vec<(u32, u64)> = classes
-            .iter()
-            .filter(|class| class.id != 0)
-            .filter_map(|class| {
-                let node = graph.ids.rank(class.id)?;
-                Some((node, class_object_size(class, by_layout[class_slot], layout)))
-            })
-            .collect();
-        class_objects.sort_unstable_by_key(|&(node, _)| node);
-        Ok(Self { source, layout, types, class_objects, ambiguous })
+        Ok(Self { source, layout, types, class_objects: mirrors.sizes(layout, injected), ambiguous })
     }
 
     /// Shallow size of `object` (a node of the graph); 0 for the super-root.
@@ -266,12 +190,6 @@ fn ambiguous_names(names: &[String]) -> Vec<bool> {
     names.iter().map(|name| counts[name.as_str()] > 1).collect()
 }
 
-/// `java.lang.Class` fields, plus room for the statics.
-fn class_object_size(class: &ClassInfo, class_instance: u64, layout: VmLayout) -> u64 {
-    let references = class.statics.len() as u64 * u64::from(layout.ref_size);
-    layout.align(class_instance + class.static_bytes + references)
-}
-
 /// `bytes / instances` for each plain class with a histogram row of its name. A name that is
 /// ambiguous in the dump or repeated in the histogram, or a row that is not a whole number of
 /// objects, keeps its layout size.
@@ -294,7 +212,8 @@ fn apply_histogram(types: &mut [TypeSize], names: &[String], ambiguous: &[bool],
 /// Takes the smallest distance from an instance to the next object in address order as the size
 /// of its type, for types with two or more instances where that distance is no smaller than the
 /// layout size and at most [`GAP_SLACK`] bigger. The result says [`SizeSource::AddressGaps`] when
-/// nine in ten instance types did.
+/// nine in ten of the types with two or more instances did; types with one instance have no gap
+/// to measure, so they neither count for nor against.
 fn apply_address_gaps(
     types: &mut [TypeSize],
     graph: &HeapGraph,
@@ -323,20 +242,21 @@ fn apply_address_gaps(
         object += 1;
     }
 
-    let (mut seen, mut by_gap) = (0usize, 0usize);
+    let (mut measurable, mut by_gap) = (0usize, 0usize);
     for (slot, ty) in types.iter_mut().enumerate() {
         let TypeSize::Fixed(size) = ty else { continue };
-        if instances[slot] == 0 {
+        if instances[slot] < 2 {
             continue;
         }
-        seen += 1;
+        measurable += 1;
         let gap = smallest_gap[slot];
-        if instances[slot] >= 2 && (by_layout[slot]..=by_layout[slot] + GAP_SLACK).contains(&gap) {
+        if (by_layout[slot]..=by_layout[slot] + GAP_SLACK).contains(&gap) {
             *size = gap;
             by_gap += 1;
         }
     }
-    Ok(if seen > 0 && by_gap * 10 >= seen * GAP_TRUST_TENTHS { SizeSource::AddressGaps } else { SizeSource::Layout })
+    let trusted = measurable > 0 && by_gap * 10 >= measurable * GAP_TRUST_TENTHS;
+    Ok(if trusted { SizeSource::AddressGaps } else { SizeSource::Layout })
 }
 
 #[cfg(test)]
