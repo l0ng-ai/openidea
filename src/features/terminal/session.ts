@@ -627,7 +627,8 @@ export class TerminalSession {
     if (!data) return;
     const status = this.snapshot.status;
     if (status === "exited" || status === "error") {
-      if (data === "\r") this.restart();
+      // Shift+Enter sends Esc+Return.
+      if (data === "\r" || data === "\x1b\r") this.restart();
       return;
     }
     if (this.ptyId === null) {

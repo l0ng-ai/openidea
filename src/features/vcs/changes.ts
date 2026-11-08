@@ -311,6 +311,19 @@ export function changeGroupPaths(roots: readonly ChangeNode[], path: string): st
   return paths;
 }
 
+/** Every file node of the tree, in tree order (a partially staged file is listed under both staging groups). */
+export function changeFileNodes(roots: readonly ChangeNode[]): ChangeNode[] {
+  const out: ChangeNode[] = [];
+  const walk = (nodes: readonly ChangeNode[]) => {
+    for (const node of nodes) {
+      if (node.type === "file" && node.path) out.push(node);
+      else walk(node.children ?? []);
+    }
+  };
+  walk(roots);
+  return out;
+}
+
 /** File nodes, in tree order, of the group a file node belongs to. */
 export function groupFileNodes(roots: readonly ChangeNode[], node: ChangeNode): ChangeNode[] {
   const group = roots.find((r) => r.group === node.group && r.files.some((f) => stripSlash(f.path) === node.path));

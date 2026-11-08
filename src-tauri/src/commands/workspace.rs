@@ -1,9 +1,25 @@
 use crate::state::AppState;
-use ide_core::{IdeError, IdeResult};
+use ide_core::{IdeError, IdeResult, RequestId};
 use ide_host::ops::project::ProjectInfo;
 use ide_workspace::workspace::Workspace;
 use std::path::PathBuf;
-use tauri::{Manager, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
+
+#[tauri::command]
+#[specta::specta]
+pub async fn workspace_discover_projects(
+    state: State<'_, AppState>,
+    request: RequestId,
+    folders: Vec<PathBuf>,
+) -> IdeResult<ide_workspace::project_discovery::ProjectDiscovery> {
+    let cancel = state.begin_request(request);
+    let result =
+        tauri::async_runtime::spawn_blocking(move || ide_workspace::project_discovery::discover(folders, &cancel))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()));
+    state.end_request(request);
+    result?
+}
 
 #[tauri::command]
 #[specta::specta]
