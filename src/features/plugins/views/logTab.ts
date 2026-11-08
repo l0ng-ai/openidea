@@ -15,6 +15,8 @@ export interface PluginLogEditorData {
   program: string;
   args: string[];
   toggles: PluginLogToggleSpec[];
+  /** Opened by the plugin's code (`views.open-log-tab`): the host starts what it approved for `key`. */
+  origin?: "code";
 }
 
 const text = (v: unknown, max: number): v is string =>

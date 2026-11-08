@@ -224,6 +224,10 @@ pub enum PluginEvent {
     },
     #[serde(rename_all = "camelCase")]
     OpenLocation { plugin_id: String, path: ide_core::IpcPath, line: u32, column: u32 },
+    /// Open (or focus) the log tab `key` following `log` (`views.open-log-tab`);
+    /// it starts the program with `plugin_log_tab_spawn`.
+    #[serde(rename_all = "camelCase")]
+    OpenLogTab { plugin_id: String, key: String, title: String, log: ide_plugin::ServiceLog },
     /// Plugin languages, or the servers they may start, changed: re-fetch
     /// `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
     LanguagesChanged,

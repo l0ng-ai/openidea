@@ -6755,5 +6755,6 @@
   "The plugin did not save the content": "插件未保存内容",
   "Running an action applies pending settings first.": "运行动作前会先应用待保存的设置。",
   "Could not apply settings.": "无法应用设置。",
-  "The value exceeds this setting’s limits.": "该值超出了此设置的限制。"
+  "The value exceeds this setting’s limits.": "该值超出了此设置的限制。",
+  "Log tabs opened by plugin code are not available in remote projects yet.": "插件代码打开的日志标签页暂不支持远程项目。"
 }

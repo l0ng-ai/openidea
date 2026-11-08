@@ -402,5 +402,6 @@
   "The plugin did not save the content": "The plugin did not save the content",
   "Running an action applies pending settings first.": "Running an action applies pending settings first.",
   "Could not apply settings.": "Could not apply settings.",
-  "The value exceeds this setting’s limits.": "The value exceeds this setting’s limits."
+  "The value exceeds this setting’s limits.": "The value exceeds this setting’s limits.",
+  "Log tabs opened by plugin code are not available in remote projects yet.": "Log tabs opened by plugin code are not available in remote projects yet."
 }

@@ -502,6 +502,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_service_log,
         plugin::plugin_web_page,
         plugin::plugin_web_pty_spawn,
+        plugin::plugin_log_tab_spawn,
         plugin::plugin_web_save_file,
         plugin::plugin_web_read_file,
         plugin::plugin_line_markers,
