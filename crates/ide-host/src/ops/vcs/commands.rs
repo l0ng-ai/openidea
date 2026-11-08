@@ -1041,6 +1041,12 @@ pub async fn vcs_remove_worktree(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            project.with_repo_at(repo.as_deref(), |r| Ok(r.root().join(&path)))?
+        };
+        check_worktree_removal(&project.root, &path)?;
         let result = project.with_repo_at(repo.as_deref(), |r| r.remove_worktree(&path, force));
         project.refresh_repositories();
         result

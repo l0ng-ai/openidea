@@ -21,6 +21,7 @@ import { Popup, type PopupAnchor } from "./Popup";
 import type { Placement } from "@floating-ui/react-dom";
 import styles from "./Menu.module.css";
 import { tx } from "@/platform/i18n";
+import { isSubmenuAim, type MenuPointer } from "./menuAim";
 
 export type MenuItem =
   | { kind: "separator" }
@@ -125,6 +126,10 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   const [subAnchor, setSubAnchor] = useState<HTMLElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const submenuRef = useRef<HTMLDivElement | null>(null);
+  const pointer = useRef<MenuPointer | null>(null);
+  const previousPointer = useRef<MenuPointer | null>(null);
+  const pendingAim = useRef<number | null>(null);
   // Pointer movement highlights a row without focusing it. Focusing on every
   // enter drops the hover paint in the Windows webview, so the menu looks frozen.
   const pointerHover = useRef(false);
@@ -163,6 +168,7 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   };
 
   const activate = (i: number) => {
+    cancelHover();
     const item = resolved[i];
     if (!selectable(item)) return;
     if (item!.submenu) {
@@ -174,21 +180,85 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
     item!.run?.();
   };
 
-  const hover = (i: number) => {
-    const item = resolved[i];
-    if (!item || item.disabled || item.kind !== "item") return;
-    if (hovered.current !== i) {
-      hovered.current = i;
-      if (i !== active) {
-        pointerHover.current = true;
-        focusItem(i);
-      }
-    }
+  const cancelHover = () => {
     clearTimeout(hoverTimer.current);
-    hoverTimer.current = setTimeout(() => setOpenSub(item.submenu ? i : null), item.submenu ? 120 : 200);
+    pendingAim.current = null;
+  };
+
+  const applyHover = (i: number, immediate = false) => {
+    cancelHover();
+    if (i !== active) {
+      pointerHover.current = true;
+      focusItem(i);
+    }
+    const next = resolved[i]?.submenu ? i : null;
+    if (immediate) setOpenSub(next);
+    else hoverTimer.current = setTimeout(() => setOpenSub(next), next === null ? 200 : 120);
+  };
+
+  const recordPointer = (point: MenuPointer) => {
+    if (pointer.current?.x === point.x && pointer.current.y === point.y) return false;
+    previousPointer.current = pointer.current;
+    pointer.current = point;
+    return true;
+  };
+
+  const aiming = () => {
+    const rect = submenuRef.current?.parentElement?.getBoundingClientRect();
+    return !!rect && !!pointer.current && isSubmenuAim(previousPointer.current, pointer.current, rect);
+  };
+
+  const deferHover = (i: number) => {
+    cancelHover();
+    pendingAim.current = i;
+    hoverTimer.current = setTimeout(() => applyHover(i, true), 300);
+  };
+
+  const pointerMove = (point: MenuPointer) => {
+    if (!recordPointer(point) || pendingAim.current === null) return;
+    const i = pendingAim.current;
+    if (aiming()) deferHover(i);
+    else applyHover(i);
+  };
+
+  const enterSubmenu = () => {
+    cancelHover();
+    hovered.current = -1;
+    pointer.current = previousPointer.current = null;
+    if (openSub !== null && active !== openSub) {
+      pointerHover.current = true;
+      setActive(openSub);
+    }
+  };
+
+  // Track movement across the gap too; submenu portals are outside this level's DOM.
+  useEffect(() => {
+    if (openSub === null) return;
+    const onMove = (e: PointerEvent) => {
+      if (submenuRef.current?.parentElement?.contains(e.target as Node)) enterSubmenu();
+      else pointerMove({ x: e.clientX, y: e.clientY });
+    };
+    document.addEventListener("pointermove", onMove);
+    return () => document.removeEventListener("pointermove", onMove);
+  });
+
+  const hover = (i: number, point: MenuPointer) => {
+    const item = resolved[i];
+    if (!selectable(item) || hovered.current === i) return;
+    hovered.current = i;
+    recordPointer(point);
+    if (openSub !== null && openSub !== i && aiming()) deferHover(i);
+    else applyHover(i);
+  };
+
+  const leave = (i: number) => {
+    // A compatibility mouseleave can follow pointerenter on the next row.
+    if (hovered.current === i) hovered.current = -1;
   };
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
+    cancelHover();
+    pointer.current = previousPointer.current = null;
     switch (e.key) {
       case "ArrowDown":
         move(1);
@@ -235,7 +305,15 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
   };
 
   return (
-    <div role="menu" aria-label={aria["aria-label"]} className={styles.menu} onKeyDown={onKeyDown}>
+    <div
+      role="menu"
+      aria-label={aria["aria-label"]}
+      className={styles.menu}
+      onKeyDown={onKeyDown}
+      onPointerMove={(e) => {
+        if (e.currentTarget.contains(e.target as Node)) pointerMove({ x: e.clientX, y: e.clientY });
+      }}
+    >
       {resolved.map((r, i) => {
         if (r.kind === "separator") return <div key={r.key} role="separator" className={styles.separator} />;
         if (r.kind === "header")
@@ -264,10 +342,10 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
                 r.disabled && styles.disabled,
                 r.danger && styles.danger,
               )}
-              onPointerEnter={() => hover(i)}
-              onMouseEnter={() => hover(i)}
-              onPointerLeave={() => (hovered.current = -1)}
-              onMouseLeave={() => (hovered.current = -1)}
+              onPointerEnter={(e) => hover(i, { x: e.clientX, y: e.clientY })}
+              onMouseEnter={(e) => hover(i, { x: e.clientX, y: e.clientY })}
+              onPointerLeave={() => leave(i)}
+              onMouseLeave={() => leave(i)}
               onClick={() => activate(i)}
             >
               <span className={styles.icon} data-menu-icon={!r.checked && r.icon ? "" : undefined}>
@@ -290,14 +368,16 @@ export function MenuList({ items, onDone, onCloseLevel, autoFocusFirst = true, .
                 onClose={() => setOpenSub(null)}
                 className={styles.popup}
               >
-                <MenuList
-                  items={r.submenu!}
-                  onDone={onDone}
-                  onCloseLevel={() => {
-                    setOpenSub(null);
-                    itemRefs.current[i]?.focus();
-                  }}
-                />
+                <div ref={submenuRef} onPointerEnter={enterSubmenu}>
+                  <MenuList
+                    items={r.submenu!}
+                    onDone={onDone}
+                    onCloseLevel={() => {
+                      setOpenSub(null);
+                      itemRefs.current[i]?.focus();
+                    }}
+                  />
+                </div>
               </Popup>
             )}
           </Fragment>

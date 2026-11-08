@@ -4169,6 +4169,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-cli"
+version = "0.1.39"
+dependencies = [
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
+ "winreg 0.56.0",
+]
+
+[[package]]
 name = "ide-clipboard"
 version = "0.1.39"
 dependencies = [
@@ -6370,6 +6384,7 @@ dependencies = [
  "ide-analysis",
  "ide-android",
  "ide-build",
+ "ide-cli",
  "ide-clipboard",
  "ide-core",
  "ide-coverage",

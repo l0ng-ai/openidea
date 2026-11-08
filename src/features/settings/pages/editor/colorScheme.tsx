@@ -279,6 +279,8 @@ const SAMPLES: Record<string, CodeSample> = {
         ["name", "parameter"],
         [", ", "operator"],
         ["GLOBAL", "globalVariable"],
+        [", ", "operator"],
+        ["com.example", "packageReference"],
         ["):", "operator"],
       ],
       [
