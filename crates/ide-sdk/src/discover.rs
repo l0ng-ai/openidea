@@ -197,16 +197,36 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
     par_map(&candidates, |(path, source)| python_sdk(path, source, root))
 }
 
-/// Interpreter `path` (one the project is set to, wherever it lives) as an SDK, named
-/// like the detected ones.
+/// A runnable Python executable or virtualenv folder, named like detected SDKs.
 pub fn python_interpreter_sdk(path: &Path, root: Option<&Path>) -> Option<Sdk> {
-    python_sdk(path, if venv_of(path).is_some() { "venv" } else { "system" }, root)
+    let path = if path.is_dir() && path.join("pyvenv.cfg").is_file() {
+        path.join(bin_dir()).join(exe("python"))
+    } else {
+        path.to_path_buf()
+    };
+    if !path.is_file() || !usable(&path) {
+        return None;
+    }
+    // Run Python code: --version and pyvenv.cfg can still work after the base
+    // installation (including its standard library) has been removed.
+    let version =
+        query(&path, &["-I", "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"], VERSION_TIMEOUT)?;
+    if version.split('.').count() != 3
+        || !version.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    {
+        return None;
+    }
+    Some(python_sdk_with_version(&path, if venv_of(&path).is_some() { "venv" } else { "system" }, root, version))
 }
 
 pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Option<Sdk> {
     let version = query(path, &["--version"], VERSION_TIMEOUT)
         .and_then(|v| v.strip_prefix("Python ").map(str::to_owned))
         .or_else(|| pyvenv_version(path))?;
+    Some(python_sdk_with_version(path, source, root, version))
+}
+
+fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, version: String) -> Sdk {
     let short = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let venv = venv_of(path);
     let label = match (&venv, source) {
@@ -236,7 +256,7 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
         (None, tool @ ("uv" | "mise" | "asdf")) => format!("Python {short} ({tool})"),
         _ => format!("Python {short}"),
     };
-    Some(Sdk {
+    Sdk {
         path: path.into(),
         name: label,
         version: Some(version),
@@ -246,7 +266,7 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
             .or_else(|| path.parent().and_then(Path::parent).map(Path::to_path_buf))
             .map(Into::into),
         extra: None,
-    })
+    }
 }
 
 /// `.pixi/envs/<env>` of a pixi interpreter (`<env>/python`, `<env>/bin/python`).

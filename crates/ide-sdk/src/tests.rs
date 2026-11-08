@@ -78,20 +78,90 @@ fn project_venv_is_the_default_interpreter() {
 }
 
 #[test]
+#[cfg(unix)]
 fn an_interpreter_outside_detection_is_named_like_a_detected_one() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("shop");
     let member = fake_venv(&root.join("backend"), ".venv");
+    working_python(&member);
     let sdk = crate::python_interpreter_sdk(&member, Some(&root)).unwrap();
     assert_eq!(
         (sdk.name.as_str(), sdk.version.as_deref(), sdk.source.as_str()),
         ("Python 3.12 (backend)", Some("3.12.1"), "venv")
     );
     let own = fake_venv(&root, ".venv");
+    working_python(&own);
     assert_eq!(crate::python_interpreter_sdk(&own, Some(&root)).unwrap().name, "Python 3.12 (shop)");
     // Outside the project the folder name says which one it is.
     let elsewhere = fake_venv(&tmp.path().join("other"), ".venv");
+    working_python(&elsewhere);
     assert_eq!(crate::python_interpreter_sdk(&elsewhere, Some(&root)).unwrap().name, "Python 3.12 (.venv)");
+}
+
+#[cfg(unix)]
+fn working_python(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, "#!/bin/sh\n[ \"$1\" = '-I' ] && [ \"$2\" = '-c' ] || exit 1\necho 3.12.1\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn picked_venv_folders_and_executables_are_validated_without_resolving_symlinks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("base-python");
+    working_python(&base);
+    for (name, cfg) in [("venv", "version = 3.12.1\n"), (".venv", "uv = 0.9.0\nversion_info = 3.12.1\n")] {
+        let python = fake_venv(tmp.path(), name);
+        let home = python.parent().unwrap().parent().unwrap();
+        std::fs::write(home.join("pyvenv.cfg"), cfg).unwrap();
+        std::fs::remove_file(&python).unwrap();
+        std::os::unix::fs::symlink(&base, &python).unwrap();
+        for picked in [home, python.as_path()] {
+            let sdk = crate::python_interpreter_sdk(picked, None).unwrap();
+            assert_eq!(&*sdk.path, python.as_path());
+            assert_eq!(sdk.source, "venv");
+            assert_eq!(sdk.version.as_deref(), Some("3.12.1"));
+        }
+    }
+    assert_eq!(crate::python_interpreter_sdk(&base, None).unwrap().source, "system");
+    std::fs::remove_file(&base).unwrap();
+    assert!(crate::python_interpreter_sdk(&tmp.path().join(".venv"), None).is_none());
+}
+
+#[test]
+fn a_real_existing_virtualenv_resolves_from_its_folder_or_platform_executable() {
+    let Some(base) = crate::exec::which("python3").or_else(|| crate::exec::which("python")) else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("existing");
+    let status =
+        std::process::Command::new(base).args(["-I", "-m", "venv", "--without-pip"]).arg(&home).status().unwrap();
+    assert!(status.success());
+    let python = home.join(bin_dir()).join(exe("python"));
+    for picked in [&home, &python] {
+        let sdk = crate::python_interpreter_sdk(picked, None).unwrap();
+        assert_eq!(&*sdk.path, python.as_path());
+        assert_eq!(&**sdk.home.as_ref().unwrap(), home.as_path());
+        assert_eq!(sdk.source, "venv");
+        assert!(sdk.name.ends_with("(existing)"));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn picked_interpreters_must_run_python_code_even_with_valid_venv_metadata() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let python = fake_venv(tmp.path(), "broken");
+    // A broken runtime can still answer --version.
+    std::fs::write(&python, "#!/bin/sh\n[ \"$1\" = '--version' ] && echo 'Python 3.12.1' && exit 0\nexit 1\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(crate::python_interpreter_sdk(&python, None).is_none());
+    std::fs::write(&python, "#!/bin/sh\necho not-python\n").unwrap();
+    assert!(crate::python_interpreter_sdk(&python, None).is_none());
+    std::fs::remove_file(&python).unwrap();
+    assert!(crate::python_interpreter_sdk(&python, None).is_none());
+    assert!(crate::python_interpreter_sdk(tmp.path(), None).is_none());
 }
 
 #[test]

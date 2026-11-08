@@ -20,6 +20,7 @@ export interface SelectOption<V extends string = string> {
 }
 
 export interface SelectProps<V extends string = string> {
+  id?: string;
   value: V | null;
   options: readonly SelectOption<V>[];
   onChange: (value: V) => void;
@@ -177,6 +178,7 @@ export function Select<V extends string = string>({
     <>
       <button
         ref={triggerRef}
+        id={aria.id}
         type="button"
         aria-haspopup="listbox"
         aria-expanded={open}
