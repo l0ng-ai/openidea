@@ -6,12 +6,13 @@ import { colorSlot, flameLayout, formatWeight, frameLocation, matchingFrames, pr
 const profile: Profile = {
   profiler: "t",
   unit: "samples",
+  mode: "cpu",
   total: 10,
   frames: [
-    { name: "all", file: null, line: null },
-    { name: "main", file: "/p/main.py", line: 4 },
-    { name: "work", file: null, line: null },
-    { name: "io", file: null, line: null },
+    { name: "all", file: null, line: null, kind: "code" },
+    { name: "main", file: "/p/main.py", line: 4, kind: "code" },
+    { name: "work", file: null, line: null, kind: "code" },
+    { name: "io", file: null, line: null, kind: "code" },
   ],
   nodes: [
     { frame: 0, total: 10, selfWeight: 0, children: [1] },

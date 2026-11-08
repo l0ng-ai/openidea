@@ -1,6 +1,6 @@
 //! Which profiler samples a configuration, and how its command line changes.
 
-use crate::{ProfilePrepared, ProfileSpec, ProfilerInstall};
+use crate::{ProfileMode, ProfilePrepared, ProfileSpec, ProfilerInstall};
 use ide_run::RunConfig;
 use ide_run::wrap::{self, program_name};
 use std::path::{Path, PathBuf};
@@ -105,6 +105,7 @@ fn python(root: &Path, config: &RunConfig, dir: &Path, out: &Path, py: wrap::Pyt
         ext: s("txt"),
         base: dir.to_path_buf().into(),
         jvm_root: None,
+        mode: ProfileMode::Cpu,
     };
     ready("py-spy", launch, spec)
 }
@@ -151,6 +152,7 @@ fn jvm(root: &Path, config: &RunConfig, dir: &Path, out: &Path) -> ProfilePrepar
         ext: s("collapsed"),
         base: dir.to_path_buf().into(),
         jvm_root: Some(root.to_path_buf().into()),
+        mode: ProfileMode::Cpu,
     };
     ready("async-profiler", launch, spec)
 }
