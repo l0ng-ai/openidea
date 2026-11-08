@@ -28,6 +28,7 @@ pub use ide_plugin::indexing::*;
 struct File {
     version: Option<u32>,
     scope: String,
+    hash: blake3::Hash,
     edges: Edges,
 }
 #[derive(Default)]
@@ -60,6 +61,11 @@ impl Graph {
             }
         }
         targets
+    }
+    fn scoped_targets(&self, key: &str, scope: &str) -> Vec<&Location> {
+        let targets = self.targets(key);
+        let local = targets.iter().any(|t| self.files.get(&t.path.0).is_some_and(|f| f.scope == scope));
+        targets.into_iter().filter(|t| !local || self.files.get(&t.path.0).is_some_and(|f| f.scope == scope)).collect()
     }
     fn remove(&mut self, path: &Path) {
         if let Some(file) = self.files.remove(path) {
@@ -303,7 +309,7 @@ impl PluginHost {
             {
                 return Err(IdeError::unavailable("navigation association limit reached"));
             }
-            graph.insert(path.to_owned(), File { version, scope: scope.to_owned(), edges });
+            graph.insert(path.to_owned(), File { version, scope: scope.to_owned(), hash: snapshot_hash(text), edges });
         }
         Ok(())
     }
@@ -365,6 +371,70 @@ impl PluginHost {
         }
         result.filter(|r| !r.targets.is_empty())
     }
+    /// Definitions and references of each indexed key under the caret. Markers
+    /// are navigation affordances, not name anchors, and never participate.
+    pub fn indexed_symbol_at(&self, root: &Path, path: &Path, pos: Pos, client: Option<&str>) -> Option<IndexedSymbol> {
+        if !(self.project_policy.read())(root) {
+            return None;
+        }
+        let plugins = self.plugins.read();
+        let index = self.navigation.lock();
+        let graphs = index.projects.get(&(root.to_owned(), client.map(str::to_owned)))?;
+        let mut result: Option<IndexedSymbol> = None;
+        for (id, graph) in graphs {
+            let Some(plugin) = plugins.get(id) else { continue };
+            if !plugin.status().is_live() || !graph.instance.ptr_eq(&Arc::downgrade(plugin)) {
+                continue;
+            }
+            let Some(source) = graph.files.get(path) else { continue };
+            let anchors: Vec<_> = source
+                .edges
+                .definitions
+                .iter()
+                .chain(&source.edges.references)
+                .filter(|anchor| contains(anchor.range, pos))
+                .collect();
+            let Some(primary) = anchors.first() else { continue };
+            let keys: std::collections::HashSet<_> = anchors.iter().map(|anchor| anchor.key.as_str()).collect();
+            let targets: std::collections::HashSet<_> =
+                keys.iter().flat_map(|key| graph.scoped_targets(key, &source.scope)).collect();
+            let answer = result.get_or_insert_with(|| IndexedSymbol { range: primary.range, files: vec![] });
+            for (path, file) in &graph.files {
+                let mut ranges = std::collections::BTreeSet::new();
+                for candidate in &file.edges.definitions {
+                    if targets.contains(&Location::file(path.clone(), candidate.range))
+                        || (targets.is_empty() && file.scope == source.scope && keys.contains(candidate.key.as_str()))
+                    {
+                        ranges.insert(candidate.range);
+                    }
+                }
+                let mut matches = HashMap::new();
+                for candidate in &file.edges.references {
+                    let same = *matches.entry(candidate.key.as_str()).or_insert_with(|| {
+                        let resolved = graph.scoped_targets(&candidate.key, &file.scope);
+                        resolved.iter().any(|target| targets.contains(target))
+                            || (targets.is_empty()
+                                && resolved.is_empty()
+                                && file.scope == source.scope
+                                && keys.contains(candidate.key.as_str()))
+                    });
+                    if same {
+                        ranges.insert(candidate.range);
+                    }
+                }
+                if !ranges.is_empty() {
+                    answer.files.push(IndexedAnchors {
+                        path: path.clone(),
+                        version: file.version,
+                        hash: file.hash,
+                        ranges: ranges.into_iter().collect(),
+                    });
+                }
+            }
+        }
+        result
+    }
+
     /// Gutter markers of visible files. Uses only existing graph entries; never executes WASM.
     pub fn navigation_markers(
         &self,
@@ -421,6 +491,24 @@ impl PluginHost {
         }
         result
     }
+}
+
+#[derive(Clone)]
+pub struct IndexedSymbol {
+    pub range: Range,
+    pub files: Vec<IndexedAnchors>,
+}
+
+#[derive(Clone)]
+pub struct IndexedAnchors {
+    pub path: PathBuf,
+    pub version: Option<u32>,
+    pub hash: blake3::Hash,
+    pub ranges: Vec<Range>,
+}
+
+pub(crate) fn snapshot_hash(text: &str) -> blake3::Hash {
+    blake3::hash(ide_text::normalize_line_endings(text).as_bytes())
 }
 
 #[derive(Clone, Deserialize)]

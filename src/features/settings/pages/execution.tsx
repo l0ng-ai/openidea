@@ -145,6 +145,10 @@ export const EXECUTION_PAGES: PageSpec[] = [
     // IntelliJ IDEA: Build Tools › Maven, before Console / Debugger.
     order: 359,
     keywords: [
+      "JRE",
+      "runner",
+      "JDK",
+      "JAVA_HOME",
       "maven home",
       "mvn",
       "mvnw",

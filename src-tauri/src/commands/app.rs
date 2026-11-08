@@ -179,6 +179,9 @@ pub fn settings_set(
     value: String,
 ) -> IdeResult<Settings> {
     let applied = ide_host::ops::project::set_settings(&state.host, window.label(), scope, &key, &value)?;
+    if key == "mcpServer" || key.starts_with("mcpServer.") {
+        crate::commands::mcp::apply(&state);
+    }
     // A project value concerns only that project's window (and its settings window).
     let event = ide_core::IdeEvent::SettingsChanged { key };
     if applied.project_scope {
@@ -231,10 +234,20 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }
     crate::commands::ssh::apply_ssh_settings(&state);
+    crate::commands::mcp::apply(&state);
     state.host.apply_proxy();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = ide_host::ops::project::settings(&state.host, window.label());
     Ok(SettingsImport { settings, storage })
+}
+
+/// Import Settings… with a JetBrains `settings.zip`: reads it; the frontend maps and applies it.
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_read_jetbrains(path: PathBuf) -> IdeResult<ide_workspace::settings::JetBrainsSettings> {
+    tauri::async_runtime::spawn_blocking(move || ide_workspace::settings::read_jetbrains_settings(&path))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Effective source / test / resource / excluded roots of the window's project:

@@ -8,12 +8,12 @@
  */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
-import { executeAction } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
-import { Button, EmptyState, T } from "@/ui";
+import { Button, EmptyState, T, showContextMenu } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
@@ -32,12 +32,14 @@ import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import {
   configRemoved,
+  debugSession,
   loadConfigs,
   persistTemporary,
   rerunConfig,
   startRun,
   stopSession,
   useRun,
+  waitForExit,
   type RunSession,
   isLive,
 } from "./store";
@@ -66,7 +68,7 @@ const TYPE_PREFIX = "run:type:";
 const CONFIG_PREFIX = "run:config:";
 const STORAGE_KEY = "openidea.services.runTypes:";
 const RAN_KEY = "openidea.services.ran:";
-/** Types shown in Services until the user changes the list. npm covers the JS dev servers (vite and friends). */
+/** Types shown in Services until the user changes the list. */
 export const DEFAULT_TYPES: readonly string[] = ["spring-boot"];
 
 // ---------------------------------------------------------------------------
@@ -207,7 +209,6 @@ export async function cleanupRemovedProject(removedRoot: string): Promise<void> 
   }
 }
 
-
 // ---------------------------------------------------------------------------
 // Tree
 
@@ -241,22 +242,6 @@ function executionDetail(s: ServiceSession | undefined): string | undefined {
   return s.run ? sessionDetail(s.run) : "Finished";
 }
 
-/** The configurations of `kind` the tree shows: all, for added types; the ran ones, otherwise. */
-function kindConfigs(
-  kind: string,
-  configs: readonly RunConfig[],
-  added: readonly string[],
-  ran: readonly string[],
-  latest: ReadonlyMap<string, ServiceSession>,
-): RunConfig[] {
-  const entries: RunConfig[] = added.includes(kind)
-    ? configs.filter((c) => c.kind === kind)
-    : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
-  for (const s of latest.values())
-    if (s.config.kind === kind && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
-  return entries;
-}
-
 /**
  * Groups by configuration type: added types list all their configurations, other
  * types only those that ran. A default type (Spring Boot) without configurations is hidden.
@@ -286,7 +271,6 @@ export function runServiceItems(
       : ran.map((id) => configs.find((c) => c.id === id)).filter((c): c is RunConfig => !!c && c.kind === kind);
     for (const s of latest.values())
       if (s.config.kind === kind && shown(s) && !entries.some((c) => c.id === s.config.id)) entries.push(s.config);
-    // A default type with everything removed keeps its empty group, so "Add Service" can restore it.
     if (!entries.length && DEFAULT_TYPES.includes(kind)) return [];
     const children = orderServices(entries, order[kind]).map((c): ServiceTreeItem => {
       const s = latest.get(c.id);
@@ -318,8 +302,7 @@ export function runServiceItems(
 function useRoots(): ServiceTreeItem[] {
   const root = useProject((s) => s.project?.root ?? null);
   useRemote((s) => s.session);
-  const location = projectLocation(root);
-  const order = useServiceOrder(location);
+  const order = useServiceOrder(projectLocation(root));
   const configs = useRun((s) => s.configs);
   const sessions = useRun((s) => s.sessions);
   const debug = useDebugRunSessions((s) => s.serviceSessions);
@@ -330,7 +313,7 @@ function useRoots(): ServiceTreeItem[] {
   useEffect(() => {
     if (typesRoot !== root) useAddedTypes.setState({ root, types: root ? readTypes(root) : [] });
     if (ranRoot !== root) useRanConfigs.setState({ root, ids: root ? readRan(root) : [] });
-  }, [root, typesRoot, ranRoot, location]);
+  }, [root, typesRoot, ranRoot]);
   return useMemo(
     () =>
       runServiceItems(
@@ -357,26 +340,14 @@ interface Resolved {
 function resolve(item: ServiceTreeItem): Resolved {
   const { configs, sessions } = useRun.getState();
   const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
-  // A configuration type's group node (`run:type:spring-boot`).
   if (item.key.startsWith(TYPE_PREFIX)) {
     const kind = item.key.slice(TYPE_PREFIX.length);
-    return {
-      kind,
-      config: null,
-      session: undefined,
-      sessions: executions.filter((s) => s.config.kind === kind),
-    };
+    return { kind, config: null, session: undefined, sessions: executions.filter((s) => s.config.kind === kind) };
   }
-  // A configuration (`run:config:<id>`).
   const id = item.key.slice(CONFIG_PREFIX.length);
   const session = currentServiceSession(id, executions);
   const config = configs.find((c) => c.id === id) ?? session?.config ?? null;
-  return {
-    kind: config?.kind ?? null,
-    config,
-    session,
-    sessions: session ? [session] : [],
-  };
+  return { kind: config?.kind ?? null, config, session, sessions: session ? [session] : [] };
 }
 
 function showOutput(s: RunSession) {
@@ -387,7 +358,7 @@ function showOutput(s: RunSession) {
 /** Runs (or reruns, in its tab) a configuration; the output stays in Services instead of opening Run. */
 function run(r: Resolved) {
   const debug = serviceDebugger(r.session);
-  if (debug) debug.rerun?.();
+  if (debug) (debug.rerunInPlace ?? debug.rerun)?.();
   else if (r.session?.run) {
     const s = r.session.run;
     void startRun(rerunConfig(s), s.id, s.baseConfig, { show: false });
@@ -396,49 +367,102 @@ function run(r: Resolved) {
 
 function debug(r: Resolved) {
   const session = serviceDebugger(r.session);
-  if (session) session.rerun?.();
-  else if (r.config) void executeAction("run.debugConfig", r.config);
+  if (session) (session.rerunInPlace ?? session.rerun)?.();
+  else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false });
 }
 
-/** Run All / Restart All: starts the configurations of `kind` that can run, in display order. */
-async function startAll(kind: string, restart: boolean): Promise<void> {
+function groupConfigs(kind: string): RunConfig[] {
   const root = useProject.getState().project?.root ?? null;
-  const { configs, sessions } = useRun.getState();
-  const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
-  const latest = currentServiceSessions(executions);
-  const running = executions.filter((s) => s.config.kind === kind && liveServiceSession(s));
-  if (restart) await stopServiceSessions(running);
   const location = projectLocation(root);
-  const order = location ? currentServiceOrder(location) : {};
-  const entries = orderServices(kindConfigs(kind, configs, currentTypes(), ranIds(root), latest), order[kind]);
-  for (const c of entries) {
-    if (isDebugOnly(c)) continue;
-    // Run All skips running configurations; Restart All stopped them above (the snapshot is stale then).
-    if (!restart) {
-      const s = latest.get(c.id);
-      if (s && liveServiceSession(s)) continue;
+  const { configs, sessions } = useRun.getState();
+  const debug = useDebugRunSessions.getState().serviceSessions;
+  const latest = currentServiceSessions(serviceSessions(sessions, debug));
+  const group = runServiceItems(
+    configs,
+    sessions,
+    currentTypes(),
+    ranIds(root),
+    location ? currentServiceOrder(location) : {},
+    debug,
+    configRemoved,
+  ).find((item) => item.key === TYPE_PREFIX + kind);
+  return (group?.children ?? []).flatMap((item) => {
+    const id = item.key.slice(CONFIG_PREFIX.length);
+    const config = configs.find((c) => c.id === id) ?? latest.get(id)?.config;
+    return config ? [config] : [];
+  });
+}
+
+async function startAll(kind: string, restart: boolean): Promise<void> {
+  const root = useProject.getState().project?.root;
+  const entries = groupConfigs(kind).filter((c) => !isDebugOnly(c));
+  if (restart) {
+    const { sessions } = useRun.getState();
+    const running = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions).filter(
+      (s) => s.config.kind === kind && liveServiceSession(s),
+    );
+    await stopServiceSessions(running);
+    await waitForExit(
+      running.flatMap((s) => (s.run ? [s.run.id] : [])),
+      null,
+    );
+  }
+  for (const config of entries) {
+    if (useProject.getState().project?.root !== root) return;
+    const running = serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions);
+    if (running.some((s) => s.config.id === config.id && liveServiceSession(s))) continue;
+    try {
+      await startRun(config, undefined, undefined, { show: false });
+    } catch (e) {
+      notifications().notify({ group: "run", level: "error", title: tx`Cannot run '${config.name}'`, body: String(e) });
     }
-    await startRun(c, undefined, undefined, { show: false });
   }
 }
 
-function actions(item: ServiceTreeItem): ServiceItemAction[] {
+function browserActions(sessions: readonly ServiceSession[]): ServiceItemAction[] {
+  const urls = new Map<string, string>();
+  for (const s of sessions) {
+    if (!liveServiceSession(s)) continue;
+    const port = (s.run && isLive(s.run) ? s.run.httpPort : undefined) ?? serviceDebugger(s)?.httpPort;
+    if (port && Number.isInteger(port) && port > 0 && port < 65536) urls.set(`http://localhost:${port}`, s.config.name);
+  }
+  return [
+    {
+      id: "open-browser",
+      title: "Open in Browser",
+      icon: "web",
+      disabled: !urls.size,
+      run: () => {
+        if (urls.size === 1) return void openUrl(urls.keys().next().value!);
+        if (!urls.size) return;
+        showContextMenu(
+          { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+          [...urls].map(([url, name]) => ({
+            label: `${name} — ${url}`,
+            verbatim: true,
+            icon: "web",
+            run: () => void openUrl(url),
+          })),
+        );
+      },
+    },
+  ];
+}
+
+function itemActions(item: ServiceTreeItem): ServiceItemAction[] {
   const r = resolve(item);
-  // A type group: batch actions over its configurations.
+  const running = r.sessions.filter(liveServiceSession);
   if (!r.config && r.kind) {
     const kind = r.kind;
-    const root = useProject.getState().project?.root ?? null;
-    const { configs, sessions } = useRun.getState();
-    const executions = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions);
-    const latest = currentServiceSessions(executions);
-    const entries = kindConfigs(kind, configs, currentTypes(), ranIds(root), latest);
-    const running = executions.filter((s) => s.config.kind === kind && liveServiceSession(s));
-    const runnable = entries.some((c) => {
-      const s = latest.get(c.id);
-      return !(s && liveServiceSession(s)) && !isDebugOnly(c);
-    });
+    const entries = groupConfigs(kind).filter((c) => !isDebugOnly(c));
     return [
-      { id: "run-all", title: "Run All", icon: "run", disabled: !runnable, run: () => startAll(kind, false) },
+      {
+        id: "run-all",
+        title: "Run All",
+        icon: "run",
+        disabled: !entries.some((c) => !running.some((s) => s.config.id === c.id)),
+        run: () => startAll(kind, false),
+      },
       {
         id: "restart-all",
         title: "Restart All",
@@ -451,11 +475,11 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
         title: "Stop All",
         icon: "stop",
         disabled: !running.length,
-        run: () => void stopServiceSessions(running),
+        run: () => stopServiceSessions(running),
       },
+      ...browserActions(r.sessions),
     ];
   }
-  const running = r.sessions.filter(liveServiceSession);
   const stop = {
     id: "stop",
     title: "Stop",
@@ -466,18 +490,6 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
   if (!r.config) return [stop];
   const live = !!r.session && liveServiceSession(r.session);
   const debugging = serviceDebugger(r.session);
-  // A running web application's HTTP port becomes a browser link (IDEA's port URL).
-  const browser: ServiceItemAction[] =
-    live && r.session?.run?.httpPort
-      ? [
-          {
-            id: "open-browser",
-            title: "Open in Browser",
-            icon: "web",
-            run: () => void openUrl(`http://localhost:${r.session!.run!.httpPort}`),
-          },
-        ]
-      : [];
   return [
     {
       id: "run",
@@ -487,7 +499,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
       run: () => run(r),
     },
     { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
-    ...browser,
+    ...browserActions(r.sessions),
     stop,
     ...(isUpdatable(r.config)
       ? [
@@ -501,6 +513,44 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
         ]
       : []),
   ];
+}
+
+const SERVICE_ACTIONS = [
+  { id: "run-all", action: "run.services.runAll", title: "Run All", icon: "run" },
+  { id: "restart-all", action: "run.services.restartAll", title: "Restart All", icon: "rerun" },
+  { id: "stop-all", action: "run.services.stopAll", title: "Stop All", icon: "stop" },
+  { id: "open-browser", action: "run.services.openBrowser", title: "Open in Browser", icon: "web" },
+];
+
+export function registerRunServiceActions(): () => void {
+  return registerActions(
+    SERVICE_ACTIONS.map(({ id, action, title, icon }) => ({
+      id: action,
+      title,
+      icon,
+      category: "Run",
+      hidden: true,
+      run: async ({ arg }) => {
+        if (typeof arg !== "string" || (!arg.startsWith(TYPE_PREFIX) && !arg.startsWith(CONFIG_PREFIX))) return;
+        const action = itemActions({ key: arg, label: "", icon: "" }).find((a) => a.id === id);
+        if (action && !action.disabled) await action.run();
+      },
+    })),
+  );
+}
+
+function actions(item: ServiceTreeItem): ServiceItemAction[] {
+  return itemActions(item).map((entry) => {
+    const action = SERVICE_ACTIONS.find((a) => a.id === entry.id);
+    return action
+      ? {
+          ...entry,
+          run: async () => {
+            await executeAction(action.action, item.key);
+          },
+        }
+      : entry;
+  });
 }
 
 function menu(item: ServiceTreeItem): MenuItem[] {
@@ -562,12 +612,13 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   if (r.session?.run) {
     const execution = r.session;
     const d = serviceDebugger(execution);
+    const rerun = d ? (d.rerunInPlace ?? d.rerun) : undefined;
     return (
       <SessionPanel
         key={execution.run!.id}
         session={execution.run!}
-        onRerun={d ? d.rerun : undefined}
-        onDebug={d ? d.rerun : undefined}
+        onRerun={d ? rerun : () => run(r)}
+        onDebug={d ? rerun : () => debugSession(execution.run!.id, { show: false })}
         onStop={d ? () => void stopServiceSessions([execution]) : undefined}
       />
     );
@@ -592,14 +643,6 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
         <dd>
           <T>{kindLabel(r.config.kind)}</T>
         </dd>
-        {r.config.module && (
-          <>
-            <dt>
-              <T>Module</T>
-            </dt>
-            <dd>{r.config.module}</dd>
-          </>
-        )}
         <dt>
           <T>Command</T>
         </dt>
@@ -685,10 +728,7 @@ export const runServiceProvider: ServiceProviderContribution = {
         to = target.key.slice(CONFIG_PREFIX.length);
       if (!ids.includes(from) || !ids.includes(to)) return;
       if (
-        !saveServiceOrder(location, {
-          ...order,
-          [kind]: moveServiceOrder(order[kind] ?? [], ids, from, to, position),
-        })
+        !saveServiceOrder(location, { ...order, [kind]: moveServiceOrder(order[kind] ?? [], ids, from, to, position) })
       ) {
         notifications().notify({
           group: "run",

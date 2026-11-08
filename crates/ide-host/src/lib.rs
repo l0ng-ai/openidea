@@ -8,12 +8,14 @@ pub mod environment;
 mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
+pub mod mcp;
 pub mod notebook;
 pub mod ops;
 mod phpstan;
 pub mod plugins;
 mod project;
 mod proxy;
+pub mod relay;
 mod requests;
 pub mod rpc;
 pub mod shell_env;
@@ -53,6 +55,8 @@ pub struct HostConfig {
 }
 
 pub struct Host {
+    pub mcp_reports: mcp::Reports,
+    pub mcp_requests: mcp::Requests,
     pub trust: trust::TrustStore,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
@@ -111,6 +115,8 @@ impl Host {
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
+            mcp_reports: Default::default(),
+            mcp_requests: Default::default(),
             trust: trust::TrustStore::load(&config_dir, &data_dir),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
@@ -218,11 +224,15 @@ impl Host {
     /// so the window can open another project at once. Returns the thread that
     /// finishes shutting down its workers.
     fn begin_close(&self, window: &str) -> Option<std::thread::JoinHandle<()>> {
+        self.mcp_reports.forget_window(window);
+        self.mcp_requests.forget_window(window);
         self.external_logs.write().remove(self.owner_window(window));
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);
@@ -373,6 +383,10 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
+        }
+        for project in &projects {
+            project.plugin_diagnostics.close();
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
             }

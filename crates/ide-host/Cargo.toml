@@ -12,11 +12,15 @@ path = "src/bin/server.rs"
 [dependencies]
 encoding_rs.workspace = true
 ide-core.workspace = true
+ide-mcp.workspace = true
+futures.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
 regex-syntax.workspace = true
+regex-lite = "0.1"
 ide-workspace.workspace = true
 ide-language.workspace = true
+blake3.workspace = true
 ide-index.workspace = true
 ide-syntax.workspace = true
 ide-search.workspace = true
@@ -48,7 +52,7 @@ ide-tools = { path = "../ide-tools" }
 ide-docker = { path = "../ide-docker" }
 semver = "1"
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true

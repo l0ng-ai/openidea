@@ -191,6 +191,6 @@ impl LspManager {
     ) {
         let conv = self.conv(enc);
         let items = items.into_iter().map(|d| convert::diagnostic(&conv, &path, d, &server.name)).collect();
-        self.sink.emit(IdeEvent::Diagnostics { path: path.into(), source: server.name.clone(), items });
+        server.emit(&self.sink, IdeEvent::Diagnostics { path: path.into(), source: server.name.clone(), items });
     }
 }

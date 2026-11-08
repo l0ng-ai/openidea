@@ -2,7 +2,8 @@
  * Client side of the plugin UI points: declarations the
  * backend validated, projected onto the workbench's own registries.
  *
- * - `menus`: editor / project view / editor tab context menus, and Tools in the main menu;
+ * - `menus`: editor / project view / editor tab context menus, Tools in the main menu, and the
+ *   toolbar above the commit message;
  * - `keymaps`: default shortcuts below the IDE's (a taken keystroke is dropped);
  * - `statusBar`: items shown before the code runs (its `set-status-item` with the same id updates them);
  * - `settings`: a page under Settings › Plugins generated from the schema;
@@ -10,44 +11,36 @@
  * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
  *   beside the text editor;
  * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
- * - `fileTemplates`: entries of the New menu.
+ * - `fileTemplates`: entries of the New menu;
+ * - `commitChecks`: before-commit checks listed in Commit Options, run by the plugin's code.
  */
-import { useMemo } from "react";
 import type { PluginInfo } from "@/bindings";
 import { getAction } from "@/platform/actions";
-import { evaluateWhen, getContext } from "@/platform/context";
+import { evaluateWhen, getContext, useContextKeys } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
-import {
-  Checkbox,
-  Input,
-  Select,
-  T,
-  addFileIconProvider,
-  fileIconName,
-  registerExternalIcons,
-  type MenuItem,
-} from "@/ui";
-import { addContributedFileTemplate } from "@/features/templates/files/store";
+import { addFileIconProvider, fileIconName, registerExternalIcons, type MenuItem } from "@/ui";
+import { addContributedFileTemplate } from "@/workbench/contributions";
 import {
   registerEditorKind,
   registerFileEditorProvider,
+  registerCommitCheckProvider,
   registerMenuGroup,
   registerMenuSlotItem,
   registerServiceProvider,
-  registerSettingsPage,
   registerTextEditorWrapper,
-  registerToolWindow,
-  useSettingsForm,
   type ContextMenuId,
+  type ContributedCommitProblem,
   type ToolWindowAnchor,
 } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
+import { pluginIconName } from "./pluginIcon";
+import { projectMarkerIcon, type MarkerIconDecl } from "./markerIcons";
 import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
 import { declareStatusItem } from "./runtimeUi";
-import { pluginToolWindowId } from "./views/viewStore";
+import { registerWindowView } from "./views/viewWindows";
 import {
   CUSTOM_EDITOR_KIND,
   CustomEditor,
@@ -58,18 +51,38 @@ import {
   type CustomEditorDecl,
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
+import { registerContentActions } from "./views/contentActions";
+import {
+  PluginContentEditor,
+  pluginContentEditorDocument,
+  pluginContentEditorIcon,
+  pluginContentEditorTitle,
+} from "./views/contentEditor";
+import { PLUGIN_CONTENT_EDITOR_KIND } from "./views/contentTab";
+import { PLUGIN_LOG_EDITOR_KIND, PluginLogEditor, pluginLogEditorTitle } from "./views/logEditor";
 import { PluginView } from "./views/PluginView";
 import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
-import styles from "./PluginsPage.module.css";
+import { registerLogActions } from "./views/logActions";
+import { projectSettings, type SettingsDecl } from "./settings";
 
 // --- menus ------------------------------------------------------------------------
 
 interface MenuDecl {
-  menu: "editor.context" | "projectView.context" | "editorTab.context" | "viewItem.context" | "tools";
+  menu:
+    | "editor.context"
+    | "projectView.context"
+    | "editorTab.context"
+    | "viewItem.context"
+    | "tools"
+    | "commit.message";
   view?: string | null;
   command: string;
   when?: string | null;
+  /** Groups the plugin's entries of one context menu under this label. */
+  submenu?: string | null;
+  /** The command's title in the plugin's language, when it ships one. */
+  commandTitle?: string;
 }
 
 const CONTEXT_MENUS: Record<string, ContextMenuId> = {
@@ -81,46 +94,151 @@ const CONTEXT_MENUS: Record<string, ContextMenuId> = {
 const contextItems = new Map<string, { pluginId: string; decl: MenuDecl }>();
 let menuSeq = 0;
 
+/**
+ * Adds `item` to `out`; the entries of one plugin that name the same
+ * `submenu` are collected under it.
+ */
+function addGrouped(
+  out: MenuItem[],
+  groups: Map<string, MenuItem[]>,
+  pluginId: string,
+  submenu: string | null | undefined,
+  item: MenuItem,
+): void {
+  if (!submenu) {
+    out.push(item);
+    return;
+  }
+  const key = `${pluginId}\u0000${submenu}`;
+  let group = groups.get(key);
+  if (!group) {
+    group = [];
+    groups.set(key, group);
+    out.push({ kind: "item", label: submenu, verbatim: true, submenu: group });
+  }
+  group.push(item);
+}
+
+/** A submenu holding one visible entry gains nothing from nesting. */
+function flattenSingleGroups(items: MenuItem[]): MenuItem[] {
+  return items.map((item) =>
+    item.kind !== "action" && "submenu" in item && item.submenu?.length === 1 ? item.submenu[0]! : item,
+  );
+}
+
 /** Plugin items of a context menu: their command's action with the menu's file as argument. */
 export function pluginMenuItems(menu: ContextMenuId, paths: readonly string[]): MenuItem[] {
   const out: MenuItem[] = [];
+  const groups = new Map<string, MenuItem[]>();
   for (const { pluginId, decl } of contextItems.values()) {
     if (CONTEXT_MENUS[decl.menu] !== menu || !evaluateWhen(decl.when ?? undefined)) continue;
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;
     // The editor menu runs with the focused editor; the others name their file.
-    out.push({
+    addGrouped(out, groups, pluginId, decl.submenu, {
       kind: "action",
       action,
       arg: menu === "editor" ? undefined : { path: paths[0], paths: [...paths] },
     });
   }
-  return out;
+  return flattenSingleGroups(out);
 }
 
 /** Plugin entries of a view item's context menu, with the item key as argument. */
 export function pluginViewItemMenuItems(pluginId: string, view: string, key: string): MenuItem[] {
   const ctx = { ...getContext(), viewItem: key, viewItemKind: key.split(":")[0] };
   const out: MenuItem[] = [];
+  const groups = new Map<string, MenuItem[]>();
   for (const { pluginId: owner, decl } of contextItems.values()) {
     if (owner !== pluginId || decl.menu !== "viewItem.context" || decl.view !== view) continue;
     if (!evaluateWhen(decl.when ?? undefined, ctx)) continue;
     const action = pluginActionId(pluginId, decl.command);
     if (!getAction(action)) continue;
-    out.push({ kind: "action", action, arg: key });
+    addGrouped(out, groups, pluginId, decl.submenu, { kind: "action", action, arg: key });
   }
-  return out;
+  return flattenSingleGroups(out);
 }
 
 function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () => void {
   if (decl.menu === "tools") {
     const action = pluginActionId(pluginId, decl.command);
-    const title = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
-    return registerMenuSlotItem("pluginTools", { action, label: title });
+    const title = decl.commandTitle ?? getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
+    return registerMenuSlotItem("pluginTools", { action, label: title, verbatim: true });
+  }
+  if (decl.menu === "commit.message") {
+    const action = pluginActionId(pluginId, decl.command);
+    const label = getAction(action)?.title ?? `${plugin.name}: ${decl.command}`;
+    return registerMenuSlotItem("commitMessage", {
+      action,
+      label,
+      verbatim: true,
+      icon: pluginIconName(pluginId, plugin.icon),
+      when: decl.when ?? null,
+    });
   }
   const key = `${++menuSeq}`;
   contextItems.set(key, { pluginId, decl });
   return () => void contextItems.delete(key);
+}
+
+// --- commit checks ----------------------------------------------------------------
+
+interface CommitCheckDecl {
+  id: string;
+  title: string;
+}
+
+/** Declared before-commit checks by `<plugin id>/<check id>`. */
+const commitChecks = new Map<string, { pluginId: string; check: string; title: string }>();
+let unregisterCommitChecks: (() => void) | null = null;
+
+/** (Re)publishes the checks, so Commit Options sees the change. */
+function publishCommitChecks() {
+  unregisterCommitChecks?.();
+  unregisterCommitChecks = null;
+  if (!commitChecks.size) return;
+  const snapshot = [...commitChecks.entries()];
+  unregisterCommitChecks = registerCommitCheckProvider({
+    checks: () => snapshot.map(([key, c]) => ({ key, title: c.title })),
+    run: async (selection, keys) => {
+      const refs = keys.flatMap((k) => {
+        const c = commitChecks.get(k);
+        return c ? [{ pluginId: c.pluginId, check: c.check }] : [];
+      });
+      const results = await pluginsBackend()
+        .commitChecks(selection, refs)
+        .catch((e: unknown) =>
+          refs.map((r) => ({
+            ...r,
+            title: commitChecks.get(`${r.pluginId}/${r.check}`)?.title ?? r.check,
+            problems: [],
+            error: e instanceof Error ? e.message : String(e),
+          })),
+        );
+      return results.flatMap((r): ContributedCommitProblem[] =>
+        r.error !== null
+          ? [{ title: r.title, message: couldNotRun(r.error) }]
+          : r.problems.map((p) => ({
+              title: r.title,
+              message: p.message,
+              path: p.path ?? undefined,
+              line: p.range?.start.line,
+            })),
+      );
+    },
+  });
+}
+
+const couldNotRun = (reason: string) => tx`The check could not run: ${reason}`;
+
+function projectCommitCheck(pluginId: string, decl: CommitCheckDecl): () => void {
+  const key = `${pluginId}/${decl.id}`;
+  commitChecks.set(key, { pluginId, check: decl.id, title: decl.title });
+  publishCommitChecks();
+  return () => {
+    commitChecks.delete(key);
+    publishCommitChecks();
+  };
 }
 
 // --- keymaps ----------------------------------------------------------------------
@@ -144,99 +262,7 @@ interface StatusDecl {
 
 // --- settings ---------------------------------------------------------------------
 
-export interface SettingSchema {
-  key: string;
-  type: "boolean" | "string" | "number" | "integer";
-  title: string;
-  description?: string | null;
-  default: unknown;
-  options?: string[] | null;
-  multiline?: boolean;
-}
-
-interface SettingsDecl {
-  title: string;
-  properties: SettingSchema[];
-}
-
-type PluginSettings = Record<string, Record<string, unknown>>;
-
-/** `settings` with `key` of `pluginId` set (`null`: back to the default). */
-export function withPluginSetting(
-  settings: PluginSettings | undefined,
-  pluginId: string,
-  key: string,
-  value: unknown,
-): PluginSettings {
-  const own = { ...(settings?.[pluginId] ?? {}) };
-  if (value === null) delete own[key];
-  else own[key] = value;
-  const next = { ...(settings ?? {}) };
-  if (Object.keys(own).length) next[pluginId] = own;
-  else delete next[pluginId];
-  return next;
-}
-
-function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema }) {
-  const form = useSettingsForm();
-  const all = form.useValue("plugins") as PluginSettings | undefined;
-  const value = all?.[pluginId]?.[s.key] ?? s.default;
-  const set = (v: unknown) => form.set("plugins", withPluginSetting(all, pluginId, s.key, v === s.default ? null : v));
-  const id = `plugin-setting-${pluginId}-${s.key}`;
-  const description = s.description ? <div className={styles.muted}>{s.description}</div> : null;
-  if (s.type === "boolean")
-    return (
-      <div className={styles.settingRow}>
-        <Checkbox checked={value === true} label={s.title} onChange={set} />
-        {description}
-      </div>
-    );
-  return (
-    <div className={styles.settingRow}>
-      <label htmlFor={id}>{s.title}</label>
-      {s.options ? (
-        <Select
-          aria-label={s.title}
-          value={String(value)}
-          options={s.options.map((o) => ({ value: o, label: o }))}
-          onChange={set}
-        />
-      ) : (
-        <Input
-          id={id}
-          type={s.type === "string" ? "text" : "number"}
-          value={String(value ?? "")}
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (s.type === "string") set(raw);
-            else if (raw.trim() !== "" && Number.isFinite(Number(raw)))
-              set(s.type === "integer" ? Math.trunc(Number(raw)) : Number(raw));
-          }}
-        />
-      )}
-      {description}
-    </div>
-  );
-}
-
-function settingsPage(pluginId: string, decl: SettingsDecl) {
-  return function PluginSettingsPage() {
-    const properties = useMemo(() => decl.properties, []);
-    return (
-      <div className={styles.settingsPage}>
-        <p className={styles.muted}>
-          <T>Settings of the plugin; projects can override them.</T>
-        </p>
-        {properties.map((s) => (
-          <SettingControl key={s.key} pluginId={pluginId} s={s} />
-        ))}
-      </div>
-    );
-  };
-}
-
-/** Settings page id of a plugin (dots nest pages, so they become dashes). */
-export const pluginSettingsPageId = (pluginId: string) => `plugins.${pluginId.replace(/\./g, "-")}`;
+export { withPluginSetting, pluginSettingsPageId } from "./settings";
 
 // --- views and custom editors -----------------------------------------------------
 
@@ -245,7 +271,11 @@ interface ViewDecl {
   title: string;
   icon?: string | null;
   location: ToolWindowAnchor | "services";
+  detail?: boolean;
+  header?: "default" | "none" | null;
   web?: string;
+  group?: string | null;
+  when?: string | null;
 }
 
 interface FileIconDecl {
@@ -256,6 +286,8 @@ interface FileIconDecl {
 }
 
 interface FileTemplateDecl {
+  fileName?: string | null;
+  variables?: { name: string; prompt: string }[];
   id: string;
   name: string;
   extension: string;
@@ -263,8 +295,8 @@ interface FileTemplateDecl {
 }
 
 /** A new file's icon: the plugin's own file icon for it, else the built-in one. */
-function templateIcon(pluginId: string, extension: string): string {
-  const file = `untitled.${extension}`;
+function templateIcon(pluginId: string, extension: string, fileName?: string | null): string {
+  const file = fileName ?? `untitled.${extension}`;
   const own = usePlugins
     .getState()
     .ui.find(
@@ -310,55 +342,76 @@ function projectFileIcon(pluginId: string, decl: FileIconDecl): () => void {
   };
 }
 
-function registerView(pluginId: string, decl: ViewDecl, icon: string): () => void {
-  if (decl.location === "services") {
-    const itemMenu = (key: string) => pluginViewItemMenuItems(pluginId, decl.id, key);
-    return registerServiceProvider(pluginServiceProvider(pluginId, decl, icon, itemMenu));
-  }
-  return registerToolWindow({
-    id: pluginToolWindowId(pluginId, decl.id),
-    title: decl.title,
-    icon,
-    anchor: decl.location,
-    order: 900,
-    component: () =>
-      decl.web ? (
-        <WebView pluginId={pluginId} view={decl.id} label={decl.title} />
-      ) : (
-        <PluginView
-          pluginId={pluginId}
-          view={decl.id}
-          label={decl.title}
-          itemMenu={(key) => pluginViewItemMenuItems(pluginId, decl.id, key)}
-        />
-      ),
-  });
-}
-
-function projectView(pluginId: string, decl: ViewDecl): () => void {
-  if (!decl.icon?.endsWith(".svg")) return registerView(pluginId, decl, decl.icon ?? "plugin");
+function projectView(pluginId: string, decl: ViewDecl, index: number): () => void {
+  const initialIcon = decl.icon?.endsWith(".svg") ? "plugin" : (decl.icon ?? "plugin");
   let disposed = false;
-  let undo = () => {};
-  void pluginsBackend()
-    .assets(pluginId, `viewIcon/${decl.id}`)
-    .then((assets) => {
-      if (disposed) return;
-      const svg = assets.find(([id]) => id === `viewIcon/${decl.id}`)?.[1];
-      const name = `ext:${pluginId}/view-${decl.id}`;
-      const unregister = svg ? registerExternalIcons([[name, svg]]) : () => {};
-      const remove = registerView(pluginId, decl, svg ? name : "plugin");
-      undo = () => {
+  let unregisterIcon = () => {};
+  const itemMenu = (key: string) => pluginViewItemMenuItems(pluginId, decl.id, key);
+  let setIcon: (icon: string) => void;
+  let undo: () => void;
+  if (decl.location === "services") {
+    let icon = initialIcon;
+    let remove = () => {};
+    let visible = false;
+    const refresh = () => {
+      const next = evaluateWhen(decl.when ?? undefined);
+      if (next === visible) return;
+      remove();
+      visible = next;
+      remove = next ? registerServiceProvider(pluginServiceProvider(pluginId, decl, icon, itemMenu)) : () => {};
+    };
+    const unsubscribe = useContextKeys.subscribe(refresh);
+    refresh();
+    setIcon = (next) => {
+      icon = next;
+      if (visible) {
         remove();
-        unregister();
-      };
-    })
-    .catch((e: unknown) => {
-      console.warn(`plugin ${pluginId}: view icon ${decl.id}`, e);
-      if (!disposed) undo = registerView(pluginId, decl, "plugin");
-    });
+        visible = false;
+        refresh();
+      }
+    };
+    undo = () => {
+      unsubscribe();
+      remove();
+    };
+  } else {
+    const registration = registerWindowView(
+      pluginId,
+      { ...decl, location: decl.location },
+      initialIcon,
+      () =>
+        decl.web ? (
+          <WebView
+            pluginId={pluginId}
+            view={decl.id}
+            label={decl.title}
+            header={decl.header === "none" ? "none" : "default"}
+          />
+        ) : (
+          <PluginView pluginId={pluginId} view={decl.id} detail={decl.detail} label={decl.title} itemMenu={itemMenu} />
+        ),
+      index,
+    );
+    setIcon = registration.setIcon;
+    undo = registration.dispose;
+  }
+  if (decl.icon?.endsWith(".svg")) {
+    void pluginsBackend()
+      .assets(pluginId, `viewIcon/${decl.id}`)
+      .then((assets) => {
+        if (disposed) return;
+        const svg = assets.find(([id]) => id === `viewIcon/${decl.id}`)?.[1];
+        if (!svg) return;
+        const name = `ext:${pluginId}/view-${decl.id}`;
+        unregisterIcon = registerExternalIcons([[name, svg]]);
+        setIcon(name);
+      })
+      .catch((e: unknown) => console.warn(`plugin ${pluginId}: view icon ${decl.id}`, e));
+  }
   return () => {
     disposed = true;
     undo();
+    unregisterIcon();
   };
 }
 
@@ -387,18 +440,12 @@ export function defineViewUiPoints(): () => void {
     }),
     defineUiPoint<SettingsDecl>("settings", {
       title: "Settings",
-      project: ({ pluginId, decl }) =>
-        registerSettingsPage({
-          id: pluginSettingsPageId(pluginId),
-          title: decl.title,
-          projectScope: true,
-          keywords: ["plugin", pluginId, ...decl.properties.flatMap((p) => [p.key, p.title])],
-          component: settingsPage(pluginId, decl),
-        }),
+      project: ({ pluginId, decl }) => projectSettings(pluginId, decl),
     }),
     defineUiPoint<ViewDecl>("views", {
+      orderSensitive: true,
       title: "Tool Windows",
-      project: ({ pluginId, decl }) => projectView(pluginId, decl),
+      project: ({ pluginId, decl }, { index }) => projectView(pluginId, decl, index),
     }),
     defineUiPoint<CustomEditorDecl>("customEditors", {
       title: "Editors",
@@ -428,9 +475,17 @@ export function defineViewUiPoints(): () => void {
         };
       },
     }),
+    defineUiPoint<MarkerIconDecl>("markerIcons", {
+      title: "Marker Icons",
+      project: ({ pluginId, decl }) => projectMarkerIcon(pluginId, decl),
+    }),
     defineUiPoint<FileIconDecl>("fileIcons", {
       title: "File Icons",
       project: ({ pluginId, decl }) => projectFileIcon(pluginId, decl),
+    }),
+    defineUiPoint<CommitCheckDecl>("commitChecks", {
+      title: "Commit Checks",
+      project: ({ pluginId, decl }) => projectCommitCheck(pluginId, decl),
     }),
     defineUiPoint<FileTemplateDecl>("fileTemplates", {
       title: "File Templates",
@@ -438,9 +493,12 @@ export function defineViewUiPoints(): () => void {
         addContributedFileTemplate({
           id: `plugin.${pluginId}.${decl.id}`,
           name: decl.name,
-          icon: templateIcon(pluginId, decl.extension),
+          icon: templateIcon(pluginId, decl.extension, decl.fileName),
           extension: decl.extension,
           nameStyle: "asis",
+          fileName: decl.fileName ?? undefined,
+          variables: decl.variables,
+          inferPackage: true,
           kinds: [{ id: "file", label: decl.name, body: decl.body }],
         }),
     }),
@@ -454,6 +512,8 @@ const openWith = new Map<string, { pluginId: string; decl: CustomEditorDecl; mat
 /** One-time registrations behind the points: the editor kind and the context menu group. */
 export function startViewUi(openInput: (input: ReturnType<typeof customEditorInput>) => void): () => void {
   const disposers = [
+    registerLogActions(),
+    registerContentActions(),
     registerEditorKind({
       kind: CUSTOM_EDITOR_KIND,
       component: CustomEditor,
@@ -461,6 +521,21 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       icon: () => "db-table",
       restorable: true,
       document: customEditorDocument,
+    }),
+    registerEditorKind({
+      kind: PLUGIN_LOG_EDITOR_KIND,
+      component: PluginLogEditor,
+      keepAlive: true,
+      title: pluginLogEditorTitle,
+      icon: () => "file-log",
+    }),
+    registerEditorKind({
+      kind: PLUGIN_CONTENT_EDITOR_KIND,
+      component: PluginContentEditor,
+      keepAlive: true,
+      title: pluginContentEditorTitle,
+      icon: pluginContentEditorIcon,
+      document: pluginContentEditorDocument,
     }),
     registerMenuGroup({
       id: "plugins",
@@ -476,6 +551,7 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
               label: tx("Open With"),
               submenu: editors.map((e) => ({
                 label: e.decl.title,
+                verbatim: true,
                 run: () => openInput(customEditorInput(e.pluginId, e.decl, path)),
               })),
             });

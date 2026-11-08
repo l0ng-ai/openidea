@@ -1,7 +1,43 @@
 package openidea:plugin@1.3.0;
 
 interface workspace {
-    use types.{error};
+    use types.{error, location};
+
+    /// Requests File > Open in this command/event's window (or a new window),
+    /// including the usual project trust prompt. Needs no capability.
+    /// `path` is an absolute directory path on the UI machine.
+    open-project: func(path: string, new-window: bool) -> result<_, error>;
+
+    /// The open project containing an absolute document path, or `none`.
+    /// Reading the returned project still requires `project.read`.
+    project-of: func(path: string) -> option<project>;
+
+    /// What a path inside a project is.
+    enum file-kind {
+        file,
+        directory,
+        symlink,
+        other,
+    }
+
+    /// Metadata of a path inside a project, as `stat` reports it.
+    record file-stat {
+        kind: file-kind,
+        /// Bytes, for a file.
+        size: u64,
+        /// Seconds since the Unix epoch; `none` when the file system does
+        /// not track it.
+        modified: option<u64>,
+    }
+
+    /// A symbol in the host's current in-memory project index (new in 1.3).
+    record symbol-info {
+        name: string,
+        /// Host symbol kind, in camelCase (`class`, `method`, `enumMember`, …).
+        kind: string,
+        container: option<string>,
+        location: location,
+    }
 
     /// A project open in the IDE.
     resource project {
@@ -9,12 +45,40 @@ interface workspace {
         root: func() -> result<string, error>;
         /// Reads a UTF-8 text file inside the project (absolute, or relative
         /// to the root); paths leaving the root are refused. Unsaved editor
-        /// contents win over the disk. Requires `project.read`.
+        /// contents win over the disk. A missing path is `not-found`.
+        /// Requires `project.read`.
         read-file: func(path: string) -> result<string, error>;
+        /// Replaces the text of a file inside the project (absolute, or
+        /// relative to the root), or creates it with missing parent
+        /// directories; paths leaving the root are refused. Written in one
+        /// step (a reader never sees half of it), keeping the file's encoding
+        /// and BOM; a new file is UTF-8. An editor holding unsaved changes for
+        /// the file makes it `invalid` (save them first). Requires
+        /// `project.write`.
+        write-file: func(path: string, text: string) -> result<_, error>;
+        /// Whether `path` (absolute, or relative to the root) names an
+        /// existing file or directory — including hidden and ignored ones,
+        /// without reading any content. Paths leaving the root are refused.
+        /// Requires `project.read`.
+        exists: func(path: string) -> result<bool, error>;
+        /// Metadata of an existing path inside the project (absolute, or
+        /// relative to the root); a missing path is `not-found` and paths
+        /// leaving the root are refused. Requires `project.read`.
+        stat: func(path: string) -> result<file-stat, error>;
         /// Project files whose root-relative path matches `glob` (`**/*Mapper.xml`),
         /// at most `limit`, as absolute paths. Ignored and excluded files are
         /// skipped. Requires `project.read`.
         find-files: func(glob: string, limit: u32) -> result<list<string>, error>;
+        /// Fuzzy symbol search (CamelHump and container-qualified queries) over the
+        /// current index only; never starts or waits for a language server. Results
+        /// may be incomplete while indexing and ranges reflect the indexed text,
+        /// not necessarily unsaved edits. Empty queries return no symbols. Queries
+        /// over 256 UTF-8 bytes are invalid; limit is capped at 1000 (zero is
+        /// empty). Only paths readable under the root are returned; external
+        /// content roots are excluded. Cancellation returns cancelled; exceeding
+        /// the current call's deadline fails. A closed project is not-found.
+        /// Requires `project.read`.
+        symbols: func(query: string, limit: u32) -> result<list<symbol-info>, error>;
     }
 
     /// Projects open in any window. Requires `project.read`.

@@ -76,6 +76,9 @@ export function frameTheme(root: HTMLElement = document.documentElement): FrameT
   return { dark: root.dataset.theme !== "light", vars };
 }
 
+/** Top-right space reserved for `ToolWindowCornerActions` when a web view uses `header = "none"`. */
+export const HEADERLESS_CORNER_INSET = { width: 64, height: 34 } as const;
+
 /** The message that updates a loaded frame's theme. */
 export const frameThemeMessage = (theme: FrameTheme) => ({ tag: FRAME_TAG, theme });
 

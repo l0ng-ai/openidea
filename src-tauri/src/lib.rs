@@ -4,6 +4,7 @@
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
 mod application_focus;
+mod cli;
 mod commands;
 #[cfg(debug_assertions)]
 mod dev;
@@ -17,9 +18,12 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+#[cfg(target_os = "macos")]
+mod page_swipe;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
+mod remote_container;
 mod remote_dev;
 mod remote_wsl;
 
@@ -69,6 +73,14 @@ pub fn run() {
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
+    if let Some(project) = ide_mcp::stdio_request(&std::env::args().collect::<Vec<_>>()) {
+        let app_data = dirs::data_dir().unwrap_or_default().join(&context.config().identifier);
+        std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&app_data), project));
+    }
+    // The `openidea` command: answer and exit, no UI.
+    if let Some(code) = cli::run(&context.config().identifier) {
+        std::process::exit(code);
+    }
     // Before the first window: one taskbar identity for every launch path.
     jump_list::set_app_id(&context.config().identifier);
     logging::init(&context.config().identifier);
@@ -182,13 +194,19 @@ pub fn run() {
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
+        commands::mcp::apply(&app.state::<AppState>());
         app.manage(windows);
         app.manage(application_focus::ApplicationFocus::default());
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            macos::prepare_window_tabbing(mtm);
+        }
+        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
+        cli::serve(app.handle(), &app.config().identifier);
         if let Some(paths) = setup_opens.lock().take() {
             windows::open_paths_at_launch(app.handle(), paths);
         }
@@ -198,8 +216,13 @@ pub fn run() {
         Ok(())
     })
     .on_window_event(|window, event| match event {
-        #[cfg(target_os = "linux")]
-        tauri::WindowEvent::CloseRequested { .. } => linux_window_state::save_before_close(window.app_handle()),
+        tauri::WindowEvent::CloseRequested { .. } => {
+            #[cfg(target_os = "linux")]
+            linux_window_state::save_before_close(window.app_handle());
+            if let Some(w) = window.try_state::<WindowsState>() {
+                w.close_requested(window.label());
+            }
+        }
         tauri::WindowEvent::Focused(true) => {
             application_focus::changed(window.app_handle(), true);
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -211,6 +234,11 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            #[cfg(target_os = "macos")]
+            {
+                page_swipe::forget(window.label());
+                titlebar::forget(window);
+            }
             if windows::auxiliary_parent(window.label()).is_none() {
                 window_groups::destroyed(window.app_handle(), window.label());
                 windows::close_auxiliary_windows(window.app_handle(), window.label());
@@ -245,6 +273,7 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app.try_state::<AppState>() {
                 state.host.stop_processes_on_exit();
+                commands::mcp::stop(&state);
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }
@@ -288,7 +317,10 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
             // nothing else gets through. Others handle their own items; Close Tab closes the window.
             let label = match windows::auxiliary(w.label()) {
                 Some((_, parent))
-                    if matches!(route.action.as_str(), "app.quit" | "file.settings" | "file.newProjectsSettings") =>
+                    if matches!(
+                        route.action.as_str(),
+                        "app.quit" | "file.settings" | "file.projectStructure" | "file.newProjectsSettings"
+                    ) =>
                 {
                     parent
                 }

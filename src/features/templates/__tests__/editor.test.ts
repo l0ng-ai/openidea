@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
 import { CompletionContext, autocompletion, completionStatus, hasNextSnippetField } from "@codemirror/autocomplete";
 import {
@@ -42,8 +42,7 @@ async function editor(language: string, doc: string, cursor = doc.length, extra:
       ...extra,
     ],
   });
-  ensureSyntaxTree(state, doc.length, 5000);
-  view = new EditorView({ state, parent: document.body });
+  view = new EditorView({ state: completedSyntaxState(state), parent: document.body });
   return view;
 }
 

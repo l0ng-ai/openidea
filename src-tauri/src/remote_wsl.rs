@@ -71,8 +71,15 @@ async fn output(distro: &str, mut cmd: tokio::process::Command, limit: Duration)
     if out.status.success() { Ok(out) } else { Err(failure(distro, &out)) }
 }
 
+/// Prints [`PROBE_MARK`], `$HOME`, `uname -sm` and the installed builds of version `$1`.
+pub(crate) fn probe_script() -> String {
+    format!(
+        r#"echo {PROBE_MARK}; echo "$HOME"; uname -sm; ls -d "$HOME/{SERVER_DIR}/$1"/*/{SERVER_BIN} 2>/dev/null; true"#
+    )
+}
+
 /// Splits the probe output (after its marker) into [`Probe`].
-fn parse_probe(text: &str) -> IdeResult<Probe> {
+pub(crate) fn parse_probe(text: &str) -> IdeResult<Probe> {
     // Between markers: `wsl.exe` may print notices to stdout before the script runs.
     let text = text.split_once(PROBE_MARK).map_or("", |(_, rest)| rest);
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
@@ -87,10 +94,7 @@ fn parse_probe(text: &str) -> IdeResult<Probe> {
 
 /// Home directory, platform and installed server builds of `distro` (starts it if stopped).
 pub(crate) async fn probe(distro: &str, version: &str) -> IdeResult<Probe> {
-    let script = format!(
-        r#"echo {PROBE_MARK}; echo "$HOME"; uname -sm; ls -d "$HOME/{SERVER_DIR}/$1"/*/{SERVER_BIN} 2>/dev/null; true"#
-    );
-    let out = output(distro, sh(distro, &script, &[version])?, PROBE_TIMEOUT).await?;
+    let out = output(distro, sh(distro, &probe_script(), &[version])?, PROBE_TIMEOUT).await?;
     parse_probe(&String::from_utf8_lossy(&out.stdout))
 }
 
@@ -109,14 +113,37 @@ pub(crate) async fn install(
     progress: &Arc<Progress>,
 ) -> IdeResult<String> {
     let build_dir = format!("{version_dir}/{build}");
-    // Per install: another window may be installing the same build right now.
-    let script = format!(
+    let cmd = sh(distro, &install_script(), &[&build_dir, version_dir, build])?;
+    let out = upload(cmd, "wsl.exe", data, progress)
+        .await
+        .map_err(|_| IdeError::unavailable(format!("installing {SERVER_BIN} in '{distro}' timed out")))??;
+    if out.status.success() { Ok(format!("{build_dir}/{SERVER_BIN}")) } else { Err(failure(distro, &out)) }
+}
+
+/// Reads the server from stdin into `$1/openidea-server` and removes the builds of version folder
+/// `$2` other than `$3`. Per install file: another window may be installing the same build.
+pub(crate) fn install_script() -> String {
+    format!(
         r#"set -e; mkdir -p "$1"; p="$1/{SERVER_BIN}.part.$$"; trap 'rm -f "$p"' EXIT; cat > "$p"; chmod 755 "$p"; mv -f "$p" "$1/{SERVER_BIN}"; find "$2" -mindepth 1 -maxdepth 1 ! -name "$3" -exec rm -rf {{}} +"#
-    );
-    let mut cmd = sh(distro, &script, &[&build_dir, version_dir, build])?;
+    )
+}
+
+/// Runs `cmd` (an [`install_script`]) with `data` on its stdin, reporting the upload. `Err` when it
+/// timed out; else the finished command's output (or why it couldn't run), whatever its status.
+pub(crate) async fn upload(
+    mut cmd: tokio::process::Command,
+    program: &str,
+    data: &[u8],
+    progress: &Arc<Progress>,
+) -> Result<IdeResult<std::process::Output>, tokio::time::error::Elapsed> {
     cmd.stdin(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| IdeError::unavailable(format!("cannot start wsl.exe: {e}")))?;
-    let mut stdin = child.stdin.take().ok_or_else(|| IdeError::internal("wsl.exe stdin unavailable"))?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return Ok(Err(IdeError::unavailable(format!("cannot start {program}: {e}")))),
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        return Ok(Err(IdeError::internal(format!("{program} stdin unavailable"))));
+    };
     // `stdin` drops at the end of the upload: that is the EOF `cat` waits for.
     let upload = async move {
         for (i, chunk) in data.chunks(UPLOAD_CHUNK).enumerate() {
@@ -125,17 +152,16 @@ pub(crate) async fn install(
         }
         stdin.flush().await
     };
-    let result = tokio::time::timeout(INSTALL_TIMEOUT, async {
+    tokio::time::timeout(INSTALL_TIMEOUT, async {
         let uploaded = upload.await;
-        (uploaded, child.wait_with_output().await)
+        let failed = |e: std::io::Error| IdeError::unavailable(format!("installing {SERVER_BIN} failed: {e}"));
+        match (uploaded, child.wait_with_output().await) {
+            // Never a success without the whole binary.
+            (Err(e), Ok(out)) if out.status.success() => Err(failed(e)),
+            (_, out) => out.map_err(failed),
+        }
     })
     .await
-    .map_err(|_| IdeError::unavailable(format!("installing {SERVER_BIN} in '{distro}' timed out")))?;
-    match result {
-        (Ok(()), Ok(out)) if out.status.success() => Ok(format!("{build_dir}/{SERVER_BIN}")),
-        (_, Ok(out)) => Err(failure(distro, &out)),
-        (_, Err(e)) => Err(IdeError::unavailable(format!("installing {SERVER_BIN} failed: {e}"))),
-    }
 }
 
 /// The last lines the server (or `wsl.exe`) wrote outside the protocol.
@@ -143,7 +169,7 @@ pub(crate) async fn install(
 pub(crate) struct Tail(Arc<Mutex<VecDeque<String>>>);
 
 impl Tail {
-    fn push(&self, line: String) {
+    pub fn push(&self, line: String) {
         let mut lines = self.0.lock();
         if lines.len() == KEPT_LINES {
             lines.pop_front();

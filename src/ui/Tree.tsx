@@ -30,7 +30,8 @@ import { fuzzyMatch } from "./match";
 import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
-import { tx } from "@/platform/i18n";
+import { setContext } from "@/platform/context";
+import { useGivenTx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { useTreeDirectoryContext } from "./treeDirectoryContext";
 import { useIconRowHeight } from "./iconAppearance";
@@ -85,8 +86,8 @@ export interface TreeProps<T> {
   /** Custom row content (after the chevron). Defaults to icon + highlighted label + `getDetail`. */
   renderNode?: (node: T, state: TreeRowState) => ReactNode;
   getIcon?: (node: T, expanded: boolean) => IconName | (string & {}) | undefined;
-  /** Muted trailing text (e.g. a path next to the project root). */
-  getDetail?: (node: T) => string | undefined;
+  /** Muted trailing detail (e.g. a path next to the project root); may include styled content. */
+  getDetail?: (node: T) => ReactNode;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
@@ -116,6 +117,8 @@ export interface TreeProps<T> {
   rowClassName?: (node: T) => string | undefined;
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
+  /** Context key set while the tree itself has keyboard focus. */
+  focusContext?: string;
   empty?: ReactNode;
   /** Rows wider than the pane scroll horizontally instead of clipping. */
   horizontalScroll?: boolean;
@@ -230,6 +233,7 @@ function useControllableSet(value: ReadonlySet<string> | undefined, initial: Ite
 }
 
 export function Tree<T>(props: TreeProps<T>) {
+  const given = useGivenTx();
   const {
     roots,
     getKey,
@@ -592,6 +596,31 @@ export function Tree<T>(props: TreeProps<T>) {
   );
   const noMatch = !!query && matchMap.size === 0;
 
+  const { focusContext } = props;
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!focusContext || !element) return;
+    let focused = false;
+    const focus = () => {
+      focused = true;
+      setContext(focusContext, true);
+    };
+    const blur = () => {
+      if (!focused) return;
+      focused = false;
+      setContext(focusContext, false);
+    };
+    element.addEventListener("focus", focus);
+    element.addEventListener("blur", blur);
+    if (element.ownerDocument.activeElement === element) focus();
+    return () => {
+      element.removeEventListener("focus", focus);
+      element.removeEventListener("blur", blur);
+      // Removing a focused tree can skip blur, leaving its shortcuts active.
+      blur();
+    };
+  }, [emptyState, focusContext]);
+
   if (emptyState) return <div className={clsx(styles.tree, styles.emptyWrap, className)}>{empty}</div>;
 
   return (
@@ -599,7 +628,7 @@ export function Tree<T>(props: TreeProps<T>) {
       <div
         ref={scrollRef}
         role="tree"
-        aria-label={tx(props["aria-label"])}
+        aria-label={given(props["aria-label"])}
         aria-multiselectable={multiSelect || undefined}
         aria-activedescendant={
           leadRow && !leadRow.loading && virtualizer.getVirtualItems().some((v) => v.index === leadIndex)
@@ -721,7 +750,9 @@ export function Tree<T>(props: TreeProps<T>) {
                       indices={matches}
                       tone="accent"
                     />
-                    {detail && <span className={styles.detail}>{detail}</span>}
+                    {detail != null && detail !== false && detail !== "" && (
+                      <span className={styles.detail}>{detail}</span>
+                    )}
                   </>
                 )}
               </div>

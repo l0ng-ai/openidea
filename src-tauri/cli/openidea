@@ -1,0 +1,13 @@
+#!/bin/sh
+# The `openidea` command, linked onto PATH by "Install 'openidea' Command".
+# Runs the app executable of this bundle in CLI mode (src-tauri/src/cli.rs).
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+contents=$(cd "$(dirname "$self")/../.." && pwd -P) || exit 1
+exec "$contents/MacOS/openidea" --cli "$@"

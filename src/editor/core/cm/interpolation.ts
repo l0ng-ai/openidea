@@ -25,7 +25,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
   return {
     name: base.name,
     languageData: base.languageData,
-    tokenTable: { ...base.tokenTable, templateDelimiter: tags.special(tags.brace) },
+    tokenTable: { ...base.tokenTable, templateDelimiter: tags.special(tags.brace), stringRaw: tags.string },
     startState: (indentUnit) => ({ frames: [{ code: start(indentUnit), depth: 0 }], indentUnit }),
     copyState: (state) => ({
       ...state,
@@ -76,7 +76,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
           if (stream.next() === "\\" && literal.escape) stream.next();
         }
         if (stream.eol() && !literal.multiline) frame.literal = undefined;
-        return "string";
+        return dialect === "Kotlin" && literal.quote.length > 1 ? "stringRaw" : "string";
       }
       // Probe with a copy so quotes/braces inside comments or characters stay opaque.
       const from = stream.pos;
@@ -118,7 +118,7 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
             !(dialect === "Scala" && stream.string.slice(0, from).endsWith("raw")),
           multiline: quote.length >= 3 || verbatim,
         };
-        return "string";
+        return dialect === "Kotlin" && quote.length > 1 ? "stringRaw" : "string";
       }
       if (state.frames.length > 1 && style !== "comment" && !style?.startsWith("string") && end === from + 1) {
         if (frame.depth === 0 && stream.match(frame.close ?? "}")) {

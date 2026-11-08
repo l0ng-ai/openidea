@@ -132,6 +132,23 @@ export interface ReplyTurn {
   steered: boolean;
 }
 
+export interface ReplyTimes {
+  sentMs: number | null;
+  doneMs: number | null;
+}
+
+/** When the turn behind each agent reply was asked and finished, by entry index. */
+export function replyTimes(entries: AgentEntry[]): Map<number, ReplyTimes> {
+  const out = new Map<number, ReplyTimes>();
+  let current: Extract<AgentEntry, { type: "user" }> | null = null;
+  entries.forEach((entry, i) => {
+    if (entry.type === "user" && !entry.steered) current = entry;
+    else if (entry.type === "agent" && current)
+      out.set(i, { sentMs: current.sentMs ?? null, doneMs: current.doneMs ?? null });
+  });
+  return out;
+}
+
 /** Only the last reply of a turn offers actions that change the conversation. */
 export function replyTurns(entries: AgentEntry[]): Map<number, ReplyTurn> {
   const out = new Map<number, ReplyTurn>();

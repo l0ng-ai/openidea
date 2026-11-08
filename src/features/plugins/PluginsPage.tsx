@@ -33,6 +33,7 @@ import {
 } from "@/ui";
 import { RISK_LABEL, sortByRisk } from "./consent";
 import { pluginIconName } from "./pluginIcon";
+import { localizeContributions, usePluginCatalogs, usePluginT } from "./pluginText";
 import { itemsOf, uiPoint } from "./projection";
 import {
   compareVersions,
@@ -75,6 +76,7 @@ const POINT_TITLES: Record<string, string> = {
   iconThemes: "File Icon Themes",
   languages: "Languages",
   providers: "Editor Providers",
+  locales: "Translations",
 };
 
 const pointTitle = (point: string) => uiPoint(point)?.title ?? POINT_TITLES[point] ?? point;
@@ -268,7 +270,9 @@ function pointsOf(plugin: PluginInfo): string[] {
 function PointSection({ plugin, point }: { plugin: PluginInfo; point: string }) {
   const ui = usePlugins((s) => s.ui);
   const Details = uiPoint(point)?.Details;
-  const items = itemsOf(ui, point, plugin.id);
+  const catalogs = usePluginCatalogs((s) => s.catalogs);
+  const t = usePluginT(plugin.id);
+  const items = itemsOf(localizeContributions(ui, catalogs), point, plugin.id);
   return (
     <Section title={pointTitle(point)}>
       {Details && items.length > 0 ? (
@@ -279,7 +283,7 @@ function PointSection({ plugin, point }: { plugin: PluginInfo; point: string }) 
             .filter((c) => c.point === point)
             .map((c, i) => (
               <li key={`${c.label}-${i}`} className={styles.item}>
-                <span className={styles.itemMain}>{c.label}</span>
+                <span className={styles.itemMain}>{t(c.label)}</span>
               </li>
             ))}
         </ul>
@@ -292,7 +296,7 @@ function CapabilityRow({ cap, children }: { cap: CapabilityInfo; children?: Reac
   return (
     <li className={styles.item}>
       {children}
-      <span className={styles.itemMain}>{cap.description}</span>
+      <span className={styles.itemMain}>{tx(cap.description)}</span>
       <span className={styles.mono}>{cap.id}</span>
       <Badge tone={RISK_LABEL[cap.risk].tone}>{RISK_LABEL[cap.risk].label}</Badge>
     </li>

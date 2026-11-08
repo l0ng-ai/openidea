@@ -14,8 +14,8 @@
 //! The commands a window needs at run time (`plugin_run_command`,
 //! `plugin_post_events`, `plugin_event_kinds`, `plugin_status_items`,
 //! `plugin_context_keys`, `plugin_cancel_task`, `plugin_answer_prompt`, `plugin_set_active_file`,
-//! `plugin_line_markers`, `plugin_view_render`, `plugin_view_event`, `plugin_service_detail`,
-//! `plugin_service_log`)
+//! `plugin_line_markers`, `plugin_set_ui_locale`, `plugin_view_render`, `plugin_view_event`,
+//! `plugin_service_detail`, `plugin_service_log`, `plugin_answer_commit`, `plugin_commit_checks`)
 //! carry the desktop commands' names and arguments, so a remote window's UI
 //! routes them here unchanged. Plugin results come back as `plugin`
 //! notifications ([`PluginEventMessage`]); secrets stay in the desktop's
@@ -31,6 +31,7 @@ use ide_core::{IdeError, IdeResult};
 use ide_extension::{MANIFEST_FILE, ledger};
 use ide_jsonrpc::Peer;
 use ide_plugin::{Invocation, Limits};
+use ide_workspace::settings::SettingsScope;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -117,11 +118,15 @@ pub fn forwarded(event: &PluginEvent) -> bool {
             | PluginEvent::ViewMessage { .. }
             | PluginEvent::OpenTerminal { .. }
             | PluginEvent::OpenLocation { .. }
+            | PluginEvent::OpenLogTab { .. }
             | PluginEvent::CopyToClipboard { .. }
             | PluginEvent::OpenUrl { .. }
+            | PluginEvent::OpenProject { .. }
             | PluginEvent::PromptRequested { .. }
             | PluginEvent::PromptClosed { .. }
             | PluginEvent::RevealView { .. }
+            | PluginEvent::CommitRequested { .. }
+            | PluginEvent::EndpointsChanged { .. }
     )
 }
 
@@ -373,13 +378,23 @@ impl RemotePlugins {
                 let arg: Option<String> = c.arg("arg")?;
                 let editor: Option<PluginEditor> = c.arg("editor")?;
                 let paths: Option<Vec<PathBuf>> = c.arg("paths")?;
+                let settings_scope: Option<SettingsScope> = c.arg("settingsScope")?;
                 let invocation = Invocation {
                     client: Some(c.window.clone()),
                     workspace_root: c.host.project(&c.window).ok().map(|p| p.root.clone()),
                     editor: editor.map(PluginEditor::context),
                     selected_paths: paths.unwrap_or_default(),
+                    global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
                 };
                 blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_set_ui_locale", move |c| {
+            let h = h.clone();
+            async move {
+                alive(&h)?.set_ui_locale(&c.arg::<String>("tag")?);
+                Ok(())
             }
         });
         let h = host.clone();
@@ -420,6 +435,26 @@ impl RemotePlugins {
         d.add("plugin_answer_prompt", move |c| {
             let h = h.clone();
             async move { Ok(alive(&h)?.answer_prompt(&c.arg::<String>("promptId")?, c.arg("answer")?)) }
+        });
+        let h = host.clone();
+        d.add("plugin_answer_commit", move |c| {
+            let h = h.clone();
+            async move { Ok(alive(&h)?.answer_commit(&c.arg::<String>("requestId")?, c.arg("answer")?)) }
+        });
+        let h = host.clone();
+        d.add("plugin_commit_checks", move |c| {
+            let h = h.clone();
+            async move {
+                super::commit::commit_checks(
+                    &c.host,
+                    alive(&h)?,
+                    &c.window,
+                    c.arg("selection")?,
+                    c.arg("checks")?,
+                    c.arg("request")?,
+                )
+                .await
+            }
         });
         let h = host.clone();
         d.add("plugin_set_active_file", move |c| {
@@ -536,6 +571,11 @@ impl RemotePlugins {
             async move {
                 super::index_ops::plugin_navigation_markers(&c.host, alive(&h)?, &c.window, c.arg("paths")?).await
             }
+        });
+        let h = host.clone();
+        d.add("plugin_endpoints", move |c| {
+            let h = h.clone();
+            async move { super::index_ops::plugin_endpoints(&c.host, alive(&h)?, &c.window, c.arg("pluginId")?).await }
         });
         d.add("plugin_line_markers", |c| async move {
             crate::ops::lsp::plugin_line_markers(&c.host, &c.window, c.arg("doc")?).await

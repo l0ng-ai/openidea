@@ -73,7 +73,7 @@ export function jdwpLaunch(config: RunConfig): RunConfig | null {
 }
 
 /** Runs `config` with a JDWP agent and attaches the Java debugger to every JVM it starts. */
-export async function debugWithAgent(config: RunConfig): Promise<boolean> {
+export async function debugWithAgent(config: RunConfig, show?: boolean): Promise<boolean> {
   const launch = jdwpLaunch(config);
   if (!launch) return false;
   let sessionId: string | null = null;
@@ -88,10 +88,12 @@ export async function debugWithAgent(config: RunConfig): Promise<boolean> {
       port,
       process: runId,
       runConfig: config,
+      show,
     });
   };
   const session = await startRun(config, undefined, undefined, {
     launch,
+    show,
     onLine: (line) => {
       const port = jdwpListeningPort(line);
       if (port === null) return;

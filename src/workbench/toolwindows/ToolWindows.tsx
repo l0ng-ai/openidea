@@ -17,7 +17,7 @@ import { create } from "zustand";
 import { call, commands } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
-import { dragRequiresAlt, Icon, IconButton, Menu, showContextMenu, tooltipAttrs, type MenuItem, T } from "@/ui";
+import { dragRequiresAlt, Icon, IconButton, Menu, showContextMenu, tooltipAttrs, type MenuItem } from "@/ui";
 import { FOCUSABLE } from "@/ui/popupState";
 import { TabStripRegistry } from "@/ui/Tabs";
 import {
@@ -50,6 +50,11 @@ import {
 import { contentTabRegistry } from "./content";
 import styles from "./ToolWindows.module.css";
 import { tx } from "@/platform/i18n";
+
+/** The window's title in the UI language; a plugin's stays as written. */
+function titleOf(tw: ToolWindowContribution): string {
+  return tw.verbatim ? tw.title : tx(tw.title);
+}
 
 function byOrder(a: ToolWindowContribution, b: ToolWindowContribution) {
   return (a.order ?? 100) - (b.order ?? 100) || a.title.localeCompare(b.title);
@@ -403,7 +408,7 @@ function StripeButton({
         side === "right" && styles.stripeRight,
         dragged && styles.stripeDragged,
       )}
-      aria-label={tx(tw.title)}
+      aria-label={titleOf(tw)}
       aria-pressed={active}
       aria-keyshortcuts={shortcut}
       data-stripe-button={tw.id}
@@ -415,7 +420,8 @@ function StripeButton({
         e.preventDefault();
         showContextMenu(e, stripeButtonMenu(tw, showName));
       }}
-      {...tooltipAttrs(tw.title, shortcut)}
+      data-tooltip-stripe={side}
+      {...tooltipAttrs(titleOf(tw), shortcut, true)}
     >
       <span className={styles.stripeIcon}>
         <Icon name={tw.icon} size={20} />
@@ -423,7 +429,7 @@ function StripeButton({
       </span>
       {showName && (
         <span className={clsx(styles.stripeLabel, !/\s/.test(tw.title) && styles.stripeLabelWord)} aria-hidden="true">
-          <T>{tw.title}</T>
+          {titleOf(tw)}
         </span>
       )}
     </button>
@@ -441,6 +447,7 @@ function StripeMore({ windows }: { windows: ToolWindowContribution[] }) {
         .map((w) => ({
           id: w.id,
           label: w.title,
+          verbatim: w.verbatim,
           icon: w.icon,
           shortcut: shortcutLabel(`toolwindow.${w.id}`),
           run: () => showToolWindow(w.id, true),
@@ -457,6 +464,7 @@ function StripeMore({ windows }: { windows: ToolWindowContribution[] }) {
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
+        data-tooltip-stripe="left"
         {...tooltipAttrs("More Tool Windows")}
       >
         <Icon name="more-horizontal" size={20} />
@@ -612,30 +620,24 @@ export function ToolWindowHeader({
   );
 }
 
-function HeaderRow({
-  tw,
-  title,
-  actions,
-  children,
-}: {
-  tw: ToolWindowContribution;
-  title: boolean;
-  actions: boolean;
-  children?: ReactNode;
-}) {
+/**
+ * The Options (`⋮` Move To / Maximize / Hide) and Hide (`—`) buttons of a tool
+ * window that uses `useOwnToolWindowHeader` without a full `ToolWindowHeader`.
+ */
+export function ToolWindowCornerActions({ className }: { className?: string }) {
+  const tw = useContext(ToolWindowFrame)?.tw;
+  if (!tw) return null;
+  return <ToolWindowActionsBar tw={tw} className={className} />;
+}
+
+function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; className?: string }) {
   const maximized = useToolWindowLayout((s) => s.maximized === tw.anchor);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [titleOpen, setTitleOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement>(null);
-  const titleRef = useRef<HTMLButtonElement>(null);
   const Actions = tw.headerActions;
-  const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
 
   const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
   const own = useHeaderMenu(tw.id);
-  const useTitleMenu = tw.titleMenu ?? noTitleMenu;
-  const titleMenu = useTitleMenu(tw.id);
-  const titleItems = titleMenu?.items ?? own;
   const more: MenuItem[] = [
     ...own,
     ...(own.length ? [{ kind: "separator" } as MenuItem] : []),
@@ -648,6 +650,62 @@ function HeaderRow({
     { kind: "separator" },
     { label: "Hide", icon: "hide", shortcut: shortcutLabel("toolwindow.hideActive"), run: () => hideToolWindow(tw.id) },
   ];
+
+  return (
+    <>
+      <div className={clsx(styles.headerActions, className)}>
+        {Actions && <Actions id={tw.id} />}
+        <IconButton
+          ref={moreRef}
+          icon="more"
+          title="Options"
+          size="small"
+          iconSize={16}
+          aria-haspopup="menu"
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen((v) => !v)}
+        />
+        <IconButton
+          icon="minus"
+          title="Hide"
+          shortcut={shortcutLabel("toolwindow.hideActive")}
+          size="small"
+          iconSize={16}
+          onClick={() => hideToolWindow(tw.id)}
+        />
+      </div>
+      <Menu
+        open={moreOpen}
+        onClose={() => setMoreOpen(false)}
+        anchor={moreRef}
+        items={more}
+        placement="bottom-end"
+        aria-label={tx`${titleOf(tw)} options`}
+      />
+    </>
+  );
+}
+
+function HeaderRow({
+  tw,
+  title,
+  actions,
+  children,
+}: {
+  tw: ToolWindowContribution;
+  title: boolean;
+  actions: boolean;
+  children?: ReactNode;
+}) {
+  const [titleOpen, setTitleOpen] = useState(false);
+  const titleRef = useRef<HTMLButtonElement>(null);
+  const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
+
+  const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
+  const own = useHeaderMenu(tw.id);
+  const useTitleMenu = tw.titleMenu ?? noTitleMenu;
+  const titleMenu = useTitleMenu(tw.id);
+  const titleItems = titleMenu?.items ?? own;
 
   return (
     <header
@@ -672,9 +730,7 @@ function HeaderRow({
             aria-expanded={titleOpen}
             onClick={() => setTitleOpen((v) => !v)}
           >
-            <span className={styles.title}>
-              <T>{titleMenu?.label ?? tw.title}</T>
-            </span>
+            <span className={styles.title}>{titleMenu ? tx(titleMenu.label) : titleOf(tw)}</span>
             <Icon name="chevron-down" size={12} className={styles.titleChevron} />
           </button>
           <Menu
@@ -682,49 +738,15 @@ function HeaderRow({
             onClose={() => setTitleOpen(false)}
             anchor={titleRef}
             items={titleItems}
-            aria-label={titleMenu ? tx`${tw.title} views` : tx`${tw.title} view options`}
+            aria-label={titleMenu ? tx`${titleOf(tw)} views` : tx`${titleOf(tw)} view options`}
           />
         </>
       ) : (
-        <span className={clsx(styles.title, styles.titlePlain)}>
-          <T>{tw.title}</T>
-        </span>
+        <span className={clsx(styles.title, styles.titlePlain)}>{titleOf(tw)}</span>
       )}
       {children && <div className={clsx(styles.headerContent, !showTitle && styles.headerContentOnly)}>{children}</div>}
       <div className={styles.headerSpacer} />
-      {actions && (
-        <>
-          <div className={styles.headerActions}>
-            {Actions && <Actions id={tw.id} />}
-            <IconButton
-              ref={moreRef}
-              icon="more"
-              title="Options"
-              size="small"
-              iconSize={16}
-              aria-haspopup="menu"
-              aria-expanded={moreOpen}
-              onClick={() => setMoreOpen((v) => !v)}
-            />
-            <IconButton
-              icon="minus"
-              title="Hide"
-              shortcut={shortcutLabel("toolwindow.hideActive")}
-              size="small"
-              iconSize={16}
-              onClick={() => hideToolWindow(tw.id)}
-            />
-          </div>
-          <Menu
-            open={moreOpen}
-            onClose={() => setMoreOpen(false)}
-            anchor={moreRef}
-            items={more}
-            placement="bottom-end"
-            aria-label={tx`${tw.title} options`}
-          />
-        </>
-      )}
+      {actions && <ToolWindowActionsBar tw={tw} />}
     </header>
   );
 }
@@ -790,7 +812,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       ref={ref}
       className={styles.window}
       data-toolwindow={tw.id}
-      aria-label={tx(tw.title)}
+      aria-label={titleOf(tw)}
       hidden={hidden}
       tabIndex={-1}
     >

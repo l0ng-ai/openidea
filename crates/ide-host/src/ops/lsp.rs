@@ -7,6 +7,7 @@ use ide_core::error::ErrorKind;
 use ide_core::{DocId, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
+use std::path::Path;
 
 async fn prepare_actions(
     project: std::sync::Arc<crate::Project>,
@@ -85,7 +86,12 @@ const PLUGIN_SERVER: ServerId = ServerId(0);
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PluginActionRef {
     plugin: String,
-    data: String,
+    data: Option<String>,
+    /// Opened once the action is applied.
+    open: Option<ide_core::IpcPath>,
+    /// Listed by the plugin's `file-actions` export, which resolves it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    file: bool,
 }
 
 /// A plugin's `completion-item.kind` (wit/providers.wit lists them).
@@ -195,9 +201,24 @@ pub async fn lsp_hover(
 ) -> IdeResult<Option<Hover>> {
     let lsp = host.project(window)?.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp.hover(doc, pos, cancel).await;
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Hover) else {
+        let result = lsp.hover(doc, pos, cancel).await;
+        host.end_request(request);
+        return result;
+    };
+    let (result, hovers) =
+        tokio::join!(lsp.hover(doc, pos, cancel), plugin_call(move || plugins.provide_hover(&d, pos)));
     host.end_request(request);
-    result
+    let hovers = hovers.unwrap_or_default();
+    if hovers.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => None,
+        Err(e) => return Err(e),
+    };
+    Ok(crate::plugins::merge_hover(server, hovers))
 }
 
 pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<SignatureHelp>> {
@@ -375,23 +396,142 @@ pub async fn lsp_references(
     libraries: bool,
     on_partial: super::Channel<References>,
 ) -> IdeResult<References> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
+    let lsp = project.lsp.clone();
     let cancel = host.begin_request(request);
-    let result = lsp
-        .references_streaming(
-            doc,
-            pos,
-            include_declaration,
-            project_wide,
-            libraries,
-            cancel,
-            Some(&|refs| {
-                let _ = on_partial.send(refs);
-            }),
-        )
-        .await;
+    let result = async {
+        let symbol = indexed_symbol(host, window, doc, pos).await?;
+        if let Some(symbol) = &symbol {
+            let project = project.clone();
+            let snapshot = symbol.clone();
+            let cancellation = cancel.clone();
+            blocking(move || validate_indexed_symbol(&project, &snapshot, Some(&cancellation))).await?;
+            let _ = on_partial.send(merge_indexed_references(References::default(), symbol));
+        }
+        let result = lsp
+            .references_streaming(
+                doc,
+                pos,
+                include_declaration,
+                project_wide,
+                libraries,
+                cancel.clone(),
+                Some(&|refs| {
+                    let refs =
+                        symbol.as_ref().map_or_else(|| refs.clone(), |s| merge_indexed_references(refs.clone(), s));
+                    let _ = on_partial.send(refs);
+                }),
+            )
+            .await;
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        match symbol {
+            None => result,
+            Some(symbol) => {
+                let server = match result {
+                    Ok(server) => server,
+                    Err(e) => References { incomplete: indexed_lsp_error(e)?, ..Default::default() },
+                };
+                blocking(move || {
+                    validate_indexed_symbol(&project, &symbol, Some(&cancel))?;
+                    Ok(merge_indexed_references(server, &symbol))
+                })
+                .await
+            }
+        }
+    }
+    .await;
     host.end_request(request);
     result
+}
+
+/// Native servers can decline names owned by indexers. A failed native query
+/// keeps the graph usable but must not look like a complete merged result.
+fn indexed_lsp_error(error: ide_core::IdeError) -> IdeResult<Option<ReferencesIncomplete>> {
+    match error.kind {
+        ErrorKind::NotFound | ErrorKind::Unavailable => Ok(None),
+        ErrorKind::Protocol => Ok(Some(ReferencesIncomplete::ServerFailed)),
+        _ => Err(error),
+    }
+}
+
+async fn indexed_symbol(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<crate::plugins::navigation::IndexedSymbol>> {
+    let Some(plugins) = crate::plugins::editor_plugin_host() else { return Ok(None) };
+    let project = host.project(window)?;
+    let client = window.to_owned();
+    blocking(move || {
+        let Ok((path, _)) = project.documents.identity(doc) else { return Ok(None) };
+        let path = ide_plugin::resolve_real(&path);
+        Ok(plugins.indexed_symbol_at(&project.root, &path, pos, Some(&client)))
+    })
+    .await
+}
+
+fn validate_indexed_symbol(
+    project: &crate::Project,
+    symbol: &crate::plugins::navigation::IndexedSymbol,
+    cancel: Option<&ide_core::CancellationToken>,
+) -> IdeResult<()> {
+    for file in &symbol.files {
+        if cancel.is_some_and(|cancel| cancel.is_cancelled()) {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        let stale = || {
+            ide_core::IdeError::new(ErrorKind::OutOfSync, "indexed document changed; wait for indexing and try again")
+        };
+        if ide_plugin::resolve_in_root(&project.root, &file.path.to_string_lossy()).ok().as_ref() != Some(&file.path) {
+            return Err(stale());
+        }
+        let text = if let Some(doc) = project.documents.by_path(&file.path) {
+            let snapshot = project.documents.text_snapshot(doc)?;
+            if snapshot.large || file.version.is_some_and(|v| v != snapshot.version) {
+                return Err(stale());
+            }
+            snapshot.text
+        } else {
+            let loaded = project
+                .documents
+                .load_file_bounded(&file.path, crate::plugins::navigation::MAX_DOCUMENT_BYTES)
+                .map_err(|_| stale())?;
+            if loaded.binary || loaded.large {
+                return Err(stale());
+            }
+            loaded.text
+        };
+        if text.len() > crate::plugins::navigation::MAX_DOCUMENT_BYTES
+            || crate::plugins::navigation::snapshot_hash(&text) != file.hash
+        {
+            return Err(stale());
+        }
+        let text = ide_text::Document::new(&text);
+        for range in &file.ranges {
+            if [range.start, range.end].into_iter().any(|pos| text.offset_to_pos(text.pos_to_offset(pos)) != pos) {
+                return Err(ide_core::IdeError::invalid("indexed name is not on a UTF-16 character boundary"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn merge_indexed_references(mut server: References, symbol: &crate::plugins::navigation::IndexedSymbol) -> References {
+    let key =
+        |location: &Location| (dunce::simplified(&location.path).to_path_buf(), location.range, location.uri.clone());
+    let mut seen: std::collections::HashSet<_> = server.locations.iter().map(key).collect();
+    for file in &symbol.files {
+        for range in &file.ranges {
+            let location = Location::file(file.path.clone(), *range);
+            if seen.insert(key(&location)) {
+                server.locations.push(location);
+            }
+        }
+    }
+    server
 }
 
 pub async fn lsp_document_highlights(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Vec<Highlight>> {
@@ -428,7 +568,7 @@ pub async fn lsp_code_actions(
     };
     let plugin_actions: Vec<CodeAction> = plugin_actions
         .into_iter()
-        .map(|(plugin, a)| plugin_code_action(&plugin, a))
+        .map(|(plugin, a)| plugin_code_action(&plugin, &project.root, a))
         .filter(|a| {
             only.is_empty()
                 || a.kind.as_ref().is_some_and(|k| only.iter().any(|o| k == o || k.starts_with(&format!("{o}."))))
@@ -444,28 +584,78 @@ pub async fn lsp_code_actions(
     prepare_actions(project, doc, version, actions).await
 }
 
-fn plugin_code_action(plugin: &str, a: ide_plugin::CodeAction) -> CodeAction {
-    // With `data` and no edits, the plugin computes them when the action is picked.
-    let lazy = a.edits.is_empty() && a.data.is_some();
-    let files: Vec<_> = a
-        .edits
-        .into_iter()
-        .map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None })
-        .collect();
-    let data = a
-        .data
-        .filter(|_| lazy)
-        .and_then(|data| serde_json::to_value(PluginActionRef { plugin: plugin.to_owned(), data }).ok());
+fn plugin_code_action(plugin: &str, root: &Path, a: ide_plugin::CodeAction) -> CodeAction {
+    // With `data` and nothing to apply, the plugin computes the edits when the action is picked.
+    let lazy = a.edits.is_empty() && a.operations.is_empty() && a.data.is_some();
+    let (files, open, disabled_reason) = match plugin_file_edits(root, &a) {
+        Ok((files, open)) => (files, open, None),
+        Err(reason) => (Vec::new(), None, Some(reason)),
+    };
+    let data = (lazy || open.is_some())
+        .then(|| PluginActionRef {
+            plugin: plugin.to_owned(),
+            data: a.data.filter(|_| lazy),
+            open: open.map(Into::into),
+            file: a.file_action,
+        })
+        .and_then(|r| serde_json::to_value(r).ok());
     CodeAction {
         title: a.title,
         kind: a.kind,
         is_preferred: a.preferred,
-        disabled_reason: None,
+        disabled_reason,
         edit: (!lazy).then(|| WorkspaceEdit { files, preconditions: Vec::new() }),
         command: None,
         data,
         server: PLUGIN_SERVER,
     }
+}
+
+/// The action's file operations, then its text edits, as one workspace edit's files, and the
+/// file to open. An action with file operations or an `open` target stays inside the project
+/// root as a whole: a path outside it disables the action.
+fn plugin_file_edits(
+    root: &Path,
+    a: &ide_plugin::CodeAction,
+) -> Result<(Vec<ide_core::FileEdit>, Option<std::path::PathBuf>), String> {
+    use ide_core::FileEdit;
+    use ide_plugin::FileOperation;
+    let confine = !a.operations.is_empty() || a.open.is_some();
+    let confined = |path: &Path| ide_plugin::resolve_new_in_root(root, &path.to_string_lossy());
+    let mut files = Vec::new();
+    let mut created_with_text = Vec::new();
+    for operation in &a.operations {
+        match operation {
+            FileOperation::Create { path, text, overwrite } => {
+                let path = confined(path)?;
+                files.push(FileEdit::Create { path: path.clone().into(), overwrite: *overwrite });
+                if !text.is_empty() {
+                    let start = Range::point(Pos::new(0, 0));
+                    files.push(FileEdit::Edit {
+                        path: path.clone().into(),
+                        edits: vec![TextEdit { range: start, new_text: text.clone() }],
+                        version: None,
+                    });
+                    created_with_text.push(path);
+                }
+            }
+            FileOperation::Rename { from, to } => {
+                files.push(FileEdit::Rename { from: confined(from)?.into(), to: confined(to)?.into() });
+            }
+            FileOperation::Delete { path } => {
+                files.push(FileEdit::Delete { path: confined(path)?.into(), recursive: false });
+            }
+        }
+    }
+    for (path, edits) in &a.edits {
+        let path = if confine { confined(path)? } else { path.clone() };
+        if created_with_text.contains(&path) {
+            return Err("put the text of a created file in its `create`, not in an edit".into());
+        }
+        files.push(FileEdit::Edit { path: path.into(), edits: edits.clone(), version: None });
+    }
+    let open = a.open.as_deref().map(confined).transpose()?;
+    Ok((files, open))
 }
 
 /// A code action resolved by whoever offered it: its language server, or
@@ -484,11 +674,16 @@ async fn resolve_action(host: &Host, window: &str, doc: DocId, action: CodeActio
         kind: action.kind.clone(),
         preferred: action.is_preferred,
         edits: Vec::new(),
-        data: Some(r.data),
+        operations: Vec::new(),
+        open: None,
+        data: r.data,
+        file_action: r.file,
     };
     let plugin = r.plugin.clone();
-    let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending)).await?;
-    Ok(plugin_code_action(&r.plugin, ide_plugin::CodeAction { data: None, ..resolved }))
+    let invocation = ide_plugin::Invocation { client: Some(window.to_owned()), ..Default::default() };
+    let resolved = blocking(move || plugins.resolve_code_action(&plugin, &d, pending, invocation)).await?;
+    let root = host.project(window)?.root.clone();
+    Ok(plugin_code_action(&r.plugin, &root, ide_plugin::CodeAction { data: None, ..resolved }))
 }
 
 /// Cancellable code actions with the kinds the servers advertise (Refactor This, refactoring availability).
@@ -511,7 +706,7 @@ pub async fn lsp_code_action_query(
     Ok(result)
 }
 
-/// Resolves a code action's edit without applying it (intention preview).
+/// Resolves a code action's edit without applying it.
 pub async fn lsp_resolve_code_action(
     host: &Host,
     window: &str,
@@ -539,17 +734,39 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
     } else {
         action
     };
+    if let Some(reason) = &action.disabled_reason {
+        return Err(ide_core::IdeError::invalid(reason.clone()));
+    }
     if let Some(edit) = &action.edit {
         let documents = project.documents.clone();
         let edit = edit.clone();
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
+    open_plugin_action_target(&action, window);
     if let Some(command) = action.command
         && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
     {
         project.lsp.execute_command(doc, command).await?;
     }
     Ok(())
+}
+
+/// The plugin and the file its action asks to show once applied.
+fn plugin_action_open(action: &CodeAction) -> Option<(String, ide_core::IpcPath)> {
+    if action.server != PLUGIN_SERVER {
+        return None;
+    }
+    let r = action.data.clone().and_then(|d| serde_json::from_value::<PluginActionRef>(d).ok())?;
+    Some((r.plugin, r.open?))
+}
+
+/// Opens the file a plugin's action asked to show, now that the action is applied.
+fn open_plugin_action_target(action: &CodeAction, window: &str) {
+    let (Some((plugin, path)), Some(plugins)) = (plugin_action_open(action), crate::plugins::editor_plugin_host())
+    else {
+        return;
+    };
+    plugins.open_file(&plugin, window, path);
 }
 
 /// A command after a code action's edit that no server provides: what other editors'
@@ -569,6 +786,14 @@ async fn is_client_follow_up(
 }
 
 pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos) -> IdeResult<Option<Range>> {
+    if let Some(symbol) = indexed_symbol(host, window, doc, pos).await? {
+        let project = host.project(window)?;
+        return blocking(move || {
+            validate_indexed_symbol(&project, &symbol, None)?;
+            Ok(Some(symbol.range))
+        })
+        .await;
+    }
     host.project(window)?.lsp.prepare_rename(doc, pos).await
 }
 
@@ -635,20 +860,133 @@ pub async fn lsp_rename(
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
     let cancel = host.begin_request(request);
-    let result = project.lsp.rename(doc, pos, new_name, cancel).await;
-    host.end_request(request);
-    let mut renamed = result?;
-    blocking(move || {
-        if project.documents.version(doc)? != version {
-            return Err(ide_core::IdeError::new(
-                ide_core::error::ErrorKind::OutOfSync,
-                "document changed while computing rename; request it again",
-            ));
+    let result = async {
+        let symbol = indexed_symbol(host, window, doc, pos).await?;
+        let mut native_owned = false;
+        let result = async {
+            if let Some(symbol) = &symbol {
+                let range = tokio::select! {
+                    _ = cancel.cancelled() => return Err(ide_core::IdeError::cancelled()),
+                    range = project.lsp.prepare_rename(doc, pos) => range?,
+                };
+                if range != Some(symbol.range) {
+                    return Ok(Renamed::default());
+                }
+                native_owned = true;
+            }
+            project.lsp.rename(doc, pos, new_name.clone(), cancel.clone()).await
         }
-        project.documents.prepare_workspace_edit(&mut renamed.edit)?;
-        Ok(renamed)
-    })
-    .await
+        .await;
+        if cancel.is_cancelled() {
+            return Err(ide_core::IdeError::cancelled());
+        }
+        let mut renamed = match result {
+            Ok(renamed) => renamed,
+            Err(e) if symbol.is_some() && !native_owned => {
+                Renamed { incomplete: indexed_lsp_error(e)?, ..Default::default() }
+            }
+            Err(e) => return Err(e),
+        };
+        if native_owned
+            && !renamed.edit.files.iter().any(|file| match file {
+                ide_core::FileEdit::Edit { edits, .. } => !edits.is_empty(),
+                _ => true,
+            })
+        {
+            return Err(ide_core::IdeError::invalid("Native server declined rename"));
+        }
+        blocking(move || {
+            if project.documents.version(doc)? != version {
+                return Err(ide_core::IdeError::new(
+                    ErrorKind::OutOfSync,
+                    "document changed while computing rename; request it again",
+                ));
+            }
+            if let Some(symbol) = &symbol {
+                merge_indexed_rename(&mut renamed, symbol, &new_name, &project.documents);
+            }
+            project.documents.prepare_workspace_edit(&mut renamed.edit)?;
+            if let Some(symbol) = &symbol {
+                validate_indexed_symbol(&project, symbol, Some(&cancel))?;
+            }
+            if cancel.is_cancelled() {
+                return Err(ide_core::IdeError::cancelled());
+            }
+            Ok(renamed)
+        })
+        .await
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
+fn merge_indexed_rename(
+    renamed: &mut Renamed,
+    symbol: &crate::plugins::navigation::IndexedSymbol,
+    new_name: &str,
+    documents: &ide_workspace::Documents,
+) {
+    use ide_core::FileEdit;
+    renamed.preview = true;
+    let server = std::mem::take(&mut renamed.edit.files);
+    let mut additions: Vec<Vec<FileEdit>> = vec![vec![]; server.len() + 1];
+    for file in &symbol.files {
+        let mut path = dunce::simplified(&file.path).to_path_buf();
+        let mut at = server.len();
+        for (index, operation) in server.iter().enumerate() {
+            match operation {
+                FileEdit::Edit { path: target, .. } if dunce::simplified(target) == path.as_path() => {
+                    at = index;
+                    break;
+                }
+                FileEdit::Rename { from, to } => {
+                    if let Ok(suffix) = path.strip_prefix(dunce::simplified(from)) {
+                        path = dunce::simplified(to).join(suffix);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let covered: Vec<_> = server[at..]
+            .iter()
+            .take_while(|operation| matches!(operation, FileEdit::Edit { .. }))
+            .filter_map(|operation| match operation {
+                FileEdit::Edit { path: target, edits, .. } if dunce::simplified(target) == path.as_path() => {
+                    Some(edits)
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let edits: Vec<_> = file
+            .ranges
+            .iter()
+            .filter(|range| {
+                !covered.iter().any(|native| {
+                    native.range == **range || (native.range.start < range.end && range.start < native.range.end)
+                })
+            })
+            .map(|range| TextEdit { range: *range, new_text: new_name.to_owned() })
+            .collect();
+        if edits.is_empty() {
+            continue;
+        }
+        additions[at].push(FileEdit::Edit {
+            path: path.into(),
+            version: documents
+                .by_path(&file.path)
+                .and_then(|id| documents.version(id).ok())
+                .and_then(|v| i32::try_from(v).ok()),
+            edits,
+        });
+    }
+    for (index, operation) in server.into_iter().enumerate() {
+        renamed.edit.files.push(operation);
+        renamed.edit.files.append(&mut additions[index]);
+    }
+    renamed.edit.files.append(additions.last_mut().expect("one trailing batch"));
+    renamed.edit.deduplicate();
 }
 
 pub async fn lsp_format(
@@ -662,7 +1000,22 @@ pub async fn lsp_format(
 }
 
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
-    host.project(window)?.lsp.inlay_hints(doc, range).await
+    let lsp = host.project(window)?.lsp.clone();
+    let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::InlayHints) else {
+        return lsp.inlay_hints(doc, range).await;
+    };
+    let (result, hints) =
+        tokio::join!(lsp.inlay_hints(doc, range), plugin_call(move || plugins.provide_inlay_hints(&d, range)));
+    let hints = hints.unwrap_or_default();
+    if hints.is_empty() {
+        return result;
+    }
+    let server = match result {
+        Ok(server) => server,
+        Err(e) if matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable) => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    Ok(crate::plugins::merge_inlay_hints(server, hints, range))
 }
 
 pub async fn lsp_semantic_tokens(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<SemanticTokens>> {
@@ -816,6 +1169,8 @@ pub async fn lsp_execute_code_action(
             return Err(ide_core::IdeError::cancelled());
         }
         let edited = action.edit.is_some();
+        // A plugin's action may name a file to show once applied; the caller opens it.
+        let open = plugin_action_open(&action).map(|(_, path)| path);
         if let Some(edit) = action.edit {
             let documents = project.documents.clone();
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
@@ -831,7 +1186,7 @@ pub async fn lsp_execute_code_action(
                 .execute_action_command(doc, action.server, command, answers, cancel)
                 .await
                 .map(|paths| paths.into_iter().map(ide_core::IpcPath::from).collect()),
-            None => Ok(Vec::new()),
+            None => Ok(open.into_iter().collect()),
         }
     }
     .await;
@@ -989,21 +1344,213 @@ mod tests {
     use super::*;
 
     #[test]
+    fn indexed_names_survive_native_refusal_without_hiding_cancellation_or_staleness() {
+        use ide_core::IdeError;
+        for kind in [ErrorKind::NotFound, ErrorKind::Unavailable] {
+            assert_eq!(indexed_lsp_error(IdeError::new(kind, "no native provider")).unwrap(), None);
+        }
+        assert_eq!(
+            indexed_lsp_error(IdeError::new(ErrorKind::Protocol, "not a native identifier")).unwrap(),
+            Some(ReferencesIncomplete::ServerFailed)
+        );
+        for kind in [ErrorKind::Cancelled, ErrorKind::OutOfSync, ErrorKind::InvalidInput] {
+            assert_eq!(indexed_lsp_error(IdeError::new(kind, "must propagate")).unwrap_err().kind, kind);
+        }
+    }
+
+    #[test]
+    fn indexed_results_merge_with_lsp_locations_edits_and_incompleteness() {
+        use crate::plugins::navigation::{IndexedAnchors, IndexedSymbol};
+        use ide_core::{FileEdit, LanguageId};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let shared = root.join("shared.idx");
+        let native = root.join("native.txt");
+        std::fs::write(&shared, "old old").unwrap();
+        std::fs::write(&native, "old").unwrap();
+        let range = Range::new(Pos::new(0, 0), Pos::new(0, 3));
+        let other = Range::new(Pos::new(0, 4), Pos::new(0, 7));
+        let symbol = IndexedSymbol {
+            range,
+            files: vec![IndexedAnchors {
+                path: shared.clone(),
+                version: None,
+                hash: blake3::hash(b"old old"),
+                ranges: vec![range, other],
+            }],
+        };
+        // Native file URIs have ordinary Windows paths; index snapshots retain
+        // canonical verbatim paths. Both identify the same file and edit batch.
+        let server_shared = dunce::simplified(&shared).to_path_buf();
+        let server_native = dunce::simplified(&native).to_path_buf();
+        #[cfg(windows)]
+        assert_ne!(shared, server_shared);
+        let location = Location::file(server_shared.clone(), range);
+        let native_location = Location::file(server_native.clone(), range);
+        let merged = merge_indexed_references(
+            References {
+                locations: vec![location.clone(), native_location.clone()],
+                incomplete: Some(ReferencesIncomplete::Indexing),
+                libraries_skipped: true,
+                ..Default::default()
+            },
+            &symbol,
+        );
+        assert_eq!(merged.locations, vec![location, native_location, Location::file(shared.clone(), other)]);
+        assert_eq!(merged.incomplete, Some(ReferencesIncomplete::Indexing));
+        assert!(merged.libraries_skipped);
+        let edit = |path, range| FileEdit::Edit {
+            path,
+            version: None,
+            edits: vec![TextEdit { range, new_text: "new".into() }],
+        };
+        let mut renamed = Renamed {
+            edit: WorkspaceEdit {
+                files: vec![edit(server_shared.clone().into(), range), edit(server_native.into(), range)],
+                ..Default::default()
+            },
+            incomplete: Some(ReferencesIncomplete::FilesSkipped),
+            ..Default::default()
+        };
+        let docs = ide_workspace::Documents::new(
+            std::sync::Arc::new(ide_core::NullSink),
+            Box::new(|_: &Path, _: Option<&str>| LanguageId::plain_text()),
+        );
+        merge_indexed_rename(&mut renamed, &symbol, "new", &docs);
+        assert!(renamed.preview);
+        assert_eq!(renamed.incomplete, Some(ReferencesIncomplete::FilesSkipped));
+        assert_eq!(renamed.edit.files.len(), 2);
+        docs.prepare_workspace_edit(&mut renamed.edit).unwrap();
+        docs.apply_workspace_edit(&renamed.edit).unwrap();
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "new new");
+        assert_eq!(std::fs::read_to_string(&native).unwrap(), "new");
+
+        // Native rewrites preserve syntax (for example a shorthand property key).
+        std::fs::write(&shared, "old old").unwrap();
+        let mut rewritten = Renamed {
+            edit: WorkspaceEdit {
+                files: vec![FileEdit::Edit {
+                    path: shared.clone().into(),
+                    version: None,
+                    edits: vec![TextEdit { range, new_text: "old: new".into() }],
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        merge_indexed_rename(&mut rewritten, &symbol, "new", &docs);
+        docs.prepare_workspace_edit(&mut rewritten.edit).unwrap();
+        docs.apply_workspace_edit(&rewritten.edit).unwrap();
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "old: new new");
+        std::fs::write(&shared, "new new").unwrap();
+
+        // A class rename may move its file before editing the new path. Indexed
+        // anchors still describe the original file and must join that text batch.
+        let moved = root.join("moved.idx");
+        let server_moved = dunce::simplified(&moved).to_path_buf();
+        let mut renamed = Renamed {
+            edit: WorkspaceEdit {
+                files: vec![
+                    FileEdit::Rename { from: server_shared.into(), to: server_moved.clone().into() },
+                    FileEdit::Edit {
+                        path: server_moved.into(),
+                        version: None,
+                        edits: vec![TextEdit { range, new_text: "moved".into() }],
+                    },
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        merge_indexed_rename(&mut renamed, &symbol, "moved", &docs);
+        docs.prepare_workspace_edit(&mut renamed.edit).unwrap();
+        docs.apply_workspace_edit(&renamed.edit).unwrap();
+        assert!(!shared.exists());
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "moved moved");
+    }
+
+    #[test]
+    fn indexed_edits_yield_to_native_intersections_but_keep_boundary_insertions() {
+        use crate::plugins::navigation::{IndexedAnchors, IndexedSymbol};
+        use ide_core::{FileEdit, LanguageId};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("shared.idx");
+        std::fs::write(&path, "old old").unwrap();
+        let range = Range::new(Pos::new(0, 0), Pos::new(0, 3));
+        let symbol = IndexedSymbol {
+            range,
+            files: vec![IndexedAnchors {
+                path: path.clone(),
+                version: None,
+                hash: blake3::hash(b"old old"),
+                ranges: vec![range],
+            }],
+        };
+        let docs = ide_workspace::Documents::new(
+            std::sync::Arc::new(ide_core::NullSink),
+            Box::new(|_: &Path, _: Option<&str>| LanguageId::plain_text()),
+        );
+        for (start, end, expected) in [
+            (0, 3, "native old"),
+            (0, 4, "nativeold"),
+            (1, 4, "onativeold"),
+            (1, 2, "onatived old"),
+            (1, 1, "onativeld old"),
+            (0, 0, "nativeindexed old"),
+            (3, 3, "indexednative old"),
+            (3, 4, "indexednativeold"),
+            (4, 7, "indexed native"),
+        ] {
+            let native =
+                TextEdit { range: Range::new(Pos::new(0, start), Pos::new(0, end)), new_text: "native".into() };
+            let mut renamed = Renamed {
+                edit: WorkspaceEdit {
+                    files: vec![FileEdit::Edit {
+                        path: path.clone().into(),
+                        version: None,
+                        edits: vec![native.clone()],
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            merge_indexed_rename(&mut renamed, &symbol, "indexed", &docs);
+            let edits: Vec<_> = renamed
+                .edit
+                .files
+                .iter()
+                .flat_map(|file| match file {
+                    FileEdit::Edit { edits, .. } => edits.clone(),
+                    _ => vec![],
+                })
+                .collect();
+            assert!(edits.contains(&native));
+            let mut text = ide_text::Document::new("old old");
+            text.apply_edits(&edits).unwrap();
+            assert_eq!(text.text(), expected, "native range {start}..{end}");
+        }
+    }
+
+    #[test]
     fn a_plugin_action_with_data_and_no_edits_is_resolved_by_its_plugin() {
         let action = |edits: Vec<(std::path::PathBuf, Vec<TextEdit>)>, data: Option<&str>| ide_plugin::CodeAction {
             title: "Fix".into(),
             kind: None,
             preferred: false,
             edits,
+            operations: Vec::new(),
+            open: None,
             data: data.map(str::to_owned),
+            file_action: false,
         };
-        let lazy = plugin_code_action("acme.x", action(Vec::new(), Some("ref")));
+        let root = Path::new("/p");
+        let lazy = plugin_code_action("acme.x", root, action(Vec::new(), Some("ref")));
         assert!(lazy.edit.is_none());
         let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
-        assert_eq!((r.plugin.as_str(), r.data.as_str()), ("acme.x", "ref"));
+        assert_eq!((r.plugin.as_str(), r.data.as_deref()), ("acme.x", Some("ref")));
         // With edits, `data` is the plugin's business: applied as is.
         let edit = TextEdit { range: Range::default(), new_text: "x".into() };
-        let eager = plugin_code_action("acme.x", action(vec![("/a".into(), vec![edit])], Some("ref")));
+        let eager = plugin_code_action("acme.x", root, action(vec![("/a".into(), vec![edit])], Some("ref")));
         assert!(eager.edit.is_some() && eager.data.is_none());
     }
 
@@ -1078,6 +1625,83 @@ mod tests {
             ["/app/_ide_helper_models.php", "/app/.phpstorm.meta.php"]
         );
         assert!(without_generated_helpers(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn a_plugin_action_maps_its_file_operations_before_its_edits_and_stays_in_the_project() {
+        use ide_core::FileEdit;
+        use ide_plugin::FileOperation;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let action = |operations: Vec<FileOperation>| ide_plugin::CodeAction {
+            title: "Create view".into(),
+            kind: Some("quickfix".into()),
+            preferred: false,
+            edits: vec![(root.join("a.txt"), vec![TextEdit { range: Range::default(), new_text: "x".into() }])],
+            operations,
+            open: Some(root.join("views/home.html")),
+            data: None,
+            file_action: true,
+        };
+
+        let created = plugin_code_action(
+            "acme.x",
+            &root,
+            action(vec![
+                FileOperation::Create { path: "views/home.html".into(), text: "<h1/>".into(), overwrite: false },
+                FileOperation::Rename { from: root.join("old.txt"), to: root.join("new.txt") },
+                FileOperation::Delete { path: root.join("gone.txt") },
+            ]),
+        );
+        assert_eq!(created.disabled_reason, None);
+        let files = created.edit.unwrap().files;
+        let home = root.join("views/home.html");
+        assert!(matches!(&files[0], FileEdit::Create { path, overwrite: false } if **path == home));
+        assert!(
+            matches!(&files[1], FileEdit::Edit { path, edits, .. } if **path == home && edits[0].new_text == "<h1/>")
+        );
+        assert!(matches!(&files[2], FileEdit::Rename { to, .. } if **to == root.join("new.txt")));
+        assert!(matches!(&files[3], FileEdit::Delete { recursive: false, .. }));
+        assert!(matches!(&files[4], FileEdit::Edit { path, .. } if **path == root.join("a.txt")));
+        let r: PluginActionRef = serde_json::from_value(created.data.unwrap()).unwrap();
+        assert_eq!(r.data, None);
+        assert!(r.file, "resolved by the file-actions export");
+        let opened = r.open.unwrap().to_path_buf();
+        assert!(opened.components().eq(dunce::simplified(&home).components()), "{opened:?}");
+
+        let outside = tmp.path().join("evil.txt");
+        let mut open_outside = action(Vec::new());
+        open_outside.open = Some(outside.clone());
+        assert!(plugin_code_action("acme.x", &root, open_outside).disabled_reason.is_some());
+        let mut edit_outside = action(vec![FileOperation::Delete { path: root.join("gone.txt") }]);
+        edit_outside.edits.push((outside, Vec::new()));
+        assert!(plugin_code_action("acme.x", &root, edit_outside).disabled_reason.is_some());
+        let mut edit_created =
+            action(vec![FileOperation::Create { path: root.join("n.txt"), text: "x".into(), overwrite: false }]);
+        edit_created.edits = vec![(root.join("n.txt"), Vec::new())];
+        assert!(plugin_code_action("acme.x", &root, edit_created).disabled_reason.is_some());
+
+        for outside in [tmp.path().join("evil.txt"), "../evil.txt".into()] {
+            for operation in [
+                FileOperation::Create { path: outside.clone(), text: String::new(), overwrite: false },
+                FileOperation::Rename { from: root.join("old.txt"), to: outside.clone() },
+                FileOperation::Delete { path: outside.clone() },
+            ] {
+                let rejected = plugin_code_action("acme.x", &root, action(vec![operation]));
+                assert!(rejected.disabled_reason.is_some_and(|r| r.contains("outside the project root")));
+                assert!(rejected.edit.unwrap().files.is_empty());
+            }
+        }
+
+        // `data` and nothing to apply: the file-actions export computes it when picked.
+        let mut lazy = action(Vec::new());
+        (lazy.edits, lazy.open, lazy.data) = (Vec::new(), None, Some("ref".into()));
+        let lazy = plugin_code_action("acme.x", &root, lazy);
+        assert!(lazy.edit.is_none());
+        let r: PluginActionRef = serde_json::from_value(lazy.data.unwrap()).unwrap();
+        assert_eq!((r.data.as_deref(), r.file), (Some("ref"), true));
     }
 
     #[test]

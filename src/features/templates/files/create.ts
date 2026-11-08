@@ -1,4 +1,5 @@
 /** Creates a file from a template and fills it through the editor. */
+import { tx } from "@/platform/i18n";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { EditorSelection } from "@codemirror/state";
 import { executeAction } from "@/platform/actions";
@@ -21,6 +22,7 @@ import {
   type FileTemplate,
   type FileTemplateKind,
 } from "./model";
+import { BUILTIN_FILE_TEMPLATES } from "./builtins";
 import { templateIncludes } from "./store";
 
 async function siblingGoPackage(directory: string): Promise<string | null> {
@@ -66,11 +68,24 @@ async function composerNamespace(directory: string, root: string | null): Promis
   }
 }
 
+export function packageStyleFor(t: FileTemplate): FileTemplate["packageStyle"] {
+  const dot = t.fileName?.lastIndexOf(".") ?? -1;
+  const extension = t.fileName === undefined ? t.extension : dot > 0 ? t.fileName.slice(dot + 1) : "";
+  return (
+    t.packageStyle ??
+    (t.inferPackage
+      ? BUILTIN_FILE_TEMPLATES.find((b) => b.packageStyle && b.extension.toLowerCase() === extension.toLowerCase())
+          ?.packageStyle
+      : undefined)
+  );
+}
+
 export async function packageFor(t: FileTemplate, directory: string): Promise<string> {
   const root = useProject.getState().project?.root ?? null;
-  if (t.packageStyle === "jvm") return inferJvmPackage(directory, root, packageRoots());
-  if (t.packageStyle === "go") return inferGoPackage(directory, root, await siblingGoPackage(directory));
-  if (t.packageStyle === "php") return composerNamespace(directory, root);
+  const style = packageStyleFor(t);
+  if (style === "jvm") return inferJvmPackage(directory, root, packageRoots());
+  if (style === "go") return inferGoPackage(directory, root, await siblingGoPackage(directory));
+  if (style === "php") return composerNamespace(directory, root);
   return "";
 }
 
@@ -109,14 +124,17 @@ export async function createFromTemplate(
   input: string,
   /** Called once the file exists (e.g. to close the dialog before the editor takes focus). */
   onCreated?: () => void,
+  variables?: Readonly<Record<string, string>>,
+  cancelled?: () => boolean,
 ): Promise<string> {
   const plan = planFile(withKind(t, kind), directory, input);
-  if (!plan) throw new Error("Invalid file name");
+  if (!plan) throw new Error(tx("Invalid file name"));
   const project = useProject.getState().project;
-  const packageName = await packageFor(t, plan.directory);
+  const packageName = await packageFor(withKind(t, kind), plan.directory);
   const { text, caret } = renderFileTemplate(
     kind.body,
     {
+      variables,
       name: plan.name,
       fileName: plan.fileName,
       packageName,
@@ -125,6 +143,7 @@ export async function createFromTemplate(
     },
     templateIncludes(),
   );
+  if (cancelled?.()) return plan.path;
   await call(commands.fsCreateFile(plan.path));
   notifyFileOperation({ kind: "created", paths: [plan.path] });
   onCreated?.();

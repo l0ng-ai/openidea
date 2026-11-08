@@ -17,7 +17,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
+import type { CommitSelection, FileMatches, SearchQuery, RunConfig } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -29,6 +29,8 @@ export type ToolWindowAnchor = "left" | "right" | "bottom";
 export interface ToolWindowContribution {
   id: string;
   title: string;
+  /** The title comes from outside the IDE (a plugin) and is shown as written. */
+  verbatim?: boolean;
   /** Icon name from `ui/icons`. */
   icon: string;
   anchor: ToolWindowAnchor;
@@ -164,6 +166,14 @@ export interface EditorDocumentLifecycle {
   /** Edit › Undo / Redo while the editor has focus. */
   undo?(input: EditorInput): Promise<void>;
   redo?(input: EditorInput): Promise<void>;
+}
+
+/** Bumped by `notifyTabTitlesChanged`; tab labels whose `title(input)` changed re-render. */
+export const useEditorTabTitles = create<{ revision: number }>(() => ({ revision: 0 }));
+
+/** An editor kind's tab title may have changed outside the tab state (e.g. a renamed agent task). */
+export function notifyTabTitlesChanged() {
+  useEditorTabTitles.setState((s) => ({ revision: s.revision + 1 }));
 }
 
 /** Bumped by `notifyEditorDocumentChanged`; selectors reading `isDirty` re-run on it. */
@@ -616,6 +626,8 @@ export interface NotificationService {
     sticky?: boolean;
     /** Replaces an earlier notification with the same key. */
     key?: string;
+    /** Title, body and action labels come from outside the IDE (a plugin) and are shown as written. */
+    verbatim?: boolean;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
      * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
@@ -675,6 +687,53 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+
+/**
+ * The commit being prepared (the Commit tool window or dialog), for plugins:
+ * provided by the vcs feature.
+ */
+export interface CommitService {
+  /**
+   * What Commit would commit now, per repository (unsaved editors saved first, as
+   * Commit does); `null` without a repository.
+   */
+  selection(): Promise<CommitSelection | null>;
+  /** Replaces the message if the draft is still at `revision`; false when it changed. */
+  setMessage(revision: number, message: string): boolean;
+}
+
+let commitServiceImpl: CommitService | undefined;
+export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
+export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+/** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
+export interface ContributedCommitCheck {
+  /** Stable key (`<plugin id>/<check id>`), stored when the check is turned off. */
+  key: string;
+  title: string;
+}
+
+/** A problem a contributed check reported (or why the check could not run). */
+export interface ContributedCommitProblem {
+  title: string;
+  message: string;
+  path?: string;
+  /** 0-based. */
+  line?: number;
+}
+
+export interface CommitCheckProvider {
+  checks(): ContributedCommitCheck[];
+  /** Runs the checks `keys` on what `selection` commits. */
+  run(selection: CommitSelection, keys: string[]): Promise<ContributedCommitProblem[]>;
+}
+
+export const useCommitCheckProviders = create<{ providers: CommitCheckProvider[] }>(() => ({ providers: [] }));
+
+export function registerCommitCheckProvider(p: CommitCheckProvider): () => void {
+  useCommitCheckProviders.setState((s) => ({ providers: [...s.providers, p] }));
+  return () => useCommitCheckProviders.setState((s) => ({ providers: s.providers.filter((x) => x !== p) }));
+}
 
 /**
  * Handles a pointer drag dropped on the editor content: features register handlers for
@@ -846,11 +905,15 @@ export interface SettingsPageContribution {
  * edits not applied yet. Edits are written on Apply / OK and dropped on Cancel.
  */
 export interface SettingsForm {
+  /** Applies pending edits; false prevents an action from running after a failed save. */
+  apply(): Promise<boolean>;
   scope: "global" | "project";
   /** Value of a dotted key (map entries too, e.g. `languageServers.ruff.args`). */
   useValue(key: string): unknown;
   /** Stages a value; `null` removes the key on Apply. */
   set(key: string, value: unknown): void;
+  /** Stages a literal map entry with independent page/Reset ownership. */
+  setMapEntry(key: string, path: string[], value: unknown): void;
   /** Values stored outside settings JSON; the writer runs on Apply / OK and returns the saved value. */
   useExternal<T>(
     key: string,
@@ -980,13 +1043,20 @@ export type ContextMenuId =
   | "new";
 
 /**
- * Entries of the native main menu's open slots (src-tauri/src/menu.rs
- * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ * Entries of open menu slots: the native main menu's (src-tauri/src/menu.rs
+ * `Entry::Dynamic`, e.g. `pluginTools` at the end of Tools) and in-app toolbars
+ * (`commitMessage`, above the commit message). Each runs `action`.
  */
 export interface MenuSlotItem {
   action: string;
   arg?: string | null;
   label: string;
+  /** The label comes from outside the IDE (a plugin) and is shown as written. */
+  verbatim?: boolean;
+  /** Icon name, for toolbar slots. */
+  icon?: string;
+  /** Shown only while this `when` clause holds (toolbar slots). */
+  when?: string | null;
 }
 
 export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));
@@ -1372,6 +1442,8 @@ export function localChangedPaths(
 // running a whole command line; anything else runs as a shell command.
 
 export interface RunAnythingItem {
+  /** Optional section within the provider; the shared `recent` id merges command histories. */
+  group?: { id: string; label: string };
   /** Stable within the provider. */
   key: string;
   label: string;
@@ -1416,6 +1488,9 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
 export interface EndpointEntry {
   /** `GET`, `POST`, … */
   method: string;
+  framework?: string;
+  handler?: string;
+  pluginId?: string;
   /** Class-level and method-level mapping joined; `{var}` kept. */
   url: string;
   controller: string;
@@ -1432,17 +1507,33 @@ export interface EndpointProvider {
 }
 
 const endpointProviders = new Map<string, EndpointProvider>();
+const endpointListeners = new Set<() => void>();
+export function onEndpointsChanged(listener: () => void): () => void {
+  endpointListeners.add(listener);
+  return () => {
+    endpointListeners.delete(listener);
+  };
+}
+/** Endpoints a provider reports may have changed: `onEndpointsChanged` listeners ask again. */
+export function endpointsChanged() {
+  for (const listener of endpointListeners) listener();
+}
 
 export function registerEndpointProvider(p: EndpointProvider): () => void {
   endpointProviders.set(p.id, p);
+  endpointsChanged();
   return () => {
-    if (endpointProviders.get(p.id) === p) endpointProviders.delete(p.id);
+    if (endpointProviders.get(p.id) === p) {
+      endpointProviders.delete(p.id);
+      endpointsChanged();
+    }
   };
 }
 
 export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
   if (!root) return [];
-  return (await Promise.all([...endpointProviders.values()].map((p) => p.endpoints(root)))).flat();
+  const results = await Promise.allSettled([...endpointProviders.values()].map(async (p) => p.endpoints(root)));
+  return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,6 +1577,8 @@ export interface DebugServiceSession {
   /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
   httpPort?: number;
   rerun: (() => void) | null;
+  /** Rerun without opening the Debug tool window (the Services panel debugs in place). */
+  rerunInPlace?: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
 }
@@ -1583,4 +1676,26 @@ export function registerCloneSource(source: CloneSourceContribution): () => void
 /** Registered clone sources in order. */
 export function cloneSourceList(sources = useCloneSources.getState().sources): CloneSourceContribution[] {
   return [...sources.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id));
+}
+
+// File templates contributed by plugins, consumed by the templates feature.
+export const useContributedFileTemplates = create<{ templates: import("@/platform/fileTemplates").FileTemplate[] }>(
+  () => ({ templates: [] }),
+);
+
+export function addContributedFileTemplate(t: import("@/platform/fileTemplates").FileTemplate): () => void {
+  useContributedFileTemplates.setState((s) => ({ templates: [...s.templates.filter((x) => x.id !== t.id), t] }));
+  return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
+}
+
+/** Flush contributed document indexes before workspace usages or refactoring. */
+const documentIndexSync = new Set<(path: string) => Promise<void>>();
+export function registerDocumentIndexSync(sync: (path: string) => Promise<void>): () => void {
+  documentIndexSync.add(sync);
+  return () => {
+    documentIndexSync.delete(sync);
+  };
+}
+export async function synchronizeDocumentIndexes(path: string): Promise<void> {
+  await Promise.all([...documentIndexSync].map((sync) => sync(path)));
 }

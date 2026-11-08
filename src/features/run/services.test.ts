@@ -13,6 +13,7 @@ import {
   addType,
   cleanupRemovedProject,
   runServiceProvider,
+  registerRunServiceActions,
   DEFAULT_TYPES,
   readRan,
   readTypes,
@@ -20,12 +21,14 @@ import {
   sessionDetail,
   sessionStatus,
 } from "./services";
-import { startedPort } from "./serverPort";
-import type { DebugServiceSession } from "@/workbench/contributions";
+import { startedPort } from "@/platform/serverPort";
+import { useDebugRunSessions, type DebugServiceSession } from "@/workbench/contributions";
 import { useRun, type RunSession } from "./store";
 
-const { startRun, stopServiceSessions } = vi.hoisted(() => ({
+const { startRun, stopServiceSessions, openUrl, showContextMenu } = vi.hoisted(() => ({
   startRun: vi.fn(),
+  openUrl: vi.fn(),
+  showContextMenu: vi.fn(),
   stopServiceSessions: vi.fn(),
 }));
 vi.mock("./store", async (importOriginal) => ({ ...(await importOriginal<typeof import("./store")>()), startRun }));
@@ -33,6 +36,18 @@ vi.mock("./serviceSessions", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./serviceSessions")>()),
   stopServiceSessions,
 }));
+
+vi.mock("./navigate", () => ({ openUrl }));
+vi.mock("@/ui", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/ui")>()), showContextMenu }));
+
+let disposeActions: () => void;
+beforeEach(() => {
+  disposeActions = registerRunServiceActions();
+  useDebugRunSessions.setState({ serviceSessions: [] });
+  openUrl.mockReset();
+  showContextMenu.mockReset();
+});
+afterEach(() => disposeActions());
 
 const config = (id: string, kind: string): RunConfig => ({
   id,
@@ -317,12 +332,11 @@ describe("embedded web server port", () => {
     expect(startedPort("Started DemoApplication in 1.2 seconds")).toBeNull();
     expect(startedPort("Tomcat started on port 99999")).toBeNull();
   });
-
 });
 
 describe("open in browser", () => {
   const item = () => ({ key: "run:config:a", label: "a", icon: "" });
-  const hasBrowser = () => runServiceProvider.actions!(item() as never).some((a: { id: string }) => a.id === "open-browser");
+  const hasBrowser = () => !runServiceProvider.actions!(item()).find((a) => a.id === "open-browser")?.disabled;
 
   beforeEach(() => {
     useProject.setState({ project: null });
@@ -337,7 +351,7 @@ describe("open in browser", () => {
     expect(hasBrowser()).toBe(true);
   });
 
-  it("hides Open in Browser without a port or a running session", () => {
+  it("disables Open in Browser without a port or a running session", () => {
     useRun.setState({
       configs: [config("a", "spring-boot")],
       sessions: [session("s1", config("a", "spring-boot"), "running", 1)],
@@ -350,11 +364,17 @@ describe("open in browser", () => {
 
 describe("group batch actions", () => {
   const group = () => ({ key: "run:type:spring-boot", label: "Spring Boot", icon: "" });
-  const action = (id: string) => runServiceProvider.actions!(group() as never).find((a: { id: string }) => a.id === id)!;
+  const action = (id: string) =>
+    runServiceProvider.actions!(group() as never).find((a: { id: string }) => a.id === id)!;
 
   beforeEach(() => {
     startRun.mockReset().mockResolvedValue(null);
-    stopServiceSessions.mockReset().mockResolvedValue(undefined);
+    stopServiceSessions.mockReset().mockImplementation(async (sessions) => {
+      const ids = sessions.flatMap((s: { run?: RunSession }) => (s.run ? [s.run.id] : []));
+      useRun.setState((state) => ({
+        sessions: state.sessions.map((s) => (ids.includes(s.id) ? { ...s, status: "finished" } : s)),
+      }));
+    });
     useProject.setState({ project: null });
     useRun.setState({ configs: [], sessions: [] });
     addType("spring-boot");
@@ -407,6 +427,87 @@ describe("group batch actions", () => {
       [a, undefined, undefined, { show: false }],
       [b, undefined, undefined, { show: false }],
     ]);
+  });
+
+  it("waits for process exit before restarting any configuration and continues after a launch failure", async () => {
+    const a = config("a", "spring-boot");
+    const b = config("b", "spring-boot");
+    useRun.setState({ configs: [a, b], sessions: [session("s1", a, "running", 1, { runId: 1 })] });
+    stopServiceSessions.mockResolvedValue(undefined);
+    startRun.mockRejectedValueOnce(new Error("launch failed"));
+    const pending = action("restart-all").run();
+    await vi.waitFor(() => expect(stopServiceSessions).toHaveBeenCalledOnce());
+    expect(startRun).not.toHaveBeenCalled();
+    useRun.setState({ sessions: [session("s1", a, "finished", 1, { runId: 1 })] });
+    await pending;
+    expect(startRun.mock.calls.map(([c]) => c.id)).toEqual(["a", "b"]);
+  });
+
+  it("uses the saved display order and leaves other types alone", async () => {
+    useProject.setState({ project: { root: "/group-order" } as never });
+    localStorage.setItem("openidea.services.runOrder:/group-order", JSON.stringify({ "spring-boot": ["c", "a", "b"] }));
+    const configs = [
+      config("a", "spring-boot"),
+      config("b", "spring-boot"),
+      config("c", "spring-boot"),
+      config("d", "npm"),
+    ];
+    useRun.setState({ configs, sessions: [session("other", configs[3]!, "running", 1)] });
+    await action("run-all").run();
+    expect(startRun.mock.calls.map(([c]) => c.id)).toEqual(["c", "a", "b"]);
+    expect(action("stop-all").disabled).toBe(true);
+    await action("stop-all").run();
+    expect(stopServiceSessions).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a deleted configuration retained only as finished output", async () => {
+    const a = config("removed", "spring-boot");
+    useRun.setState({ configs: [a], sessions: [] });
+    useRun.setState({ configs: [], sessions: [session("old", a, "finished", 1)] });
+    expect(action("run-all").disabled).toBe(true);
+    expect(action("restart-all").disabled).toBe(true);
+  });
+
+  it("rechecks enabled state when a registered action runs", async () => {
+    const a = config("a", "spring-boot");
+    useRun.setState({ configs: [a], sessions: [] });
+    const run = action("run-all");
+    useRun.setState({ sessions: [session("s1", a, "starting", 1)] });
+    await run.run();
+    expect(startRun).not.toHaveBeenCalled();
+  });
+
+  it("opens the known group URL and offers a named choice for several web apps", async () => {
+    const a = config("a", "spring-boot");
+    const b = config("b", "spring-boot");
+    useRun.setState({ configs: [a, b], sessions: [session("s1", a, "running", 1, { httpPort: 8123 })] });
+    await action("open-browser").run();
+    expect(openUrl).toHaveBeenCalledWith("http://localhost:8123");
+    openUrl.mockClear();
+    useDebugRunSessions.setState({
+      serviceSessions: [
+        {
+          id: 1,
+          config: b,
+          status: "running",
+          processId: null,
+          startedAt: 2,
+          httpPort: 8456,
+          stop: async () => {},
+          rerun: null,
+          show: () => {},
+        },
+      ],
+    });
+    await action("open-browser").run();
+    expect(openUrl).not.toHaveBeenCalled();
+    const choices = showContextMenu.mock.calls[0]![1];
+    expect(choices.map((c: { label: string }) => c.label)).toEqual([
+      "a — http://localhost:8123",
+      "b — http://localhost:8456",
+    ]);
+    choices[1].run();
+    expect(openUrl).toHaveBeenCalledWith("http://localhost:8456");
   });
 });
 

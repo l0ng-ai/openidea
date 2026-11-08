@@ -7,6 +7,7 @@
 pub mod editor_settings;
 pub mod error;
 pub mod event;
+pub mod go;
 pub mod ids;
 pub mod ignored;
 pub mod inspection_settings;

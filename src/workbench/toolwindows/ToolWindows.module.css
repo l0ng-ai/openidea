@@ -1,5 +1,4 @@
 .frame {
-  --stripe-button-radius: var(--radius-popup);
   flex: 1;
   display: flex;
   min-height: 0;
@@ -246,7 +245,7 @@
   align-items: center;
   justify-content: center;
   gap: 3px;
-  border-radius: var(--stripe-button-radius);
+  border-radius: var(--radius-toolbar-button);
   color: var(--fg-muted);
   transition:
     background var(--dur-fast) var(--ease),
@@ -267,8 +266,6 @@
 .stripeButton:hover,
 .stripeButton[aria-expanded="true"] {
   color: var(--fg-secondary);
-}
-.stripeButton[aria-expanded="true"] {
   background: var(--bg-stripe-hover);
 }
 .stripeActive,
@@ -278,8 +275,8 @@
 }
 .stripeFocused,
 .stripeFocused:hover {
-  background: var(--bg-button-primary);
-  color: var(--fg-button-primary);
+  background: var(--bg-stripe-selected);
+  color: var(--fg-emphasis);
   --icon-color: currentColor;
 }
 .stripeButton:focus-visible {
@@ -465,4 +462,10 @@
 /* Settings › Appearance › "Different tool window background". */
 :global(:root[data-tool-window-bg="different"]) .anchor {
   background: var(--bg-elev);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stripeButton {
+    transition: none;
+  }
 }

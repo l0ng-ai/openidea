@@ -168,11 +168,22 @@ pub enum PluginEvent {
     CommandsChanged,
     /// Cached document associations were disposed (reload, disable or failure).
     DocumentIndexesChanged,
+    /// The routes `plugin_id` reports for the project `root` may have changed:
+    /// ask `plugin_endpoints` again.
+    #[serde(rename_all = "camelCase")]
+    EndpointsChanged { plugin_id: String, root: ide_core::IpcPath },
     /// The marketplace offers newer versions of installed plugins (announced
     /// once per set of versions).
     UpdatesAvailable { updates: Vec<PluginUpdate> },
     #[serde(rename_all = "camelCase")]
-    Notification { plugin_id: String, level: NotificationLevel, title: String, body: String },
+    Notification {
+        plugin_id: String,
+        level: NotificationLevel,
+        title: String,
+        body: String,
+        /// Buttons running the plugin's own commands (`ui.notify`).
+        actions: Vec<ide_plugin::NotificationAction>,
+    },
     /// A plugin's status bar item was set (`item`) or removed.
     #[serde(rename_all = "camelCase")]
     StatusItemChanged { plugin_id: String, id: String, item: Option<StatusItem> },
@@ -213,6 +224,10 @@ pub enum PluginEvent {
     },
     #[serde(rename_all = "camelCase")]
     OpenLocation { plugin_id: String, path: ide_core::IpcPath, line: u32, column: u32 },
+    /// Open (or focus) the log tab `key` following `log` (`views.open-log-tab`);
+    /// it starts the program with `plugin_log_tab_spawn`.
+    #[serde(rename_all = "camelCase")]
+    OpenLogTab { plugin_id: String, key: String, title: String, log: ide_plugin::ServiceLog },
     /// Plugin languages, or the servers they may start, changed: re-fetch
     /// `languages` (the host re-detects open documents: [`crate::Host::plugin_languages_changed`]).
     LanguagesChanged,
@@ -222,6 +237,9 @@ pub enum PluginEvent {
     /// Open `url` (`http(s)://`) in the system browser.
     #[serde(rename_all = "camelCase")]
     OpenUrl { plugin_id: String, url: String },
+    /// A window command/event requests the normal File > Open flow.
+    #[serde(rename_all = "camelCase")]
+    OpenProject { plugin_id: String, path: String, new_window: bool },
     /// A command waits for the user's answer: show `prompt`, then report it with
     /// `plugin_answer_prompt(prompt_id, …)`.
     #[serde(rename_all = "camelCase")]
@@ -232,6 +250,55 @@ pub enum PluginEvent {
     /// Bring the tool window of the plugin's view `view` to the front.
     #[serde(rename_all = "camelCase")]
     RevealView { plugin_id: String, view: String },
+    /// A command needs the window's Commit view: answer with
+    /// `plugin_answer_commit(request_id, …)`. Closed like a prompt (`PromptClosed`).
+    #[serde(rename_all = "camelCase")]
+    CommitRequested { plugin_id: String, request_id: String, request: CommitRequest },
+}
+
+/// What a plugin asks of a window's Commit view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommitRequest {
+    /// What Commit would commit now ([`CommitAnswer::Selection`]); unsaved
+    /// editors of the included files are saved first.
+    Selection,
+    /// Replace the message if the draft is still at `revision`.
+    SetMessage { revision: u64, message: String },
+}
+
+/// A window's answer to a [`CommitRequest`].
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CommitAnswer {
+    /// The window's project has no repository.
+    NoRepository,
+    Selection {
+        selection: CommitSelection,
+    },
+    /// The message was replaced.
+    Done,
+    /// The draft is no longer at the revision.
+    Stale,
+}
+
+/// What a window's Commit view would commit: per repository, the options
+/// `vcs_commit` would get.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSelection {
+    /// Changes whenever the message, the included changes or Amend do.
+    pub revision: u64,
+    pub message: String,
+    pub amend: bool,
+    pub repositories: Vec<CommitSelectionRepo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitSelectionRepo {
+    pub root: ide_core::IpcPath,
+    pub options: ide_vcs::CommitOptions,
 }
 
 /// Delivers events to the UI. `client` is the window that invoked the plugin
@@ -299,4 +366,25 @@ pub struct LineMarkerInfo {
     pub tooltip: String,
     /// Opened on click.
     pub target: Option<ide_core::Location>,
+}
+
+/// A plugin's before-commit check to run (`[[contributes.commitChecks]]`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommitCheckRef {
+    pub plugin_id: String,
+    pub check: String,
+}
+
+/// What a plugin's before-commit check found.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginCommitCheckResult {
+    pub plugin_id: String,
+    pub check: String,
+    /// The check's declared title.
+    pub title: String,
+    pub problems: Vec<ide_plugin::CommitProblem>,
+    /// The check could not run (the plugin failed, timed out or lacks `vcs.read`).
+    pub error: Option<String>,
 }

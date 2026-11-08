@@ -171,6 +171,10 @@ pub trait Providers {
 
     /// The edits of an action [`Providers::code_actions`] returned with
     /// `data`, when the user picks it (the command budget applies, not 50 ms).
+    /// `host::pick`, `pick_many`, `input` and `confirm` ask in the editor's
+    /// window, excluding the wait from that budget. Dismissal returns `None`
+    /// (or `false` for `confirm`); return `Error::Cancelled` or no edits to stop.
+    /// Other command/event-only APIs remain unavailable.
     fn resolve_code_action(&mut self, _doc: &Document, action: CodeAction) -> Result<CodeAction, crate::Error> {
         Ok(action)
     }
