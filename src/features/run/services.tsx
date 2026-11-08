@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
-import { executeAction, registerActions } from "@/platform/actions";
+import { executeAction, registerActions, type Action } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
@@ -616,8 +616,8 @@ const SERVICE_ACTIONS = [
 ];
 
 export function registerRunServiceActions(): () => void {
-  return registerActions(
-    SERVICE_ACTIONS.map(({ id, action, title, icon }) => ({
+  return registerActions([
+    ...SERVICE_ACTIONS.map<Action>(({ id, action, title, icon }) => ({
       id: action,
       title,
       icon,
@@ -629,7 +629,29 @@ export function registerRunServiceActions(): () => void {
         if (action && !action.disabled) await action.run();
       },
     })),
-  );
+    {
+      id: "run.services.addType",
+      title: "Add Service",
+      icon: "plus",
+      category: "Run",
+      hidden: true,
+      run: async ({ arg }) => {
+        if (typeof arg === "string") await pickForKind(arg);
+      },
+    },
+    {
+      id: "run.services.hideConfig",
+      title: "Remove from Services",
+      icon: "close",
+      category: "Run",
+      hidden: true,
+      run: ({ arg }) => {
+        if (typeof arg !== "string") return;
+        const { config } = resolve({ key: CONFIG_PREFIX + arg, label: "", icon: "" });
+        if (config) hideConfig(config.kind, config.id);
+      },
+    },
+  ]);
 }
 
 function actions(item: ServiceTreeItem): ServiceItemAction[] {
@@ -663,7 +685,9 @@ function menu(item: ServiceTreeItem): MenuItem[] {
         label: "Add Service",
         icon: "plus",
         disabled: !useRun.getState().configs.some((c) => c.kind === kind),
-        run: () => pickForKind(kind),
+        run: async () => {
+          await executeAction("run.services.addType", kind);
+        },
       },
     );
     if (currentTypes().includes(kind))
@@ -688,7 +712,11 @@ function menu(item: ServiceTreeItem): MenuItem[] {
         run: () => debuggerSession?.show(),
       },
       { label: "Edit Configuration…", icon: "edit", run: () => void executeAction("run.editConfigs", config.id) },
-      { label: "Remove from Services", icon: "close", run: () => hideConfig(config.kind, config.id) },
+      {
+        label: "Remove from Services",
+        icon: "close",
+        run: () => void executeAction("run.services.hideConfig", config.id),
+      },
     );
   }
   return items;
@@ -817,7 +845,9 @@ function addMenu(): MenuItem[] {
   const item = (kind: string): MenuItem => ({
     label: useRunConfigTypes.getState().types.get(kind)?.label ?? kindLabel(kind),
     icon: configIcon({ kind, isTest: false }),
-    run: () => pickForKind(kind),
+    run: async () => {
+      await executeAction("run.services.addType", kind);
+    },
   });
   const grouped = (list: readonly string[]) =>
     categorizedTypes(list).map(({ category, kinds: members }) => ({

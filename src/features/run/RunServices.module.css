@@ -39,7 +39,8 @@
 .importList {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
+  padding: var(--space-3);
   max-height: 320px;
   overflow: auto;
 }
