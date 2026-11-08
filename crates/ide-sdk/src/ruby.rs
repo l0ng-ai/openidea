@@ -148,6 +148,28 @@ pub fn gem_bin_dirs(ruby: &Path, root: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// Prepares a Ruby debug session (rdbg) running in `dir` of the project `root`: the
+/// project Ruby's `bin` leads `env`'s `PATH` unless the configuration sets one, and the
+/// `bundle` and `rdbg` installed with that Ruby are returned by name, to start the adapter.
+pub fn debug_environment(
+    root: &Path,
+    dir: &Path,
+    s: &ide_core::settings::Settings,
+    env: &mut std::collections::BTreeMap<String, String>,
+) -> Vec<(&'static str, PathBuf)> {
+    let ruby = crate::apply::setting_path(root, &s.languages.ruby.interpreter).or_else(|| project_ruby(dir));
+    let Some((ruby, bin)) = ruby.and_then(|r| bin_dir_of(&r).map(|b| (r, b))) else { return Vec::new() };
+    env.entry("PATH".into()).or_insert_with(|| crate::exec::path_with(&[&bin]));
+    let mut gem_bins: Option<Vec<PathBuf>> = None;
+    let mut find = |name: &str| {
+        ide_core::process::find_executable(name, bin.as_os_str()).or_else(|| {
+            let dirs = gem_bins.get_or_insert_with(|| gem_bin_dirs(&ruby, dir));
+            ide_core::process::find_executable(name, &std::env::join_paths(dirs.iter()).ok()?)
+        })
+    };
+    ["bundle", "rdbg"].into_iter().filter_map(|name| Some((name, find(name)?))).collect()
+}
+
 type NamedRoots = Vec<(String, PathBuf)>;
 
 /// Standard-library / site directories (`ruby/3.3.0`) and the gems Bundler resolves
@@ -214,6 +236,40 @@ mod tests {
 
         let (_, gems) = library_roots(&bin.join("ruby"), Some(&root));
         assert_eq!(gems, vec![("rake-13.4.0".into(), gem), ("rspec-3.13.2".into(), external)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debug_sessions_use_the_rdbg_of_the_project_ruby_and_its_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("ruby/bin");
+        let gem_bin = dir.path().join("gems/bin");
+        for path in [&bin, &gem_bin] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        // Homebrew's Ruby installs gem executables outside its `bin`.
+        let scripts = [
+            (bin.join("ruby"), format!("#!/bin/sh\necho '{}'\n", gem_bin.display())),
+            (bin.join("bundle"), String::new()),
+            (gem_bin.join("rdbg"), String::new()),
+        ];
+        for (path, text) in scripts {
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut s = ide_core::settings::Settings::default();
+        s.languages.ruby.interpreter = bin.join("ruby").to_string_lossy().into_owned();
+
+        let mut env = std::collections::BTreeMap::new();
+        let tools = debug_environment(dir.path(), dir.path(), &s, &mut env);
+        assert_eq!(tools, [("bundle", bin.join("bundle")), ("rdbg", gem_bin.join("rdbg"))]);
+        assert_eq!(std::env::split_paths(&env["PATH"]).next(), Some(bin.clone()));
+        // The configuration's own PATH stays.
+        let mut env = std::collections::BTreeMap::from([("PATH".to_owned(), "/custom".to_owned())]);
+        debug_environment(dir.path(), dir.path(), &s, &mut env);
+        assert_eq!(env["PATH"], "/custom");
     }
 
     #[test]
