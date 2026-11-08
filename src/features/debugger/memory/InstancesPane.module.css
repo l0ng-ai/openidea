@@ -103,8 +103,16 @@
   margin-left: 8px;
   opacity: 0;
 }
+/* Outranks `.iconButton:disabled`, which would show it on every row of an outdated list. */
+.row .rowButton:disabled {
+  opacity: 0;
+}
 .row:hover .rowButton,
 .row[aria-selected="true"] .rowButton,
 .rowButton:focus-visible {
   opacity: 1;
+}
+.row:hover .rowButton:disabled,
+.row[aria-selected="true"] .rowButton:disabled {
+  opacity: 0.4;
 }

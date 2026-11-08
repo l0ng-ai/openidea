@@ -171,10 +171,18 @@
   margin-left: auto;
   opacity: 0;
 }
+/* Outranks `.iconButton:disabled`, which would show it on every row while the program runs. */
+.row .rowButton:disabled {
+  opacity: 0;
+}
 .row:hover .rowButton,
 :global([data-lead]) > .row .rowButton,
 .rowButton:focus-visible {
   opacity: 1;
+}
+.row:hover .rowButton:disabled,
+:global([data-lead]) > .row .rowButton:disabled {
+  opacity: 0.4;
 }
 
 .num {
