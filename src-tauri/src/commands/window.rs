@@ -193,17 +193,10 @@ pub fn window_open_projects(
         .collect())
 }
 
-/// Whether this window fills the screen: in native full screen, or (macOS) shown in its window
-/// group's full-screen Space.
+/// Whether this window is in native full screen (on macOS, also a tab of a fullscreen group).
 #[tauri::command]
 #[specta::specta]
 pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::Manager;
-        crate::window_groups::in_fullscreen(window.app_handle(), &window)
-    }
-    #[cfg(not(target_os = "macos"))]
     window.is_fullscreen().unwrap_or(false)
 }
 

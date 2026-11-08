@@ -190,6 +190,10 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
+        if let Some(mtm) = objc2::MainThreadMarker::new() {
+            macos::prepare_window_tabbing(mtm);
+        }
+        #[cfg(target_os = "macos")]
         application_focus::observe(app.handle());
         app.manage(menu_state);
         if let Some(paths) = setup_opens.lock().take() {

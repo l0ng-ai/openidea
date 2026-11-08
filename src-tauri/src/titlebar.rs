@@ -12,8 +12,9 @@ use objc2::{
     runtime::ProtocolObject,
 };
 use objc2_app_kit::{
-    NSToolbar, NSWindow, NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification,
-    NSWindowStyleMask, NSWindowToolbarStyle, NSWindowWillEnterFullScreenNotification,
+    NSToolbar, NSWindow, NSWindowDidBecomeKeyNotification, NSWindowDidEnterFullScreenNotification,
+    NSWindowDidExitFullScreenNotification, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSWindowWillEnterFullScreenNotification,
 };
 use objc2_foundation::{NSNotificationCenter, NSObjectProtocol};
 use std::{cell::Cell, cell::RefCell, collections::HashMap, rc::Rc};
@@ -56,7 +57,7 @@ impl Drop for Observer {
 
 struct Tracked {
     state: Rc<Fullscreen>,
-    _observers: [Observer; 3],
+    _observers: [Observer; 4],
 }
 
 thread_local! {
@@ -85,8 +86,9 @@ fn track(window: &NSWindow, app: &tauri::AppHandle) -> Tracked {
             change(&state);
             if let Some(window) = weak.load() {
                 apply(&window, &state);
+                crate::macos::hide_tab_bar(&window);
             }
-            // The web title bar shows the window buttons itself in full screen.
+            // The web title bar releases the room kept for the window buttons in full screen.
             app.state::<crate::state::AppState>().sink.emit(ide_core::IdeEvent::WindowFullscreenChanged);
         });
         let observer = unsafe {
@@ -104,6 +106,8 @@ fn track(window: &NSWindow, app: &tauri::AppHandle) -> Tracked {
             observe(NSWindowWillEnterFullScreenNotification, Fullscreen::will_enter),
             observe(NSWindowDidEnterFullScreenNotification, Fullscreen::will_enter),
             observe(NSWindowDidExitFullScreenNotification, Fullscreen::did_exit),
+            // A tab shown in its group: AppKit's tab bar moves to it, and it may be in full screen.
+            observe(NSWindowDidBecomeKeyNotification, |_| {}),
         ]
     };
     Tracked { state, _observers: observers }
