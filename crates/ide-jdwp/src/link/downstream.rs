@@ -1,6 +1,6 @@
 //! JVM → adapter.
 
-use super::{HANDSHAKE, Shared, check_handshake};
+use super::{HANDSHAKE, Route, Shared, check_handshake};
 use crate::codec::{HEADER_LEN, Header};
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -28,12 +28,23 @@ pub(super) async fn run(
             .checked_sub(HEADER_LEN)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("invalid JDWP packet length {len}")))?;
         if h.is_reply() {
-            if let Some(own) = shared.update(|core| core.own.remove(&h.id)) {
-                let body = read_body(&mut jvm, body_len).await?;
-                shared.update(|core| core.own_reply(own, &h, &body));
-                continue;
+            match shared.update(|core| core.route_reply(h.id)) {
+                Route::Own(own) => {
+                    let body = read_body(&mut jvm, body_len).await?;
+                    shared.update(|core| core.own_reply(own, &h, &body));
+                    shared.own_answered.notify_waiters();
+                    continue;
+                }
+                Route::Nobody => {
+                    tracing::warn!(
+                        "JDWP link: dropped a reply to reserved id {:#x} that nobody sent or waits for",
+                        h.id
+                    );
+                    skip_body(&mut jvm, body_len).await?;
+                    continue;
+                }
+                Route::Adapter => {}
             }
-            shared.update(|core| core.invokes.remove(&h.id));
         } else if h.command() == (64, 100) && len <= MAX_EVENT {
             let mut packet = vec![0; len];
             packet[..HEADER_LEN].copy_from_slice(&header);
@@ -51,6 +62,14 @@ pub(super) async fn run(
         }
         adapter.flush().await?;
     }
+}
+
+async fn skip_body(jvm: &mut (impl AsyncRead + Unpin), len: usize) -> io::Result<()> {
+    let skipped = tokio::io::copy(&mut jvm.take(len as u64), &mut tokio::io::sink()).await?;
+    if skipped != len as u64 {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(())
 }
 
 /// Grows the buffer as bytes arrive instead of trusting the length up front.

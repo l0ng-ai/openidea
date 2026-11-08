@@ -373,6 +373,63 @@ async fn adapter_id_in_reserved_range_degrades() {
 }
 
 #[tokio::test]
+async fn untracked_reserved_reply_never_reaches_adapter() {
+    let mut p = pair(OPEN);
+    let own = handshake(&mut p).await;
+    let id_sizes = reply(own, 0, &id_sizes_body());
+    p.jvm.write_all(&id_sizes).await.unwrap();
+    // A late duplicate of a reply the link already took, and an id nobody sent.
+    p.jvm.write_all(&id_sizes).await.unwrap();
+    p.jvm.write_all(&reply(own + 7, 0, &[0xEE; 64])).await.unwrap();
+    jvm_marker(&mut p).await;
+}
+
+#[tokio::test]
+async fn adapter_reserved_reply_reaches_adapter_once() {
+    let mut p = connected(OPEN).await;
+    let id = OWN_IDS.start + 5;
+    let invoke = command(id, 9, 6, &[0; 24]);
+    p.adapter.write_all(&invoke).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, invoke);
+    wait_state(&p.link, LinkState::Degraded(RESERVED_ID.into())).await;
+    assert!(p.link.adapter_invoking());
+    let answer = reply(id, 0, &[b'I', 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    p.jvm.write_all(&answer).await.unwrap();
+    assert_eq!(read_packet(&mut p.adapter).await, answer);
+    assert!(!p.link.adapter_invoking());
+    // The adapter got its one answer; a second reply for the id is no longer its.
+    p.jvm.write_all(&answer).await.unwrap();
+    jvm_marker(&mut p).await;
+}
+
+#[tokio::test]
+async fn adapter_command_reusing_a_pending_own_id_waits_for_the_own_reply() {
+    let mut p = pair(OPEN);
+    let own = handshake(&mut p).await;
+    let colliding = command(own, 1, 1, &[]);
+    p.adapter.write_all(&colliding).await.unwrap();
+    wait_state(&p.link, LinkState::Degraded(RESERVED_ID.into())).await;
+    let mut byte = [0; 1];
+    let early = tokio::time::timeout(Duration::from_millis(200), p.jvm.read(&mut byte)).await;
+    assert!(early.is_err(), "adapter packet reached the JVM while the link's {own:#x} was pending: {early:?}");
+    p.jvm.write_all(&reply(own, 0, &id_sizes_body())).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, colliding);
+    let answer = reply(own, 0, b"adapter");
+    p.jvm.write_all(&answer).await.unwrap();
+    // The adapter's first packet is its own answer, and the link took the IDSizes reply.
+    assert_eq!(read_packet(&mut p.adapter).await, answer);
+    assert!(p.link.inner.shared.update(|core| core.sizes.is_some()));
+}
+
+#[test]
+fn own_ids_skip_ids_still_pending() {
+    let mut core = Core { next_own: OWN_IDS.start, ..Core::default() };
+    core.adapter_reserved.insert(OWN_IDS.start, 1);
+    core.own.insert(OWN_IDS.start + 1, OwnCommand::IdSizes);
+    assert_eq!(core.register_own(OwnCommand::IdSizes), OWN_IDS.start + 2);
+}
+
+#[tokio::test]
 async fn vm_dispose_closes_link() {
     for (set, cmd) in [(1, 6), (1, 10)] {
         let mut p = connected(OPEN).await;

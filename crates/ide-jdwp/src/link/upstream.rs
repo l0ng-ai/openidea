@@ -91,12 +91,33 @@ async fn forward(shared: &Shared, packet: &[u8]) -> io::Result<()> {
         });
     }
     let command = (!h.is_reply()).then(|| h.command());
-    let mut jvm = shared.jvm.lock().await;
+    let mut jvm = loop {
+        let answered = shared.own_answered.notified();
+        tokio::pin!(answered);
+        answered.as_mut().enable();
+        let jvm = shared.jvm.lock().await;
+        // Before the write: the reply may be read before this task runs again.
+        let registered = shared.update(|core| {
+            if command.is_some() && OWN_IDS.contains(&h.id) {
+                // A reply carries only its id. The link never invokes, so the JVM answers its
+                // command without waiting on anything; until then this command waits.
+                if core.own.contains_key(&h.id) {
+                    return false;
+                }
+                *core.adapter_reserved.entry(h.id).or_default() += 1;
+            }
+            if command.is_some_and(is_invoke) {
+                core.invokes.insert(h.id);
+            }
+            true
+        });
+        if registered {
+            break jvm;
+        }
+        drop(jvm);
+        answered.await;
+    };
     let jvm = jvm.as_mut().ok_or_else(closed)?;
-    // Before the write: the reply may be read before this task runs again.
-    if command.is_some_and(is_invoke) {
-        shared.update(|core| core.invokes.insert(h.id));
-    }
     jvm.write_all(packet).await?;
     jvm.flush().await?;
     // Still under the writer lock, so no command of the link's own can slip in between the

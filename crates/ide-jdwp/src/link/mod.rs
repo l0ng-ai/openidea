@@ -75,6 +75,8 @@ struct Shared {
     state: watch::Sender<LinkState>,
     /// Every write to the JVM goes through this lock, so packets never interleave.
     jvm: tokio::sync::Mutex<Option<JvmWriter>>,
+    /// Signalled after each reply to one of the link's own commands.
+    own_answered: tokio::sync::Notify,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,8 +100,21 @@ struct Core {
     unread_stop: Option<Vec<u8>>,
     /// Ids of adapter invokes the JVM has not answered yet.
     invokes: HashSet<u32>,
+    /// The link's commands the JVM has not answered yet. An entry leaves only when its reply
+    /// arrives: a caller that stops waiting must leave it here, or the late reply could be
+    /// taken for the adapter's.
     own: HashMap<u32, OwnCommand>,
+    /// Adapter commands with an id in [`OWN_IDS`] the JVM has not answered yet, per id.
+    adapter_reserved: HashMap<u32, u32>,
     next_own: u32,
+}
+
+/// Who gets a reply from the JVM.
+enum Route {
+    Own(OwnCommand),
+    Adapter,
+    /// In [`OWN_IDS`] but nobody is waiting for it.
+    Nobody,
 }
 
 impl Core {
@@ -121,11 +136,36 @@ impl Core {
         }
     }
 
+    /// Call under the JVM writer lock, so the id is pending before an adapter command with the
+    /// same id can be written.
     fn register_own(&mut self, command: OwnCommand) -> u32 {
-        let id = self.next_own;
-        self.next_own = if id + 1 >= OWN_IDS.end { OWN_IDS.start } else { id + 1 };
-        self.own.insert(id, command);
-        id
+        loop {
+            let id = self.next_own;
+            self.next_own = if id + 1 >= OWN_IDS.end { OWN_IDS.start } else { id + 1 };
+            if !self.own.contains_key(&id) && !self.adapter_reserved.contains_key(&id) {
+                self.own.insert(id, command);
+                return id;
+            }
+        }
+    }
+
+    /// Two pending commands never share a reserved id (see `upstream::forward`), so a reply's
+    /// id alone names its owner.
+    fn route_reply(&mut self, id: u32) -> Route {
+        if let Some(own) = self.own.remove(&id) {
+            return Route::Own(own);
+        }
+        if OWN_IDS.contains(&id) {
+            let Some(pending) = self.adapter_reserved.get_mut(&id) else {
+                return Route::Nobody;
+            };
+            *pending -= 1;
+            if *pending == 0 {
+                self.adapter_reserved.remove(&id);
+            }
+        }
+        self.invokes.remove(&id);
+        Route::Adapter
     }
 
     fn own_reply(&mut self, command: OwnCommand, header: &Header, body: &[u8]) {
@@ -178,7 +218,12 @@ impl Shared {
     fn new(options: LinkOptions) -> Shared {
         let core = Core { hold: options.hold_resumes, next_own: OWN_IDS.start, ..Core::default() };
         let (state, _) = watch::channel(core.state());
-        Shared { core: Mutex::new(core), state, jvm: tokio::sync::Mutex::new(None) }
+        Shared {
+            core: Mutex::new(core),
+            state,
+            jvm: tokio::sync::Mutex::new(None),
+            own_answered: tokio::sync::Notify::new(),
+        }
     }
 
     /// Runs `f` on the core and publishes the state if it changed.
