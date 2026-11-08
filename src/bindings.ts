@@ -5581,11 +5581,15 @@ export type MavenPlugin = {
 };
 
 export type MavenProfile = {
+	/**  Owning project folder when displayed in a workspace. */
+	projectRoot?: string | null,
 	id: string,
 	activeByDefault: boolean,
 };
 
 export type MavenProject = {
+	/**  Owning project folder when displayed in a workspace. */
+	projectRoot?: string | null,
 	/**  Project-relative, `/`-separated (`pom.xml`, `core/pom.xml`). */
 	pom: string,
 	/**  Project-relative directory; `""` = the project root. */

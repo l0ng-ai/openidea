@@ -1,5 +1,7 @@
 //! Maven / Gradle tool windows (the build model and its background sync) and
 //! Build › Build Project (compiling with the project's build system).
+mod workspace;
+
 use crate::ops::Channel;
 use crate::rpc::Dispatcher;
 use crate::{Host, Project, apply_workspace_edit};
@@ -10,7 +12,6 @@ use ide_build::pom_edit::{ArtifactKey, Exclusion};
 use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
 use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
-use std::collections::BTreeMap;
 use std::path::Path;
 
 fn join_err(e: tokio::task::JoinError) -> IdeError {
@@ -125,8 +126,8 @@ fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
 pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    tokio::task::spawn_blocking(move || load(&root, &cache, &settings)).await.map_err(join_err)
+    let config = host.config_dir.clone();
+    tokio::task::spawn_blocking(move || workspace::load_project(&project, &config)).await.map_err(join_err)?
 }
 
 fn linked_gradle_paths(
@@ -224,83 +225,88 @@ pub async fn build_sync(
 ) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
-    let bridge_profiles = profiles.clone();
-    // What the Java language server and Build Project resolve the project with from now on.
-    let profiles_changed = tool == BuildTool::Maven
-        && ide_build::save_maven_profiles(&cache, &profiles).unwrap_or_else(|e| {
-            tracing::warn!("Maven profiles not saved: {e}");
-            false
-        });
-    if profiles_changed {
-        // The modules of the chosen profiles are read from the POMs with them from now on (the
-        // project tree's module folders too), whether or not Maven itself can run.
-        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
-    }
     let token = host.begin_project_request(window, request);
     let completion_token = token.clone();
-    let original_links = settings.languages.java.gradle.linked_projects.clone();
+    let bridge_profiles = profiles.clone();
+    let p = project.clone();
+    let config = host.config_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let current = load(&root, &cache, &settings);
-        let env = match tool {
-            BuildTool::Maven => current
+        let scopes = workspace::scopes(&p, &config)?;
+        let selected: Vec<_> =
+            scopes.iter().filter(|scope| workspace::selected(scope, &p.root, tool, build_dir.as_deref())).collect();
+        if selected.is_empty() {
+            return Err(IdeError::not_found("Build project is no longer linked"));
+        }
+        let mut profiles_changed = false;
+        for scope in selected {
+            if token.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
+            let current = load(root, cache, settings);
+            if tool == BuildTool::Maven && current.maven.is_some() {
+                let changed = ide_build::save_maven_profiles(cache, &profiles).unwrap_or_else(|e| {
+                    tracing::warn!("Maven profiles not saved: {e}");
+                    false
+                });
+                if changed {
+                    p.sink.emit(IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
+                }
+                profiles_changed |= changed;
+            }
+            let env = current
                 .maven
                 .as_ref()
                 .and_then(|m| m.projects.iter().find(|p| !p.env.is_empty()))
                 .map(|p| p.env.clone())
-                .unwrap_or_default(),
-            BuildTool::Gradle => BTreeMap::new(),
-        };
-        let options = SyncOptions {
-            offline,
-            profiles,
-            env,
-            maven_command: ide_sdk::apply::maven_command(&root, &settings).map(|p| p.to_string_lossy().into_owned()),
-            maven_options: ide_sdk::apply::maven_options(&root, &settings),
-            maven_settings: settings.languages.java.maven.clone(),
-            gradle_command: None,
-        };
-        let progress = |p: SyncProgress| {
-            let _ = on_progress.send(p);
-        };
-        match tool {
-            BuildTool::Maven => ide_build::sync_maven(&root, &cache, &options, &token, &progress)?,
-            BuildTool::Gradle => {
-                if let Some(dir) = &build_dir
-                    && !current.gradle.iter().any(|g| &g.dir == dir)
-                {
-                    return Err(IdeError::not_found("Gradle project is no longer linked"));
+                .unwrap_or_default();
+            let options = SyncOptions {
+                offline,
+                profiles: profiles.clone(),
+                env,
+                maven_command: ide_sdk::apply::maven_command(root, settings).map(|p| p.to_string_lossy().into_owned()),
+                maven_options: ide_sdk::apply::maven_options(root, settings),
+                maven_settings: settings.languages.java.maven.clone(),
+                gradle_command: None,
+            };
+            let progress = |p: SyncProgress| {
+                let _ = on_progress.send(p);
+            };
+            match tool {
+                BuildTool::Maven if current.maven.is_some() => {
+                    ide_build::sync_maven(root, cache, &options, &token, &progress)?
                 }
-                for g in current.gradle.iter().filter(|g| build_dir.as_ref().is_none_or(|dir| dir == &g.dir)) {
-                    if token.is_cancelled() {
-                        return Err(IdeError::cancelled());
+                BuildTool::Maven => {}
+                BuildTool::Gradle => {
+                    for g in current
+                        .gradle
+                        .iter()
+                        .filter(|g| build_dir.as_ref().is_none_or(|dir| p.root.join(dir) == root.join(&g.dir)))
+                    {
+                        if token.is_cancelled() {
+                            return Err(IdeError::cancelled());
+                        }
+                        let options = SyncOptions {
+                            env: g.env.clone(),
+                            gradle_command: Some(g.command.clone()),
+                            ..options.clone()
+                        };
+                        ide_build::sync_gradle_model(root, cache, g, &options, &token, &progress)?;
                     }
-                    let options =
-                        SyncOptions { env: g.env.clone(), gradle_command: Some(g.command.clone()), ..options.clone() };
-                    ide_build::sync_gradle_model(&root, &cache, g, &options, &token, &progress)?;
-                }
-                if token.is_cancelled() {
-                    return Err(IdeError::cancelled());
                 }
             }
         }
-        Ok::<BuildModel, IdeError>(load(&root, &cache, &settings))
+        let scopes = workspace::scopes(&p, &config)?;
+        let model = workspace::load_scopes(&p.root, &scopes);
+        let updates = workspace::update_files(&p.root, &scopes, &model, tool);
+        Ok::<_, IdeError>((model, profiles_changed, updates))
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    let model = result??;
+    let (model, profiles_changed, updates) = result??;
     if completion_token.is_cancelled() {
         return Err(IdeError::cancelled());
-    }
-    if tool == BuildTool::Gradle && original_links != project.settings.effective().languages.java.gradle.linked_projects
-    {
-        // A late sync must not re-import a build that was unlinked while it ran.
-        return tokio::task::spawn_blocking(move || {
-            load(&project.root, &project.build_cache_dir(), &project.settings.effective())
-        })
-        .await
-        .map_err(join_err);
     }
     if tool == BuildTool::Gradle {
         // The sync may report project folders outside the project (`includeFlat`): index and list them.
@@ -320,30 +326,17 @@ pub async fn build_sync(
     // to update the project configurations re-resolves them (#436). The same
     // holds for Gradle: it reuses its cached classpath on restart, so a
     // dependency added to `build.gradle` stays unresolved until told to sync.
-    let build_files: Vec<String> = match tool {
-        BuildTool::Maven => model.maven.iter().flat_map(|m| m.projects.iter().map(|p| p.pom.clone())).collect(),
-        BuildTool::Gradle => {
-            model.gradle.iter().flat_map(|g| g.projects.iter().filter_map(|p| p.build_file.clone())).collect()
-        }
-    };
     let lsp = project.lsp.clone();
-    // With a module of a reactor unlinked, jdtls imports the other modules one by one and
-    // not the reactor: naming the reactor here would import it again, all modules included.
-    let imported = match tool {
-        BuildTool::Maven => crate::project::jdtls_maven_import(&project.root, &project.settings.effective()).1,
-        BuildTool::Gradle => None,
-    };
-    let uris = match imported {
-        Some(files) => files.into_iter().filter(|f| f.ends_with("/pom.xml")).collect(),
-        None => build_files.iter().map(|f| ide_lsp::path_to_uri_string(&project.root.join(f))).collect(),
-    };
     tokio::spawn(async move {
         if profiles_changed {
             // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
             lsp.reconfigure().await;
         }
-        if let Err(e) = lsp.java_update_project_configs(&project.root, uris).await {
-            tracing::debug!("java/projectConfigurationsUpdate: {e}");
+        for file in updates {
+            let uri = ide_lsp::path_to_uri_string(&file);
+            if let Err(e) = lsp.java_update_project_configs(&file, vec![uri]).await {
+                tracing::debug!("java/projectConfigurationsUpdate: {e}");
+            }
         }
     });
     Ok(model)
@@ -353,12 +346,25 @@ pub async fn build_sync(
 /// module's own, else its nearest parent in the project; its path, text and declaration.
 fn declaring_pom(
     project: &Project,
+    config: &Path,
     pom: &str,
     dependency: &ArtifactKey,
 ) -> IdeResult<(std::path::PathBuf, String, Range)> {
-    let model = ide_build::maven::load(&project.root);
-    for rel in ide_build::pom_edit::declaring_poms(&model, pom) {
-        let path = project.root.join(&rel);
+    let scopes = workspace::scopes(project, config)?;
+    let path = project.root.join(pom);
+    let scope = scopes
+        .iter()
+        .filter(|s| path.starts_with(&s.root))
+        .max_by_key(|s| s.root.components().count())
+        .ok_or_else(|| IdeError::not_found("Maven project is no longer linked"))?;
+    let model = load(&scope.root, &scope.cache, &scope.settings).maven.unwrap_or_default();
+    let pom = model
+        .projects
+        .iter()
+        .find(|p| scope.root.join(&p.pom) == path)
+        .ok_or_else(|| IdeError::not_found("Maven project is no longer linked"))?;
+    for rel in ide_build::pom_edit::declaring_poms(&model, &pom.pom) {
+        let path = scope.root.join(&rel);
         let text = project.text_of(&path)?;
         if let Some(range) = ide_build::pom_edit::declaration(&text, dependency) {
             return Ok((path, text, range));
@@ -398,14 +404,19 @@ pub async fn gradle_dependencies(
 ) -> IdeResult<Vec<ide_build::GradleDependency>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
+    let config = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
-        let model = load(&root, &cache, &settings);
+        let scopes = workspace::scopes(&project, &config)?;
+        let scope = scopes
+            .iter()
+            .find(|s| workspace::selected(s, &project.root, BuildTool::Gradle, build_dir.as_deref()))
+            .ok_or_else(|| IdeError::not_found("Gradle project is no longer linked"))?;
+        let model = load(&scope.root, &scope.cache, &scope.settings);
         let gradle = model
             .gradle
             .iter()
-            .find(|g| build_dir.as_ref().is_none_or(|dir| &g.dir == dir))
+            .find(|g| build_dir.as_ref().is_none_or(|dir| project.root.join(dir) == scope.root.join(&g.dir)))
             .ok_or_else(|| IdeError::not_found("Gradle project is no longer linked"))?;
         let options = SyncOptions {
             offline,
@@ -413,7 +424,7 @@ pub async fn gradle_dependencies(
             gradle_command: Some(gradle.command.clone()),
             ..Default::default()
         };
-        ide_build::gradle_dependencies(&root, gradle, &options, &gradle_path, &configuration, &token)
+        ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)
     })
     .await
     .map_err(join_err);
@@ -429,8 +440,9 @@ pub async fn maven_dependency_declaration(
     dependency: ArtifactKey,
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
+    let config = host.config_dir.clone();
     tokio::task::spawn_blocking(move || {
-        let (path, _, range) = declaring_pom(&project, &pom, &dependency)?;
+        let (path, _, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         Ok(Location::file(path, range))
     })
     .await
@@ -469,8 +481,9 @@ pub async fn maven_exclude_dependency(
     exclusion: ArtifactKey,
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
+    let config = host.config_dir.clone();
     tokio::task::spawn_blocking(move || {
-        let (path, text, range) = declaring_pom(&project, &pom, &dependency)?;
+        let (path, text, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         match ide_build::pom_edit::add_exclusion(&text, &dependency, &exclusion) {
             Some(Exclusion::Edit(edit)) => {
                 let edit = WorkspaceEdit {
