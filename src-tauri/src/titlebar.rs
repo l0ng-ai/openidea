@@ -89,7 +89,12 @@ fn track(window: &NSWindow, app: &tauri::AppHandle) -> Tracked {
                 crate::macos::hide_tab_bar(&window);
             }
             // The web title bar releases the room kept for the window buttons in full screen.
-            app.state::<crate::state::AppState>().sink.emit(ide_core::IdeEvent::WindowFullscreenChanged);
+            // Closing a window posts this while the runtime still holds its window table, and an
+            // emit from here evaluates script in that table; send it from outside the notification.
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                app.state::<crate::state::AppState>().sink.emit(ide_core::IdeEvent::WindowFullscreenChanged);
+            });
         });
         let observer = unsafe {
             NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
