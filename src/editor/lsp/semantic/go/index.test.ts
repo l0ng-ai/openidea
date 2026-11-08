@@ -46,11 +46,20 @@ describe("Go semantic tokens", () => {
       ["namespace", "cm-sem-namespace"],
       ["property", "cm-sem-property"],
       ["function", "cm-sem-function"],
+      ["type", "cm-sem-type"],
+      ["typeParameter", "cm-sem-typeParameter"],
     ]) {
       expect(
         semanticRanges(doc, { tokenTypes: [type!], tokenModifiers: [], data: [0, 0, 4, 0, 0] }, false, "go")[0]
           ?.className,
       ).toBe(expected);
     }
+  });
+
+  it("leaves branch labels and missing server tokens to syntax highlighting", () => {
+    expect(
+      semanticRanges(doc, { tokenTypes: ["label"], tokenModifiers: [], data: [0, 0, 4, 0, 0] }, false, "go"),
+    ).toEqual([]);
+    expect(semanticRanges(doc, { tokenTypes: [], tokenModifiers: [], data: [] }, true, "go")).toEqual([]);
   });
 });
