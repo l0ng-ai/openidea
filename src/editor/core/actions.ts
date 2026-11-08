@@ -806,6 +806,7 @@ export function registerEditorActions(): () => void {
       title: "Add or Remove Caret",
       category: "Editor Actions",
       when: "textEditorActive",
+      hidden: true,
       // The mouse selection style handles the pointer position and dragging.
       run: () => {},
     },

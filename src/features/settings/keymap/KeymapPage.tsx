@@ -9,7 +9,7 @@
 import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { useActions, allActions, type Action } from "@/platform/actions";
-import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS } from "@/platform/keymap";
+import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS, useKeymap } from "@/platform/keymap";
 import { confirm } from "@/workbench/messages";
 import {
   HighlightedText,
@@ -36,6 +36,7 @@ import {
   deleteKeymap,
   duplicateKeymap,
   isModified,
+  isKeymapAction,
   keymapName,
   removeBinding,
   removeConflicts,
@@ -61,8 +62,9 @@ type KNode =
 type GroupNode = Extract<KNode, { kind: "group" }>;
 
 export function keymapSearchLabels(): string[] {
+  const draft = useKeymap.getState();
   return allActions()
-    .filter((a) => !a.hidden)
+    .filter((a) => isKeymapAction(a, draft))
     .map((a) => a.title);
 }
 
@@ -107,7 +109,7 @@ export function buildKeymapTree(
   const q = query.toLowerCase();
   for (const action of actions) {
     const bindings = resolveBindings(draft, action.id);
-    if (action.hidden && !bindings.length) continue;
+    if (!isKeymapAction(action, draft)) continue;
     let hits: number[] | null = null;
     if (query) {
       hits = wordMatch(action.title, query);
