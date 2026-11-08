@@ -47,23 +47,33 @@ describe("widenToRightEdge", () => {
 describe("growToLineBoxes", () => {
   const C = "cm-selectionBackground";
   const box = (m: RectangleMarker) => [m.left, m.top, m.width, m.height];
+  const rows20 = (y: number) => ({ top: Math.floor(y / 20) * 20, bottom: Math.floor(y / 20) * 20 + 20 });
 
-  it("grows the first and last rows of a selection to full line height", () => {
-    // 20px lines with 16px glyph boxes: CodeMirror leaves 2px above the first row and below the last.
+  it("grows the first and last rows of a selection to their line boxes", () => {
+    // 20px rows, 16px glyph boxes: CodeMirror leaves 2px above the first row and below the last.
     const markers = [
       new RectangleMarker(C, 40, 2, 100, 16), // first row
-      new RectangleMarker(C, 2, 18, 500, 24), // rows in between (already full height)
+      new RectangleMarker(C, 2, 18, 500, 24), // rows in between
       new RectangleMarker(C, 2, 42, 30, 16), // last row
     ];
-    expect(growToLineBoxes(markers, C, 20).map(box)).toEqual([
+    expect(growToLineBoxes(markers, C, rows20).map(box)).toEqual([
       [40, 0, 100, 18],
       [2, 18, 500, 24],
       [2, 42, 30, 18],
     ]);
   });
 
+  it("uses the line boxes when CodeMirror has already met two adjacent rows in the middle", () => {
+    // two lines: CodeMirror stretches both to the 20px boundary, so the rectangles are 18px, not glyph-high
+    const markers = [new RectangleMarker(C, 40, 2, 100, 18), new RectangleMarker(C, 2, 20, 30, 18)];
+    expect(growToLineBoxes(markers, C, rows20).map(box)).toEqual([
+      [40, 0, 100, 20],
+      [2, 20, 30, 20],
+    ]);
+  });
+
   it("grows a single-row selection both ways", () => {
-    expect(growToLineBoxes([new RectangleMarker(C, 40, 22, 60, 16)], C, 20).map(box)).toEqual([[40, 20, 60, 20]]);
+    expect(growToLineBoxes([new RectangleMarker(C, 40, 22, 60, 16)], C, rows20).map(box)).toEqual([[40, 20, 60, 20]]);
   });
 });
 
@@ -85,6 +95,22 @@ describe("fillRowEnds", () => {
       [2, 20, 514, 40],
       [112, 0, 404, 20],
     ]);
+  });
+
+  it("does not count the rectangle below that only reaches into a row's leading", () => {
+    // a folded first row, then CodeMirror's block for the rows below starting at its glyph bottom (18)
+    const markers = [new RectangleMarker(C, 2, 0, 110, 20), new RectangleMarker(C, 2, 18, 514, 42)];
+    expect(fillRowEnds(markers, C, [{ top: 0, bottom: 20 }], 516).map(box)).toEqual([
+      [2, 0, 110, 20],
+      [2, 18, 514, 42],
+      [112, 0, 404, 20],
+    ]);
+  });
+
+  it("matches the height of the row's own rectangle", () => {
+    // CodeMirror's block for the rows below starts at 18, so this row's rectangle (and the fill) ends there
+    const markers = [new RectangleMarker(C, 2, 0, 110, 18), new RectangleMarker(C, 2, 18, 514, 42)];
+    expect(box(fillRowEnds(markers, C, [{ top: 0, bottom: 20 }], 516)[2]!)).toEqual([112, 0, 404, 18]);
   });
 
   it("leaves rows with no rectangle alone", () => {
