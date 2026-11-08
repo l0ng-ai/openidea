@@ -329,6 +329,34 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
   );
 }
 
+function Homepage({ value }: { value: string }) {
+  let isWebUrl = false;
+  try {
+    const { protocol } = new URL(value);
+    isWebUrl = protocol === "http:" || protocol === "https:";
+  } catch {
+    // Malformed manifest values remain readable as plain text.
+  }
+  return (
+    <dd className={clsx(styles.mono, styles.homepage)}>
+      {isWebUrl ? (
+        <a
+          href={value}
+          className={styles.homepageLink}
+          onClick={(event) => {
+            event.preventDefault();
+            void openExternalUrl(value);
+          }}
+        >
+          {value}
+        </a>
+      ) : (
+        value
+      )}
+    </dd>
+  );
+}
+
 function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   const busy = usePlugins((s) => !!s.busy[plugin.id]);
   const status = STATUS[plugin.status];
@@ -363,18 +391,7 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             <dt>
               <T>Homepage</T>
             </dt>
-            <dd className={styles.mono}>
-              <a
-                href={plugin.homepage}
-                className={styles.homepageLink}
-                onClick={(e) => {
-                  e.preventDefault();
-                  void openExternalUrl(plugin.homepage!);
-                }}
-              >
-                {plugin.homepage}
-              </a>
-            </dd>
+            <Homepage value={plugin.homepage} />
           </>
         )}
       </dl>
@@ -520,18 +537,7 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
             <dt>
               <T>Homepage</T>
             </dt>
-            <dd className={styles.mono}>
-              <a
-                href={entry.homepage}
-                className={styles.homepageLink}
-                onClick={(e) => {
-                  e.preventDefault();
-                  void openExternalUrl(entry.homepage!);
-                }}
-              >
-                {entry.homepage}
-              </a>
-            </dd>
+            <Homepage value={entry.homepage} />
           </>
         )}
         {contributes.length > 0 && (

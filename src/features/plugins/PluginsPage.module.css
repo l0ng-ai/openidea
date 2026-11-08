@@ -282,6 +282,10 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
 }
+.facts .homepage {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .homepageLink {
   color: var(--link);
   text-decoration: none;
