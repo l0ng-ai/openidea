@@ -100,7 +100,7 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
-    /// One pre-session command lookup per provider, including failed attempts.
+    /// One pre-session lookup of commands and settings per provider, including failed attempts.
     command_fetches: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
@@ -153,7 +153,7 @@ impl Shared {
         cache.get(provider).and_then(|k| k.commands.get(&self.root_key())).cloned().unwrap_or_default()
     }
 
-    async fn fetch_commands(self: &Arc<Self>, spec: provider::ProviderSpec) {
+    async fn fetch_settings(self: &Arc<Self>, spec: provider::ProviderSpec) {
         let mut ready = {
             let mut fetches = self.command_fetches.lock();
             fetches
@@ -163,14 +163,20 @@ impl Shared {
                     let shared = self.clone();
                     // Keep the lookup alive if a composer unmounts while it is waiting.
                     self.runtime.spawn(async move {
-                        if let Ok(commands) =
-                            native::claude::commands(spec.clone(), shared.paths.project_root.clone()).await
+                        if let Ok((commands, options)) =
+                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await
                         {
                             let commands = config::commands_of(&json!({ "availableCommands": commands }), &spec.id);
+                            let options = config::options_of(&json!({ "configOptions": options }));
                             let _ = tokio::task::spawn_blocking(move || {
                                 if shared.known_commands(&spec.id).is_empty() {
                                     shared.remember(&spec.id, None, Some(&commands), None);
                                 }
+                                // What a session has reported wins over this first guess.
+                                if !shared.has_config(&spec.id) {
+                                    shared.remember(&spec.id, Some(&options), None, model_of(&options).as_deref());
+                                }
+                                shared.emit(AgentEvent::Providers);
                             })
                             .await;
                         }
@@ -185,6 +191,10 @@ impl Shared {
                 break;
             }
         }
+    }
+
+    fn has_config(&self, provider: &str) -> bool {
+        self.known.lock().get(provider).is_some_and(|k| !k.config.is_empty())
     }
 
     fn root_key(&self) -> String {
@@ -458,10 +468,10 @@ impl AgentManager {
         // merged without duplicating what `availableCommands` or the disk offer.
         let mut offered = offered;
         if task.is_none()
-            && offered.is_empty()
+            && (offered.is_empty() || !self.shared.has_config(&provider))
             && let Some(spec) = self.shared.spec(&provider).filter(|s| s.driver == provider::Driver::Claude)
         {
-            self.shared.fetch_commands(spec).await;
+            self.shared.fetch_settings(spec).await;
             offered = self.shared.known_commands(&provider);
         }
         for &(name, description) in builtin_commands(&provider) {

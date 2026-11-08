@@ -394,13 +394,22 @@ response = {'subtype': outcome, 'request_id': request['request_id']}
 if outcome == 'success':
     response['response'] = {'commands': [
         {'name': 'compact', 'description': 'Free up context', 'argumentHint': '[instructions]'},
-        {'name': 'clear'}, {'name': 'model'}, {'name': 'context'}]}
+        {'name': 'clear'}, {'name': 'model'}, {'name': 'context'}],
+        'models': [
+            {'value': 'default', 'displayName': 'Default (recommended)', 'description': 'Use the default model',
+             'supportsEffort': True, 'supportedEffortLevels': ['low', 'high']},
+            {'value': 'custom-opus', 'displayName': 'custom-opus', 'description': 'Custom Opus model'}]}
 else:
     response['error'] = 'Authentication required'
 print(json.dumps({'type': 'control_response', 'response': response}), flush=True)
 for line in sys.stdin:
     with (root / 'requests').open('a') as f:
         f.write(line)
+    request = json.loads(line)
+    if request['request']['subtype'] == 'get_settings':
+        reply = {'subtype': 'success', 'request_id': request['request_id'],
+                 'response': {'applied': {'effort': 'high'}, 'effective': {}}}
+        print(json.dumps({'type': 'control_response', 'response': reply}), flush=True)
 "#,
         )
         .unwrap();
@@ -427,9 +436,22 @@ for line in sys.stdin:
             assert_eq!(first[0].hint.as_deref(), Some("[instructions]"));
             let restored = manager(root, Arc::new(FakeAgent::default()));
             assert_eq!(first, restored.commands("claude", None).await.unwrap());
+            // The same handshake lists the models, so the composer has them before any task.
+            for mgr in [&mgr, &restored] {
+                let claude = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+                let model = claude.config.iter().find(|o| o.category.as_deref() == Some("model")).unwrap();
+                assert_eq!(model.current.as_deref(), Some("default"));
+                let values: Vec<_> = model.values.iter().map(|v| v.value.as_str()).collect();
+                assert_eq!(values, ["default", "custom-opus"]);
+                let effort =
+                    claude.thought_levels["default"].iter().find(|o| o.category.as_deref() == Some("thought_level"));
+                assert_eq!(effort.unwrap().current.as_deref(), Some("high"));
+            }
         } else {
             assert_eq!(names, ["triage"], "{outcome}");
             assert!(!root.join("models.json").exists());
+            let claude = mgr.providers().into_iter().find(|p| p.id == "claude").unwrap();
+            assert!(!claude.config.iter().any(|o| o.category.as_deref() == Some("model")), "{outcome}");
         }
         assert!(mgr.tasks.read().is_empty());
         assert!(!root.join("store").exists());
@@ -439,10 +461,14 @@ for line in sys.stdin:
             let args: Vec<String> = serde_json::from_str(launches.trim()).unwrap();
             assert!(args.windows(2).any(|a| a == ["--input-format", "stream-json"]));
             let requests = std::fs::read_to_string(root.join("requests")).unwrap();
-            assert_eq!(requests.lines().count(), 1, "only initialize, no prompt or other control request");
-            let request: Value = serde_json::from_str(requests.trim()).unwrap();
-            assert_eq!(request["type"], "control_request");
-            assert_eq!(request["request"]["subtype"], "initialize");
+            let subtypes: Vec<String> = requests
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()["request"]["subtype"].as_str().unwrap().to_owned())
+                .collect();
+            // The handshake and the settings read: no prompt or other control request.
+            let expected: &[&str] =
+                if outcome == "success" { &["initialize", "get_settings"] } else { &["initialize"] };
+            assert_eq!(subtypes, expected, "{outcome}");
         }
     }
 }
