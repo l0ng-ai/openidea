@@ -76,7 +76,7 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     }
     let root = config.cwd.clone().map(PathBuf::from).unwrap_or_default();
     let mut ruby_tools = Vec::new();
-    if config.adapter == "rdbg" {
+    if config.adapter == "rdbg" && config.request == "launch" {
         let project_root = host.project(window).map(|p| p.root.clone()).unwrap_or_else(|_| root.clone());
         let (dir, settings) = (root.clone(), settings.clone());
         (config, ruby_tools) = host
