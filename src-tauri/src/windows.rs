@@ -286,6 +286,9 @@ pub fn settings_label(parent: &str) -> String {
     format!("{}-{parent}", AuxKind::Settings.name())
 }
 
+/// Held from choosing a project window's label until the window exists.
+static CREATING: Mutex<()> = Mutex::new(());
+
 /// Windows being built to join a window group, which takes their frame from the group.
 #[cfg(target_os = "macos")]
 static JOINING_GROUP: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -665,6 +668,8 @@ fn create_window_for(
 ) -> IdeResult<WebviewWindow> {
     #[cfg(target_os = "macos")]
     let tab_target = if _restoring { None } else { crate::macos::new_project_tab_target(app, &launch)? };
+    // The label is free only until the window exists, so concurrent opens take turns.
+    let creating = CREATING.lock();
     let windows = app.webview_windows();
     let label = next_label(windows.keys().map(String::as_str));
     let mut config = window_config(app)?;
@@ -691,6 +696,7 @@ fn create_window_for(
         config.visible = false;
     }
     let window = build_project_window(app, config);
+    drop(creating);
     // Plugins hear of the window from the main thread's queue; forget it after them.
     #[cfg(target_os = "macos")]
     if tab_target.is_some() {
