@@ -23,10 +23,9 @@ describe("build policy for build-tool commands", () => {
       "-B",
       "spring-boot:run",
     ]);
-    expect(applyBuildPolicyToCommand({ ...cfg({ kind: "gradle", args: ["bootRun"] }), buildPolicy: "rebuild" }).args).toEqual([
-      "clean",
-      "bootRun",
-    ]);
+    expect(
+      applyBuildPolicyToCommand({ ...cfg({ kind: "gradle", args: ["bootRun"] }), buildPolicy: "rebuild" }).args,
+    ).toEqual(["clean", "bootRun"]);
   });
 
   it("lets Maven continue on compile errors only when asked", () => {

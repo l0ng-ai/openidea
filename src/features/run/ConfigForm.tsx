@@ -81,7 +81,13 @@ export type OptionId =
   | "isTest"
   | "emulateTerminal";
 
-const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set(["stdinFile", "envFiles", "outputFile", "beforeLaunch", "buildPolicy"]);
+const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set([
+  "stdinFile",
+  "envFiles",
+  "outputFile",
+  "beforeLaunch",
+  "buildPolicy",
+]);
 
 const OPTION_LABELS: Record<OptionId, string> = {
   allowParallel: "Allow multiple instances",
@@ -102,7 +108,11 @@ const OPTION_GROUPS: ReadonlyArray<{ label: string; options: OptionId[]; process
   { label: "Operating System", options: ["allowParallel", "stdinFile", "envFiles", "emulateTerminal"], process: true },
   { label: "Logs", options: ["outputFile", "showOnStdout", "showOnStderr"], process: true },
   { label: "Test", options: ["isTest"], process: true },
-  { label: "Before Launch", options: ["buildPolicy", "beforeLaunch", "openToolWindow", "focusToolWindow"], process: false },
+  {
+    label: "Before Launch",
+    options: ["buildPolicy", "beforeLaunch", "openToolWindow", "focusToolWindow"],
+    process: false,
+  },
 ];
 
 /** Whether the option currently has a (non-default) value. */
