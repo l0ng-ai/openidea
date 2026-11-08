@@ -822,7 +822,7 @@ impl CodexShim {
         match method {
             "item/commandExecution/requestApproval" => {
                 let choices = translate::decisions(params, true);
-                let title = translate::command_approval_title(params, item.as_ref(), cwd);
+                let title = translate::command_approval_title(params, item.as_ref());
                 let call = tool_call_of(
                     &item_id,
                     &title,

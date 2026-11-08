@@ -123,6 +123,7 @@ interface view-types {
 /// What a plugin's code can ask of its views.
 interface views {
     use types.{error};
+    use detail-types.{process-log};
 
     /// The view (or every custom editor of that id) shows outdated content:
     /// the IDE renders it again.
@@ -136,6 +137,13 @@ interface views {
     /// `program` (pinned by a `process:<program>` grant) with `args` in the
     /// project root: long-running output (logs) and interactive sessions.
     open-terminal: func(title: string, program: string, args: list<string>) -> result<_, error>;
+    /// Opens a read-only log tab in the editor area of the window the call
+    /// came from, following `log`'s program (pinned by a `process:<program>`
+    /// grant) in the project root, its toggles above the output: the tab a
+    /// web view opens with `open-log-tab`. Reopening `key` focuses that tab.
+    /// Only from a command or event of a window; `title` at most 256
+    /// characters, `key` 128, at most 32 toggles.
+    open-log-tab: func(key: string, title: string, log: process-log) -> result<_, error>;
     /// Opens `path` (project-relative or absolute, inside the project) in an
     /// editor of the window the call came from, the caret at `line` and
     /// `column` (0-based; UTF-16 column): a view's links to code.

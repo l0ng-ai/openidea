@@ -1,15 +1,22 @@
 package openidea:plugin@1.3.0;
 
-/// Optional diagnostics for the current, possibly unsaved document (API 1.3).
+/// Optional export (world `plugin-diagnostics`): problems in the current,
+/// possibly unsaved document, for the languages declared with the
+/// `diagnostics` provider kind. Asked shortly after a document opens or
+/// changes, under the editor-provider budget; it can't ask the user.
 interface diagnostics-provider {
     use diagnostics.{diagnostic};
 
+    /// The document to check (the editor's text, unsaved edits included).
     record document {
+        /// Absolute path.
         path: string,
         language: string,
         version: u64,
         text: string,
     }
 
+    /// The document's problems, at most 5,000; they replace what this
+    /// provider reported before, and an empty list removes them.
     diagnostics: func(doc: document) -> list<diagnostic>;
 }

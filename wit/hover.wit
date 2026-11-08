@@ -1,19 +1,29 @@
 package openidea:plugin@1.3.0;
 
+/// Optional export (world `plugin-hover`): Markdown added to the hover of
+/// documents of the languages declared with the `hover` provider kind,
+/// including languages the plugin doesn't contribute. It shows below the
+/// language server's hover, under the edit-path budget.
 interface hover-provider {
     use types.{position, range};
 
+    /// The document hovered (the editor's text while it is open).
     record document {
+        /// Absolute path.
         path: string,
         language: string,
         version: u64,
         text: string,
     }
 
+    /// What the plugin adds to the hover.
     record hover-content {
+        /// At most 64 KiB.
         markdown: string,
+        /// The text the hover describes; used when the server names none.
         range: option<range>,
     }
 
+    /// The hover at `at`, or `none` to add nothing.
     hover: func(doc: document, at: position) -> option<hover-content>;
 }

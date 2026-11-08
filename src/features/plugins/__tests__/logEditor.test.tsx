@@ -9,17 +9,17 @@ import { usePlugins } from "../store";
 import { startViewUi } from "../uiPoints";
 import { registerLogActions } from "../views/logActions";
 import { PluginLogEditor } from "../views/logEditor";
-import { boundedLog, logTabData } from "../views/logTab";
-import { webPtyBackend } from "../views/ptyBackend";
+import { boundedLog, logTabData, type PluginLogEditorData } from "../views/logTab";
+import { logTabPtyBackend, webPtyBackend } from "../views/ptyBackend";
 import type { PtyBackend } from "../views/ptyBridge";
 
-vi.mock("../views/ptyBackend", () => ({ webPtyBackend: vi.fn() }));
+vi.mock("../views/ptyBackend", () => ({ webPtyBackend: vi.fn(), logTabPtyBackend: vi.fn() }));
 
 const plugin = { id: "probe", enabled: true, capabilities: [{ id: "process:bash", granted: true }] } as PluginInfo;
 const spec = {
   program: "bash",
   title: "Probe logs",
-  baseArgs: ["--noprofile", "--norc"],
+  args: ["--noprofile", "--norc"],
   toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
 };
 let stopActions: () => void;
@@ -36,7 +36,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function setup() {
+function setup(extra: Partial<PluginLogEditorData> = {}) {
   usePlugins.setState({ plugins: [plugin] });
   let output: (text: string) => void = () => {};
   let exit: Parameters<PtyBackend["onExit"]>[0] = () => {};
@@ -54,7 +54,8 @@ function setup() {
     },
   };
   vi.mocked(webPtyBackend).mockReturnValue(backend);
-  const data = logTabData("probe", "logs", spec, 100);
+  vi.mocked(logTabPtyBackend).mockReturnValue(backend);
+  const data = { ...logTabData("probe", "logs", spec, 100), ...extra };
   const input = { kind: "pluginLog", key: "test-log", data };
   const rendered = render(<PluginLogEditor input={input} />);
   const content = () => rendered.container.querySelector(".cm-content")!;
@@ -76,9 +77,10 @@ describe("plugin streaming log tabs", () => {
       { program: "sh" },
       { program: "/bin/bash" },
       { program: " bash" },
-      { baseArgs: [123] },
-      { baseArgs: ["\0"] },
-      { baseArgs: ["x".repeat(4097)] },
+      { args: [123] },
+      { args: ["\0"] },
+      { args: ["x".repeat(4097)] },
+      { baseArgs: ["--verbose"] },
       { cwd: "/" },
       { env: { PATH: "/tmp" } },
       { title: "x".repeat(257) },
@@ -102,7 +104,7 @@ describe("plugin streaming log tabs", () => {
     const f = setup();
     expect(webPtyBackend).toHaveBeenCalledWith("probe", "logs");
     expect(f.backend.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({ program: "bash", env: {}, args: spec.baseArgs }),
+      expect.objectContaining({ program: "bash", env: {}, args: spec.args }),
       expect.any(Function),
     );
     expect(f.view().state.facet(EditorState.readOnly)).toBe(true);
@@ -121,6 +123,16 @@ describe("plugin streaming log tabs", () => {
     expect(screen.getByRole("textbox", { name: "Find" })).toBeTruthy();
   });
 
+  it("starts a tab opened by plugin code by its key, with the toggles that are on", async () => {
+    const f = setup({ view: "", key: "code", origin: "code" });
+    expect(webPtyBackend).not.toHaveBeenCalled();
+    expect(logTabPtyBackend).toHaveBeenLastCalledWith("probe", "code", []);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("switch", { name: "Verbose" }));
+    await waitFor(() => expect(f.backend.kill).toHaveBeenCalledWith(42));
+    expect(logTabPtyBackend).toHaveBeenLastCalledWith("probe", "code", ["verbose"]);
+  });
+
   it("kills the previous process on toggle and every lifecycle boundary", async () => {
     for (const boundary of ["unmount", "disable", "project", "window"] as const) {
       const f = setup();
@@ -128,7 +140,7 @@ describe("plugin streaming log tabs", () => {
       fireEvent.click(screen.getByRole("switch", { name: "Verbose" }));
       await waitFor(() => expect(f.backend.kill).toHaveBeenCalledWith(42));
       expect(f.backend.spawn).toHaveBeenLastCalledWith(
-        expect.objectContaining({ args: [...spec.baseArgs, "-v"] }),
+        expect.objectContaining({ args: [...spec.args, "-v"] }),
         expect.any(Function),
       );
       vi.mocked(f.backend.kill).mockClear();

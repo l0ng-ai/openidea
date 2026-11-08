@@ -311,7 +311,7 @@ mod imp {
     }
 
     pub fn project_symbols(p: &ProjectRes, query: &str, limit: u32) -> Result<Vec<SymbolInfo>, Error> {
-        wit::workspace::symbols(p, query, limit)
+        p.symbols(query, limit)
             .map(|symbols| {
                 symbols
                     .into_iter()
@@ -449,6 +449,14 @@ mod imp {
 
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
         wit::views::open_terminal(title, program, args).map_err(error)
+    }
+
+    pub fn open_log_tab(key: &str, title: &str, log: &crate::details::ProcessLog) -> Result<(), Error> {
+        use wit::detail_types::{LogToggle, ProcessLog};
+        let toggles =
+            log.toggles.iter().map(|t| LogToggle { id: t.id.clone(), label: t.label.clone(), args: t.args.clone() });
+        let log = ProcessLog { program: log.program.clone(), args: log.args.clone(), toggles: toggles.collect() };
+        wit::views::open_log_tab(key, title, &log).map_err(error)
     }
 
     pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
@@ -703,6 +711,14 @@ pub fn post_view_message(view: &str, message: &str) -> Result<(), Error> {
 /// interactive sessions (`kubectl exec -it …`).
 pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
     imp::open_terminal(title, program, args)
+}
+
+/// Opens (or focuses) the read-only log tab `key` in the invoking window,
+/// following `log`'s program (the approved `process:<program>`) in the project
+/// root, with its toggles above the output. Only from a command or event of a
+/// window; `title` at most 256 characters, `key` 128, at most 32 toggles.
+pub fn open_log_tab(key: &str, title: &str, log: &crate::details::ProcessLog) -> Result<(), Error> {
+    imp::open_log_tab(key, title, log)
 }
 
 pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {

@@ -1119,7 +1119,7 @@ openidea.postMessage(JSON.stringify({
   key: "server-output",
   title: "Server logs",
   program: "my-server",
-  baseArgs: ["logs"],
+  args: ["logs"],
   toggles: [{ id: "verbose", label: "Verbose", args: ["--verbose"] }],
 }));
 ```
@@ -1130,9 +1130,9 @@ session caps and lifecycle rules are the same as for web frame PTYs. The tab
 uses the backend PTY API, never a shell fallback. It supplies no environment
 overrides; the environment is inherited. A shell requires its own explicit grant.
 
-`program` is required. `baseArgs` and `toggles` default to empty arrays; `title`
+`program` is required. `args` and `toggles` default to empty arrays; `title`
 defaults to the program. Each toggle has a unique `id`, a plugin-localized
-`label`, and `args` appended after `baseArgs` in declaration order. Changing a
+`label`, and `args` appended after the top-level `args` in declaration order. Changing a
 toggle terminates the previous process and replaces the stream. `key` defaults
 to the title and is scoped to the calling plugin and view; reopening the same
 key focuses its existing tab. Titles are at most 256 characters, keys 128,
@@ -1150,11 +1150,29 @@ five-tab retention limit; evicting a hidden tab stops its process. Closing the
 tab, disabling/updating the plugin, changing grants, switching projects or
 closing the window stops it, including a pending spawn.
 
+A plugin's code opens the same tab without a page, from a command or event of a
+window, with `host::open_log_tab(key, title, &log)` (WIT `views.open-log-tab`)
+and the `ProcessLog` the Services pane uses:
+
+```rust
+use openidea_plugin::details::ProcessLog;
+
+let log = ProcessLog::new("kubectl", &["logs", "-f", "deploy/api"]).toggle("previous", "Previous", &["--previous"]);
+host::open_log_tab("api-logs", "api logs", &log)?;
+```
+
+The call fails at once without the `process:<program>` grant or over the limits
+above. The host remembers what each key runs in that window, and the tab starts
+it by key, so nothing the tab sends names a program; a plugin keeps at most 32
+such tabs per window (opening more forgets the oldest). Tabs opened by code
+don't run in remote projects yet.
+
 The built fixture `crates/ide-plugin/tests/fixtures/web-log` exercises permission
 refusal, continuous Unicode output and a plugin-defined Verbose toggle. On Unix,
 grant its optional `process:bash` permission and use its Log Probe tool window.
 Its `Log Probe: Open Stream` and `Log Probe: Try Undeclared Program` commands
-also ask the sandboxed page to open a tab, exercising the Wasm-to-page bridge.
+also ask the sandboxed page to open a tab, exercising the Wasm-to-page bridge;
+`Log Probe: Open From Code` opens one from the plugin's code.
 This extends the web bridge without changing released WIT signatures.
 
 ### Plugin-backed content editor tabs (API 1.3)

@@ -565,6 +565,41 @@ pub async fn plugin_web_pty_spawn(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Starts the program of a log tab the plugin's code opened in this window,
+/// with the toggles in `on`.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn plugin_log_tab_spawn(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    key: String,
+    on: Vec<String>,
+    cols: u16,
+    rows: u16,
+    on_output: Channel<String>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    let plugins = state.plugins.clone();
+    let host = state.host.clone();
+    let window = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        plugins.spawn_log_tab_pty(
+            &host,
+            &plugin_id,
+            &key,
+            &window,
+            &on,
+            (cols, rows),
+            Arc::new(move |chunk| {
+                let _ = on_output.send(chunk);
+            }),
+        )
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 /// Largest file a web view saves or opens (`openidea.saveFile` / `openFile`).
 const MAX_WEB_VIEW_FILE: u64 = 64 << 20;
 

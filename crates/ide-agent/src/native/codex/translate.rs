@@ -733,20 +733,60 @@ pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> 
 }
 
 /// The ACP title of a command approval.
-pub(super) fn command_approval_title(params: &Value, item: Option<&Value>, cwd: Option<&str>) -> String {
+pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> String {
     if let Some(host) = params.pointer("/networkApprovalContext/host").and_then(Value::as_str) {
         return format!("Allow network access to {host}");
     }
-    let from_item = item.and_then(|i| tool_call(i, false, cwd, None)).and_then(|c| str_of(&c, "title"));
-    let title = from_item.or_else(|| {
-        let synthetic = json!({ "id": "", "type": "commandExecution", "command": params.get("command"),
-            "commandActions": params.get("commandActions").cloned().unwrap_or(json!([])) });
-        tool_call(&synthetic, false, cwd, None).and_then(|c| str_of(&c, "title"))
-    });
-    match title.filter(|t| !t.is_empty()) {
-        Some(t) => format!("Run {t}"),
+    // Approval payloads can describe a different command from the item's earlier summary.
+    let item = item.filter(|i| i.get("id") == params.get("itemId"));
+    let command = params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()));
+    match command {
+        Some(command) => format!("Run {}", shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }
+}
+
+/// The script of a `<shell> -c <quoted script>` command line, when the whole line is exactly that.
+fn shell_script(command: &str) -> Option<String> {
+    let (shell, rest) = command.split_once(' ')?;
+    if !matches!(shell.rsplit('/').next(), Some("sh" | "bash" | "zsh")) {
+        return None;
+    }
+    let quoted = rest.strip_prefix("-lc ").or_else(|| rest.strip_prefix("-c "))?;
+    let mut out = String::new();
+    let mut chars = quoted.chars();
+    // Adjacent quoted words, e.g. 'a'\''b' or "a \"b\"".
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    c => out.push(c),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '\\' => match chars.next()? {
+                        c @ ('"' | '\\' | '$' | '`') => out.push(c),
+                        '\n' => {}
+                        c => {
+                            out.push('\\');
+                            out.push(c);
+                        }
+                    },
+                    c => out.push(c),
+                }
+            },
+            '\\' => out.push(chars.next()?),
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// The ACP title of a file-change approval, from the item it is about.

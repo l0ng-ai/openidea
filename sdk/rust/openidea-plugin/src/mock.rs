@@ -122,6 +122,7 @@ struct State {
     refreshed: Vec<String>,
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
+    log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
     locale: Option<String>,
@@ -133,6 +134,14 @@ pub struct MockTerminal {
     pub title: String,
     pub program: String,
     pub args: Vec<String>,
+}
+
+/// A log tab the plugin opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockLogTab {
+    pub key: String,
+    pub title: String,
+    pub log: crate::details::ProcessLog,
 }
 
 /// At most 8 programs a plugin may keep running, as the host allows.
@@ -405,6 +414,11 @@ impl MockHost {
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
+    }
+
+    /// Log tabs the plugin opened, the latest of each key last.
+    pub fn log_tabs(&self) -> Vec<MockLogTab> {
+        self.state.borrow().log_tabs.clone()
     }
 
     /// The value of one of the plugin's settings, as JSON (`true`, `"text"`).
@@ -1272,6 +1286,20 @@ pub mod current {
         })
     }
 
+    pub fn open_log_tab(key: &str, title: &str, log: &crate::details::ProcessLog) -> Result<(), Error> {
+        with(|s| {
+            require(s, &format!("process:{}", log.program))?;
+            let line =
+                |t: &str, max: usize| !t.is_empty() && t.chars().count() <= max && !t.contains(['\0', '\r', '\n']);
+            if !line(key, 128) || !line(title, 256) || log.toggles.len() > 32 {
+                return Err(Error::Invalid("a log tab's key, title or toggles are over the limits".into()));
+            }
+            s.log_tabs.retain(|t| t.key != key);
+            s.log_tabs.push(MockLogTab { key: key.into(), title: title.into(), log: log.clone() });
+            Ok(())
+        })
+    }
+
     pub fn open_location(path: &str, line: u32, column: u32) -> Result<(), Error> {
         with(|s| {
             if !is_private_path(path) {
@@ -1822,6 +1850,25 @@ mod tests {
         assert!(host::fs::read_dir(&traversal).is_err());
         assert!(host::open_location(&file, 0, 0).is_err());
         assert_eq!(mock.opened_locations().len(), 2);
+    }
+
+    #[test]
+    fn log_tabs_need_the_program_grant() {
+        let log = crate::details::ProcessLog::new("kubectl", &["logs", "-f", "api"]).toggle(
+            "previous",
+            "Previous",
+            &["--previous"],
+        );
+        let _mock = MockHost::install();
+        assert_eq!(host::open_log_tab("api", "api logs", &log), Err(Error::Denied("process:kubectl".into())));
+
+        let mock = MockHost::install().with_capabilities(&["process:kubectl"]);
+        host::open_log_tab("api", "api logs", &log).unwrap();
+        // Reopening a key replaces that tab.
+        host::open_log_tab("api", "api logs again", &log).unwrap();
+        assert_eq!(mock.log_tabs().len(), 1);
+        assert_eq!((mock.log_tabs()[0].title.as_str(), &mock.log_tabs()[0].log), ("api logs again", &log));
+        assert!(matches!(host::open_log_tab("", "api logs", &log), Err(Error::Invalid(_))));
     }
 
     #[test]

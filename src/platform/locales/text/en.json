@@ -403,5 +403,19 @@
   "Running an action applies pending settings first.": "Running an action applies pending settings first.",
   "Could not apply settings.": "Could not apply settings.",
   "The value exceeds this setting’s limits.": "The value exceeds this setting’s limits.",
-  "Context path must start with / and contain only letters, digits, /, - or _": "Context path must start with / and contain only letters, digits, /, - or _"
+  "Context path must start with / and contain only letters, digits, /, - or _": "Context path must start with / and contain only letters, digits, /, - or _",
+  "Log tabs opened by plugin code are not available in remote projects yet.": "Log tabs opened by plugin code are not available in remote projects yet.",
+  "{0} wants to run a command": "{0} wants to run a command",
+  "Allow tool call?": "Allow tool call?",
+  "Allow Once": "Allow Once",
+  "Always Allow": "Always Allow",
+  "Allow for This Session": "Allow for This Session",
+  "Decline": "Decline",
+  "Decline and Stop": "Decline and Stop",
+  "Always Decline": "Always Decline",
+  "Allowed once": "Allowed once",
+  "Allowed for this session": "Allowed for this session",
+  "Always allowed": "Always allowed",
+  "Declined": "Declined",
+  "Always declined": "Always declined"
 }

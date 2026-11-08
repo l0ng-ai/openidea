@@ -13,8 +13,10 @@ export interface PluginLogEditorData {
   key?: string;
   title: string;
   program: string;
-  baseArgs: string[];
+  args: string[];
   toggles: PluginLogToggleSpec[];
+  /** Opened by the plugin's code (`views.open-log-tab`): the host starts what it approved for `key`. */
+  origin?: "code";
 }
 
 const text = (v: unknown, max: number): v is string =>
@@ -25,27 +27,28 @@ const args = (v: unknown): v is string[] =>
 /** Reject malformed requests instead of silently running a different command. */
 export function logTabData(pluginId: string, view: string, value: object, length: number): PluginLogEditorData {
   const m = value as Record<string, unknown>;
-  const { program, baseArgs = [], toggles = [], key, title = program } = m;
+  const { program, args: command = [], toggles = [], key, title = program } = m;
   if (
     length > 2 << 20 ||
     !text(program, 256) ||
     program.trim() !== program ||
     !text(title, 256) ||
     (key !== undefined && !text(key, 128)) ||
-    !args(baseArgs) ||
+    !args(command) ||
     !Array.isArray(toggles) ||
     toggles.length > 32 ||
     toggles.some((t) => !t || !text(t.id, 64) || !text(t.label, 128) || !args(t.args)) ||
     new Set(toggles.map((t) => t.id)).size !== toggles.length ||
-    baseArgs.length + toggles.reduce((n, t) => n + t.args.length, 0) > 256 ||
+    command.length + toggles.reduce((n, t) => n + t.args.length, 0) > 256 ||
     "cwd" in m ||
-    "env" in m
+    "env" in m ||
+    "baseArgs" in m
   )
     throw new Error(tx("Invalid log stream configuration"));
   const plugin = usePlugins.getState().plugins.find((p) => p.id === pluginId);
   if (!plugin?.enabled || !plugin.capabilities.some((c) => c.id === `process:${program}` && c.granted))
     throw new Error(tx`Cannot start PTY: process:${program} capability not granted.`);
-  return { pluginId, view, key: key as string | undefined, title, program, baseArgs, toggles };
+  return { pluginId, view, key: key as string | undefined, title, program, args: command, toggles };
 }
 
 /** Bound both line count and text size, including output with no newlines. */

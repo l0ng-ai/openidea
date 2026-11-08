@@ -277,7 +277,7 @@ describe("WebView", () => {
       title: "App Logs",
       key: "shared",
       program: "tail",
-      baseArgs: ["-f", "app.log"],
+      args: ["-f", "app.log"],
       toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
     };
 
@@ -308,7 +308,7 @@ describe("WebView", () => {
         pluginId: "acme.draw",
         title: "App Logs",
         program: "tail",
-        baseArgs: ["-f", "app.log"],
+        args: ["-f", "app.log"],
         toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
       },
     });

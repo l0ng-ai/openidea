@@ -1,11 +1,13 @@
 .session {
+  --session-content-width: calc(var(--agent-conversation-width) - var(--space-4) * 6);
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  background: var(--bg-editor);
+  background: var(--bg-app);
   color: var(--fg);
+  font-size: var(--fs-ui);
 }
 
 .conversation {
@@ -82,62 +84,9 @@
   color: var(--fg-subtle);
 }
 
-/* Pending permission: an editor notification banner. A long question (AskUserQuestion) wraps,
-   scrolling past a third of the height; the answers follow it, wrapping too. */
-.banner {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 4px 8px;
-  min-height: 36px;
-  padding: 9px 12px;
-  background: var(--bg-feedback-warning);
-  border-bottom: 1px solid var(--border-feedback-warning);
-  color: var(--fg-strong);
-}
-.banner > svg {
-  flex: none;
-  margin-top: 1px;
-}
-.bannerText {
-  flex: 1 1 240px;
-  min-width: 0;
-  max-height: 33vh;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.bannerSpacer {
-  flex: 1;
-}
-.bannerActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin-left: auto;
-}
-.bannerLink {
-  flex: none;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.bannerLink:hover:not(:disabled) {
-  color: var(--link-hover);
-  text-decoration: underline;
-}
-.bannerLink:disabled {
-  color: var(--fg-subtle);
-  cursor: default;
-}
-
 /* The conversation with its find bar. */
 .streamArea {
+  min-width: 0;
   position: relative;
   flex: 1;
   min-height: 0;
@@ -148,28 +97,34 @@
 .stream {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   overflow-anchor: none;
-  padding: calc(var(--space-3) * 2) var(--space-4);
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
 }
 /* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
 .stream > * {
   flex: none;
-  width: 100%;
-  max-width: var(--agent-conversation-width);
-  margin-inline: auto;
+  min-width: 0;
+  width: min(100%, var(--session-content-width));
+  max-width: 100%;
+  margin-inline: 0;
   box-sizing: border-box;
 }
-/* Messages keep room around them; the folded reasoning/tool rows sit close together. */
+/* Messages and folded process rows share the tool-window gutter. */
 .stream > * + * {
-  margin-top: calc(var(--space-3) * 2);
+  margin-top: var(--space-3);
 }
 .stream > * + .process {
   margin-top: var(--space-2);
 }
 .stream > .process + * {
+  margin-top: var(--space-2);
+}
+.stream > * + .agentMessage[data-continuation] {
   margin-top: var(--space-2);
 }
 .stream > .process + .process {
@@ -208,14 +163,14 @@
   flex-direction: column;
   align-items: stretch;
 }
-/* The author line, with the reply actions on its right; its height is always reserved. */
+/* Keep the author attached to the message. */
 .messageHead {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 8px;
-  min-height: 24px;
-  margin-bottom: 3px;
+  gap: var(--space-2);
+  min-height: var(--h-control-small);
+  margin-bottom: calc(var(--space-2) / 2);
 }
 .messageTime {
   -webkit-user-select: none;
@@ -227,39 +182,25 @@
 .messageHead > .role {
   margin-bottom: 0;
 }
-/* Chat layout: the user's messages sit on the right, the agent's on the left. */
+/* User prompts stay in the same column as replies and tool calls. */
 .userMessage {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-}
-.userMessage > .messageHead {
-  align-self: stretch;
-  justify-content: flex-end;
-}
-.userMessage > .user {
-  width: fit-content;
-  max-width: min(80%, 720px);
-}
-.userMessage > .messageFooter {
-  align-self: flex-end;
+  align-items: stretch;
 }
 /* The actions and time below a message, in flow so they never cover the next entry. */
 .messageFooter {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 24px;
+  min-height: var(--h-control-small);
   max-width: 100%;
   flex-wrap: wrap;
 }
-/* The footer's icons stay visible: the time follows them, at the message's side. */
-.messageFooter .messageActions {
-  margin-left: 0;
-  opacity: 1;
-  pointer-events: auto;
+.messageFooter > .messageTime {
+  order: -1;
 }
-/* Who wrote the message, above its card. */
+/* Who wrote the message. */
 .role {
   display: flex;
   align-items: center;
@@ -273,26 +214,20 @@
 .agentMessage {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
 }
 .agentMessage > .messageHead,
 .agentCard {
-  max-width: min(80%, 760px);
-}
-.agentCard {
   box-sizing: border-box;
-  width: fit-content;
+  width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-popup);
-  background: var(--bg-elev);
 }
 .messageActions {
   display: inline-flex;
   gap: 4px;
-  margin-left: 8px;
+  max-width: 100%;
+  flex-wrap: wrap;
   opacity: 0;
   pointer-events: none;
   -webkit-user-select: none;
@@ -323,9 +258,6 @@
   padding-top: 2px;
   -webkit-user-select: none;
   user-select: none;
-}
-.replyActions {
-  margin-left: 0;
 }
 
 @media (hover: none) {
@@ -369,10 +301,10 @@
 .user {
   width: 100%;
   box-sizing: border-box;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
-  border-radius: var(--radius-popup);
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-app));
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
   color: var(--fg-strong);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -407,7 +339,7 @@
 }
 
 .markdown {
-  line-height: 1.55;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .markdown :global(p) {
@@ -582,7 +514,8 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  width: fit-content;
+  min-width: 0;
+  height: var(--h-row);
   color: var(--fg-muted);
   font-size: var(--fs-small);
   -webkit-user-select: none;
@@ -614,23 +547,33 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 2px 8px;
-  margin-left: -8px;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
   border-radius: var(--radius-row);
   color: var(--fg-secondary);
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
 }
 .toolDetails > summary.tool:hover {
   background: var(--bg-hover);
   color: var(--fg);
 }
+.tool > svg {
+  flex: none;
+}
 .toolTitle {
-  font-family: var(--font-mono);
+  min-width: 0;
   font-size: var(--fs-small);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.toolChevron {
+  flex: none;
+}
+.toolDetails[open] > summary .toolChevron {
+  transform: rotate(90deg);
 }
 .toolDiff {
   font: inherit;
@@ -658,10 +601,11 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
-  padding: 2px 8px;
-  margin-left: -8px;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
   border-radius: var(--radius-row);
   color: var(--fg-muted);
   font-size: var(--fs-small);
@@ -680,6 +624,7 @@
   transform: rotate(90deg);
 }
 .processRun:not([open]) > .processBody {
+  min-width: 0;
   display: none;
 }
 .processBody {
@@ -701,6 +646,7 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--fg-secondary);
 }
 
@@ -726,56 +672,99 @@
   box-sizing: border-box;
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-popup);
-  background: var(--bg-elev);
+  padding: var(--space-2);
+  border: 1px solid var(--border-feedback-warning);
+  border-radius: var(--radius-small);
+  background: var(--bg-feedback-warning);
   color: var(--fg-secondary);
 }
-/* Waiting for an answer: the card takes the warning colour of the banner above. */
-.permissionAsking {
-  border-color: var(--border-feedback-warning);
-  background: var(--bg-feedback-warning);
+.permissionLine > svg {
+  flex: none;
+  margin-top: calc(var(--space-2) / 4);
 }
-.permissionDone {
-  opacity: 0.85;
+.permissionAsking > svg {
+  color: var(--warning);
 }
-/* Title, state and answers on one line when they fit; a long title takes its own line and
-   the state and answers go below it, in line with it. */
 .permissionBody {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 2px 6px;
+  flex-direction: column;
+  gap: var(--space-2);
 }
-/* Up to three lines; the full text is its tooltip. */
 .permissionTitle {
-  display: -webkit-box;
-  flex: 0 1 auto;
   color: var(--fg-strong);
-  font-weight: 600;
+  font-weight: 400;
+}
+.permissionCommand {
   min-width: 0;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  max-width: 100%;
+  max-height: calc(var(--lh-code) * 6);
+  box-sizing: border-box;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+.permissionCommand:focus-visible,
+.permissionDone:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.permissionDetail {
+  max-height: 33vh;
+  overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.permissionLine > svg,
-.permissionBody > .muted {
-  flex: none;
-}
 .permissionAnswers {
-  flex: 1 1 160px;
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 12px;
-  margin-left: 6px;
+  gap: var(--space-2);
+}
+.permissionOption {
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: var(--space-3);
+}
+.permissionOptionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.permissionPrefix {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.permissionDone {
+  padding: calc(var(--space-2) / 2) 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.permissionRecord {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .error {
@@ -803,11 +792,11 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  align-self: center;
+  align-self: flex-start;
   width: 100%;
-  max-width: calc(var(--agent-conversation-width) + var(--space-4) * 2);
+  max-width: calc(var(--session-content-width) + var(--space-3) * 2);
   box-sizing: border-box;
-  padding: var(--space-2) var(--space-4) var(--space-4);
+  padding: var(--space-2) var(--space-3) var(--space-4);
 }
 
 .background {
@@ -1249,7 +1238,7 @@
   overflow-y: auto;
   /* The composer's width, so the card sits exactly over the box it belongs to. */
   width: 100%;
-  max-width: var(--agent-conversation-width);
+  max-width: var(--session-content-width);
   margin: 0 auto 8px;
   padding: 12px;
   border: 1px solid var(--border-strong);
