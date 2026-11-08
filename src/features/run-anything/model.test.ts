@@ -71,3 +71,62 @@ describe("run anything", () => {
     expect(cfg.name).toHaveLength(58);
   });
 });
+
+describe("provider command sections", () => {
+  it("merges build-tool recents with shared history without duplicate commands", () => {
+    const provider: RunAnythingProvider = {
+      id: "build-tools",
+      group: "Build Tools",
+      items: () => [
+        {
+          key: "recent",
+          label: "mvn clean",
+          completion: "mvn clean ",
+          group: { id: "recent", label: "Recent" },
+          run: () => {},
+        },
+        { key: "goal", label: "mvn clean", group: { id: "maven", label: "Maven Goals" }, run: () => {} },
+      ],
+    };
+    const rows = buildRows("mvn", ["mvn clean"], [provider], () => {});
+    expect(rows.map((r) => (r.kind === "section" ? r.label : r.item.label))).toEqual([
+      "Recent",
+      "mvn clean",
+      "Maven Goals",
+      "mvn clean",
+    ]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
+  });
+
+  it("limits each section separately so recent commands cannot hide available goals", () => {
+    const provider: RunAnythingProvider = {
+      id: "build-tools",
+      group: "Build Tools",
+      items: () => [
+        ...Array.from({ length: 20 }, (_, i) => ({
+          key: `recent-${i}`,
+          label: `mvn command-${i}`,
+          group: { id: "recent", label: "Recent" },
+          run: () => {},
+        })),
+        { key: "compile", label: "mvn compile", group: { id: "maven", label: "Maven Goals" }, run: () => {} },
+      ],
+    };
+    const rows = buildRows("mvn", [], [provider], () => {});
+    expect(rows.filter((r) => r.kind === "item" && r.group === "recent")).toHaveLength(8);
+    expect(rows.at(-1)).toMatchObject({ kind: "item", item: { label: "mvn compile" } });
+  });
+
+  it("keeps groups from different providers separate even when their local ids match", () => {
+    const providers: RunAnythingProvider[] = ["maven", "gradle"].map((id) => ({
+      id,
+      group: id,
+      items: () => [{ key: "build", label: `${id} build`, group: { id: "commands", label: id }, run: () => {} }],
+    }));
+    const rows = buildRows("", [], providers, () => {});
+    expect(rows.filter((r) => r.kind === "section").map((r) => r.key)).toEqual([
+      "s:maven:commands",
+      "s:gradle:commands",
+    ]);
+  });
+});

@@ -232,6 +232,7 @@ function BuildBanner({ info, tool }: { info: MavenModel | GradleModel; tool: Bui
 
 function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
   const choices = useBuild((s) => s.settings.maven.profiles);
+  const skipTests = useBuild((s) => s.settings.maven.skipTests);
   if (node.kind === "profile") {
     return (
       <span className={styles.row} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
@@ -255,7 +256,15 @@ function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
   return (
     <span className={styles.row} title={node.kind === "task" ? (node.task.description ?? undefined) : undefined}>
       <Icon name={nodeIcon(node)} size={16} className={styles.icon} />
-      <span className={clsx(styles.label, state.selected && styles.selectedLabel)}>{nodeLabel(node)}</span>
+      <span
+        className={clsx(
+          styles.label,
+          state.selected && styles.selectedLabel,
+          skipTests && node.kind === "phase" && node.phase === "test" && styles.skippedGoal,
+        )}
+      >
+        {nodeLabel(node)}
+      </span>
       {detail && <span className={styles.detail}>{detail}</span>}
     </span>
   );
