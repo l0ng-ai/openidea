@@ -126,6 +126,7 @@ export async function attachDocument(
     path,
     doc: model.doc,
     text: () => model.sync.localText.toString(),
+    lineEnding: () => model.getMeta().lineEnding,
     uiMode: () => model.getMeta().uiMode,
     get readOnly() {
       return model.getMeta().readOnly || model.virtual;
