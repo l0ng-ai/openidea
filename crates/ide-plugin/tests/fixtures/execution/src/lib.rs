@@ -2,8 +2,28 @@ use openidea_plugin::{host, register_plugin, *};
 #[derive(Default)]
 struct Execution;
 impl Plugin for Execution {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
+            "target" => {
+                let project = ctx.project().ok_or_else(|| Error::Invalid("no project".into()))?;
+                host::register_run_target(
+                    &project,
+                    &PluginRunTarget {
+                        id: arg.unwrap_or("wrapper").into(),
+                        name: "Execution target".into(),
+                        program: "execution-tool".into(),
+                        args: vec!["wrapped".into()],
+                        workdir_args: vec!["--cwd={cwd}".into()],
+                        container_root: Some("/container".into()),
+                        commands: vec![("composer".into(), vec!["composer".into()])],
+                    },
+                )?;
+                Ok(None)
+            }
+            "untarget" => {
+                host::unregister_run_target(&ctx.project().unwrap(), arg.unwrap_or("wrapper"));
+                Ok(None)
+            }
             "run" | "debug" => {
                 host::start_run(arg.unwrap_or("detected"), &["appended".into()], id == "debug").map(Some)
             }

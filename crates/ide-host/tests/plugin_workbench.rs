@@ -229,3 +229,126 @@ async fn plugin_debug_uses_the_source_language_and_revalidates_its_owned_program
     plugins.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(plugins.prepare_debug_run("main", config).is_err());
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
+    use ide_host::plugins::{Consent, PluginEvent, PluginHost, run_targets};
+    use ide_plugin::{Invocation, Limits};
+    use std::os::unix::fs::PermissionsExt;
+    let f = Harness::new();
+    f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    let plugins = Arc::new(
+        PluginHost::new(
+            f._tmp.path().join("plugins"),
+            Arc::new(|_: Option<&str>, _: PluginEvent| {}),
+            Limits { idle_timeout: Some(std::time::Duration::from_millis(10)), ..Default::default() },
+        )
+        .unwrap(),
+    );
+    plugins.set_workspace(Some(Arc::new(f.workspace())));
+    f.host.set_plugin_host(&plugins);
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution");
+    plugins.install_from_dir(&package, &Consent::all()).unwrap();
+    let tool = f._tmp.path().join("wrapper");
+    std::fs::write(&tool, "#!/bin/sh\nprintf 'cwd=%s\\n' \"$PWD\"\nprintf '<%s>\\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let invocation =
+        || Invocation { client: Some("main".into()), workspace_root: Some(f.root.clone()), ..Default::default() };
+    assert!(plugins.run_command("execution", "target", None, invocation()).is_err());
+    plugins.choose_program("execution", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
+    plugins.run_command("execution", "target", None, invocation()).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    plugins.tick_at(std::time::Instant::now());
+    assert_eq!(plugins.info_of("execution").unwrap().status, ide_host::plugins::PluginStatus::Inactive);
+    let targets = run_targets::list(&f.host, &plugins, "main").unwrap();
+    assert_eq!(targets.len(), 1);
+    assert!(targets[0].prompt);
+    assert!(f.host.project("main").unwrap().settings.effective().run.default_target.is_empty());
+    let id = &targets[0].id;
+    let settings = run_targets::answer(&f.host, &plugins, "main", id, false).unwrap();
+    assert!(settings.run.default_target.is_empty());
+    // A stale prompt in a second window cannot change an answered selection.
+    assert!(run_targets::answer(&f.host, &plugins, "second", id, true).unwrap().run.default_target.is_empty());
+    plugins.run_command("execution", "untarget", None, invocation()).unwrap();
+    assert!(plugins.run_targets(&f.root).is_empty());
+    plugins.run_command("execution", "target", None, invocation()).unwrap();
+    assert!(!plugins.run_targets(&f.root)[0].prompt);
+    plugins.run_command("execution", "target", Some("preferred"), invocation()).unwrap();
+    let preferred = plugins.run_targets(&f.root).into_iter().find(|t| t.target.id == "preferred").unwrap();
+    let settings = run_targets::answer(&f.host, &plugins, "main", &preferred.id, true).unwrap();
+    assert_eq!(settings.run.default_target, preferred.id);
+    assert_eq!(settings.languages.php.run_target, preferred.id);
+    assert_eq!(settings.languages.node.run_target, preferred.id);
+    assert_eq!(f.host.project("second").unwrap().settings.effective().run.default_target, preferred.id);
+    std::fs::write(f.root.join("execution.marker"), "").unwrap();
+    std::fs::write(f.root.join("entry.py"), "print('test')\n").unwrap();
+    let mut detected =
+        plugins.run_detection().detect(&f.root).into_iter().find(|c| c.id == "plugin:execution:detected").unwrap();
+    detected.args = vec!["entry.py".into()];
+    ide_run::save_user_configs(&f.root, &[detected]).unwrap();
+    let mut debug = f.workspace().run_configuration("main", "execution", "detected").unwrap();
+    debug.extras.target = None;
+    let error = plugins.prepare_debug_run("main", debug).unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("target"));
+    assert!(plugins.run_command("execution", "debug", None, invocation()).unwrap_err().to_string().contains("target"));
+    let output = Arc::new(parking_lot::Mutex::new(String::new()));
+    let captured = output.clone();
+    let config = ide_run::RunConfig {
+        id: "php-target".into(),
+        name: "PHP target".into(),
+        kind: "php".into(),
+        command: "php".into(),
+        args: vec!["x.php".into(), "a b; $(touch forbidden)".into()],
+        cwd: None,
+        env: Default::default(),
+        detected: false,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    let run = ide_host::ops::run::start(
+        &f.host,
+        "main",
+        config.clone(),
+        Arc::new(move |chunk| {
+            if let ide_run::OutputChunk::Stdout { text } = chunk {
+                captured.lock().push_str(&text);
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    for _ in 0..100 {
+        if f.host.processes.list().iter().any(|r| r.id == run.id && !r.running) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let text = output.lock().clone();
+    assert!(text.contains("<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<a b; $(touch forbidden)>"), "{text}");
+    assert!(text.contains(&format!("cwd={}", f.root.display())), "{text}");
+    assert!(!f.root.join("forbidden").exists());
+    // Pin checks are repeated at launch, not only at registration.
+    std::fs::write(&tool, "#!/bin/sh\nexit 99\n").unwrap();
+    assert!(ide_host::ops::run::start(&f.host, "main", config.clone(), Arc::new(|_| {})).await.is_err());
+    plugins.set_capability("execution", "process:execution-tool", false).unwrap();
+    assert!(plugins.run_targets(&f.root).is_empty());
+    assert!(ide_host::ops::run::start(&f.host, "main", config, Arc::new(|_| {})).await.is_err());
+    plugins.choose_program("execution", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
+    plugins.run_command("execution", "target", None, invocation()).unwrap();
+    f.host.set_project_trust(&f.root, false, false).await.unwrap();
+    assert!(plugins.run_targets(&f.root).is_empty());
+    assert!(
+        plugins.run_command("execution", "target", None, invocation()).unwrap_err().to_string().contains("trusted")
+    );
+    f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    plugins.run_command("execution", "target", None, invocation()).unwrap();
+    f.host.close_project_detached("main");
+    assert_eq!(plugins.run_targets(&f.root).len(), 1);
+    f.host.close_project_detached("second");
+    assert!(plugins.run_targets(&f.root).is_empty());
+    plugins.shutdown();
+}

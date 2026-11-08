@@ -495,6 +495,8 @@ then run `openidea-plugin check`.
 | `host::reveal_view(view)`                                                 | `views.reveal`                             | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                                                                                                                                                                   |
 | `host::post_view_message(view, text)`                                     | `views.post-message`                       | To the script of the view's `html` body.                                                                                                                                                                                                                                                                                                                  |
 | `host::open_terminal(title, program, args)`                               | `views.open-terminal`                      | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                                                                                                                                                       |
+| `host::register_run_target(project, target)`                              | `run-targets.register`                     | API 1.4: project-scoped, read-only argv wrapper; requires its process grant, executable pin and project trust; remote projects run on the server.                                                                                                                                                                                                         |
+| `host::unregister_run_target(project, id)`                                | `run-targets.unregister`                   | Withdraw this plugin's target; remembered prompt answers remain.                                                                                                                                                                                                                                                                                          |
 | `host::start_run(config, args, debug)`                                    | `run.start`                                | API 1.4: start an owned configuration in this window's Run tool window; returns an id, followed by `run-exited`. Approved `process:` program; commands/events only.                                                                                                                                                                                       |
 | `host::open_terminal_session(key, title, cmd)`                            | `views.open-terminal-session`              | API 1.4: keyed, pinned terminal in this window, append-only env; returns its operation id and later `terminal-exited`.                                                                                                                                                                                                                                    |
 | `host::write_terminal(key, text)`                                         | `views.write-terminal`                     | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
@@ -2060,3 +2062,57 @@ one dismisses the balloon and runs the command in the receiving window with
 its normal editor and project context. No capability is needed. Invalid or
 undeclared actions reject the whole notification. Labels are limited to 256
 bytes and arguments to 64 KiB. Plain `host::notify` behaves as before.
+
+### Plugin-provided run targets (API 1.4)
+
+`host::register_run_target(project, target)` registers or replaces a read-only,
+project-scoped target owned by the plugin. `host::unregister_run_target(project,
+id)` removes it. `PluginRunTarget` has `id`, `name`, a granted `process:` `program`,
+`args`, `workdir_args`, optional `container_root`, and `commands` (pairs of tool
+names and replacement argv). Targets appear in Settings › Run Targets and every
+run configuration's Run on selector, labelled with their plugin. They survive
+idle instance reclamation; stopping, disabling, reloading or uninstalling a plugin
+withdraws them. Registrations and execution for remote projects are on the server.
+A missing target fails the run rather than silently using the local tool.
+
+For each launch the host checks project trust and the wrapper's current process
+grant and executable pin, including per-project executable choices. Debugging on
+plugin targets returns `invalid`; language servers are not run in these targets.
+There are at most 32 targets per plugin/project, 64 unique command overrides and
+256 arguments per prefix (16 KiB each, 256 KiB metadata per registration).
+
+The host constructs argv directly, without a shell:
+
+- No override: `program + args + workdir_args + command + command arguments`.
+- Override matching `wrap::program_name(command)` (basename without `.exe`, `.cmd`
+  or `.bat`): `program + override + workdir_args + command arguments`. The override
+  replaces **both** the prefix and the command name and includes the tool itself.
+
+DDEV, for example: `program = "ddev"`, `args = ["exec"]`,
+`commands = [("composer", ["composer"])]` runs `php x.php` as
+`ddev exec php x.php` and `composer install` as `ddev composer install`.
+
+Local absolute tool paths outside the project use the tool basename.
+When `container_root` is set, project paths in argv map under that root. Each
+`workdir_args` element may contain `{cwd}`; for example `["--dir", "{cwd}"]`.
+The host substitutes the configuration's working directory mapped under
+`container_root`. It omits **all** workdir arguments when there is no container
+root or the working directory is outside the project. Without `workdir_args`,
+the wrapper manages its container directory itself. The wrapper process always
+starts in the configuration's **local** working directory, so tools such as DDEV
+can find their project. Configuration env and env files reach the local wrapper;
+no generic env-forwarding flags are added. Container env is forwarded only if
+the wrapper's own conventions allow it.
+
+Registration never changes a selection. The first registration prompts the
+project's windows: “Use <name> for running PHP / Node / Composer in this project?”
+with **Use** / **Not now**. The first answer is remembered on the host per
+project + plugin + target id. Use sets the project's default run target and its
+PHP and Node run-target choices; Not now leaves settings alone. Interpreters
+also have a Run in target choice in Settings (Default run target, Local machine,
+or a named target). The `languages.php.runTarget` / `languages.node.runTarget`
+settings store a selector id, empty for the default, or `local` for local execution. Code-created PHP/Node runs,
+Composer/npm scripts, PHPUnit and Node tests use that choice through the normal
+Run flow. Explicit per-configuration targets take precedence. Choosing Local
+machine explicitly overrides defaults. Language servers, tool discovery/version
+probes and external analysis helpers remain local to the host.

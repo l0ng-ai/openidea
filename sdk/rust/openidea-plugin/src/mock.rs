@@ -150,6 +150,7 @@ struct State {
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
+    run_targets: BTreeMap<(String, String), crate::PluginRunTarget>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
     log_tabs: Vec<MockLogTab>,
@@ -478,6 +479,10 @@ impl MockHost {
         self.state.borrow().locations.clone()
     }
 
+    /// Registered targets of this mock plugin, scoped by project root.
+    pub fn run_targets(&self) -> BTreeMap<(String, String), crate::PluginRunTarget> {
+        self.state.borrow().run_targets.clone()
+    }
     /// Configurations available to start_run in native tests.
     pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
         self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
@@ -1754,6 +1759,29 @@ pub mod current {
         Ok(())
     }
 
+    pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {
+        with(|s| {
+            require(s, &format!("process:{}", target.program))?;
+            if target.id.is_empty()
+                || target.name.is_empty()
+                || target
+                    .args
+                    .iter()
+                    .chain(&target.workdir_args)
+                    .chain(target.commands.iter().flat_map(|(_, a)| a))
+                    .any(|a| a.contains('\0'))
+            {
+                return Err(Error::Invalid("invalid run target".into()));
+            }
+            s.run_targets.insert((project.root.clone(), target.id.clone()), target.clone());
+            Ok(())
+        })
+    }
+    pub fn unregister_run_target(project: &ProjectRes, id: &str) {
+        with(|s| {
+            s.run_targets.remove(&(project.root.clone(), id.into()));
+        });
+    }
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
         with(|s| {
             let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?;

@@ -1027,3 +1027,25 @@ pub async fn plugin_prepare_debug_run(
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_run_targets(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_host::plugins::run_targets::RegisteredRunTarget>> {
+    ide_host::plugins::run_targets::list(&state.host, &state.plugins, window.label())
+}
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_answer_run_target(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    use_target: bool,
+) -> IdeResult<ide_core::settings::Settings> {
+    let host = state.host.clone();
+    let plugins = state.plugins.clone();
+    let window = window.label().to_owned();
+    state.host.blocking(move || ide_host::plugins::run_targets::answer(&host, &plugins, &window, &id, use_target)).await
+}

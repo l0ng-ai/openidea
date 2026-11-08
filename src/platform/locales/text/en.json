@@ -578,5 +578,12 @@
   "Open Plugin Terminal Session": "Open Plugin Terminal Session",
   "Debug Plugin Configuration": "Debug Plugin Configuration",
   "Expected: {0}": "Expected: {0}",
-  "Actual: {0}": "Actual: {0}"
+  "Actual: {0}": "Actual: {0}",
+  "Use {0} for running PHP / Node / Composer in this project?": "Use {0} for running PHP / Node / Composer in this project?",
+  "Use": "Use",
+  "Not now": "Not now",
+  "Run in target": "Run in target",
+  "Run in target {0}": "Run in target {0}",
+  "Default run target": "Default run target",
+  "Read-only": "Read-only"
 }

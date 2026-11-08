@@ -178,3 +178,16 @@ impl crate::Event {
         (kind == expected).then(|| serde_json::from_str(data).ok()).flatten()
     }
 }
+
+/// A plugin-owned argv wrapper for project runs (API 1.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRunTarget {
+    pub id: String,
+    pub name: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub workdir_args: Vec<String>,
+    pub container_root: Option<String>,
+    pub commands: Vec<(String, Vec<String>)>,
+}

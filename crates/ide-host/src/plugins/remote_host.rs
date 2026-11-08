@@ -131,7 +131,8 @@ pub fn package_digest(dir: &Path, files: &[PathBuf]) -> IdeResult<String> {
 pub fn forwarded(event: &PluginEvent) -> bool {
     matches!(
         event,
-        PluginEvent::WindowRequest { .. }
+        PluginEvent::RunTargetsChanged
+            | PluginEvent::WindowRequest { .. }
             | PluginEvent::ContentTabReply { .. }
             | PluginEvent::DecorationsChanged { .. }
             | PluginEvent::EditorOpen { .. }
@@ -719,6 +720,21 @@ impl RemotePlugins {
         d.add("plugin_endpoints", move |c| {
             let h = h.clone();
             async move { super::index_ops::plugin_endpoints(&c.host, alive(&h)?, &c.window, c.arg("pluginId")?).await }
+        });
+        let h = host.clone();
+        d.add("plugin_run_targets", move |c| {
+            let h = h.clone();
+            async move { super::run_targets::list(&c.host, alive(&h)?.as_ref(), &c.window) }
+        });
+        let h = host.clone();
+        d.add("plugin_answer_run_target", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                let id: String = c.arg("id")?;
+                let use_target = c.arg("useTarget")?;
+                blocking(move || super::run_targets::answer(&c.host, &plugins, &c.window, &id, use_target)).await
+            }
         });
         d.add("plugin_line_markers", |c| async move {
             crate::ops::lsp::plugin_line_markers(&c.host, &c.window, c.arg("doc")?).await

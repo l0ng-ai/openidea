@@ -35,6 +35,7 @@ import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellij
 import { startWorkspaceContains } from "./workspaceContains";
 import { startPluginDecorations } from "./decorations";
 import { startIndexedMarkers } from "./indexedMarkers";
+import { startRunTargets } from "./runTargets";
 import { startPluginNavigation } from "./navigation";
 import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
 
@@ -63,6 +64,7 @@ export function activateSettingsPages(): () => void {
     provideConsentDialog(),
     defineBuiltinUiPoints(),
     followPluginChanges(),
+    startRunTargets(false),
     syncProjection(),
     trackPluginTheme(),
     trackIconTheme(),

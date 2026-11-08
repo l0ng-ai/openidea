@@ -494,6 +494,7 @@ pub(super) struct Shared {
     pub(super) prompts_blocked: Mutex<BTreeSet<String>>,
     pub(super) next_prompt: AtomicU64,
     pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
+    pub(super) run_targets: Mutex<super::run_targets::Targets>,
     pub(super) operations: Mutex<BTreeMap<String, super::execution::Operation>>,
     pub(super) content_tabs: Mutex<BTreeMap<(String, String, String), ide_plugin::ContentTab>>,
     pub(super) content_requests: Mutex<ContentRequests>,
@@ -560,6 +561,7 @@ impl Shared {
             prompts_blocked: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             run_configurations: Arc::default(),
+            run_targets: Mutex::default(),
             operations: Mutex::default(),
             content_tabs: Mutex::default(),
             content_requests: Mutex::default(),
@@ -739,6 +741,7 @@ impl Shared {
     /// Withdraws a plugin's run-time state (it stopped or failed). Its
     /// subscriptions go only with `subscriptions`, as they survive restarts.
     pub fn clear_plugin(&self, plugin: &str, subscriptions: bool) {
+        self.withdraw_run_targets(Some(plugin), None);
         self.run_configurations.write().retain(|(p, _), _| p != plugin);
         self.operations.lock().retain(|_, op| op.plugin != plugin);
         self.content_tabs.lock().retain(|(p, _, _), _| p != plugin);
@@ -994,7 +997,7 @@ impl PluginApi {
         self.approved_program_in_project(program, None)
     }
 
-    fn approved_program_in_project(&self, program: &str, root: Option<&Path>) -> Result<PathBuf, HostError> {
+    pub(super) fn approved_program_in_project(&self, program: &str, root: Option<&Path>) -> Result<PathBuf, HostError> {
         if let Some(pin) = root.and_then(|root| {
             self.shared.project_pins.read().get(&(self.id().into(), format!("process:{program}"), root.into())).cloned()
         }) {
@@ -1248,6 +1251,13 @@ fn failed(e: impl std::fmt::Display) -> HostError {
 }
 
 impl HostApi for PluginApi {
+    fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
+        self.register_target(root, target)
+    }
+    fn unregister_run_target(&self, root: &Path, id: &str) {
+        self.unregister_target(root, id);
+    }
+
     fn start_run(
         &self,
         client: &str,

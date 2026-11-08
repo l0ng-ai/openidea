@@ -43,3 +43,10 @@ title = "content"
 [[contributes.commands]]
 id = "events"
 title = "events"
+
+[[contributes.commands]]
+id = "target"
+title = "target"
+[[contributes.commands]]
+id = "untarget"
+title = "untarget"

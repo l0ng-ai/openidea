@@ -218,6 +218,9 @@ async fn start_inner(
 ) -> IdeResult<RunInfo> {
     host.require_trust(window)?;
     let project = host.project(window)?;
+    if config.extras.target.is_none() {
+        config.extras.target = ide_sdk::apply::run_target(&config, &project.settings.effective()).map(str::to_owned);
+    }
     if config.detected
         && config.id.starts_with(ide_run::EXTERNAL_PREFIX)
         && let Some(plugins) = host.plugin_host()
@@ -250,6 +253,25 @@ async fn start_inner(
     }
     if let Some(id) = config.extras.target.as_deref().filter(|t| !t.is_empty()) {
         let settings = project.settings.effective();
+        if id.starts_with("plugin-target:") {
+            let plugins =
+                host.plugin_host().ok_or_else(|| IdeError::not_found("plugin run target is no longer available"))?;
+            let root = project.root.clone();
+            let id = id.to_owned();
+            let config = host.blocking(move || plugins.prepare_run_target(&root, &id, &config)).await?;
+            project.require_trust()?;
+            return host.processes.start(
+                &project.root,
+                &config,
+                &StartOptions {
+                    encoding: Some(settings.console.encoding).filter(|e| !e.trim().is_empty()),
+                    python_paths: Vec::new(),
+                    ruby_reporter: None,
+                },
+                sink,
+                Box::new(move |c| on_output(c)),
+            );
+        }
         let target = ide_remote::service::run_target(&settings, id)?;
         if target.kind != RunTargetKind::Ssh {
             // A local run of the docker CLI: the command is resolved in the container, and

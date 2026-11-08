@@ -26,3 +26,5 @@ pub use wasmtime::component::Component;
 
 mod execution;
 pub use execution::*;
+
+pub use ide_core::remote_settings::PluginRunTarget;

@@ -6921,5 +6921,11 @@
   "Open Plugin Terminal Session": "打开插件终端会话",
   "Debug Plugin Configuration": "调试插件配置",
   "Expected: {0}": "期望值：{0}",
-  "Actual: {0}": "实际值：{0}"
+  "Actual: {0}": "实际值：{0}",
+  "Use {0} for running PHP / Node / Composer in this project?": "在此项目中使用 {0} 运行 PHP / Node / Composer？",
+  "Use": "使用",
+  "Not now": "暂不使用",
+  "Run in target": "在目标中运行",
+  "Run in target {0}": "在目标 {0} 中运行",
+  "Default run target": "默认运行目标"
 }

@@ -33,6 +33,7 @@ world plugin {
     import command-runner;
     import views;
     import run;
+    import run-targets;
     import settings;
 
     export lifecycle;

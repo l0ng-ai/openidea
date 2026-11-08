@@ -2169,3 +2169,31 @@ fn project_structure_module_jdk_language_level_and_external_libraries() {
     let groups = crate::libraries::project_libraries(root, &settings, &[]);
     assert!(groups.iter().any(|g| g.name == "servlet-api" && g.kind == "library" && g.roots.len() == 1));
 }
+
+#[test]
+fn plugin_interpreter_targets_route_all_php_node_command_families() {
+    let mut settings = Settings::default();
+    settings.languages.php.run_target = "plugin-target:php".into();
+    settings.languages.node.run_target = "plugin-target:node".into();
+    settings.languages.php.interpreter = "/local/php".into();
+    settings.languages.node.interpreter = "/local/node".into();
+    for (command, kind, expected) in [
+        ("php", "php", "php"),
+        ("composer", "composer", "php"),
+        ("vendor/bin/phpunit", "phpunit", "php"),
+        ("node", "node", "node"),
+        ("npm", "npm", "node"),
+        ("node_modules/.bin/vitest", "vitest", "node"),
+        ("npx", "node", "node"),
+    ] {
+        let mut config: ide_run::RunConfig = serde_json::from_value(serde_json::json!({ "id":"run", "name":"run", "kind":kind, "command":command, "args":[], "env":{}, "detected":true, "isTest":false })).unwrap();
+        crate::apply::apply_to_run_configs(std::slice::from_mut(&mut config), Path::new("/project"), &settings);
+        assert_eq!(config.extras.target.as_deref(), Some(format!("plugin-target:{expected}").as_str()));
+        assert_eq!(config.command, command);
+        assert!(config.env.is_empty());
+        assert!(crate::apply::without_derived(&config, Path::new("/project"), &settings).extras.target.is_none());
+        config.extras.target = Some(String::new());
+        crate::apply::apply_to_run_configs(std::slice::from_mut(&mut config), Path::new("/project"), &settings);
+        assert_eq!(config.extras.target.as_deref(), Some(""));
+    }
+}

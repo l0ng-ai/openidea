@@ -464,6 +464,9 @@ impl PluginHost {
         if owned.debug_adapter.is_none() {
             return Err(IdeError::invalid("this configuration has no debugger"));
         }
+        if config.extras.target.is_none() {
+            config.extras.target = owned.extras.target.clone();
+        }
         if config.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
             return Err(IdeError::invalid("debugging this target is not supported"));
         }

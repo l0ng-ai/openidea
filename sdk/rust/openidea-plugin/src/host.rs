@@ -690,6 +690,24 @@ mod imp {
         }
     }
 
+    pub fn register_run_target(project: &ProjectRes, target: &crate::PluginRunTarget) -> Result<(), Error> {
+        wit::run_targets::register(
+            project,
+            &wit::run_targets::RunTarget {
+                id: target.id.clone(),
+                name: target.name.clone(),
+                program: target.program.clone(),
+                args: target.args.clone(),
+                workdir_args: target.workdir_args.clone(),
+                container_root: target.container_root.clone(),
+                commands: target.commands.clone(),
+            },
+        )
+        .map_err(error)
+    }
+    pub fn unregister_run_target(project: &ProjectRes, id: &str) {
+        wit::run_targets::unregister(project, id);
+    }
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
         wit::run::start(config, args, debug).map_err(error)
     }
@@ -1598,4 +1616,13 @@ pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
 /// Replies to a content-tab-action event in its originating window.
 pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
     imp::reply_content_tab(request, reply)
+}
+
+/// Registers/replaces a read-only project target. Requires the program's process grant.
+pub fn register_run_target(project: &Project, target: &crate::PluginRunTarget) -> Result<(), Error> {
+    imp::register_run_target(&project.inner, target)
+}
+/// Withdraws a target owned by this plugin.
+pub fn unregister_run_target(project: &Project, id: &str) {
+    imp::unregister_run_target(&project.inner, id);
 }

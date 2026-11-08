@@ -30,3 +30,26 @@ fn owned_configurations_require_grants_and_reject_debug_without_a_debugger() {
     assert!(matches!(host::start_run("tests", &[], true), Err(Error::Invalid(_))));
     assert!(matches!(host::start_run("foreign", &[], false), Err(Error::NotFound(_))));
 }
+
+#[test]
+fn run_targets_require_a_program_grant_and_are_project_scoped() {
+    let mock = MockHost::install();
+    let project = mock.invocation().project().unwrap();
+    let target = PluginRunTarget {
+        id: "ddev".into(),
+        name: "DDEV".into(),
+        program: "ddev".into(),
+        args: vec!["exec".into()],
+        ..Default::default()
+    };
+    assert!(matches!(host::register_run_target(&project, &target), Err(Error::Denied(_))));
+    let mock = mock.with_capabilities(&["process:ddev"]);
+    host::register_run_target(&project, &target).unwrap();
+    assert_eq!(mock.run_targets().len(), 1);
+    host::register_run_target(&project, &target).unwrap();
+    assert_eq!(mock.run_targets().len(), 1);
+    host::unregister_run_target(&project, "missing");
+    assert_eq!(mock.run_targets().len(), 1);
+    host::unregister_run_target(&project, "ddev");
+    assert!(mock.run_targets().is_empty());
+}

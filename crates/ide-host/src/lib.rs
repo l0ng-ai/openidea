@@ -249,6 +249,11 @@ impl Host {
             self.cancel_request(request);
         }
         let project = self.projects.write().remove(window)?;
+        if self.windows_for_root(&project.root).is_empty()
+            && let Some(plugins) = self.plugin_host()
+        {
+            plugins.withdraw_project_run_targets(&project.root);
+        }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
         if let Some(plugins) = plugins::editor_plugin_host() {

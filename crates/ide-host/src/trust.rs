@@ -146,6 +146,9 @@ impl crate::Host {
                 phpstan.interrupt();
             }
             if !trusted {
+                if let Some(plugins) = self.plugin_host() {
+                    plugins.withdraw_project_run_targets(&project.root);
+                }
                 project.lsp.set_execution_allowed(false);
             }
             project.repos();

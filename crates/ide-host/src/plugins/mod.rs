@@ -40,6 +40,7 @@ mod providers;
 pub mod remote;
 pub mod remote_host;
 mod run_detectors;
+pub mod run_targets;
 mod semantic_tokens;
 mod theme;
 mod types;
@@ -661,6 +662,7 @@ impl PluginHost {
 
     /// Unloads the project plugins of `root` (the project became untrusted or closed).
     pub fn restrict_project(&self, root: &Path) {
+        self.shared.withdraw_run_targets(None, Some(root));
         let _guard = self.lifecycle.lock();
         let ids: Vec<_> = self
             .plugins

@@ -165,6 +165,8 @@ pub struct PluginUpdate {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PluginEvent {
+    /// Project target registrations or remembered prompt answers changed.
+    RunTargetsChanged,
     /// A window-owned operation; an empty request id queues an asynchronous run.
     #[serde(rename_all = "camelCase")]
     WindowRequest { plugin_id: String, request_id: String, request: WindowRequest },

@@ -1,3 +1,4 @@
+import { useProject } from "@/platform/project";
 /**
  * Plugin host backend: `plugin_*` IPC + a `plugin_subscribe` event channel in the desktop
  * app; an in-memory simulation (the bundled samples) in plain-browser
@@ -126,6 +127,8 @@ export interface PluginsBackend {
   /** The detail tabs of item `key` in a Services or `detail = true` view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
+  runTargets(): Promise<import("@/bindings").RegisteredRunTarget[]>;
+  answerRunTarget(id: string, useTarget: boolean): Promise<import("@/bindings").Settings>;
   endpoints(pluginId: string): Promise<PluginEndpoint[]>;
   /**
    * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
@@ -292,6 +295,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
   },
   serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
+  runTargets: () => call(commands.pluginRunTargets()),
+  answerRunTarget: (id, useTarget) => call(commands.pluginAnswerRunTarget(id, useTarget)),
   endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
   serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
     const request = nextRequestId();
@@ -651,6 +656,8 @@ export function createMemoryPluginsBackend(
     }),
     viewEvent: async () => {},
     serviceDetail: async () => [],
+    runTargets: async () => [],
+    answerRunTarget: async () => useProject.getState().settings as import("@/bindings").Settings,
     endpoints: async () => [],
     answerCommand: async () => {},
     finishOperation: async () => {},

@@ -64,6 +64,16 @@ pub const CANCELLED: &str = "was cancelled";
 /// which routes notifications and status items to windows and edits to open
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
+    /// Registers a project-scoped wrapper after validating its process grant and pin.
+    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
+        let _ = (root, target);
+        Err(HostError::Failed("run targets unavailable".into()))
+    }
+    /// Withdraws this plugin's target, preserving the user's remembered prompt answer.
+    fn unregister_run_target(&self, root: &Path, id: &str) {
+        let _ = (root, id);
+    }
+
     /// Starts one of this plugin's configurations in a window.
     fn start_run(
         &self,

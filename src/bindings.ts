@@ -1208,6 +1208,8 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("plugin_navigation_goto", { doc, pos })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
 	pluginEndpoints: (pluginId: string) => typedError<PluginEndpoint[], IdeError>(__TAURI_INVOKE("plugin_endpoints", { pluginId })),
+	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
+	pluginAnswerRunTarget: (id: string, useTarget: boolean) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("plugin_answer_run_target", { id, useTarget })),
 	/**  The marketplace's plugins: read again when `refresh` or when none was read yet, else the last index read. */
 	pluginMarket: (refresh: boolean) => typedError<MarketPlugin[], IdeError>(__TAURI_INVOKE("plugin_market", { refresh })),
 	pluginMarketUrl: () => __TAURI_INVOKE<string | null>("plugin_market_url"),
@@ -5947,6 +5949,8 @@ export type NodeAt = {
 export type NodeSettings = {
 	/**  `node` executable; empty = the one on `PATH`. */
 	interpreter?: string,
+	/**  Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local. */
+	runTarget?: string,
 	/**  `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`. */
 	packageManager?: string,
 };
@@ -6144,6 +6148,8 @@ export type PhpLevelSource =
 export type PhpSettings = {
 	/**  `php` CLI executable; empty = the one on `PATH`. */
 	interpreter?: string,
+	/**  Run PHP/Composer or Node/package-manager commands in this target; empty = project default, `local` = local. */
+	runTarget?: string,
 	/**
 	 *  PHP version the language server checks the code against (`7.4`); empty = from
 	 *  `composer.json` (`config.platform.php`, else the lowest version `require.php` allows).
@@ -6232,6 +6238,8 @@ export type PluginEvent = PluginEvent_Serialize | PluginEvent_Deserialize;
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent_Deserialize = 
+/**  Project target registrations or remembered prompt answers changed. */
+({ type: "runTargetsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A window-owned operation; an empty request id queues an asynchronous run. */
 ({ type: "windowRequest"; pluginId: string; requestId: string; request: WindowRequest_Deserialize }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Reply to a content action in this window. */
@@ -6324,6 +6332,8 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
 
 /**  Backend → UI notifications (Tauri event `ide://plugin`). */
 export type PluginEvent_Serialize = 
+/**  Project target registrations or remembered prompt answers changed. */
+({ type: "runTargetsChanged" }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; pluginId?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A window-owned operation; an empty request id queues an asynchronous run. */
 ({ type: "windowRequest"; pluginId: string; requestId: string; request: WindowRequest_Serialize }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; cwd?: never; done?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; reveal?: never; root?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  Reply to a content action in this window. */
@@ -6461,6 +6471,17 @@ export type PluginLocation = {
 export type PluginOutputLine = {
 	stderr: boolean,
 	text: string,
+};
+
+/**  A plugin-owned argv wrapper for project runs (API 1.4). */
+export type PluginRunTarget = {
+	id: string,
+	name: string,
+	program: string,
+	args: string[],
+	workdirArgs: string[],
+	containerRoot: string | null,
+	commands: ([string, string[]])[],
 };
 
 /**  A secret a plugin declares, and whether the user stored it. */
@@ -7005,6 +7026,15 @@ export type ReferencesIncomplete =
 /**  A native query failed; indexed anchors are still available. */
 "serverFailed";
 
+export type RegisteredRunTarget = {
+	/**  Opaque selector id, namespaced by the host. */
+	id: string,
+	pluginId: string,
+	pluginName: string,
+	target: PluginRunTarget,
+	prompt: boolean,
+};
+
 /**  A registry agent this machine can run (or has installed). */
 export type RegistryAgent = {
 	id: string,
@@ -7437,6 +7467,8 @@ export type RunInfo = {
 
 /**  Run/Debug configuration behaviour. */
 export type RunSettings = {
+	/**  Target for configurations without an explicit target. Empty = local. */
+	defaultTarget?: string,
 	confirmRerun?: boolean,
 	/**  Ask before closing a Run tab whose process is still running. */
 	confirmTerminate?: boolean,

@@ -477,7 +477,7 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     let bin = tmp.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let executable = bin.join("execution-tool");
-    std::fs::write(&executable, "#!/bin/sh\nread line\nprintf '%s\\n' \"$line\"\n").unwrap();
+    std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = wrapped ]; then printf '<%s>\\n' \"$@\" > \"$PWD/wrapped.txt\"; exit; fi\nread line\nprintf '%s\\n' \"$line\"\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path_var = {
         let bin = bin.clone();
@@ -521,6 +521,38 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
     sync(&peer, &desktop, &[]).await;
     assert!(sync(&peer, &desktop, &["execution"]).await.failed.is_empty());
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"target", "arg":null, "editor":null}),
+    )
+    .await
+    .unwrap();
+    let targets = invoke(&peer, "plugin_run_targets", json!({})).await.unwrap();
+    assert_eq!(targets.as_array().unwrap().len(), 1);
+    assert_eq!(targets[0]["pluginId"], "execution");
+    assert!(desktop.run_targets(&project).is_empty());
+    let id = targets[0]["id"].as_str().unwrap();
+    let settings = invoke(&peer, "plugin_answer_run_target", json!({"id":id, "useTarget":false})).await.unwrap();
+    assert_eq!(settings["run"]["defaultTarget"], "");
+    let config = json!({"id":"wrapped-php", "name":"Wrapped PHP", "kind":"php", "command":"php", "args":["x.php", "literal ; $(touch bad)"], "env":{}, "detected":false, "isTest":false, "target":id});
+    invoke(&peer, "run_start", json!({"config":config, "onOutput":{"$channel":38}})).await.unwrap();
+    until("remote wrapped run", 5, || project.join("wrapped.txt").exists()).await;
+    assert_eq!(
+        std::fs::read_to_string(project.join("wrapped.txt")).unwrap(),
+        "<wrapped>\n<--cwd=/container>\n<php>\n<x.php>\n<literal ; $(touch bad)>\n"
+    );
+    assert!(!project.join("bad").exists());
+    invoke(
+        &peer,
+        "plugin_run_command",
+        json!({"pluginId":"execution", "commandId":"untarget", "arg":null, "editor":null}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(invoke(&peer, "plugin_run_targets", json!({})).await.unwrap(), json!([]));
+    client.plugin_events.lock().clear();
+    client.events.lock().clear();
     let runner = peer.clone();
     let run = tokio::spawn(async move {
         invoke(

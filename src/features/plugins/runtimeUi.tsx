@@ -13,6 +13,7 @@ import {
   WASM_CONTENT_VIEW,
 } from "./views/contentTab";
 import { create } from "zustand";
+import { refreshRunTargets, startRunTargets } from "./runTargets";
 import type {
   CommitAnswer,
   CommandAnswer,
@@ -474,6 +475,9 @@ async function answerCommand(e: Extract<PluginEvent, { type: "executeCommand" }>
 /** Handles the runtime UI events; returns whether `e` was one. */
 export function handleRuntimeEvent(e: PluginEvent): boolean {
   switch (e.type) {
+    case "runTargetsChanged":
+      void refreshRunTargets().catch(() => {});
+      return true;
     case "decorationsChanged":
       setPluginDecorations(e.pluginId, e.sets);
       return true;
@@ -632,7 +636,13 @@ function refreshOnProjectChange(): () => void {
 
 export function startRuntimeUi(): () => void {
   const stopParser = providePluginTestParser((config, chunk) => pluginsBackend().parseTestResults(config, chunk));
-  const disposers = [stopParser, projectStatusItems(), trackWorkbenchEvents(), refreshOnProjectChange()];
+  const disposers = [
+    startRunTargets(),
+    stopParser,
+    projectStatusItems(),
+    trackWorkbenchEvents(),
+    refreshOnProjectChange(),
+  ];
   return () => disposers.reverse().forEach((d) => d());
 }
 

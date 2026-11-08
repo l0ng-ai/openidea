@@ -132,8 +132,9 @@ export interface ArtifactConfigValid {
 export interface LanguagesValid {
   python: { interpreter: string; activateVirtualenv: boolean };
   ruby: { interpreter: string };
-  node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
+  node: { runTarget: string; interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
   php: {
+    runTarget: string;
     interpreter: string;
     languageLevel: (typeof PHP_LANGUAGE_LEVELS)[number];
     includePaths: string[];
@@ -227,8 +228,8 @@ export type FolderListKey =
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   python: { interpreter: "", activateVirtualenv: true },
   ruby: { interpreter: "" },
-  node: { interpreter: "", packageManager: "" },
-  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
+  node: { runTarget: "", interpreter: "", packageManager: "" },
+  php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
@@ -350,10 +351,12 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     node: {
+      runTarget: text(node.runTarget, ""),
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
     },
     php: {
+      runTarget: text(php.runTarget, ""),
       interpreter: text(php.interpreter, d.php.interpreter),
       languageLevel: oneOf(php.languageLevel, PHP_LANGUAGE_LEVELS, d.php.languageLevel),
       includePaths: strings(php.includePaths),

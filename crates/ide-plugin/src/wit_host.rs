@@ -1846,6 +1846,39 @@ impl From<bindings::openidea::plugin::views::ContentTabReply> for crate::Content
     }
 }
 
+impl bindings::openidea::plugin::run_targets::Host for StoreData {
+    fn register(
+        &mut self,
+        project: Resource<ProjectRes>,
+        target: bindings::openidea::plugin::run_targets::RunTarget,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Process(target.program.clone())) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .register_run_target(
+                &root,
+                crate::PluginRunTarget {
+                    id: target.id,
+                    name: target.name,
+                    program: target.program,
+                    args: target.args,
+                    workdir_args: target.workdir_args,
+                    container_root: target.container_root,
+                    commands: target.commands,
+                },
+            )
+            .map_err(to_wit))
+    }
+    fn unregister(&mut self, project: Resource<ProjectRes>, id: String) -> wasmtime::Result<()> {
+        let root = self.table.get(&project)?.root.clone();
+        self.host.unregister_run_target(&root, &id);
+        Ok(())
+    }
+}
+
 impl bindings::openidea::plugin::run::Host for StoreData {
     fn start(&mut self, config: String, args: Vec<String>, debug: bool) -> Fallible<String> {
         if let Err(e) = self.require_window() {
