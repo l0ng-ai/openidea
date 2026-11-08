@@ -422,7 +422,12 @@ impl AgentManager {
         let mut offered = offered;
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
-                offered.push(AgentCommand { name: name.to_owned(), description: description.to_owned(), hint: None });
+                offered.push(AgentCommand {
+                    name: name.to_owned(),
+                    description: description.to_owned(),
+                    hint: None,
+                    source: AgentCommandSource::Command,
+                });
             }
         }
         if provider != "claude" && provider != "claude-acp" {
@@ -1712,7 +1717,7 @@ impl Task {
                     true
                 }
                 "available_commands_update" => {
-                    s.task.commands = config::commands_of(update);
+                    s.task.commands = config::commands_of(update, &provider);
                     true
                 }
                 "usage_update" => {
