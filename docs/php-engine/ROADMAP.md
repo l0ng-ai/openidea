@@ -478,7 +478,7 @@ The design:
 - [x] Phase 7.3: Twig
       Add a `twig` language: `languages/twig.toml`, highlighting, and outline through `mago-twig-syntax` or a tree-sitter grammar if one is better. Completion of variables, filters and functions, and goto definition for templates (`{% extends %}`, `include`). Tests: unit tests.
 
-- [ ] Phase 7.4: Blade
+- [x] Phase 7.4: Blade
       Add a `blade` language. Highlight directives and echo statements, and treat the PHP inside directives and `{{ }}` as embedded PHP using the engine's analysis. Add goto for `@include` and `@extends` views and components. Tests: unit tests.
 
 - [ ] Phase 7.5: SQL in strings

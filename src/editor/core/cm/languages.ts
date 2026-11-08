@@ -114,6 +114,12 @@ const OWN_MODES = [
     load: () => import("./erb").then((m) => m.erb()),
   }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
+  LanguageDescription.of({
+    name: "Blade",
+    alias: ["blade"],
+    extensions: ["blade.php"],
+    load: () => import("./blade").then((m) => m.blade()),
+  }),
 ];
 
 const BATCH_KEYWORDS = new Set([

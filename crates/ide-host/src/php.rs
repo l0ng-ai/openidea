@@ -632,7 +632,7 @@ fn hierarchy_item(entry: ide_php::navigate::HierarchyEntry) -> HierarchyItem {
 }
 
 /// An engine completion item as the editor takes it.
-fn completion_item(item: Completion, server: ide_core::ServerId) -> CompletionItem {
+pub(crate) fn completion_item(item: Completion, server: ide_core::ServerId) -> CompletionItem {
     use ide_php::complete::CompletionKind as Kind;
     let kind = match item.kind {
         Kind::Class | Kind::Trait => CompletionKind::Class,

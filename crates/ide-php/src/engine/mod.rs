@@ -111,6 +111,11 @@ pub struct OpenDocument {
     pub path: PathBuf,
     pub version: u32,
     pub text: Arc<str>,
+    /// The PHP compiled from a template (a Blade view,
+    /// [`crate::blade`]): analysed like any open document, but never
+    /// inspected (its positions aren't the editor's) and updated only
+    /// through [`PhpEngine::embedded_document`].
+    pub embedded: bool,
 }
 
 /// The native PHP engine of one project. Dropping it shuts it down.
@@ -397,16 +402,37 @@ impl PhpEngine {
     /// An editor opened `path`: its buffer overrides the file on disk.
     pub fn document_opened(&self, doc: DocId, path: &Path, version: u32, text: &str) {
         self.shared.modification.fetch_add(1, Ordering::SeqCst);
-        let document = OpenDocument { doc, path: normalize(path), version, text: Arc::from(text) };
+        let document = OpenDocument { doc, path: normalize(path), version, text: Arc::from(text), embedded: false };
         self.shared.documents.lock().insert(doc, document);
         self.shared.inspections.schedule(doc);
     }
 
+    /// Holds `text`, the PHP compiled from the template `doc` at `path`
+    /// (a Blade view), as an embedded open document: the engine's requests
+    /// answer on it, and it overrides the file on disk, but it is never
+    /// inspected. Nothing happens when it already holds that version.
+    /// [`document_closed`](Self::document_closed) drops it.
+    pub fn embedded_document(&self, doc: DocId, path: &Path, version: u32, text: &str) {
+        let mut documents = self.shared.documents.lock();
+        if documents.get(&doc).is_some_and(|d| d.embedded && d.version == version && *d.text == *text) {
+            return;
+        }
+        let document = OpenDocument { doc, path: normalize(path), version, text: Arc::from(text), embedded: true };
+        documents.insert(doc, document);
+        drop(documents);
+        // The same version can come back with other text (another template
+        // engine's compilation): parse it again.
+        self.shared.parses.remove(doc);
+        self.shared.open_summaries.lock().remove(&doc);
+        self.shared.modification.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// The buffer of an open document changed; `text` is its full new text.
+    /// Embedded documents ignore it (their template changed, not the PHP).
     pub fn document_changed(&self, doc: DocId, version: u32, text: &str) {
         let mut documents = self.shared.documents.lock();
         let Some(document) = documents.get_mut(&doc) else { return };
-        if version < document.version {
+        if version < document.version || document.embedded {
             return;
         }
         document.version = version;
@@ -445,6 +471,11 @@ impl PhpEngine {
     pub fn open_document(&self, path: &Path) -> Option<OpenDocument> {
         let path = normalize(path);
         self.shared.documents.lock().values().find(|d| d.path == path).cloned()
+    }
+
+    /// The project folder.
+    pub fn root(&self) -> PathBuf {
+        self.shared.layout_config.lock().root.clone()
     }
 
     /// The project's Symfony configuration (`config/*.yaml`), read once
@@ -860,7 +891,7 @@ impl Shared {
     /// Other files' declarations changed: the open documents are inspected
     /// again.
     fn inspect_open_documents(&self) {
-        let open: Vec<DocId> = self.documents.lock().keys().copied().collect();
+        let open: Vec<DocId> = self.documents.lock().values().filter(|d| !d.embedded).map(|d| d.doc).collect();
         for doc in open {
             self.inspections.schedule(doc);
         }

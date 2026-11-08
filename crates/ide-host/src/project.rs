@@ -299,6 +299,10 @@ impl Host {
         let services = Arc::new(crate::language_service::LanguageServices::default());
         services.register(LanguageId::new("php"), Arc::new(crate::php::PhpService(php.clone())));
         services.register(LanguageId::new("twig"), Arc::new(crate::twig::TwigService::new(&root, documents.clone())));
+        services.register(
+            LanguageId::new("blade"),
+            Arc::new(crate::blade::BladeService::new(&root, documents.clone(), php.clone())),
+        );
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));

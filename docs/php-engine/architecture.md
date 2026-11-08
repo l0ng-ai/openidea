@@ -34,6 +34,13 @@ frontend ── IPC ──▶ ide-host ops/lsp.rs ──▶ LanguageService (php
 - `crates/ide-host/src/twig.rs` registers `TwigService` for `twig`. It needs
   no engine: `ide_php::twig` answers the outline, completion and template
   goto from the open document's text and the project's template directories.
+- `crates/ide-host/src/blade.rs` registers `BladeService` for `blade`
+  (`*.blade.php`). Directive completion and view/component goto need no
+  engine. For the PHP inside echoes, directives and `@php` blocks it asks the
+  engine: `ide_php::blade::compile` turns the view into PHP with an offset
+  map, `PhpEngine::embedded_document` holds it under the view's id (never
+  inspected, ignored by `document_changed`), and the `blade_*` methods map
+  positions in and answers out. `PhpObserver` drops it when the view closes.
 - With `Intelephense` selected, the slot is empty, the service answers
   nothing, and `ide_sdk::apply::language_servers` starts the server from
   `languages/php.toml`. Only one of the two runs at a time.

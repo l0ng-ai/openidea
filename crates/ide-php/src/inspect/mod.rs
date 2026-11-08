@@ -499,7 +499,7 @@ impl PhpEngine {
     /// Runs every inspection over the current version of an open document.
     /// `None` when the engine doesn't hold it or `cancel` fired.
     pub fn inspect(&self, doc: DocId, cancel: &CancellationToken) -> Option<Inspected> {
-        let document = self.open_documents().into_iter().find(|d| d.doc == doc)?;
+        let document = self.open_documents().into_iter().find(|d| d.doc == doc && !d.embedded)?;
         let parsed = self.parse_open(&document);
         let (diagnostics, problems) = self.run_inspections(&parsed, &document.path, cancel)?;
         Some(Inspected { doc, version: document.version, path: document.path.clone(), diagnostics, problems })

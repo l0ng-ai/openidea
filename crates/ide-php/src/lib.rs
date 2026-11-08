@@ -60,6 +60,9 @@
 //!   return types).
 //! - [`navigate`]: document symbols, fuzzy workspace symbols and goto
 //!   definition of class-like, function and constant names.
+//! - [`blade`]: Blade templates: the PHP of echoes, directives and PHP
+//!   blocks compiled into an embedded document the engine answers on, and
+//!   goto definition of views and components.
 //! - [`twig`]: Twig templates: outline, completion of variables, tags,
 //!   filters, functions, tests and template names, and goto definition of
 //!   the templates a template loads, through `mago-twig-syntax`.
@@ -69,6 +72,7 @@
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
+pub mod blade;
 pub mod complete;
 pub mod engine;
 pub mod format;

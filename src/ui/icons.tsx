@@ -979,7 +979,7 @@ const EXT_ICONS = table({
   "file-gradle": "gradle",
   "file-gradle-kts": "gradle.kts",
   "file-scala": "scala sc sbt mill",
-  "file-php": "php phtml php3 php4 php5 phps phpt",
+  "file-php": "php phtml php3 php4 php5 phps phpt blade.php twig",
   "file-perl": "pl pm pod psgi cgi",
   "file-c": "c",
   "file-h": "h hpp hh hxx h++",

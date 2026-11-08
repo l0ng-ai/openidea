@@ -11,6 +11,7 @@ use std::sync::{Arc, OnceLock};
 const BUILTIN: &[(&str, &str)] = &[
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
+    ("blade", include_str!("../../../languages/blade.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
     ("cmake", include_str!("../../../languages/cmake.toml")),
@@ -602,6 +603,7 @@ mod tests {
         "Angular Template",
         "ERB",
         "JSP",
+        "Blade",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -864,6 +866,8 @@ mod tests {
             ("Gemfile", "ruby"),
             ("show.html.erb", "erb"),
             ("index.php", "php"),
+            ("welcome.blade.php", "blade"),
+            ("components/Alert.BLADE.PHP", "blade"),
             ("base.html.twig", "twig"),
             ("mail.txt.twig", "twig"),
             ("init.lua", "lua"),
