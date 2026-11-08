@@ -285,8 +285,8 @@ function selectedLines(state: EditorState): { from: number; to: number }[] {
  * them is not commented (the caller then comments instead).
  *
  * The pair to look for is read at both ends of a range and past its last line,
- * not only at its start: a comment can start in one syntax context and end in
- * another, and a JSX `{/* … *\/}` is the extreme case — it sits in JSX children,
+ * and just outside matching tokens. A comment can span syntax contexts:
+ * a JSX `{/* … *\/}` is the extreme case — it sits in JSX children,
  * while its own text parses as JavaScript, where the tokens are `/* … *\/`. The
  * widest pair wins when several fit, so the outer comment is the one removed.
  */
@@ -301,11 +301,33 @@ function uncommentBlock(view: EditorView, ranges: { from: number; to: number }[]
     let best: { pair: CommentPair; comment: BlockComment } | null = null;
     for (const pair of pairs) {
       const comment = findBlockComment(state, pair, r.from, r.to);
+      if (comment)
+        for (const pos of [
+          Math.max(0, comment.open - pair.open.length - 1),
+          Math.min(doc.length, comment.close + pair.close.length + 1),
+        ])
+          for (const outer of commentPairs(state, pos))
+            if (!pairs.some((p) => p.open === outer.open && p.close === outer.close)) pairs.push(outer);
       if (comment && (!best || comment.open - pair.open.length < best.comment.open - best.pair.open.length))
         best = { pair, comment };
     }
     return best;
   });
+  // End tokens from separate comments must not be removed across live code.
+  for (const done of comments) {
+    if (!done) continue;
+    const { pair, comment } = done;
+    if (!state.sliceDoc(comment.open, comment.close).includes(pair.close)) continue;
+    let node = syntaxTree(state).resolveInner(comment.open, 1);
+    while (node.parent && !/comment/i.test(node.name)) node = node.parent;
+    // A parser-confirmed nested comment can legitimately contain closing tokens.
+    if (
+      !/comment/i.test(node.name) ||
+      node.from !== comment.open - pair.open.length ||
+      node.to !== comment.close + pair.close.length
+    )
+      return true;
+  }
   if (comments.some((c) => !c)) return false;
 
   const changes: ChangeSpec[] = [];
