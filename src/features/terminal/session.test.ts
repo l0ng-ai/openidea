@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FIT_INTERVAL_MS } from "./fit";
+import { FIT_SETTLE_MS } from "./fit";
 import { findTerminalLinks, type TerminalLink } from "./links";
 import { openFileLink, resolveStartCwd, TerminalSession } from "./session";
 
@@ -204,7 +204,7 @@ describe("terminal open", () => {
 
     width = 400;
     height = 300;
-    vi.advanceTimersByTime(FIT_INTERVAL_MS);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
     expect(open).toHaveBeenCalledTimes(1);
     session.dispose();
     container.remove();

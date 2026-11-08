@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FIT_INTERVAL_MS, PROCESS_RESIZE_DELAY_MS, fitScheduler, settledResize } from "./fit";
+import { FIT_SETTLE_MS, PROCESS_RESIZE_DELAY_MS, fitScheduler, settledResize } from "./fit";
 import { isAllowedIdeShortcut, terminalKeyAction } from "./keys";
 import { matchCounter } from "./FindBar";
 import { buildSearchDecorations } from "./theme";
@@ -438,23 +438,24 @@ describe("terminal tab titles", () => {
 describe("fit scheduling", () => {
   afterEach(() => vi.useRealTimers());
 
-  it("refits at most once per interval while resizing, and once after it stops", () => {
+  it("fits an idle terminal on the next frame, and a resizing one once it settles", () => {
     vi.useFakeTimers();
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
     vi.advanceTimersToNextFrame();
     expect(fit).toHaveBeenCalledTimes(1);
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 30; i++) {
       f.schedule();
       vi.advanceTimersByTime(16);
     }
     expect(fit).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(FIT_INTERVAL_MS);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
     expect(fit).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
     f.schedule();
     f.cancel();
-    vi.advanceTimersByTime(FIT_INTERVAL_MS * 2);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
     expect(fit).toHaveBeenCalledTimes(2);
   });
 
