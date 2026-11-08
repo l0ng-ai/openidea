@@ -10,7 +10,6 @@ import {
 } from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
 import { isJvmApplication } from "@/platform/javaLaunch";
-import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import TESTS_SCRIPT from "./gradleTests.gradle?raw";
 import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
