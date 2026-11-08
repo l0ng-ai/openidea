@@ -249,9 +249,7 @@ async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
 async fn execution_requires_a_window_and_denial_never_runs_a_build() {
     let h = Harness::new();
     h.trust().await;
-    for name in ["get_run_configurations", "build_project"] {
-        assert!(h.error(name, json!({})).await.contains("no project window"));
-    }
+    assert!(h.error("build_project", json!({})).await.contains("no project window"));
     h.host.mcp_requests.set_ready("main", true);
     let denied = h.error("build_project", json!({}));
     let answer = async {
@@ -264,7 +262,7 @@ async fn execution_requires_a_window_and_denial_never_runs_a_build() {
     assert!(h.host.processes.list().is_empty());
     assert!(h.events.lock().unwrap().iter().any(|e| matches!(e, IdeEvent::McpRequestClosed { .. })));
     h.events.lock().unwrap().clear();
-    let closed = h.error("get_run_configurations", json!({}));
+    let closed = h.error("build_project", json!({}));
     let close = async {
         h.request().await;
         h.host.mcp_requests.forget_window("main");

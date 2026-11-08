@@ -3,7 +3,7 @@
 //! Output of commands and runs: truncation, the run output collector and the private
 //! directory of full output files.
 
-use ide_core::{IdeError, IdeResult};
+use ide_core::IdeResult;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -129,7 +129,7 @@ fn output_dir() -> IdeResult<PathBuf> {
         }
         let meta = std::fs::symlink_metadata(&dir)?;
         if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
-            return Err(IdeError::new(
+            return Err(ide_core::IdeError::new(
                 ide_core::error::ErrorKind::PermissionDenied,
                 format!("{} is not a private directory of this user", dir.display()),
             ));

@@ -112,7 +112,6 @@ In OpenIDEA the configurations are the saved ones and those detected from the bu
 Cargo targets, Gradle/Maven tasks, Go, Python, Makefile…); `description` is the configuration type and `commandLine` \
 the whole command. Run points are found in Rust, JavaScript/TypeScript, Python and Go files.",
         |call| async move {
-            call.confirm("List run configurations", None).await?;
             let configs = load_configs(&call).await?;
             if let Some(file) = call.opt_str("filePath")? {
                 let points = scan_file(&call, &file, move |root, rel, text| {
@@ -466,7 +465,10 @@ fn confirmation_detail(
     overrides: &[(String, String)],
     configs: &[RunConfig],
 ) -> String {
-    let mut detail = format!("{}\nin {cwd}", command_line(config));
+    let mut detail = command_line(config);
+    if !cwd.is_empty() {
+        detail.push_str(&format!("\nin {cwd}"));
+    }
     if let Some(target) = config.extras.target.as_deref().filter(|t| !t.is_empty()) {
         detail.push_str(&format!("\non run target {target}"));
     }
