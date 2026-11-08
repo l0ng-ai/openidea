@@ -45,6 +45,19 @@
   font-size: var(--fs-ui);
 }
 
+/* A row above the table: the table and the instances pane below it share what is left. */
+.capture {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-block: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.captureBar {
+  flex: 0 1 160px;
+}
+
 .table {
   flex: 1;
   min-height: 0;
@@ -56,6 +69,12 @@
 }
 .noSizes {
   --memory-columns: minmax(0, 1fr) 96px 72px;
+}
+.withRetained {
+  --memory-columns: minmax(0, 1fr) 96px 72px 104px 104px;
+}
+.noSizes.withRetained {
+  --memory-columns: minmax(0, 1fr) 96px 72px 104px;
 }
 
 .head,

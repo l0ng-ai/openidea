@@ -2,7 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const ipc = vi.hoisted(() => ({ debugJvmMemoryClasses: vi.fn(), debugJvmMemoryInstances: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  Channel: class {
+    onmessage: (p: unknown) => void = () => {};
+  },
+}));
+
+const ipc = vi.hoisted(() => ({
+  debugJvmMemoryClasses: vi.fn(),
+  debugJvmMemoryInstances: vi.fn(),
+  debugHeapCapture: vi.fn(),
+  debugHeapClasses: vi.fn(),
+  cancelRequest: vi.fn(),
+}));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -11,7 +23,12 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 
 import type {
   DebugCapabilities,
+  HeapCaptureResult,
+  HeapClassRow,
+  HeapProgress,
+  HeapSnapshotInfo,
   JvmClassRow,
+  JvmHeapUnavailable,
   JvmInstancesResult,
   JvmMemoryResult,
   JvmMemoryUnavailable,
@@ -21,6 +38,7 @@ import { registerActions } from "@/platform/actions";
 import { setLocale } from "@/platform/i18n";
 import { refreshMemory, useMemory } from "../memory/memoryState";
 import { showInstances, useInstances } from "../memory/instancesState";
+import { captureHeap, useHeap } from "../heap/heapState";
 import { MemoryView } from "../memory/MemoryView";
 
 const session = {
@@ -97,9 +115,9 @@ let unregister: () => void;
 beforeEach(() => {
   useMemory.setState({ bySession: {} });
   useInstances.setState({ bySession: {} });
+  useHeap.setState({ snapshots: {}, captures: {}, opening: null });
   useDebug.setState({ sessions: { 1: session }, active: 1, stopSeq: 0 });
-  ipc.debugJvmMemoryClasses.mockReset();
-  ipc.debugJvmMemoryInstances.mockReset();
+  for (const m of Object.values(ipc)) m.mockReset();
   // The real actions live in actions.ts (covered by actions.test.ts); the buttons only need their ids to resolve.
   unregister = registerActions([
     { id: "debug.memory.refresh", title: "Refresh Memory View", run: () => void refreshMemory(1) },
@@ -109,6 +127,7 @@ beforeEach(() => {
       run: ({ arg }) => void showInstances(1, arg as string),
     },
     { id: "debug.memory.jumpToSource", title: "Jump to Source", run: () => {} },
+    { id: "debug.heap.capture", title: "Capture Heap Snapshot", run: () => void captureHeap(1) },
   ]);
 });
 
@@ -553,6 +572,168 @@ describe("MemoryView", () => {
       render(<MemoryView session={withInstances} />);
       expect(await screen.findByText("Instances of com.x.Order")).toBeTruthy();
       expect(screen.getByRole("table", { name: "Memory" })).toBeTruthy();
+    });
+  });
+
+  describe("heap snapshots", () => {
+    const withHeap = { ...session, caps: { jvmMemory: true, jvmHeap: true } as DebugCapabilities } as DebugSession;
+    const NODE_ROWS = [
+      row("Node", { instances: 2, bytes: 48 }),
+      row("Leaf", { bytes: 8 }),
+      row("Dup", { bytes: 4, ambiguous: true }),
+    ];
+    const heapRow = (name: string, retained: number, ambiguous = false): HeapClassRow => ({
+      classIndex: 0,
+      name,
+      count: 1,
+      shallow: 8,
+      retained,
+      unreachableCount: 0,
+      ambiguous,
+    });
+    const info = (id: number): HeapSnapshotInfo => ({
+      id,
+      label: "12:30:00",
+      origin: { kind: "captured", session: 1, pid: 99, javaVersion: "21", takenWhileSuspended: true, dumpMs: 40 },
+      summary: {} as HeapSnapshotInfo["summary"],
+      createdMs: id,
+    });
+    const snapshotAt = (stop: number, classes: HeapClassRow[]) =>
+      useHeap.setState({ snapshots: { 7: { info: info(7), takenAtStop: stop, classes } } });
+    const rowOf = (name: string) => screen.getByText(name).closest<HTMLElement>("[role=row]")!;
+    const headers = () => screen.getAllByRole("columnheader").map((h) => h.textContent);
+
+    type FakeChannel = { onmessage: (p: HeapProgress) => void };
+    let channel: FakeChannel | null;
+    let answer: (r: HeapCaptureResult) => void;
+
+    beforeEach(() => {
+      useDebug.setState({ sessions: { 1: withHeap } });
+      channel = null;
+      ipc.debugHeapCapture.mockImplementation(
+        (_s: number, _r: number, ch: FakeChannel) =>
+          new Promise((resolve) => {
+            channel = ch;
+            answer = (data) => resolve({ status: "ok", data });
+          }),
+      );
+      ipc.cancelRequest.mockResolvedValue(null);
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(ready(NODE_ROWS)));
+    });
+
+    const startCapture = async () => {
+      render(<MemoryView session={withHeap} />);
+      await screen.findByText("Node");
+      fireEvent.click(screen.getByRole("button", { name: "Capture Heap Snapshot" }));
+      await waitFor(() => expect(channel).not.toBeNull());
+    };
+
+    it("shows Capture only for sessions with jvmHeap", async () => {
+      const { rerender } = render(<MemoryView session={session} />);
+      await screen.findByText("Node");
+      expect(screen.queryByRole("button", { name: "Capture Heap Snapshot" })).toBeNull();
+      rerender(<MemoryView session={withHeap} />);
+      const capture = screen.getByRole("button", { name: "Capture Heap Snapshot" });
+      expect(capture.getAttribute("data-tooltip")).toContain(
+        "Writing the dump pauses the program for about a second per gigabyte of heap.",
+      );
+      const toolbar = screen.getByRole("toolbar", { name: "Memory" });
+      expect(
+        within(toolbar)
+          .getAllByRole("button")
+          .slice(0, 2)
+          .map((b) => b.getAttribute("aria-label")),
+      ).toEqual(["Refresh Memory View", "Capture Heap Snapshot"]);
+    });
+
+    it("runs a capture and shows its phase", async () => {
+      await startCapture();
+      expect(screen.getByText("Writing the heap dump…")).toBeTruthy();
+      act(() => channel!.onmessage({ type: "analyzing", phase: "dominators", done: 1, total: 2 }));
+      expect(screen.getByText("Computing dominators…")).toBeTruthy();
+      expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("42");
+      // The table keeps its rows while the capture runs.
+      expect(screen.getByText("Node")).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel Heap Snapshot" }));
+      expect(ipc.cancelRequest).toHaveBeenCalledWith(ipc.debugHeapCapture.mock.calls[0]![1]);
+      await act(async () => answer({ status: "cancelled" }));
+      expect(screen.queryByText("Computing dominators…")).toBeNull();
+      expect(screen.getByRole("button", { name: "Capture Heap Snapshot" })).toBeTruthy();
+    });
+
+    it("explains a refused capture", async () => {
+      await startCapture();
+      await act(async () =>
+        answer({
+          status: "unavailable",
+          reason: { kind: "notEnoughDiskSpace", needed: 3221225472, available: 536870912 },
+        }),
+      );
+      expect(screen.getByText("Not enough disk space for the heap dump: 3.0 GB needed, 512.0 MB free.")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Capture Heap Snapshot" })).toBeTruthy();
+      expect(screen.getByText("Node")).toBeTruthy();
+    });
+
+    it.each<[JvmHeapUnavailable, string]>([
+      [
+        { kind: "dumpFailed", message: "Permission denied" },
+        "The JVM could not write the heap dump: Permission denied",
+      ],
+      [{ kind: "dumpTimedOut", seconds: 120 }, "The JVM did not finish the heap dump within 120 seconds."],
+      [
+        { kind: "memory", reason: { kind: "unsafeWhileSuspended", javaMajor: 11 } },
+        "JDK 11 cannot write a heap dump while suspended. Resume the program, then capture again.",
+      ],
+      [
+        { kind: "memory", reason: { kind: "unsafeWhileSuspended", javaMajor: 0 } },
+        "This JDK cannot write a heap dump while suspended. Resume the program, then capture again.",
+      ],
+      [
+        { kind: "memory", reason: { kind: "listenerNotRunning" } },
+        "The JVM does not accept attach requests. Restart the debug session without -XX:+DisableAttachMechanism.",
+      ],
+    ])("words the refusal %j", async (reason, text) => {
+      await startCapture();
+      await act(async () => answer({ status: "unavailable", reason }));
+      expect(screen.getByText(text)).toBeTruthy();
+    });
+
+    it("shows retained sizes from a snapshot of this stop", async () => {
+      const { rerender } = render(<MemoryView session={withHeap} />);
+      await screen.findByText("Node");
+      expect(headers()).not.toContain("Retained Size");
+
+      act(() => snapshotAt(0, [heapRow("Node", 104), heapRow("Dup", 9, true)]));
+      expect(headers()).toEqual(["Class", "Count", "Diff", "Shallow Size", "Retained Size"]);
+      expect(within(rowOf("Node")).getAllByRole("cell").at(-1)!.textContent).toBe("104 B");
+      expect(within(rowOf("Leaf")).getAllByRole("cell").at(-1)!.textContent).toBe("—");
+      // A name shared by several classes cannot be joined to one retained size.
+      expect(within(rowOf("Dup")).getAllByRole("cell").at(-1)!.textContent).toBe("—");
+
+      fireEvent.click(screen.getByRole("button", { name: "Retained Size" }));
+      expect(screen.getByRole("columnheader", { name: "Retained Size" }).getAttribute("aria-sort")).toBe("descending");
+
+      const next = { ...withHeap, stops: 1 };
+      act(() => useDebug.setState({ sessions: { 1: next } }));
+      rerender(<MemoryView session={next} />);
+      expect(headers()).not.toContain("Retained Size");
+      expect(screen.getByRole("columnheader", { name: "Count" }).getAttribute("aria-sort")).toBe("descending");
+    });
+
+    it("shows retained sizes beside debugger counts without their sizes", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(
+        ok(debuggerCounts([row("Node", { instances: 2, bytes: 0 }), row("Leaf", { bytes: 0 })])),
+      );
+      snapshotAt(0, [heapRow("Node", 104), heapRow("Leaf", 500)]);
+      render(<MemoryView session={withHeap} />);
+      await screen.findByText("Node");
+      expect(headers()).toEqual(["Class", "Count", "Diff", "Retained Size"]);
+      fireEvent.click(screen.getByRole("button", { name: "Retained Size" }));
+      const order = within(screen.getAllByRole("rowgroup")[1]!)
+        .getAllByRole("row")
+        .map((r) => r.textContent?.slice(0, 4));
+      expect(order).toEqual(["Leaf", "Node"]);
     });
   });
 });

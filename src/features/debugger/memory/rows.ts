@@ -1,6 +1,6 @@
 import type { JvmClassRow, JvmMemorySource } from "@/platform/ipc";
 
-export type SortKey = "name" | "instances" | "deltaInstances" | "bytes";
+export type SortKey = "name" | "instances" | "deltaInstances" | "bytes" | "retained";
 
 export interface RowQuery {
   filter: string;
@@ -9,20 +9,30 @@ export interface RowQuery {
   changedOnly: boolean;
 }
 
-/** The debugger counts objects without sizes, so its table has no Shallow Size column. */
-export function columnsOf(source: JvmMemorySource): SortKey[] {
-  return source === "debugger"
-    ? ["name", "instances", "deltaInstances"]
-    : ["name", "instances", "deltaInstances", "bytes"];
+/**
+ * The debugger counts objects without sizes, so its table has no Shallow Size column; Retained Size comes from a heap
+ * snapshot of the same stop, joined by class name, and exists only while there is one.
+ */
+export function columnsOf(source: JvmMemorySource, retained = false): SortKey[] {
+  const columns: SortKey[] =
+    source === "debugger" ? ["name", "instances", "deltaInstances"] : ["name", "instances", "deltaInstances", "bytes"];
+  return retained ? [...columns, "retained"] : columns;
 }
 
 /** `q` sorted by a column the table has: a size sort falls back to the count. */
-export function queryFor(q: RowQuery, source: JvmMemorySource): RowQuery {
-  return columnsOf(source).includes(q.sort) ? q : { ...q, sort: "instances" };
+export function queryFor(q: RowQuery, source: JvmMemorySource, retained = false): RowQuery {
+  return columnsOf(source, retained).includes(q.sort) ? q : { ...q, sort: "instances" };
 }
 
-/** Filter, then sort a copy of `rows`; rows without a delta always sort last so a baseline-less table stays readable. */
-export function visibleRows(rows: readonly JvmClassRow[], q: RowQuery): JvmClassRow[] {
+/**
+ * Filter, then sort a copy of `rows`; rows without a delta or a retained size always sort last so a baseline-less
+ * table stays readable.
+ */
+export function visibleRows(
+  rows: readonly JvmClassRow[],
+  q: RowQuery,
+  retained?: ReadonlyMap<string, number>,
+): JvmClassRow[] {
   const needle = q.filter.trim().toLowerCase();
   const kept = rows.filter(
     (r) =>
@@ -37,6 +47,12 @@ export function visibleRows(rows: readonly JvmClassRow[], q: RowQuery): JvmClass
         return (a.deltaInstances == null ? 1 : 0) - (b.deltaInstances == null ? 1 : 0);
       }
       return dir * (a.deltaInstances - b.deltaInstances);
+    }
+    if (q.sort === "retained") {
+      const ra = retained?.get(a.name);
+      const rb = retained?.get(b.name);
+      if (ra === undefined || rb === undefined) return (ra === undefined ? 1 : 0) - (rb === undefined ? 1 : 0);
+      return dir * (ra - rb);
     }
     return dir * (a[q.sort] - b[q.sort]);
   });

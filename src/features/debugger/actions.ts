@@ -33,6 +33,7 @@ import { reloadChangedClasses } from "./hotswap";
 import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
+import { captureHeap } from "./heap/heapState";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
 import {
@@ -441,6 +442,18 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s && sessionSupports("jvmMemory", s)) void refreshMemory(s.id);
+      },
+    },
+    {
+      id: "debug.heap.capture",
+      title: "Capture Heap Snapshot",
+      category: "Debug",
+      icon: "heap-snapshot",
+      keywords: ["memory", "heap", "dump", "snapshot"],
+      when: "debugHasJvmMemory",
+      run: () => {
+        const s = activeSession();
+        if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
       },
     },
     {

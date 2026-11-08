@@ -6508,5 +6508,21 @@
   "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.": "kotlin-lsp 仍在导入项目。导入完成后再次调试即可使用其调试器。",
   "kotlin-lsp could not import the project.": "kotlin-lsp 无法导入项目。",
   "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp 无法启动其调试器：{detail}",
-  "kotlin-lsp or kotlin-debug-adapter (Kotlin)": "kotlin-lsp 或 kotlin-debug-adapter（Kotlin）"
+  "kotlin-lsp or kotlin-debug-adapter (Kotlin)": "kotlin-lsp 或 kotlin-debug-adapter（Kotlin）",
+  "Capture Heap Snapshot": "捕获堆快照",
+  "Writing the dump pauses the program for about a second per gigabyte of heap.": "写入转储时程序会暂停，每 GB 堆约一秒。",
+  "Writing the heap dump…": "正在写入堆转储…",
+  "Reading the dump…": "正在读取转储…",
+  "Linking objects…": "正在关联对象…",
+  "Computing dominators…": "正在计算支配树…",
+  "Computing retained sizes…": "正在计算保留大小…",
+  "Finding paths to GC roots…": "正在查找到 GC 根的路径…",
+  "Saving the index…": "正在保存索引…",
+  "Cancel Heap Snapshot": "取消堆快照",
+  "Retained Size": "保留大小",
+  "Not enough disk space for the heap dump: {needed} needed, {available} free.": "磁盘空间不足，无法保存堆转储：需要 {needed}，可用 {available}。",
+  "The JVM could not write the heap dump: {message}": "JVM 无法写入堆转储：{message}",
+  "The JVM did not finish the heap dump within {n} seconds.": "JVM 未能在 {n} 秒内完成堆转储。",
+  "JDK {v} cannot write a heap dump while suspended. Resume the program, then capture again.": "JDK {v} 在暂停时无法写入堆转储。请先恢复程序，再重新捕获。",
+  "This JDK cannot write a heap dump while suspended. Resume the program, then capture again.": "此 JDK 在暂停时无法写入堆转储。请先恢复程序，再重新捕获。"
 }

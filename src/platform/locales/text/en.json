@@ -133,5 +133,21 @@
   "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.": "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.",
   "kotlin-lsp could not import the project.": "kotlin-lsp could not import the project.",
   "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp could not start its debugger: {detail}",
-  "kotlin-lsp or kotlin-debug-adapter (Kotlin)": "kotlin-lsp or kotlin-debug-adapter (Kotlin)"
+  "kotlin-lsp or kotlin-debug-adapter (Kotlin)": "kotlin-lsp or kotlin-debug-adapter (Kotlin)",
+  "Capture Heap Snapshot": "Capture Heap Snapshot",
+  "Writing the dump pauses the program for about a second per gigabyte of heap.": "Writing the dump pauses the program for about a second per gigabyte of heap.",
+  "Writing the heap dump…": "Writing the heap dump…",
+  "Reading the dump…": "Reading the dump…",
+  "Linking objects…": "Linking objects…",
+  "Computing dominators…": "Computing dominators…",
+  "Computing retained sizes…": "Computing retained sizes…",
+  "Finding paths to GC roots…": "Finding paths to GC roots…",
+  "Saving the index…": "Saving the index…",
+  "Cancel Heap Snapshot": "Cancel Heap Snapshot",
+  "Retained Size": "Retained Size",
+  "Not enough disk space for the heap dump: {needed} needed, {available} free.": "Not enough disk space for the heap dump: {needed} needed, {available} free.",
+  "The JVM could not write the heap dump: {message}": "The JVM could not write the heap dump: {message}",
+  "The JVM did not finish the heap dump within {n} seconds.": "The JVM did not finish the heap dump within {n} seconds.",
+  "JDK {v} cannot write a heap dump while suspended. Resume the program, then capture again.": "JDK {v} cannot write a heap dump while suspended. Resume the program, then capture again.",
+  "This JDK cannot write a heap dump while suspended. Resume the program, then capture again.": "This JDK cannot write a heap dump while suspended. Resume the program, then capture again."
 }
