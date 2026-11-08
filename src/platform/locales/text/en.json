@@ -1,4 +1,5 @@
 {
+  "Cannot remove a worktree containing the open project.": "Cannot remove a worktree containing the open project.",
   "Delete Remote Branches": "Delete Remote Branches",
   "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.": "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.",
   "Add or Remove Caret": "Add or Remove Caret",
