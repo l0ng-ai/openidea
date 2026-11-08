@@ -681,11 +681,14 @@ export function DiffEditor({
               const lineTop = v.lineBlockAt(v.state.selection.main.head).top;
               return documentTop + lineTop - scroller.clientHeight / 3;
             },
-            write: (top) =>
-              scroller.scrollTo({
+            write: (top) => {
+              const options: ScrollToOptions = {
                 top: Math.max(0, top),
                 behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
-              }),
+              };
+              if (views.panes) views.panes.scrollTo(onA ? "a" : "b", options);
+              else scroller.scrollTo(options);
+            },
           });
         },
       });
