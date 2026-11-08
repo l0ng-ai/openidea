@@ -14,6 +14,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
 import {
   addType,
   cleanupRemovedProject,
+  addMenuCategories,
   categorizedTypes,
   runServiceProvider,
   registerRunServiceActions,
@@ -449,6 +450,13 @@ describe("add service categories", () => {
 
   it("groups nothing for an empty list", () => {
     expect(categorizedTypes([])).toEqual([]);
+  });
+
+  it("lists a category once in the Add Service menu when the project uses only some of its kinds", () => {
+    const { project, rest } = addMenuCategories(["go", "maven", "gradle", "python"], ["go", "maven"]);
+    expect(project.map((b) => b.category)).toEqual(["Build Tools", "Go"]);
+    expect(project[0]!.kinds).toEqual(expect.arrayContaining(["maven", "gradle"]));
+    expect(rest.map((b) => b.category)).toEqual(["Python"]);
   });
 });
 

@@ -835,6 +835,13 @@ export function categorizedTypes(kinds: readonly string[]): Array<{ category: st
   }));
 }
 
+/** The project's categories, then the rest. A category appears once, even when the project uses only some of its kinds. */
+export function addMenuCategories(kinds: readonly string[], used: readonly string[]) {
+  const buckets = categorizedTypes(kinds);
+  const inProject = (bucket: (typeof buckets)[number]) => bucket.kinds.some((kind) => used.includes(kind));
+  return { project: buckets.filter(inProject), rest: buckets.filter((bucket) => !inProject(bucket)) };
+}
+
 /** "Add Service › Run Configuration Type": the project's types first, then the rest. */
 function addMenu(): MenuItem[] {
   const added = currentTypes();
@@ -849,18 +856,17 @@ function addMenu(): MenuItem[] {
       await executeAction("run.services.addType", kind);
     },
   });
-  const grouped = (list: readonly string[]) =>
-    categorizedTypes(list).map(({ category, kinds: members }) => ({
+  const grouped = (buckets: ReturnType<typeof categorizedTypes>) =>
+    buckets.map(({ category, kinds: members }) => ({
       label: category,
       icon: configIcon({ kind: members[0]!, isTest: false }),
       submenu: members.map(item),
     }));
+  const { project, rest } = addMenuCategories(kinds, used);
   const submenu: MenuItem[] = [
-    ...grouped(kinds.filter((k) => used.includes(k))),
-    ...(used.some((k) => kinds.includes(k)) && kinds.some((k) => !used.includes(k))
-      ? [{ kind: "separator" } as MenuItem]
-      : []),
-    ...grouped(kinds.filter((k) => !used.includes(k))),
+    ...grouped(project),
+    ...(project.length && rest.length ? [{ kind: "separator" } as MenuItem] : []),
+    ...grouped(rest),
   ];
   return [{ label: "Run Configuration Type", icon: "toolwindow-run", disabled: !submenu.length, submenu }];
 }
