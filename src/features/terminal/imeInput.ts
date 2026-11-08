@@ -60,7 +60,7 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
   let composition = "";
   /** The pending keydown went to the input method, so its keypress belongs to it too. */
   let imeKey = false;
-  /** An IME keydown was seen since the last keyup: its commit is ours to deliver. */
+  /** The pending key belongs to an IME: its commit is ours to deliver. */
   let imeDown = false;
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -70,10 +70,10 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
       return;
     }
     imeKey = isImeKey(e);
+    imeDown = imeKey;
     if (imeKey) {
       // The IME owns this key: xterm must not run its deferred textarea diff or send the
       // keypress, and the text it commits next is ours.
-      imeDown = true;
       e.stopPropagation();
     }
   };

@@ -28,7 +28,7 @@ function keydown(target: EventTarget, init: { key: string; keyCode: number; isCo
 }
 
 function keypress(target: EventTarget, key: string) {
-  const e = new KeyboardEvent("keypress", { key, bubbles: true, cancelable: true });
+  const e = new KeyboardEvent("keypress", { key, charCode: key.charCodeAt(0), bubbles: true, cancelable: true });
   target.dispatchEvent(e);
   return e;
 }
@@ -222,6 +222,7 @@ describe("ownTerminalInput", () => {
 describe("ownTerminalInput with xterm", () => {
   type Step =
     | ["keydown" | "keyup", string, number, boolean?]
+    | ["keypress", string]
     | ["compositionstart" | "compositionupdate" | "compositionend", string]
     | ["input", string, string | null, string];
 
@@ -241,6 +242,8 @@ describe("ownTerminalInput with xterm", () => {
         const e = keydown(textarea, { key: step[1], keyCode: step[2], isComposing: step[3] });
         // A browser fires no keypress for a keydown xterm cancelled.
         if (!step[3] && !e.defaultPrevented && step[1].length === 1) keypress(textarea, step[1]);
+      } else if (step[0] === "keypress") {
+        keypress(textarea, step[1]);
       } else if (step[0] === "keyup") {
         keyup(textarea, step[2]);
       } else if (step[0] === "input") {
@@ -255,6 +258,47 @@ describe("ownTerminalInput with xterm", () => {
     term.dispose();
     return sent;
   }
+
+  it.each([true, false])("sends a retyped word and following plain keys once (keyup first: %s)", async (release) => {
+    // Uppercase typing reaches both keypress and input; lowercase keydown is cancelled by xterm.
+    const sent = await replay([
+      ["keydown", "ông", 65],
+      ["keypress", "ông"],
+      ["input", "insertText", "ông", "ông"],
+      ...(release ? ([["keyup", "ông", 65]] as Step[]) : []),
+      ["keydown", "A", 65],
+      ["input", "insertText", "A", "A"],
+      ["keyup", "A", 65],
+      ["keydown", "b", 66],
+      ["input", "insertText", "b", "Ab"],
+      ["keyup", "b", 66],
+    ]);
+    expect(sent).toEqual(["ông", "A", "b"]);
+  });
+
+  it.each([
+    ["Enter", 13, "\r"],
+    ["Tab", 9, "\t"],
+    ["Backspace", 8, "\x7f"],
+    ["Escape", 27, "\x1b"],
+    ["ArrowUp", 38, "\x1b[A"],
+    ["ArrowDown", 40, "\x1b[B"],
+    ["ArrowLeft", 37, "\x1b[D"],
+    ["ArrowRight", 39, "\x1b[C"],
+    ["Dead", 0, ""],
+    ["Process", 229, ""],
+    ["Unidentified", 0, ""],
+  ] as const)("leaves %s keydown handling intact after a retyped word", async (key, code, expected) => {
+    const sent = await replay([
+      ["keydown", "ông", 65],
+      ["keypress", "ông"],
+      ["input", "insertText", "ông", "ông"],
+      ["keyup", "ông", 65],
+      ["keydown", key, code],
+      ["keyup", key, code],
+    ]);
+    expect(sent.join("")).toBe("ông" + expected);
+  });
 
   function composeThenSwitch(before: string, shown: string[]): Step[] {
     const steps: Step[] = [["compositionstart", ""]];
