@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
 import type { RunConfig, RunId } from "@/platform/ipc";
 import { registerRunExecutor } from "@/workbench/contributions";
 import { runWithExecutor } from "./executors";
-import { BEFORE_STOP_TIMEOUT_MS, onRunExited, resetRuns, stopSession, useRun } from "./store";
+import { BEFORE_STOP_TIMEOUT_MS, closeSession, onRunExited, resetRuns, stopSession, useRun } from "./store";
 
 const config: RunConfig = {
   id: "cargo:test",
@@ -201,6 +201,48 @@ describe("an executor's beforeStop hook", () => {
     settle[0]!();
     await stopped;
     expect(ipc.runStop).not.toHaveBeenCalled();
+    expect(session().status).toBe("finished");
+  });
+
+  it("closing the tab while the hook is pending still stops the process", async () => {
+    const { hook, settle } = controlledHook();
+    register(hook);
+    const id = await start();
+
+    closeSession(id);
+    expect(useRun.getState().sessions).toEqual([]);
+    expect(ipc.runStop).not.toHaveBeenCalled();
+
+    settle[0]!();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ipc.runStop).toHaveBeenCalledTimes(1);
+    expect(ipc.runStop).toHaveBeenCalledWith(7);
+  });
+
+  it("closing the tab of a hook that never settles stops the process after the cap", async () => {
+    const { hook } = controlledHook();
+    register(hook);
+    const id = await start();
+
+    closeSession(id);
+    await vi.advanceTimersByTimeAsync(BEFORE_STOP_TIMEOUT_MS);
+    expect(ipc.runStop).toHaveBeenCalledTimes(1);
+    expect(ipc.runStop).toHaveBeenCalledWith(7);
+  });
+
+  it("a failed stop does not mark a tab that already finished as running", async () => {
+    register();
+    const id = await start();
+
+    let fail: (e: Error) => void = () => undefined;
+    ipc.runStop.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
+    const stopped = stopSession(id);
+    onRunExited(7 as RunId, 0);
+    await vi.advanceTimersByTimeAsync(EXIT_SETTLE_MS);
+    expect(session().status).toBe("finished");
+
+    fail(new Error("gone"));
+    await stopped;
     expect(session().status).toBe("finished");
   });
 

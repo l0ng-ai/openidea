@@ -1115,10 +1115,10 @@ export async function stopSession(sessionId: string): Promise<void> {
         rt.hookPending = false;
       }
       // The program may have exited, or the tab been rerun, during the wait; a second Stop may
-      // have sent the signal already, and sending again would make the backend kill it.
+      // have sent the signal already, and sending again would make the backend kill it. A tab
+      // closed meanwhile (`closeSession`) is gone, but its process still needs the signal.
       const current = getSession(sessionId);
-      if (runtimes.get(sessionId) !== rt || rt.stopSent || !current || !isLive(current) || current.runId !== runId)
-        return;
+      if (rt.stopSent || (current && (!isLive(current) || current.runId !== runId))) return;
     }
     rt.stopSent = true;
   }
