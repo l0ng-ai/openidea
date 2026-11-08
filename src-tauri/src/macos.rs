@@ -182,3 +182,10 @@ pub fn handling_key_press() -> bool {
         .currentEvent()
         .is_some_and(|event| event.r#type() == objc2_app_kit::NSEventType::KeyDown)
 }
+
+/// Native dialogs block the workbench even when their menu event no longer carries a key press.
+pub fn native_modal_open() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    let application = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    application.modalWindow().is_some() || application.windows().iter().any(|window| window.attachedSheet().is_some())
+}

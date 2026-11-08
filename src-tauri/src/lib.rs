@@ -308,7 +308,9 @@ fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
     // A keymap accelerator only draws the shortcut: its key reached the menu because the keymap declined it.
     #[cfg(target_os = "macos")]
-    if macos::handling_key_press() && !menu::fires_natively(&menu::spec(menu::Os::Mac), id) {
+    if !menu::fires_natively(&menu::spec(menu::Os::Mac), id)
+        && (macos::handling_key_press() || macos::native_modal_open())
+    {
         return;
     }
     dispatch_menu_action(app, id);
