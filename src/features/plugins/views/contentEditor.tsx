@@ -46,6 +46,7 @@ interface ContentSession {
   readOnly: boolean;
   closing: boolean;
   view: EditorView | null;
+  pending?: Promise<void>;
   invokeAction?: (id: string, fromSave: boolean) => Promise<void>;
   setClosing?: (closing: boolean) => void;
   discard?: () => void;
@@ -89,12 +90,13 @@ export function closeContentSession(key: string) {
 export const pluginContentEditorDocument: EditorDocumentLifecycle = {
   isDirty: (input) => {
     const s = sessions.get(input.key);
-    return !!s && !s.readOnly && s.currentText !== s.baselineText;
+    return !!s && s.currentText !== s.baselineText;
   },
   flush: async () => {},
   save: async (input) => {
     const s = sessions.get(input.key);
-    if (!s || s.readOnly || s.currentText === s.baselineText) return;
+    if (s?.pending) await s.pending;
+    if (!s || s.currentText === s.baselineText) return;
     const saveAction =
       s.data.actions.find((a) => a.save) ??
       s.data.actions.find((a) => a.id === "save") ??
@@ -103,11 +105,19 @@ export const pluginContentEditorDocument: EditorDocumentLifecycle = {
     if (s.invokeAction) {
       await s.invokeAction(saveAction.id, true);
     } else {
-      const reply = await dispatchContentTabAction(s.data, saveAction.id, s.currentText);
-      if (reply.error) throw new Error(reply.error);
-      if (reply.content !== undefined) s.currentText = reply.content;
-      s.baselineText = s.currentText;
-      notifyEditorDocumentChanged();
+      const snapshot = s.currentText;
+      s.pending = dispatchContentTabAction(s.data, saveAction.id, snapshot)
+        .then((reply) => {
+          if (reply.error) throw new Error(reply.error);
+          if (reply.saved === false) throw new Error(tx("The plugin did not save the content"));
+          if (reply.content !== undefined && s.currentText === snapshot) s.currentText = reply.content;
+          s.baselineText = reply.content ?? snapshot;
+          notifyEditorDocumentChanged();
+        })
+        .finally(() => {
+          s.pending = undefined;
+        });
+      await s.pending;
     }
   },
   prepareClose: async (input) => {
@@ -115,6 +125,7 @@ export const pluginContentEditorDocument: EditorDocumentLifecycle = {
     if (s) {
       s.closing = true;
       s.setClosing?.(true);
+      await s.pending?.catch(() => {});
     }
   },
   cancelClose: (input) => {
@@ -171,9 +182,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
   const session = useMemo(() => ensureSession(input.key, initialData), [input.key, initialData]);
   const [data, setData] = useState<PluginContentEditorData>(() => session.data);
   const [readOnly, setReadOnly] = useState<boolean>(() => session.readOnly);
-  const [modified, setModified] = useState<boolean>(
-    () => !session.readOnly && session.currentText !== session.baselineText,
-  );
+  const [modified, setModified] = useState<boolean>(() => session.currentText !== session.baselineText);
   const [busy, setBusy] = useState<boolean>(false);
   const [status, setStatus] = useState<{ text: string; isError: boolean } | null>(null);
   const [find, setFind] = useState<{ replace: boolean; seq: number } | null>(null);
@@ -267,7 +276,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
           suppressDirtyRef.current = false;
         }
       }
-      const nextDirty = !session.readOnly && session.currentText !== session.baselineText;
+      const nextDirty = session.currentText !== session.baselineText;
       setModified(nextDirty);
       notifyEditorDocumentChanged();
     },
@@ -275,56 +284,62 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
   );
 
   const invokeAction = useCallback(
-    async (actionId: string, fromSave = false) => {
+    (actionId: string, fromSave = false): Promise<void> => {
+      if (session.pending) return session.pending;
+      if (session.closing && !fromSave) return Promise.resolve();
       const currentText = viewRef.current?.state.doc.toString() ?? session.currentText;
       session.currentText = currentText;
       setBusy(true);
       setStatus(null);
-      try {
-        const reply = await dispatchContentTabAction(session.data, actionId, currentText);
-        if (typeof reply.readOnly === "boolean") {
-          session.readOnly = reply.readOnly;
-          setReadOnly(reply.readOnly);
+      const pending = (async () => {
+        try {
+          const reply = await dispatchContentTabAction(session.data, actionId, currentText);
+          if (reply.error) throw new Error(reply.error);
+          if (fromSave && reply.saved === false) throw new Error(tx("The plugin did not save the content"));
+          if (typeof reply.readOnly === "boolean") {
+            session.readOnly = reply.readOnly;
+            setReadOnly(reply.readOnly);
+          }
+          if (reply.content !== undefined && session.currentText === currentText) {
+            applyDocText(reply.content, reply.saved !== false);
+          } else if (reply.saved === true || fromSave || (reply.content !== undefined && reply.saved !== false)) {
+            session.baselineText = reply.content ?? currentText;
+            setModified(session.currentText !== session.baselineText);
+            notifyEditorDocumentChanged();
+          } else {
+            setModified(session.currentText !== session.baselineText);
+            notifyEditorDocumentChanged();
+          }
+          if (reply.diff) {
+            void executeAction("vcs.openDiff", {
+              path: session.data.fileName ?? session.data.title,
+              title: reply.diff.title ?? session.data.title,
+              left: {
+                type: "text",
+                text: reply.diff.left,
+                label: reply.diff.leftLabel ?? tx("Before"),
+              },
+              right: {
+                type: "text",
+                text: reply.diff.right,
+                label: reply.diff.rightLabel ?? tx("After"),
+              },
+            });
+          }
+          if (reply.status !== undefined) {
+            setStatus(reply.status ? { text: reply.status, isError: false } : null);
+          }
+        } catch (err) {
+          const msg = errorText(err);
+          setStatus({ text: msg, isError: true });
+          if (fromSave) throw err;
+        } finally {
+          session.pending = undefined;
+          setBusy(false);
         }
-        if (reply.content !== undefined) {
-          applyDocText(reply.content, reply.saved !== false);
-        } else if (reply.saved === true || (fromSave && !reply.error)) {
-          session.baselineText = session.currentText;
-          setModified(false);
-          notifyEditorDocumentChanged();
-        } else {
-          setModified(!session.readOnly && session.currentText !== session.baselineText);
-          notifyEditorDocumentChanged();
-        }
-        if (reply.diff) {
-          void executeAction("vcs.openDiff", {
-            path: session.data.fileName ?? session.data.title,
-            title: reply.diff.title ?? session.data.title,
-            left: {
-              type: "text",
-              text: reply.diff.left,
-              label: reply.diff.leftLabel ?? tx("Before"),
-            },
-            right: {
-              type: "text",
-              text: reply.diff.right,
-              label: reply.diff.rightLabel ?? tx("After"),
-            },
-          });
-        }
-        if (reply.error) {
-          setStatus({ text: reply.error, isError: true });
-          if (fromSave) throw new Error(reply.error);
-        } else if (reply.status !== undefined) {
-          setStatus(reply.status ? { text: reply.status, isError: false } : null);
-        }
-      } catch (err) {
-        const msg = errorText(err);
-        setStatus({ text: msg, isError: true });
-        if (fromSave) throw err;
-      } finally {
-        setBusy(false);
-      }
+      })();
+      session.pending = pending;
+      return pending;
     },
     [applyDocText, session],
   );
@@ -358,7 +373,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
       applyDocText(session.baselineText, true);
     };
     session.syncData = (next) => {
-      const wasDirty = !session.readOnly && session.currentText !== session.baselineText;
+      const wasDirty = session.currentText !== session.baselineText;
       session.data = next;
       setData(next);
       if (session.readOnly !== next.readOnly) {
@@ -422,7 +437,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !suppressDirtyRef.current) {
               session.currentText = u.state.doc.toString();
-              const nextDirty = !session.readOnly && session.currentText !== session.baselineText;
+              const nextDirty = session.currentText !== session.baselineText;
               setModified(nextDirty);
               notifyEditorDocumentChanged();
             }

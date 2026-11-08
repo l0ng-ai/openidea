@@ -383,5 +383,6 @@
   "Run Content Editor Action": "Run Content Editor Action",
   "Modified": "Modified",
   "Before": "Before",
-  "After": "After"
+  "After": "After",
+  "The plugin did not save the content": "The plugin did not save the content"
 }

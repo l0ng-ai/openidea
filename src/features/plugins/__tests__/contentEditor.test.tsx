@@ -228,6 +228,107 @@ describe("plugin-backed content editor tabs", () => {
     }
   });
 
+  it.each([undefined, "normalized = true\n"])("keeps later edits dirty when a save returns %j", async (replacement) => {
+    const f = setup();
+    try {
+      act(() => f.view().dispatch({ changes: { from: 0, insert: "first = true\n" } }));
+      const savedText = f.view().state.doc.toString();
+      const saving = pluginContentEditorDocument.save(f.input);
+      act(() => f.view().dispatch({ changes: { from: 0, insert: "later = true\n" } }));
+      f.reply({ requestId: f.sent.at(-1)!.requestId, saved: true, content: replacement });
+      await saving;
+      expect(pluginContentEditorDocument.isDirty(f.input)).toBe(true);
+      expect(f.view().state.doc.toString()).toBe(`later = true\n${savedText}`);
+      await act(() => pluginContentEditorDocument.discard(f.input));
+      expect(f.view().state.doc.toString()).toBe(replacement ?? savedText);
+    } finally {
+      f.offSender();
+    }
+  });
+
+  it.each([{ saved: false }, { content: "rejected replacement", error: "validation failed" }])(
+    "keeps failed saves dirty for reply %j",
+    async (reply) => {
+      const f = setup();
+      try {
+        act(() => f.view().dispatch({ changes: { from: 0, insert: "edited = true\n" } }));
+        const editedText = f.view().state.doc.toString();
+        const saving = pluginContentEditorDocument.save(f.input);
+        f.reply({ requestId: f.sent.at(-1)!.requestId, ...reply });
+        await expect(saving).rejects.toThrow();
+        expect(pluginContentEditorDocument.isDirty(f.input)).toBe(true);
+        expect(f.view().state.doc.toString()).toBe(editedText);
+      } finally {
+        f.offSender();
+      }
+    },
+  );
+
+  it("preserves unsaved changes when a reply makes the document read-only", async () => {
+    const f = setup();
+    try {
+      act(() => f.view().dispatch({ changes: { from: 0, insert: "edited = true\n" } }));
+      fireEvent.click(screen.getByRole("button", { name: "Diff" }));
+      await waitFor(() => expect(f.sent.at(-1)).toMatchObject({ action: "diff" }));
+      f.reply({ requestId: f.sent.at(-1)!.requestId, readOnly: true });
+      await waitFor(() => expect(f.view().state.facet(EditorState.readOnly)).toBe(true));
+      expect(pluginContentEditorDocument.isDirty(f.input)).toBe(true);
+      const saving = pluginContentEditorDocument.save(f.input);
+      f.reply({ requestId: f.sent.at(-1)!.requestId, saved: true });
+      await saving;
+      expect(pluginContentEditorDocument.isDirty(f.input)).toBe(false);
+    } finally {
+      f.offSender();
+    }
+  });
+
+  it("rejects an unsuccessful save while the editor is unmounted", async () => {
+    const f = setup();
+    try {
+      act(() => f.view().dispatch({ changes: { from: 0, insert: "edited = true\n" } }));
+      f.rendered.unmount();
+      const saving = pluginContentEditorDocument.save(f.input);
+      let prepared = false;
+      const preparing = pluginContentEditorDocument.prepareClose(f.input).then(() => {
+        prepared = true;
+      });
+      await Promise.resolve();
+      expect(prepared).toBe(false);
+      f.reply({ requestId: f.sent.at(-1)!.requestId, saved: false });
+      await expect(saving).rejects.toThrow();
+      await preparing;
+      expect(prepared).toBe(true);
+      expect(pluginContentEditorDocument.isDirty(f.input)).toBe(true);
+    } finally {
+      f.offSender();
+    }
+  });
+
+  it("drains pending toolbar actions before deciding whether a tab can close", async () => {
+    const f = setup();
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+      await waitFor(() => expect(f.sent.at(-1)).toMatchObject({ action: "reload" }));
+      let prepared = false;
+      const preparing = pluginContentEditorDocument.prepareClose(f.input).then(() => {
+        prepared = true;
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(prepared).toBe(false);
+      expect(f.view().state.facet(EditorState.readOnly)).toBe(true);
+      f.reply({ requestId: f.sent.at(-1)!.requestId, content: "loaded = true\n" });
+      await preparing;
+      expect(prepared).toBe(true);
+      expect(f.view().state.doc.toString()).toBe("loaded = true\n");
+      act(() => pluginContentEditorDocument.cancelClose(f.input));
+      expect(f.view().state.facet(EditorState.readOnly)).toBe(false);
+    } finally {
+      f.offSender();
+    }
+  });
+
   it("supports readOnly mode and registers the editor kind with EditorDocumentLifecycle", () => {
     const f = setup({ readOnly: true });
     try {

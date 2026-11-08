@@ -1135,7 +1135,8 @@ This extends the web bridge without changing released WIT signatures.
 ### Plugin-backed content editor tabs (API 1.3)
 
 A web view can open an editor tab on content the plugin supplies, with
-plugin-defined toolbar actions that call back into the plugin:
+plugin-defined toolbar actions that call back into the plugin. Declare
+`engines.openidea = "^1.3"` when using this protocol:
 
 ```js
 openidea.postMessage(JSON.stringify({
@@ -1168,8 +1169,9 @@ Clicking an action (or saving via ⌘S / the close-with-changes prompt) sends
 the plugin has code, as a `ViewEvent::Message`. The plugin replies with
 `content-tab-reply { requestId, content?, saved?, readOnly?, status?, error?, diff? }`:
 
-- `content` replaces the editor text and updates the clean baseline (unless `saved: false`);
-- `saved: true` marks the current content clean;
+- `content` replaces unchanged editor text and updates the clean baseline (unless `saved: false`); later edits stay in the editor;
+- `saved: true` marks the submitted content clean; edits made while the action is pending remain dirty;
+- `saved: false` rejects a pending Save and keeps the tab open and dirty;
 - `status` / `error` update the toolbar status (and `error` rejects a pending Save so the tab stays open and dirty);
 - `diff: { left, right, leftLabel?, rightLabel?, title? }` opens the IDE's diff viewer.
 
