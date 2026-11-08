@@ -81,27 +81,7 @@ fn git_select(
         }
         args.extend(filter.iter().cloned());
         let revs: Vec<String> = scope.split_whitespace().map(str::to_string).collect();
-        // Past this many bytes of paths the command line risks Windows' ~32K limit.
-        let long_paths = paths.iter().map(|p| p.len() + 12).sum::<usize>() > 8 * 1024;
-        let long_revs = revs.iter().map(|p| p.len() + 12).sum::<usize>() > 8 * 1024;
-        let stdin = if long_revs {
-            Some(stdin_args(&revs, &[], paths))
-        } else if long_paths {
-            Some(paths_stdin(paths))
-        } else {
-            None
-        };
-        if stdin.is_some() {
-            args.push("--stdin".into());
-        }
-        args.push("--end-of-options".into());
-        if !long_revs {
-            args.extend(revs);
-        }
-        if !long_paths && !long_revs {
-            args.push("--".into());
-            args.extend(paths.iter().map(|p| format!(":(literal){p}")));
-        }
+        let stdin = revision_args(&mut args, &revs, &[], Some(paths));
         let output = run_log(r, args, stdin.as_deref(), cancel)?;
         for line in output.stdout_str().lines() {
             ids.insert(ObjectId::from_hex(line.as_bytes()).map_err(gx)?);
@@ -110,26 +90,41 @@ fn git_select(
     Ok(ids)
 }
 
-/// Stdin for `git log --stdin` that limits the walk to `paths`, however many there are.
-fn paths_stdin(paths: &[String]) -> String {
-    let mut text = String::from("--\n");
-    for p in paths {
-        text.push_str(&format!(":(literal){p}\n"));
+/// Keep revision walks below a conservative argv budget on every platform. Exclusions
+/// always use stdin; large walks move revisions and literal pathspecs there together.
+fn revision_args(
+    args: &mut Vec<String>,
+    revs: &[String],
+    excluded: &[String],
+    paths: Option<&[String]>,
+) -> Option<String> {
+    let long = revs.iter().chain(excluded).map(|rev| rev.len() + 12).sum::<usize>()
+        + paths.into_iter().flatten().map(|path| path.len() + 12).sum::<usize>()
+        > 8 * 1024;
+    let stdin = if long {
+        let mut text = revs.iter().chain(excluded).map(|rev| format!("{rev}\n")).collect::<String>();
+        if let Some(paths) = paths {
+            text.push_str("--\n");
+            for path in paths {
+                text.push_str(&format!(":(literal){path}\n"));
+            }
+        }
+        Some(text)
+    } else {
+        (!excluded.is_empty()).then(|| excluded.join("\n") + "\n")
+    };
+    if stdin.is_some() {
+        args.push("--stdin".into());
     }
-    text
-}
-
-/// Stdin for `git log --stdin` carrying `revs` and `exclusions` followed by the `paths`,
-/// however many of them there are; everything after `--` limits the walk.
-fn stdin_args(revs: &[String], excluded: &[String], paths: &[String]) -> String {
-    let mut text = revs.iter().chain(excluded).map(|rev| format!("{rev}\n")).collect::<String>();
-    text.push_str("--\n");
-    for p in paths {
-        text.push_str(":(literal)");
-        text.push_str(p);
-        text.push('\n');
+    args.push("--end-of-options".into());
+    if !long {
+        args.extend(revs.iter().cloned());
+        if let Some(paths) = paths {
+            args.push("--".into());
+            args.extend(paths.iter().map(|path| format!(":(literal){path}")));
+        }
     }
-    text
+    stdin
 }
 
 fn run_log(
@@ -173,24 +168,9 @@ fn file_history(
         if first_parent {
             opts.push("--first-parent".into());
         }
-        let pathspec = ["--".to_string(), format!(":(literal){path}")];
-        // `excluded` can name a revision per created file, so it goes through stdin.
         let run = |excluded: &[String]| -> IdeResult<Vec<(ObjectId, Option<char>)>> {
             let mut args = opts.clone();
-            let long = revs.iter().chain(excluded).map(|p| p.len() + 12).sum::<usize>()
-                + pathspec.iter().map(|p| p.len() + 12).sum::<usize>()
-                > 8 * 1024;
-            let stdin = long
-                .then(|| stdin_args(&revs, excluded, std::slice::from_ref(&path)))
-                .or_else(|| (!excluded.is_empty()).then(|| excluded.join("\n") + "\n"));
-            if stdin.is_some() {
-                args.push("--stdin".into());
-            }
-            args.push("--end-of-options".into());
-            if !long {
-                args.extend(revs.iter().cloned());
-                args.extend(pathspec.iter().cloned());
-            }
+            let stdin = revision_args(&mut args, &revs, excluded, Some(std::slice::from_ref(&path)));
             Ok(parse_name_status_log(&run_log(r, args, stdin.as_deref(), cancel)?.stdout_str()))
         };
         let records = run(&[])?;
@@ -479,10 +459,9 @@ fn log_indexed(
         {
             args.push(format!("--max-count={}", u64::from(q.skip) + u64::from(q.limit)));
         }
-        args.push("--end-of-options".into());
-        args.extend(tips.iter().map(ToString::to_string));
-        let result =
-            crate::cli::run_cancellable(r.root(), &args.iter().map(String::as_str).collect::<Vec<_>>(), cancel)?;
+        let revs: Vec<_> = tips.iter().map(ToString::to_string).collect();
+        let stdin = revision_args(&mut args, &revs, &[], None);
+        let result = run_log(r, args, stdin.as_deref(), cancel)?;
         let ids = result
             .stdout_str()
             .lines()
@@ -491,10 +470,9 @@ fn log_indexed(
         if repo.is_shallow().unwrap_or(false) {
             // A separately bounded walk provides the domain; pagination must never
             // turn a shallow boundary into a connection through a locally present object.
-            let mut boundary_args = vec!["rev-list", "--end-of-options"];
-            let ids_as_text: Vec<_> = tips.iter().map(ToString::to_string).collect();
-            boundary_args.extend(ids_as_text.iter().map(String::as_str));
-            let boundaries = crate::cli::run_cancellable(r.root(), &boundary_args, cancel)?;
+            let mut boundary_args = vec!["rev-list".to_string()];
+            let stdin = revision_args(&mut boundary_args, &revs, &[], None);
+            let boundaries = run_log(r, boundary_args, stdin.as_deref(), cancel)?;
             visibility.range_ids = Some(
                 boundaries
                     .stdout_str()
@@ -896,18 +874,20 @@ fn range_ids(
     first_parent: bool,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<ObjectId>> {
-    let mut args: Vec<&str> = vec!["rev-list", if order == LogOrder::Date { "--date-order" } else { "--topo-order" }];
+    let mut args: Vec<String> =
+        ["rev-list", if order == LogOrder::Date { "--date-order" } else { "--topo-order" }].map(String::from).into();
     if first_parent {
-        args.push("--first-parent");
+        args.push("--first-parent".into());
     }
-    args.push("--end-of-options");
+    let mut revs = Vec::new();
     for part in range.split_whitespace() {
         if part.starts_with('-') {
             return Err(ide_core::IdeError::invalid(format!("invalid revision range '{range}'")));
         }
-        args.push(part);
+        revs.push(part.to_string());
     }
-    let out = crate::cli::run_cancellable(r.root(), &args, cancel)?;
+    let stdin = revision_args(&mut args, &revs, &[], None);
+    let out = run_log(r, args, stdin.as_deref(), cancel)?;
     out.stdout_str()
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -1143,4 +1123,60 @@ pub(crate) fn commits_changes(r: &Repo, commits: &[String]) -> IdeResult<Vec<Rev
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::revision_args;
+
+    #[test]
+    fn small_revision_walks_keep_their_arguments() {
+        let revs = vec!["HEAD".into(), "^HEAD~2".into()];
+        let paths = vec!["src/[literal] file.rs".into()];
+        for paths in [None, Some(paths.as_slice())] {
+            for excluded in [vec![], vec!["^HEAD~1^@".into()]] {
+                let mut args = vec!["log".into()];
+                let stdin = revision_args(&mut args, &revs, &excluded, paths);
+                let mut expected = vec!["log"];
+                if !excluded.is_empty() {
+                    expected.push("--stdin");
+                }
+                expected.extend(["--end-of-options", "HEAD", "^HEAD~2"]);
+                if paths.is_some() {
+                    expected.extend(["--", ":(literal)src/[literal] file.rs"]);
+                }
+                assert_eq!(args, expected);
+                assert_eq!(stdin, (!excluded.is_empty()).then(|| "^HEAD~1^@\n".to_string()));
+            }
+        }
+    }
+
+    #[test]
+    fn revisions_and_paths_share_one_budget() {
+        let revs = vec!["a".repeat(4084)];
+        let mut paths = vec!["b".repeat(4084)];
+        let mut args = vec!["log".into()];
+        assert_eq!(revision_args(&mut args, &revs, &[], Some(&paths)), None);
+        paths[0].push('b');
+        let mut args = vec!["log".into()];
+        assert_eq!(
+            revision_args(&mut args, &revs, &[], Some(&paths)),
+            Some(format!("{}\n--\n:(literal){}\n", revs[0], paths[0]))
+        );
+        let excluded = vec!["^HEAD".into()];
+        let mut args = vec!["log".into()];
+        let stdin = revision_args(&mut args, &revs, &excluded, Some(&paths));
+        assert_eq!(args, ["log", "--stdin", "--end-of-options"]);
+        assert_eq!(stdin, Some(format!("{}\n^HEAD\n--\n:(literal){}\n", revs[0], paths[0])));
+    }
+
+    #[test]
+    fn large_revision_walks_preserve_input_order_and_exclusions() {
+        let revs = vec!["HEAD".into(); 600];
+        let excluded = vec!["^HEAD~2".into()];
+        let mut args = vec!["rev-list".into(), "--date-order".into()];
+        let stdin = revision_args(&mut args, &revs, &excluded, None);
+        assert_eq!(args, ["rev-list", "--date-order", "--stdin", "--end-of-options"]);
+        assert_eq!(stdin, Some("HEAD\n".repeat(600) + "^HEAD~2\n"));
+    }
 }

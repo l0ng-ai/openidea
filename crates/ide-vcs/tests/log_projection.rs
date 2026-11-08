@@ -769,6 +769,7 @@ fn followed_file_history_survives_a_long_path() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-q"]);
+    git(dir, &["config", "core.longpaths", "true"]);
     let mut path = String::from("src");
     while path.len() < 260 {
         path.push_str("/deep-history-directory-segment");
@@ -782,4 +783,78 @@ fn followed_file_history_survives_a_long_path() {
     let ids: std::collections::HashSet<_> = log.iter().map(|c| c.id.clone()).collect();
     assert_eq!(ids, [first, second].into());
     assert!(log.iter().all(|c| c.history_path.as_deref() == Some(file.as_str())));
+}
+
+#[test]
+fn many_tips_preserve_cancellable_shallow_and_range_walks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    commit_one_file_with_a_tag_per_commit(dir, 200, "file.txt");
+    let expected = git(dir, &["rev-list", "--topo-order", "HEAD"]);
+    let expected: Vec<_> = expected.lines().map(str::to_string).collect();
+    let range = format!("{} ^{}", expected[0], expected[50]);
+    for shallow in [false, true] {
+        if shallow {
+            std::fs::write(dir.join(".git/shallow"), format!("{}\n", expected[100])).unwrap();
+        }
+        let repo = Repo::discover(dir).unwrap().unwrap();
+        for order in [LogOrder::Topo, LogOrder::Date, LogOrder::Standard] {
+            for first_parent in [false, true] {
+                let query = LogQuery { order, first_parent, ..Default::default() };
+                let log = repo.log(&LogQuery { request: Some(ide_core::RequestId(1)), ..query.clone() }).unwrap();
+                assert_eq!(log.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), expected);
+                if shallow {
+                    let boundary = log.iter().find(|c| c.id == expected[100]).unwrap();
+                    assert_eq!(boundary.graph_parents, Some(vec![]));
+                }
+                let mixed = repo
+                    .log(&LogQuery { branches: expected.clone(), ranges: vec![range.clone()], ..query.clone() })
+                    .unwrap();
+                assert_eq!(mixed.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), expected);
+                let long_range = format!("{} ^{}", vec![expected[0].as_str(); 200].join(" "), expected[50]);
+                let ranged = repo.log(&LogQuery { range: Some(long_range), ..query }).unwrap();
+                assert_eq!(ranged.iter().map(|c| c.id.clone()).collect::<Vec<_>>(), expected[..50]);
+            }
+        }
+    }
+}
+
+#[test]
+fn many_tips_preserve_followed_renames_and_recreation_exclusions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q"]);
+    commit_one_file_with_a_tag_per_commit(dir, 200, "old [literal] file.txt");
+    git(dir, &["mv", "old [literal] file.txt", "renamed file.txt"]);
+    git(dir, &["commit", "-qm", "renamed"]);
+    let renamed = git(dir, &["rev-parse", "HEAD"]);
+    git(dir, &["rm", "renamed file.txt"]);
+    git(dir, &["commit", "-qm", "deleted"]);
+    let recreated = commit(dir, "renamed file.txt", "recreated");
+    let repo = Repo::discover(dir).unwrap().unwrap();
+    for order in [LogOrder::Topo, LogOrder::Date, LogOrder::Standard] {
+        for first_parent in [false, true] {
+            let query = LogQuery {
+                path: Some("renamed file.txt".into()),
+                follow: true,
+                order,
+                first_parent,
+                ..Default::default()
+            };
+            let log = repo.log(&query).unwrap();
+            assert_eq!(log.len(), 1);
+            assert_eq!(log[0].id, recreated);
+            let query = LogQuery { range: Some(renamed.clone()), ..query };
+            let small = repo.log(&query).unwrap();
+            let large = repo.log(&LogQuery { range: Some(vec![renamed.as_str(); 200].join(" ")), ..query }).unwrap();
+            assert_eq!(small.len(), 201);
+            assert_eq!(
+                large.iter().map(|c| (&c.id, &c.history_path, &c.graph_parents)).collect::<Vec<_>>(),
+                small.iter().map(|c| (&c.id, &c.history_path, &c.graph_parents)).collect::<Vec<_>>()
+            );
+            assert_eq!(large[0].history_path.as_deref(), Some("renamed file.txt"));
+            assert!(large[1..].iter().all(|c| c.history_path.as_deref() == Some("old [literal] file.txt")));
+        }
+    }
 }
