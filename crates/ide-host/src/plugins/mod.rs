@@ -115,6 +115,7 @@ struct Links {
 }
 
 struct Meta {
+    uninstalling: bool,
     status: PluginStatus,
     error: Option<String>,
     warnings: Vec<String>,
@@ -142,6 +143,7 @@ struct Meta {
 impl Meta {
     fn new() -> Self {
         Self {
+            uninstalling: false,
             status: PluginStatus::Disabled,
             error: None,
             warnings: Vec::new(),
@@ -492,6 +494,47 @@ impl PluginHost {
     /// Instantiates no Wasm: code runs on its activation events.
     pub fn load_all(&self) {
         let _guard = self.lifecycle.lock();
+        for pending in install::pending_uninstalls(&self.plugins_dir) {
+            if self.plugins.read().contains_key(&pending.id) {
+                continue;
+            }
+            let dir = pending.package_dir(&self.plugins_dir);
+            let mut manifest = placeholder_manifest(&dir);
+            manifest.id = pending.id.clone();
+            manifest.name = pending.name;
+            manifest.version = pending.version;
+            manifest.contributes.insert(
+                providers::SECRETS_POINT.into(),
+                toml::Value::Array(
+                    pending
+                        .secrets
+                        .into_iter()
+                        .map(|name| {
+                            toml::Value::Table(toml::Table::from_iter([("name".into(), toml::Value::String(name))]))
+                        })
+                        .collect(),
+                ),
+            );
+            let mut meta = Meta::new();
+            meta.status = PluginStatus::Failed;
+            meta.uninstalling = true;
+            meta.error = Some(
+                pending.error.unwrap_or_else(|| "Uninstall incomplete; retry Uninstall to finish cleanup.".into()),
+            );
+            self.plugins.write().insert(
+                pending.id,
+                Arc::new(LoadedPlugin {
+                    pkg: Package::new(manifest, dir),
+                    icon: None,
+                    invalid: false,
+                    source: PluginSource::Installed,
+                    dev_root: None,
+                    meta: Mutex::new(meta),
+                    batches: Arc::default(),
+                    runtime: Mutex::new(None),
+                }),
+            );
+        }
         let dirs = package_dirs(&self.plugins_dir);
         self.migrate_grants(&dirs);
         for dir in dirs {
@@ -757,6 +800,7 @@ impl PluginHost {
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         {
             let mut state = self.state.lock();
             if enabled {
@@ -780,6 +824,7 @@ impl PluginHost {
     pub fn reload(&self, id: &str) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         let (dir, source, root) = (plugin.dir().to_path_buf(), plugin.source, plugin.dev_root.clone());
         self.unload(id);
         let new_id = self.load_dir(&dir, source, root);
@@ -841,6 +886,11 @@ impl PluginHost {
         let _guard = self.lifecycle.lock();
         let (pkg, set) = self.validate_package(src)?;
         let id = pkg.id().to_owned();
+        if let Some(plugin) = self.plugins.read().get(&id) {
+            self.check_not_uninstalling(plugin)?;
+        } else {
+            self.check_uninstall_pending(&id)?;
+        }
         if let Some(existing) = self.plugins.read().get(&id)
             && existing.source != PluginSource::Installed
         {
@@ -915,6 +965,13 @@ impl PluginHost {
     /// Makes `previous` the active version of `id` again and drops `failed`
     /// (its directory, its consent). Called with the plugin unloaded or not.
     fn roll_back(&self, id: &str, previous: &str, failed: &str, grant: Option<ledger::Grant>) {
+        let ready = match self.get(id) {
+            Ok(plugin) => self.check_not_uninstalling(&plugin),
+            Err(_) => self.check_uninstall_pending(id),
+        };
+        if ready.is_err() {
+            return;
+        }
         let root = self.plugins_dir.join(id);
         self.unload(id);
         if let Err(e) = install::activate_version(&root, previous) {
@@ -969,6 +1026,7 @@ impl PluginHost {
     pub fn roll_back_update(&self, id: &str) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         if plugin.source != PluginSource::Installed {
             return Err(IdeError::invalid("only installed plugins have versions to roll back to"));
         }
@@ -987,6 +1045,7 @@ impl PluginHost {
     pub fn grant(&self, id: &str, consent: &Consent) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         if plugin.invalid {
             return Err(IdeError::invalid("the plugin's manifest is invalid"));
         }
@@ -1007,6 +1066,7 @@ impl PluginHost {
     pub fn set_capability(&self, id: &str, capability: &str, granted: bool) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         let cap: Capability = capability.parse().map_err(IdeError::invalid)?;
         if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
             return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
@@ -1045,6 +1105,13 @@ impl PluginHost {
             .map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))
     }
 
+    fn check_uninstall_pending(&self, id: &str) -> IdeResult<()> {
+        if install::uninstall_pending(&self.plugins_dir, id)? {
+            return Err(IdeError::unavailable(std::io::Error::from(std::io::ErrorKind::ResourceBusy).to_string()));
+        }
+        Ok(())
+    }
+
     pub fn uninstall(&self, id: &str) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
@@ -1063,25 +1130,65 @@ impl PluginHost {
             .flatten()
             .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
             .collect();
-        self.unload(id);
+        let mut pending = install::PendingUninstall {
+            id: id.to_owned(),
+            name: plugin.manifest().name.clone(),
+            version: plugin.manifest().version.clone(),
+            flat: plugin.dir() == self.plugins_dir.join(id),
+            secrets: secrets.clone(),
+            error: None,
+        };
+        // A broken manifest has no trusted identity to journal; keep its existing removal path.
+        if !plugin.invalid {
+            install::remember_uninstall(&self.plugins_dir, &pending, plugin.dir())?;
+        }
+        // Retain registration for retry, but prevent concurrent on-demand activation.
         {
+            let _runtime = plugin.runtime.lock();
+            let mut meta = plugin.meta.lock();
+            meta.uninstalling = true;
+            meta.status = PluginStatus::Disabled;
+        }
+        self.stop(&plugin);
+        let cleanup = || -> std::io::Result<()> {
+            install::check_cleanup_parent(&self.plugins_dir, &self.shared.data_dir.join(id))?;
+            install::check_cleanup_parent(&self.plugins_dir, plugin.dir())?;
+            install::check_not_symlink(&self.shared.data_dir.join(id))?;
+            for file in ["secrets.json", "secrets.tmp"] {
+                install::check_not_symlink(&self.shared.data_dir.join(id).join(file))?;
+            }
             let store = self.shared.secrets.read().clone();
             for name in &secrets {
                 if let Err(e) = store.set(id, name, None) {
-                    tracing::warn!(plugin = %id, "cannot delete secret {name:?}: {e}");
+                    return Err(std::io::Error::other(format!("cannot delete secret {name:?}: {e}")));
                 }
             }
+            // Keep the installed package and registration available until cleanup succeeds.
+            let data = self.shared.data_dir.join(id);
+            match std::fs::remove_dir_all(&data) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !data.exists() => {}
+                Err(e) => return Err(e),
+            }
+            // Every version (`<id>/<version>`), or the flat directory of an older install.
+            let target = self.plugins_dir.join(id);
+            match std::fs::remove_dir_all(&target) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !target.exists() => Ok(()),
+                result => result,
+            }
+        };
+        if let Err(e) = cleanup() {
+            pending.error = Some(e.to_string());
+            if !plugin.invalid
+                && let Err(record_error) = install::remember_uninstall(&self.plugins_dir, &pending, plugin.dir())
+            {
+                tracing::warn!(plugin = %id, "cannot save uninstall error: {record_error}");
+            }
+            self.set_failed(&plugin, e.to_string());
+            self.changed();
+            return Err(e.into());
         }
-        // Every version (`<id>/<version>`), or the flat directory of an older install.
-        let root = self.plugins_dir.join(id);
-        std::fs::remove_dir_all(if root.is_dir() { root } else { plugin.dir().to_path_buf() })?;
         self.updates.lock().remove(id);
-        // Its storage goes with it.
-        match std::fs::remove_dir_all(self.shared.data_dir.join(id)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
         {
             let mut ledger = self.ledger.lock();
             ledger.remove(&plugin.subject());
@@ -1095,6 +1202,12 @@ impl PluginHost {
             }
         }
         self.save_state();
+        if let Err(e) = install::forget_uninstall(&self.plugins_dir, id) {
+            self.set_failed(&plugin, e.to_string());
+            self.changed();
+            return Err(e.into());
+        }
+        self.unload(id);
         self.changed();
         Ok(())
     }
@@ -2066,7 +2179,17 @@ impl PluginHost {
     fn load_dir(&self, dir: &Path, source: PluginSource, dev_root: Option<PathBuf>) -> String {
         let (manifest, error) = match Manifest::load(dir) {
             Ok(m) => (m, None),
-            Err(e) => (placeholder_manifest(dir), Some(e)),
+            Err(e) => {
+                let mut manifest = placeholder_manifest(dir);
+                // Installed directory names retain identity when discovery metadata is damaged.
+                if source == PluginSource::Installed
+                    && let Ok(relative) = dir.strip_prefix(&self.plugins_dir)
+                    && let Some(name) = relative.components().next().and_then(|p| p.as_os_str().to_str())
+                {
+                    manifest.id = name.to_owned();
+                }
+                (manifest, Some(e))
+            }
         };
         let invalid = error.is_some();
         let id = manifest.id.clone();
@@ -2116,9 +2239,25 @@ impl PluginHost {
         self.stop(&plugin);
     }
 
+    fn check_not_uninstalling(&self, plugin: &LoadedPlugin) -> IdeResult<()> {
+        if plugin.meta.lock().uninstalling {
+            return Err(IdeError::unavailable("Uninstall incomplete; retry Uninstall to finish cleanup."));
+        }
+        if plugin.source == PluginSource::Installed {
+            self.check_uninstall_pending(plugin.id())?;
+        }
+        Ok(())
+    }
+
     /// Validates, checks grants and commits the contributions; activates code
     /// whose activation event already fired.
     fn start(&self, plugin: &Arc<LoadedPlugin>) {
+        if let Err(e) = self.check_not_uninstalling(plugin) {
+            if !plugin.meta.lock().uninstalling {
+                self.set_failed(plugin, e.message);
+            }
+            return;
+        }
         self.registry.dispose_plugin(plugin.id());
         self.clear_provider_diagnostics(plugin.id());
         if plugin.source == PluginSource::Installed
@@ -2178,6 +2317,7 @@ impl PluginHost {
     /// first if needed. Returns whether it was activated now.
     fn ensure_active(&self, plugin: &Arc<LoadedPlugin>, client: Option<&str>) -> IdeResult<(Arc<Actor>, bool)> {
         let mut runtime = plugin.runtime.lock();
+        self.check_not_uninstalling(plugin)?;
         if let Some(actor) = runtime.as_ref() {
             if actor.is_alive() {
                 return Ok((actor.clone(), false));
