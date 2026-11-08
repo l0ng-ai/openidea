@@ -4,6 +4,8 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
+  /* Shorter than the class table and the instances pane at their smallest: scroll rather than overlap. */
+  overflow-y: auto;
 }
 
 .toolbar {
@@ -60,7 +62,8 @@
 
 .table {
   flex: 1;
-  min-height: 0;
+  /* Its header, three rows and the footer; the instances pane below gives way first. */
+  min-height: calc(2 * var(--h-row) + 3 * 22px);
   /* Squeezed by the instances pane, it must not paint over it. */
   overflow: hidden;
   display: flex;

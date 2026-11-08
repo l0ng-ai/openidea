@@ -72,10 +72,14 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Shorter than the view and the strip at their smallest: scroll rather than overlap. */
+  overflow-y: auto;
 }
 .main {
   flex: 1;
-  min-height: 0;
+  /* The toolbar, the column header and three rows; the strip below gives way first. */
+  min-height: calc(3 * var(--h-row) + 3 * 22px);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -84,10 +88,10 @@
 }
 /* Biggest objects and the path share a strip under the view; the view keeps the rest. */
 .details {
-  flex: none;
+  flex: 0 1 auto;
   display: flex;
   height: min(calc(var(--h-row) + 10 * var(--h-list-row)), 45%);
-  min-height: 0;
+  min-height: calc(2 * var(--h-row) + var(--h-list-row));
   border-top: 1px solid var(--border);
 }
 .pane {

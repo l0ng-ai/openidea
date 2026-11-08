@@ -27,4 +27,10 @@ describe("instances pane in a short Memory view", () => {
   it("keeps the squeezed class table from painting over it", () => {
     expect(read("MemoryView")).toMatch(/\.table \{[^}]*overflow: hidden;/);
   });
+
+  it("shrinks before the class table, which keeps a few rows", () => {
+    expect(read("InstancesPane")).toMatch(/\.pane \{[^}]*flex: 0 1 auto;[^}]*min-height: calc\(/);
+    expect(read("MemoryView")).toMatch(/\.table \{[^}]*min-height: calc\([^;]*3 \* 22px\);/);
+    expect(read("MemoryView")).toMatch(/\.root \{[^}]*overflow-y: auto;/);
+  });
 });
