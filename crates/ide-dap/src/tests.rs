@@ -1107,6 +1107,35 @@ async fn hot_swap_only_for_java_debug() {
     assert_eq!(failed.error_message.as_deref(), Some("boom"));
 }
 
+/// A loopback port nothing listens on until `listen` is called on the socket, and that no parallel
+/// test can bind meanwhile. A port picked by binding to 0 and closing the listener can be taken
+/// by another test before the code under test connects to it.
+fn reserved_port() -> (tokio::net::TcpSocket, u16) {
+    // Without SO_REUSEADDR, which every `TcpListener::bind` sets: no other socket may bind it.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    (socket, port)
+}
+
+/// An editor that starts listening on the reserved port after `delay` and serves one session.
+fn fake_editor(socket: tokio::net::TcpSocket, delay: Duration, log: Log) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let listener = socket.listen(1).unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        // Closed once its session is accepted, so a later start finds no editor open.
+        drop(listener);
+        fake_adapter(stream, log, Script::default()).await;
+    });
+}
+
+#[tokio::test]
+async fn a_reserved_port_cannot_be_taken_by_a_parallel_test() {
+    let (_socket, port) = reserved_port();
+    assert!(tokio::net::TcpListener::bind(("127.0.0.1", port)).await.is_err(), "port {port} is still free to bind");
+}
+
 fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegistry> {
     let lang = ide_language::LanguageConfig {
         id: ide_core::LanguageId::new("gdscript"),
@@ -1174,7 +1203,7 @@ async fn godot_connects_to_the_editor_adapter() {
 
 #[tokio::test]
 async fn godot_without_editor_or_executable_says_what_to_do() {
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let (_no_editor, port) = reserved_port();
     let (owner, _events) = recording_owner("main");
     let manager = DebugManager::new(godot_registry(port, "openidea-no-such-godot", &[]));
     let err = manager.start(godot_launch(&std::env::temp_dir()), owner).await.unwrap_err();
@@ -1187,15 +1216,9 @@ async fn godot_without_editor_or_executable_says_what_to_do() {
 #[cfg(unix)]
 #[tokio::test]
 async fn godot_starts_a_headless_editor_when_none_is_open() {
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let (editor, port) = reserved_port();
     let log: Log = Arc::default();
-    let server_log = log.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
-        let (stream, _) = listener.accept().await.unwrap();
-        fake_adapter(stream, server_log, Script::default()).await;
-    });
+    fake_editor(editor, Duration::from_millis(300), log.clone());
     let (owner, _events) = recording_owner("main");
     // `sleep` stands in for `godot --headless --editor --path ${root} …`.
     let manager = DebugManager::new(godot_registry(port, "sleep", &["30"]));
@@ -1398,7 +1421,7 @@ async fn a_plugin_language_runs_its_debug_adapter_from_the_approved_program() {
     std::fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let (editor, port) = reserved_port();
     let mut gdscript = parse_definition(include_str!("../../../languages/gdscript.toml")).unwrap();
     let debugger = gdscript.debugger.as_mut().unwrap();
     debugger.args.clear();
@@ -1415,13 +1438,7 @@ async fn a_plugin_language_runs_its_debug_adapter_from_the_approved_program() {
     let _language = store.add("acme.godot".into(), gdscript);
 
     let log: Log = Arc::default();
-    let server_log = log.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
-        let (stream, _) = listener.accept().await.unwrap();
-        fake_adapter(stream, server_log, Script::default()).await;
-    });
+    fake_editor(editor, Duration::from_millis(300), log.clone());
     let (owner, _events) = recording_owner("main");
     let manager = DebugManager::new(registry.clone());
     let id = manager.start(godot_launch(&dir), owner).await.unwrap();
