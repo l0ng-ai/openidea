@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const adapterData = vi.hoisted(() => ({
   /** Value of a `library` variable the adapter computes asynchronously; null leaves it out. */
   library: null as string | null,
   scopes: vi.fn(),
   memoryClasses: vi.fn(),
+  /** Value the adapter answers a watch with. */
+  watch: "Collecting data…",
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -19,6 +21,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         adapterData.memoryClasses();
         return ok({ status: "unavailable", reason: { kind: "programExited" } });
       },
+      debugEvaluateIn: (_s: number, _f: number | null, expression: string) =>
+        ok({ name: expression, value: adapterData.watch, typeName: null, variablesReference: 0, evaluateName: null }),
       debugSetVariable: () =>
         ok({ name: "count", value: "4", typeName: "int", variablesReference: 0, evaluateName: "count" }),
       debugScopes: () => {
@@ -273,6 +277,22 @@ describe("variables the adapter computes after the stop", () => {
     const value = await screen.findByText("com.example.library.Library@1");
     expect(screen.queryByText("Collecting data…")).toBeNull();
     expect(value.closest("[role=treeitem]")?.querySelector("[class*=changed]")).toBeNull();
+  });
+
+  it("shows the watch value the adapter computes after an invalidation", async () => {
+    adapterData.watch = "Collecting data…";
+    useDebug.setState({ watches: ['library.search("java").size'] });
+    try {
+      setup();
+      const watch = () => screen.getByText('library.search("java").size').closest("[role=treeitem]")!;
+      await waitFor(() => expect(watch().textContent).toContain("Collecting data…"));
+      adapterData.watch = "1";
+      act(() => handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] }));
+      await waitFor(() => expect(watch().textContent).not.toContain("Collecting data…"));
+      expect(watch().textContent).toContain("1");
+    } finally {
+      useDebug.setState({ watches: [] });
+    }
   });
 
   it("reloads after Set Value", async () => {

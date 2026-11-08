@@ -443,7 +443,8 @@ function VariablesPane({ session }: { session: DebugSession }) {
     };
   }, [session.id, frame, stopSeq, variablesEpoch]);
 
-  // Watches are re-evaluated on every stop / frame change.
+  // Watches are re-evaluated on every stop / frame change, and when the adapter has new values (kotlin-lsp first
+  // answers "Collecting data…").
   useEffect(() => {
     if (frame == null || !watches.length) return;
     let cancelled = false;
@@ -464,7 +465,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
     };
     // `session` identity changes on every patch; frame/stopSeq capture what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.id, frame, stopSeq, watches]);
+  }, [session.id, frame, stopSeq, variablesEpoch, watches]);
 
   const roots = useMemo<VarRoot[]>(() => {
     const out: VarRoot[] = [];
