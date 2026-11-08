@@ -123,3 +123,7 @@ jobs:
       - run: pnpm smoke smoke/debug.test.ts -t "^${{ matrix.language }}$"
         # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.
         env: { GITHUB_TOKEN: "${{ github.token }}" }
+      # Kotlin falls back to kotlin-debug-adapter when kotlin-lsp is off.
+      - if: matrix.language == 'kotlin'
+        run: pnpm smoke smoke/debug.test.ts -t "^kotlin-fwcd$"
+        env: { GITHUB_TOKEN: "${{ github.token }}" }

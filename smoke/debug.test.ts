@@ -19,7 +19,7 @@ import { activate as activateBuildTools } from "@/features/build-tools";
 import { useBuild } from "@/features/build-tools/store";
 import { activate as activateDebugger } from "@/features/debugger";
 import { addBreakpoint } from "@/features/debugger/breakpoints/store";
-import { activeSession, evaluate, sessionSupports, useDebug } from "@/features/debugger/state";
+import { activeSession, evaluate, rootOf, sessionSupports, useDebug } from "@/features/debugger/state";
 import { activate as activateRun } from "@/features/run";
 import { resetRuns, useRun } from "@/features/run/store";
 import { activateWorkbench } from "@/workbench/activate";
@@ -31,8 +31,16 @@ interface Case {
   fixture: string;
   /** Runs in the project copy first (installs its dependencies). */
   setup?: (root: string) => void;
-  /** The IDE's tool that debugs it. */
-  debugger: string;
+  /** The IDE's tools that debug it, installed unless found. */
+  tools: string[];
+  /** The adapter of the session Debug starts. */
+  adapter: string;
+  /** Global settings (key: value) written before the project opens. */
+  settings?: Record<string, unknown>;
+  /** The title of a notification Debug shows. */
+  notice?: string;
+  /** Instances, fields and referrers may answer `timedOut` while the adapter is still busy after a stop. */
+  retryTimedOut?: boolean;
   /** The entry point, debugged from its context. */
   file: string;
   /** A variable of the paused frame. */
@@ -47,11 +55,23 @@ interface Case {
   instances?: { className: string; count: number; field: string };
 }
 
+/** Debugging the Kotlin fixture, with either debugger. */
+const kotlin = {
+  fixture: "kotlin-gradle",
+  file: "src/main/kotlin/com/example/library/App.kt",
+  variable: "library",
+  evaluate: ["library", /Library/] as [string, RegExp],
+  // Gradle forks the JVM and the debugger attaches to it: the attach-session path.
+  memory: { className: "com.example.library.Book", instances: 3 },
+  instances: { className: "com.example.library.Book", count: 3, field: "title" },
+};
+
 const CASES: Record<string, Case> = {
   typescript: {
     fixture: "ts-app",
     setup: (root) => execFileSync("npm", ["install", "--no-audit", "--no-fund"], { cwd: root, stdio: "ignore" }),
-    debugger: "js-debug",
+    tools: ["js-debug"],
+    adapter: "js-debug",
     file: "src/index.ts",
     variable: "cart",
     evaluate: ["cart.items.length", /^2$/],
@@ -59,21 +79,24 @@ const CASES: Record<string, Case> = {
   python: {
     fixture: "python-app",
     setup: (root) => execFileSync("python3", ["-m", "venv", ".venv"], { cwd: root, stdio: "ignore" }),
-    debugger: "debugpy",
+    tools: ["debugpy"],
+    adapter: "debugpy",
     file: "src/tasks/cli.py",
     variable: "tasks",
     evaluate: ["len(tasks.pending())", /^3$/],
   },
   rust: {
     fixture: "rust-app",
-    debugger: "codelldb",
+    tools: ["codelldb"],
+    adapter: "codelldb",
     file: "src/main.rs",
     variable: "inventory",
     evaluate: ["inventory", /\S/],
   },
   go: {
     fixture: "go-app",
-    debugger: "delve",
+    tools: ["delve"],
+    adapter: "delve",
     file: "cmd/server/main.go",
     variable: "r",
     evaluate: ["r.Method", /^"GET"$/],
@@ -81,7 +104,8 @@ const CASES: Record<string, Case> = {
   },
   java: {
     fixture: "java-app",
-    debugger: "java-debug",
+    tools: ["java-debug"],
+    adapter: "java-debug",
     file: "src/main/java/com/example/orders/App.java",
     variable: "book",
     evaluate: ["book.size()", /^3$/],
@@ -89,14 +113,18 @@ const CASES: Record<string, Case> = {
     instances: { className: "com.example.orders.OrderBook", count: 1, field: "orders" },
   },
   kotlin: {
-    fixture: "kotlin-gradle",
-    debugger: "kotlin-debug-adapter",
-    file: "src/main/kotlin/com/example/library/App.kt",
-    variable: "library",
-    evaluate: ["library", /Library/],
-    // Gradle forks the JVM and the debugger attaches to it: the attach-session path.
-    memory: { className: "com.example.library.Book", instances: 3 },
-    instances: { className: "com.example.library.Book", count: 3, field: "title" },
+    ...kotlin,
+    tools: ["kotlin-lsp"],
+    adapter: "kotlin-lsp",
+    // kotlin-lsp evaluates for itself after each stop, which the inspector's link waits out.
+    retryTimedOut: true,
+  },
+  "kotlin-fwcd": {
+    ...kotlin,
+    tools: ["kotlin-debug-adapter"],
+    adapter: "kotlin-debug-adapter",
+    settings: { languageServers: { "kotlin-lsp": { enabled: false } } },
+    notice: "Debugging Kotlin with kotlin-debug-adapter",
   },
 };
 
@@ -108,7 +136,15 @@ let base = "";
 /** Backend events received, for failure messages. */
 const events: string[] = [];
 beforeAll(() => {
-  onIdeEvent("*", (e) => events.push(e.type === "debug" ? `debug ${e.session} ${e.event.kind}` : e.type));
+  onIdeEvent("*", (e) =>
+    events.push(
+      e.type === "debug"
+        ? `debug ${e.session} ${e.event.kind}`
+        : e.type === "task"
+          ? `task ${e.title}${e.done ? " (done)" : ""}`
+          : e.type,
+    ),
+  );
   const disposers = [activateWorkbench(), activateBuildTools(), activateRun(), activateDebugger()];
   deactivate = () => disposers.reverse().forEach((d) => d());
 });
@@ -130,6 +166,8 @@ async function open(c: Case): Promise<string> {
   c.setup?.(root);
   server = await Server.start(join(base, "home"));
   disconnect = connectDesktop(server);
+  for (const [key, value] of Object.entries(c.settings ?? {}))
+    await call(commands.settingsSet("global", key, JSON.stringify(value)));
   await openProject(root);
   const trusted = await commands.projectTrustSet(root, true, false);
   if (trusted.status !== "ok") throw new Error(trusted.error.message);
@@ -149,7 +187,9 @@ async function open(c: Case): Promise<string> {
 
 async function install(tool: string) {
   const tools = await call(commands.toolsList());
-  if (tools.find((t) => t.name === tool)?.status === "installed") return;
+  // CI puts its pinned kotlin-lsp on `PATH`: that one is tested, not the latest release.
+  const status = tools.find((t) => t.name === tool)?.status;
+  if (status === "installed" || status === "onPath") return;
   const channel = new Channel<InstallEvent>();
   const info = await call(commands.toolsInstall(tool, nextRequestId(), channel));
   expect(info.status, `${tool} installs`).toBe("installed");
@@ -214,7 +254,7 @@ const pausedOrEnded = () => {
 async function smoke(language: string) {
   const c = CASES[language]!;
   const root = await open(c);
-  await install(c.debugger);
+  for (const tool of c.tools) await install(tool);
 
   const path = join(root, c.file);
   const content = readFileSync(path, "utf8");
@@ -222,10 +262,18 @@ async function smoke(language: string) {
   const line = marker + 1;
   addBreakpoint(path, line);
 
+  const started = Date.now();
+  const begun = events.length;
   await executeAction("run.debugContext", { path, content });
   if (c.request) void requestWhenListening(c.request);
   const s = await until("the breakpoint", pausedOrEnded, 5 * 60_000);
+  const firstStop = Date.now() - started;
   expect(s.stopReason, `${s.stopDescription}\n${shown()}`).toBe("breakpoint");
+  expect(rootOf(s).adapter, shown()).toBe(c.adapter);
+  if (c.notice) {
+    const titles = useNotifications.getState().items.map((n) => n.title);
+    expect(titles, shown()).toContain(c.notice);
+  }
   const top = s.frames[0]!;
   expect(top.path).toBe(path);
   expect(top.line).toBe(line);
@@ -234,8 +282,20 @@ async function smoke(language: string) {
   const locals = await call(commands.debugVariables(s.id, scopes[0]!.variablesReference));
   expect(locals.map((v) => v.name)).toContain(c.variable);
 
+  // The value, not kotlin-lsp's "Collecting data…" placeholder.
   const value = await evaluate(c.evaluate[0], "repl", s);
   expect(value.value, c.evaluate[0]).toMatch(c.evaluate[1]);
+
+  const filters = (await call(commands.debugExceptionFilters())).find((f) => f.session === rootOf(s).id);
+  const filterIds = filters?.filters.map((f) => f.filter) ?? [];
+  // The JVM debuggers offer caught / uncaught exceptions; Delve offers none.
+  if (c.memory) expect(filterIds, `exception filters of ${c.adapter}`).not.toHaveLength(0);
+  const waits = events.slice(begun).filter((e) => e.startsWith("task Waiting for")).length;
+  console.info(
+    `${language}: ${c.adapter} stopped after ${(firstStop / 1000).toFixed(1)} s (${waits} wait task events); ` +
+      `${c.variable} = ${locals.find((v) => v.name === c.variable)?.value}; evaluated ${value.value}; ` +
+      `exception filters [${filterIds.join(", ")}]`,
+  );
 
   if (c.memory) {
     const memory = await call(commands.debugJvmMemoryClasses(s.id));
@@ -250,6 +310,7 @@ async function smoke(language: string) {
     }
   }
 
+  let timedOutRetries = 0;
   if (c.instances) {
     const { className, count, field } = c.instances;
     // The inspector comes up beside the session (jdtls bundle, Kotlin JDWP link).
@@ -259,26 +320,35 @@ async function smoke(language: string) {
       if (backend && backend.kind !== "ready") throw new Error(`JVM inspector ${JSON.stringify(backend)}\n${shown()}`);
       return sessionSupports("jvmInstances", session);
     });
-    const ready = <T extends { status: string }>(what: string, r: T) => {
+    type Answer = { status: "ready" } | { status: "unavailable"; reason: { kind: string } };
+    const ready = async <T extends Answer>(what: string, ask: () => Promise<T>) => {
+      let r = await ask();
+      for (let retry = 0; c.retryTimedOut && retry < 5; retry++) {
+        if (r.status !== "unavailable" || r.reason.kind !== "timedOut") break;
+        timedOutRetries++;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        r = await ask();
+      }
       expect(r.status, `${what}: ${JSON.stringify(r)}\n${shown()}`).toBe("ready");
       return r as Extract<T, { status: "ready" }>;
     };
-    const listed = ready("instances", await call(commands.debugJvmMemoryInstances(s.id, className, 1000)));
+    const listed = await ready("instances", () => call(commands.debugJvmMemoryInstances(s.id, className, 1000)));
     expect(listed.instances, `${className} instances`).toHaveLength(count);
     const first = listed.instances[0]!;
     if (!("id" in first)) throw new Error(`${className} instance without an id: ${JSON.stringify(first)}`);
     const object = { generation: listed.generation, id: first.id };
-    const fields = ready("fields", await call(commands.debugJvmMemoryFields(s.id, object)));
+    const fields = await ready("fields", () => call(commands.debugJvmMemoryFields(s.id, object)));
     const held = fields.fields.find((f) => f.name === field)?.value;
     if (!held || !("id" in held)) throw new Error(`${className}.${field}: ${JSON.stringify(fields.fields)}`);
     // Only objects count as referrers, not stack frames: Java's `OrderBook` is held by a local alone.
-    ready("referrers", await call(commands.debugJvmMemoryReferrers(s.id, object, 50)));
+    await ready("referrers", () => call(commands.debugJvmMemoryReferrers(s.id, object, 50)));
     const heldRef = { generation: listed.generation, id: held.id };
-    const referrers = ready("referrers", await call(commands.debugJvmMemoryReferrers(s.id, heldRef, 50)));
+    const referrers = await ready("referrers", () => call(commands.debugJvmMemoryReferrers(s.id, heldRef, 50)));
     const back = referrers.referrers.find((r) => "id" in r.value && r.value.id === first.id);
     expect(back?.via, `referrers of ${className}.${field}: ${JSON.stringify(referrers)}`).toContain(field);
   }
 
+  const stepped = events.length;
   // Python 3.12 reports a conditional expression's line twice: Step Over may stop on it
   // (and its breakpoint) again.
   for (let step = 0; step < 3 && paused()!.frames[0]!.line === line; step++) {
@@ -289,6 +359,13 @@ async function smoke(language: string) {
   const after = paused()!;
   expect(after.stopReason, shown()).toBe("step");
   expect(after.frames[0]!.line, shown()).toBeGreaterThan(line);
+
+  const invalidated = (from: number, to = events.length) =>
+    events.slice(from, to).filter((e) => e.endsWith(" invalidated")).length;
+  console.info(
+    `${language}: invalidated ${invalidated(begun, stepped)} at the breakpoint, ${invalidated(stepped)} after Step Over; ` +
+      `${timedOutRetries} timedOut retries`,
+  );
 
   await executeAction("debug.resume");
   if (c.request) {
