@@ -175,6 +175,7 @@ export interface LanguagesValid {
       runnerJre: string;
       home: string;
       userSettings: string;
+      toolchains: string;
       localRepository: string;
       unlinkedProjects: string[];
       linkedProjects: string[];
@@ -182,6 +183,8 @@ export interface LanguagesValid {
       mvndHome: string;
       /** `-T`: a thread count (4) or a core multiplier (2C, 2.5C); empty = Maven's default. */
       threads: string;
+      /** Comma-separated `-P` profiles; empty = POM/settings defaults. */
+      activeProfiles: string;
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -242,12 +245,14 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       runnerJre: "",
       home: "",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       unlinkedProjects: [],
       linkedProjects: [],
       daemon: false,
       mvndHome: "",
       threads: "",
+      activeProfiles: "",
     },
   },
   markdown: { previewFontSize: null },
@@ -400,12 +405,14 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         runnerJre: text(maven.runnerJre, d.java.maven.runnerJre),
         home: text(maven.home, d.java.maven.home),
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
+        toolchains: text(maven.toolchains, d.java.maven.toolchains),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
         linkedProjects: folders(maven.linkedProjects),
         daemon: bool(maven.daemon, d.java.maven.daemon),
         mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
         threads: text(maven.threads, d.java.maven.threads),
+        activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
