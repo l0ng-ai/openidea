@@ -57,10 +57,15 @@ const ready = (rows: JvmClassRow[]): JvmMemoryResult => ({
     takenWhileSuspended: true,
     hasBaseline: true,
     elapsedMs: 5,
+    source: "histogram",
   },
 });
 
-const unavailable = (reason: JvmMemoryUnavailable): JvmMemoryResult => ({ status: "unavailable", reason });
+const unavailable = (reason: JvmMemoryUnavailable): JvmMemoryResult => ({
+  status: "unavailable",
+  reason,
+  canCountWhenPaused: false,
+});
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
 const fail = (message: string) => Promise.resolve({ status: "error" as const, error: { kind: "internal", message } });
 

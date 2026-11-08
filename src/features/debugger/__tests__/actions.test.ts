@@ -83,6 +83,7 @@ const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   hitConditionalBreakpoints: true,
   logPoints: true,
   jvmMemory: false,
+  jvmInstances: false,
   ...p,
 });
 

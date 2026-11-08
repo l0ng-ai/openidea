@@ -22,6 +22,7 @@ const ready = (totalBytes: number): JvmMemoryResult => ({
     takenWhileSuspended: true,
     hasBaseline: false,
     elapsedMs: 5,
+    source: "histogram",
   },
 });
 const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -64,7 +65,11 @@ describe("refreshMemory", () => {
     ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(ready(10)));
     await refreshMemory(ID);
     setStops(2);
-    const refused: JvmMemoryResult = { status: "unavailable", reason: { kind: "timedOut" } };
+    const refused: JvmMemoryResult = {
+      status: "unavailable",
+      reason: { kind: "timedOut" },
+      canCountWhenPaused: false,
+    };
     ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(refused));
     await refreshMemory(ID);
     const e = useMemory.getState().bySession[ID]!;

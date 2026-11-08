@@ -78,9 +78,34 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         Some(path.to_string_lossy().into_owned())
     };
     host.require_trust(window)?;
+    let server_port = debug_server_port(&config);
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
+    if let (Ok(id), Some(port)) = (&result, server_port) {
+        attach_jvm_inspector(host, window, *id, port);
+    }
     result
+}
+
+/// The port of the java-debug server this machine's jdtls started; `debugServer` as `host:port`
+/// names an adapter on another machine, whose jdtls is not ours to ask.
+fn debug_server_port(config: &LaunchConfig) -> Option<u16> {
+    if config.adapter != "java-debug" {
+        return None;
+    }
+    let extra: serde_json::Value = serde_json::from_str(config.extra_json.as_deref()?).ok()?;
+    extra.get("debugServer")?.as_u64().and_then(|port| u16::try_from(port).ok()).filter(|port| *port != 0)
+}
+
+/// Lets the session ask the jdtls that runs it about its JVM. Without a module (no jdtls, or a
+/// debug server it did not start) the session keeps the debugger-only memory view.
+fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port: u16) {
+    let Ok(project) = host.project(window) else { return };
+    let Some(module) = project.lsp.java_debug_server_module(port) else { return };
+    let inspector = std::sync::Arc::new(ide_lsp::JdtJvmInspector::new(project.lsp.clone(), module));
+    if let Err(e) = host.debugger.set_jvm_inspector(session, inspector) {
+        tracing::debug!("jvm inspector for session {session:?}: {e}");
+    }
 }
 
 /// The JVM memory tab reads the class table over the attach socket, which only exists once the
@@ -398,6 +423,41 @@ pub async fn debug_jvm_memory_classes(
     host.debugger.jvm_memory_classes(session).await
 }
 
+/// Up to `limit` live instances of `class_name` in the stopped JVM.
+pub async fn debug_jvm_memory_instances(
+    host: &Host,
+    window: &str,
+    session: DebugSessionId,
+    class_name: String,
+    limit: u32,
+) -> IdeResult<JvmInstancesResult> {
+    host.require_trust(window)?;
+    host.debugger.jvm_memory_instances(session, class_name, limit).await
+}
+
+/// The fields (or array elements) of an instance listed by [`debug_jvm_memory_instances`].
+pub async fn debug_jvm_memory_fields(
+    host: &Host,
+    window: &str,
+    session: DebugSessionId,
+    object: JvmObjectRef,
+) -> IdeResult<JvmFieldsResult> {
+    host.require_trust(window)?;
+    host.debugger.jvm_memory_fields(session, object).await
+}
+
+/// The objects that hold a reference to `object`; `limit` 0 selects the default.
+pub async fn debug_jvm_memory_referrers(
+    host: &Host,
+    window: &str,
+    session: DebugSessionId,
+    object: JvmObjectRef,
+    limit: u32,
+) -> IdeResult<JvmReferrersResult> {
+    host.require_trust(window)?;
+    host.debugger.jvm_memory_referrers(session, object, limit).await
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("debug_start", |c| async move { debug_start(&c.host, &c.window, c.arg("config")?).await });
@@ -528,6 +588,15 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("debug_jvm_memory_classes", |c| async move {
         debug_jvm_memory_classes(&c.host, &c.window, c.arg("session")?).await
     });
+    d.add("debug_jvm_memory_instances", |c| async move {
+        debug_jvm_memory_instances(&c.host, &c.window, c.arg("session")?, c.arg("className")?, c.arg("limit")?).await
+    });
+    d.add("debug_jvm_memory_fields", |c| async move {
+        debug_jvm_memory_fields(&c.host, &c.window, c.arg("session")?, c.arg("object")?).await
+    });
+    d.add("debug_jvm_memory_referrers", |c| async move {
+        debug_jvm_memory_referrers(&c.host, &c.window, c.arg("session")?, c.arg("object")?, c.arg("limit")?).await
+    });
 }
 
 #[cfg(test)]
@@ -611,6 +680,17 @@ mod tests {
             vm_args(&on_unix(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})))),
             "-XX:+StartAttachListener"
         );
+    }
+
+    #[test]
+    fn debug_server_port_only_for_local_java_debug() {
+        let port = |adapter: &str, request: &str, extra| debug_server_port(&launch(adapter, request, extra));
+        assert_eq!(port("java-debug", "launch", serde_json::json!({"debugServer": 4711})), Some(4711));
+        assert_eq!(port("java-debug", "attach", serde_json::json!({"debugServer": 4711})), Some(4711));
+        assert_eq!(port("java-debug", "launch", serde_json::json!({"debugServer": "10.0.0.5:4711"})), None);
+        assert_eq!(port(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({"debugServer": 4711})), None);
+        assert_eq!(port("java-debug", "launch", serde_json::json!({})), None);
+        assert_eq!(port("java-debug", "launch", serde_json::json!({"debugServer": 0})), None);
     }
 
     #[test]
