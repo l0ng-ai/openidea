@@ -17,6 +17,7 @@ mod go_scope;
 mod handler;
 mod inspect;
 pub mod jdtls;
+mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
@@ -33,6 +34,7 @@ mod virtual_doc;
 
 pub use inspect::{FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
+pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};

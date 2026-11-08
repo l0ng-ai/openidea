@@ -260,6 +260,9 @@ impl Handler for ClientHandler {
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
+            "intellij/workspaceImportState" if self.server.name == crate::kotlin_lsp::KOTLIN_LSP => {
+                crate::kotlin_lsp::record_import_state(&self.server, self.generation, &params)
+            }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
                 mgr.java_import_ready(self.server.clone(), self.generation);
             }

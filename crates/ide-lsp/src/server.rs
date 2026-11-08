@@ -124,6 +124,8 @@ pub struct Server {
     /// The instance whose just registered external project is loading, until an open file's
     /// diagnostics arrive (0: none).
     pub external_loading: std::sync::atomic::AtomicU64,
+    /// kotlin-lsp's project import as the current instance last reported it.
+    pub(crate) import_state: watch::Sender<Option<crate::kotlin_lsp::ImportState>>,
 }
 
 impl Server {
@@ -161,6 +163,7 @@ impl Server {
             external_diagnostics: std::sync::atomic::AtomicBool::new(false),
             external_refresh_queued: std::sync::atomic::AtomicBool::new(false),
             external_loading: std::sync::atomic::AtomicU64::new(0),
+            import_state: watch::channel(None).0,
         }
     }
 
@@ -202,8 +205,18 @@ impl Server {
         st.conn = Conn::Starting;
         *self.start_cancel.lock() = CancellationToken::new();
         *self.started.lock() = Some(Instant::now());
+        self.import_state.send_replace(None);
         self.phase.send_replace(Phase::Starting);
         Some(st.generation)
+    }
+
+    /// Publishes instance `generation`'s import state unless a newer start replaced it; checked
+    /// under the state lock so it cannot land after [`Self::begin_start`]'s reset.
+    pub(crate) fn set_import_state(&self, generation: u64, state: crate::kotlin_lsp::ImportState) {
+        let st = self.state.lock();
+        if st.generation == generation {
+            self.import_state.send_replace(Some(state));
+        }
     }
 
     /// Starting → Missing/Failed, publishing the status the failed start reports
