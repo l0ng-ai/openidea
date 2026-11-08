@@ -95,4 +95,18 @@ test("plugin settings pages stage edits, apply before actions and discard on Can
   await expect(dialog.getByRole("table", { name: "Allowed commit types" })).toBeVisible();
   if (process.env.SETTINGS_EVIDENCE)
     await page.screenshot({ path: `${process.env.SETTINGS_EVIDENCE}/after-3.png`, animations: "disabled" });
+  const types = dialog.getByRole("table", { name: "Allowed commit types" }).getByRole("textbox");
+  await types.first().fill("docs");
+  await search.fill("LLM Settings");
+  await dialog.getByRole("treeitem", { name: "LLM Settings", exact: true }).click();
+  await search.clear();
+  await name.fill("Reset only this page");
+  await dialog.getByRole("button", { name: "Reset", exact: true }).click();
+  await expect(name).toHaveValue("Cloud");
+  await search.fill("Commit Template");
+  await dialog.getByRole("treeitem", { name: "Commit Template", exact: true }).click();
+  await search.clear();
+  await expect(types.first()).toHaveValue("docs");
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
 });

@@ -45,6 +45,9 @@ export function TestSettingsForm({
     () => ({
       scope,
       apply: async () => true,
+      setMapEntry: () => {
+        throw new Error("Map entries are not supported by this stand-in");
+      },
       useExternal: () => {
         throw new Error("External settings are not supported by this stand-in");
       },

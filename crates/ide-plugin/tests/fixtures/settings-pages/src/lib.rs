@@ -6,7 +6,7 @@ use openidea_plugin::{Error, Invocation, NotificationLevel, Plugin, host, regist
 pub struct Profiles;
 
 impl Plugin for Profiles {
-    fn run_command(&mut self, id: &str, _ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
+    fn run_command(&mut self, id: &str, ctx: &Invocation, _arg: Option<&str>) -> Result<Option<String>, Error> {
         if id != "test" {
             return Err(Error::Invalid("unknown command".into()));
         }
@@ -17,7 +17,7 @@ impl Plugin for Profiles {
             return Err(Error::Invalid("Add a model profile before testing".into()));
         }
         host::notify(NotificationLevel::Info, "Model Profiles", &format!("Read {} saved profile(s)", rows.len()));
-        Ok(None)
+        Ok(Some(serde_json::json!({ "profiles": profiles, "hasProject": ctx.project().is_some() }).to_string()))
     }
 }
 

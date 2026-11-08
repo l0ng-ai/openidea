@@ -13,6 +13,8 @@ export type Scope = "global" | "project";
 export interface StagedChange {
   scope: Scope;
   key: string;
+  /** Literal map segments; dots inside plugin IDs and keys are data. */
+  path?: string[];
   value: unknown;
   /** Page that made the change (Reset discards per page). */
   page: string;
@@ -217,17 +219,67 @@ export function setPageScope(pageId: string, scope: Scope) {
 
 const isInside = (key: string, parent: string) => key.startsWith(`${parent}.`);
 
+function mapEntry(value: unknown, path: readonly string[]): unknown {
+  for (const key of path)
+    value =
+      value && typeof value === "object" && Object.hasOwn(value, key)
+        ? (value as Record<string, unknown>)[key]
+        : undefined;
+  return value;
+}
+
+function putEntry(value: unknown, path: readonly string[], next: unknown): unknown {
+  const [head, ...tail] = path;
+  if (head === undefined) return next;
+  const out = { ...(value as Record<string, unknown> | undefined) };
+  const child = tail.length ? putEntry(out[head], tail, next) : next;
+  if (child == null || (tail.length && typeof child === "object" && !Object.keys(child).length)) delete out[head];
+  else Object.defineProperty(out, head, { value: child, enumerable: true, configurable: true, writable: true });
+  return out;
+}
+
+/** Merge literal map entries only at the persistence boundary; their page ownership stays separate. */
+function mergedChanges(s: Bases & Pick<SettingsDialogState, "staged">): StagedChange[] {
+  const all = Object.values(s.staged);
+  const roots = new Map(all.filter((c) => !c.path).map((c) => [stageKey(c.scope, c.key), { ...c }]));
+  for (const c of all) {
+    if (!c.path) continue;
+    const id = stageKey(c.scope, c.key);
+    const root = roots.get(id) ?? {
+      scope: c.scope,
+      key: c.key,
+      page: c.page,
+      value: getAt(baseFor(s, c.scope), c.key),
+    };
+    root.value = putEntry(root.value, c.path, c.value);
+    roots.set(id, root);
+  }
+  return [...roots.values()];
+}
+
+/** Stage one literal map entry independently of every other page. */
+export function stageMapEntry(page: string, scope: Scope, key: string, path: string[], value: unknown) {
+  if (!path.length) return stage(page, scope, key, value);
+  useSettingsDialog.setState((s) => {
+    const staged = { ...s.staged };
+    const id = `${stageKey(scope, key)}|${JSON.stringify(path)}`;
+    const next = value ?? null;
+    if (deepEqual(next ?? undefined, mapEntry(getAt(baseFor(s, scope), key), path))) delete staged[id];
+    else staged[id] = { scope, key, path, value: next, page };
+    return { staged, error: null };
+  });
+}
+
 /**
  * Current value of `key` as the page shows it: staged edit, else the effective
  * value. Edits staged for a parent (a whole map entry) or inside `key` (one
  * field of it) show through too.
  */
 export function stagedValue(s: Bases & Pick<SettingsDialogState, "staged">, scope: Scope, key: string): unknown {
-  const hit = s.staged[stageKey(scope, key)];
+  const changes = mergedChanges(s);
+  const hit = changes.find((c) => c.scope === scope && c.key === key);
   if (hit) return hit.value;
-  const related = Object.values(s.staged).filter(
-    (c) => c.scope === scope && (isInside(key, c.key) || isInside(c.key, key)),
-  );
+  const related = changes.filter((c) => c.scope === scope && (isInside(key, c.key) || isInside(c.key, key)));
   let value = getAt(baseFor(s, scope), key);
   for (const c of related.sort((a, b) => a.key.length - b.key.length)) {
     value = isInside(key, c.key)
@@ -251,7 +303,8 @@ export function stage(page: string, scope: Scope, key: string, value: unknown) {
       staged[stageKey(scope, parent.key)] = { ...parent, value: merged };
       return { staged, error: null };
     }
-    for (const [id, c] of Object.entries(staged)) if (c.scope === scope && isInside(c.key, key)) delete staged[id];
+    for (const [id, c] of Object.entries(staged))
+      if (c.scope === scope && (isInside(c.key, key) || (c.key === key && c.path))) delete staged[id];
     const id = stageKey(scope, key);
     const next = value === undefined ? null : value;
     // Back to the scope's current value: nothing to write.
@@ -296,7 +349,7 @@ export function resetPage(page: string) {
 
 /** Writes to perform, global layer first so a project value still wins afterwards. */
 export function pendingChanges(s: Bases & Pick<SettingsDialogState, "staged">): StagedChange[] {
-  return Object.values(s.staged)
+  return mergedChanges(s)
     .filter((c) => !deepEqual(c.value ?? undefined, getAt(baseFor(s, c.scope), c.key)))
     .sort((a, b) => (a.scope === b.scope ? a.key.localeCompare(b.key) : a.scope === "global" ? -1 : 1));
 }
@@ -375,7 +428,9 @@ export async function applySettings(deps: PersistDeps = defaultDeps()): Promise<
           .filter((c) => c.scope === "global" && done.has(stageKey(c.scope, c.key)))
           .reduce((g, c) => putAt(g, c.key, c.value), st.globalBase)
       : base,
-    staged: Object.fromEntries(Object.entries(st.staged).filter(([k]) => !done.has(k))),
+    staged: Object.fromEntries(
+      Object.entries(st.staged).filter(([id, c]) => !done.has(stageKey(c.scope, c.key)) || initial.staged[id] !== c),
+    ),
   }));
   await loadGlobalBase();
   if (!error) {

@@ -208,6 +208,7 @@ function accepts(s: SettingSchema, value: unknown): boolean {
 }
 
 function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema }) {
+  const [invalid, setInvalid] = useState(false);
   const form = useSettingsForm();
   const all = form.useValue("plugins") as PluginSettings | undefined;
   const stored = all?.[pluginId]?.[s.key];
@@ -218,9 +219,18 @@ function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema })
       <ValueControl
         s={s}
         value={value}
-        set={(v) => form.set("plugins", withPluginSetting(all, pluginId, s.key, v === s.default ? null : v))}
+        set={(v) => {
+          const valid = accepts(s, v);
+          setInvalid(!valid);
+          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v === s.default ? null : v);
+        }}
       />
       {s.description && <div className={styles.description}>{s.description}</div>}
+      {invalid && (
+        <p role="alert" className={styles.error}>
+          <T>The value exceeds this setting’s limits.</T>
+        </p>
+      )}
     </div>
   );
 }
@@ -237,7 +247,7 @@ function PageAction({ pluginId, action }: { pluginId: string; action: SettingsAc
     setError(null);
     try {
       if (!(await form.apply())) throw new Error(tx`Could not apply settings.`);
-      await pluginsBackend().runCommand(pluginId, action.command, null, null, []);
+      await pluginsBackend().runCommand(pluginId, action.command, null, null, [], form.scope);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -304,7 +314,8 @@ function keywords(page: Pick<SettingsPage, "properties" | "actions">): string[] 
     s.description ?? "",
     s.group ?? "",
     ...(s.options ?? []),
-    ...(s.items?.properties ?? []).flatMap(fieldWords),
+    ...(s.items ? fieldWords(s.items) : []),
+    ...(s.properties ?? []).flatMap(fieldWords),
   ];
   return [...page.properties.flatMap(fieldWords), ...(page.actions ?? []).map((a) => a.title)];
 }

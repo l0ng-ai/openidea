@@ -1177,7 +1177,7 @@ impl views::Host for StoreData {
 
 impl settings::Host for StoreData {
     fn get(&mut self, key: String) -> wasmtime::Result<Option<String>> {
-        let root = self.invocation.workspace_root.clone();
+        let root = if self.invocation.global_settings { None } else { self.invocation.workspace_root.clone() };
         Ok(self.host.setting(root.as_deref(), &clip(key, 128)))
     }
 }

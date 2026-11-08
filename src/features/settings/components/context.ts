@@ -5,6 +5,7 @@ import {
   applySettings,
   externalKey,
   stage,
+  stageMapEntry,
   stageExternal,
   stagedValue,
   useSettingsDialog,
@@ -47,6 +48,7 @@ export function useSettingsFormFor(pageId: string, scope: Scope): SettingsForm {
       apply: () => applySettings(),
       useValue: (key: string) => useStagedValue(scope, key),
       set: (key: string, value: unknown) => stage(pageId, scope, key, value),
+      setMapEntry: (key: string, path: string[], value: unknown) => stageMapEntry(pageId, scope, key, path, value),
       useExternal: <T>(key: string, base: T, apply: (value: T) => Promise<T>) =>
         useExternalValue(pageId, key, base, apply),
     }),

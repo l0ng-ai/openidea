@@ -29,6 +29,7 @@ struct TestWorkspace {
     diagnostics: Mutex<std::collections::BTreeMap<(String, PathBuf), Vec<ide_core::Diagnostic>>>,
     /// plugin → its settings as the user set them.
     settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+    global_settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
 }
 
 impl TestWorkspace {
@@ -46,6 +47,7 @@ impl TestWorkspace {
             event_read_gate: Mutex::new(None),
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
+            global_settings: Mutex::default(),
         })
     }
 
@@ -125,8 +127,9 @@ impl PluginWorkspace for TestWorkspace {
         self.diagnostics.lock().insert((source.to_owned(), path.to_path_buf()), items);
         Ok(())
     }
-    fn plugin_settings(&self, plugin: &str, _root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
-        self.settings.lock().get(plugin).cloned().unwrap_or_default()
+    fn plugin_settings(&self, plugin: &str, root: Option<&Path>) -> serde_json::Map<String, serde_json::Value> {
+        let layer = if root.is_some() { &self.settings } else { &self.global_settings };
+        layer.lock().get(plugin).cloned().unwrap_or_default()
     }
 }
 
@@ -286,6 +289,7 @@ impl Fixture {
             workspace_root: Some(self.project.clone()),
             editor: None,
             selected_paths: Vec::new(),
+            global_settings: false,
         }
     }
 
@@ -2155,6 +2159,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
         event_read_gate: Mutex::default(),
         diagnostics: Mutex::default(),
         settings: Mutex::default(),
+        global_settings: Mutex::default(),
     });
     f.host.set_workspace(Some(untrusted));
     let err = f.run("openidea.git-toolbox", "fetch", None).unwrap_err();
@@ -2757,6 +2762,24 @@ fn official_regex_tester_answers_its_page() {
     let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
     assert_eq!((reply["seq"].clone(), reply["count"].clone()), (serde_json::json!(3), serde_json::json!(2)));
     assert_eq!(reply["matches"][0]["groups"][0], serde_json::json!([2, 4]));
+}
+
+#[test]
+fn settings_actions_choose_their_layer_without_losing_the_project() {
+    let f = fixture(Limits::default());
+    f.install(&sample("settings-pages"));
+    for (global, name) in [(false, "Project"), (true, "Global")] {
+        let values = serde_json::json!({ "profiles": [{ "name": name, "provider": "local", "baseUrl": "http://localhost", "model": "test", "enabled": true, "temperature": 0.7, "limit": 100 }] });
+        let layer = if global { &f.workspace.global_settings } else { &f.workspace.settings };
+        layer.lock().insert("settings-pages".into(), values.as_object().unwrap().clone());
+    }
+    for (global_settings, name) in [(false, "Project"), (true, "Global"), (false, "Project")] {
+        let inv = Invocation { global_settings, ..f.inv() };
+        let result = f.host.run_command("settings-pages", "test", None, inv).unwrap().unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["profiles"][0]["name"], name);
+        assert_eq!(result["hasProject"], true);
+    }
 }
 
 /// A tree filled from a pinned program's output, and a terminal for the

@@ -1309,8 +1309,11 @@ use each column's default. Nested collections are unsupported. Arrays default
 to `[]` and contain at most 1,000 entries. A plugin can declare at most 32 pages,
 200 settings across pages, and 32 actions per page.
 
-Edits use the normal Apply/OK/Cancel flow. **Running a page action applies all
-pending settings first**, then invokes its declared command. A failed save
+Edits use the normal Apply/OK/Cancel flow. Reset discards only the current page’s
+edits, including when several pages edit one plugin. Invalid collection edits
+are rejected without replacing existing rows. **Running a page action applies all
+pending settings first**, then invokes its declared command using the page’s
+Global or This project settings layer. The command retains its project context. A failed save
 prevents the command; a command error appears beside the button. Successful
 commands report through plugin notifications. Cancel after an action does not
 undo settings that action already applied. Secrets remain under

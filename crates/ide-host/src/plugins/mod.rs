@@ -1698,6 +1698,7 @@ impl PluginHost {
             client: client.clone(),
             editor: None,
             selected_paths: Vec::new(),
+            global_settings: false,
         };
         let kinds: BTreeSet<EventKind> = queue.events.iter().map(WorkbenchEvent::kind).collect();
         let filesystem = kinds.contains(&EventKind::FilesChanged);
