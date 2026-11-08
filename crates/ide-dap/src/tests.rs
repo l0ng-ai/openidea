@@ -1119,6 +1119,7 @@ fn reserved_port() -> (tokio::net::TcpSocket, u16) {
 }
 
 /// An editor that starts listening on the reserved port after `delay` and serves one session.
+#[cfg(unix)]
 fn fake_editor(socket: tokio::net::TcpSocket, delay: Duration, log: Log) {
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
