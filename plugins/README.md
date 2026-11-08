@@ -871,8 +871,12 @@ tool window `ctx.editor()` is the window's active text editor, as for a
 command, so a view's buttons can act on what the user is editing (a click in
 the tool window doesn't change which editor that is).
 
-API 1.3 adds optional `group` and `when` fields to `[[contributes.views]]`;
-using either requires `engines.openidea = "^1.3"`. `when` uses the same
+API 1.3 adds optional `group`, `when` and `secondary` fields to `[[contributes.views]]`;
+using any of them requires `engines.openidea = "^1.3"`. `secondary = true`
+places a `left`, `right` or `bottom` tool window in the secondary split of its
+dock (**Left Bottom**, **Right Bottom** or **Bottom Right**); ungrouped side
+views (`left` or `right`) with `header = "none"` default to `secondary = true`
+unless `secondary = false` is set. `when` uses the same
 context clauses as commands and menus, including `workspaceContains:pom.xml`
 and keys set with `set_context`. A false condition removes the view from the
 stripe and its group tabs; context changes, file creation/removal and project
