@@ -27,7 +27,7 @@ pub(crate) use scan::watch_for_attached_jvm;
 pub(crate) use scan::{JvmFinder, attach_target, find_attached_jvm, find_local_jvm, local_jdwp_port};
 use snapshot::{AttachProbe, JdkProbe, take_snapshot};
 
-pub const JVM_MEMORY_ADAPTERS: &[&str] = &["java-debug", crate::kotlin::ADAPTER];
+pub const JVM_MEMORY_ADAPTERS: &[&str] = &["java-debug", crate::kotlin::ADAPTER, crate::kotlin_lsp::ADAPTER];
 pub const HISTOGRAM_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

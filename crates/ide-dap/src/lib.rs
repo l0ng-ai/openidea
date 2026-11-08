@@ -15,6 +15,7 @@ pub mod connection;
 pub mod jdwp;
 mod jvm_memory;
 pub mod kotlin;
+pub mod kotlin_lsp;
 mod session;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
@@ -868,6 +869,7 @@ impl DebugManager {
             arguments["projectRoot"] = json!(mirror.root());
             *s.kotlin_mirror.lock() = Some(mirror);
         }
+        let is_kotlin_lsp = s.adapter == kotlin_lsp::ADAPTER;
         let caps = s
             .conn
             .request_timeout(
@@ -875,7 +877,7 @@ impl DebugManager {
                 json!({
                     "clientID": "openidea",
                     "clientName": "OpenIDEA",
-                    "adapterID": s.adapter,
+                    "adapterID": if is_kotlin_lsp { kotlin_lsp::DAP_ADAPTER_ID } else { s.adapter.as_str() },
                     "locale": "en",
                     "linesStartAt1": true,
                     "columnsStartAt1": true,
@@ -885,7 +887,8 @@ impl DebugManager {
                     "supportsRunInTerminalRequest": true,
                     "supportsStartDebuggingRequest": true,
                     "supportsProgressReporting": true,
-                    "supportsInvalidatedEvent": false,
+                    // kotlin-lsp sends `invalidated` either way.
+                    "supportsInvalidatedEvent": is_kotlin_lsp,
                     "supportsMemoryReferences": false,
                     "supportsArgsCanBeInterpretedByShell": false,
                 }),
@@ -894,8 +897,8 @@ impl DebugManager {
             .await?;
         *s.caps.lock() = if caps.is_object() { caps } else { json!({}) };
 
-        // The Kotlin adapter ignores the resolved classpath and project runtime on launch.
-        let request = if s.adapter == kotlin::ADAPTER && s.request == "launch" {
+        // The Kotlin adapters ignore the resolved classpath and project runtime on launch.
+        let request = if kotlin::is_kotlin(&s.adapter) && s.request == "launch" {
             session::start_kotlin_debuggee(s, &mut arguments).await?;
             "attach"
         } else {
@@ -918,7 +921,7 @@ impl DebugManager {
                 jvm_memory::find_attached_jvm(s, port, self.jvm_finder.lock().clone());
             }
         }
-        if s.adapter == kotlin::ADAPTER {
+        if kotlin::is_kotlin(&s.adapter) {
             let host = arguments
                 .get("hostName")
                 .and_then(Value::as_str)

@@ -466,6 +466,85 @@ async fn a_stop_before_id_sizes_is_tracked_once_its_thread_is_read() {
     assert_eq!(p.link.state(), LinkState::Suspended { generation: 3, thread: Some(7) });
 }
 
+/// kotlin-lsp's stop: a breakpoint suspending its thread, then the adapter's `VM.Suspend` and
+/// method invokes; the link reads one object meanwhile.
+async fn kotlin_lsp_stop() -> Pair {
+    use super::command_tests::{THREAD, own_instances, result, spawn_command, tagged};
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, THREAD).await;
+    let stopped = LinkState::Suspended { generation: 1, thread: Some(THREAD) };
+    wait_state(&p.link, stopped.clone()).await;
+    let suspend = command(70, 1, 8, &[]);
+    p.adapter.write_all(&suspend).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, suspend);
+    assert_eq!(p.link.state(), stopped);
+    let invoke = command(71, 9, 6, &[0; 24]);
+    p.adapter.write_all(&invoke).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, invoke);
+    let answer = reply(71, 0, &[b'I', 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    p.jvm.write_all(&answer).await.unwrap();
+    assert_eq!(read_packet(&mut p.adapter).await, answer);
+    assert_eq!(p.link.state(), stopped);
+    let task = spawn_command(&p.link, WAIT);
+    let id = own_instances(&mut p).await;
+    p.jvm.write_all(&reply(id, 0, &tagged(&[0x11]))).await.unwrap();
+    assert_eq!(result(task).await, Ok(tagged(&[0x11])));
+    assert_eq!(p.link.state(), stopped);
+    p
+}
+
+/// Sends `packets` and a marker; returns what the JVM got before the marker.
+async fn through_to_jvm(p: &mut Pair, packets: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let marker = command(0x99, 1, 1, &[]);
+    for packet in packets.iter().chain([&marker]) {
+        p.adapter.write_all(packet).await.unwrap();
+    }
+    let mut seen = Vec::new();
+    loop {
+        let packet = read_packet(&mut p.jvm).await;
+        if packet == marker {
+            return seen;
+        }
+        seen.push(packet);
+    }
+}
+
+/// The link's `DisposeObjects` of the one object `kotlin_lsp_stop` read.
+fn is_dispose_of_the_read_object(packet: &[u8]) -> bool {
+    let h = Header::parse(packet[..HEADER_LEN].try_into().unwrap());
+    let mut body = Writer::new();
+    body.i32(1);
+    body.id(0x11, 8);
+    body.i32(1);
+    h.command() == (1, 14) && !h.is_reply() && OWN_IDS.contains(&h.id) && packet[HEADER_LEN..] == body.into_vec()
+}
+
+#[tokio::test]
+async fn kotlin_lsp_stop_lasts_until_vm_resume() {
+    let mut p = kotlin_lsp_stop().await;
+    let resume = command(72, 1, 9, &[]);
+    let seen = through_to_jvm(&mut p, std::slice::from_ref(&resume)).await;
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[0], resume);
+    assert!(is_dispose_of_the_read_object(&seen[1]), "{seen:?}");
+    wait_state(&p.link, LinkState::Ready).await;
+    assert_eq!(p.link.generation(), 1);
+}
+
+#[tokio::test]
+async fn kotlin_lsp_thread_resume_before_vm_resume_ends_the_stop_once() {
+    let mut p = kotlin_lsp_stop().await;
+    let thread_resume = command(72, 11, 3, &super::command_tests::THREAD.to_be_bytes());
+    let resume = command(73, 1, 9, &[]);
+    let seen = through_to_jvm(&mut p, &[thread_resume.clone(), resume.clone()]).await;
+    let (own, adapter): (Vec<_>, Vec<_>) = seen.iter().partition(|packet| is_dispose_of_the_read_object(packet));
+    assert_eq!(adapter, [&thread_resume, &resume], "{seen:?}");
+    assert_eq!(own.len(), 1, "{seen:?}");
+    assert_eq!(seen[0], thread_resume, "the disposal follows the resume that ends the stop");
+    wait_state(&p.link, LinkState::Ready).await;
+    assert_eq!(p.link.generation(), 1);
+}
+
 #[tokio::test]
 async fn adapter_id_in_reserved_range_degrades() {
     let mut p = connected(OPEN).await;

@@ -28,4 +28,4 @@ libc = "0.2"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "test-util"] }

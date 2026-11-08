@@ -39,6 +39,8 @@ struct Script {
     continued_after_stop: bool,
     /// Close the connection when a `pause` request arrives (the adapter dies).
     hang_up_on_pause: bool,
+    /// Close the connection at the first request after the first `stopped` event.
+    hang_up_after_stop: bool,
     /// Answer `continue` with this body and keep the program running, instead of letting it exit.
     continue_reply: Option<Value>,
 }
@@ -57,6 +59,7 @@ impl Default for Script {
             hold_set_breakpoints: 0,
             continued_after_stop: false,
             hang_up_on_pause: false,
+            hang_up_after_stop: false,
             continue_reply: None,
         }
     }
@@ -93,6 +96,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
     let mut held: Vec<Value> = Vec::new();
+    let mut stopped = false;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -111,6 +115,9 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
         log.lock().push(msg.clone());
         if msg["type"] == "response" {
             continue;
+        }
+        if script.hang_up_after_stop && stopped {
+            break;
         }
         match msg["command"].as_str().unwrap_or_default() {
             "initialize" => ok!(
@@ -208,6 +215,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(
                     json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
                 );
+                stopped = true;
                 if script.continued_after_stop {
                     send!(json!({"type": "event", "event": "continued", "body": {"threadId": 1}}));
                 }
@@ -1928,6 +1936,7 @@ fn kotlin_attach(project: &std::path::Path, host: &str, port: u16) -> LaunchConf
 #[test]
 fn link_options_hold_only_for_fwcd() {
     assert!(kotlin::link_options(kotlin::ADAPTER).hold_resumes);
+    assert!(!kotlin::link_options(kotlin_lsp::ADAPTER).hold_resumes);
     assert!(!kotlin::link_options("x").hold_resumes);
 }
 
@@ -1998,6 +2007,100 @@ async fn closing_the_session_drops_the_link() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    assert!(session.jdwp_link.lock().is_none());
+    assert!(session.jvm_inspector.lock().is_none());
+}
+
+/// kotlin-lsp's debugger, reached through the language server's `debugServer` port (the fake ignores it).
+fn kotlin_lsp_attach(project: &std::path::Path) -> LaunchConfig {
+    LaunchConfig {
+        adapter: kotlin_lsp::ADAPTER.into(),
+        request: "attach".into(),
+        cwd: Some(project.to_owned().into()),
+        extra_json: Some(
+            json!({"debugServer": 4711, "hostName": "127.0.0.1", "port": 5005, "projectRoot": project}).to_string(),
+        ),
+        ..config()
+    }
+}
+
+#[tokio::test]
+async fn kotlin_lsp_initializes_as_intellij_jvm() {
+    let project = tempfile::tempdir().unwrap();
+    for (config, adapter_id, invalidated) in [
+        (kotlin_lsp_attach(project.path()), "intellij_jvm", true),
+        (kotlin_attach(project.path(), "127.0.0.1", 5005), "kotlin-debug-adapter", false),
+    ] {
+        let h = harness(Script::default());
+        let id = h.start(config).await.unwrap();
+        let init = &h.request("initialize")["arguments"];
+        assert_eq!(init["adapterID"], adapter_id);
+        assert_eq!(init["supportsInvalidatedEvent"], invalidated, "{adapter_id}");
+        h.manager.stop(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn kotlin_lsp_gets_real_paths_and_its_link_holds_nothing() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join("Main.kt");
+    std::fs::write(&path, "package org.example\nfun main() {}\n").unwrap();
+    h.manager.set_breakpoints(path.clone(), vec![bp(1)]).await.unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    assert_eq!(h.request("setBreakpoints")["arguments"]["source"]["path"], json!(path));
+    let sent = &h.request("attach")["arguments"];
+    assert_eq!(sent["projectRoot"], json!(project.path()));
+    assert!(sent.get("debugServer").is_none());
+    assert_eq!(sent["hostName"], "127.0.0.1");
+    let link_port = sent["port"].as_u64().unwrap();
+    assert!(link_port != 0 && link_port != 5005);
+    let session = h.manager.session(id).unwrap();
+    assert!(session.kotlin_mirror.lock().is_none());
+    assert!(session.jdwp_link.lock().is_some() && session.jvm_inspector.lock().is_some());
+    assert_eq!(session.attach_target.get(), Some(&("127.0.0.1".to_owned(), 5005)));
+    assert!(!kotlin::link_options(&session.adapter).hold_resumes);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn kotlin_lsp_waits_for_the_configuration_done_reply() {
+    let project = tempfile::tempdir().unwrap();
+    // fwcd never answers it (`kotlin_configures_without_configuration_done_response`).
+    let h = harness(Script { ignore_configuration_done: true, ..Default::default() });
+    let fwcd = h.start(kotlin_attach(project.path(), "127.0.0.1", 5005));
+    let id = tokio::time::timeout(Duration::from_secs(2), fwcd).await.unwrap().unwrap();
+    h.manager.stop(id).await.unwrap();
+
+    tokio::time::pause();
+    let h = harness(Script { ignore_configuration_done: true, ..Default::default() });
+    let started = tokio::time::Instant::now();
+    let err = h.start(kotlin_lsp_attach(project.path())).await.unwrap_err();
+    assert!(started.elapsed() >= REQUEST_TIMEOUT, "{:?}", started.elapsed());
+    assert!(err.message.contains("configurationDone"), "{err:?}");
+    assert!(h.manager.sessions(None).is_empty());
+}
+
+#[tokio::test]
+async fn kotlin_lsp_sessions_have_the_memory_tab() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    assert!(h.manager.capabilities(id).unwrap().jvm_memory);
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn losing_the_kotlin_lsp_connection_ends_the_session() {
+    let h = harness(Script { hang_up_after_stop: true, ..Script::default() });
+    let project = tempfile::tempdir().unwrap();
+    let id = h.start(kotlin_lsp_attach(project.path())).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    assert!(session.jdwp_link.lock().is_some());
+    let _ = session.conn.request_timeout("threads", Value::Null, Duration::from_secs(2)).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+    assert!(h.manager.sessions(None).is_empty());
     assert!(session.jdwp_link.lock().is_none());
     assert!(session.jvm_inspector.lock().is_none());
 }

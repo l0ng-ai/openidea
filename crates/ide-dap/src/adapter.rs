@@ -72,6 +72,13 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install Kotlin Debug Adapter in Settings › Languages & Frameworks › Language Servers",
         ),
+        // Inside the language server: reached through `debugServer`, never started.
+        "kotlin-lsp" => cfg(
+            "kotlin-lsp",
+            &[],
+            "tcp",
+            "Install JetBrains Kotlin LSP in Settings › Languages & Frameworks › Language Servers",
+        ),
         // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
         "debugpy" => cfg(
             if cfg!(windows) { "python" } else { "python3" },
