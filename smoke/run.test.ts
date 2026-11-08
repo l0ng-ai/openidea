@@ -122,6 +122,19 @@ const CASES: Record<string, Case> = {
       file: "LibraryTest.kt",
     },
   },
+  php: {
+    fixture: "php-app",
+    setup: (root) =>
+      execFileSync("composer", ["install", "--no-interaction", "--no-progress"], { cwd: root, stdio: "ignore" }),
+    run: { config: "composer:quote", prints: "Bluebird Electronics: VAT $34.20, clearance fee $5.00" },
+    tests: {
+      config: "phpunit",
+      failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+      passed: 13,
+      failed: "it intentionally fails (set OPENIDEA_FAIL=1)",
+      file: "ThresholdCustomsTest.php",
+    },
+  },
 };
 
 let server: Server | null = null;
