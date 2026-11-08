@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IpcError, type RunConfig } from "@/platform/ipc";
-import { recordProjectBuild } from "@/platform/buildReceipt";
 import { useProject } from "@/platform/project";
-import { findJavaModule, prepareJavaLaunch } from "@/platform/javaLaunch";
+import { findJavaModule, prepareJavaLaunch, prepareJavaModule } from "@/platform/javaLaunch";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { provideNotificationService } from "@/workbench/contributions";
 import { applicationConfig } from "./application";
@@ -100,11 +99,10 @@ it.each(["noBuild", "rebuild"] as const)("passes the %s build policy to the reso
   expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, buildPolicy, expect.any(Number));
 });
 
-it("reuses a successful Before launch Build Project instead of building again", async () => {
+it("always applies the launch policy after a Before launch Build Project", async () => {
   useProject.setState({ project: { root: "/p" } as never });
-  recordProjectBuild("/p");
   await startRun({ ...config, module: "app" });
-  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "noBuild", expect.any(Number));
+  expect(ipc.javaResolveLaunch).toHaveBeenCalledWith("app", false, "automatic", expect.any(Number));
   useProject.setState({ project: null });
 });
 
@@ -238,4 +236,18 @@ it("translates import recovery guidance for a root Spring Boot configuration", a
       { request: 1, signal: new AbortController().signal },
     ),
   ).rejects.toThrow("Java 模块 '.' 尚未导入");
+});
+
+it("does not resolve or launch when saving fails", async () => {
+  const saveAll = vi.fn().mockRejectedValue(new Error("save failed"));
+  await expect(
+    prepareJavaLaunch(config, {
+      request: 1,
+      signal: new AbortController().signal,
+      saveAll,
+    }),
+  ).rejects.toThrow("save failed");
+  await expect(prepareJavaModule(config, saveAll)).rejects.toThrow("save failed");
+  expect(ipc.javaResolveLaunch).not.toHaveBeenCalled();
+  expect(ipc.runStart).not.toHaveBeenCalled();
 });

@@ -525,5 +525,13 @@
   "Select Maven toolchains.xml": "Select Maven toolchains.xml",
   "dev,integration": "dev,integration",
   "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.": "Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles.",
-  "Active profiles": "Active profiles"
+  "Active profiles": "Active profiles",
+  "Build failed; '{name}' was not started.": "Build failed; '{name}' was not started.",
+  "Build has compile errors; '{name}' was not started.": "Build has compile errors; '{name}' was not started.",
+  "Automatic (incremental)": "Automatic (incremental)",
+  "Build (Make)": "Build (Make)",
+  "Rebuild": "Rebuild",
+  "No build": "No build",
+  "Build, no error check": "Build, no error check",
+  "Before launch build for this Java configuration": "Before launch build for this Java configuration"
 }

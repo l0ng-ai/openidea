@@ -10,7 +10,7 @@ const GRADLE = new Set(["gradle"]);
 
 export function applyBuildPolicyToCommand(config: RunConfig): RunConfig {
   const rebuild = config.buildPolicy === "rebuild";
-  if (rebuild && (MAVEN.has(config.kind) || GRADLE.has(config.kind))) {
+  if (rebuild && !config.args.includes("clean") && (MAVEN.has(config.kind) || GRADLE.has(config.kind))) {
     // Maven and Gradle both accept the clean task before their other goals.
     return { ...config, args: ["clean", ...config.args] };
   }

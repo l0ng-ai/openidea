@@ -784,6 +784,12 @@ fn launch_plan(root: &Path, model: &BuildModel, module: &Path, test: bool, kind:
     Ok(plan)
 }
 
+#[derive(Debug)]
+pub struct LaunchBuild {
+    pub class_dirs: Vec<PathBuf>,
+    pub failure: Option<String>,
+}
+
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
 pub fn build_for_launch(
@@ -793,10 +799,10 @@ pub fn build_for_launch(
     test: bool,
     kind: BuildKind,
     cancel: &CancellationToken,
-) -> IdeResult<Vec<PathBuf>> {
+) -> IdeResult<LaunchBuild> {
     let plan = launch_plan(root, model, module, test, kind)?;
     let result = run(root, &plan, cancel, &|_| {})?;
-    if !result.success {
+    let failure = if !result.success {
         let errors: Vec<String> = result
             .messages
             .iter()
@@ -807,17 +813,21 @@ pub fn build_for_launch(
                 _ => m.text.clone(),
             })
             .collect();
-        return Err(IdeError::internal(format!("Build failed:\n{}", errors.join("\n"))));
-    }
-    if plan.system == BuildSystem::Maven
+        Some(format!("Build failed:\n{}", errors.join("\n")))
+    } else {
+        None
+    };
+    let class_dirs = if plan.system == BuildSystem::Maven
         && let Some(m) = &model.maven
     {
-        return Ok(maven_launch_projects(root, m, module, test)
+        maven_launch_projects(root, m, module, test)
             .iter()
             .flat_map(|p| launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module))
-            .collect());
-    }
-    Ok(launch_class_dirs(plan.system, module, test))
+            .collect()
+    } else {
+        launch_class_dirs(plan.system, module, test)
+    };
+    Ok(LaunchBuild { class_dirs, failure })
 }
 
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
@@ -1339,7 +1349,7 @@ mod tests {
         let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
             .unwrap();
         assert_eq!(
-            dirs,
+            dirs.class_dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
                 .map(|p| root.join(p))
         );
@@ -1350,8 +1360,10 @@ mod tests {
         );
         let error =
             build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
-                .unwrap_err();
-        assert!(error.message.contains("Kotlin compilation failed"), "{}", error.message);
+                .unwrap()
+                .failure
+                .unwrap();
+        assert!(error.contains("Kotlin compilation failed"), "{error}");
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(

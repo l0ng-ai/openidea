@@ -42,7 +42,9 @@ import {
   parseEnv,
   type ConfigErrors,
 } from "./configs";
+import { gradleContainsModule } from "./gradleRun";
 import { EnvDialog } from "./EnvDialog";
+import { useBuildModel } from "@/platform/buildModel";
 import { withTarget } from "./remote";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
 import { TomcatSettings } from "./TomcatSettings";
@@ -246,6 +248,17 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const root = useProject((s) => s.project?.root ?? null);
+  const gradle = useBuildModel((s) => s.model?.gradle);
+  const runUsing = useProject((s) => s.settings?.languages?.java?.gradle?.runUsing);
+  const delegated =
+    isJvmApplication(config) &&
+    runUsing !== "ide" &&
+    gradle?.some((g) => config.module == null || gradleContainsModule(g, root ?? "", config.module));
+  const buildPolicyOptions = BUILD_POLICY_OPTIONS.filter((option) => {
+    if (config.kind === "gradle" || delegated)
+      return option.value !== "noBuild" && option.value !== "makeAndContinueOnErrors";
+    return config.kind !== "maven" || option.value !== "noBuild";
+  });
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
   const [envText, setEnvText] = useState<string | null>(null);
@@ -660,7 +673,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
             <Field label="Build" hint="Before launch build for this Java configuration">
               <Select
                 value={config.buildPolicy ?? "automatic"}
-                options={BUILD_POLICY_OPTIONS}
+                options={buildPolicyOptions}
                 onChange={(v) => update({ buildPolicy: v === "automatic" ? null : (v as BuildPolicy) })}
                 aria-label="Build"
               />

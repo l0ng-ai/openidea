@@ -75,17 +75,30 @@ async fn resolve_launch(
                 &project.root,
                 &model,
                 &module,
-                test,
+                cache::BuildOptions { test, policy },
                 ide_sdk::apply::maven_local_repository(&project.root, &settings),
                 &cancel,
             )?;
             let copies = use_snapshot(&mut info, &outputs.originals, &outputs.snapshot);
-            info.build = Some(JavaBuildStatus::Succeeded);
-            info.errors.clear();
-            info.error_count = 0;
+            if let Some(failure) = outputs.failure {
+                info.build = Some(JavaBuildStatus::Failed);
+                info.hints.push(failure);
+            } else {
+                info.build = Some(JavaBuildStatus::Succeeded);
+                info.errors.clear();
+                info.error_count = 0;
+            }
             copies
         } else if external {
-            compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?
+            let built = compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?;
+            if let Some(failure) = built.failure {
+                if policy != BuildPolicy::MakeAndContinueOnErrors {
+                    return Err(IdeError::internal(failure));
+                }
+                info.build = Some(JavaBuildStatus::Failed);
+                info.hints.push(failure);
+            }
+            built.class_dirs
         } else {
             Vec::new()
         };

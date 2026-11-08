@@ -178,6 +178,16 @@ export async function resolveJavaModule(config: RunConfig): Promise<string> {
   return module;
 }
 
+/** Saves before resolving the module, for direct and delegated Run and Debug. */
+export async function prepareJavaModule(config: RunConfig, saveAll?: () => Promise<void>, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  await saveAll?.();
+  signal?.throwIfAborted();
+  const module = await resolveJavaModule(config);
+  signal?.throwIfAborted();
+  return module;
+}
+
 /** Shared, cancellable build and classpath preparation for Run and Debug. */
 export interface JavaPreparation {
   request: RequestId;
@@ -187,8 +197,6 @@ export interface JavaPreparation {
   policy?: BuildPolicy;
   /** Saves open documents first, as IDEA's Before launch does. */
   saveAll?: () => Promise<void>;
-  /** A successful Before launch "Build Project" already built this project for this launch. */
-  projectBuild?: boolean;
 }
 
 /** The build the launch would do: the configuration's policy, else incremental. */
@@ -201,17 +209,13 @@ export class JavaBuildFailedError extends Error {}
 
 export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPreparation) {
   const { signal, report } = preparation;
-  const requested = preparation.policy ?? buildPolicyOf(config);
-  // Reuse the project build only when nothing more specific was asked for.
-  const policy = preparation.projectBuild && requested === "automatic" ? "noBuild" : requested;
+  const policy = preparation.policy ?? buildPolicyOf(config);
   signal.throwIfAborted();
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);
-  await preparation.saveAll?.();
   report?.(tx`Building and resolving the classpath of ${parsed.mainClass}…` + "\n");
   const started = performance.now();
-  const module = await resolveJavaModule(config);
-  signal.throwIfAborted();
+  const module = await prepareJavaModule(config, preparation.saveAll, signal);
   const moduleMs = performance.now() - started;
   const info = await call(
     commands.javaResolveLaunch(module, parsed.classpath === "test", policy, preparation.request),
