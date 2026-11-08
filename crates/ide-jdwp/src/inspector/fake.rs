@@ -460,7 +460,15 @@ impl Fake {
     /// The adapter resumes the VM, which then stops again at a breakpoint.
     pub(super) async fn next_stop(&mut self) {
         let generation = self.link.generation() + 1;
+        let resumes = self.count(1, 9);
         self.adapter.write_all(&packet(50, 1, 9, &[])).await.unwrap();
+        // A JVM stops again only after the resume reaches it; the link reads both directions apart.
+        within("the resume", async {
+            while self.count(1, 9) == resumes {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
         let mut event = breakpoint();
         event[4..8].copy_from_slice(&0x101u32.to_be_bytes());
         self.jvm.lock().await.write_all(&event).await.unwrap();
