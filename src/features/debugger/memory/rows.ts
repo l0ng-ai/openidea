@@ -1,4 +1,4 @@
-import type { JvmClassRow } from "@/platform/ipc";
+import type { JvmClassRow, JvmMemorySource } from "@/platform/ipc";
 
 export type SortKey = "name" | "instances" | "deltaInstances" | "bytes";
 
@@ -7,6 +7,18 @@ export interface RowQuery {
   sort: SortKey;
   desc: boolean;
   changedOnly: boolean;
+}
+
+/** The debugger counts objects without sizes, so its table has no Shallow Size column. */
+export function columnsOf(source: JvmMemorySource): SortKey[] {
+  return source === "debugger"
+    ? ["name", "instances", "deltaInstances"]
+    : ["name", "instances", "deltaInstances", "bytes"];
+}
+
+/** `q` sorted by a column the table has: a size sort falls back to the count. */
+export function queryFor(q: RowQuery, source: JvmMemorySource): RowQuery {
+  return columnsOf(source).includes(q.sort) ? q : { ...q, sort: "instances" };
 }
 
 /** Filter, then sort a copy of `rows`; rows without a delta always sort last so a baseline-less table stays readable. */

@@ -109,6 +109,20 @@ describe("showInstances", () => {
     expect(entry().result).toEqual(instances());
   });
 
+  it("asks again for the same class at a new stop while the old request is loading", async () => {
+    setStops(1);
+    const old = later();
+    ipc.debugJvmMemoryInstances.mockReturnValueOnce(old.promise);
+    const first = showInstances(ID, CLASS);
+    setStops(2);
+    ipc.debugJvmMemoryInstances.mockReturnValueOnce(ok(instances(3)));
+    await showInstances(ID, CLASS);
+    expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledTimes(2);
+    old.release(instances(2));
+    await first;
+    expect(entry()).toMatchObject({ result: instances(3), takenAtStop: 2, loading: false });
+  });
+
   it("a late reply for a closed or replaced list is ignored", async () => {
     const closed = later();
     ipc.debugJvmMemoryInstances.mockReturnValueOnce(closed.promise);

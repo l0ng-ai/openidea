@@ -52,6 +52,9 @@
   flex-direction: column;
   --memory-columns: minmax(0, 1fr) 96px 72px 104px;
 }
+.noSizes {
+  --memory-columns: minmax(0, 1fr) 96px 72px;
+}
 
 .head,
 .row {
@@ -160,6 +163,18 @@
   flex: none;
   align-self: center;
   color: var(--warning);
+}
+
+.rowButton {
+  flex: none;
+  align-self: center;
+  margin-left: auto;
+  opacity: 0;
+}
+.row:hover .rowButton,
+:global([data-lead]) > .row .rowButton,
+.rowButton:focus-visible {
+  opacity: 1;
 }
 
 .num {

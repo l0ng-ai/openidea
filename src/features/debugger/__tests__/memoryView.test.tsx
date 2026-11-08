@@ -1,18 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-const ipc = vi.hoisted(() => ({ debugJvmMemoryClasses: vi.fn() }));
+const ipc = vi.hoisted(() => ({ debugJvmMemoryClasses: vi.fn(), debugJvmMemoryInstances: vi.fn() }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
 });
 
-import type { JvmClassRow, JvmMemoryResult, JvmMemoryUnavailable } from "@/platform/ipc";
+import type {
+  DebugCapabilities,
+  JvmClassRow,
+  JvmInstancesResult,
+  JvmMemoryResult,
+  JvmMemoryUnavailable,
+} from "@/platform/ipc";
 import { useDebug, type DebugSession } from "../state";
 import { registerActions } from "@/platform/actions";
 import { setLocale } from "@/platform/i18n";
 import { refreshMemory, useMemory } from "../memory/memoryState";
+import { showInstances, useInstances } from "../memory/instancesState";
 import { MemoryView } from "../memory/MemoryView";
 
 const session = {
@@ -75,15 +82,32 @@ const HEAP = ready([
   row("Dup", { instances: 2, bytes: 64, ambiguous: true }),
 ]);
 
+const withInstances = { ...session, caps: { jvmInstances: true } as DebugCapabilities } as DebugSession;
+
+const debuggerCounts = (rows: JvmClassRow[]): JvmMemoryResult => {
+  const r = ready(rows) as Extract<JvmMemoryResult, { status: "ready" }>;
+  return { ...r, snapshot: { ...r.snapshot, source: "debugger", totalBytes: 0 } };
+};
+
+const NO_INSTANCES: JvmInstancesResult = { status: "ready", generation: 1, instances: [], truncated: false };
+
 let unregister: () => void;
 
 beforeEach(() => {
   useMemory.setState({ bySession: {} });
+  useInstances.setState({ bySession: {} });
   useDebug.setState({ sessions: { 1: session }, active: 1, stopSeq: 0 });
   ipc.debugJvmMemoryClasses.mockReset();
-  // The real action lives in actions.ts (covered by actions.test.ts); the button only needs its id to resolve.
+  ipc.debugJvmMemoryInstances.mockReset();
+  // The real actions live in actions.ts (covered by actions.test.ts); the buttons only need their ids to resolve.
   unregister = registerActions([
     { id: "debug.memory.refresh", title: "Refresh Memory View", run: () => void refreshMemory(1) },
+    {
+      id: "debug.memory.showInstances",
+      title: "Show Instances",
+      run: ({ arg }) => void showInstances(1, arg as string),
+    },
+    { id: "debug.memory.jumpToSource", title: "Jump to Source", run: () => {} },
   ]);
 });
 
@@ -285,5 +309,108 @@ describe("MemoryView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh Memory View" }));
     expect((await screen.findByRole("alert")).textContent).toBe("boom");
     expect(screen.getByText("Heap$Live")).toBeTruthy();
+  });
+
+  describe("instances", () => {
+    const ORDER_ROWS = [row("com.x.Order", { instances: 3, bytes: 72 }), row("com.x.Line", { bytes: 8 })];
+    const ORDERS = ready(ORDER_ROWS);
+    const rowOf = (name: string) => screen.getByText(name).closest<HTMLElement>("[role=row]")!;
+    const body = () => screen.getAllByRole("rowgroup")[1]!;
+
+    it("opens the instances of the selected class with Enter", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(ORDERS));
+      ipc.debugJvmMemoryInstances.mockReturnValue(ok(NO_INSTANCES));
+      render(<MemoryView session={withInstances} />);
+      await screen.findByText("com.x.Order");
+      fireEvent.mouseDown(rowOf("com.x.Line"), { button: 0 });
+      fireEvent.click(rowOf("com.x.Line"));
+      // A click only selects.
+      expect(ipc.debugJvmMemoryInstances).not.toHaveBeenCalled();
+      expect(useMemory.getState().bySession[1]!.selected).toBe("com.x.Line");
+      fireEvent.keyDown(body(), { key: "ArrowUp" });
+      expect(useMemory.getState().bySession[1]!.selected).toBe("com.x.Order");
+      fireEvent.keyDown(body(), { key: "Enter" });
+      await waitFor(() => expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledWith(1, "com.x.Order", 1000));
+      expect(await screen.findByText("Instances of com.x.Order")).toBeTruthy();
+    });
+
+    it("opens the instances of a class with a double-click or its row button", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(ORDERS));
+      ipc.debugJvmMemoryInstances.mockReturnValue(ok(NO_INSTANCES));
+      render(<MemoryView session={withInstances} />);
+      await screen.findByText("com.x.Order");
+      fireEvent.doubleClick(screen.getByText("com.x.Line"));
+      await waitFor(() => expect(ipc.debugJvmMemoryInstances).toHaveBeenLastCalledWith(1, "com.x.Line", 1000));
+      fireEvent.click(within(rowOf("com.x.Order")).getByRole("button", { name: "Show Instances" }));
+      await waitFor(() => expect(ipc.debugJvmMemoryInstances).toHaveBeenLastCalledWith(1, "com.x.Order", 1000));
+    });
+
+    it("has no Show Instances button without jvmInstances", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(ORDERS));
+      render(<MemoryView session={session} />);
+      await screen.findByText("com.x.Order");
+      expect(screen.queryByRole("button", { name: "Show Instances" })).toBeNull();
+      fireEvent.mouseDown(rowOf("com.x.Order"), { button: 0 });
+      fireEvent.keyDown(body(), { key: "Enter" });
+      fireEvent.doubleClick(screen.getByText("com.x.Order"));
+      expect(ipc.debugJvmMemoryInstances).not.toHaveBeenCalled();
+    });
+
+    it("hides Shallow Size for debugger counts", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(debuggerCounts(ORDER_ROWS)));
+      render(<MemoryView session={withInstances} />);
+      await screen.findByText("com.x.Order");
+      const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+      expect(headers).toEqual(["Class", "Count", "Diff"]);
+      expect(within(rowOf("com.x.Order")).getAllByRole("cell")).toHaveLength(3);
+      // Without sizes the table sorts by count.
+      expect(screen.getByRole("columnheader", { name: "Count" }).getAttribute("aria-sort")).toBe("descending");
+      expect(screen.getByText("Counted by the debugger: reachable objects only, no sizes.")).toBeTruthy();
+      expect(screen.queryByText("Counts include objects that are unreachable but not yet collected.")).toBeNull();
+      expect(screen.getByText("2 classes · 4 objects")).toBeTruthy();
+    });
+
+    it("offers counting when paused", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(
+        ok({ status: "unavailable", reason: { kind: "listenerNotRunning" }, canCountWhenPaused: true }),
+      );
+      render(<MemoryView session={{ ...session, status: "running" }} />);
+      expect(
+        await screen.findByText(
+          "The JVM does not accept attach requests. Restart the debug session without -XX:+DisableAttachMechanism.",
+        ),
+      ).toBeTruthy();
+      expect(screen.getByText("Pause the program to count objects through the debugger.")).toBeTruthy();
+    });
+
+    it("says the debugger is counting while paused", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(new Promise(() => {}));
+      const counting = "Counting objects through the debugger. This can take several seconds on a large heap.";
+      const { unmount } = render(<MemoryView session={withInstances} />);
+      expect(await screen.findByText(counting)).toBeTruthy();
+      unmount();
+      render(<MemoryView session={session} />);
+      expect(screen.queryByText(counting)).toBeNull();
+    });
+
+    it.each([
+      [{ kind: "unsupported", detail: "no VM field" }, "The debugger cannot list instances: no VM field"],
+      [{ kind: "degraded", detail: "id in range" }, "The debugger link stopped reading the JVM. Debugging continues."],
+      [{ kind: "closed" }, "The connection to the JVM is closed."],
+    ] as const)("explains the %j instance backend and keeps the table", async (jvmBackend, text) => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(ORDERS));
+      render(<MemoryView session={{ ...session, jvmBackend }} />);
+      expect(await screen.findByText(text)).toBeTruthy();
+      expect(screen.getByText("com.x.Order")).toBeTruthy();
+    });
+
+    it("shows the instances of the open class under the table", async () => {
+      ipc.debugJvmMemoryClasses.mockReturnValue(ok(ORDERS));
+      ipc.debugJvmMemoryInstances.mockReturnValue(ok(NO_INSTANCES));
+      await showInstances(1, "com.x.Order");
+      render(<MemoryView session={withInstances} />);
+      expect(await screen.findByText("Instances of com.x.Order")).toBeTruthy();
+      expect(screen.getByRole("table", { name: "Memory" })).toBeTruthy();
+    });
   });
 });

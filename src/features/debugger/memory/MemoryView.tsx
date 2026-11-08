@@ -2,11 +2,14 @@
 import { useEffect, useMemo } from "react";
 import clsx from "clsx";
 import { Checkbox, Icon, IconButton, Input, List, T } from "@/ui";
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
-import type { JvmClassRow, JvmMemoryUnavailable } from "@/platform/ipc";
-import type { DebugSession } from "../state";
-import { DEFAULT_QUERY, isOutdated, refreshMemory, setMemoryQuery, useMemory } from "./memoryState";
-import { formatBytes, formatCount, formatDelta, visibleRows, type SortKey } from "./rows";
+import type { JvmClassRow, JvmMemorySnapshot, JvmMemoryUnavailable } from "@/platform/ipc";
+import { sessionSupports, type DebugSession } from "../state";
+import { DEFAULT_QUERY, isOutdated, refreshMemory, selectMemoryClass, setMemoryQuery, useMemory } from "./memoryState";
+import { InstancesPane } from "./InstancesPane";
+import { backendText } from "./instancesTree";
+import { columnsOf, formatBytes, formatCount, formatDelta, queryFor, visibleRows, type SortKey } from "./rows";
 import styles from "./MemoryView.module.css";
 
 const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> = [
@@ -15,6 +18,8 @@ const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; numeric: boolean }> 
   { key: "deltaInstances", label: "Diff", numeric: true },
   { key: "bytes", label: "Shallow Size", numeric: true },
 ];
+
+const showInstancesOf = (name: string) => void executeAction("debug.memory.showInstances", name);
 
 function unavailableText(reason: JvmMemoryUnavailable): string {
   switch (reason.kind) {
@@ -45,10 +50,22 @@ function unavailableText(reason: JvmMemoryUnavailable): string {
   }
 }
 
-function ClassRow({ row }: { row: JvmClassRow }) {
+/** `listsInstances`: the session can list the class's instances, which it reads only while paused. */
+function ClassRow({
+  row,
+  sizes,
+  listsInstances,
+  paused,
+}: {
+  row: JvmClassRow;
+  sizes: boolean;
+  listsInstances: boolean;
+  paused: boolean;
+}) {
   const delta = formatDelta(row.deltaInstances);
+  const opens = listsInstances && paused;
   return (
-    <div className={styles.row} role="none">
+    <div className={styles.row} role="none" onDoubleClick={opens ? () => showInstancesOf(row.name) : undefined}>
       <span role="cell" className={clsx(styles.cell, styles.className)}>
         <span className={styles.classText}>{row.name}</span>
         {row.ambiguous && (
@@ -62,6 +79,17 @@ function ClassRow({ row }: { row: JvmClassRow }) {
           </span>
         )}
         {row.module && <span className={styles.module}>{row.module}</span>}
+        {listsInstances && (
+          <IconButton
+            icon="list"
+            action="debug.memory.showInstances"
+            actionArg={row.name}
+            title="Show Instances"
+            size="small"
+            className={styles.rowButton}
+            disabled={!paused}
+          />
+        )}
       </span>
       <span role="cell" className={clsx(styles.cell, styles.num)}>
         {formatCount(row.instances)}
@@ -69,9 +97,11 @@ function ClassRow({ row }: { row: JvmClassRow }) {
       <span role="cell" className={clsx(styles.cell, styles.num, row.deltaInstances === 0 && styles.zero)}>
         {delta}
       </span>
-      <span role="cell" className={clsx(styles.cell, styles.num)}>
-        {formatBytes(row.bytes)}
-      </span>
+      {sizes && (
+        <span role="cell" className={clsx(styles.cell, styles.num)}>
+          {formatBytes(row.bytes)}
+        </span>
+      )}
     </div>
   );
 }
@@ -82,6 +112,11 @@ export function MemoryView({ session }: { session: DebugSession }) {
   const query = entry?.query ?? DEFAULT_QUERY;
   const result = entry?.result ?? null;
   const snapshot = entry?.snapshot ?? null;
+  const source = snapshot?.source ?? "histogram";
+  const sorted = useMemo(() => queryFor(query, source), [query, source]);
+  const listsInstances = sessionSupports("jvmInstances", session);
+  const paused = session.status === "paused";
+  const backend = backendText(session.jvmBackend);
 
   // Only the first visit loads: later stops mark the table outdated instead of re-running a heap walk.
   useEffect(() => {
@@ -89,10 +124,12 @@ export function MemoryView({ session }: { session: DebugSession }) {
     if (!e?.result && !e?.loading) void refreshMemory(id);
   }, [id]);
 
-  const rows = useMemo(() => (snapshot ? visibleRows(snapshot.rows, query) : []), [snapshot, query]);
+  const rows = useMemo(() => (snapshot ? visibleRows(snapshot.rows, sorted) : []), [snapshot, sorted]);
+  const columns = COLUMNS.filter((c) => columnsOf(source).includes(c.key));
+  const selected = entry?.selected ?? null;
 
   const sortBy = (key: SortKey) =>
-    setMemoryQuery(id, query.sort === key ? { desc: !query.desc } : { sort: key, desc: key !== "name" });
+    setMemoryQuery(id, sorted.sort === key ? { sort: key, desc: !sorted.desc } : { sort: key, desc: key !== "name" });
 
   return (
     <div className={styles.root} aria-busy={entry?.loading || undefined}>
@@ -118,6 +155,16 @@ export function MemoryView({ session }: { session: DebugSession }) {
           label="Changed only"
         />
       </div>
+      {backend && (
+        <div className={styles.banner} role="status">
+          {backend}
+        </div>
+      )}
+      {entry?.loading && listsInstances && paused && (
+        <div className={styles.note} role="status">
+          <T>Counting objects through the debugger. This can take several seconds on a large heap.</T>
+        </div>
+      )}
       {entry?.error && (
         <div className={styles.error} role="alert">
           {entry.error}
@@ -131,22 +178,30 @@ export function MemoryView({ session }: { session: DebugSession }) {
       {result?.status === "unavailable" && (
         <div className={snapshot ? styles.banner : styles.note} role={snapshot ? "status" : undefined}>
           {unavailableText(result.reason)}
+          {result.canCountWhenPaused && (
+            <>
+              {" "}
+              <span>
+                <T>Pause the program to count objects through the debugger.</T>
+              </span>
+            </>
+          )}
         </div>
       )}
       {snapshot && (
-        <div className={styles.table}>
+        <div className={clsx(styles.table, source === "debugger" && styles.noSizes)}>
           <div className={styles.grid} role="table" aria-label={tx("Memory")} aria-rowcount={rows.length + 1}>
             <div className={styles.headGroup} role="rowgroup">
               <div className={styles.head} role="row" aria-rowindex={1}>
-                {COLUMNS.map((c) => (
+                {columns.map((c) => (
                   <div
                     key={c.key}
                     role="columnheader"
-                    aria-sort={query.sort === c.key ? (query.desc ? "descending" : "ascending") : "none"}
+                    aria-sort={sorted.sort === c.key ? (sorted.desc ? "descending" : "ascending") : "none"}
                     className={clsx(
                       styles.headCell,
                       c.numeric && styles.numeric,
-                      query.sort === c.key && styles.sorted,
+                      sorted.sort === c.key && styles.sorted,
                     )}
                   >
                     <button type="button" onClick={() => sortBy(c.key)}>
@@ -160,7 +215,15 @@ export function MemoryView({ session }: { session: DebugSession }) {
               className={styles.list}
               items={rows}
               getKey={(r, i) => `${i}:${r.name}`}
-              renderItem={(r) => <ClassRow row={r} />}
+              renderItem={(r) => (
+                <ClassRow row={r} sizes={source !== "debugger"} listsInstances={listsInstances} paused={paused} />
+              )}
+              activeIndex={selected == null ? -1 : rows.findIndex((r) => r.name === selected)}
+              onActiveChange={(i) => selectMemoryClass(id, rows[i]?.name ?? null)}
+              // A click only selects; Enter opens (double-click is handled by the row).
+              onActivate={(r, _i, e) => {
+                if (e.type === "keydown" && listsInstances && paused) showInstancesOf(r.name);
+              }}
               rowHeight={22}
               tableBody={{ headerRows: 1 }}
               empty={<span className={styles.note}>{tx("No matches")}</span>}
@@ -169,19 +232,25 @@ export function MemoryView({ session }: { session: DebugSession }) {
           <FooterTotals snapshot={snapshot} />
         </div>
       )}
+      <InstancesPane session={session} />
     </div>
   );
 }
 
-function FooterTotals({ snapshot }: { snapshot: { rows: JvmClassRow[]; totalInstances: number; totalBytes: number } }) {
+function FooterTotals({ snapshot }: { snapshot: JvmMemorySnapshot }) {
   const n = formatCount(snapshot.rows.length);
   const m = formatCount(snapshot.totalInstances);
   const size = formatBytes(snapshot.totalBytes);
+  const counted = snapshot.source === "debugger";
   return (
     <div className={styles.footer}>
-      <span>{tx`${n} classes · ${m} objects · ${size}`}</span>
+      <span>{counted ? tx`${n} classes · ${m} objects` : tx`${n} classes · ${m} objects · ${size}`}</span>
       <span className={styles.source}>
-        <T>Counts include objects that are unreachable but not yet collected.</T>
+        {counted ? (
+          <T>Counted by the debugger: reachable objects only, no sizes.</T>
+        ) : (
+          <T>Counts include objects that are unreachable but not yet collected.</T>
+        )}
       </span>
     </div>
   );

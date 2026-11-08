@@ -67,10 +67,11 @@ const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export async function showInstances(id: DebugSessionId, className: string): Promise<void> {
   const open = useInstances.getState().bySession[id];
-  if (open?.loading && open.className === className) return;
+  const stop = useDebug.getState().sessions[id]?.stops ?? 0;
+  // A request still loading from an earlier stop would only bring outdated objects: replace it.
+  if (open?.loading && open.className === className && open.takenAtStop === stop) return;
   const token = Symbol("instances");
   current.set(id, token);
-  const stop = useDebug.getState().sessions[id]?.stops ?? 0;
   useInstances.setState((s) => ({
     bySession: {
       ...s.bySession,

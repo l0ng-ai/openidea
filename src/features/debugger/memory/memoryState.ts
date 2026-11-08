@@ -13,6 +13,8 @@ export interface MemoryEntry {
   /** The session's `stops` when `snapshot` was requested; compare with the current value to tell the table is stale. */
   takenAtStop: number;
   query: RowQuery;
+  /** Name of the class row the user selected; the Show Instances action runs for it. */
+  selected: string | null;
 }
 
 export const DEFAULT_QUERY: RowQuery = { filter: "", sort: "bytes", desc: true, changedOnly: false };
@@ -24,6 +26,7 @@ const emptyEntry = (): MemoryEntry => ({
   error: null,
   takenAtStop: 0,
   query: DEFAULT_QUERY,
+  selected: null,
 });
 
 export const useMemory = create<{ bySession: Record<DebugSessionId, MemoryEntry> }>(() => ({ bySession: {} }));
@@ -63,6 +66,10 @@ export async function refreshMemory(id: DebugSessionId): Promise<void> {
 
 export function setMemoryQuery(id: DebugSessionId, patch: Partial<RowQuery>): void {
   patchEntry(id, (e) => ({ query: { ...e.query, ...patch } }));
+}
+
+export function selectMemoryClass(id: DebugSessionId, name: string | null): void {
+  patchEntry(id, () => ({ selected: name }));
 }
 
 export function isOutdated(entry: MemoryEntry, sessionStops: number): boolean {

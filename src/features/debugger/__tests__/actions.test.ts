@@ -20,6 +20,17 @@ const ipc = vi.hoisted(() => {
     debugStackTrace: vi.fn(() => ok([])),
     debugThreads: vi.fn(() => ok([])),
     debugJvmMemoryClasses: vi.fn(() => ok({ status: "unavailable", reason: { kind: "programExited" } })),
+    debugJvmMemoryInstances: vi.fn(() => ok({ status: "ready", generation: 1, instances: [], truncated: false })),
+    lspWorkspaceSymbols: vi.fn(() =>
+      ok([
+        {
+          name: "Order",
+          kind: "class",
+          container: "com.x",
+          location: { path: "/p/com/x/Order.java", range: { start: { line: 2, col: 13 }, end: { line: 2, col: 18 } } },
+        },
+      ]),
+    ),
     debugScopes: vi.fn(() => ok([])),
     debugStart: vi.fn((_launch: { extraJson: string | null }) => ok(42)),
     debugSetBreakpoints: vi.fn(() => ok([])),
@@ -71,6 +82,8 @@ import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from 
 import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
 import { useOverlays } from "../ui/popoverStore";
+import { forgetMemory, selectMemoryClass } from "../memory/memoryState";
+import { forgetInstances, showInstances } from "../memory/instancesState";
 
 const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   restartFrame: false,
@@ -161,6 +174,8 @@ describe("debugger actions (IDEA parity)", () => {
       "debug.jumpToSource": ["F4", "Meta+Down"],
       "debug.resetFrame": undefined,
       "debug.memory.refresh": undefined,
+      "debug.memory.showInstances": undefined,
+      "debug.memory.jumpToSource": undefined,
       "debug.toggleMethodBreakpoint": undefined,
       "debug.toggleFieldWatchpoint": undefined,
     };
@@ -256,6 +271,31 @@ describe("debugger actions (IDEA parity)", () => {
     await executeAction("debug.memory.refresh");
     await settle();
     expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledWith(3);
+  });
+
+  it("Show Instances lists the selected Memory row of a paused session that can list instances", async () => {
+    expect(getAction("debug.memory.showInstances")!.when).toBe("debugSessionPaused");
+    selectMemoryClass(3, "com.x.Order");
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: false }) });
+    await executeAction("debug.memory.showInstances");
+    expect(ipc.debugJvmMemoryInstances).not.toHaveBeenCalled();
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await executeAction("debug.memory.showInstances");
+    expect(ipc.debugJvmMemoryInstances).toHaveBeenCalledWith(3, "com.x.Order", 1000);
+    await executeAction("debug.memory.showInstances", "com.x.Line");
+    expect(ipc.debugJvmMemoryInstances).toHaveBeenLastCalledWith(3, "com.x.Line", 1000);
+    forgetInstances(3);
+    forgetMemory(3);
+  });
+
+  it("Jump to Source opens the class of the open instances list", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await showInstances(3, "com.x.Order$Line");
+    await executeAction("debug.memory.jumpToSource");
+    await settle();
+    expect(ipc.lspWorkspaceSymbols).toHaveBeenCalledWith(expect.anything(), "Order");
+    expect(opened.at(-1)?.path).toBe("/p/com/x/Order.java");
+    forgetInstances(3);
   });
 
   it("offers Refresh Memory View only for a live session of a JVM", () => {

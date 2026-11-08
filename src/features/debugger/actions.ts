@@ -30,7 +30,9 @@ import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
 import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
 import { reloadChangedClasses } from "./hotswap";
-import { refreshMemory } from "./memory/memoryState";
+import { refreshMemory, useMemory } from "./memory/memoryState";
+import { showInstances, useInstances } from "./memory/instancesState";
+import { jumpToClass } from "./memory/jumpToClass";
 import { debugUnsupportedReason, launchConfigFor } from "./launch";
 import { isRemoteConfig, REMOTE_JVM, remoteAttachConfig, remoteJvmTarget } from "./remote";
 import {
@@ -439,6 +441,39 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s && sessionSupports("jvmMemory", s)) void refreshMemory(s.id);
+      },
+    },
+    {
+      // Runs for the class given as `arg`, else the selected row of the Memory view.
+      id: "debug.memory.showInstances",
+      title: "Show Instances",
+      category: "Debug",
+      icon: "list",
+      keywords: ["memory", "heap", "objects", "instances"],
+      when: "debugSessionPaused",
+      run: ({ arg }) => {
+        const s = activeSession();
+        if (!s || !sessionSupports("jvmInstances", s)) return;
+        const name = typeof arg === "string" ? arg : useMemory.getState().bySession[s.id]?.selected;
+        if (name) void showInstances(s.id, name);
+      },
+    },
+    {
+      // Runs for the class given as `arg`, else the open instances list, else the selected Memory row.
+      id: "debug.memory.jumpToSource",
+      title: "Jump to Source",
+      category: "Debug",
+      icon: "edit-source",
+      keywords: ["memory", "class", "instances"],
+      when: "debugHasJvmMemory",
+      run: ({ arg }) => {
+        const s = activeSession();
+        const name =
+          typeof arg === "string"
+            ? arg
+            : s &&
+              (useInstances.getState().bySession[s.id]?.className ?? useMemory.getState().bySession[s.id]?.selected);
+        if (name) void jumpToClass(name);
       },
     },
     {
