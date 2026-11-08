@@ -3215,7 +3215,7 @@ export type DbIntrospection = {
 };
 
 /**  Schema objects other than tables and columns (Go to DDL, Drop). */
-export type DbObjectKind = "function" | "procedure" | "trigger" | "sequence";
+export type DbObjectKind = "function" | "procedure" | "package" | "trigger" | "sequence";
 
 /**  Options tab: session settings applied to every connection. */
 export type DbOptions = {
@@ -3232,6 +3232,11 @@ export type DbOptions = {
 	autoDisconnectSecs?: number | null,
 	/**  PostgreSQL: show only the configured database, its schemas right under the data source. */
 	singleDatabase?: boolean,
+};
+
+/**  An Oracle package (its procedures and functions are not listed separately). */
+export type DbPackageInfo = {
+	name: string,
 };
 
 /**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
@@ -3293,9 +3298,10 @@ export type DbRoutineInfo = {
  */
 export type DbRowEdit = { kind: "update"; key: DbCellValue[]; values: DbCellValue[] } | { kind: "insert"; values: DbCellValue[] } | { kind: "delete"; key: DbCellValue[] };
 
-/**  A schema's routines (procedures and functions) and sequences. */
+/**  A schema's routines (procedures and functions), packages and sequences. */
 export type DbSchemaObjects = {
 	routines: DbRoutineInfo[],
+	packages: DbPackageInfo[],
 	sequences: DbSequenceInfo[],
 };
 
