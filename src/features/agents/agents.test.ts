@@ -121,6 +121,27 @@ describe("agent composer", () => {
     expect(names("")).toHaveLength(cmds.length);
   });
 
+  it("keeps all commands and skills and ranks matches within each source", () => {
+    const cmds = Array.from({ length: 600 }, (_, i) => ({
+      name: `item-${i}`,
+      description: "",
+      hint: null,
+      source: i % 2 ? ("command" as const) : ("skill" as const),
+    }));
+    const all = matchCommands(cmds, "");
+    expect(all).toHaveLength(600);
+    expect(all.slice(0, 300)).toEqual(cmds.filter((c) => c.source === "command"));
+    expect(all.slice(300)).toEqual(cmds.filter((c) => c.source === "skill"));
+    const mixed = [
+      { ...cmds[0]!, name: "pre-review" },
+      { ...cmds[1]!, name: "pre-review" },
+      { ...cmds[0]!, name: "review" },
+      { ...cmds[1]!, name: "review" },
+    ];
+    expect(matchCommands(mixed, "rev")).toEqual([mixed[3], mixed[1], mixed[2], mixed[0]]);
+    expect(matchCommands(mixed, "missing")).toEqual([]);
+  });
+
   it("sends only the files still mentioned", () => {
     const prompt = toPrompt({
       text: " look at @src/a.rs:3-5 and @b.rs ",
