@@ -13,6 +13,7 @@ pub mod language_service;
 pub mod notebook;
 pub mod ops;
 pub mod php;
+mod php_analyzers;
 pub mod plugins;
 mod project;
 mod proxy;
@@ -197,6 +198,9 @@ impl Host {
                 bridge.stop();
             }
             project.php.shutdown();
+            if let Some(analyzers) = &project.php_analyzers {
+                analyzers.stop();
+            }
             project.documents.clear_workspace_edit_history();
             project.agents.shutdown();
             project.notebooks.stop_admission();
@@ -291,6 +295,9 @@ impl Host {
                 bridge.stop();
             }
             project.php.shutdown();
+            if let Some(analyzers) = &project.php_analyzers {
+                analyzers.stop();
+            }
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();

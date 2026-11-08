@@ -5423,6 +5423,11 @@ export type PhpSettings = {
 	 *  the default) or the Intelephense language server as a fallback.
 	 */
 	engine?: PhpEngineKind,
+	/**
+	 *  Run PHPStan and Psalm from the project's `vendor/bin` on each saved PHP file and
+	 *  show their problems (Settings › PHP › External Analyzers). Off by default.
+	 */
+	analyzersOnSave?: boolean,
 };
 
 /**  The focused editor when a plugin command is invoked. */

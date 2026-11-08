@@ -484,7 +484,7 @@ The design:
 - [x] Phase 7.5: SQL in strings
       Highlight SQL inside PHP strings recognised by a heuristic or a `/** @lang SQL */` comment, with completion against the connected `ide-db` data source when there is one. Tests: unit tests.
 
-- [ ] Phase 7.6: PHPStan and Psalm diagnostics
+- [x] Phase 7.6: PHPStan and Psalm diagnostics
       When `phpstan` or `psalm` is in `vendor/bin`, optionally run it on save and publish its diagnostics under its own source, removing duplicates of the engine's own diagnostics. Has a settings toggle (text in `en` and `zh`). Tests: parser tests on recorded JSON output.
 
 ## Plan 8: Laravel support

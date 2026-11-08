@@ -57,6 +57,8 @@ pub struct Project {
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     /// The native PHP engine, while Settings › PHP › Engine is `Native`.
     pub php: Arc<crate::php::PhpEngineSlot>,
+    /// PHPStan and Psalm on save (Settings › PHP › External Analyzers); not in LightEdit.
+    pub(crate) php_analyzers: Option<Arc<crate::php_analyzers::PhpAnalyzers>>,
     /// In-process language services, asked before the language servers (`ops/lsp.rs`).
     pub services: Arc<crate::language_service::LanguageServices>,
     pub(crate) watcher: Watcher,
@@ -296,6 +298,14 @@ impl Host {
             documents.clone(),
         ));
         documents.add_observer(Arc::new(crate::php::PhpObserver(php.clone())));
+        let php_analyzers = crate::php_analyzers::PhpAnalyzers::new(
+            &root,
+            settings.clone(),
+            sink.clone(),
+            trusted.clone(),
+            php.clone(),
+        );
+        documents.add_observer(php_analyzers.clone());
         let services = Arc::new(crate::language_service::LanguageServices::default());
         services.register(LanguageId::new("php"), Arc::new(crate::php::PhpService(php.clone())));
         services.register(LanguageId::new("twig"), Arc::new(crate::twig::TwigService::new(&root, documents.clone())));
@@ -500,6 +510,7 @@ impl Host {
             notebooks,
             kotlin_bridge: Some(kotlin_bridge),
             php,
+            php_analyzers: Some(php_analyzers),
             services,
             watcher,
             content_watchers: Mutex::new(content_watchers),
@@ -645,6 +656,7 @@ impl Host {
             notebooks,
             kotlin_bridge: None,
             php,
+            php_analyzers: None,
             services: Arc::default(),
             watcher,
             content_watchers: Mutex::new(Vec::new()),

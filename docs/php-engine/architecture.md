@@ -41,6 +41,12 @@ frontend ── IPC ──▶ ide-host ops/lsp.rs ──▶ LanguageService (php
   map, `PhpEngine::embedded_document` holds it under the view's id (never
   inspected, ignored by `document_changed`), and the `blade_*` methods map
   positions in and answers out. `PhpObserver` drops it when the view closes.
+- `crates/ide-host/src/php_analyzers.rs` runs PHPStan and Psalm from the
+  project's `vendor/bin` on each saved PHP file of a trusted project when
+  `PhpSettings.analyzers_on_save` is on, and publishes their problems under
+  the sources `phpstan` and `psalm`. `ide_php::analyzers` detects the tools,
+  parses their JSON reports and drops the problems the engine's latest
+  inspection of the file already reports.
 - With `Intelephense` selected, the slot is empty, the service answers
   nothing, and `ide_sdk::apply::language_servers` starts the server from
   `languages/php.toml`. Only one of the two runs at a time.

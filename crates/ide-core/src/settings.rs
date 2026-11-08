@@ -725,6 +725,9 @@ pub struct PhpSettings {
     /// Which engine answers code insight for PHP: the built-in native engine (`ide-php`,
     /// the default) or the Intelephense language server as a fallback.
     pub engine: PhpEngineKind,
+    /// Run PHPStan and Psalm from the project's `vendor/bin` on each saved PHP file and
+    /// show their problems (Settings › PHP › External Analyzers). Off by default.
+    pub analyzers_on_save: bool,
 }
 
 /// Settings › PHP › Engine. Only the keys a user sets are stored, so settings that never

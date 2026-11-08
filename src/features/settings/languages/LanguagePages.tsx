@@ -128,6 +128,7 @@ export function PhpPage() {
   const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
   const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
   const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
+  const [analyzersOnSave, setAnalyzersOnSave] = useSetting<boolean>("languages.php.analyzersOnSave");
   const { list } = useDetected("php");
   const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
   return (
@@ -178,6 +179,14 @@ export function PhpPage() {
             aria-label="Additional stubs"
           />
         </Row>
+      </Section>
+      <Section title="External Analyzers">
+        <Toggle
+          label="Run PHPStan and Psalm on save"
+          checked={analyzersOnSave ?? false}
+          onChange={setAnalyzersOnSave}
+          hint="When vendor/bin/phpstan or vendor/bin/psalm (with a psalm.xml) is installed, runs it on each saved PHP file of a trusted project with the PHP interpreter below and shows its problems, without those the built-in engine already reports."
+        />
       </Section>
       <Section title="CLI Interpreter">
         <SdkRow

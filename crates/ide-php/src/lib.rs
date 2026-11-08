@@ -72,6 +72,7 @@
 //! - [`probe`]: the declaration outline used by the Mago test-drive
 //!   (`examples/parse_corpus.rs`, results in `docs/php-engine/spike.md`).
 
+pub mod analyzers;
 pub mod blade;
 pub mod complete;
 pub mod engine;

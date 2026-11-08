@@ -211,7 +211,11 @@ pub fn set_settings(
         let affected = affected();
         host.runtime.spawn_blocking(move || {
             for project in affected.into_iter().filter(|p| !p.light) {
-                project.php.apply(&project.settings.effective());
+                let settings = project.settings.effective();
+                project.php.apply(&settings);
+                if let Some(analyzers) = &project.php_analyzers {
+                    analyzers.apply(&settings);
+                }
             }
         });
     }
