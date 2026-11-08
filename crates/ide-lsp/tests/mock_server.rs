@@ -1342,6 +1342,76 @@ async fn a_progress_token_begun_again_ends_the_task_it_replaces() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_task() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "target");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |title| json!({ "token": 7, "value": { "kind": "begin", "title": title, "cancellable": true } });
+    let task_of = |title: &str| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, title: t, done: false, .. } if t == title => Some(*id),
+            _ => None,
+        })
+    };
+    peer.notify("$/progress", begin("Old work")).unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let old = task_of("Old work").unwrap();
+    let mgr = h.mgr.clone();
+    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 1), true, true, Default::default()).await });
+    eventually(|| !s.requested("textDocument/references").is_empty()).await;
+
+    peer.notify("$/progress", begin("New work")).unwrap();
+    peer.notify(
+        "$/progress",
+        json!({ "token": 7, "value": { "kind": "report", "message": "Halfway", "percentage": 50 } }),
+    )
+    .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, message: Some(m), fraction: Some(f), done: false, .. } if title == "New work" && m == "Halfway" && *f == 0.5))
+    })
+    .await;
+    let new = task_of("New work").unwrap();
+    assert_ne!(old, new);
+    assert!(!ide_core::task::cancel(old), "a replaced task cannot cancel its successor");
+    assert!(ide_core::task::cancel(new));
+    eventually(|| !s.notified("window/workDoneProgress/cancel").is_empty()).await;
+    assert_eq!(s.notified("window/workDoneProgress/cancel"), [json!({ "token": 7 })]);
+    assert_eq!(h.statuses("mock").last(), Some(&ServerStatus::Busy));
+    assert!(!search.is_finished(), "replacement must not release a search waiting for idle");
+    let refs = h.mgr.references(doc, Pos::new(0, 1), true, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+
+    for _ in 0..2 {
+        peer.notify("$/progress", json!({ "token": 7, "value": { "kind": "end" } })).unwrap();
+    }
+    // A later task is a barrier for both end notifications.
+    peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "begin", "title": "Barrier" } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "end" } })).unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Barrier"))
+    })
+    .await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
+    assert_eq!(refs.incomplete, None);
+    assert!(!ide_core::task::cancel(new));
+    let events = h.events.lock();
+    for id in [old, new] {
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, IdeEvent::Task { id: t, done: true, .. } if *t == id)).count(),
+            1
+        );
+    }
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { id, message: Some(m), .. } if *id == old && m == "Halfway"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_cancellable_progress_task_asks_the_server_to_stop() {
     let h = harness(&[("mock", incremental_caps())]);
     h.open("a.mk", "x");
