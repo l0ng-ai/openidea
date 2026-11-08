@@ -64,6 +64,7 @@ tab with custom toolbar actions (`content-tab-action` / `content-tab-reply`),
 native diff viewer integration, and full `EditorDocumentLifecycle` support. See
 the [protocol and lifecycle](../../../plugins/README.md#plugin-backed-content-editor-tabs-api-13)
 and the [built fixture](../../../crates/ide-plugin/tests/fixtures/web-content).
+
 ## Multi-page settings (API 1.3)
 
 Declare `[[contributes.settings.pages]]` with `id`, `title`, and `schema` and
