@@ -392,6 +392,9 @@ pub fn base_dir(cache: &Path, id: &str) -> PathBuf {
 
 /// Resolve existing ancestors before comparing paths, including aliases of a not-yet-created base.
 fn canonical_path(path: &Path) -> IdeResult<PathBuf> {
+    // `D:` / `\\?\D:` are not canonicalizable on their own; work with a plain path.
+    let text = path.to_string_lossy();
+    let path = Path::new(text.strip_prefix(r"\\?\").unwrap_or(&text));
     let mut resolved = PathBuf::new();
     for component in std::path::absolute(path)?.components() {
         match component {
