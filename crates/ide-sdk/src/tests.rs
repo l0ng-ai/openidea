@@ -453,6 +453,7 @@ fn maven_daemon_uses_the_runner_jre_version() {
         settings.languages.java.maven.runner_jre = format!("jdk{runner}");
         assert_eq!(maven_command(&root, &settings).as_ref(), Some(expected));
     }
+}
 
 #[test]
 fn maven_options_carry_active_profiles_into_the_command_line() {
