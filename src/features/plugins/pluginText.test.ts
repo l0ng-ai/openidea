@@ -108,6 +108,14 @@ describe("localizeContributions", () => {
     expect(localizeContributions(items, { a: fr })[0]!.decl).toMatchObject({ submenu: "Actualiser" });
   });
 
+  it("translates an indexed marker tooltip without changing its key prefixes", () => {
+    const decl = { id: "m", icon: "icons/m.svg", markers: ["Refresh"], tooltip: "Refresh" };
+    expect(localizeContributions([item("a", "markerIcons", decl)], { a: fr })[0]!.decl).toEqual({
+      ...decl,
+      tooltip: "Actualiser",
+    });
+  });
+
   it("gives a tools menu entry the translated title of its command", () => {
     const items = [
       item("a", "commands", { id: "x", title: "Refresh" }),
