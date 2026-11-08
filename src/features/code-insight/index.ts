@@ -16,6 +16,7 @@ import { HierarchyTabs, HierarchyView } from "./HierarchyView";
 import { resetHierarchy, showHierarchy } from "./hierarchy";
 import { installServerEvents } from "./servers";
 import { ServerStatus } from "./ServerStatus";
+import { reportProblems } from "./problemsReport";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
 
 const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
@@ -43,6 +44,7 @@ export function activate(): () => void {
   const disposers = [
     unsubProject,
     installProblemsEvents(),
+    reportProblems(),
     installProblemDecorations(),
     installServerEvents(),
     installWorkspaceEditUndo(),

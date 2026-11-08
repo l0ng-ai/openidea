@@ -2255,3 +2255,17 @@ async fn delete_running_agent(no_load: bool) {
     };
     assert!(!alive, "the agent (pid {pid}) is still running");
 }
+
+#[test]
+fn mcp_servers_follow_server_state_and_agent_capabilities() {
+    let root = std::path::Path::new("/project");
+    let exe = std::path::Path::new("/app/openidea");
+    assert!(super::stdio_mcp_servers(None, true, root).is_empty());
+    assert!(super::stdio_mcp_servers(Some(exe), false, root).is_empty());
+    let servers = super::stdio_mcp_servers(Some(exe), true, root);
+    assert_eq!(
+        servers,
+        vec![json!({"name":"OpenIDEA","command":"/app/openidea",
+        "args":["--mcp-stdio","--project","/project"],"env":[]})]
+    );
+}

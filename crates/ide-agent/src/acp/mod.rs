@@ -92,6 +92,11 @@ pub(crate) struct Negotiated {
 }
 
 impl Negotiated {
+    pub fn mcp_stdio(&self) -> bool {
+        // Stdio is the ACP v1 baseline; v2 negotiates each transport explicitly.
+        self.capabilities.pointer("/mcpCapabilities/stdio").and_then(Value::as_bool).unwrap_or(self.generation == 1)
+    }
+
     /// Reads an `initialize` response. The shape decides, not `protocolVersion`: some v1
     /// agents report version 2 with v1 fields (`agentInfo`, `agentCapabilities`); only a
     /// v2 response has `info`.
@@ -120,7 +125,7 @@ impl Negotiated {
                 "audio": has(prompt, "audio"),
                 "embeddedContext": has(prompt, "embeddedContext"),
             },
-            "mcpCapabilities": { "http": has(mcp, "http"), "sse": false },
+            "mcpCapabilities": { "http": has(mcp, "http"), "sse": false, "stdio": has(mcp, "stdio") },
         });
         if session.is_some() {
             let mut sc = json!({ "list": {}, "resume": {}, "close": {} });
