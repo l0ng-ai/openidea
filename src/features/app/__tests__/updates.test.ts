@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Settings, UpdateCheck, UpdateProgress } from "@/bindings";
+import type { Settings, UpdateCheck, UpdateInfo, UpdateProgress } from "@/bindings";
 import type { NotificationService } from "@/workbench/contributions";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -25,6 +25,7 @@ const appInstallUpdate = vi.fn((_source: string, _request: number, ch: Channel) 
   return install.promise;
 });
 const appCheckUpdate = vi.fn(() => check.promise);
+const appStartupUpdateCheck = vi.fn(async (): Promise<UpdateInfo | null> => null);
 const appRestart = vi.fn(async () => null);
 const cancelRequest = vi.fn(async () => null);
 const appBuildInfo = vi.fn(async () => ({ version: "0.1.21" }));
@@ -39,6 +40,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       ...actual.commands,
       appInstallUpdate,
       appCheckUpdate,
+      appStartupUpdateCheck,
       appRestart,
       cancelRequest,
       appBuildInfo,
@@ -49,6 +51,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 
 const {
   checkForUpdates,
+  checkForUpdatesOnStartup,
   installUpdate,
   notifyUpdate,
   progressText,
@@ -85,7 +88,12 @@ afterEach(() => vi.clearAllMocks());
 describe("Install and Restart", () => {
   it("runs as a background task with download progress, then restarts", async () => {
     const done = installUpdate("0.1.22");
-    expect(notes.at(-1)).toMatchObject({ title: "Downloading OpenIDEA 0.1.22", key: UPDATE_KEY, sticky: true });
+    expect(notes.at(-1)).toMatchObject({
+      title: "Downloading OpenIDEA 0.1.22",
+      key: UPDATE_KEY,
+      sticky: true,
+      userInitiated: true,
+    });
     expect(notes.at(-1)!.actions![0]!.label).toBe("Cancel");
     expect(task(INSTALL_TASK_ID)).toMatchObject({ title: "Downloading OpenIDEA 0.1.22", fraction: null, done: false });
     expect(task(INSTALL_TASK_ID)?.cancel).toBeTypeOf("function");
@@ -200,7 +208,7 @@ describe("Check for Updates", () => {
     const done = checkForUpdates();
     check.resolve(result);
     await done;
-    expect(notes.at(-1)?.title).toBe(title);
+    expect(notes.at(-1)).toMatchObject({ title, userInitiated: true });
     expect(task(CHECK_TASK_ID)?.done).toBe(true);
   });
 
@@ -210,6 +218,58 @@ describe("Check for Updates", () => {
     check.resolve(ok({ enabled: true, update: null }));
     await done;
     expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.21 is up to date", key: UPDATE_KEY });
+  });
+
+  it("marks the manual check's progress as the user's own request", async () => {
+    const done = checkForUpdates();
+    expect(notes[0]).toMatchObject({ level: "info", title: "Checking for updates…", userInitiated: true });
+    check.resolve(ok({ enabled: true, update: null }));
+    await done;
+  });
+
+  it("leaves the startup check to the IDE Updates notification settings", async () => {
+    appStartupUpdateCheck.mockResolvedValueOnce({
+      version: "0.1.22",
+      currentVersion: "0.1.21",
+      notes: null,
+      date: null,
+    });
+    await checkForUpdatesOnStartup();
+    expect(notes.at(-1)).toMatchObject({ title: "OpenIDEA 0.1.22 is available" });
+    expect(notes.at(-1)?.userInitiated).toBe(false);
+  });
+
+  it('still pops up when IDE Updates is set to "No popup" (no other surface on the welcome screen)', async () => {
+    const { notificationServiceImpl, useNotifications } = await import("@/workbench/notificationStore");
+    // What Settings › Notifications › IDE Updates stores for "No popup" (or "Don't Show Again").
+    useProject.setState({
+      settings: {
+        notifications: { balloons: true, groups: { updates: { display: "none", log: true } } },
+      } as unknown as Settings,
+    });
+    useNotifications.setState({ items: [] });
+    provideNotificationService(notificationServiceImpl);
+    try {
+      const done = checkForUpdates();
+      try {
+        expect(useNotifications.getState().items[0]).toMatchObject({
+          key: UPDATE_KEY,
+          balloon: true,
+          title: "Checking for updates…",
+        });
+      } finally {
+        // Settle the check even when the assertion above fails, so later tests don't join it.
+        check.resolve(ok({ enabled: true, update: null }));
+        await done;
+      }
+      expect(useNotifications.getState().items[0]).toMatchObject({
+        key: UPDATE_KEY,
+        balloon: true,
+        title: "OpenIDEA 0.1.21 is up to date",
+      });
+    } finally {
+      useNotifications.setState({ items: [] });
+    }
   });
 
   it("leaves the check to the status bar in a project window", async () => {

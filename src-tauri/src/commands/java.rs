@@ -40,6 +40,7 @@ pub async fn java_build_workspace(
     window: Window,
     state: State<'_, AppState>,
     module: PathBuf,
+    request: Option<RequestId>,
 ) -> IdeResult<ide_lsp::jdtls::JavaBuildStatus> {
-    ide_host::ops::java::java_build_workspace(&state.host, window.label(), module).await
+    ide_host::ops::java::java_build_workspace(&state.host, window.label(), module, request).await
 }

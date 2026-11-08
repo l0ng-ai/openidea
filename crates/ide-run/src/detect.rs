@@ -1168,6 +1168,7 @@ fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
             ("ruby".into(), Vec::new()),
             &["bin/rails", "server"],
         );
+        c = c.debug("rdbg");
         c.extras.folder = Some("Rails".into());
         out.push(c);
     }
@@ -1180,12 +1181,15 @@ fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
             if task == "test" || task == "spec" || task.ends_with(":test") || task.ends_with(":spec") {
                 c = c.test();
             }
+            c = c.debug("rdbg");
             c.extras.folder = Some("Rake".into());
             out.push(c);
         }
     }
     if uses_rspec(root) {
-        out.push(ruby_config("rspec".into(), "rspec".into(), "rspec", ruby_tool(root, "rspec"), &[]).test());
+        out.push(
+            ruby_config("rspec".into(), "rspec".into(), "rspec", ruby_tool(root, "rspec"), &[]).test().debug("rdbg"),
+        );
     } else if root.join("test").is_dir() && !out.iter().any(|c| c.id == "rake:test") {
         // Minitest / Test::Unit without a `test` Rake task: load every test file under `test/`.
         let mut args = Vec::new();
@@ -1196,7 +1200,11 @@ fn detect_ruby(root: &Path, out: &mut Vec<RunConfig>) {
         }
         args.extend(["-e".to_owned(), MINITEST_RUNNER.to_owned(), "test".to_owned()]);
         let extra: Vec<&str> = args.iter().map(String::as_str).collect();
-        out.push(ruby_config("minitest".into(), "minitest".into(), "ruby", ruby_tool(root, "ruby"), &extra).test());
+        out.push(
+            ruby_config("minitest".into(), "minitest".into(), "ruby", ruby_tool(root, "ruby"), &extra)
+                .test()
+                .debug("rdbg"),
+        );
     }
 }
 

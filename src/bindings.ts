@@ -780,7 +780,7 @@ export const commands = {
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**  Incremental build of the jdtls workspace serving `module` (e.g. before HotSwap). */
-	javaBuildWorkspace: (module: string) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module })),
+	javaBuildWorkspace: (module: string, request: number | null) => typedError<JavaBuildStatus, IdeError>(__TAURI_INVOKE("java_build_workspace", { module, request })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
@@ -973,8 +973,8 @@ export const commands = {
 	/**  A window vetoed the quit (user cancelled its unsaved-changes prompt). */
 	appCancelQuit: () => __TAURI_INVOKE<void>("app_cancel_quit"),
 	/**
-	 *  Sets the menu's labels / shortcut text and updates the menu when the visible
-	 *  items changed. Shortcuts for actions that are not on the menu must not call
+	 *  Sets the menu's labels / accelerators and updates the menu when the visible
+	 *  items changed. Accelerators of actions that are not on the menu must not call
 	 *  `set_menu`, which redraws the macOS menu bar.
 	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
@@ -5679,13 +5679,16 @@ export type MemoryCategory =
 /**  Debug adapters, Run processes, terminal shells and other children. */
 "process";
 
-/**  Localised labels and displayed shortcuts, pushed by the frontend. */
+/**  Localised labels and keymap accelerators, pushed by the frontend. */
 export type MenuConfig = {
 	locale: string,
 	/**  `menu.<id>` → label (ids of submenus, actions and `native.*` roles). */
 	labels: { [key in string]: string },
-	/**  Action id → display shortcut from the JS keymap, e.g. `⇧⌘O`. */
-	shortcuts: { [key in string]: string },
+	/**
+	 *  Action id → native accelerator of its first keymap binding, e.g. `Shift+Meta+O`.
+	 *  Absent when that binding has no native form (chord, double modifier).
+	 */
+	accelerators: { [key in string]: string },
 	/**  [`Entry::Dynamic`] slot → its items, already localised. */
 	dynamic?: { [key in string]: DynamicItem[] },
 };
