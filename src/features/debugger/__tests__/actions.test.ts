@@ -40,6 +40,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   return { ...real, commands: { ...real.commands, ...cmds } };
 });
 
+const saveAll = vi.hoisted(() => vi.fn(async () => undefined));
 const editor = vi.hoisted(() => ({
   current: null as null | { ctx: { path: string; language: string }; view: { state: unknown } },
 }));
@@ -55,7 +56,7 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
     ...real,
     maybeEditorService: () => ({
       openFile: async (path: string, o?: { focus?: boolean }) => void opened.push({ path, focus: o?.focus }),
-      saveAll: async () => undefined,
+      saveAll,
     }),
   };
 });
@@ -437,4 +438,27 @@ it("stops the waiting Python container if attaching fails", async () => {
     process: 9,
   });
   expect(ipc.runStop).toHaveBeenCalledWith(9);
+});
+
+it("reports Java Debug save failures and does not start the adapter", async () => {
+  const notify = vi.fn();
+  provideNotificationService({ notify });
+  useProject.setState({ project: { root: "/p" } as never });
+  saveAll.mockRejectedValueOnce(new Error("save failed"));
+  await executeAction("debug.startConfig", {
+    id: "main",
+    name: "Main",
+    kind: "application",
+    command: "java",
+    args: ["a.Main"],
+    cwd: null,
+    module: "",
+    env: {},
+    detected: false,
+    isTest: false,
+    debugAdapter: "java-debug",
+  });
+  expect(ipc.debugStart).not.toHaveBeenCalled();
+  expect(notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "save failed" }));
+  useProject.setState({ project: null });
 });

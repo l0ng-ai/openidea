@@ -243,6 +243,34 @@ describe("catalogs", () => {
   const COMPLETE = ["zh"];
   /** Written in another script, so a text equal to its English source was not translated. */
   const OWN_SCRIPT = new Set(["zh", "ko"]);
+  /** Product names intentionally kept as written in every locale. */
+  const SAME_AS_ENGLISH = new Set([
+    "Docker",
+    "Shell",
+    "Java",
+    "Python",
+    "C/C++",
+    "C#",
+    "Go",
+    "Rust",
+    "Kotlin",
+    "PHP",
+    "SQL",
+    "JavaScript",
+    "TypeScript",
+    "HTML",
+    "CSS",
+    "JSON",
+    "YAML",
+    "XML",
+    "Maven",
+    "Gradle",
+    "npm",
+    "pnpm",
+    "Yarn",
+    "Cargo",
+    "CMake",
+  ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 
   it("exist for exactly the supported locales", () => {
@@ -259,7 +287,8 @@ describe("catalogs", () => {
   it("translate source text into text different from English, in locales with another script", () => {
     for (const [locale, catalog] of Object.entries(texts))
       if (OWN_SCRIPT.has(locale))
-        for (const [source, text] of Object.entries(catalog)) expect(text, `${locale}:${source}`).not.toBe(source);
+        for (const [source, text] of Object.entries(catalog))
+          if (!SAME_AS_ENGLISH.has(source)) expect(text, `${locale}:${source}`).not.toBe(source);
   });
 
   it("keep the placeholders of source-text templates", () => {
