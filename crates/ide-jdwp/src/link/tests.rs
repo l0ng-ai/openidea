@@ -370,6 +370,102 @@ async fn stop_before_id_sizes_learns_its_thread_from_the_reply() {
     wait_state(&p.link, LinkState::Suspended { generation: 1, thread: Some(9) }).await;
 }
 
+/// `ThreadReference.Resume` of `thread`, through to the JVM.
+async fn resume_thread(p: &mut Pair, thread: u64) {
+    let resume = command(40, 11, 3, &thread.to_be_bytes());
+    p.adapter.write_all(&resume).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, resume);
+}
+
+/// fwcd's breakpoints and steps suspend only their thread (`SUSPEND_EVENT_THREAD`): 7 stops, then 8.
+async fn two_threads_stopped() -> Pair {
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, 7).await;
+    stop(&mut p, 1, 8).await;
+    wait_state(&p.link, LinkState::Suspended { generation: 2, thread: Some(8) }).await;
+    p
+}
+
+#[tokio::test]
+async fn resuming_an_earlier_stopped_thread_keeps_the_latest_stop() {
+    let mut p = two_threads_stopped().await;
+    resume_thread(&mut p, 7).await;
+    adapter_marker(&mut p).await;
+    assert_eq!(p.link.state(), LinkState::Suspended { generation: 2, thread: Some(8) });
+}
+
+#[tokio::test]
+async fn resuming_the_latest_stopped_thread_moves_to_the_one_still_stopped() {
+    let mut p = two_threads_stopped().await;
+    resume_thread(&mut p, 8).await;
+    adapter_marker(&mut p).await;
+    // A new generation: ids read on thread 8 are stale.
+    assert_eq!(p.link.state(), LinkState::Suspended { generation: 3, thread: Some(7) });
+    resume_thread(&mut p, 7).await;
+    wait_state(&p.link, LinkState::Ready).await;
+}
+
+#[tokio::test]
+async fn resuming_a_thread_that_did_not_stop_changes_nothing() {
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, 7).await;
+    let stopped = LinkState::Suspended { generation: 1, thread: Some(7) };
+    wait_state(&p.link, stopped.clone()).await;
+    resume_thread(&mut p, 5).await;
+    adapter_marker(&mut p).await;
+    assert_eq!(p.link.state(), stopped);
+}
+
+#[tokio::test]
+async fn vm_resume_ends_the_stop_of_every_thread() {
+    let mut p = two_threads_stopped().await;
+    let resume = command(41, 1, 9, &[]);
+    p.adapter.write_all(&resume).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, resume);
+    wait_state(&p.link, LinkState::Ready).await;
+    // 7 and 8 are forgotten: resuming 7 leaves the next stop alone.
+    stop(&mut p, 1, 9).await;
+    let stopped = LinkState::Suspended { generation: 3, thread: Some(9) };
+    wait_state(&p.link, stopped.clone()).await;
+    resume_thread(&mut p, 7).await;
+    adapter_marker(&mut p).await;
+    assert_eq!(p.link.state(), stopped);
+}
+
+#[tokio::test]
+async fn thread_resume_ends_a_stop_whose_thread_is_unknown() {
+    // Before the id sizes, the resumed thread cannot be read.
+    let mut p = pair(OPEN);
+    handshake(&mut p).await;
+    stop(&mut p, 1, 9).await;
+    wait_state(&p.link, LinkState::Suspended { generation: 1, thread: None }).await;
+    resume_thread(&mut p, 5).await;
+    wait_state(&p.link, LinkState::Ready).await;
+
+    // A suspending event without a thread (CLASS_UNLOAD).
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, 7).await;
+    let unload = event(2, 9, 0);
+    p.jvm.write_all(&unload).await.unwrap();
+    assert_eq!(read_packet(&mut p.adapter).await, unload);
+    wait_state(&p.link, LinkState::Suspended { generation: 2, thread: None }).await;
+    resume_thread(&mut p, 7).await;
+    wait_state(&p.link, LinkState::Ready).await;
+}
+
+#[tokio::test]
+async fn a_stop_before_id_sizes_is_tracked_once_its_thread_is_read() {
+    let mut p = pair(OPEN);
+    let own = handshake(&mut p).await;
+    stop(&mut p, 1, 7).await;
+    p.jvm.write_all(&reply(own, 0, &id_sizes_body())).await.unwrap();
+    wait_state(&p.link, LinkState::Suspended { generation: 1, thread: Some(7) }).await;
+    stop(&mut p, 1, 8).await;
+    resume_thread(&mut p, 8).await;
+    adapter_marker(&mut p).await;
+    assert_eq!(p.link.state(), LinkState::Suspended { generation: 3, thread: Some(7) });
+}
+
 #[tokio::test]
 async fn adapter_id_in_reserved_range_degrades() {
     let mut p = connected(OPEN).await;

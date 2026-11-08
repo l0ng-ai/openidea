@@ -36,7 +36,12 @@ pub(super) struct Core {
     pub(super) handshaken: bool,
     pub(super) released: bool,
     pub(super) stopped: bool,
+    /// The thread the link's commands run on: the last of `event_threads`; `None` while running
+    /// or for a stop whose thread is unknown.
     pub(super) thread: Option<u64>,
+    /// Threads an event stopped and the adapter has not resumed, oldest first. fwcd suspends
+    /// only the event's thread and resumes each thread alone, so earlier ones can stay stopped.
+    pub(super) event_threads: Vec<u64>,
     pub(super) generation: u64,
     pub(super) degraded: Option<String>,
     pub(super) closed: bool,
@@ -121,6 +126,7 @@ impl Core {
                     self.sizes = Some(sizes);
                     if let Some(event) = self.unread_stop.take() {
                         self.thread = stop_of(&event, &sizes).and_then(|stop| stop.thread);
+                        self.event_threads.extend(self.thread);
                     }
                 }
                 Err(e) => tracing::warn!("JDWP link: malformed IDSizes reply: {e}"),
@@ -230,11 +236,54 @@ impl Core {
         self.stopped = true;
         self.thread = thread;
         self.unread_stop = unread;
+        match thread {
+            Some(thread) => {
+                self.event_threads.retain(|&t| t != thread);
+                self.event_threads.push(thread);
+            }
+            // Its resume cannot be told apart from the others' either: any resume ends it.
+            None => self.event_threads.clear(),
+        }
     }
 
-    pub(super) fn end_stop(&mut self) {
+    /// The adapter's `VirtualMachine.Resume` (1/9) or `ThreadReference.Resume` (11/3) with
+    /// `body`. Call before writing it, under the JVM writer lock: once the JVM has it, it may
+    /// stop again, and that stop must not be taken for the one the resume ends. Returns whether
+    /// the ids read so far may be released after it: not while the link's stop goes on.
+    pub(super) fn resume(&mut self, command: (u8, u8), body: &[u8]) -> bool {
+        if command != (11, 3) {
+            self.end_stop();
+            return true;
+        }
+        let before = (self.stopped, self.generation);
+        let thread = self.sizes.and_then(|sizes| Reader::new(body).id(sizes.object).ok());
+        self.resume_thread(thread);
+        !self.stopped || (self.stopped, self.generation) != before
+    }
+
+    fn end_stop(&mut self) {
         self.stopped = false;
         self.thread = None;
+        self.event_threads.clear();
         self.unread_stop = None;
+    }
+
+    /// `thread` is `None` when its id could not be read. Resuming the thread the link runs on
+    /// moves it to the latest thread still stopped, as a new stop.
+    fn resume_thread(&mut self, thread: Option<u64>) {
+        let (Some(thread), Some(current)) = (thread, self.thread) else {
+            return self.end_stop();
+        };
+        self.event_threads.retain(|&t| t != thread);
+        if thread != current {
+            return;
+        }
+        match self.event_threads.last() {
+            Some(&next) => {
+                self.generation += 1;
+                self.thread = Some(next);
+            }
+            None => self.end_stop(),
+        }
     }
 }

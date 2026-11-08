@@ -1,6 +1,6 @@
 //! Adapter → JVM.
 
-use super::{HANDSHAKE, OWN_IDS, OwnCommand, RESERVED_ID, Shared, check_handshake};
+use super::{Core, HANDSHAKE, OWN_IDS, OwnCommand, RESERVED_ID, Shared, check_handshake};
 use crate::codec::{HEADER_LEN, Header, MAX_ADAPTER_PACKET};
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -99,28 +99,32 @@ async fn forward(shared: &Shared, packet: &[u8]) -> io::Result<()> {
         });
     }
     let command = (!h.is_reply()).then(|| h.command());
-    let mut jvm = loop {
+    let (mut jvm, release) = loop {
         let answered = shared.own_answered.notified();
         tokio::pin!(answered);
         answered.as_mut().enable();
         let jvm = shared.jvm.lock().await;
-        // Before the write: the reply may be read before this task runs again.
+        // Before the write: the reply, or the stop a resume lets happen, may be read before
+        // this task runs again.
         let registered = shared.update(|core| {
             if command.is_some() && OWN_IDS.contains(&h.id) {
                 // A reply carries only its id. The link never invokes, so the JVM answers its
                 // command without waiting on anything; until then this command waits.
                 if core.own.contains_key(&h.id) {
-                    return false;
+                    return None;
                 }
                 *core.adapter_reserved.entry(h.id).or_default() += 1;
             }
             if command.is_some_and(is_invoke) {
                 core.invokes.insert(h.id);
             }
-            true
+            Some(match command {
+                Some(resume @ ((1, 9) | (11, 3))) => core.resume(resume, &packet[HEADER_LEN..]),
+                _ => false,
+            })
         });
-        if registered {
-            break jvm;
+        if let Some(release) = registered {
+            break (jvm, release);
         }
         drop(jvm);
         answered.await;
@@ -131,12 +135,9 @@ async fn forward(shared: &Shared, packet: &[u8]) -> io::Result<()> {
     // Still under the writer lock, so no command of the link's own can slip in between the
     // write and the state change.
     match command {
-        Some((1, 9) | (11, 3)) => {
+        Some((1, 9) | (11, 3)) if release => {
             // Only once the resume is on its way: the ids stay valid for the whole stop.
-            let disposals = shared.update(|core| {
-                core.end_stop();
-                core.disposals()
-            });
+            let disposals = shared.update(Core::disposals);
             for packet in &disposals {
                 jvm.write_all(packet).await?;
             }

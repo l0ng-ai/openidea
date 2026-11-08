@@ -1,9 +1,13 @@
-//! A packet of the link's own that a cancelled caller or a failing socket cuts short.
+//! A packet of the link's own that a cancelled caller or a failing socket cuts short, and a
+//! flush that returns only after the JVM already acted on the packet.
 
 use super::command_tests::{
     THREAD, entries, header, instances_body, own_instances, result, resume, spawn_command, suspended, tagged,
 };
-use super::tests::{OPEN, Pair, WAIT, assert_eof, command, connect, pair_over, read_packet, reply, wait_state, within};
+use super::tests::{
+    OPEN, Pair, WAIT, adapter_marker, assert_eof, command, connect, pair_over, read_packet, reply, stop, wait_state,
+    within,
+};
 use super::*;
 use crate::codec::{HEADER_LEN, Header};
 use crate::ids::ReplyIds;
@@ -20,6 +24,8 @@ struct Gate {
     budget: Option<usize>,
     /// Once the budget is spent: fail writes instead of stalling them.
     fail: bool,
+    /// Bytes still to be written before flushes stall; `None`: flushes never stall.
+    flush_after: Option<usize>,
     waker: Option<Waker>,
 }
 
@@ -33,10 +39,16 @@ impl Valve {
         gate.fail = fail;
     }
 
+    /// Writes go through, but once `bytes` more are written flushes stay pending until [`Self::open`].
+    fn stall_flush_after(&self, bytes: usize) {
+        self.0.lock().unwrap().flush_after = Some(bytes);
+    }
+
     fn open(&self) {
         let mut gate = self.0.lock().unwrap();
         gate.budget = None;
         gate.fail = false;
+        gate.flush_after = None;
         if let Some(waker) = gate.waker.take() {
             waker.wake();
         }
@@ -72,11 +84,21 @@ impl AsyncWrite for Throttled {
         if let (Ok(n), Some(budget)) = (&written, gate.budget.as_mut()) {
             *budget -= n;
         }
+        if let (Ok(n), Some(left)) = (&written, gate.flush_after.as_mut()) {
+            *left = left.saturating_sub(*n);
+        }
         Poll::Ready(written)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+        let this = self.get_mut();
+        let mut gate = this.valve.0.lock().unwrap();
+        if gate.flush_after == Some(0) {
+            gate.waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        drop(gate);
+        Pin::new(&mut this.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -172,4 +194,18 @@ async fn failed_write_closes_the_link() {
     assert_eof(&mut p.adapter, "adapter").await;
     let refused = p.link.command(2, 16, instances_body(), ReplyIds::TaggedObjects, WAIT).await;
     assert_eq!(refused, Err(LinkError::Closed));
+}
+
+#[tokio::test]
+async fn a_stop_while_the_resume_is_flushed_is_kept() {
+    let (mut p, valve) = throttled().await;
+    let resume = command(50, 1, 9, &[]);
+    valve.stall_flush_after(resume.len());
+    p.adapter.write_all(&resume).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, resume);
+    // The JVM runs and stops again before the link's flush of the resume returns.
+    stop(&mut p, 2, THREAD).await;
+    valve.open();
+    adapter_marker(&mut p).await;
+    assert_eq!(p.link.state(), LinkState::Suspended { generation: 2, thread: Some(THREAD) });
 }

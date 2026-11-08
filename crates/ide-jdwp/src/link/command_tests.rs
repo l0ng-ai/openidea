@@ -402,6 +402,24 @@ async fn id_sizes_come_from_the_link_reply() {
     assert_eq!(p.link.id_sizes(), Some(IdSizes { field: 8, method: 8, object: 8, reference_type: 8, frame: 8 }));
 }
 
+#[tokio::test]
+async fn ids_outlive_the_resume_of_another_stopped_thread() {
+    let mut p = connected(OPEN).await;
+    stop(&mut p, 1, 7).await;
+    stop(&mut p, 1, THREAD).await;
+    wait_state(&p.link, LinkState::Suspended { generation: 2, thread: Some(THREAD) }).await;
+    let task = spawn_command(&p.link, WAIT);
+    let id = own_instances(&mut p).await;
+    p.jvm.write_all(&reply(id, 0, &tagged(&[0x66]))).await.unwrap();
+    assert_eq!(result(task).await, Ok(tagged(&[0x66])));
+    // The stop on THREAD goes on, so do the ids read during it.
+    let resume_other = command(51, 11, 3, &7u64.to_be_bytes());
+    p.adapter.write_all(&resume_other).await.unwrap();
+    assert_eq!(read_packet(&mut p.jvm).await, resume_other);
+    adapter_marker(&mut p).await;
+    assert_eq!(entries(&resume(&mut p).await), vec![vec![(0x66, 1)]]);
+}
+
 #[derive(Debug, Clone)]
 enum Step {
     Stop,
