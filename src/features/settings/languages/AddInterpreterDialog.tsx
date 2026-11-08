@@ -5,7 +5,7 @@
 import { isCancelled } from "@/platform/ipc";
 import { useId, useMemo, useState } from "react";
 import { Dialog, IconButton, Input, Select, Spinner, type SelectOption, T } from "@/ui";
-import { choosePath, createVenv, pythonInterpreter, rememberSdk, type VenvTool } from "./api";
+import { choosePath, createVenv, pythonInterpreter, rememberSdk, type Sdk, type VenvTool } from "./api";
 import { tildify, useDetected } from "./components";
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
@@ -36,10 +36,11 @@ export function AddInterpreterDialog({
   const [base, setBase] = useState<string | null>(null);
   const [location, setLocation] = useState(`${root}/.venv`);
   const [existing, setExisting] = useState<string | null>(null);
+  const [browsed, setBrowsed] = useState<Sdk[]>([]);
   const [busy, setBusy] = useState<{ cancel: () => void } | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const ids = { base: useId(), location: useId(), path: useId() };
+  const ids = { base: useId(), location: useId(), existing: useId() };
 
   const baseValue = base ?? bases[0]?.path ?? null;
   const toOption = (s: { path: string; name: string }): SelectOption => ({
@@ -48,44 +49,46 @@ export function AddInterpreterDialog({
     detail: tildify(s.path),
   });
   const baseOptions = bases.map(toOption);
-  const existingOptions = useMemo(() => {
-    const opts = list.map(toOption);
-    if (existing && !opts.some((o) => o.value === existing))
-      opts.push({ value: existing, label: tildify(existing), detail: "custom" });
-    return opts;
-  }, [list, existing]);
+  const existingOptions = [...browsed, ...list.filter((s) => !browsed.some((b) => b.path === s.path))].map((s) => ({
+    value: s.path,
+    label: `${s.name} — ${tildify(s.path)}`,
+  }));
+
+  const checkExisting = (path: string, onResolved: (sdk: Sdk) => void) => {
+    setError(null);
+    let cancelled = false;
+    setBusy({
+      cancel: () => {
+        cancelled = true;
+        setBusy(null);
+      },
+    });
+    void pythonInterpreter(path)
+      .then((sdk) => {
+        if (cancelled) return;
+        if (!sdk) {
+          setError(tx("Cannot run this Python interpreter. Select a working Python executable or virtualenv folder."));
+          return;
+        }
+        onResolved(sdk);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String((e as Error)?.message ?? e));
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(null);
+      });
+  };
 
   const ok = () => {
     if (busy) return;
     setError(null);
     if (mode === "existing") {
-      if (existing) {
-        let cancelled = false;
-        setBusy({
-          cancel: () => {
-            cancelled = true;
-            setBusy(null);
-          },
+      if (existing)
+        checkExisting(existing, (sdk) => {
+          rememberSdk("python", sdk);
+          onAdded(sdk.path);
         });
-        void pythonInterpreter(existing)
-          .then((sdk) => {
-            if (cancelled) return;
-            if (!sdk) {
-              setError(
-                tx("Cannot run this Python interpreter. Select a working Python executable or virtualenv folder."),
-              );
-              return;
-            }
-            rememberSdk("python", sdk);
-            onAdded(sdk.path);
-          })
-          .catch((e: unknown) => {
-            if (!cancelled) setError(String((e as Error)?.message ?? e));
-          })
-          .finally(() => {
-            if (!cancelled) setBusy(null);
-          });
-      }
       return;
     }
     if (!baseValue || !location.trim()) return;
@@ -220,11 +223,12 @@ export function AddInterpreterDialog({
             </>
           ) : (
             <>
-              <span>
+              <label htmlFor={ids.existing}>
                 <T>Interpreter:</T>
-              </span>
-              <div className={styles.pathRow}>
+              </label>
+              <div className={`${styles.pathRow} ${styles.existingPathRow}`}>
                 <Select
+                  id={ids.existing}
                   className={styles.pathInput}
                   value={existing}
                   disabled={!!busy}
@@ -232,19 +236,6 @@ export function AddInterpreterDialog({
                   onChange={setExisting}
                   placeholder={loading ? "Detecting…" : "Select an interpreter"}
                   aria-label="Interpreter"
-                />
-              </div>
-              <label htmlFor={ids.path}>
-                <T>Environment folder or interpreter:</T>
-              </label>
-              <div className={styles.pathRow}>
-                <Input
-                  id={ids.path}
-                  className={styles.pathInput}
-                  value={existing ?? ""}
-                  disabled={!!busy}
-                  onChange={(e) => setExisting(e.target.value)}
-                  placeholder="Environment folder or interpreter"
                 />
                 <IconButton
                   icon="folder-open"
@@ -257,7 +248,11 @@ export function AddInterpreterDialog({
                       title: "Select Python Environment Folder",
                       defaultPath: root,
                     });
-                    if (p) setExisting(p);
+                    if (p)
+                      checkExisting(p, (sdk) => {
+                        setBrowsed((current) => [sdk, ...current.filter((s) => s.path !== sdk.path)]);
+                        setExisting(sdk.path);
+                      });
                   }}
                 />
               </div>

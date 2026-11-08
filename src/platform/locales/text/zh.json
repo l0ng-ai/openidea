@@ -1,6 +1,4 @@
 {
-  "Environment folder or interpreter:": "环境文件夹或解释器：",
-  "Environment folder or interpreter": "环境文件夹或解释器",
   "Select Python Environment Folder": "选择 Python 环境文件夹",
   "Checking interpreter": "正在检查解释器",
   "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "无法运行此 Python 解释器。请选择可用的 Python 可执行文件或虚拟环境文件夹。",
