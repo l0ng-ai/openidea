@@ -20,7 +20,7 @@ while true; do
 done`;
 const send = (program) => openidea.postMessage(JSON.stringify({
   op: 'open-log-tab', key: 'probe', title: 'Probe logs', program,
-  baseArgs: ['--noprofile', '--norc', '-c', script, 'log-probe'],
+  args: ['--noprofile', '--norc', '-c', script, 'log-probe'],
   toggles: [{ id: 'verbose', label: 'Verbose', args: ['--verbose'] }]
 }));
 document.querySelector('#open').onclick = () => send('bash');

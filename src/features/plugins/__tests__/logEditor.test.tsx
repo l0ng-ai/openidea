@@ -19,7 +19,7 @@ const plugin = { id: "probe", enabled: true, capabilities: [{ id: "process:bash"
 const spec = {
   program: "bash",
   title: "Probe logs",
-  baseArgs: ["--noprofile", "--norc"],
+  args: ["--noprofile", "--norc"],
   toggles: [{ id: "verbose", label: "Verbose", args: ["-v"] }],
 };
 let stopActions: () => void;
@@ -76,9 +76,10 @@ describe("plugin streaming log tabs", () => {
       { program: "sh" },
       { program: "/bin/bash" },
       { program: " bash" },
-      { baseArgs: [123] },
-      { baseArgs: ["\0"] },
-      { baseArgs: ["x".repeat(4097)] },
+      { args: [123] },
+      { args: ["\0"] },
+      { args: ["x".repeat(4097)] },
+      { baseArgs: ["--verbose"] },
       { cwd: "/" },
       { env: { PATH: "/tmp" } },
       { title: "x".repeat(257) },
@@ -102,7 +103,7 @@ describe("plugin streaming log tabs", () => {
     const f = setup();
     expect(webPtyBackend).toHaveBeenCalledWith("probe", "logs");
     expect(f.backend.spawn).toHaveBeenCalledWith(
-      expect.objectContaining({ program: "bash", env: {}, args: spec.baseArgs }),
+      expect.objectContaining({ program: "bash", env: {}, args: spec.args }),
       expect.any(Function),
     );
     expect(f.view().state.facet(EditorState.readOnly)).toBe(true);
@@ -128,7 +129,7 @@ describe("plugin streaming log tabs", () => {
       fireEvent.click(screen.getByRole("switch", { name: "Verbose" }));
       await waitFor(() => expect(f.backend.kill).toHaveBeenCalledWith(42));
       expect(f.backend.spawn).toHaveBeenLastCalledWith(
-        expect.objectContaining({ args: [...spec.baseArgs, "-v"] }),
+        expect.objectContaining({ args: [...spec.args, "-v"] }),
         expect.any(Function),
       );
       vi.mocked(f.backend.kill).mockClear();
