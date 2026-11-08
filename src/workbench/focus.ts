@@ -6,6 +6,15 @@ export const EDITOR_AREA_SELECTOR = "[data-editor-area]";
 
 /** Moves focus to the active editor (or the editor area when none is open). */
 export function focusEditor() {
+  if (typeof document !== "undefined" && document.querySelector(EDITOR_AREA_SELECTOR)?.closest("[hidden]")) {
+    // Restoring the layout commits the editor's visibility on the next render.
+    requestAnimationFrame(focusEditorNow);
+    return;
+  }
+  focusEditorNow();
+}
+
+function focusEditorNow() {
   const service = maybeEditorService();
   if (service?.focus) {
     service.focus();

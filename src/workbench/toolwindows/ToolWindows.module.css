@@ -73,6 +73,14 @@
 .editorIsland {
   grid-area: editor;
 }
+.grid[data-maximized] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: none;
+}
+.grid[data-maximized] > [data-anchor] {
+  grid-area: 1 / 1;
+}
 
 /* A side: primary and split areas, each an island; stacked on the left and right, side by side at the bottom. */
 .side {
@@ -84,7 +92,8 @@
 .sideRow {
   flex-direction: row;
 }
-.island[hidden] {
+.island[hidden],
+.side[hidden] {
   display: none;
 }
 .side > .splitGap {
