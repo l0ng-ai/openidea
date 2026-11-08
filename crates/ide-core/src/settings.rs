@@ -728,6 +728,24 @@ pub struct PhpSettings {
     /// Run PHPStan and Psalm from the project's `vendor/bin` on each saved PHP file and
     /// show their problems (Settings › PHP › External Analyzers). Off by default.
     pub analyzers_on_save: bool,
+    /// Laravel support (Settings › PHP › Laravel), passed to the native engine as one struct.
+    pub laravel: LaravelSettings,
+}
+
+/// Settings › PHP › Laravel. The native engine takes it as it is (`ide_php`), so another
+/// front end can map its own configuration onto it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LaravelSettings {
+    /// A code lens on controller methods listing their routes, and the full URI after each
+    /// route registration. On by default.
+    pub route_hints: bool,
+}
+
+impl Default for LaravelSettings {
+    fn default() -> Self {
+        Self { route_hints: true }
+    }
 }
 
 /// Settings › PHP › Engine. Only the keys a user sets are stored, so settings that never

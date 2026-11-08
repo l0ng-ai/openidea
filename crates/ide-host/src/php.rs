@@ -19,11 +19,11 @@ use ide_core::{
     WorkspaceEdit,
 };
 use ide_lsp::types::{
-    CallHierarchy, CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, FormatOptions,
-    GotoKind, HierarchyChoice, HierarchyClass, HierarchyDirection, HierarchyItem, HierarchyMember, HierarchyMemberKind,
-    HierarchyMembers, HierarchyRefactored, HierarchyRefactoring, Highlight, HighlightKind, Hover, InlayHint, InlayKind,
-    Markup, ProblemSeverity, RefactoringProblem, References, Renamed, SemanticTokens, Signature, SignatureHelp,
-    WorkspaceSymbol,
+    CallHierarchy, CodeAction, CodeActionQuery, CodeLens, Command, CompletionItem, CompletionKind, CompletionList,
+    FormatOptions, GotoKind, HierarchyChoice, HierarchyClass, HierarchyDirection, HierarchyItem, HierarchyMember,
+    HierarchyMemberKind, HierarchyMembers, HierarchyRefactored, HierarchyRefactoring, Highlight, HighlightKind, Hover,
+    InlayHint, InlayKind, InlayLabelPart, Markup, ProblemSeverity, RefactoringProblem, References, Renamed,
+    SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -93,6 +93,7 @@ impl PhpEngineSlot {
         let current = self.engine();
         match (wanted(settings), current) {
             (true, Some(engine)) => {
+                engine.set_laravel_settings(settings.languages.php.laravel.clone());
                 engine.set_layout_config(config);
                 engine.set_stub_filter(StubFilter::from_settings(&self.root, settings));
                 engine.configure_inspections(InspectionConfig::from_settings(settings));
@@ -113,6 +114,7 @@ impl PhpEngineSlot {
                     }
                 };
                 engine.configure_inspections(InspectionConfig::from_settings(settings));
+                engine.set_laravel_settings(settings.languages.php.laravel.clone());
                 *self.engine.write() = Some(engine.clone());
                 for doc in self.documents.open_documents() {
                     if let Ok(info) = self.documents.snapshot(doc)
@@ -201,7 +203,8 @@ impl DocumentObserver for PhpObserver {
 /// kinds the editor shows), semantic tokens, find usages, goto
 /// implementation (also for the gutter markers), the type and call
 /// hierarchies, rename, the document highlights of framework string
-/// references, the reference updates of file moves, the
+/// references, the Laravel route lenses and URI hints, the reference
+/// updates of file moves, the
 /// code actions (inspection quick-fixes, auto-import fixes, Optimize
 /// Imports, the refactorings, and Change Signature resolved with the
 /// dialog's new signature), Pull Members Up / Push Members Down and
@@ -318,7 +321,8 @@ impl crate::language_service::LanguageService for PhpService {
             return None;
         }
         let hints = engine.inlay_hints(doc, range)?;
-        let hints = hints
+        let routes = engine.laravel_route_hints(doc, range).unwrap_or_default();
+        let mut hints: Vec<InlayHint> = hints
             .into_iter()
             .map(|hint| InlayHint {
                 position: hint.position,
@@ -333,7 +337,37 @@ impl crate::language_service::LanguageService for PhpService {
                 parts: Vec::new(),
             })
             .collect();
+        // Laravel: the full URI after each route registration.
+        hints.extend(routes.into_iter().map(|hint| InlayHint {
+            position: hint.position,
+            label: hint.label.clone(),
+            kind: InlayKind::Other,
+            padding_left: true,
+            padding_right: false,
+            tooltip: None,
+            parts: vec![InlayLabelPart {
+                value: hint.label,
+                tooltip: None,
+                location: None,
+                command: route_command(String::new(), &hint.routes),
+            }],
+        }));
+        hints.sort_by_key(|hint| (hint.position.line, hint.position.col));
         Some(Ok(hints))
+    }
+
+    /// Laravel: the routes pointing to each controller method.
+    fn code_lens(&self, doc: DocId) -> Answer<Vec<CodeLens>> {
+        let engine = self.0.engine()?;
+        if !engine.is_open(doc) {
+            return None;
+        }
+        let lenses = engine.laravel_route_lenses(doc).unwrap_or_default();
+        let lenses = lenses
+            .into_iter()
+            .map(|lens| CodeLens { range: lens.range, command: route_command(lens.title(), &lens.routes) })
+            .collect();
+        Some(Ok(lenses))
     }
 
     fn semantic_tokens(&self, doc: DocId) -> Answer<Option<SemanticTokens>> {
@@ -607,6 +641,18 @@ impl crate::language_service::LanguageService for PhpService {
     }
 }
 
+/// The command offering the actions on `routes` (go to the declaration,
+/// copy the URL, open it, create an HTTP request): its argument is their
+/// JSON.
+fn route_command(title: String, routes: &[ide_php::frameworks::laravel::RouteInfo]) -> Option<Command> {
+    let json = serde_json::to_string(routes).ok()?;
+    Some(Command {
+        title,
+        command: ide_php::frameworks::laravel::route_hints::ROUTE_ACTIONS_COMMAND.to_owned(),
+        arguments: vec![serde_json::Value::String(json)],
+    })
+}
+
 fn code_action(action: ide_php::imports::ImportAction, server: ide_core::ServerId) -> CodeAction {
     CodeAction {
         title: action.title,
@@ -767,6 +813,30 @@ mod tests {
             [(true, 10, 100), (true, 13, 107), (true, 3, 7), (false, 12, 120)],
             "the index finishing first doesn't end dumb mode; the counts at rest are the index's"
         );
+    }
+
+    #[test]
+    fn route_commands_carry_the_routes_as_json() {
+        use ide_php::frameworks::laravel::RouteInfo;
+        let route = RouteInfo {
+            name: Some("posts.show".into()),
+            methods: vec!["GET".into()],
+            uri: "/posts/{post}".into(),
+            action: r"App\Http\Controllers\PostController@show".into(),
+            middleware: vec!["web".into()],
+            path: PathBuf::from("/app/routes/web.php"),
+            range: Range::default(),
+            url: "http://localhost/posts/{post}".into(),
+            request: "### posts.show\nGET http://localhost/posts/{{post}}\n".into(),
+        };
+        let command = route_command("GET /posts/{post}".into(), std::slice::from_ref(&route)).unwrap();
+        assert_eq!(command.command, "laravel.routeActions");
+        assert_eq!(command.title, "GET /posts/{post}");
+        let [serde_json::Value::String(json)] = command.arguments.as_slice() else { panic!("{:?}", command.arguments) };
+        let parsed: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed[0]["uri"], "/posts/{post}");
+        assert_eq!(parsed[0]["range"]["start"]["line"], 0);
+        assert_eq!(serde_json::from_str::<Vec<RouteInfo>>(json).unwrap(), [route]);
     }
 
     #[test]

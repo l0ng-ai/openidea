@@ -162,6 +162,8 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "phpstan",
       "psalm",
       "static analysis",
+      "laravel",
+      "routes",
     ],
     component: PhpPage,
   },

@@ -252,6 +252,8 @@ describe("items and rows", () => {
     expect(sectionsFor("classes", true)).toEqual([]);
     expect(sectionsFor("all", false)).toEqual(["classes", "files", "symbols", "endpoints", "actions", "text"]);
     expect(sectionsFor("text", false)).toEqual(["text"]);
+    expect(sectionsFor("routes", false)).toEqual(["endpoints"]);
+    expect(sectionsFor("routes", true)).toEqual([]);
   });
 });
 
@@ -333,6 +335,7 @@ describe("parseCommand", () => {
       "/classes",
       "/files",
       "/symbols",
+      "/routes",
       "/actions",
       "/text",
     ]);

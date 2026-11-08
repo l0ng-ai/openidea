@@ -4,7 +4,7 @@
 //! `fixtures/laravel-stubs` as its `vendor/`).
 
 use super::*;
-use crate::frameworks::laravel::{RouteAction, RouteDef};
+use crate::frameworks::laravel::{RouteAction, RouteDef, RouteLens};
 
 fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -390,4 +390,141 @@ fn route_kinds_validate_values() {
     assert!(!Middleware.is_known(&cx, "nope"));
     assert!(ControllerAction.is_known(&cx, "PostController@store"));
     assert!(!ControllerAction.is_known(&cx, "PostController@nope"));
+}
+
+// ------------------------------------------------- route hints and search
+
+impl Project {
+    /// Opens the app's file `rel` as it is on disk.
+    fn open_file(&mut self, rel: &str) -> DocId {
+        let text = std::fs::read_to_string(self.root.join(rel)).unwrap().replace("\r\n", "\n");
+        let doc = DocId(self.next_doc);
+        self.next_doc += 1;
+        self.engine.document_opened(doc, &self.root.join(rel), 1, &text);
+        doc
+    }
+}
+
+#[test]
+fn route_list_and_search() {
+    let project = Project::app();
+    let all = project.engine.laravel_route_list("").unwrap();
+    assert_eq!(all.len(), project.engine.laravel_routes().unwrap().routes().len());
+    let show = all.iter().find(|route| route.name.as_deref() == Some("posts.show")).unwrap();
+    assert_eq!(show.methods, ["GET"]);
+    assert_eq!(show.uri, "/posts/{post}");
+    // `.env.example`: the fixture has no `.env`.
+    assert_eq!(show.url, "http://localhost:8000/posts/{post}");
+    assert_eq!(show.action, r"App\Http\Controllers\PostController@show");
+    assert_eq!(show.request, "### posts.show\nGET http://localhost:8000/posts/{{post}}\n");
+    assert_eq!(project.describe(&show.path, show.range), ("routes/web.php".to_owned(), 10, "resource".to_owned()));
+
+    let names = |query: &str| -> Vec<String> {
+        project.engine.laravel_route_list(query).unwrap().into_iter().filter_map(|route| route.name).collect()
+    };
+    assert_eq!(names("dashboard create"), ["dashboard.posts.create"]);
+    assert_eq!(names("delete"), ["dashboard.posts.destroy"]);
+    assert_eq!(names("billing/invoices"), ["billing.invoices.index", "api.billing.invoices.index"]);
+    assert!(names("nothing-like-this").is_empty());
+
+    // `.env` wins over `.env.example`.
+    std::fs::write(project.root.join(".env"), "APP_URL=https://blog.test/\n").unwrap();
+    let home = project.engine.laravel_route_list("home").unwrap();
+    assert_eq!(home[0].url, "https://blog.test/");
+    let api = project.engine.laravel_route_list("api.posts.index").unwrap();
+    assert_eq!(api[0].request, "### api.posts.index\nGET https://blog.test/api/posts\nAccept: application/json\n");
+}
+
+#[test]
+fn route_lenses_on_controller_methods() {
+    let mut project = Project::app();
+    let doc = project.open_file("app/Http/Controllers/PostController.php");
+    let lenses = project.engine.laravel_route_lenses(doc).unwrap();
+    let path = project.root.join("app/Http/Controllers/PostController.php");
+    let found: Vec<(String, String, Vec<String>)> = lenses
+        .iter()
+        .map(|lens| {
+            let (_, _, method) = project.describe(&path, lens.range);
+            let names = lens.routes.iter().filter_map(|route| route.name.clone()).collect();
+            (method, lens.title(), names)
+        })
+        .collect();
+    let row = |method: &str, title: &str, names: &[&str]| {
+        (method.to_owned(), title.to_owned(), names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        found,
+        [
+            row("index", "3 routes", &["posts.index", "archive.index", "admin.posts.index"]),
+            row("show", "GET /posts/{post} · posts.show", &["posts.show"]),
+            row("create", "GET /dashboard/posts/create · dashboard.posts.create", &["dashboard.posts.create"]),
+            row("store", "POST /dashboard/posts · dashboard.posts.store", &["dashboard.posts.store"]),
+            row("destroy", "DELETE /dashboard/posts/{post} · dashboard.posts.destroy", &["dashboard.posts.destroy"]),
+        ]
+    );
+
+    // An invokable controller's `__invoke`.
+    let doc = project.open_file("app/Http/Controllers/HomeController.php");
+    let lenses = project.engine.laravel_route_lenses(doc).unwrap();
+    assert_eq!(lenses.iter().map(RouteLens::title).collect::<Vec<_>>(), ["GET / · home"]);
+
+    // Off in the settings.
+    project.engine.set_laravel_settings(ide_core::settings::LaravelSettings { route_hints: false });
+    assert_eq!(project.engine.laravel_route_lenses(doc), Some(Vec::new()));
+}
+
+#[test]
+fn route_hints_after_registrations() {
+    let mut project = Project::app();
+    let doc = project.open_file("routes/web.php");
+    let all = Range::new(Pos::new(0, 0), Pos::new(1000, 0));
+    let hints = project.engine.laravel_route_hints(doc, all).unwrap();
+    let text = std::fs::read_to_string(project.root.join("routes/web.php")).unwrap().replace("\r\n", "\n");
+    let found: Vec<(String, String)> = hints
+        .iter()
+        .map(|hint| {
+            let line = text.lines().nth(hint.position.line as usize).unwrap();
+            (line[..hint.position.col as usize].trim().to_owned(), hint.label.clone())
+        })
+        .collect();
+    let row = |before: &str, label: &str| (before.to_owned(), label.to_owned());
+    assert_eq!(
+        found,
+        [
+            row("Route::get('/', HomeController::class)->name('home')", "/"),
+            row("Route::view('/about', 'about')->name('about')", "/about"),
+            row("Route::resource('posts', PostController::class)->only(['index', 'show'])", "/posts … 2 routes"),
+            row(
+                "Route::get('/posts/create', [PostController::class, 'create'])->name('posts.create')",
+                "/dashboard/posts/create"
+            ),
+            row("Route::post('/posts', [PostController::class, 'store'])->name('posts.store')", "/dashboard/posts"),
+            row(
+                "Route::delete('/posts/{post}', [PostController::class, 'destroy'])->name('posts.destroy')",
+                "/dashboard/posts/{post}"
+            ),
+            row("Route::get('/', 'index')->name('index')->middleware('throttle:60,1')", "/archive"),
+        ]
+    );
+    // Only the registrations ending in the range.
+    let first_lines = Range::new(Pos::new(0, 0), Pos::new(9, 0));
+    let some = project.engine.laravel_route_hints(doc, first_lines).unwrap();
+    assert_eq!(some.iter().map(|hint| hint.label.as_str()).collect::<Vec<_>>(), ["/", "/about"]);
+    // Route files of modules and the `then:` file carry their group prefixes.
+    let admin = project.open_file("routes/admin.php");
+    let hints = project.engine.laravel_route_hints(admin, all).unwrap();
+    assert_eq!(hints.iter().map(|hint| hint.label.as_str()).collect::<Vec<_>>(), ["/admin/posts"]);
+    // Not a route file.
+    let controller = project.open_file("app/Http/Controllers/PostController.php");
+    assert_eq!(project.engine.laravel_route_hints(controller, all), Some(Vec::new()));
+    project.engine.set_laravel_settings(ide_core::settings::LaravelSettings { route_hints: false });
+    assert_eq!(project.engine.laravel_route_hints(doc, all), Some(Vec::new()));
+}
+
+#[test]
+fn no_route_hints_outside_laravel_projects() {
+    let mut project = Project::new(&[("src/Foo.php", "<?php\nclass Foo { public function index() {} }\n")]);
+    let doc = project.open_file("src/Foo.php");
+    assert_eq!(project.engine.laravel_route_lenses(doc), None);
+    assert_eq!(project.engine.laravel_route_list(""), None);
 }

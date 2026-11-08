@@ -83,6 +83,27 @@ function editorFor(path: string, timeoutMs = 5000): Promise<TextEditorHandle | n
   });
 }
 
+/**
+ * Appends request `blocks` (`### …` texts ending with a line break) to the
+ * `generated-requests.http` scratch, opens it and puts the caret on the first
+ * request line. Throws when the scratch can't be created or opened.
+ */
+export async function appendToGeneratedRequests(blocks: string[]): Promise<void> {
+  if (!blocks.length) return;
+  const file = await scratchFile();
+  if (file.created) emitLocalIdeEvent({ type: "fsChanged", created: [file.path], modified: [], removed: [] });
+  await editorService().openFile(file.path, { focus: true });
+  const e = await editorFor(file.path);
+  if (!e) throw new Error(`${tx("Cannot open file")}: ${file.path}`);
+  const { insert, from, caret } = appendRequests(e.view.state.doc.toString(), blocks);
+  e.view.dispatch({
+    changes: { from, insert },
+    selection: { anchor: caret },
+    effects: EditorView.scrollIntoView(caret, { y: "center" }),
+    userEvent: "input",
+  });
+}
+
 /** Renders `targets` of the source at `sourcePath`, appends them to the scratch and opens it at the first one. */
 export async function generateRequests(sourcePath: string, text: string, targets: Target[]): Promise<void> {
   if (!targets.length) return;
@@ -104,18 +125,7 @@ export async function generateRequests(sourcePath: string, text: string, targets
         body: endpoint.bodyType ? skeleton(endpoint.bodyType, lookup) : undefined,
       }),
     );
-    const file = await scratchFile();
-    if (file.created) emitLocalIdeEvent({ type: "fsChanged", created: [file.path], modified: [], removed: [] });
-    await editorService().openFile(file.path, { focus: true });
-    const e = await editorFor(file.path);
-    if (!e) throw new Error(`${tx("Cannot open file")}: ${file.path}`);
-    const { insert, from, caret } = appendRequests(e.view.state.doc.toString(), blocks);
-    e.view.dispatch({
-      changes: { from, insert },
-      selection: { anchor: caret },
-      effects: EditorView.scrollIntoView(caret, { y: "center" }),
-      userEvent: "input",
-    });
+    await appendToGeneratedRequests(blocks);
   } catch (err) {
     notifications().notify({
       level: "error",

@@ -328,6 +328,11 @@ export const commands = {
 	indexFileExtensions: () => typedError<ExtensionCount[], IdeError>(__TAURI_INVOKE("index_file_extensions")),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
+	/**
+	 *  The Laravel routes matching `query` (name, URI, method or action parts) for
+	 *  Search Everywhere's Routes scope, from the native PHP engine.
+	 */
+	phpLaravelRoutes: (query: string) => typedError<LaravelRoute[], IdeError>(__TAURI_INVOKE("php_laravel_routes", { query })),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
 	/**  Folders holding indexed files, for `@` references. */
 	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
@@ -4284,6 +4289,8 @@ export type InlayLabelPart = {
 	tooltip: string | null,
 	/**  Declaration the part stands for (⌘-click navigates there). */
 	location: Location | null,
+	/**  What a click on the part runs (`InlayHintLabelPart.command`). */
+	command?: Command | null,
 };
 
 /**  One `textDocument/inlineCompletion` suggestion (ghost text at the caret). */
@@ -4736,6 +4743,41 @@ export type LanguagesSettings = {
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
+};
+
+/**
+ *  A Laravel route, as the native PHP engine reads it from the route files
+ *  (`ide_php::frameworks::laravel::RouteInfo`).
+ */
+export type LaravelRoute = {
+	/**  The full name (`dashboard.posts.create`). */
+	name: string | null,
+	/**  `GET`, `PUT|PATCH`… (`HEAD` left out next to `GET`). */
+	methods: string[],
+	/**  The full URI with a leading `/`. */
+	uri: string,
+	/**  `App\Http\Controllers\PostController@show`, `view about`, `Closure`… */
+	action: string,
+	middleware: string[],
+	/**  The route file, and the registering method's name in it. */
+	path: IpcPath,
+	range: Range,
+	/**  `APP_URL` and the URI. */
+	url: string,
+	/**  The route as an HTTP client request (`.http`). */
+	request: string,
+};
+
+/**
+ *  Settings › PHP › Laravel. The native engine takes it as it is (`ide_php`), so another
+ *  front end can map its own configuration onto it.
+ */
+export type LaravelSettings = {
+	/**
+	 *  A code lens on controller methods listing their routes, and the full URI after each
+	 *  route registration. On by default.
+	 */
+	routeHints?: boolean,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -5428,6 +5470,8 @@ export type PhpSettings = {
 	 *  show their problems (Settings › PHP › External Analyzers). Off by default.
 	 */
 	analyzersOnSave?: boolean,
+	/**  Laravel support (Settings › PHP › Laravel), passed to the native engine as one struct. */
+	laravel?: LaravelSettings,
 };
 
 /**  The focused editor when a plugin command is invoked. */

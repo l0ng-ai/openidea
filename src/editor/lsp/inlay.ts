@@ -1,8 +1,9 @@
 /**
  * Inlay hints (settings.editor.inlayHints) for the visible range, refreshed
  * after edits / scrolling (debounced) and rendered as subtle inline widgets.
- * Label parts that name a declaration navigate there on ⌘-click; right-click
- * offers to disable hints of that kind.
+ * Label parts that name a declaration navigate there on ⌘-click, parts with a
+ * command run it on a click (`clientCommands`); right-click offers to disable
+ * hints of that kind.
  */
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
@@ -17,6 +18,7 @@ import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { offsetsToRange, posToOffset } from "./positions";
 import { featureBackoff, onLspRefresh } from "./availability";
 import { gotoTargets } from "./navigation";
+import { runCommand } from "./clientCommands";
 import { tx } from "@/platform/i18n";
 
 const KIND_LABEL: Record<InlayHint["kind"], string> = {
@@ -61,7 +63,12 @@ class InlayWidget extends WidgetType {
       a.paddingLeft === b.paddingLeft &&
       a.paddingRight === b.paddingRight &&
       (a.parts?.length ?? 0) === (b.parts?.length ?? 0) &&
-      (a.parts ?? []).every((p, i) => p.location?.path === b.parts[i]?.location?.path && p.value === b.parts[i]?.value)
+      (a.parts ?? []).every(
+        (p, i) =>
+          p.location?.path === b.parts[i]?.location?.path &&
+          p.value === b.parts[i]?.value &&
+          JSON.stringify(p.command ?? null) === JSON.stringify(b.parts[i]?.command ?? null),
+      )
     );
   }
   toDOM(view: EditorView) {
@@ -70,12 +77,22 @@ class InlayWidget extends WidgetType {
     if (this.hint.paddingLeft) el.classList.add("cm-lsp-inlay-pl");
     if (this.hint.paddingRight) el.classList.add("cm-lsp-inlay-pr");
     const parts = this.hint.parts ?? [];
-    if (parts.some((p) => p.location || p.tooltip)) {
+    if (parts.some((p) => p.location || p.tooltip || p.command)) {
       for (const part of parts) {
         const span = document.createElement("span");
         span.textContent = part.value;
         if (part.tooltip) span.title = part.tooltip;
-        if (part.location) {
+        const command = part.command;
+        if (command) {
+          // A click runs the part's command (Laravel's route actions).
+          span.className = "cm-lsp-inlay-command";
+          span.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            void runCommand(view, command, e);
+          });
+        } else if (part.location) {
           span.className = "cm-lsp-inlay-part";
           const loc = part.location;
           // ⌘-click (Ctrl elsewhere) navigates to the declaration the part names, as in IDEA.

@@ -188,6 +188,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::index_status,
         nav::index_file_extensions,
         nav::spring_route_sources,
+        nav::php_laravel_routes,
         nav::find_files,
         nav::find_dirs,
         nav::find_symbols,

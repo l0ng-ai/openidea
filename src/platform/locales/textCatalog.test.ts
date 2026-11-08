@@ -92,6 +92,7 @@ const UNTRANSLATED = new Set<string>([
   "Prettier",
   "oxfmt",
   "IntelliJ IDEA",
+  "Laravel",
   // Go environment variables and placeholder values
   "CGO",
   "GOPROXY",

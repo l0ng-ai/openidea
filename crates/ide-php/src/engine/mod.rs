@@ -50,6 +50,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ide_core::event::ServerStatus;
+use ide_core::settings::LaravelSettings;
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
@@ -191,6 +192,8 @@ struct Shared {
     laravel_config: Mutex<Option<(u64, Arc<ConfigKeys>)>>,
     /// The Laravel routes, for a modification count.
     laravel_routes: Mutex<Option<(u64, Arc<RouteTable>)>>,
+    /// What Laravel support shows (Settings › PHP › Laravel).
+    laravel_settings: Mutex<LaravelSettings>,
 }
 
 /// The Laravel project model: what [`LaravelProject::load`] read (`None`:
@@ -238,6 +241,7 @@ impl PhpEngine {
             laravel: Mutex::new(LaravelCache::default()),
             laravel_config: Mutex::new(None),
             laravel_routes: Mutex::new(None),
+            laravel_settings: Mutex::new(LaravelSettings::default()),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -590,6 +594,16 @@ impl PhpEngine {
         }));
         *self.shared.laravel_routes.lock() = Some((modification, routes.clone()));
         Some(routes)
+    }
+
+    /// What Laravel support shows.
+    pub fn laravel_settings(&self) -> LaravelSettings {
+        self.shared.laravel_settings.lock().clone()
+    }
+
+    /// Changes what Laravel support shows (the front end's settings).
+    pub fn set_laravel_settings(&self, settings: LaravelSettings) {
+        *self.shared.laravel_settings.lock() = settings;
     }
 
     /// Every open document.

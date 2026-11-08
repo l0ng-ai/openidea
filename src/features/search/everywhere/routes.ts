@@ -1,4 +1,4 @@
-/** Request-path and controller-method ranking for Search Everywhere. */
+/** Request-path, route-name and controller-method ranking for Search Everywhere. */
 import type { EndpointEntry } from "@/workbench/contributions";
 import { matchText } from "../common/rank";
 import type { SymbolItem } from "./model";
@@ -15,7 +15,7 @@ function item(r: EndpointEntry, indices: number[], score: number): SymbolItem {
     name: display,
     display,
     symbolKind: "method",
-    container: `${r.controller}.${r.methodName}`,
+    container: r.detail ?? `${r.controller}.${r.methodName}`,
     path: r.path,
     rel: r.rel,
     line: r.line,
@@ -27,9 +27,10 @@ function item(r: EndpointEntry, indices: number[], score: number): SymbolItem {
 
 /**
  * Routes matching `query`: a request path (`/deeplink/menu/search`, with or without
- * the servlet context path), an optional `POST ` prefix, or the controller / method
- * name. Scores: exact path, then a path suffix (a context path in front of it), then
- * a substring, then the symbol names, then a fuzzy path hit.
+ * the servlet context path), an optional `POST ` prefix, a route name (`posts.show`)
+ * or the controller / method name. Scores: exact path, then an exact route name, then
+ * a path suffix (a context path in front of it), then a substring, then route names
+ * containing it, then the symbol names, then a fuzzy path hit.
  */
 export function matchRoutes(
   routes: readonly EndpointEntry[],
@@ -47,7 +48,7 @@ export function matchRoutes(
 
   const hits: { item: SymbolItem; score: number }[] = [];
   for (const r of routes) {
-    if (method && r.method !== method) continue;
+    if (method && !r.method.split("|").includes(method)) continue;
     const target = strip(r.url).toLowerCase();
     const qualified = `${r.controller}.${r.methodName}`.toLowerCase();
     let score = 0;
@@ -63,8 +64,13 @@ export function matchRoutes(
         if (at >= 0) indices = Array.from({ length: wantPath.length }, (_, i) => at + i);
       }
     }
+    const routeName = r.name?.toLowerCase();
+    if (routeName && wantName && score < 950) {
+      if (routeName === wantName) score = 950;
+      else if (!score && routeName.includes(wantName)) score = 650;
+    }
     if (!score && wantName) {
-      if (r.methodName.toLowerCase() === wantName) score = 800;
+      if (r.methodName && r.methodName.toLowerCase() === wantName) score = 800;
       else if (qualified === wantName || qualified.includes(wantName)) score = 600;
       else if (wantName.length >= 3 && target.includes(wantName)) score = 500;
       else {

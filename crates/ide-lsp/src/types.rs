@@ -259,6 +259,9 @@ pub struct InlayLabelPart {
     pub tooltip: Option<String>,
     /// Declaration the part stands for (⌘-click navigates there).
     pub location: Option<Location>,
+    /// What a click on the part runs (`InlayHintLabelPart.command`).
+    #[serde(default)]
+    pub command: Option<Command>,
 }
 
 /// Decoded semantic tokens (absolute positions) with the server legend applied.

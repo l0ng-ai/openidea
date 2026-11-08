@@ -53,6 +53,22 @@ describe("endpoints in Search Everywhere", () => {
     expect(matchRoutes(routes, "deeplink", 5).items).toHaveLength(2);
   });
 
+  it("finds a named route by its name and keeps routes answering several methods", () => {
+    const named = [
+      ...routes,
+      route({
+        method: "PUT|PATCH",
+        url: "/posts/{post}",
+        name: "posts.update",
+        detail: "posts.update · PostController@update",
+      }),
+    ];
+    expect(matchRoutes(named, "posts.update", 5).items[0]?.container).toBe("posts.update · PostController@update");
+    expect(matchRoutes(named, "update", 5).items[0]?.display).toBe("PUT|PATCH /posts/{post}");
+    expect(matchRoutes(named, "PATCH /posts/{post}", 5).items).toHaveLength(1);
+    expect(matchRoutes(named, "DELETE /posts/{post}", 5).items).toEqual([]);
+  });
+
   it("says nothing for an empty or unrelated query", () => {
     expect(matchRoutes(routes, "", 5).items).toEqual([]);
     expect(matchRoutes(routes, "   ", 5).items).toEqual([]);

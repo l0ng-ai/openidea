@@ -343,6 +343,9 @@ export const lspTheme = EditorView.theme({
     textUnderlineOffset: "2px",
     cursor: "pointer",
   },
+  // A part with a command (Laravel's route URI): a click offers its actions.
+  ".cm-lsp-inlay-command": { cursor: "pointer" },
+  ".cm-lsp-inlay-command:hover": { textDecoration: "underline", textUnderlineOffset: "2px" },
   // Inline completion: the suggestion as gray text at the caret.
   ".cm-inline-ghost": { color: "var(--fg-subtle)", whiteSpace: "pre" },
   ".cm-lsp-inlay-pl": { marginLeft: "4px" },

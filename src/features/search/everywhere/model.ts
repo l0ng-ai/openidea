@@ -9,7 +9,7 @@ import { tx } from "@/platform/i18n";
 import { basename, isTypeKind, relDir, symbolDisplayName } from "../common/open";
 import { byScore, matchText } from "../common/rank";
 
-export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text";
+export type SeTab = "all" | "classes" | "files" | "symbols" | "routes" | "actions" | "text";
 export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "endpoints" | "actions" | "text";
 
 export const TABS: ReadonlyArray<{ id: SeTab; label: string }> = [
@@ -17,6 +17,7 @@ export const TABS: ReadonlyArray<{ id: SeTab; label: string }> = [
   { id: "classes", label: "Classes" },
   { id: "files", label: "Files" },
   { id: "symbols", label: "Symbols" },
+  { id: "routes", label: "Routes" },
   { id: "actions", label: "Actions" },
   { id: "text", label: "Text" },
 ];
@@ -57,6 +58,7 @@ export function sectionsFor(tab: SeTab, emptyQuery: boolean): SectionId[] {
         return [];
     }
   }
+  if (tab === "routes") return ["endpoints"];
   return tab === "all" ? ["classes", "files", "symbols", "endpoints", "actions", "text"] : [tab];
 }
 

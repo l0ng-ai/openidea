@@ -1381,7 +1381,7 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
 // Project endpoints supplied by framework features for request-path search.
 
 export interface EndpointEntry {
-  /** `GET`, `POST`, … */
+  /** `GET`, `POST`, … (`PUT|PATCH` for a route answering several). */
   method: string;
   /** Class-level and method-level mapping joined; `{var}` kept. */
   url: string;
@@ -1391,6 +1391,10 @@ export interface EndpointEntry {
   rel: string;
   line: number;
   col: number;
+  /** The route's name, when the framework names routes (Laravel's `posts.show`). */
+  name?: string;
+  /** Shown instead of `controller.methodName` (`posts.show · PostController@show`). */
+  detail?: string;
 }
 
 export interface EndpointProvider {

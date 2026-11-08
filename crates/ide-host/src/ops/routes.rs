@@ -1,6 +1,9 @@
-//! Spring Web mappings, source side: the project's Java and Kotlin files that could
-//! declare a route, with their text. The UI owns the annotation parser and the index
-//! it feeds, so this side stays a cheap scan.
+//! Routes for Search Everywhere's Routes scope.
+//!
+//! - Spring Web mappings, source side: the project's Java and Kotlin files that could
+//!   declare a route, with their text. The UI owns the annotation parser and the index
+//!   it feeds, so this side stays a cheap scan.
+//! - Laravel routes: the native PHP engine's route table ([`php_laravel_routes`]).
 
 use crate::Host;
 use ide_core::IdeResult;
@@ -82,6 +85,58 @@ pub fn spring_route_sources(host: &Host, window: &str) -> IdeResult<Vec<RouteSou
         n => tracing::info!("spring routes: {n} mapping sources under {:?}", project.root),
     }
     Ok(out)
+}
+
+/// A Laravel route, as the native PHP engine reads it from the route files
+/// (`ide_php::frameworks::laravel::RouteInfo`).
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LaravelRoute {
+    /// The full name (`dashboard.posts.create`).
+    pub name: Option<String>,
+    /// `GET`, `PUT|PATCH`… (`HEAD` left out next to `GET`).
+    pub methods: Vec<String>,
+    /// The full URI with a leading `/`.
+    pub uri: String,
+    /// `App\Http\Controllers\PostController@show`, `view about`, `Closure`…
+    pub action: String,
+    pub middleware: Vec<String>,
+    /// The route file, and the registering method's name in it.
+    pub path: ide_core::IpcPath,
+    pub range: ide_core::Range,
+    /// `APP_URL` and the URI.
+    pub url: String,
+    /// The route as an HTTP client request (`.http`).
+    pub request: String,
+}
+
+impl From<ide_php::frameworks::laravel::RouteInfo> for LaravelRoute {
+    fn from(route: ide_php::frameworks::laravel::RouteInfo) -> Self {
+        Self {
+            name: route.name,
+            methods: route.methods,
+            uri: route.uri,
+            action: route.action,
+            middleware: route.middleware,
+            path: route.path.into(),
+            range: route.range,
+            url: route.url,
+            request: route.request,
+        }
+    }
+}
+
+/// The routes of the project's Laravel application matching every term of
+/// `query` (name, URI, method or action parts; empty: all), in file order.
+/// Empty while the native PHP engine isn't running or the project isn't a
+/// Laravel application.
+pub async fn php_laravel_routes(host: &Host, window: &str, query: String) -> IdeResult<Vec<LaravelRoute>> {
+    let project = host.project(window)?;
+    let Some(engine) = project.php.engine() else { return Ok(Vec::new()) };
+    host.blocking(move || {
+        Ok(engine.laravel_route_list(&query).unwrap_or_default().into_iter().map(LaravelRoute::from).collect())
+    })
+    .await
 }
 
 #[cfg(test)]

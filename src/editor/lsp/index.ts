@@ -26,6 +26,7 @@ import { inlayExtension } from "./inlay";
 import { inlineCompletionExtension, registerInlineCompletionActions } from "./inlineCompletion";
 import { semanticExtension } from "./semantic";
 import { usagesLensExtension } from "./codeLens";
+import { serverLensExtension } from "./serverLens";
 import { autoImportExtension } from "./autoImport";
 import { installAvailabilityEvents } from "./availability";
 import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from "./actions";
@@ -58,6 +59,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     inlineCompletionExtension(),
     semanticExtension(),
     usagesLensExtension(),
+    serverLensExtension(),
     autoImportExtension(),
     unresolvedReferences(),
     syntaxErrorsExtension(),

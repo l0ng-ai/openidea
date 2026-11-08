@@ -895,6 +895,7 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
                         lsp::InlayHintLabelPartTooltip::MarkupContent(m) => m.value,
                     }),
                     location: p.location.as_ref().and_then(|l| conv.location(l)),
+                    command: p.command.map(command),
                 })
                 .collect();
             (label, parts)

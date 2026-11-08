@@ -524,7 +524,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: caret fixtures on the fixture app.
 
-- [ ] Phase 8.5: Route hints and route search
+- [x] Phase 8.5: Route hints and route search
       Add these hints:
   - a code lens on controller methods listing the routes that point to them (method, URI, name)
   - an inlay hint after each `Route::get(...)` and similar call showing the full URI with group prefixes

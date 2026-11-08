@@ -45,6 +45,18 @@ pub fn spring_route_sources(
     ide_host::ops::routes::spring_route_sources(&state.host, window.label())
 }
 
+/// The Laravel routes matching `query` (name, URI, method or action parts) for
+/// Search Everywhere's Routes scope, from the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_routes(
+    window: Window,
+    state: State<'_, AppState>,
+    query: String,
+) -> IdeResult<Vec<ide_host::ops::routes::LaravelRoute>> {
+    ide_host::ops::routes::php_laravel_routes(&state.host, window.label(), query).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn find_symbols(

@@ -129,6 +129,7 @@ export function PhpPage() {
   const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
   const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
   const [analyzersOnSave, setAnalyzersOnSave] = useSetting<boolean>("languages.php.analyzersOnSave");
+  const [routeHints, setRouteHints] = useSetting<boolean>("languages.php.laravel.routeHints");
   const { list } = useDetected("php");
   const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
   return (
@@ -186,6 +187,14 @@ export function PhpPage() {
           checked={analyzersOnSave ?? false}
           onChange={setAnalyzersOnSave}
           hint="When vendor/bin/phpstan or vendor/bin/psalm (with a psalm.xml) is installed, runs it on each saved PHP file of a trusted project with the PHP interpreter below and shows its problems, without those the built-in engine already reports."
+        />
+      </Section>
+      <Section title="Laravel">
+        <Toggle
+          label="Show route hints"
+          checked={routeHints ?? true}
+          onChange={setRouteHints}
+          hint="In Laravel projects, shows the routes pointing to each controller method above it and the full URI after each route registration. Click one to go to the route, copy or open its URL, or create an HTTP request for it."
         />
       </Section>
       <Section title="CLI Interpreter">

@@ -253,6 +253,14 @@ export function activate(): void | (() => void) {
         run: se("files"),
       },
       {
+        id: "navigate.searchRoutes",
+        title: "Search Routes…",
+        category: "Navigate",
+        keywords: ["route", "endpoint", "url", "uri", "laravel", "spring", "request mapping"],
+        when: "projectOpen",
+        run: se("routes"),
+      },
+      {
         id: "navigate.gotoSymbol",
         title: "Go to Symbol…",
         category: "Navigate",

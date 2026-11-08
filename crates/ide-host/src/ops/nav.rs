@@ -184,4 +184,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("web_unresolved_references", |c| async move {
         web_unresolved_references(&c.host, &c.window, c.arg("doc")?).await
     });
+    d.add("php_laravel_routes", |c| async move {
+        super::routes::php_laravel_routes(&c.host, &c.window, c.arg("query")?).await
+    });
 }
