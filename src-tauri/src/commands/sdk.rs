@@ -96,8 +96,7 @@ pub async fn sdk_locate_tools(
     ide_host::ops::sdk::sdk_locate_tools(&state.host, window.label(), names, near).await
 }
 
-/// The interpreter `path` picked by hand ("Add Python Interpreter" › Existing) as an SDK, named
-/// like the detected ones; `None` when it isn't a usable Python.
+/// An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run.
 #[tauri::command]
 #[specta::specta]
 pub async fn sdk_python_interpreter(

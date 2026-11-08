@@ -130,7 +130,7 @@ describe("Add Python Interpreter", () => {
     fireEvent.click(await screen.findByRole("option", { name: /Python 3\.12 \(\.venv\)/ }));
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     expect(mocks.createVenv).not.toHaveBeenCalled();
-    expect(onAdded).toHaveBeenCalledWith("/project/.venv/bin/python");
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith("/project/.venv/bin/python"));
     expect(mocks.interpreter).toHaveBeenCalledWith("/project/.venv/bin/python");
     await waitFor(() =>
       expect(useSdks.getState().byKind.python?.some((s) => s.path === "/project/.venv/bin/python")).toBe(true),
@@ -147,15 +147,102 @@ describe("Add Python Interpreter", () => {
       extra: null,
     };
     mocks.interpreter.mockResolvedValue(ok(OUTSIDE));
-    mocks.choosePath.mockResolvedValue("/opt/pyenv/erp19py3.12/bin/python");
+    mocks.choosePath.mockResolvedValue("/opt/pyenv/erp19py3.12");
     const onAdded = open();
     await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
     fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "OK" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
-    expect(onAdded).toHaveBeenCalledWith("/opt/pyenv/erp19py3.12/bin/python");
-    expect(mocks.interpreter).toHaveBeenCalledWith("/opt/pyenv/erp19py3.12/bin/python");
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith("/opt/pyenv/erp19py3.12/bin/python"));
+    expect(mocks.interpreter).toHaveBeenCalledWith("/opt/pyenv/erp19py3.12");
     await waitFor(() => expect(useSdks.getState().byKind.python?.some((s) => s.path === OUTSIDE.path)).toBe(true));
+  });
+
+  it.each([
+    ["/project/.venv", "/project/.venv/bin/python"],
+    ["C:\\project\\.venv", "C:\\project\\.venv\\Scripts\\python.exe"],
+  ])("waits for validation and resolves the folder %s", async (folder, executable) => {
+    let finish!: (value: ReturnType<typeof ok<Sdk>>) => void;
+    mocks.interpreter.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    mocks.choosePath.mockResolvedValue(folder);
+    const onAdded = open();
+    fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "OK" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(onAdded).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+    expect(mocks.choosePath).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+      title: "Select Python Environment Folder",
+      defaultPath: "/project",
+    });
+    await act(async () => finish(ok({ ...VENV, path: executable })));
+    expect(onAdded).toHaveBeenCalledWith(executable);
+  });
+
+  it.each(["/project/.venv/bin/python", "C:\\project\\.venv\\Scripts\\python.exe"])(
+    "preserves the typed interpreter path %s when validating",
+    async (path) => {
+      mocks.interpreter.mockResolvedValue(ok({ ...VENV, path }));
+      const onAdded = open();
+      fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
+      fireEvent.change(screen.getByRole("textbox", { name: "Environment folder or interpreter:" }), {
+        target: { value: path },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "OK" }));
+      await waitFor(() => expect(onAdded).toHaveBeenCalledWith(path));
+      expect(mocks.interpreter).toHaveBeenCalledWith(path);
+      expect(mocks.choosePath).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ignores a validation result after cancelling", async () => {
+    let finish!: (value: ReturnType<typeof ok<Sdk>>) => void;
+    mocks.interpreter.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    mocks.choosePath.mockResolvedValue(VENV.path);
+    const onAdded = open();
+    fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "OK" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(async () => finish(ok(VENV)));
+    expect(onAdded).not.toHaveBeenCalled();
+  });
+
+  it("keeps the newly remembered interpreter when a pending scan finishes", async () => {
+    let finish!: (value: ReturnType<typeof ok<Sdk[]>>) => void;
+    mocks.detect.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    mocks.interpreter.mockResolvedValue(ok(VENV));
+    mocks.choosePath.mockResolvedValue(VENV.path);
+    const onAdded = open();
+    fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Interpreter" })).toHaveTextContent(VENV.path));
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() => expect(onAdded).toHaveBeenCalledWith(VENV.path));
+    await act(async () => finish(ok([SYSTEM])));
+    expect(useSdks.getState().byKind.python?.some((s) => s.path === VENV.path)).toBe(true);
+    expect(useSdks.getState().byKind.python?.some((s) => s.path === SYSTEM.path)).toBe(true);
+  });
+
+  it.each(["unusable", "failed"])("keeps an %s interpreter out of the project and shows an error", async (result) => {
+    mocks.interpreter.mockImplementation(() =>
+      result === "unusable" ? Promise.resolve(ok(null)) : Promise.reject(new Error("Cannot probe interpreter")),
+    );
+    mocks.choosePath.mockResolvedValue("/broken/bin/python");
+    const onAdded = open();
+    fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "OK" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      result === "unusable" ? "Cannot run this Python interpreter" : "Cannot probe interpreter",
+    );
+    expect(onAdded).not.toHaveBeenCalled();
+    expect(useSdks.getState().byKind.python?.some((s) => s.path === "/broken/bin/python")).toBe(false);
   });
 });

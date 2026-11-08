@@ -60,10 +60,14 @@ export function detectSdks(kind: SdkKind, force = false): Promise<Sdk[]> {
 
 /** Adds an SDK (e.g. a just-created virtualenv) to the cached list. */
 export function rememberSdk(kind: SdkKind, sdk: Sdk) {
-  useSdks.setState((s) => {
-    const list = s.byKind[kind] ?? [];
-    return { byKind: { ...s.byKind, [kind]: [sdk, ...list.filter((x) => x.path !== sdk.path)] } };
-  });
+  const remember = () =>
+    useSdks.setState((s) => {
+      const list = s.byKind[kind] ?? [];
+      return { byKind: { ...s.byKind, [kind]: [sdk, ...list.filter((x) => x.path !== sdk.path)] } };
+    });
+  remember();
+  // An already-running scan may not include this newly added environment.
+  void inflight.get(kind)?.then(remember);
 }
 
 export interface Streamed<T> {

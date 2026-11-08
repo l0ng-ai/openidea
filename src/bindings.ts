@@ -823,10 +823,7 @@ export const commands = {
 	jdkDownload: (vendor: string, version: number, location: string | null, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("jdk_download", { vendor, version, location, request, onEvent })),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
-	/**
-	 *  The interpreter `path` picked by hand ("Add Python Interpreter" › Existing) as an SDK, named
-	 *  like the detected ones; `None` when it isn't a usable Python.
-	 */
+	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
 	 *  Executable (`python`, `node`, `pnpm`) or directory (Rust toolchain bin
