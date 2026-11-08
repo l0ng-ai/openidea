@@ -6,8 +6,10 @@ mod error;
 mod graph;
 mod hprof;
 mod ids;
+mod names;
 mod progress;
 mod reader;
+mod shallow;
 /// Fixture builders shared by this crate's tests and by dependants' tests and benches; not API.
 #[doc(hidden)]
 pub mod testing;
@@ -20,4 +22,6 @@ pub use hprof::{
     BasicType, ClassDump, HeapRecord, HeapRootKind, HprofHeader, Record, parse_header, record_at, scan, scan_segment,
 };
 pub use ids::{IdMap, IdMapBuilder};
+pub use names::display_name;
 pub use progress::HeapPhase;
+pub use shallow::{HistogramEntry, ShallowModel, SizeSource, VmLayout};
