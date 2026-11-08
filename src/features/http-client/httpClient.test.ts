@@ -79,6 +79,60 @@ describe("http highlighting", () => {
     return out;
   }
 
+  it.each([
+    ["GRPC", "localhost:9003/example.Greeter/SayHello"],
+    ["WEBSOCKET", "ws://localhost:8080/events"],
+    ["PROPFIND", "https://example.test/collection"],
+    ["M-SEARCH", "http://example.test/devices"],
+  ])("highlights %s request lines and their JSON bodies", (method, url) => {
+    const t = tokens(
+      `### Request with body\n${method} ${url}\nContent-Type: application/json\n\n{"name": "World", "count": 12, "enabled": true}\n`,
+    );
+    expect(t).toContainEqual(["keyword", method]);
+    expect(t).toContainEqual(["link", url]);
+    expect(t).toContainEqual(["propertyName", "Content-Type"]);
+    expect(t).toContainEqual(["propertyName", '"name"']);
+    expect(t).toContainEqual(["string", '"World"']);
+    expect(t).toContainEqual(["number", "12"]);
+    expect(t).toContainEqual(["bool", "true"]);
+  });
+
+  it.each(["https://example.test/items", "/items", "{{endpoint}}", "{{host}}/items"])(
+    "recognizes a bare request target %s before entering the body",
+    (url) => {
+      const t = tokens(`${url}\n\n{"count": 12, "enabled": false}\n`);
+      expect(t[0]?.[0]).toContain(url.startsWith("{{") ? "variableName" : "link");
+      expect(t).toContainEqual(["propertyName", '"count"']);
+      expect(t).toContainEqual(["number", "12"]);
+      expect(t).toContainEqual(["bool", "false"]);
+    },
+  );
+
+  it("resets request state across protocol changes and keeps variable declarations", () => {
+    const t = tokens(
+      '@host = localhost\n### RPC\nGRPC {{host}}:9003/example.Greeter/SayHello\n\n{"count": 1}\n### HTTP\nPOST https://example.test/messages\n\n{"count": 2}\n### Socket\nWEBSOCKET ws://{{host}}/events\n\n{"count": 3}',
+    );
+    expect(t.filter(([name]) => name === "keyword").map(([, text]) => text)).toEqual(["GRPC", "POST", "WEBSOCKET"]);
+    expect(t.filter(([name]) => name === "number").map(([, text]) => text)).toEqual(["1", "2", "3"]);
+    expect(t.some(([name, text]) => name.includes("variableName") && text === "@host")).toBe(true);
+  });
+
+  it("distinguishes JSON keys, values, arrays and primitive literals", () => {
+    const t = tokens(
+      'POST https://example.test/items\n\n{"name": "World", "fraction": -1.25e+3, "enabled": true, "empty": null, "items": [1, false, {"nested": "yes"}]}',
+    );
+    expect(t).toContainEqual(["propertyName", '"name"']);
+    expect(t).toContainEqual(["string", '"World"']);
+    expect(t).toContainEqual(["propertyName", '"nested"']);
+    expect(t).toContainEqual(["number", "-1.25e+3"]);
+    expect(t).toContainEqual(["bool", "true"]);
+    expect(t).toContainEqual(["bool", "false"]);
+    expect(t).toContainEqual(["null", "null"]);
+    expect(t.some(([name, text]) => name === "brace" && text.includes("{"))).toBe(true);
+    expect(t).toContainEqual(["squareBracket", "["]);
+    expect(t.some(([name, text]) => name === "separator" && text.includes(":"))).toBe(true);
+  });
+
   it("tags separators, methods, URLs, headers, variables and comments", () => {
     const t = tokens('### Users\n# @name list\nGET https://{{host}}/users\nAccept: json\n\n{"a": 1}\n');
     const has = (name: string, text: string) => t.some(([n, s]) => n.includes(name) && s === text);
@@ -88,7 +142,7 @@ describe("http highlighting", () => {
     expect(has("variableName", "{{host}}")).toBe(true);
     expect(has("propertyName", "Accept")).toBe(true);
     expect(has("string", " json")).toBe(true);
-    expect(has("string", '"a"')).toBe(true);
+    expect(has("propertyName", '"a"')).toBe(true);
     expect(has("number", "1")).toBe(true);
     expect(has("meta", "# @name")).toBe(true);
   });

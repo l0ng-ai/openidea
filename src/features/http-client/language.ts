@@ -53,7 +53,10 @@ export const httpParser: StreamParser<State> = {
       return "comment";
     }
     const v = variable(stream);
-    if (v) return v;
+    if (v) {
+      if (state.phase === "preamble" && state.part === "start") state.part = "url";
+      return v;
+    }
 
     if (state.phase === "preamble") {
       if (state.part === "start") {
@@ -70,17 +73,16 @@ export const httpParser: StreamParser<State> = {
           state.part = "rest";
           return "variableName.definition";
         }
-        const method = stream.match(new RegExp(`^(${METHODS.join("|")})(?=\\s)`));
+        const method = stream.match(/^[A-Z][A-Z0-9_-]*(?=\s)/);
         if (method) {
           state.part = "url";
           return "keyword";
         }
-        if (stream.match(/^(https?:\/\/|\/)/, false)) {
-          state.part = "url";
+        if (stream.match(/^(https?:\/\/|\/)/, false)) state.part = "url";
+        else {
+          stream.skipToEnd();
           return null;
         }
-        stream.skipToEnd();
-        return null;
       }
       if (state.part === "url") {
         if (stream.match(/^\s+HTTP\/[\d.]+\s*$/)) return "meta";
@@ -134,10 +136,14 @@ export const httpParser: StreamParser<State> = {
         return "meta";
       }
     }
-    if (stream.match(/^"(?:[^"\\]|\\.)*"/)) return "string";
+    if (stream.match(/^"(?:[^"\\]|\\.)*"/)) return stream.match(/^\s*:/, false) ? "propertyName" : "string";
+    if (stream.match(/^[{}]/)) return "brace";
+    if (stream.match(/^[[\]]/)) return "squareBracket";
+    if (stream.match(/^[,:]/)) return "separator";
     if (stream.match(/^-?\d+(\.\d+)?([eE][+-]?\d+)?\b/)) return "number";
-    if (stream.match(/^(true|false|null)\b/)) return "atom";
-    if (!stream.match(/^[^"{\d\-tfn]+/)) stream.next();
+    if (stream.match(/^(true|false)\b/)) return "bool";
+    if (stream.match(/^null\b/)) return "null";
+    if (!stream.match(/^[^"{}[\],:\d\-tfn]+/)) stream.next();
     return null;
   },
   languageData: { commentTokens: { line: "#" } },
