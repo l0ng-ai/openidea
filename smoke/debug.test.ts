@@ -333,7 +333,7 @@ async function smoke(language: string) {
     } else {
       // Attaching to a suspended JVM older than 17 hangs, so the backend refuses it by design.
       const { reason } = memory;
-      const refused = reason.kind === "unsafeWhileSuspended" && reason.javaMajor < 17;
+      const refused = reason.kind === "unsafeWhileSuspended" && reason.javaMajor > 0 && reason.javaMajor < 17;
       expect(refused, `memory unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
     }
   }
@@ -360,7 +360,10 @@ async function smoke(language: string) {
       // The same refusal as the class table's, for the same reason.
       const { reason } = captured;
       const refused =
-        reason.kind === "memory" && reason.reason.kind === "unsafeWhileSuspended" && reason.reason.javaMajor < 17;
+        reason.kind === "memory" &&
+        reason.reason.kind === "unsafeWhileSuspended" &&
+        reason.reason.javaMajor > 0 &&
+        reason.reason.javaMajor < 17;
       expect(refused, `heap unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
     } else {
       if (captured.status !== "ready") throw new Error(`heap capture: ${JSON.stringify(captured)}\n${shown()}`);

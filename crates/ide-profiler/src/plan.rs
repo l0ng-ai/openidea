@@ -138,14 +138,14 @@ fn async_profiler_lib(config: &RunConfig) -> Option<PathBuf> {
 }
 
 /// async-profiler's `live` option needs JDK 11+. An unreadable version does not stop the run.
+/// Only an absolute launcher is checked: a bare `java` is resolved to the project's JDK at
+/// launch, which need not be the first `java` on the search path.
 fn live_objects_jdk_too_old(config: &RunConfig) -> Option<ProfilePrepared> {
     let command = Path::new(&config.command);
-    let launcher = if command.is_absolute() {
-        Some(command.to_path_buf())
-    } else {
-        ide_run::which::find_executable("java", &wrap::search_path(config))
-    };
-    let version = ide_run::java_cmdline::java_feature_version(&launcher?)?;
+    if !command.is_absolute() {
+        return None;
+    }
+    let version = ide_run::java_cmdline::java_feature_version(command)?;
     (version < 11).then(|| {
         unsupported(format!("Profiling live objects needs JDK 11 or newer; '{}' runs JDK {version}.", config.name))
     })
@@ -457,6 +457,24 @@ mod tests {
         std::fs::write(dir.path().join("jdk8/release"), "JAVA_VERSION=\"11.0.29\"\n").unwrap();
         c.env.insert("ASYNC_PROFILER_HOME".into(), fake_async_profiler(dir.path()).to_string_lossy().into_owned());
         assert!(matches!(prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects), ProfilePrepared::Ready { .. }));
+    }
+
+    #[test]
+    fn live_objects_runs_a_bare_java_command_whatever_jdk_is_on_the_path() {
+        if cfg!(windows) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("jdk8/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("java"), "").unwrap();
+        std::fs::write(dir.path().join("jdk8/release"), "JAVA_VERSION=\"1.8.0_512\"\n").unwrap();
+        // The launcher picks the project's JDK, not the first `java` on the search path.
+        let mut c = cfg("application", "java", &["com.x.App"]);
+        c.env.insert("PATH".into(), bin.to_string_lossy().into_owned());
+        c.env.insert("ASYNC_PROFILER_HOME".into(), fake_async_profiler(dir.path()).to_string_lossy().into_owned());
+        let prepared = prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects);
+        assert!(matches!(prepared, ProfilePrepared::Ready { .. }), "{prepared:?}");
     }
 
     #[test]
