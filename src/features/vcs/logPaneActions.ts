@@ -7,7 +7,7 @@ import { create } from "zustand";
 import type { Branch } from "@/bindings";
 import { registerActions, type Action } from "@/platform/actions";
 import { notifications, toolWindowService } from "@/workbench/contributions";
-import { deleteBranch, deleteRemoteBranch, newBranch, toggleFavoriteBranch, updateBranch } from "./branchOps";
+import { deleteBranches, newBranch, toggleFavoriteBranch, updateBranch } from "./branchOps";
 import {
   changesArg,
   compareChangeWithLocal,
@@ -36,6 +36,13 @@ export const useBranchesPane = create<{ selected: BranchTarget[] }>(() => ({ sel
 function branchArg(arg: unknown): BranchTarget | null {
   if (arg && typeof arg === "object" && "ref" in arg) return arg as BranchTarget;
   return useBranchesPane.getState().selected[0] ?? null;
+}
+
+/** The action's branches: an array argument as a whole, otherwise the single one or the pane's selection. */
+function branchTargets(arg: unknown): BranchTarget[] {
+  if (Array.isArray(arg)) return arg.filter((t): t is BranchTarget => !!t && typeof t === "object" && "ref" in t);
+  const t = branchArg(arg);
+  return t ? [t] : useBranchesPane.getState().selected;
 }
 
 const withBranch =
@@ -117,10 +124,7 @@ export function registerLogPaneActions(): () => void {
       icon: "trash",
       when: VCS,
       hidden: true,
-      run: withBranch((b) => {
-        if (b.current) return;
-        return b.remote ? deleteRemoteBranch(b.name) : deleteBranch(b.name);
-      }),
+      run: ({ arg }) => void deleteBranches(branchTargets(arg)),
     },
     {
       id: "vcs.log.branches.toggleFavorite",

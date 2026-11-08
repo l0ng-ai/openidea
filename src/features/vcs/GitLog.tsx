@@ -496,8 +496,8 @@ export function BranchesPanel() {
               size="small"
               title="Delete Branch"
               action="vcs.log.branches.delete"
-              actionArg={target}
-              disabled={!canDeleteBranch(target ?? null)}
+              actionArg={targets}
+              disabled={!targets.some((t) => canDeleteBranch(t))}
             />
             <IconButton
               icon="locate"
@@ -574,7 +574,7 @@ export function BranchesPanel() {
             const sel = selected.has(n.key) ? targets.filter((r) => r.repo === n.repo).map((r) => r.ref) : [n.ref];
             setLogFilters({ branches: sel, repositories: n.repo ? [n.repo] : [] });
           }}
-          onContextMenu={(n, _s, e) => {
+          onContextMenu={(n, sel, e) => {
             if (readOnly) {
               if (!n?.ref) return;
               e.preventDefault();
@@ -584,8 +584,16 @@ export function BranchesPanel() {
               ]);
               return;
             }
+            // The menu acts on the whole selection when the right-clicked branch is part of it.
+            const picked: BranchTarget[] =
+              n && sel.has(n.key) ? targets : n?.ref ? [{ ref: n.ref, branch: n.branch, repo: n.repo }] : [];
             const menu = n?.branch
-              ? branchMenu(n.branch, n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current)
+              ? branchMenu(
+                  n.branch,
+                  n.repo ? (useVcs.getState().heads[n.repo]?.head ?? null) : current,
+                  () => {},
+                  picked,
+                )
               : n?.kind === "tag"
                 ? tagMenu(n.ref!)
                 : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))

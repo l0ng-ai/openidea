@@ -10,7 +10,7 @@ import { showCommitRange } from "./CompareBranches";
 import { confirmDialog, promptText } from "./dialogs";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { runOp, runRemote, saveAll } from "./ops";
-import { conflictedFiles, currentRepo, refreshNow, repoName, useVcs } from "./store";
+import { conflictedFiles, currentRepo, focusRepo, refreshNow, repoName, useVcs } from "./store";
 import { tx } from "@/platform/i18n";
 
 const recentKey = () => `openidea.vcs.recentBranches:${useVcs.getState().root ?? ""}`;
@@ -395,6 +395,35 @@ export async function deleteRemoteBranch(name: string) {
   });
   if (!ok) return;
   await runRemote({ op: "deleteBranch", branch: name }, name);
+}
+
+/** Delete Branches for a multi-selection: the current branch is skipped, every repository is
+ * focused before its branches go, and several remote branches share a single confirmation. */
+export async function deleteBranches(targets: readonly { repo?: string; branch?: Branch }[]) {
+  const list = targets.filter((t): t is { repo?: string; branch: Branch } => !!t.branch && !t.branch.current);
+  if (!list.length) return;
+  const remote = list.filter((t) => t.branch.remote);
+  if (remote.length > 1) {
+    const names = remote.map((t) => shortRemoteName(t.branch.name)).join("', '");
+    const ok = await confirmDialog({
+      title: "Delete Remote Branches",
+      message: tx`Delete the ${remote.length} branches '${names}' on the remote? The remote-tracking branches are removed as well.`,
+      okLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+  }
+  let repo: string | undefined;
+  for (const t of list) {
+    if (t.repo !== repo) {
+      repo = t.repo;
+      if (repo) await focusRepo(repo);
+    }
+    if (t.branch.remote) {
+      if (remote.length > 1) await runRemote({ op: "deleteBranch", branch: t.branch.name }, t.branch.name);
+      else await deleteRemoteBranch(t.branch.name);
+    } else await deleteBranch(t.branch.name);
+  }
 }
 
 /** Checkout and Rebase onto Current: checks out `name`, then rebases it onto the branch that was current. */
