@@ -4323,6 +4323,7 @@ dependencies = [
 name = "ide-heap"
 version = "0.1.38"
 dependencies = [
+ "criterion",
  "ide-core",
  "libc",
  "memmap2",

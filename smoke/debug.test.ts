@@ -4,13 +4,13 @@
  * frame, its variables, evaluation, Step Over and Resume, with the debugger the IDE installs.
  */
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
 import { Channel } from "@tauri-apps/api/core";
-import { commands, type InstallEvent } from "@/bindings";
+import { commands, type HeapProgress, type InstallEvent } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useBuildModel } from "@/platform/buildModel";
@@ -53,6 +53,8 @@ interface Case {
   request?: string;
   /** JVM languages: the live instances of a class the paused program holds (Memory tab). */
   memory?: { className: string; instances: number };
+  /** JVM languages: a class of the heap snapshot captured there and its instance count. */
+  heap?: { className: string; instances: number };
   /** JVM languages: that class's instances, a field of the first one and its referrers (Show Instances). */
   instances?: { className: string; count: number; field: string };
 }
@@ -65,6 +67,7 @@ const kotlin = {
   evaluate: ["library", /Library/] as [string, RegExp],
   // Gradle forks the JVM and the debugger attaches to it: the attach-session path.
   memory: { className: "com.example.library.Book", instances: 3 },
+  heap: { className: "com.example.library.Book", instances: 3 },
   instances: { className: "com.example.library.Book", count: 3, field: "title" },
 };
 
@@ -112,6 +115,7 @@ const CASES: Record<string, Case> = {
     variable: "book",
     evaluate: ["book.size()", /^3$/],
     memory: { className: "com.example.orders.OrderBook", instances: 1 },
+    heap: { className: "com.example.orders.OrderBook", instances: 1 },
     instances: { className: "com.example.orders.OrderBook", count: 1, field: "orders" },
   },
   kotlin: {
@@ -331,6 +335,59 @@ async function smoke(language: string) {
       const { reason } = memory;
       const refused = reason.kind === "unsafeWhileSuspended" && reason.javaMajor < 17;
       expect(refused, `memory unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
+    }
+  }
+
+  if (c.heap) {
+    const { className, instances } = c.heap;
+    const snapshots = join(base, "home", "data", "cache", "heap-snapshots");
+    const dirs = () =>
+      existsSync(snapshots)
+        ? readdirSync(snapshots, { withFileTypes: true })
+            .filter((e) => e.isDirectory())
+            .map((e) => e.name)
+        : [];
+    const phases: string[] = [];
+    const progress = new Channel<HeapProgress>();
+    progress.onmessage = (p) => {
+      const phase = p.type === "dumping" ? "dumping" : p.phase;
+      if (phases.at(-1) !== phase) phases.push(phase);
+    };
+    const since = Date.now();
+    const captured = await call(commands.debugHeapCapture(s.id, nextRequestId(), progress));
+    const captureMs = Date.now() - since;
+    if (captured.status === "unavailable") {
+      // The same refusal as the class table's, for the same reason.
+      const { reason } = captured;
+      const refused =
+        reason.kind === "memory" && reason.reason.kind === "unsafeWhileSuspended" && reason.reason.javaMajor < 17;
+      expect(refused, `heap unavailable: ${JSON.stringify(reason)}\n${shown()}`).toBe(true);
+    } else {
+      if (captured.status !== "ready") throw new Error(`heap capture: ${JSON.stringify(captured)}\n${shown()}`);
+      const { snapshot } = captured;
+      const held = dirs();
+      expect(held, "snapshot directories while open").toHaveLength(1);
+      const dumpBytes = statSync(join(snapshots, held[0]!, "dump.hprof")).size;
+      const classes = await call(commands.debugHeapClasses(snapshot.id));
+      const row = classes.find((r) => r.name === className);
+      expect(row?.count, `${className} in the heap snapshot`).toBe(instances);
+      expect(row!.shallow, `${className} shallow size`).toBeGreaterThan(0);
+      expect(row!.retained, `${className} retained size`).toBeGreaterThanOrEqual(row!.shallow);
+      const page = await call(commands.debugHeapDominators(snapshot.id, null, row!.classIndex, 0, 1));
+      expect(page.rows, `${className} dominator rows`).toHaveLength(1);
+      const path = await call(commands.debugHeapPath(snapshot.id, page.rows[0]!.object));
+      const last = path?.at(-1)?.via;
+      expect(last?.kind, `path to a GC root: ${JSON.stringify(path)}`).toBe("root");
+      await call(commands.debugHeapClose(snapshot.id));
+      expect(dirs(), "snapshot directories after close").toEqual([]);
+      const origin = snapshot.origin;
+      const java = origin.kind === "captured" ? `JDK ${origin.javaVersion}, dump ${origin.dumpMs} ms` : origin.kind;
+      console.info(
+        `${language}: heap snapshot in ${captureMs} ms (${java}, analysis ${snapshot.summary.analysisMs} ms, ` +
+          `${dumpBytes} bytes, ${snapshot.summary.objects} objects; ${phases.join(" → ")}); ` +
+          `${className} ${row!.count} / ${row!.shallow} B / retained ${row!.retained} B, ${page.total} reachable; ` +
+          `path ${path!.length} steps to ${last?.kind === "root" ? last.root : "?"}`,
+      );
     }
   }
 
