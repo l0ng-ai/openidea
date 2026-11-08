@@ -603,18 +603,26 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
   const times = useMemo(() => (entries && !subagent ? replyTimes(entries) : null), [entries, subagent]);
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
+  // Keep the row stable when earlier history is prepended; its author can move with the work.
+  const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
   const authorHeaders = useMemo(() => {
     const headers = new Set<number>();
-    let first = true;
-    entries?.slice(start).forEach((entry, i) => {
-      if (entry.type === "user") first = true;
-      if (entry.type === "agent" && first) {
-        headers.add(start + i);
-        first = false;
+    const work = (row: ConversationRow) =>
+      row.kind === "process" || row.entry.type === "thought" || row.entry.type === "tool";
+    rows.forEach((row, i) => {
+      if (row.kind === "entry" && row.entry.type === "user") return;
+      const previous = rows[i - 1];
+      if (
+        !previous ||
+        (previous.kind === "entry" && previous.entry.type === "user") ||
+        (work(row) && !work(previous)) ||
+        (row.kind === "entry" && row.entry.type === "agent" && !work(previous))
+      ) {
+        headers.add(row.index);
       }
     });
     return headers;
-  }, [entries, start]);
+  }, [rows]);
   const renderRow = useCallback(
     (row: EntryRow) => (
       <Entry
@@ -626,15 +634,12 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         reply={replies?.get(row.index)}
         time={times?.get(row.index) ?? null}
         working={row.index === lastIndex && busy}
-        showAuthor={authorHeaders.has(row.index)}
         onOpenSubagent={onOpenSubagent}
         onDiagramDrawn={onDiagramDrawn}
       />
     ),
-    [task, turns, replies, times, lastIndex, busy, authorHeaders, onOpenSubagent, onDiagramDrawn],
+    [task, turns, replies, times, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
   );
-  // Only the tail is built while following the end; `start` moves earlier as batches load.
-  const rows = useMemo(() => (entries ? conversationRows(entries, start) : []), [entries, start]);
   return (
     <div className={styles.streamArea}>
       {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
@@ -668,20 +673,30 @@ function Stream({ task, entries, subagent, onOpenSubagent, finding, findFocus, o
         {entries === null ? (
           <Spinner />
         ) : (
-          rows.map((row) =>
-            row.kind === "process" ? (
-              <ProcessRun
-                key={`process:${row.index}`}
-                row={row}
-                task={task}
-                lastIndex={lastIndex}
-                busy={busy}
-                renderRow={renderRow}
-              />
-            ) : (
-              renderRow(row)
-            ),
-          )
+          rows.map((row) => (
+            <div
+              key={row.index}
+              className={styles.conversationRow}
+              data-message={
+                (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+              }
+              data-process={row.kind === "process" || row.entry.type !== "user" || undefined}
+            >
+              {authorHeaders.has(row.index) && (
+                <div className={styles.agentAuthor}>
+                  <div className={styles.role}>
+                    <Icon name={providerIcon(task.provider)} size={13} />
+                    <span>{providerName(task.provider)}</span>
+                  </div>
+                </div>
+              )}
+              {row.kind === "process" ? (
+                <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
+              ) : (
+                renderRow(row)
+              )}
+            </div>
+          ))
         )}
         {subagent && subagentWorking(subagent.status) && (
           <div className={styles.working}>
@@ -964,7 +979,6 @@ const Entry = memo(function Entry({
   reply,
   time,
   working,
-  showAuthor,
   onOpenSubagent,
   onDiagramDrawn,
 }: {
@@ -977,7 +991,6 @@ const Entry = memo(function Entry({
   /** When the turn this reply answered was asked and finished. */
   time?: ReplyTimes | null;
   working: boolean;
-  showAuthor: boolean;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
 }) {
@@ -986,15 +999,7 @@ const Entry = memo(function Entry({
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
     case "agent":
       return (
-        <div className={styles.agentMessage} data-continuation={!showAuthor || undefined}>
-          {showAuthor && (
-            <div className={styles.messageHead}>
-              <div className={styles.role}>
-                <Icon name={providerIcon(task.provider)} size={13} />
-                <span>{providerName(task.provider)}</span>
-              </div>
-            </div>
-          )}
+        <div className={styles.agentMessage}>
           <div className={styles.agentCard}>
             <AgentReply
               text={entry.text}

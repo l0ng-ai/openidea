@@ -121,7 +121,7 @@ beforeEach(() => {
 });
 
 describe("conversation rows", () => {
-  it("groups agent authors by turn and uses matching icon-only message action rows", async () => {
+  it("keeps authors above messages and their folded work with matching icon-only actions", async () => {
     const user = (text: string): AgentEntry => ({
       type: "user",
       text,
@@ -136,12 +136,17 @@ describe("conversation rows", () => {
       tool("read"),
       { type: "agent", text: "More detail" },
       user("Next question"),
+      { type: "thought", text: "Considering the next question" },
+      tool("next"),
       { type: "agent", text: "Next reply" },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("More detail");
-    expect(stream().querySelectorAll(`.${styles.agentMessage} .${styles.role}`)).toHaveLength(2);
+    expect(stream().querySelectorAll(`.${styles.agentAuthor} .${styles.role}`)).toHaveLength(3);
+    const author = stream().querySelectorAll(`.${styles.agentAuthor}`)[2]!;
+    expect(author.nextElementSibling).toHaveClass(styles.processRun!);
+    expect(author.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
     const quote = within(stream()).getAllByRole("button", { name: "Quote Reply" });
     const copy = within(stream()).getAllByRole("button", { name: "Copy Markdown" });
     expect(quote).toHaveLength(3);

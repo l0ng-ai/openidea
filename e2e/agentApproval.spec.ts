@@ -23,6 +23,17 @@ const task: AgentTask = {
 const command = `python3 -c 'import pathlib\np = pathlib.Path("note.txt")\np.write_text("${"long content ".repeat(80)}")'`;
 const entries: AgentEntry[] = [
   { type: "user", text: "Write a note with Python.", attachments: [], steered: false },
+  { type: "thought", text: "I need approval to write." },
+  {
+    type: "tool",
+    id: "inspect",
+    title: "Read README.md",
+    kind: "read",
+    status: "completed",
+    locations: [],
+    output: null,
+    diffs: [],
+  },
   { type: "agent", text: "I will request approval before writing the note." },
   {
     type: "tool",
@@ -50,7 +61,7 @@ const entries: AgentEntry[] = [
 
 for (const theme of ["dark", "light"] as const) {
   for (const width of [760, 1400]) {
-    test(`approval stays inside a flat transcript at ${width}px in ${theme}`, async ({ page }) => {
+    test(`approval stays inside the agent column at ${width}px in ${theme}`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.goto("/");
       await page.getByRole("tree", { name: "Project" }).waitFor();
@@ -74,7 +85,7 @@ for (const theme of ["dark", "light"] as const) {
       await expect(card.locator("pre")).toHaveText(command);
       await expect(card.getByRole("button")).toHaveText(["Allow Once", "Always Allow", "Decline", "Decline and Stop"]);
       const geometry = await card.evaluate((el) => {
-        const transcript = el.parentElement!;
+        const transcript = el.parentElement!.parentElement!;
         const prompt = transcript.querySelector('[class*="_user_"]')!;
         const reply = transcript.querySelector('[class*="_agentCard_"]')!;
         const rect = el.getBoundingClientRect();
@@ -86,15 +97,31 @@ for (const theme of ["dark", "light"] as const) {
           promptRadius: parseFloat(getComputedStyle(prompt).borderRadius),
           replyBackground: getComputedStyle(reply).backgroundColor,
           replyBorder: getComputedStyle(reply).borderTopWidth,
-          leftAligned: Math.abs(prompt.getBoundingClientRect().left - reply.getBoundingClientRect().left) < 1,
+          userOnRight: prompt.getBoundingClientRect().right > reply.getBoundingClientRect().right,
+          approvalAligned: Math.abs(rect.left - reply.getBoundingClientRect().left) < 1,
+          authorBeforeWork:
+            transcript.querySelector('[class*="_agentAuthor_"]')?.nextElementSibling?.matches("details") ?? false,
+          footerAligned:
+            Math.abs(prompt.getBoundingClientRect().right - prompt.nextElementSibling!.getBoundingClientRect().right) <
+            1,
+          cardWidth: rect.width,
+          available: bounds.width,
+          actionsVisible: getComputedStyle(reply.nextElementSibling!.querySelector('[class*="_messageActions_"]')!)
+            .opacity,
         };
       });
       expect(geometry.scroll).toBe(geometry.client);
       expect(geometry.contained).toBe(true);
       expect(geometry.promptRadius).toBeLessThanOrEqual(4);
-      expect(geometry.replyBackground).toBe("rgba(0, 0, 0, 0)");
-      expect(geometry.replyBorder).toBe("0px");
-      expect(geometry.leftAligned).toBe(true);
+      expect(geometry.replyBackground).not.toBe("rgba(0, 0, 0, 0)");
+      expect(geometry.replyBorder).toBe("1px");
+      expect(geometry.userOnRight).toBe(true);
+      expect(geometry.approvalAligned).toBe(true);
+      expect(geometry.authorBeforeWork).toBe(true);
+      expect(geometry.footerAligned).toBe(true);
+      // The last message stays actionable even while an approval follows it.
+      expect(geometry.actionsVisible).toBe("1");
+      if (width === 760) expect(geometry.cardWidth).toBeGreaterThan(geometry.available * 0.8);
       await card.locator("pre").focus();
       for (const label of ["Allow Once", "Always Allow", "Decline", "Decline and Stop"]) {
         await page.keyboard.press("Tab");
