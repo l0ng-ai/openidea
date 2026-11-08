@@ -1,5 +1,7 @@
+use super::fallback::{debugger_snapshot, falls_back};
 use super::scan::*;
 use super::snapshot::*;
+use super::test_support::{BareSession, FakeInspector, bare_session};
 use super::*;
 use ide_jvm_attach::{AttachError, HistogramRow, JavaVersion};
 use std::collections::VecDeque;
@@ -177,10 +179,23 @@ fn command_errors_are_internal() {
 
 #[test]
 fn result_serializes_with_camel_case_tags() {
-    let r = JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 } };
+    let r = JvmMemoryResult::Unavailable {
+        reason: JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 },
+        can_count_when_paused: true,
+    };
     assert_eq!(
         serde_json::to_value(r).unwrap(),
-        serde_json::json!({"status": "unavailable", "reason": {"kind": "unsafeWhileSuspended", "javaMajor": 11}})
+        serde_json::json!({
+            "status": "unavailable",
+            "reason": {"kind": "unsafeWhileSuspended", "javaMajor": 11},
+            "canCountWhenPaused": true
+        })
+    );
+    assert_eq!(serde_json::to_value(JvmMemorySource::Debugger).unwrap(), "debugger");
+    let stale = JvmFieldsResult::Unavailable { reason: JvmInspectUnavailable::Stale };
+    assert_eq!(
+        serde_json::to_value(stale).unwrap(),
+        serde_json::json!({"status": "unavailable", "reason": {"kind": "stale"}})
     );
 }
 
@@ -208,7 +223,7 @@ async fn attach_with_pid_takes_snapshot() {
     let fake = Arc::new(FakeProbe::new(4242, vec![Ok(HISTOGRAM.into())]));
     let probe: Arc<dyn AttachProbe> = fake.clone();
     let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
-    let r = snapshot(&state, &running, |_| probe, target).await.unwrap();
+    let r = snapshot(&state, &running, |_| probe, target, None).await.unwrap();
     assert!(matches!(r, JvmMemoryResult::Ready { .. }), "{r:?}");
     // The attached JVM's own pid only: its children are not part of the session.
     assert_eq!(*fake.asked.lock(), [4242]);
@@ -225,8 +240,11 @@ async fn refresh_rescans_local_attach_without_pid() {
     let probe: Arc<dyn AttachProbe> = missing.clone();
     let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
     assert_eq!(
-        snapshot(&state, &running, |_| probe, target).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound }
+        snapshot(&state, &running, |_| probe, target, None).await.unwrap(),
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::AttachedJvmNotFound,
+            can_count_when_paused: false
+        }
     );
     assert_eq!(missing.scans.load(Ordering::SeqCst), 1);
     assert_eq!(jvm_pid.load(Ordering::Acquire), 0);
@@ -236,10 +254,10 @@ async fn refresh_rescans_local_attach_without_pid() {
     let found = Arc::new(found);
     let probe: Arc<dyn AttachProbe> = found.clone();
     let target = || JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
-    let r = snapshot(&state, &running, |_| probe.clone(), target()).await.unwrap();
+    let r = snapshot(&state, &running, |_| probe.clone(), target(), None).await.unwrap();
     assert!(matches!(r, JvmMemoryResult::Ready { .. }), "{r:?}");
     assert_eq!(jvm_pid.load(Ordering::Acquire), 4242);
-    snapshot(&state, &running, |_| probe, target()).await.unwrap();
+    snapshot(&state, &running, |_| probe, target(), None).await.unwrap();
     assert_eq!(found.scans.load(Ordering::SeqCst), 1, "a found pid is kept");
 }
 
@@ -254,8 +272,11 @@ async fn remote_attach_without_pid_is_not_scanned() {
     let probe: Arc<dyn AttachProbe> = fake.clone();
     let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: None };
     assert_eq!(
-        snapshot(&state, &running, |_| probe, target).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound }
+        snapshot(&state, &running, |_| probe, target, None).await.unwrap(),
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::AttachedJvmNotFound,
+            can_count_when_paused: false
+        }
     );
     assert_eq!(fake.scans.load(Ordering::SeqCst), 0);
 }
@@ -307,7 +328,7 @@ async fn suspended_scan(fake: FakeProbe) -> (JvmMemoryResult, Arc<FakeProbe>, i6
     let fake = Arc::new(fake);
     let probe: Arc<dyn AttachProbe> = fake.clone();
     let target = JvmTarget::Attached { pid: &jvm_pid, jdwp_port: Some(5005) };
-    let result = snapshot(&state, &suspended, |_| probe, target).await.unwrap();
+    let result = snapshot(&state, &suspended, |_| probe, target, None).await.unwrap();
     (result, fake, jvm_pid.load(Ordering::Acquire))
 }
 
@@ -331,7 +352,10 @@ async fn suspended_scan_never_asks_an_older_jdk() {
         let (result, fake, pid) = suspended_scan(fake).await;
         assert_eq!(
             result,
-            JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::UnsafeWhileSuspended { java_major } }
+            JvmMemoryResult::Unavailable {
+                reason: JvmMemoryUnavailable::UnsafeWhileSuspended { java_major },
+                can_count_when_paused: false,
+            }
         );
         assert!(fake.queried.lock().is_empty());
         assert!(fake.asked.lock().is_empty());
@@ -342,7 +366,13 @@ async fn suspended_scan_never_asks_an_older_jdk() {
 #[tokio::test]
 async fn suspended_scan_without_candidates_is_not_found() {
     let (result, _, _) = suspended_scan(FakeProbe::new(4242, Vec::new())).await;
-    assert_eq!(result, JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound });
+    assert_eq!(
+        result,
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::AttachedJvmNotFound,
+            can_count_when_paused: false
+        }
+    );
 }
 
 #[tokio::test]
@@ -383,11 +413,14 @@ async fn histogram_lock_released_after_timeout() {
     let running = Suspension::default();
     let probe: Arc<dyn AttachProbe> =
         Arc::new(FakeProbe::new(pid, vec![Err(AttachError::Timeout), Ok(HISTOGRAM.into())]));
-    let first = snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32)).await.unwrap();
-    assert_eq!(first, JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::TimedOut });
+    let first = snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32), None).await.unwrap();
+    assert_eq!(
+        first,
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::TimedOut, can_count_when_paused: false }
+    );
     let second = tokio::time::timeout(
         Duration::from_secs(5),
-        snapshot(&state, &running, |_| probe, JvmTarget::Launched(pid as i32)),
+        snapshot(&state, &running, |_| probe, JvmTarget::Launched(pid as i32), None),
     )
     .await
     .expect("second request blocked by the first")
@@ -408,8 +441,8 @@ async fn one_histogram_at_a_time_per_session() {
     let probe: Arc<dyn AttachProbe> = fake.clone();
     let running = Suspension::default();
     let (a, b) = tokio::join!(
-        snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32)),
-        snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32))
+        snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32), None),
+        snapshot(&state, &running, |_| probe.clone(), JvmTarget::Launched(pid as i32), None)
     );
     assert_eq!(fake.max_in_flight.load(Ordering::SeqCst), 1);
     let has_baseline = |r: JvmMemoryResult| match r {
@@ -441,6 +474,7 @@ async fn queued_request_reads_suspension_under_the_lock() {
             probe
         },
         JvmTarget::Launched(pid as i32),
+        None,
     ));
     assert!(tokio::time::timeout(Duration::from_millis(50), &mut queued).await.is_err());
     // The program hits a breakpoint while the request waits behind another one.
@@ -448,7 +482,10 @@ async fn queued_request_reads_suspension_under_the_lock() {
     drop(running);
     assert_eq!(
         queued.await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 } }
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 },
+            can_count_when_paused: false,
+        }
     );
     assert_eq!(*seen.lock(), Some(true));
 }
@@ -460,12 +497,184 @@ async fn failed_blocking_task_keeps_the_baseline() {
     let state = tokio::sync::Mutex::new(JvmMemoryState::default());
     let running = Suspension::default();
     let probe = |histograms: Vec<_>| -> Arc<dyn AttachProbe> { Arc::new(FakeProbe::new(pid, histograms)) };
-    snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), JvmTarget::Launched(pid as i32)).await.unwrap();
-    // An empty fake panics on its histogram call, failing the blocking task.
-    assert!(snapshot(&state, &running, |_| probe(Vec::new()), JvmTarget::Launched(pid as i32)).await.is_err());
-    let third = snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), JvmTarget::Launched(pid as i32))
+    snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), JvmTarget::Launched(pid as i32), None)
         .await
         .unwrap();
+    // An empty fake panics on its histogram call, failing the blocking task.
+    assert!(snapshot(&state, &running, |_| probe(Vec::new()), JvmTarget::Launched(pid as i32), None).await.is_err());
+    let third =
+        snapshot(&state, &running, |_| probe(vec![Ok(HISTOGRAM.into())]), JvmTarget::Launched(pid as i32), None)
+            .await
+            .unwrap();
     let JvmMemoryResult::Ready { snapshot } = third else { panic!("{third:?}") };
     assert!(snapshot.has_baseline);
+}
+
+fn class(name: &str, instances: u64) -> ide_jvm_inspect::ClassCount {
+    ide_jvm_inspect::ClassCount { name: name.into(), instances }
+}
+
+fn jdk11(listener: u32) -> FakeProbe {
+    let mut probe = FakeProbe::new(listener, Vec::new());
+    probe.version = Some(JavaVersion { major: 11, text: "11.0.25".into() });
+    probe
+}
+
+/// The class table of `bare`'s session, histogram from `probe` or else `target`'s reason.
+async fn table(bare: &BareSession, probe: FakeProbe, target: JvmTarget<'_>) -> JvmMemoryResult {
+    let s = &bare.session;
+    let probe: Arc<dyn AttachProbe> = Arc::new(probe);
+    snapshot(&s.jvm_memory, &s.suspended, |_| probe, target, Some(s)).await.unwrap()
+}
+
+fn inspected(bare: &BareSession, fake: FakeInspector) -> Arc<FakeInspector> {
+    let fake = Arc::new(fake);
+    *bare.session.jvm_inspector.lock() = Some(fake.clone());
+    fake
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn suspended_jdk11_falls_back_to_debugger_counts() {
+    let pid = std::process::id();
+    let bare = bare_session("launch");
+    bare.session.suspended.stopped();
+    let fake = inspected(&bare, FakeInspector::default());
+    fake.counts.lock().extend([class("A", 3), class("B", 0)]);
+    let target = JvmTarget::Launched(pid as i32);
+    let result = table(&bare, jdk11(pid), target).await;
+    let JvmMemoryResult::Ready { snapshot } = result else { panic!("{result:?}") };
+    assert_eq!(snapshot.source, JvmMemorySource::Debugger);
+    assert_eq!(
+        snapshot.rows,
+        [JvmClassRow {
+            name: "A".into(),
+            module: None,
+            instances: 3,
+            bytes: 0,
+            delta_instances: None,
+            delta_bytes: None,
+            ambiguous: false
+        }]
+    );
+    assert_eq!((snapshot.total_instances, snapshot.total_bytes), (3, 0));
+    assert!(snapshot.taken_while_suspended && !snapshot.has_baseline);
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn reasons_found_before_asking_the_jvm_fall_back_too() {
+    let bare = bare_session("launch");
+    bare.session.suspended.stopped();
+    let fake = inspected(&bare, FakeInspector::default());
+    fake.counts.lock().push(class("A", 3));
+    let result = table(&bare, jdk11(1), JvmTarget::Unavailable(JvmMemoryUnavailable::UnsupportedPlatform)).await;
+    assert!(matches!(&result, JvmMemoryResult::Ready { snapshot } if snapshot.source == JvmMemorySource::Debugger));
+}
+
+#[tokio::test]
+async fn running_without_listener_offers_counting_when_paused() {
+    let bare = bare_session("launch");
+    let reason = JvmMemoryUnavailable::ListenerNotRunning;
+    let target = JvmTarget::Unavailable(reason);
+    let without = table(&bare, jdk11(1), target).await;
+    assert_eq!(without, JvmMemoryResult::Unavailable { reason, can_count_when_paused: false });
+
+    let fake = inspected(&bare, FakeInspector::default());
+    let with = table(&bare, jdk11(1), target).await;
+    assert_eq!(with, JvmMemoryResult::Unavailable { reason, can_count_when_paused: true });
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn other_reasons_do_not_fall_back() {
+    let bare = bare_session("attach");
+    bare.session.suspended.stopped();
+    let fake = inspected(&bare, FakeInspector::default());
+    for reason in [JvmMemoryUnavailable::ProgramExited, JvmMemoryUnavailable::TimedOut] {
+        let result = table(&bare, jdk11(1), JvmTarget::Unavailable(reason)).await;
+        assert_eq!(result, JvmMemoryResult::Unavailable { reason, can_count_when_paused: false });
+    }
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn failed_debugger_count_reports_the_histogram_reason() {
+    let bare = bare_session("launch");
+    bare.session.suspended.stopped();
+    inspected(&bare, FakeInspector::failing(ide_jvm_inspect::InspectError::TimedOut));
+    let reason = JvmMemoryUnavailable::UnsafeWhileSuspended { java_major: 11 };
+    let result = table(&bare, jdk11(1), JvmTarget::Unavailable(reason)).await;
+    assert_eq!(result, JvmMemoryResult::Unavailable { reason, can_count_when_paused: false });
+}
+
+#[tokio::test]
+async fn unsupported_count_turns_the_backend_off() {
+    use ide_core::event::{DebugEvent, JvmBackendState};
+    let bare = bare_session("launch");
+    bare.session.suspended.stopped();
+    inspected(&bare, FakeInspector::failing(ide_jvm_inspect::InspectError::Unsupported("x".into())));
+    let reason = JvmMemoryUnavailable::UnsupportedPlatform;
+    let result = table(&bare, jdk11(1), JvmTarget::Unavailable(reason)).await;
+    assert_eq!(result, JvmMemoryResult::Unavailable { reason, can_count_when_paused: false });
+    assert!(bare.session.jvm_inspector.lock().is_none());
+    let events: Vec<_> = bare
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            ide_core::IdeEvent::Debug { event, .. } => Some(event.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        matches!(
+            events.as_slice(),
+            [DebugEvent::JvmBackend { state: JvmBackendState::Unsupported { .. } }, DebugEvent::Capabilities]
+        ),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn falls_back_only_where_the_debugger_can_count() {
+    use JvmMemoryUnavailable as U;
+    for reason in [
+        U::UnsafeWhileSuspended { java_major: 11 },
+        U::UnsupportedPlatform,
+        U::AttachedJvmNotFound,
+        U::ListenerNotRunning,
+        U::ListenModeNotSupported,
+        U::NoJvmProcess,
+    ] {
+        assert!(falls_back(&reason), "{reason:?}");
+    }
+    assert!(!falls_back(&U::ProgramExited) && !falls_back(&U::TimedOut));
+}
+
+#[test]
+fn deltas_only_against_the_same_source() {
+    use JvmMemorySource::{Debugger, Histogram};
+    let mut state = JvmMemoryState::default();
+    let probe = FakeProbe::new(12, vec![Ok(HISTOGRAM.into())]);
+    let (_, counts) = take_snapshot(&probe, &[12], false, None).unwrap().unwrap();
+    state.remember(Histogram, counts);
+
+    let (snapshot, counts) =
+        debugger_snapshot(vec![class("A", 3), class("C", 1)], state.baseline(Debugger).as_deref(), 0);
+    assert!(!snapshot.has_baseline);
+    assert!(snapshot.rows.iter().all(|r| r.delta_instances.is_none() && r.delta_bytes.is_none()), "{snapshot:?}");
+    state.remember(Debugger, counts);
+    assert!(state.baseline(Histogram).is_none());
+
+    let (snapshot, _) = debugger_snapshot(vec![class("A", 4)], state.baseline(Debugger).as_deref(), 0);
+    assert!(snapshot.has_baseline);
+    assert_eq!((snapshot.rows[0].delta_instances, snapshot.rows[0].delta_bytes), (Some(1), None));
+}
+
+#[test]
+fn debugger_rows_are_ordered_by_instances() {
+    let (snapshot, _) = debugger_snapshot(vec![class("B", 1), class("A", 9), class("C", 9)], None, 0);
+    let names: Vec<_> = snapshot.rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, ["A", "C", "B"]);
 }

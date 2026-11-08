@@ -130,6 +130,9 @@ pub struct DebugCapabilities {
     /// The session debugs a JVM, so it has a Memory view; [`DebugManager::jvm_memory_classes`]
     /// says why when it has no data (platform, remote JVM, ...).
     pub jvm_memory: bool,
+    /// The session has a JVM inspector: instances, fields and referrers while suspended. Can
+    /// change during the session ([`ide_core::event::DebugEvent::Capabilities`]).
+    pub jvm_instances: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -516,6 +519,7 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         log_points: has("supportsLogPoints"),
         hot_code_replace: false,
         jvm_memory: false,
+        jvm_instances: false,
     }
 }
 
@@ -928,6 +932,7 @@ impl DebugManager {
                 .ok_or_else(|| IdeError::invalid("Invalid Kotlin JDWP port"))?;
             let (link, port) = ide_jdwp::JdwpLink::start(host, port, kotlin::link_options(&s.adapter)).await?;
             *s.jvm_inspector.lock() = Some(Arc::new(ide_jdwp::LinkInspector::new(link.clone())));
+            jvm_memory::watch_link(s, &link);
             *s.jdwp_link.lock() = Some(link);
             arguments["hostName"] = json!("127.0.0.1");
             arguments["port"] = json!(port);
@@ -1565,14 +1570,55 @@ impl DebugManager {
         let mut caps = capabilities_from(&session.caps.lock());
         caps.hot_code_replace = HOT_CODE_REPLACE_ADAPTERS.contains(&session.adapter.as_str());
         caps.jvm_memory = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
+        caps.jvm_instances = session.jvm_inspector.lock().is_some();
         Ok(caps)
     }
 
-    /// Class table of the session's JVM (`GC.class_histogram -all`), with deltas against
-    /// the session's previous snapshot.
+    /// Class table of the session's JVM (`GC.class_histogram -all`, or counted by the debugger
+    /// while suspended where no histogram can be taken), with deltas against the session's
+    /// previous snapshot from the same source.
     pub async fn jvm_memory_classes(&self, s: DebugSessionId) -> IdeResult<JvmMemoryResult> {
         let session = self.session(s)?;
         jvm_memory::session_classes(session).await
+    }
+
+    /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class
+    /// counts; the UI is told to reload the session's capabilities.
+    pub fn set_jvm_inspector(
+        &self,
+        s: DebugSessionId,
+        inspector: Arc<dyn ide_jvm_inspect::JvmInspector>,
+    ) -> IdeResult<()> {
+        let session = self.session(s)?;
+        if session.ended.is_cancelled() {
+            return Err(no_session(s));
+        }
+        jvm_memory::set_inspector(&session, inspector);
+        Ok(())
+    }
+
+    /// Up to `limit` (clamped to `1..=MAX_INSTANCES`) instances of `class_name` while suspended.
+    pub async fn jvm_memory_instances(
+        &self,
+        s: DebugSessionId,
+        class_name: String,
+        limit: u32,
+    ) -> IdeResult<JvmInstancesResult> {
+        jvm_memory::instances(&*self.session(s)?, &class_name, limit).await
+    }
+
+    pub async fn jvm_memory_fields(&self, s: DebugSessionId, object: JvmObjectRef) -> IdeResult<JvmFieldsResult> {
+        jvm_memory::fields(&*self.session(s)?, object).await
+    }
+
+    /// Objects that point at `object`; `limit` 0 means `DEFAULT_REFERRERS`, at most `MAX_REFERRERS`.
+    pub async fn jvm_memory_referrers(
+        &self,
+        s: DebugSessionId,
+        object: JvmObjectRef,
+        limit: u32,
+    ) -> IdeResult<JvmReferrersResult> {
+        jvm_memory::referrers(&*self.session(s)?, object, limit).await
     }
 
     /// HotSwap: reloads the classes compiled since the session started (or since the

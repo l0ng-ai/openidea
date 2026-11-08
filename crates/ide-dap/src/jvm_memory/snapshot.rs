@@ -2,7 +2,8 @@
 
 use super::scan::{RESCAN_BUDGET, RESCAN_PER_SOCKET};
 use super::{
-    ClassCounts, HISTOGRAM_TIMEOUT, JvmClassRow, JvmMemorySnapshot, JvmMemoryUnavailable, safe_while_suspended,
+    ClassCounts, HISTOGRAM_TIMEOUT, JvmClassRow, JvmMemorySnapshot, JvmMemorySource, JvmMemoryUnavailable,
+    safe_while_suspended,
 };
 use ide_core::IdeResult;
 use ide_jvm_attach::{AttachError, HistogramRow, JavaVersion};
@@ -171,6 +172,7 @@ pub(crate) fn take_snapshot(
         taken_while_suspended: suspended,
         has_baseline: previous.is_some(),
         elapsed_ms,
+        source: JvmMemorySource::Histogram,
     };
     Ok(Ok((snapshot, counts)))
 }

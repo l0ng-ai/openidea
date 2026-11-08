@@ -76,6 +76,11 @@ pub(crate) struct Session {
     /// Relay between a Kotlin adapter and its JVM. Dropping it closes both sockets.
     pub jdwp_link: parking_lot::Mutex<Option<ide_jdwp::JdwpLink>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
+    /// One inspector request per session at a time.
+    pub inspect_lock: tokio::sync::Mutex<()>,
+    /// Cancelled when the session ends, so a request still waiting on the inspector lets go of
+    /// it (and of the JDWP link it holds).
+    pub ended: ide_core::CancellationToken,
     /// `hostName` (empty when absent) and `port` of the session's `attach` request, as the IDE
     /// was given them: Kotlin then replaces them with the link's. Unlike `jdwp_port`, also set
     /// for a remote JVM.
@@ -169,6 +174,8 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             jdwp_link: parking_lot::Mutex::new(None),
             jvm_inspector: parking_lot::Mutex::new(None),
+            inspect_lock: tokio::sync::Mutex::default(),
+            ended: ide_core::CancellationToken::new(),
             attach_target: std::sync::OnceLock::new(),
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
@@ -332,6 +339,7 @@ impl Session {
 
     /// Kills the adapter and every debuggee we started.
     pub fn kill_processes(&self) {
+        self.ended.cancel();
         // The inspector holds a clone of the link, so both go.
         self.jvm_inspector.lock().take();
         self.jdwp_link.lock().take();

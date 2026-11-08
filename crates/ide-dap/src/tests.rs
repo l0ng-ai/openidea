@@ -1,5 +1,7 @@
 //! Protocol flow against an in-memory fake adapter.
 
+mod jvm_inspect;
+
 use super::*;
 use crate::adapter::{AdapterIo, LaunchFuture};
 use ide_core::IdeEvent;
@@ -1679,7 +1681,7 @@ async fn attach_session_reports_capability() {
     assert!(!h.manager.capabilities(id).unwrap().jvm_memory);
     assert_eq!(
         h.manager.jvm_memory_classes(id).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess }
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess, can_count_when_paused: false }
     );
 }
 
@@ -1692,7 +1694,7 @@ async fn ended_attach_session_without_pid_reports_program_exited() {
     h.manager.session(id).unwrap().terminated.store(true, Ordering::Release);
     assert_eq!(
         h.manager.jvm_memory_classes(id).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::ProgramExited }
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::ProgramExited, can_count_when_paused: false }
     );
 }
 
@@ -1712,7 +1714,10 @@ async fn listen_mode_attach_is_not_scanned() {
     let id = h.start(cfg).await.unwrap();
     assert_eq!(
         h.manager.jvm_memory_classes(id).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::ListenModeNotSupported }
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::ListenModeNotSupported,
+            can_count_when_paused: false
+        }
     );
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(scans.lock().is_empty());
@@ -1728,7 +1733,10 @@ async fn remote_host_is_not_scanned() {
     assert_eq!(session.jdwp_port.get(), None);
     assert_eq!(
         h.manager.jvm_memory_classes(id).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::AttachedJvmNotFound }
+        JvmMemoryResult::Unavailable {
+            reason: JvmMemoryUnavailable::AttachedJvmNotFound,
+            can_count_when_paused: false
+        }
     );
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 0);
 }
@@ -1858,7 +1866,7 @@ async fn unknown_pid_reports_no_jvm_process() {
     assert!(h.manager.capabilities(id).unwrap().jvm_memory);
     assert_eq!(
         h.manager.jvm_memory_classes(id).await.unwrap(),
-        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess }
+        JvmMemoryResult::Unavailable { reason: JvmMemoryUnavailable::NoJvmProcess, can_count_when_paused: false }
     );
 }
 
