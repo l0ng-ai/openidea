@@ -52,7 +52,7 @@ async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
     notifications().notify({ group: "run", level: "warning", title: "Profiling needs the desktop app" });
     return null;
   }
-  const plan = await call(commands.profilerPrepare(config));
+  const plan = await call(commands.profilerPrepare(config, "cpu"));
   if (plan.status === "unsupported") {
     notifications().notify({
       group: "run",

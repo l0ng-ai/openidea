@@ -3,7 +3,7 @@
 use super::coverage::{KEEP_RUNS, blocking};
 use crate::state::AppState;
 use ide_core::IdeResult;
-use ide_profiler::{Profile, ProfilePrepared, ProfileSpec};
+use ide_profiler::{Profile, ProfileMode, ProfilePrepared, ProfileSpec};
 use ide_run::RunConfig;
 use tauri::{State, Window};
 
@@ -14,12 +14,13 @@ pub async fn profiler_prepare(
     window: Window,
     state: State<'_, AppState>,
     config: RunConfig,
+    mode: ProfileMode,
 ) -> IdeResult<ProfilePrepared> {
     let project = state.project(window.label())?;
     let (root, cache) = (project.root.clone(), project.cache_dir.join("profiles"));
     blocking(move || {
         let out = ide_run::wrap::new_output_dir(&cache, KEEP_RUNS)?;
-        Ok(ide_profiler::prepare(&root, &config, &out))
+        Ok(ide_profiler::prepare(&root, &config, &out, mode))
     })
     .await
 }
