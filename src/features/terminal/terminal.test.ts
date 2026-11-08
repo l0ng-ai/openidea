@@ -459,6 +459,60 @@ describe("fit scheduling", () => {
     expect(fit).toHaveBeenCalledTimes(2);
   });
 
+  it("fits a lone second request after it settles without needing another request", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    vi.advanceTimersToNextFrame();
+    vi.advanceTimersByTime(40);
+    f.schedule();
+    vi.advanceTimersByTime(FIT_SETTLE_MS - 1);
+    expect(fit).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fits without animation frames in a background window", () => {
+    vi.useFakeTimers();
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+    const fit = vi.fn();
+    try {
+      fitScheduler(fit).schedule();
+      vi.advanceTimersByTime(100);
+      expect(fit).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      frame.mockRestore();
+    }
+  });
+
+  it.each([false, true])("cancels all pending work after repeated requests: %s", (repeated) => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    if (repeated) f.schedule();
+    f.cancel();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
+    expect(fit).not.toHaveBeenCalled();
+  });
+
+  it("flushes a deferred fit immediately and leaves no delayed duplicate", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn();
+    const f = fitScheduler(fit);
+    f.schedule();
+    f.schedule();
+    f.flush();
+    expect(fit).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
+    expect(fit).toHaveBeenCalledOnce();
+  });
+
   it("reports only the size the terminal settles on", () => {
     vi.useFakeTimers();
     const report = vi.fn();
