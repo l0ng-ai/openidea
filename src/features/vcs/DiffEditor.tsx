@@ -218,6 +218,7 @@ export function DiffEditor({
   input,
   toolbarActions,
   onNeighbour,
+  onJumpToSource,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -227,6 +228,8 @@ export function DiffEditor({
    * own content, as a modal dialog hides the editor area.
    */
   onNeighbour?: (data: DiffData) => void;
+  /** Called as Jump to Source opens the file in an editor: a modal host closes, or the editor stays hidden behind it. */
+  onJumpToSource?: () => void;
 }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
@@ -735,8 +738,10 @@ export function DiffEditor({
     const own = onA ? fileA : fileB;
     const file = own ?? fileB ?? fileA ?? worktreeSource;
     if (!file) return;
-    const open = (line: number, col: number) =>
+    const open = (line: number, col: number) => {
+      onJumpToSource?.();
       void editorService().openFile(file, { selection: { line, col }, focus: true });
+    };
     if (!v) return open(0, 0);
     const head = v.state.selection.main.head;
     const at = v.state.doc.lineAt(head);
@@ -750,7 +755,7 @@ export function DiffEditor({
       const line = mapLine(Chunk.build(from, to), at.number - 1, from, to);
       open(line, to.line(line + 1).text === at.text ? head - at.from : 0);
     });
-  }, [left, right, path, worktreeSource]);
+  }, [left, right, path, worktreeSource, onJumpToSource]);
 
   const currentChunk = (): { chunk: Chunk; index: number } | undefined => {
     const v = viewsRef.current?.b;

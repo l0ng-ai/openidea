@@ -42,7 +42,7 @@ import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { cleanupRemovedProject, recordRun, runServiceProvider } from "./services";
+import { cleanupRemovedProject, recordRun, registerRunServiceActions, runServiceProvider } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { cmakeBuildId } from "./cmake";
 import { runBeforeLaunch } from "./beforeLaunch";
@@ -342,6 +342,7 @@ export function activate(): () => void {
     }),
     registerOverlay({ id: "run.dialogs", component: RunDialogsOverlay }),
     registerServiceProvider(runServiceProvider),
+    registerRunServiceActions(),
     registerRunningProcessesProvider({
       id: "run",
       running: () =>

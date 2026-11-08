@@ -100,7 +100,7 @@ import {
 } from "./branches";
 import { chooseDateRange, chooseMany } from "./dialogs";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
-import { DIFF_KIND, diffInput } from "./diffInput";
+import { DIFF_KIND, diffInput, vcsDiffInFront } from "./diffInput";
 import {
   absolutePath,
   filesUnder,
@@ -2413,7 +2413,11 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const fromParents = useLogOptions((s) => s.changesFromParents);
   const onlyAffected = useLogOptions((s) => s.showOnlyAffected);
   const preview = useLogOptions((s) => s.diffPreview);
-  const diffLocation = useLogOptions((s) => s.diffLocation);
+  const savedLocation = useLogOptions((s) => s.diffLocation);
+  // The modal commit interface keeps diffs out of editor tabs (#1863): the "Editor"
+  // preview shows beside the changes instead.
+  const modal = useWorkflowSettings((s) => !s.vcs.commit.nonModal);
+  const diffLocation = modal && savedLocation === "editor" ? "right" : savedLocation;
   const showLineStats = useLogOptions((s) => s.showLineStats);
   const filters = useGitLog((s) => s.filters);
   const filesKey = JSON.stringify([idsKey, fromParents, parentIndex, commitRoot, showLineStats]);
@@ -2525,7 +2529,8 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
     if (syncingDiff.current) return;
-    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || sel.size !== 1) return;
+    if (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || vcsDiffInFront() || sel.size !== 1)
+      return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
     // A preview that cannot open (no editor yet, the file went away) is just skipped.
     if (file)
@@ -2596,7 +2601,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
         label: "Diff Preview Location",
         submenu: (["editor", "right", "bottom"] as const).map((location) => ({
           label: location === "editor" ? "Editor" : location === "right" ? "Right" : "Bottom",
-          checked: diffLocation === location,
+          checked: savedLocation === location,
           run: () => updateLogOptions({ diffLocation: location }),
         })),
       },

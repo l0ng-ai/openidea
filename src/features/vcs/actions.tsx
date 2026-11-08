@@ -27,8 +27,16 @@ import {
 import { setAmend, useCommit } from "./commitStore";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
-import { openDiff, withChain, workingDiffData } from "./diffInput";
-import { buildChangeTree, changeGroupPaths } from "./changes";
+import {
+  changeNodeDiff,
+  changeNodeDiffData,
+  openDiff,
+  openVcsDiff,
+  withChain,
+  workingDiffData,
+  type DiffData,
+} from "./diffInput";
+import { buildChangeTree, changeFileNodes, changeGroupPaths, type ChangeNode } from "./changes";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import { gotoChange, rollbackSelectedLines } from "./gutter";
@@ -74,6 +82,34 @@ export const commitWindowFocused = () => {
   const active = getContext().activeToolWindow;
   return active === "commit" || (active === "git" && useGitLog.getState().tab === "changes");
 };
+
+/** A changed file's working diff, with the other files of its group (in tree order) as the F7 chain. */
+function groupDiffData(tree: readonly ChangeNode[], path: string): DiffData {
+  const siblings = changeGroupPaths(tree, path);
+  return withChain(
+    siblings.map((p) => workingDiffData(p)),
+    Math.max(0, siblings.indexOf(path)),
+  );
+}
+
+/**
+ * Show Diff's files as tree nodes where the side of the index is known: the changes
+ * tree's selected file nodes, else the nodes of `paths` the tree lists once. A
+ * partially staged file listed under both staging groups stays a path: its whole
+ * working diff.
+ */
+function showDiffTargets(tree: readonly ChangeNode[], paths: readonly string[], fromTree: boolean) {
+  const files = changeFileNodes(tree);
+  if (fromTree) {
+    const keys = new Set(useCommit.getState().selectionKeys);
+    const selected = files.filter((n) => keys.has(n.key));
+    if (selected.length && selected.length === keys.size) return selected;
+  }
+  return paths.map((path): ChangeNode | string => {
+    const nodes = files.filter((n) => n.path === path);
+    return nodes.length === 1 ? nodes[0]! : path;
+  });
+}
 
 /** The action's own paths, or the changes tree's selection while the tree has focus. */
 function changedPaths(arg: unknown): string[] {
@@ -354,13 +390,25 @@ export function registerVcsActions(): () => void {
           state.roots,
           useCommit.getState().groupByStaging,
         );
+        // The modal interface has one front diff window (#1863): a file with its group
+        // as the F7 chain, or several selected files as the chain.
+        if (isModalCommit()) {
+          const targets = showDiffTargets(tree, paths, !argPaths(arg)?.length && commitWindowFocused());
+          const [first] = targets;
+          const data =
+            targets.length > 1
+              ? withChain(
+                  targets.map((t) => (typeof t === "string" ? workingDiffData(t) : changeNodeDiff(t))),
+                  0,
+                )
+              : typeof first === "string"
+                ? groupDiffData(tree, first)
+                : changeNodeDiffData(tree, first!);
+          await openVcsDiff({ ...data, line });
+          return;
+        }
         for (const path of paths.slice(0, 5)) {
-          const siblings = changeGroupPaths(tree, path);
-          const items = siblings.map((path) => workingDiffData(path));
-          await openDiff(
-            { ...withChain(items, Math.max(0, siblings.indexOf(path))), line },
-            { preview: paths.length === 1 },
-          );
+          await openDiff({ ...groupDiffData(tree, path), line }, { preview: paths.length === 1 });
         }
       },
     },

@@ -216,6 +216,12 @@ export function duplicateConfig(config: RunConfig, configs: readonly RunConfig[]
 /** Field errors: `name`, `command`, `env`, `cwd`, `compound`, `beforeLaunch` or a type param key. */
 export type ConfigErrors = Partial<Record<string, string>>;
 
+export function moduleTaskError(config: RunConfig, target: string): string | null {
+  if (config.module == null) return "Select a module for the Build Module task";
+  if (config.module !== target) return "The Build Module task uses a different module; remove it and add it again";
+  return null;
+}
+
 export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []): ConfigErrors {
   const errors: ConfigErrors = {};
   if (!config.name.trim()) errors.name = "Name is required";
@@ -235,7 +241,16 @@ export function validateConfig(config: RunConfig, all: readonly RunConfig[] = []
       (t.target === config.id || !all.some((c) => c.id === t.target))
     )
       errors.beforeLaunch = "A before launch task runs a missing configuration or this one";
-    else if (t.kind !== "build" && t.kind !== "dotnetBuild" && t.kind !== "run" && !(t.target ?? "").trim())
+    else if (t.kind === "buildModule") {
+      const error = moduleTaskError(config, t.target ?? "");
+      if (error) errors.beforeLaunch = error;
+    } else if (
+      t.kind !== "build" &&
+      t.kind !== "buildArtifacts" &&
+      t.kind !== "dotnetBuild" &&
+      t.kind !== "run" &&
+      !(t.target ?? "").trim()
+    )
       errors.beforeLaunch = "A before launch task is incomplete";
   }
   for (const key of Object.keys(config.env)) {

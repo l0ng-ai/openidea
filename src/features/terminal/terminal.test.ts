@@ -195,6 +195,23 @@ describe("terminal keys", () => {
     expect(terminalKeyAction(key({ key: "a" }), false)).toEqual({ kind: "pass" });
   });
 
+  it("sends Shift+Enter as Esc+Return, a newline for Claude Code instead of submitting", () => {
+    expect(terminalKeyAction(key({ key: "Enter", code: "Enter", shiftKey: true }), false)).toEqual({
+      kind: "send",
+      data: "\x1b\r",
+    });
+    expect(terminalKeyAction(key({ key: "Enter", code: "NumpadEnter", shiftKey: true }), true)).toEqual({
+      kind: "send",
+      data: "\x1b\r",
+    });
+    expect(terminalKeyAction(key({ key: "Enter", code: "Enter" }), false)).toEqual({ kind: "pass" });
+    for (const mod of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      expect(terminalKeyAction(key({ key: "Enter", code: "Enter", shiftKey: true, ...mod }), false)).toEqual({
+        kind: "pass",
+      });
+    }
+  });
+
   it("clears a selection with Escape before sending it", () => {
     expect(terminalKeyAction(key({ key: "Escape" }), true)).toEqual({ kind: "clearSelection" });
     expect(terminalKeyAction(key({ key: "Escape", shiftKey: true }), true)).toEqual({ kind: "send", data: "\x1b" });

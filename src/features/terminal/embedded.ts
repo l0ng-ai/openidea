@@ -54,8 +54,15 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     theme: readTerminalTheme(),
   });
   term.attachCustomKeyEventHandler((e) => {
-    if (isImeKey(e) || terminalKeyAction(e, term.hasSelection()).kind !== "copy") return true;
-    if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+    if (isImeKey(e)) return true;
+    const action = terminalKeyAction(e, term.hasSelection());
+    if (action.kind === "send" && e.key === "Enter") {
+      if (e.type === "keydown") term.input(action.data);
+    } else if (action.kind === "copy") {
+      if (e.type === "keydown") void navigator.clipboard?.writeText(term.getSelection()).catch(() => undefined);
+    } else {
+      return true;
+    }
     e.preventDefault();
     return false;
   });

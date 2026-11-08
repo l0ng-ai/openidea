@@ -156,6 +156,28 @@ describe("terminal start directory fallback", () => {
   });
 });
 
+describe("terminal restart", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("restarts a session that failed to start on Shift+Enter's Esc+Return as on Enter", async () => {
+    ipc.commands.fsEntryKind.mockResolvedValue("dir");
+    ipc.commands.termSpawn.mockRejectedValueOnce(new Error("no shell")).mockRejectedValueOnce(new Error("no shell"));
+    const session = new TerminalSession({
+      key: "s-restart",
+      cwd: "/repo",
+      onChange: () => undefined,
+      onFocus: () => undefined,
+    });
+    await session.start();
+    expect(session.state.status).toBe("error");
+    session.send("\x1b");
+    expect(session.state.status).toBe("error");
+    session.send("\x1b\r");
+    await vi.waitFor(() => expect(ipc.commands.termSpawn).toHaveBeenCalledTimes(2));
+    session.dispose();
+  });
+});
+
 describe("terminal open", () => {
   afterEach(() => vi.useRealTimers());
 
