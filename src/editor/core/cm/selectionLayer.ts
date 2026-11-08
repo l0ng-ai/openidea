@@ -1,5 +1,5 @@
-import { Direction, EditorView, RectangleMarker, layer } from "@codemirror/view";
-import type { Extension } from "@codemirror/state";
+import { BlockType, Direction, EditorView, RectangleMarker, layer } from "@codemirror/view";
+import type { Extension, SelectionRange } from "@codemirror/state";
 
 /** Rounds a CSS length to the nearest device pixel. */
 export function snapToDevicePixel(v: number, dpr: number): number {
@@ -62,7 +62,39 @@ export function growToLineBoxes(
   });
 }
 
+/**
+ * Adds what is missing up to `right` on rows (`{ top, bottom }`, layer coordinates) the selection runs past the
+ * end of. CodeMirror skips folded ranges, so a selection starting on a folded line stopped at its visible text,
+ * short of the placeholder and the edge. Rows with no rectangle at all are left alone.
+ */
+export function fillRowEnds(
+  markers: readonly RectangleMarker[],
+  className: string,
+  rows: readonly { top: number; bottom: number }[],
+  right: number,
+): RectangleMarker[] {
+  const out = [...markers];
+  for (const row of rows) {
+    let end = -Infinity;
+    for (const m of markers)
+      if (m.top < row.bottom - 0.5 && m.top + m.height > row.top + 0.5)
+        end = Math.max(end, m.width === null ? Infinity : m.left + m.width);
+    if (end === -Infinity || end >= right - 0.5) continue;
+    out.push(new RectangleMarker(className, end, row.top, right - end, row.bottom - row.top));
+  }
+  return out;
+}
+
 const CLASS = "cm-selectionBackground";
+
+/** The line boxes (layer coordinates) of the visible rows that `r` runs past the end of. */
+function rowsPastEnd(view: EditorView, r: SelectionRange): { top: number; bottom: number }[] {
+  const scroller = view.scrollDOM.getBoundingClientRect();
+  const offset = view.documentTop - (scroller.top - view.scrollDOM.scrollTop * view.scaleY);
+  return view.viewportLineBlocks
+    .filter((b) => b.type === BlockType.Text && b.to >= r.from && b.to < r.to)
+    .map((b) => ({ top: offset + b.top, bottom: offset + b.bottom }));
+}
 
 /** Where CodeMirror ends a selection past the line end, in layer coordinates, and the lines' right padding (screen px). */
 function lineRightEdge(view: EditorView): { rightSide: number; pad: number } {
@@ -88,8 +120,15 @@ const snappedSelectionLayer = layer({
         CLASS,
         view.defaultLineHeight * view.scaleY,
       );
-      const markers = snapMarkers(lines, CLASS, dpr);
-      out.push(...(edge ? widenToRightEdge(markers, CLASS, edge.rightSide, edge.pad) : markers));
+      const full = edge
+        ? fillRowEnds(
+            widenToRightEdge(lines, CLASS, edge.rightSide, edge.pad),
+            CLASS,
+            rowsPastEnd(view, r),
+            edge.rightSide + edge.pad,
+          )
+        : lines;
+      out.push(...snapMarkers(full, CLASS, dpr));
     }
     return out;
   },

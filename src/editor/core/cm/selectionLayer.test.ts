@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RectangleMarker } from "@codemirror/view";
-import { growToLineBoxes, snapMarkers, widenToRightEdge } from "./selectionLayer";
+import { fillRowEnds, growToLineBoxes, snapMarkers, widenToRightEdge } from "./selectionLayer";
 
 describe("snapMarkers", () => {
   it("makes stacked selection rectangles share their edge exactly", () => {
@@ -64,5 +64,30 @@ describe("growToLineBoxes", () => {
 
   it("grows a single-row selection both ways", () => {
     expect(growToLineBoxes([new RectangleMarker(C, 40, 22, 60, 16)], C, 20).map(box)).toEqual([[40, 20, 60, 20]]);
+  });
+});
+
+describe("fillRowEnds", () => {
+  const C = "cm-selectionBackground";
+  const box = (m: RectangleMarker) => [m.left, m.top, m.width, m.height];
+
+  it("fills a row the selection runs past from where its rectangles stop to the edge (a folded first line)", () => {
+    const markers = [
+      new RectangleMarker(C, 2, 0, 110, 20), // `import asyncio`, then the fold placeholder
+      new RectangleMarker(C, 2, 20, 514, 40), // the rows below, already to the edge
+    ];
+    const rows = [
+      { top: 0, bottom: 20 },
+      { top: 20, bottom: 40 },
+    ];
+    expect(fillRowEnds(markers, C, rows, 516).map(box)).toEqual([
+      [2, 0, 110, 20],
+      [2, 20, 514, 40],
+      [112, 0, 404, 20],
+    ]);
+  });
+
+  it("leaves rows with no rectangle alone", () => {
+    expect(fillRowEnds([], C, [{ top: 0, bottom: 20 }], 516)).toEqual([]);
   });
 });
