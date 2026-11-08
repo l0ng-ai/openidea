@@ -36,7 +36,7 @@ export function BiggestObjects({
         </div>
       )}
       {page.data && (
-        <div className={clsx(styles.table, styles.objectColumns)} role="table" aria-label={title}>
+        <div className={clsx(styles.table, styles.objectColumns)} role="grid" aria-label={title}>
           <div role="rowgroup">
             <div className={styles.head} role="row" aria-rowindex={1}>
               <div role="columnheader" className={styles.headCell}>
@@ -56,13 +56,13 @@ export function BiggestObjects({
             getKey={(o) => String(o.object)}
             renderItem={(o) => (
               <div className={styles.row} role="none">
-                <span role="cell" className={styles.cell}>
+                <span role="gridcell" className={styles.cell}>
                   <ObjectText object={o} />
                 </span>
-                <span role="cell" className={clsx(styles.cell, styles.num)}>
+                <span role="gridcell" className={clsx(styles.cell, styles.num)}>
                   {formatBytes(o.shallow)}
                 </span>
-                <span role="cell" className={clsx(styles.cell, styles.num)}>
+                <span role="gridcell" className={clsx(styles.cell, styles.num)}>
                   {formatBytes(o.retained)}
                 </span>
               </div>

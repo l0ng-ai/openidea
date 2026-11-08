@@ -49,8 +49,9 @@ export interface ListProps<T> {
   hoverSelects?: boolean;
   empty?: ReactNode;
   /**
-   * Body of a `role="table"`: a `rowgroup` of `row`s numbered after the table's `headerRows`,
-   * instead of a listbox of options. `renderItem` then renders the row's cells.
+   * Body of a `role="grid"`: a `rowgroup` of `row`s numbered after the grid's `headerRows`,
+   * instead of a listbox of options. `renderItem` then renders the row's `gridcell`s. Rows carry
+   * `aria-selected`, which only a grid's rows may, and the rowgroup names the active one.
    */
   tableBody?: { headerRows: number };
   className?: string;
@@ -194,7 +195,7 @@ export function List<T>({
       aria-label={aria["aria-label"]}
       aria-labelledby={aria["aria-labelledby"]}
       aria-activedescendant={
-        focusable && !tableBody && active >= 0 && virtualizer.getVirtualItems().some((v) => v.index === active)
+        focusable && active >= 0 && virtualizer.getVirtualItems().some((v) => v.index === active)
           ? `${baseId}-${active}`
           : undefined
       }
@@ -221,7 +222,7 @@ export function List<T>({
               key={v.key}
               id={`${baseId}-${v.index}`}
               role={tableBody ? "row" : "option"}
-              aria-selected={tableBody ? undefined : selected}
+              aria-selected={selected}
               data-lead={isActive || undefined}
               aria-posinset={tableBody ? undefined : optionIndex.idx[v.index]}
               aria-setsize={tableBody ? undefined : optionIndex.count}

@@ -57,7 +57,7 @@ describe("List", () => {
       <List
         items={["a", "b"]}
         getKey={(r) => r}
-        renderItem={(r) => <span role="cell">{r}</span>}
+        renderItem={(r) => <span role="gridcell">{r}</span>}
         tableBody={{ headerRows: 1 }}
       />,
     );
@@ -65,8 +65,25 @@ describe("List", () => {
     expect(screen.queryByRole("option")).toBeNull();
     const rows = screen.getAllByRole("row");
     expect(rows.map((r) => r.getAttribute("aria-rowindex"))).toEqual(["2", "3"]);
-    expect(rows[0]).not.toHaveAttribute("aria-selected");
-    expect(screen.getByRole("rowgroup")).not.toHaveAttribute("aria-activedescendant");
+  });
+
+  it("tells assistive tech which row of a table body is selected", () => {
+    render(
+      <List
+        items={["a", "b"]}
+        getKey={(r) => r}
+        renderItem={(r) => <span role="gridcell">{r}</span>}
+        defaultActiveIndex={0}
+        tableBody={{ headerRows: 1 }}
+      />,
+    );
+    const body = screen.getByRole("rowgroup");
+    const rows = screen.getAllByRole("row");
+    expect(rows.map((r) => r.getAttribute("aria-selected"))).toEqual(["true", "false"]);
+    expect(body).toHaveAttribute("aria-activedescendant", rows[0]!.id);
+    fireEvent.keyDown(body, { key: "ArrowDown" });
+    expect(screen.getAllByRole("row").map((r) => r.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    expect(body).toHaveAttribute("aria-activedescendant", rows[1]!.id);
   });
 
   it("renders section headers that are skipped by keyboard navigation", () => {

@@ -496,12 +496,13 @@ export function registerDebugActions(): () => void {
     },
     {
       // Runs for the class given as `arg`, else the open instances list, else the selected Memory row.
+      // Needs only the project's language server, so it also works once the session has ended.
       id: "debug.memory.jumpToSource",
       title: "Jump to Source",
       category: "Debug",
       icon: "edit-source",
       keywords: ["memory", "class", "instances"],
-      when: "debugHasJvmMemory",
+      when: "projectOpen",
       run: ({ arg }) => {
         const s = activeSession();
         const name =

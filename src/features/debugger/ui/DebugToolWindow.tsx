@@ -1,8 +1,7 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { executeAction, getAction } from "@/platform/actions";
-import { evaluateWhen, useContextKeys } from "@/platform/context";
+import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
 import { call, commands, type Scope, type Variable } from "@/platform/ipc";
 import {
@@ -24,6 +23,7 @@ import {
 import { setMuted, useBreakpoints } from "../breakpoints/store";
 import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
+import { useActionEnabled } from "./useActionEnabled";
 import {
   addWatch,
   closeSessionTab,
@@ -46,12 +46,6 @@ import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import styles from "./DebugToolWindow.module.css";
 import { tx } from "@/platform/i18n";
-
-function useActionEnabled(id: string): boolean {
-  const ctx = useContextKeys();
-  const a = getAction(id);
-  return !!a && evaluateWhen(a.when, ctx);
-}
 
 function ToolButton({ action, icon, tone }: { action: string; icon: string; tone?: "danger" }) {
   const enabled = useActionEnabled(action);

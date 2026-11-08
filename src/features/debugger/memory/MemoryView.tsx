@@ -6,6 +6,7 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemorySnapshot } from "@/platform/ipc";
 import { sessionSupports, type DebugSession } from "../state";
+import { useActionEnabled } from "../ui/useActionEnabled";
 import { retainedForSession, useHeap } from "../heap/heapState";
 import {
   DEFAULT_QUERY,
@@ -56,7 +57,7 @@ function ClassRow({
   const opens = listsInstances && paused;
   return (
     <div className={styles.row} role="none" onDoubleClick={opens ? () => showInstancesOf(row.name) : undefined}>
-      <span role="cell" className={clsx(styles.cell, styles.className)}>
+      <span role="gridcell" className={clsx(styles.cell, styles.className)}>
         <span className={styles.classText}>{row.name}</span>
         {row.ambiguous && (
           <span
@@ -82,19 +83,19 @@ function ClassRow({
           />
         )}
       </span>
-      <span role="cell" className={clsx(styles.cell, styles.num)}>
+      <span role="gridcell" className={clsx(styles.cell, styles.num)}>
         {formatCount(row.instances)}
       </span>
-      <span role="cell" className={clsx(styles.cell, styles.num, row.deltaInstances === 0 && styles.zero)}>
+      <span role="gridcell" className={clsx(styles.cell, styles.num, row.deltaInstances === 0 && styles.zero)}>
         {delta}
       </span>
       {sizes && (
-        <span role="cell" className={clsx(styles.cell, styles.num)}>
+        <span role="gridcell" className={clsx(styles.cell, styles.num)}>
           {formatBytes(row.bytes)}
         </span>
       )}
       {retained && (
-        <span role="cell" className={clsx(styles.cell, styles.num, retainedBytes === undefined && styles.zero)}>
+        <span role="gridcell" className={clsx(styles.cell, styles.num, retainedBytes === undefined && styles.zero)}>
           {retainedBytes === undefined ? "—" : formatBytes(retainedBytes)}
         </span>
       )}
@@ -120,6 +121,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
   const sorted = useMemo(() => queryFor(query, source, retained !== null), [query, source, retained]);
   const listsInstances = sessionSupports("jvmInstances", session);
   const paused = session.status === "paused";
+  const canRefresh = useActionEnabled("debug.memory.refresh");
   const backend = backendText(session.jvmBackend);
 
   // Only the first visit loads: later stops mark the table outdated instead of re-running a heap walk.
@@ -151,7 +153,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
           title="Refresh Memory View"
           size="small"
           iconSize={16}
-          disabled={entry?.loading}
+          disabled={entry?.loading || !canRefresh}
         />
         <HeapCaptureButton session={session} />
         <Input
@@ -203,7 +205,7 @@ export function MemoryView({ session }: { session: DebugSession }) {
       )}
       {snapshot && (
         <div className={clsx(styles.table, source === "debugger" && styles.noSizes, retained && styles.withRetained)}>
-          <div className={styles.grid} role="table" aria-label={tx("Memory")} aria-rowcount={rows.length + 1}>
+          <div className={styles.grid} role="grid" aria-label={tx("Memory")} aria-rowcount={rows.length + 1}>
             <div className={styles.headGroup} role="rowgroup">
               <div className={styles.head} role="row" aria-rowindex={1}>
                 {columns.map((c) => (

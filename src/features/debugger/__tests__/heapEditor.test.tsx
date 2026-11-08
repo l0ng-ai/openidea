@@ -99,7 +99,7 @@ function keep(info: HeapSnapshotInfo, classes: HeapClassRow[] | null = CLASSES) 
 
 const SNAPSHOT = captured(7, "12:30:00");
 const show = (info: HeapSnapshotInfo = SNAPSHOT) => render(<HeapSnapshotEditor input={heapInput(info)} />);
-const classTable = () => screen.getByRole("table", { name: "Classes" });
+const classTable = () => screen.getByRole("grid", { name: "Classes" });
 const rowOf = (scope: HTMLElement, text: string) => within(scope).getByText(text).closest<HTMLElement>('[role="row"]')!;
 
 beforeEach(() => {
@@ -125,8 +125,22 @@ describe("HeapSnapshotEditor", () => {
     const names = within(classTable())
       .getAllByRole("row")
       .slice(1)
-      .map((r) => r.querySelector('[role="cell"]')?.textContent);
+      .map((r) => r.querySelector('[role="gridcell"]')?.textContent);
     expect(names).toEqual(["Node", "java.lang.String"]);
+  });
+
+  it("tells a screen reader which row of the class and object tables is selected", async () => {
+    keep(SNAPSHOT);
+    ipc.debugHeapDominators.mockReturnValue(ok(page([obj(16)])));
+    show();
+    fireEvent.mouseDown(rowOf(classTable(), "Node"));
+    const objects = await screen.findByRole("grid", { name: "Biggest objects of Node" });
+    fireEvent.mouseDown(rowOf(objects, "Node@0x10"));
+    for (const grid of [classTable(), objects]) {
+      const [, body] = within(grid).getAllByRole("rowgroup");
+      const row = within(body!).getByRole("row", { selected: true });
+      expect(body).toHaveAttribute("aria-activedescendant", row.id);
+    }
   });
 
   it("describes the snapshot in its header", () => {
@@ -207,7 +221,7 @@ describe("HeapSnapshotEditor", () => {
     ipc.debugHeapPath.mockReturnValue(ok({ steps, omitted: 0, omittedAfter: 0 }));
     show();
     fireEvent.mouseDown(rowOf(classTable(), "Node"));
-    fireEvent.mouseDown(rowOf(await screen.findByRole("table", { name: "Biggest objects of Node" }), "Node@0x10"));
+    fireEvent.mouseDown(rowOf(await screen.findByRole("grid", { name: "Biggest objects of Node" }), "Node@0x10"));
     const path = await screen.findByRole("region", { name: "Path to GC Root" });
     expect(await within(path).findByText(".next")).toBeInTheDocument();
     expect(within(path).getByText("Local variable in main")).toBeInTheDocument();
@@ -226,7 +240,7 @@ describe("HeapSnapshotEditor", () => {
     ipc.debugHeapPath.mockReturnValue(ok({ steps, omitted: 2000, omittedAfter: 1 }));
     show();
     fireEvent.mouseDown(rowOf(classTable(), "Node"));
-    fireEvent.mouseDown(rowOf(await screen.findByRole("table", { name: "Biggest objects of Node" }), "Node@0x10"));
+    fireEvent.mouseDown(rowOf(await screen.findByRole("grid", { name: "Biggest objects of Node" }), "Node@0x10"));
     const path = await screen.findByRole("region", { name: "Path to GC Root" });
     const gap = await within(path).findByText(`Path truncated: ${(2000).toLocaleString()} steps not shown`);
     const rows = within(path).getAllByRole("option");
@@ -243,7 +257,7 @@ describe("HeapSnapshotEditor", () => {
     ipc.debugHeapDominators.mockReturnValue(ok(page([obj(16)])));
     show();
     fireEvent.mouseDown(rowOf(classTable(), "Node"));
-    fireEvent.mouseDown(rowOf(await screen.findByRole("table", { name: "Biggest objects of Node" }), "Node@0x10"));
+    fireEvent.mouseDown(rowOf(await screen.findByRole("grid", { name: "Biggest objects of Node" }), "Node@0x10"));
     expect(await screen.findByText("This object is not reachable from a GC root.")).toBeInTheDocument();
   });
 
@@ -325,7 +339,7 @@ describe("HeapSnapshotEditor", () => {
   it("says so when the snapshot belongs to another window", () => {
     show();
     expect(screen.getByText("This heap snapshot is not available in this window.")).toBeInTheDocument();
-    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("grid")).toBeNull();
   });
 
   it("offers Save As for the active captured snapshot of a local window only", () => {

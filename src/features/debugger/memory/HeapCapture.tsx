@@ -4,6 +4,7 @@ import { IconButton, ProgressBar } from "@/ui";
 import { tx } from "@/platform/i18n";
 import type { HeapProgress, JvmHeapUnavailable } from "@/platform/ipc";
 import { sessionSupports, type DebugSession } from "../state";
+import { useActionEnabled } from "../ui/useActionEnabled";
 import { cancelCapture, progressFraction, useHeap, type CaptureState } from "../heap/heapState";
 import { formatBytes } from "./rows";
 import { unavailableText } from "./unavailableText";
@@ -60,6 +61,7 @@ function refusalText(reason: JvmHeapUnavailable): string {
 export function HeapCaptureButton({ session }: { session: DebugSession }) {
   const id = session.id;
   const capture = useHeap((s) => s.captures[id]);
+  const canCapture = useActionEnabled("debug.heap.capture");
   if (!sessionSupports("jvmHeap", session)) return null;
   if (isRunning(capture)) {
     return (
@@ -83,6 +85,7 @@ export function HeapCaptureButton({ session }: { session: DebugSession }) {
       size="small"
       iconSize={16}
       data-tooltip={tooltip}
+      disabled={!canCapture}
     />
   );
 }

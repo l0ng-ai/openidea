@@ -36,6 +36,7 @@ import type {
 } from "@/platform/ipc";
 import { useDebug, type DebugSession } from "../state";
 import { registerActions } from "@/platform/actions";
+import { clearContext, setContext } from "@/platform/context";
 import { setLocale } from "@/platform/i18n";
 import { refreshMemory, useMemory } from "../memory/memoryState";
 import { showInstances, useInstances } from "../memory/instancesState";
@@ -119,25 +120,52 @@ beforeEach(() => {
   useHeap.setState({ snapshots: {}, captures: {}, opening: null });
   useDebug.setState({ sessions: { 1: session }, active: 1, stopSeq: 0 });
   for (const m of Object.values(ipc)) m.mockReset();
-  // The real actions live in actions.ts (covered by actions.test.ts); the buttons only need their ids to resolve.
+  // The real actions live in actions.ts (covered by actions.test.ts, which pins their `when`); the
+  // buttons only need their ids and `when` clauses to resolve.
   unregister = registerActions([
-    { id: "debug.memory.refresh", title: "Refresh Memory View", run: () => void refreshMemory(1) },
+    {
+      id: "debug.memory.refresh",
+      title: "Refresh Memory View",
+      when: "debugHasJvmMemory",
+      run: () => void refreshMemory(1),
+    },
     {
       id: "debug.memory.showInstances",
       title: "Show Instances",
       run: ({ arg }) => void showInstances(1, arg as string),
     },
-    { id: "debug.memory.jumpToSource", title: "Jump to Source", run: () => {} },
-    { id: "debug.heap.capture", title: "Capture Heap Snapshot", run: () => void captureHeap(1) },
+    { id: "debug.memory.jumpToSource", title: "Jump to Source", when: "projectOpen", run: () => {} },
+    {
+      id: "debug.heap.capture",
+      title: "Capture Heap Snapshot",
+      when: "debugHasJvmMemory",
+      run: () => void captureHeap(1),
+    },
   ]);
+  setContext("debugHasJvmMemory", true);
+  setContext("projectOpen", true);
 });
 
 afterEach(() => {
   unregister();
+  clearContext("debugHasJvmMemory");
+  clearContext("projectOpen");
   cleanup();
 });
 
 describe("MemoryView", () => {
+  it("disables Refresh and Capture once the session has ended", async () => {
+    ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
+    const ended = { ...session, status: "terminated", caps: { jvmHeap: true } as DebugCapabilities } as DebugSession;
+    render(<MemoryView session={ended} />);
+    await screen.findByText("Heap$Live");
+    const refresh = screen.getByRole("button", { name: "Refresh Memory View" });
+    const capture = screen.getByRole("button", { name: "Capture Heap Snapshot" });
+    expect([refresh, capture].map((b) => b.hasAttribute("disabled"))).toEqual([false, false]);
+    act(() => setContext("debugHasJvmMemory", false));
+    expect([refresh, capture].map((b) => b.hasAttribute("disabled"))).toEqual([true, true]);
+  });
+
   it("loads a snapshot when the tab first opens", async () => {
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
     const { unmount } = render(<MemoryView session={session} />);
@@ -286,7 +314,7 @@ describe("MemoryView", () => {
     ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
     render(<MemoryView session={session} />);
     await screen.findByText("Heap$Live");
-    const table = screen.getByRole("table", { name: "Memory" });
+    const table = screen.getByRole("grid", { name: "Memory" });
     expect(table.getAttribute("aria-rowcount")).toBe("4");
     const headers = within(table)
       .getAllByRole("columnheader")
@@ -297,11 +325,24 @@ describe("MemoryView", () => {
     const rows = within(body!).getAllByRole("row");
     expect(rows.map((r) => r.getAttribute("aria-rowindex"))).toEqual(["2", "3", "4"]);
     const cells = within(rows[0]!)
-      .getAllByRole("cell")
+      .getAllByRole("gridcell")
       .map((c) => c.textContent);
     expect(cells).toHaveLength(headers.length);
     expect(cells[0]).toContain("Heap$Live");
     expect(cells[3]).toBe("15.3 MB");
+  });
+
+  it("tells a screen reader which class row the arrow keys select", async () => {
+    ipc.debugJvmMemoryClasses.mockReturnValue(ok(HEAP));
+    render(<MemoryView session={session} />);
+    await screen.findByText("Heap$Live");
+    const [, body] = within(screen.getByRole("grid", { name: "Memory" })).getAllByRole("rowgroup");
+    fireEvent.keyDown(body!, { key: "ArrowDown" });
+    const selected = within(body!)
+      .getAllByRole("row")
+      .filter((r) => r.getAttribute("aria-selected") === "true");
+    expect(selected).toHaveLength(1);
+    expect(body).toHaveAttribute("aria-activedescendant", selected[0]!.id);
   });
 
   it("keeps the old snapshot under the reason when a refresh is refused", async () => {
@@ -397,7 +438,7 @@ describe("MemoryView", () => {
       await screen.findByText("com.x.Order");
       const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
       expect(headers).toEqual(["Class", "Count", "Diff"]);
-      expect(within(rowOf("com.x.Order")).getAllByRole("cell")).toHaveLength(3);
+      expect(within(rowOf("com.x.Order")).getAllByRole("gridcell")).toHaveLength(3);
       // Without sizes the table sorts by count.
       expect(screen.getByRole("columnheader", { name: "Count" }).getAttribute("aria-sort")).toBe("descending");
       expect(screen.getByText("Counted by the debugger: reachable objects only, no sizes.")).toBeTruthy();
@@ -572,7 +613,7 @@ describe("MemoryView", () => {
       await showInstances(1, "com.x.Order");
       render(<MemoryView session={withInstances} />);
       expect(await screen.findByText("Instances of com.x.Order")).toBeTruthy();
-      expect(screen.getByRole("table", { name: "Memory" })).toBeTruthy();
+      expect(screen.getByRole("grid", { name: "Memory" })).toBeTruthy();
     });
   });
 
@@ -707,10 +748,10 @@ describe("MemoryView", () => {
 
       act(() => snapshotAt(0, [heapRow("Node", 104), heapRow("Dup", 9, true)]));
       expect(headers()).toEqual(["Class", "Count", "Diff", "Shallow Size", "Retained Size"]);
-      expect(within(rowOf("Node")).getAllByRole("cell").at(-1)!.textContent).toBe("104 B");
-      expect(within(rowOf("Leaf")).getAllByRole("cell").at(-1)!.textContent).toBe("—");
+      expect(within(rowOf("Node")).getAllByRole("gridcell").at(-1)!.textContent).toBe("104 B");
+      expect(within(rowOf("Leaf")).getAllByRole("gridcell").at(-1)!.textContent).toBe("—");
       // A name shared by several classes cannot be joined to one retained size.
-      expect(within(rowOf("Dup")).getAllByRole("cell").at(-1)!.textContent).toBe("—");
+      expect(within(rowOf("Dup")).getAllByRole("gridcell").at(-1)!.textContent).toBe("—");
 
       fireEvent.click(screen.getByRole("button", { name: "Retained Size" }));
       expect(screen.getByRole("columnheader", { name: "Retained Size" }).getAttribute("aria-sort")).toBe("descending");
@@ -795,7 +836,7 @@ describe("MemoryView", () => {
         await waitFor(() => expect(channel).not.toBeNull());
         await act(async () => answer({ status: "ready", snapshot: info(8) }));
         await waitFor(() => expect(headers()).toContain("Retained Size"));
-        expect(within(rowOf("Node")).getAllByRole("cell").at(-1)!.textContent).toBe("208 B");
+        expect(within(rowOf("Node")).getAllByRole("gridcell").at(-1)!.textContent).toBe("208 B");
       });
     });
   });

@@ -4,6 +4,7 @@ import { Button, IconButton, Spinner, T, Tree } from "@/ui";
 import { tx } from "@/platform/i18n";
 import type { DebugSessionId, JvmValue } from "@/platform/ipc";
 import type { DebugSession } from "../state";
+import { useActionEnabled } from "../ui/useActionEnabled";
 import {
   ensureFields,
   instancesOutdated,
@@ -32,6 +33,7 @@ import styles from "./InstancesPane.module.css";
 export function InstancesPane({ session }: { session: DebugSession }) {
   const id = session.id;
   const entry = useInstances((s) => s.bySession[id]);
+  const canJump = useActionEnabled("debug.memory.jumpToSource");
   if (!entry) return null;
   const name = entry.className;
   const title = tx`Instances of ${name}`;
@@ -47,6 +49,7 @@ export function InstancesPane({ session }: { session: DebugSession }) {
           actionArg={name}
           title="Jump to Source"
           size="small"
+          disabled={!canJump}
         />
         <IconButton
           icon="close"

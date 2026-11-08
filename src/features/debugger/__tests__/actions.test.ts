@@ -76,6 +76,7 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
 });
 
 import { executeAction, getAction, isActionEnabled, registerActions } from "@/platform/actions";
+import { clearContext, setContext } from "@/platform/context";
 import { intellijMacos } from "@/platform/keymaps/intellij-macos";
 import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -370,11 +371,25 @@ describe("debugger actions (IDEA parity)", () => {
 
   it("Jump to Source opens the class of the open instances list", async () => {
     paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    setContext("projectOpen", true);
     await showInstances(3, "com.x.Order$Line");
     await executeAction("debug.memory.jumpToSource");
     await settle();
     expect(ipc.lspWorkspaceSymbols).toHaveBeenCalledWith(expect.anything(), "Order");
     expect(opened.at(-1)?.path).toBe("/p/com/x/Order.java");
+    clearContext("projectOpen");
+    forgetInstances(3);
+  });
+
+  it("Jump to Source still opens the class once the session has ended", async () => {
+    paused({ caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    await showInstances(3, "com.x.Order$Line");
+    paused({ status: "terminated", caps: caps({ jvmMemory: true, jvmInstances: true }) });
+    setContext("projectOpen", true);
+    expect(await executeAction("debug.memory.jumpToSource")).toBe(true);
+    await settle();
+    expect(opened.at(-1)?.path).toBe("/p/com/x/Order.java");
+    clearContext("projectOpen");
     forgetInstances(3);
   });
 

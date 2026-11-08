@@ -28,24 +28,24 @@ function ClassRow({ row, changes }: { row: HeapClassRow; changes: ReadonlyMap<st
   const change = changes?.get(row.name);
   return (
     <div className={styles.row} role="none">
-      <span role="cell" className={clsx(styles.cell, styles.className)}>
+      <span role="gridcell" className={clsx(styles.cell, styles.className)}>
         {row.name}
       </span>
-      <span role="cell" className={clsx(styles.cell, styles.num)}>
+      <span role="gridcell" className={clsx(styles.cell, styles.num)}>
         {formatCount(row.count)}
       </span>
-      <span role="cell" className={clsx(styles.cell, styles.num)}>
+      <span role="gridcell" className={clsx(styles.cell, styles.num)}>
         {formatBytes(row.shallow)}
       </span>
-      <span role="cell" className={clsx(styles.cell, styles.num)}>
+      <span role="gridcell" className={clsx(styles.cell, styles.num)}>
         {formatBytes(row.retained)}
       </span>
       {changes && (
         <>
-          <span role="cell" className={clsx(styles.cell, styles.num, !change?.count && styles.muted)}>
+          <span role="gridcell" className={clsx(styles.cell, styles.num, !change?.count && styles.muted)}>
             {change ? formatDelta(change.count) : "—"}
           </span>
-          <span role="cell" className={clsx(styles.cell, styles.num, !change?.retained && styles.muted)}>
+          <span role="gridcell" className={clsx(styles.cell, styles.num, !change?.retained && styles.muted)}>
             {change ? formatBytesDelta(change.retained) : "—"}
           </span>
         </>
@@ -96,7 +96,7 @@ export function HeapClasses({
       </div>
       <div
         className={clsx(styles.table, styles.classColumns, changes && styles.withDiff)}
-        role="table"
+        role="grid"
         aria-label={tx("Classes")}
         aria-rowcount={rows.length + 1}
       >
