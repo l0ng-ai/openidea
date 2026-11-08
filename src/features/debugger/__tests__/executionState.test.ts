@@ -50,7 +50,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  useDebug.setState({ sessions: {}, active: null, stopSeq: 0 });
+  useDebug.setState({ sessions: {}, active: null, stopSeq: 0, variablesEpoch: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {} });
   adoptSession(1, { adapter: "java-debug" });
   ipc.debugStackTrace.mockResolvedValue(ipc.ok([frame(6840)]));
@@ -209,5 +209,56 @@ describe("execution point state", () => {
     old.resolve(ipc.ok([{ name: "count", value: "40", typeName: null, variablesReference: 0, evaluateName: "count" }]));
     await settle();
     expect(useExecutionPoint.getState().values.count).toBe("42");
+  });
+});
+
+describe("invalidated variables", () => {
+  const library = (value: string): Variable => ({
+    name: "library",
+    value,
+    typeName: null,
+    variablesReference: 0,
+    evaluateName: "library",
+  });
+
+  it("reloads the selected frame's variables without counting a stop", async () => {
+    ipc.debugVariables.mockResolvedValue(ipc.ok([library("Collecting data…")]));
+    stopped();
+    await settle();
+    expect(useExecutionPoint.getState().values.library).toBe("Collecting data…");
+    const before = useDebug.getState();
+    ipc.debugVariables.mockResolvedValue(ipc.ok([library("Library@1")]));
+    handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] });
+    await settle();
+    expect(useDebug.getState().variablesEpoch).toBe(1);
+    expect(useExecutionPoint.getState().values.library).toBe("Library@1");
+    // A stop would mark every value changed and make the Memory view ask again.
+    expect(useDebug.getState().stopSeq).toBe(before.stopSeq);
+    expect(useDebug.getState().sessions[1]!.stops).toBe(before.sessions[1]!.stops);
+  });
+
+  it.each([[[]], [["all"]], [["variables", "threads"]]])("reloads for areas %j", async (areas) => {
+    stopped();
+    await settle();
+    ipc.debugScopes.mockClear();
+    handleDebugEvent(1, { kind: "invalidated", areas });
+    await settle();
+    expect(useDebug.getState().variablesEpoch).toBe(1);
+    expect(ipc.debugScopes).toHaveBeenCalledOnce();
+  });
+
+  it("changes nothing while the program runs or for other areas", async () => {
+    handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] });
+    stopped();
+    await settle();
+    ipc.debugScopes.mockClear();
+    handleDebugEvent(1, { kind: "invalidated", areas: ["threads", "stacks"] });
+    await settle();
+    expect(ipc.debugScopes).not.toHaveBeenCalled();
+    await resumeExecution(1, async () => {});
+    handleDebugEvent(1, { kind: "invalidated", areas: ["variables"] });
+    await settle();
+    expect(ipc.debugScopes).not.toHaveBeenCalled();
+    expect(useDebug.getState().variablesEpoch).toBe(0);
   });
 });

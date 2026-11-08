@@ -132,5 +132,6 @@
   "kotlin-lsp did not start: {detail}": "kotlin-lsp did not start: {detail}",
   "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.": "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.",
   "kotlin-lsp could not import the project.": "kotlin-lsp could not import the project.",
-  "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp could not start its debugger: {detail}"
+  "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp could not start its debugger: {detail}",
+  "kotlin-lsp or kotlin-debug-adapter (Kotlin)": "kotlin-lsp or kotlin-debug-adapter (Kotlin)"
 }

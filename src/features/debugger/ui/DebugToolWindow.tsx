@@ -405,6 +405,7 @@ interface EvalRow {
 function VariablesPane({ session }: { session: DebugSession }) {
   const watches = useDebug((s) => s.watches);
   const stopSeq = useDebug((s) => s.stopSeq);
+  const variablesEpoch = useDebug((s) => s.variablesEpoch);
   const [expression, setExpression] = useState("");
   const evalField = useRef<HTMLInputElement>(null);
   const completion = useExpressionCompletion(evalField, expression, setExpression, session);
@@ -445,7 +446,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
     return () => {
       cancelled = true;
     };
-  }, [session.id, frame, stopSeq]);
+  }, [session.id, frame, stopSeq, variablesEpoch]);
 
   // Watches are re-evaluated on every stop / frame change.
   useEffect(() => {
@@ -581,7 +582,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         <VariablesView
           roots={roots}
           session={session.id}
-          generation={stopSeq * 100000 + (frame ?? 0)}
+          generation={(stopSeq * 1000 + (variablesEpoch % 1000)) * 100000 + (frame ?? 0)}
           changes={{ epoch: stopSeq, scope: changeScope }}
           aria-label="Variables"
         />

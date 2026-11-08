@@ -89,6 +89,11 @@ interface DebugState {
   watches: string[];
   /** Incremented on every stop; views re-pull data when it changes. */
   stopSeq: number;
+  /**
+   * Incremented when the adapter says it has new values for the suspended frame (`invalidated`).
+   * Separate from `stopSeq`: no stop happened, so nothing may count as changed and the Memory view stays put.
+   */
+  variablesEpoch: number;
 }
 
 export const useDebug = create<DebugState>(() => ({
@@ -97,6 +102,7 @@ export const useDebug = create<DebugState>(() => ({
   console: {},
   watches: [],
   stopSeq: 0,
+  variablesEpoch: 0,
 }));
 
 /** Execution point of the selected frame, plus the frame's locals for inline values. */
@@ -602,7 +608,8 @@ export async function startSession(
             name: launch.name,
             runConfig: options.runConfig,
             startedAt: preparation?.startedAt ?? startedAt,
-            adapter: launch.adapter,
+            // The backend may start another adapter than the one asked for; `launch` keeps the request for Rerun.
+            adapter: cur.adapter || launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
             status: cur.status === "starting" ? "running" : cur.status,
@@ -1118,6 +1125,12 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
     case "jvmBackend":
       patch(id, { jvmBackend: event.state });
       break;
+    case "invalidated":
+      if (s.status !== "paused") break;
+      if (event.areas.length && !event.areas.some((a) => a === "variables" || a === "all")) break;
+      useDebug.setState((st) => ({ variablesEpoch: st.variablesEpoch + 1 }));
+      if (s.selectedFrame != null) void loadLocals(id, s.selectedFrame);
+      break;
   }
 }
 
@@ -1129,7 +1142,7 @@ export function resetSessions() {
   cancelOutputFlush();
   ansiStreams.clear();
   announcedPorts.clear();
-  useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0 });
+  useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0, variablesEpoch: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {}, variables: {} });
   publishContext();
 }

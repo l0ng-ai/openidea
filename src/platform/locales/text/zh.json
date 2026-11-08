@@ -6507,5 +6507,6 @@
   "kotlin-lsp did not start: {detail}": "kotlin-lsp 未能启动：{detail}",
   "kotlin-lsp is still importing the project. Debug again once the import has finished to use its debugger.": "kotlin-lsp 仍在导入项目。导入完成后再次调试即可使用其调试器。",
   "kotlin-lsp could not import the project.": "kotlin-lsp 无法导入项目。",
-  "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp 无法启动其调试器：{detail}"
+  "kotlin-lsp could not start its debugger: {detail}": "kotlin-lsp 无法启动其调试器：{detail}",
+  "kotlin-lsp or kotlin-debug-adapter (Kotlin)": "kotlin-lsp 或 kotlin-debug-adapter（Kotlin）"
 }
