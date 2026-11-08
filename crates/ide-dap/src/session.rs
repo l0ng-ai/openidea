@@ -48,6 +48,7 @@ pub(crate) struct Session {
     /// Set once `configurationDone` was sent; breakpoint updates go out live after that.
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
+    pub startup_cancel: ide_core::CancellationToken,
     pub output_drained: watch::Sender<bool>,
     pub terminated: AtomicBool,
     /// Set by a second Stop: the one waiting for the program kills it instead.
@@ -104,6 +105,7 @@ impl Session {
             program: Mutex::new(None),
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
+            startup_cancel: ide_core::CancellationToken::new(),
             output_drained: watch::channel(true).0,
             terminated: AtomicBool::new(false),
             stop_force: AtomicBool::new(false),
