@@ -1,4 +1,6 @@
 {
+  "Identifiers › Package reference": "标识符 › 包引用",
+  "Cannot remove a worktree containing the open project.": "无法移除包含当前打开项目的工作树。",
   "Select Python Environment Folder": "选择 Python 环境文件夹",
   "Checking interpreter": "正在检查解释器",
   "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "无法运行此 Python 解释器。请选择可用的 Python 可执行文件或虚拟环境文件夹。",
@@ -6787,5 +6789,6 @@
   "Rebuild": "重新构建",
   "No build": "不构建",
   "Build, no error check": "构建，不检查错误",
-  "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式"
+  "Before launch build for this Java configuration": "此 Java 配置启动前的构建方式",
+  "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "分支 '{name}' 被位于 {path} 的工作树签出。\n删除该工作树和分支？其文件夹将被删除。"
 }
