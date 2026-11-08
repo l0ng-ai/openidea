@@ -15,7 +15,7 @@ import {
 } from "./editing";
 import { batchLanguage, commentTokens, findLanguageDescription } from "./languages";
 import { toggleCaret } from "./multiCaret";
-import { enterInLineComment, lineCommentStyle } from "./comments";
+import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
 
 /** Brace languages in miniature: one unit deeper after a line ending in `{`. */
@@ -384,5 +384,56 @@ describe("Batch language mode and @REM comment toggle", () => {
     expect(has("variableName", "%APP%")).toBe(true);
     expect(has("variableName", "!COUNT!")).toBe(true);
     expect(has("labelName", ":sub")).toBe(true);
+  });
+});
+
+describe("toggle comment where the tokens depend on the syntax context", () => {
+  // A JSX comment is `{/* … */}` in JSX children, but its own text parses as
+  // JavaScript, where the tokens are `/* … */`.
+  const wrap = (body: string) => `const a = (\n  <div>\n    ${body}\n  </div>\n);`;
+
+  it("takes a JSX line comment back out, with the caret", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make(wrap("|</div>"), tsx);
+    commentLine(v);
+    expect(v.state.doc.line(3).text).toBe("    {/* </div> */}");
+    commentLine(v);
+    expect(show(v)).toBe(wrap("|</div>"));
+  });
+
+  it("takes a JSX line comment back out, with the line selected", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make(wrap("[</div>]"), tsx);
+    commentLine(v);
+    expect(v.state.doc.line(3).text).toBe("    {/* </div> */}");
+    commentLine(v);
+    expect(v.state.doc.line(3).text).toBe("    </div>");
+  });
+
+  it("takes a JSX block comment back out after ⌘⇧/", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make(wrap("[</div>]"), tsx);
+    commentBlock(v);
+    expect(v.state.doc.line(3).text).toBe("    {/* </div> */}");
+    commentBlock(v);
+    expect(show(v)).toBe(wrap("[</div>]"));
+  });
+
+  it("takes a block comment back out in a language with no line comment", async () => {
+    const html = await languages.find((l) => l.name === "HTML")!.load();
+    const v = make("<section>\n  |<p>hi</p>\n</section>", html);
+    commentLine(v);
+    expect(v.state.doc.line(2).text).toBe("  <!-- <p>hi</p> -->");
+    commentLine(v);
+    expect(show(v)).toBe("<section>\n  |<p>hi</p>\n</section>");
+  });
+
+  it("wraps several selected JSX lines once and unwraps them again", async () => {
+    const tsx = await languages.find((l) => l.name === "TSX")!.load();
+    const v = make("const a = (\n  <div>\n    [<b>x</b>\n    <i>y</i>]\n  </div>\n);", tsx);
+    commentBlock(v);
+    expect(v.state.doc.toString()).toContain("{/* <b>x</b>\n    <i>y</i> */}");
+    commentBlock(v);
+    expect(v.state.doc.toString()).toBe("const a = (\n  <div>\n    <b>x</b>\n    <i>y</i>\n  </div>\n);");
   });
 });
