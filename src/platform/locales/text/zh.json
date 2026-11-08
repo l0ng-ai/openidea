@@ -6836,6 +6836,7 @@
   "Could not copy. Select the details below and copy them.": "无法复制。请选择下方详情并手动复制。",
   "Startup error details": "启动错误详情",
   "Startup did not finish within 30 seconds.": "启动未在 30 秒内完成。",
+  "Restart All": "全部重启",
   "Build Module '{target}'": "构建模块“{target}”",
   "Build cancelled": "构建已取消",
   "Build did not start": "构建未启动",
