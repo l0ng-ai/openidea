@@ -21,6 +21,7 @@ const WHEN = `projectOpen && !${BUILD_RUNNING}`;
 /** The module to build: the invoker's path (project view) or the active editor's file. */
 function moduleTarget(arg: unknown): string | null {
   if (typeof arg === "string" && arg) return arg;
+  if (typeof arg === "object" && arg !== null && "target" in arg && typeof arg.target === "string") return arg.target;
   return maybeEditorService()?.activePath() ?? null;
 }
 
@@ -78,9 +79,11 @@ export function activate(): () => void {
         category: "Build",
         when: WHEN,
         keywords: ["recompile", "compile file", "make module"],
-        run: async ({ arg }) => {
-          const target = moduleTarget(arg);
-          await startBuild("build", target);
+        run: ({ arg }) => {
+          const options = typeof arg === "object" && arg !== null ? arg : {};
+          const activate = !("activate" in options && options.activate === false);
+          const build = startBuild("build", moduleTarget(arg), activate);
+          if ("wait" in options && options.wait === true) return build.then(() => undefined);
         },
       },
       {
@@ -103,8 +106,11 @@ export function activate(): () => void {
         category: "Build",
         when: WHEN,
         keywords: ["package", "assemble", "jar", "release"],
-        run: async () => {
-          await startBuild("artifacts");
+        run: ({ arg }) => {
+          const options = typeof arg === "object" && arg !== null ? arg : {};
+          const activate = !("activate" in options && options.activate === false);
+          const build = startBuild("artifacts", null, activate);
+          if ("wait" in options && options.wait === true) return build.then(() => undefined);
         },
       },
       {

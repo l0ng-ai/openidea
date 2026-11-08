@@ -4,8 +4,10 @@
  */
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { dotnetBuildConfig } from "./dotnetTypes";
-import { executeAction, getAction } from "@/platform/actions";
-import { getContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
+import { useBuildPresentation } from "@/platform/projectPresentation";
+import { buildTask } from "./buildTask";
+import { moduleTaskError } from "./configs";
 import { tx, txTemplate } from "@/platform/i18n";
 import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -14,7 +16,6 @@ import { externalToolConfig } from "./externalTools";
 import { startRun, useRun } from "./store";
 
 export const BUILD_ACTION = "build.buildProject";
-const BUILD_STATUS = "build.lastStatus";
 
 export type BeforeLaunchKind =
   | "run"
@@ -46,7 +47,7 @@ export function taskLabel(task: BeforeLaunchTask, configs: readonly RunConfig[] 
     case "build":
       return configs.find((c) => c.id === target)?.name ?? "Build Project";
     case "buildModule":
-      return `Build Module${target ? ` '${target}'` : ""}`;
+      return target ? `Build Module '${target}'` : "Build Module";
     case "buildArtifacts":
       return "Build Artifacts";
     case "dotnetBuild":
@@ -87,21 +88,20 @@ async function runTask(
       return (await runToEnd(dotnetBuildConfig(config), chain, show)) ? null : "Build failed";
     case "build": {
       if (target) return buildCMake(target, show === true);
-      if (!getAction(BUILD_ACTION)) return "Building is not available";
-      if (!(await executeAction(BUILD_ACTION, { activate: false }))) return "A build is already running";
-      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
+      return buildTask(BUILD_ACTION, { activate: false });
     }
     case "buildModule": {
-      if (!getAction("build.buildModule")) return "Building is not available";
-      if (!target.trim()) return "No module";
-      if (!(await executeAction("build.buildModule", target))) return "A build is already running";
-      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
+      const error = moduleTaskError(config, target);
+      if (error) return error;
+      const root = useProject.getState().project?.root;
+      if (!root) return "Build did not start";
+      const relative = target.startsWith(root + "/") ? target.slice(root.length + 1) : target;
+      if (!useBuildPresentation.getState().modules.has(relative)) return `Module '${target}' no longer exists`;
+      const path = /^(?:[A-Za-z]:[\\/]|\/)/.test(target) ? target : `${root}/${target}`;
+      return buildTask("build.buildModule", { target: path, activate: false, wait: true });
     }
-    case "buildArtifacts": {
-      if (!getAction("build.buildArtifacts")) return "Building is not available";
-      if (!(await executeAction("build.buildArtifacts"))) return "A build is already running";
-      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
-    }
+    case "buildArtifacts":
+      return buildTask("build.buildArtifacts", { activate: false, wait: true });
     case "run": {
       if (chain.includes(target)) return "The before launch tasks run in a cycle";
       const other = useRun.getState().configs.find((c) => c.id === target);

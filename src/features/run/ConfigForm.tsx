@@ -303,7 +303,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     {
       label: TASK_LABELS.buildModule,
       icon: "build-project",
-      disabled: !config.module,
+      disabled: config.module == null,
       run: () => addTask("buildModule", config.module ?? ""),
     },
     { label: TASK_LABELS.buildArtifacts, icon: "build-rebuild", run: () => addTask("buildArtifacts") },

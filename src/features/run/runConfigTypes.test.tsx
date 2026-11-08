@@ -1,3 +1,4 @@
+import { useBuildPresentation } from "@/platform/projectPresentation";
 import { useProject } from "@/platform/project";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -619,6 +620,59 @@ describe("before launch tasks", () => {
     }
   });
 
+  it.each([undefined, "", "core"])("validates saved build tasks and module selection (%s)", (module) => {
+    const app = cfg("app", {
+      module,
+      beforeLaunch: [
+        { kind: "buildArtifacts", target: "" },
+        { kind: "buildModule", target: module ?? "" },
+      ],
+    });
+    expect(validateConfig(app).beforeLaunch).toBe(
+      module == null ? "Select a module for the Build Module task" : undefined,
+    );
+    if (module != null) {
+      expect(validateConfig({ ...app, module: "other" }).beforeLaunch).toContain("different module");
+    }
+  });
+
+  it.each([undefined, "", "core"])("offers Build Module only with a selected module (%s)", (module) => {
+    const config = cfg("app", { module, beforeLaunch: [{ kind: "buildArtifacts", target: "" }] });
+    const changed = vi.fn();
+    render(
+      <ConfigForm config={config} all={[config]} type={undefined} errors={{}} onChange={changed} modifyRequest={0} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add task" }));
+    const item = screen.getByRole("menuitem", { name: "Build Module" });
+    expect(item.getAttribute("aria-disabled")).toBe(module == null ? "true" : null);
+    if (module != null) {
+      fireEvent.click(item);
+      expect(changed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          beforeLaunch: [...config.beforeLaunch!, { kind: "buildModule", target: module }],
+        }),
+      );
+    }
+  });
+
+  it("refuses a removed module before dispatching its build", async () => {
+    const run = vi.fn();
+    const dispose = registerActions([{ id: "build.buildModule", title: "Build Module", run }]);
+    useProject.setState({ project: { root: "/p" } as never });
+    useBuildPresentation.setState({ modules: new Map() });
+    try {
+      const app = cfg("app", { module: "removed", beforeLaunch: [{ kind: "buildModule", target: "removed" }] });
+      expect(await runBeforeLaunch(app, [app.id])).toBe(false);
+      expect(run).not.toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ body: expect.stringContaining("no longer exists") }),
+      );
+    } finally {
+      dispose();
+      useProject.setState({ project: null });
+    }
+  });
+
   it("runs Build Module and Build Artifacts before launch", async () => {
     const buildModule = vi.fn(async () => setContext("build.lastStatus", "success"));
     const artifacts = vi.fn(async () => setContext("build.lastStatus", "success"));
@@ -626,15 +680,24 @@ describe("before launch tasks", () => {
       { id: "build.buildModule", title: "Build Module", run: buildModule },
       { id: "build.buildArtifacts", title: "Build Artifacts", run: artifacts },
     ]);
+    useProject.setState({ project: { root: "/p" } as never });
+    useBuildPresentation.setState({ modules: new Map([["core", "maven"]]) });
     const app = cfg("app", {
+      module: "core",
       beforeLaunch: [
         { kind: "buildModule", target: "core" },
         { kind: "buildArtifacts", target: "" },
       ],
     });
     expect(await runBeforeLaunch(app, [app.id])).toBe(true);
-    expect(buildModule).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arg: "core" }));
-    expect(artifacts).toHaveBeenCalledOnce();
+    expect(buildModule).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ arg: { target: "/p/core", activate: false, wait: true } }),
+    );
+    expect(artifacts).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ arg: { activate: false, wait: true } }),
+    );
+    useProject.setState({ project: null });
+    useBuildPresentation.setState({ modules: new Map() });
     disposeBuild();
   });
 });

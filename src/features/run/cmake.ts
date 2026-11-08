@@ -1,5 +1,4 @@
-import { executeAction, getAction } from "@/platform/actions";
-import { getContext } from "@/platform/context";
+import { buildTask } from "./buildTask";
 import type { RunConfig } from "@/platform/ipc";
 
 export function isCMakeBuild(config: RunConfig): boolean {
@@ -23,7 +22,5 @@ export function cmakeBuildId(config: RunConfig | undefined, configs: readonly Ru
 }
 
 export async function buildCMake(id: string, activate = false): Promise<string | null> {
-  if (!getAction("build.buildProject")) return "Building is not available";
-  if (!(await executeAction("build.buildProject", { cmake: id, activate }))) return "A build is already running";
-  return getContext()["build.lastStatus"] === "success" ? null : "Build failed";
+  return buildTask("build.buildProject", { cmake: id, activate });
 }
