@@ -56,10 +56,7 @@ test("skips binary and unchanged siblings and restores after changing preview fi
   const toolbar = await openChain(page);
   await page.evaluate(async () => {
     const inputPath = "/src/features/vcs/diffInput.ts";
-    const layoutPath = "/src/workbench/toolwindows/store.ts";
     const { openDiff, withChain } = await import(inputPath);
-    const { useToolWindowLayout } = await import(layoutPath);
-    useToolWindowLayout.setState({ maximized: "left" });
     const files = [
       ["a.ts", "after\n"],
       ["binary.dat", "\0binary"],
@@ -73,7 +70,13 @@ test("skips binary and unchanged siblings and restores after changing preview fi
     await openDiff(withChain(files, 0), { preview: true });
   });
   await expect(toolbar).toContainText("1 difference");
-  await toolbar.getByRole("button", { name: "Maximize Editor", exact: true }).click();
+  await page.evaluate(async () => {
+    const layoutPath = "/src/workbench/toolwindows/store.ts";
+    const { useToolWindowLayout, hideAllToolWindows } = await import(layoutPath);
+    useToolWindowLayout.setState({ maximized: "left" });
+    hideAllToolWindows();
+  });
+  await toolbar.locator("..").locator(".cm-content").last().focus();
   const selected = page.getByRole("tablist", { name: "Editor tabs" }).locator('[aria-selected="true"]');
   await page.keyboard.press("F7");
   await page.keyboard.press("F7");
@@ -90,5 +93,6 @@ test("skips binary and unchanged siblings and restores after changing preview fi
     return (await import(layoutPath)).useToolWindowLayout.getState().maximized;
   });
   expect(maximized).toBe("left");
+  await expect(toolbar).toBeHidden();
   await expect(page.getByRole("tree", { name: "Project", exact: true })).toBeVisible();
 });
