@@ -47,14 +47,17 @@ fn project(dir: &Path) {
 }
 
 /// The built-in GDScript definition, with the editor's usual port moved aside so an
-/// open editor can't answer instead of the one this test starts.
-fn registry() -> Arc<LanguageRegistry> {
+/// open editor can't answer instead of the one this test starts. The port stays reserved
+/// while the returned socket lives: bound, never listening, and not bindable by anyone else.
+fn registry() -> (Arc<LanguageRegistry>, tokio::net::TcpSocket) {
     let builtin = LanguageRegistry::load(None).unwrap();
     let mut gd: LanguageConfig = builtin.get(&ide_core::LanguageId::new("gdscript")).unwrap();
     let dbg = gd.debugger.as_mut().unwrap();
-    let unused = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    let no_editor = tokio::net::TcpSocket::new_v4().unwrap();
+    no_editor.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let unused = no_editor.local_addr().unwrap().port();
     dbg.connect = Some(format!("127.0.0.1:{unused}"));
-    Arc::new(LanguageRegistry::from_configs(vec![gd]))
+    (Arc::new(LanguageRegistry::from_configs(vec![gd])), no_editor)
 }
 
 async fn wait_for(events: &Mutex<Vec<IdeEvent>>, timeout: Duration, pred: impl Fn(&DebugEvent) -> bool) -> DebugEvent {
@@ -87,7 +90,8 @@ async fn breakpoints_stepping_and_variables_in_a_real_godot() {
     std::fs::create_dir_all(&dir).unwrap();
     let root = std::fs::canonicalize(&dir).unwrap();
     project(&root);
-    let manager = DebugManager::new(registry());
+    let (registry, _no_editor) = registry();
+    let manager = DebugManager::new(registry);
     let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
     let sink: SharedSink = {
         let events = events.clone();
