@@ -16,6 +16,42 @@ const CANCEL: &str = include_str!("../../tests/fixtures/acp-v2/cancel.jsonl");
 const RESUME: &str = include_str!("../../tests/fixtures/acp-v2/resume.jsonl");
 const INITIALIZE_V1: &str = include_str!("../../tests/fixtures/acp-v2/initialize-v1.jsonl");
 
+#[test]
+fn auth_required_matches_authentication_words_and_sign_in_phrases() {
+    for (code, message, expected) in [
+        (AUTH_REQUIRED, "This account is not eligible.", true),
+        (codes::INTERNAL_ERROR, "Auth required", true),
+        (codes::INTERNAL_ERROR, "Authentication failed", true),
+        (codes::INTERNAL_ERROR, "Failed to authenticate. API Error: 401", true),
+        (codes::INTERNAL_ERROR, "Failed to authenticate. API Error: 403", true),
+        (codes::INTERNAL_ERROR, "Not authenticated", true),
+        (codes::INTERNAL_ERROR, "Authorization failed", true),
+        (codes::INTERNAL_ERROR, "Authorize your account", true),
+        (codes::INTERNAL_ERROR, "Unauthenticated", true),
+        (codes::INTERNAL_ERROR, "Unauthentication error", true),
+        (codes::INTERNAL_ERROR, "Unauthorized", true),
+        (codes::INTERNAL_ERROR, "Unauthorization error", true),
+        (codes::INTERNAL_ERROR, "OAuth token has expired", true),
+        (codes::INTERNAL_ERROR, "OAuth2 token has expired", true),
+        (codes::INTERNAL_ERROR, "You are not logged in", true),
+        (codes::INTERNAL_ERROR, "You are logged out", true),
+        (codes::INTERNAL_ERROR, "Please sign in", true),
+        (codes::INTERNAL_ERROR, "Please log in", true),
+        (codes::INTERNAL_ERROR, "Login required", true),
+        (codes::INTERNAL_ERROR, "author", false),
+        (codes::INTERNAL_ERROR, "authors", false),
+        (codes::INTERNAL_ERROR, "authority", false),
+        (codes::INTERNAL_ERROR, "authored", false),
+        (codes::INTERNAL_ERROR, "reauthenticate", false),
+        (codes::INTERNAL_ERROR, "preauthorized", false),
+        (codes::INTERNAL_ERROR, "signal input failed", false),
+        (codes::INTERNAL_ERROR, "catalog index failed", false),
+        (codes::INTERNAL_ERROR, "login succeeded", false),
+    ] {
+        assert_eq!(auth_required(code, message), expected, "code={code}, message={message:?}");
+    }
+}
+
 /// The messages of a fixture going `dir` (`in` or `out`).
 pub(crate) fn frames(fixture: &str, dir: &str) -> Vec<Value> {
     fixture
