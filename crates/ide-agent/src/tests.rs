@@ -339,6 +339,9 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 }
 
 fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentManager {
+    // These tests speak to FakeAgent, never an installed CLI, including after a provider reload.
+    let agents = dir.join("agents");
+    provider::set_builtin_command(&agents, "claude", Some(&dir.join("missing-claude").to_string_lossy())).unwrap();
     let connector: Connector = Arc::new(move |_spec, _cwd, client, _stderr| {
         let (a, b) = duplex(1 << 20);
         let (ar, aw) = tokio::io::split(a);
@@ -353,12 +356,93 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             store_dir: dir.join("store"),
             worktrees_dir: dir.join("worktrees"),
             models_file: models_file.to_path_buf(),
-            custom_agents_dir: None,
+            custom_agents_dir: Some(agents),
             home_dir: None,
         },
         tokio::runtime::Handle::current(),
         connector,
     )
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn claude_commands_before_session_are_fetched_once_and_saved() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for outcome in ["success", "error", "exit", "timeout", "missing"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let script = root.join("fake-claude");
+        std::fs::write(
+            &script,
+            r#"#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+root = pathlib.Path.cwd()
+with (root / 'launches').open('a') as f:
+    f.write(json.dumps(sys.argv[1:]) + '\n')
+request = json.loads(sys.stdin.readline())
+with (root / 'requests').open('a') as f:
+    f.write(json.dumps(request) + '\n')
+outcome = os.environ['OUTCOME']
+if outcome == 'exit':
+    sys.exit(1)
+if outcome == 'timeout':
+    time.sleep(60)
+response = {'subtype': outcome, 'request_id': request['request_id']}
+if outcome == 'success':
+    response['response'] = {'commands': [
+        {'name': 'compact', 'description': 'Free up context', 'argumentHint': '[instructions]'},
+        {'name': 'clear'}, {'name': 'model'}, {'name': 'context'}]}
+else:
+    response['error'] = 'Authentication required'
+print(json.dumps({'type': 'control_response', 'response': response}), flush=True)
+for line in sys.stdin:
+    with (root / 'requests').open('a') as f:
+        f.write(line)
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(root.join(".claude/skills/triage")).unwrap();
+        std::fs::write(root.join(".claude/skills/triage/SKILL.md"), "---\nname: triage\ndescription: Triage\n---\n")
+            .unwrap();
+        let mgr = manager(root, Arc::new(FakeAgent::default()));
+        {
+            let mut providers = mgr.shared.providers.write();
+            let spec = providers.iter_mut().find(|p| p.id == "claude").unwrap();
+            if outcome != "missing" {
+                spec.command = script.to_string_lossy().into_owned();
+            }
+            spec.env = vec![("OUTCOME".into(), outcome.into())];
+        }
+        let (first, concurrent) = tokio::join!(mgr.commands("claude", None), mgr.commands("claude", None));
+        let first = first.unwrap();
+        assert_eq!(first, concurrent.unwrap());
+        assert_eq!(first, mgr.commands("claude", None).await.unwrap());
+        let names: Vec<_> = first.iter().map(|c| c.name.as_str()).collect();
+        if outcome == "success" {
+            assert_eq!(names, ["compact", "clear", "model", "context", "triage"]);
+            assert_eq!(first[0].hint.as_deref(), Some("[instructions]"));
+            let restored = manager(root, Arc::new(FakeAgent::default()));
+            assert_eq!(first, restored.commands("claude", None).await.unwrap());
+        } else {
+            assert_eq!(names, ["triage"], "{outcome}");
+            assert!(!root.join("models.json").exists());
+        }
+        assert!(mgr.tasks.read().is_empty());
+        assert!(!root.join("store").exists());
+        if outcome != "missing" {
+            let launches = std::fs::read_to_string(root.join("launches")).unwrap();
+            assert_eq!(launches.lines().count(), 1, "{outcome}");
+            let args: Vec<String> = serde_json::from_str(launches.trim()).unwrap();
+            assert!(args.windows(2).any(|a| a == ["--input-format", "stream-json"]));
+            let requests = std::fs::read_to_string(root.join("requests")).unwrap();
+            assert_eq!(requests.lines().count(), 1, "only initialize, no prompt or other control request");
+            let request: Value = serde_json::from_str(requests.trim()).unwrap();
+            assert_eq!(request["type"], "control_request");
+            assert_eq!(request["request"]["subtype"], "initialize");
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -575,6 +659,7 @@ async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metada
         name: "compact".into(),
         description: "Agent supplied description".into(),
         hint: Some("instructions".into()),
+        source: AgentCommandSource::Command,
     };
     mgr.task(&task.id).unwrap().state.lock().task.commands = vec![advertised.clone()];
     // The task's provider wins over the caller's provider; metadata is not replaced.
