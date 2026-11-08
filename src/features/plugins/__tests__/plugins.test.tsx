@@ -705,6 +705,25 @@ describe("PluginsPage", () => {
     expect(screen.getByLabelText("Iconic details").querySelector("circle")).not.toBeNull();
   });
 
+  it("renders a plugin's homepage as a clickable link that opens in the browser", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    try {
+      setPluginsBackend(
+        createMemoryPluginsBackend([
+          plugin({ id: "k8s", name: "Kubernetes", homepage: "https://github.com/dengliu/openidea-kubernetes" }),
+        ]),
+      );
+      const user = userEvent.setup();
+      render(<PluginsPage />);
+      const link = await screen.findByRole("link", { name: "https://github.com/dengliu/openidea-kubernetes" });
+      expect(link).toHaveAttribute("href", "https://github.com/dengliu/openidea-kubernetes");
+      await user.click(link);
+      expect(open).toHaveBeenCalledWith("https://github.com/dengliu/openidea-kubernetes", "_blank", "noopener");
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it("restarts a failed plugin instead of disabling it", async () => {
     setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "broken", status: "failed", error: "trap" })]));
     const user = userEvent.setup();

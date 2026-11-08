@@ -55,6 +55,7 @@ import {
   usePlugins,
 } from "./store";
 import { useProject } from "@/platform/project";
+import { openExternalUrl } from "@/platform/openUrl";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
 import styles from "./PluginsPage.module.css";
@@ -362,7 +363,18 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
             <dt>
               <T>Homepage</T>
             </dt>
-            <dd className={styles.mono}>{plugin.homepage}</dd>
+            <dd className={styles.mono}>
+              <a
+                href={plugin.homepage}
+                className={styles.homepageLink}
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternalUrl(plugin.homepage!);
+                }}
+              >
+                {plugin.homepage}
+              </a>
+            </dd>
           </>
         )}
       </dl>
@@ -503,6 +515,25 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
           <T>Code</T>
         </dt>
         <dd>{entry.hasCode ? tx("WebAssembly component (sandboxed)") : tx("None — contributions only")}</dd>
+        {entry.homepage && (
+          <>
+            <dt>
+              <T>Homepage</T>
+            </dt>
+            <dd className={styles.mono}>
+              <a
+                href={entry.homepage}
+                className={styles.homepageLink}
+                onClick={(e) => {
+                  e.preventDefault();
+                  void openExternalUrl(entry.homepage!);
+                }}
+              >
+                {entry.homepage}
+              </a>
+            </dd>
+          </>
+        )}
         {contributes.length > 0 && (
           <>
             <dt>

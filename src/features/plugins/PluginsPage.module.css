@@ -282,6 +282,13 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
 }
+.homepageLink {
+  color: var(--link);
+  text-decoration: none;
+}
+.homepageLink:hover {
+  text-decoration: underline;
+}
 .muted {
   color: var(--fg-muted);
 }
