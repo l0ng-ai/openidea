@@ -262,6 +262,7 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
         stroke === "Meta+NumpadAdd" ||
         stroke === "Ctrl+NumpadAdd"
       ) {
+        if (document.querySelector("[data-terminal-session]:hover, iframe[data-plugin-webview]:hover")) return false;
         e.preventDefault();
         e.stopPropagation();
         stepFontZoom(view, 1);
@@ -276,6 +277,7 @@ function PluginLogEditorBody({ input, data }: { input: EditorInput; data: Plugin
         stroke === "Meta+NumpadSubtract" ||
         stroke === "Ctrl+NumpadSubtract"
       ) {
+        if (document.querySelector("[data-terminal-session]:hover, iframe[data-plugin-webview]:hover")) return false;
         e.preventDefault();
         e.stopPropagation();
         stepFontZoom(view, -1);

@@ -360,6 +360,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
     <iframe
       ref={frame}
       className={styles.frame}
+      data-plugin-webview={pluginId}
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}

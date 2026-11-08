@@ -120,6 +120,9 @@ const ALLOWED_ACTION_IDS = new Set([
   "terminal.closeSession",
   "terminal.splitRight",
   "terminal.splitDown",
+  "editor.increaseFontSize",
+  "editor.decreaseFontSize",
+  "editor.resetFontSize",
 ]);
 
 /** Whether `stroke` starts a binding of an allowed action. */
@@ -153,6 +156,17 @@ export function installTerminalKeys(target: Window = window): () => void {
     }
     const session = rt.sessionFromElement(e.target as Element | null);
     if (!session) return;
+    const stroke = strokeOf(e);
+    if (
+      stroke &&
+      effectiveBindings().some(
+        ([binding, id]) =>
+          binding === stroke &&
+          (id === "editor.increaseFontSize" || id === "editor.decreaseFontSize" || id === "editor.resetFontSize"),
+      )
+    ) {
+      return;
+    }
     const action = terminalKeyAction(e, session.hasSelection);
     // "Override IDE shortcuts" off: Ctrl+key and Escape reach the IDE keymap first;
     // keys it doesn't bind still get to xterm through its own key handling.

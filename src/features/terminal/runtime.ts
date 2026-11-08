@@ -1,6 +1,7 @@
 /** Everything that needs xterm.js; loaded on first use through `loader.ts`. */
 export {
   activeSession,
+  allSessions,
   applySettingsToAll,
   applyThemeToAll,
   closeAll,

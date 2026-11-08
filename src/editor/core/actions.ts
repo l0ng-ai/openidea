@@ -109,6 +109,60 @@ function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
   };
 }
 
+/**
+ * Routes Increase / Decrease Font Size to the surface under the mouse pointer
+ * first (specific Editor tab, specific Terminal tab, or Plugin WebView window),
+ * falling back to the currently focused surface or active editor slot.
+ */
+function stepSurfaceFontSize(delta: 1 | -1): void {
+  const hovered = typeof document !== "undefined" ? Array.from(document.querySelectorAll(":hover")).reverse() : [];
+  for (const el of hovered) {
+    const termHost = el.closest?.("[data-terminal-session]");
+    if (termHost) {
+      termHost.dispatchEvent(new CustomEvent("openidea:terminal-font-zoom", { detail: delta }));
+      return;
+    }
+    if (el instanceof HTMLIFrameElement && el.hasAttribute("data-plugin-webview")) {
+      el.contentWindow?.postMessage({ tag: "openidea-view", fontZoomDelta: delta }, "*");
+      return;
+    }
+    const cmEl = el.closest?.(".cm-editor") as HTMLElement | null;
+    if (cmEl) {
+      const cmView = EditorView.findFromDOM(cmEl);
+      if (cmView) {
+        stepFontZoom(cmView, delta);
+        return;
+      }
+    }
+  }
+
+  const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (activeEl) {
+    const termHost = activeEl.closest?.("[data-terminal-session]");
+    if (termHost) {
+      termHost.dispatchEvent(new CustomEvent("openidea:terminal-font-zoom", { detail: delta }));
+      return;
+    }
+    if (activeEl instanceof HTMLIFrameElement && activeEl.hasAttribute("data-plugin-webview")) {
+      activeEl.contentWindow?.postMessage({ tag: "openidea-view", fontZoomDelta: delta }, "*");
+      return;
+    }
+    const cmEl = activeEl.closest?.(".cm-editor") as HTMLElement | null;
+    if (cmEl) {
+      const cmView = EditorView.findFromDOM(cmEl);
+      if (cmView) {
+        stepFontZoom(cmView, delta);
+        return;
+      }
+    }
+  }
+
+  const slot = activeSlot();
+  if (!slot?.view) return;
+  stepFontZoom(slot.view, delta);
+  if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
+}
+
 // --- extend / shrink selection ---------------------------------------------------
 
 /** One stack per selection range (by index): ⌥↑ / ⌥↓ work on every caret. */
@@ -872,6 +926,14 @@ export function registerEditorActions(): () => void {
       run: () => {
         for (const ed of useEditorRegistry.getState().editors)
           if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+        if (typeof document !== "undefined") {
+          document
+            .querySelectorAll("[data-terminal-session]")
+            .forEach((el) => el.dispatchEvent(new CustomEvent("openidea:terminal-font-zoom", { detail: 0 })));
+          document
+            .querySelectorAll<HTMLIFrameElement>("iframe[data-plugin-webview]")
+            .forEach((f) => f.contentWindow?.postMessage({ tag: "openidea-view", fontZoomDelta: 0 }, "*"));
+        }
       },
     },
     {
@@ -879,16 +941,16 @@ export function registerEditorActions(): () => void {
       title: "Increase Font Size",
       category: "View",
       keywords: ["zoom", "font size"],
-      when: EDITOR_WHEN,
-      run: withView((view) => stepFontZoom(view, 1)),
+      when: "projectOpen",
+      run: () => stepSurfaceFontSize(1),
     },
     {
       id: "editor.decreaseFontSize",
       title: "Decrease Font Size",
       category: "View",
       keywords: ["zoom", "font size"],
-      when: EDITOR_WHEN,
-      run: withView((view) => stepFontZoom(view, -1)),
+      when: "projectOpen",
+      run: () => stepSurfaceFontSize(-1),
     },
     {
       id: "file.toggleReadOnly",

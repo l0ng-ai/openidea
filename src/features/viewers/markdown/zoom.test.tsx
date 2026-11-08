@@ -114,6 +114,59 @@ describe("editor font size actions", () => {
     expect(view.dom.style.getPropertyValue("--openidea-editor-font-size")).toContain("+ 2px");
   });
 
+  it("routes font size actions to hovered or focused terminal tabs and plugin webviews", async () => {
+    const md = open(mdCtx);
+    activate(md);
+    // Works even when editorFocus is false (e.g. a tool window has focus).
+    useContextKeys.setState({ projectOpen: true, textEditorActive: false, editorFocus: false, popupOpen: false });
+
+    const termHost = document.createElement("div");
+    termHost.setAttribute("data-terminal-session", "s1");
+    const termInput = document.createElement("textarea");
+    termHost.appendChild(termInput);
+    document.body.appendChild(termHost);
+    const termZooms: number[] = [];
+    termHost.addEventListener("openidea:terminal-font-zoom", (e) => {
+      termZooms.push((e as CustomEvent<number>).detail);
+    });
+
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("data-plugin-webview", "dengliu.kubernetes");
+    document.body.appendChild(iframe);
+    const posted: unknown[] = [];
+    Object.defineProperty(iframe, "contentWindow", {
+      value: { postMessage: (msg: unknown) => posted.push(msg) },
+      configurable: true,
+    });
+
+    try {
+      termInput.focus();
+      await executeAction("editor.increaseFontSize");
+      await executeAction("editor.decreaseFontSize");
+      expect(termZooms).toEqual([1, -1]);
+      expect(zoom(md)).toBe(0);
+
+      // Hovering over the plugin webview wins over terminal focus.
+      const qsa = vi.spyOn(document, "querySelectorAll").mockImplementation(((sel: string) => {
+        if (sel === ":hover") return [iframe] as unknown as NodeListOf<Element>;
+        return Document.prototype.querySelectorAll.call(document, sel);
+      }) as typeof document.querySelectorAll);
+      await executeAction("editor.increaseFontSize");
+      expect(posted).toEqual([{ tag: "openidea-view", fontZoomDelta: 1 }]);
+      qsa.mockRestore();
+
+      await executeAction("editor.resetFontSize");
+      expect(termZooms).toEqual([1, -1, 0]);
+      expect(posted).toEqual([
+        { tag: "openidea-view", fontZoomDelta: 1 },
+        { tag: "openidea-view", fontZoomDelta: 0 },
+      ]);
+    } finally {
+      termHost.remove();
+      iframe.remove();
+    }
+  });
+
   it("leaves ⌘= / ⌘- to fold and unfold", () => {
     for (const km of [intellijMacos, intellijWindows]) {
       expect(km["editor.increaseFontSize"]).toEqual(["Alt+Shift+."]);
