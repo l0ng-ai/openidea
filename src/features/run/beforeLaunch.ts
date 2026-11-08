@@ -4,8 +4,10 @@
  */
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { dotnetBuildConfig } from "./dotnetTypes";
-import { executeAction, getAction } from "@/platform/actions";
-import { getContext } from "@/platform/context";
+import { useProject } from "@/platform/project";
+import { useBuildPresentation } from "@/platform/projectPresentation";
+import { buildTask } from "./buildTask";
+import { moduleTaskError } from "./configs";
 import { tx, txTemplate } from "@/platform/i18n";
 import type { BeforeLaunchTask, RunConfig } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -14,13 +16,22 @@ import { externalToolConfig } from "./externalTools";
 import { startRun, useRun } from "./store";
 
 export const BUILD_ACTION = "build.buildProject";
-const BUILD_STATUS = "build.lastStatus";
 
-export type BeforeLaunchKind = "run" | "build" | "tool" | "command" | "toolWindow" | "dotnetBuild";
+export type BeforeLaunchKind =
+  | "run"
+  | "build"
+  | "buildModule"
+  | "buildArtifacts"
+  | "tool"
+  | "command"
+  | "toolWindow"
+  | "dotnetBuild";
 
 export const TASK_LABELS: Record<BeforeLaunchKind, string> = {
   run: "Run Another Configuration",
   build: "Build Project",
+  buildModule: "Build Module",
+  buildArtifacts: "Build Artifacts",
   dotnetBuild: "Build .NET project",
   tool: "Run External Tool",
   command: "Run Shell Command",
@@ -35,6 +46,10 @@ export function taskLabel(task: BeforeLaunchTask, configs: readonly RunConfig[] 
       return `Run '${configs.find((c) => c.id === target)?.name ?? target}'`;
     case "build":
       return configs.find((c) => c.id === target)?.name ?? "Build Project";
+    case "buildModule":
+      return target ? `Build Module '${target}'` : "Build Module";
+    case "buildArtifacts":
+      return "Build Artifacts";
     case "dotnetBuild":
       return "Build .NET project";
     case "tool":
@@ -73,10 +88,20 @@ async function runTask(
       return (await runToEnd(dotnetBuildConfig(config), chain, show)) ? null : "Build failed";
     case "build": {
       if (target) return buildCMake(target, show === true);
-      if (!getAction(BUILD_ACTION)) return "Building is not available";
-      if (!(await executeAction(BUILD_ACTION, { activate: false }))) return "A build is already running";
-      return getContext()[BUILD_STATUS] === "success" ? null : "Build failed";
+      return buildTask(BUILD_ACTION, { activate: false });
     }
+    case "buildModule": {
+      const error = moduleTaskError(config, target);
+      if (error) return error;
+      const root = useProject.getState().project?.root;
+      if (!root) return "Build did not start";
+      const relative = target.startsWith(root + "/") ? target.slice(root.length + 1) : target;
+      if (!useBuildPresentation.getState().modules.has(relative)) return `Module '${target}' no longer exists`;
+      const path = /^(?:[A-Za-z]:[\\/]|\/)/.test(target) ? target : `${root}/${target}`;
+      return buildTask("build.buildModule", { target: path, activate: false, wait: true });
+    }
+    case "buildArtifacts":
+      return buildTask("build.buildArtifacts", { activate: false, wait: true });
     case "run": {
       if (chain.includes(target)) return "The before launch tasks run in a cycle";
       const other = useRun.getState().configs.find((c) => c.id === target);
