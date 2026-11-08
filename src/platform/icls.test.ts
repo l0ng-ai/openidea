@@ -33,6 +33,43 @@ describe(".icls schemes", () => {
     expect(scheme.attributes["php.string"]).toBeUndefined();
   });
 
+  it("maps doc comment tags, tag values and markup per language", () => {
+    const fg = (c: string) => `<value><option name="FOREGROUND" value="${c}"/></value>`;
+    const { scheme } = parseIcls(`<scheme name="Docs" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_DOC_COMMENT_TAG">${fg("67a37c")}</option>
+      <option name="DEFAULT_DOC_COMMENT_TAG_VALUE">${fg("abadb3")}</option>
+      <option name="DEFAULT_DOC_MARKUP"><value><option name="BACKGROUND" value="e2ffe2"/></value></option>
+      <option name="JAVA_DOC_TAG">${fg("111111")}</option>
+      <option name="KDOC_LINK">${fg("222222")}</option>
+      <option name="PHP_DOC_TAG">${fg("333333")}</option>
+      <option name="PHP_DOC_VAR">${fg("444444")}</option>
+      <option name="PHP_ATTRIBUTE">${fg("555555")}</option>
+      </attributes></scheme>`);
+    expect(scheme.attributes.docCommentTag?.foreground).toBe("#67a37c");
+    expect(scheme.attributes.docCommentTagValue?.foreground).toBe("#abadb3");
+    expect(scheme.attributes.docCommentMarkup?.background).toBe("#e2ffe2");
+    expect(scheme.attributes["java.docCommentTag"]?.foreground).toBe("#111111");
+    expect(scheme.attributes["kotlin.docCommentTagValue"]?.foreground).toBe("#222222");
+    expect(scheme.attributes["php.docCommentTag"]?.foreground).toBe("#333333");
+    expect(scheme.attributes["php.docCommentTagValue"]?.foreground).toBe("#444444");
+    // PhpStorm's PHP 8 attributes, which PHP_DOC_TAG used to stand in for.
+    expect(scheme.attributes["php.metadata"]?.foreground).toBe("#555555");
+    const css = schemeCss("custom-docs", undefined, null, { "custom-docs": scheme });
+    expect(css).toContain("--syn-doc-comment-tag: #67a37c !important");
+    expect(css).toContain("--syn-doc-markup-bg: #e2ffe2 !important");
+    const imported = parseIcls(exportIcls("custom-docs", { "custom-docs": scheme })).scheme;
+    for (const id of [
+      "docCommentTag",
+      "docCommentTagValue",
+      "docCommentMarkup",
+      "java.docCommentTag",
+      "kotlin.docCommentTagValue",
+      "php.docCommentTag",
+      "php.docCommentTagValue",
+    ])
+      expect(imported.attributes[id]).toMatchObject(scheme.attributes[id]!);
+  });
+
   it("preserves PHP colours and regular styles separately from Java and language defaults", () => {
     const { scheme } = parseIcls(fixture("monokai-php"));
     expect(scheme.parent).toBe("dark");

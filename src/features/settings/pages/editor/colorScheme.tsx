@@ -249,9 +249,12 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
       [
         ["  /**", "docComment"],
-        [" doc comment ", "docComment"],
-        ["@param", "docComment"],
-        [" id", "docComment"],
+        [" <b>", "docCommentMarkup"],
+        ["doc comment", "docComment"],
+        ["</b> ", "docCommentMarkup"],
+        ["@param", "docCommentTag"],
+        [" ", "docComment"],
+        ["id", "docCommentTagValue"],
         [" */", "docComment"],
       ],
       [

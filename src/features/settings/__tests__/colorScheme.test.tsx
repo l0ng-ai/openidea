@@ -121,6 +121,42 @@ describe("scheme actions", () => {
   });
 });
 
+describe("doc comment scheme attributes", () => {
+  it.each([
+    ["en", "Doc comment", "Tag", "Tag value", "Markup"],
+    ["zh", "文档注释", "标签", "标签值", "标记"],
+  ])("groups, previews, edits and resets doc attributes in %s", async (locale, group, tag, valueName, markup) => {
+    await act(async () => {
+      await setLocale(locale);
+    });
+    try {
+      act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+      schemePage("editor.colorScheme.language-defaults");
+      const preview = screen.getByLabelText(locale === "en" ? "Color scheme preview" : "配色方案预览");
+      for (const [sample, label, id] of [
+        ["@param", tag, "docCommentTag"],
+        ["id", valueName, "docCommentTagValue"],
+        ["<b>", markup, "docCommentMarkup"],
+      ]) {
+        act(() => fireEvent.click(within(preview).getByText(sample!)));
+        expect(screen.getAllByRole("treeitem", { name: group })).toHaveLength(1);
+        expect(screen.getByRole("treeitem", { name: label, selected: true })).toBeInTheDocument();
+        act(() => fireEvent.click(screen.getByRole("checkbox", { name: locale === "en" ? "Bold" : "粗体" })));
+        act(() => fireEvent.click(screen.getByRole("checkbox", { name: locale === "en" ? "Italic" : "斜体" })));
+        expect(value("colorOverrides")).toMatchObject({ dark: { [id!]: { bold: true, italic: true } } });
+      }
+      act(() =>
+        fireEvent.click(screen.getByRole("button", { name: locale === "en" ? "Restore Defaults" : "恢复默认值" })),
+      );
+      expect(value("colorOverrides")).toEqual({});
+    } finally {
+      await act(async () => {
+        await setLocale("en");
+      });
+    }
+  });
+});
+
 describe("Go scheme attributes", () => {
   it("translates the attribute tree and preview selection in Chinese", async () => {
     await act(async () => {

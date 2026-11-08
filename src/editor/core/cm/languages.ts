@@ -20,6 +20,7 @@ import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
 import { JS_TAGS } from "./jsTags";
+import { docCommentTags } from "./docCommentTags";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -303,6 +304,7 @@ function patchSupport(desc: LanguageDescription, support: LanguageSupport): Lang
       : support.language;
   const patched = new LanguageSupport(language, [
     support.support,
+    docCommentTags(desc.name),
     EditorView.editorAttributes.of({ "data-language": desc.name }),
   ]);
   // `loadedSupport` reads `desc.support` synchronously; keep it on the patched instance.
