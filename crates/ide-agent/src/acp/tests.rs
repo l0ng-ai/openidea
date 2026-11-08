@@ -563,3 +563,13 @@ async fn v1_requests_are_sent_in_v2() {
         .collect();
     assert_eq!(commands, [&json!("28846a4c-c3e8-4a45-a3d0-c19f10d19d1a"), &json!("s1")]);
 }
+
+#[test]
+fn stdio_mcp_is_v1_baseline_and_negotiated_in_v2() {
+    assert!(super::Negotiated::from_initialize(&json!({"protocolVersion":1,"agentCapabilities":{}})).mcp_stdio());
+    assert!(!super::Negotiated::from_initialize(&json!({"info":{},"capabilities":{"session":{}}})).mcp_stdio());
+    assert!(
+        super::Negotiated::from_initialize(&json!({"info":{},"capabilities":{"session":{"mcp":{"stdio":{}}}}}))
+            .mcp_stdio()
+    );
+}
