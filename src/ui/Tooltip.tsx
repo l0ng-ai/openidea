@@ -115,7 +115,11 @@ export function TooltipHost() {
     void computePosition(anchor, tip, {
       placement: shown.stripe === "right" ? "left" : shown.stripe === "left" ? "right" : "bottom",
       strategy: "fixed",
-      middleware: [offset(6), flip({ padding: 6 }), shift({ padding: 6 })],
+      middleware: [
+        offset(6),
+        flip({ padding: 6, ...(shown.stripe && { fallbackAxisSideDirection: "end" }) }),
+        shift({ padding: 6 }),
+      ],
     }).then(({ x, y }) => {
       if (!cancelled) setShown((s) => (s ? { ...s, x, y, placed: true } : s));
     });

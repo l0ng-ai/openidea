@@ -341,7 +341,6 @@ html {
   --fg-stripe-label: #9fa2a8;
   --fs-stripe-label: 11px;
   --stripe-button-w: 58px;
-  --stripe-button-radius: 6px;
   --bg-tab-selected: #233558;
   --border-tab-selected: #2e4d89;
   --bg-tab-selected-inactive: #26282c;
@@ -917,6 +916,10 @@ html {
   --terminal-ansi-bright-cyan: var(--ansi-bright-cyan);
   --terminal-ansi-bright-white: var(--ansi-bright-white);
 
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
   --bg-tooltip: #24262b;
   --fg-tooltip: #ffffff;
   --border-tooltip: #6f737a;
@@ -993,6 +996,10 @@ html {
  * Keep before appearance options so accessibility preferences still win.
  */
 :root[data-color-theme] {
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
   --bg-app: var(--palette-bg);
   --bg-island: var(--palette-bg);
   --bg-input: var(--palette-bg);
@@ -1236,6 +1243,14 @@ html {
   --terminal-ansi-bright-magenta: var(--ansi-bright-magenta);
   --terminal-ansi-bright-cyan: var(--ansi-bright-cyan);
   --terminal-ansi-bright-white: var(--ansi-bright-white);
+}
+
+/* Plugin themes can opt into stripe colours; otherwise their base tooltip tokens win. */
+:root[data-plugin-theme] {
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
 }
 
 :root[data-color-theme="solarized-light"] {

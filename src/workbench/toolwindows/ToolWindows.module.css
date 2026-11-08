@@ -245,7 +245,7 @@
   align-items: center;
   justify-content: center;
   gap: 3px;
-  border-radius: var(--stripe-button-radius);
+  border-radius: var(--radius-toolbar-button);
   color: var(--fg-muted);
   transition:
     background var(--dur-fast) var(--ease),
