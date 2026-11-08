@@ -28,10 +28,10 @@ export function RunWidget() {
   const debug = useDebugRunSessions((s) => s.sessions);
   const compoundRunning = compoundTargets(selected, running, debug);
   const target = selectedTarget(selectedId, running, debug);
-  const debugging = !!target?.debug;
-  const active = !!target || compoundRunning.length > 0;
+  const { active, debugging, showLoading, launch } = useLaunchFeedback(selectedId, target, compoundRunning);
   const count = running.length + debug.length;
   const stopping = running.some((s) => s.status === "stopping") || debug.some((s) => s.status === "stopping");
+  const stop = () => void executeAction("run.stop", "widget");
   const targetStopping =
     running.some((s) => s.status === "stopping" && s.config.id === selectedId) ||
     debug.some((s) => s.status === "stopping" && s.configId === selectedId);
@@ -73,7 +73,7 @@ export function RunWidget() {
           // IDEA: the configuration's type icon, with a status dot on its top-right corner while active.
           <span className={styles.widgetConfigIcon}>
             <Icon name={configIcon(selected)} size={16} />
-            {active && (
+            {active && !showLoading && (
               <span className={styles.widgetStatusDot} aria-label={debugging ? "Debugging" : "Running"} role="img" />
             )}
           </span>
@@ -84,7 +84,33 @@ export function RunWidget() {
         <Icon name="chevron-down" size={14} className={styles.widgetChevron} />
       </BarButton>
       <span className={styles.widgetButtons}>
-        {active ? (
+        {showLoading ? (
+          <>
+            {debugging && (
+              <IconButton
+                icon="run"
+                size="large"
+                iconSize={18}
+                className={clsx(styles.widgetButton, styles.widgetRun)}
+                title="Run"
+                disabled
+              />
+            )}
+            <span className={clsx(styles.widgetButton, styles.widgetLoading)}>
+              <Spinner variant="spokes" size={18} label={tx("Starting…")} />
+            </span>
+            {!debugging && (
+              <IconButton
+                icon="debug"
+                size="large"
+                iconSize={18}
+                className={styles.widgetButton}
+                title="Debug"
+                disabled
+              />
+            )}
+          </>
+        ) : active ? (
           <>
             {target?.paused && (
               <IconButton
@@ -105,7 +131,7 @@ export function RunWidget() {
               title={tx`Rerun '${selected?.name ?? target?.name ?? ""}'`}
               shortcut={shortcutLabel("run.run")}
               disabled={!!target && (!target.rerun || targetStopping)}
-              onClick={() => void executeAction("run.run")}
+              onClick={() => void launch("run.run")}
             />
           </>
         ) : (
@@ -126,7 +152,7 @@ export function RunWidget() {
               }
               shortcut={shortcutLabel("run.run")}
               disabled={(!selected && !currentFile) || debugOnly}
-              onClick={() => void executeAction("run.run")}
+              onClick={() => void launch("run.run")}
             />
             <IconButton
               icon="debug"
@@ -136,7 +162,7 @@ export function RunWidget() {
               title={selected ? tx`Debug '${selected.name}'` : currentFile ? "Debug Current File" : "Debug"}
               shortcut={shortcutLabel("run.debug")}
               disabled={!selected && !currentFile}
-              onClick={() => void executeAction("run.debug")}
+              onClick={() => void launch("run.debug")}
             />
           </>
         )}
@@ -149,7 +175,7 @@ export function RunWidget() {
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop, styles.widgetStopping)}
               title={tx`Kill process`}
               aria-label={tx`Kill process`}
-              onClick={() => void executeAction("run.stop", "widget")}
+              onClick={stop}
             >
               <Spinner size={14} />
             </button>
@@ -161,7 +187,7 @@ export function RunWidget() {
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
               title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
               shortcut={shortcutLabel("run.stop")}
-              onClick={() => void executeAction("run.stop", "widget")}
+              onClick={stop}
             />
           ))}
         <IconButton
@@ -185,4 +211,33 @@ export function RunWidget() {
       </span>
     </div>
   );
+}
+
+/** Acknowledges widget clicks before a session exists; session state covers other entry points. */
+function useLaunchFeedback(
+  selectedId: string | null,
+  target: ReturnType<typeof selectedTarget>,
+  compoundRunning: ReturnType<typeof compoundTargets>,
+) {
+  const [pendingLaunches, setPendingLaunches] = useState<{ configId: string | null; debug: boolean }[]>([]);
+  const launching = useRef(new Set<string | null>());
+  const pending = pendingLaunches.find((launch) => launch.configId === selectedId);
+  const debugging = pending ? pending.debug : !!target?.debug;
+  const starting =
+    !!pending || target?.status === "starting" || compoundRunning.some((session) => session.status === "starting");
+  const stopping = target?.status === "stopping" || compoundRunning.some((session) => session.status === "stopping");
+  const launch = async (action: "run.run" | "run.debug") => {
+    if (launching.current.has(selectedId)) return;
+    launching.current.add(selectedId);
+    setPendingLaunches((pending) => [...pending, { configId: selectedId, debug: action === "run.debug" }]);
+    try {
+      await executeAction(action);
+    } finally {
+      launching.current.delete(selectedId);
+      setPendingLaunches((pending) => pending.filter((launch) => launch.configId !== selectedId));
+    }
+  };
+  const active = !!target || compoundRunning.length > 0;
+  const showLoading = !stopping && starting;
+  return { active, debugging, showLoading, launch };
 }

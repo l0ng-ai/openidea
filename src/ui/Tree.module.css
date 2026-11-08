@@ -129,6 +129,7 @@
   text-overflow: ellipsis;
 }
 .detail {
+  flex-shrink: var(--tree-detail-flex-shrink, 1);
   min-width: 0;
   margin-left: 4px;
   overflow: hidden;

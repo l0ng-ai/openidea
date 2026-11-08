@@ -251,6 +251,7 @@ struct Live {
     embedded: bool,
     /// `session/load`: the process can be stopped between turns and the session reloaded.
     resumable: bool,
+    mcp_stdio: bool,
 }
 
 struct Task {
@@ -421,7 +422,12 @@ impl AgentManager {
         let mut offered = offered;
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
-                offered.push(AgentCommand { name: name.to_owned(), description: description.to_owned(), hint: None });
+                offered.push(AgentCommand {
+                    name: name.to_owned(),
+                    description: description.to_owned(),
+                    hint: None,
+                    source: AgentCommandSource::Command,
+                });
             }
         }
         if provider != "claude" && provider != "claude-acp" {
@@ -696,7 +702,7 @@ impl AgentManager {
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
-            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": [] }), None)
+            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers_for(live.mcp_stdio, &source.shared.paths.project_root) }), None)
             .await
             .map_err(|e| IdeError::internal(source.describe(e)))?;
         let session = reply
@@ -1394,13 +1400,22 @@ impl Task {
             };
             return Failure { message, limit: Some(resets) };
         }
-        match e {
-            // Signed out, or the account was refused (Claude Code: "API Error: 403").
-            RpcError::Server { message, .. } if message.to_lowercase().contains("auth") => {
-                Failure::from(self.live.lock().as_ref().map(|live| live.sign_in_message.clone()).unwrap_or(message))
-            }
-            e => Failure::from(self.describe(e)),
+        let guidance = self.live.lock().as_ref().map(|live| live.sign_in_message.clone());
+        Failure::from(self.sign_in_error(&e, guidance.as_deref()).unwrap_or_else(|| self.describe(e)))
+    }
+
+    fn sign_in_error(&self, e: &RpcError, guidance: Option<&str>) -> Option<String> {
+        let RpcError::Server { code, message, .. } = e else { return None };
+        if !acp::auth_required(*code, message) {
+            return None;
         }
+        tracing::warn!(task = %self.id, code, %message, "agent sign-in failed");
+        let Some(guidance) = guidance else { return Some(message.clone()) };
+        Some(if message.trim().is_empty() || guidance.contains(message) {
+            guidance.to_owned()
+        } else {
+            format!("{guidance}\n\n{message}")
+        })
     }
 
     async fn ensure_session(self: &Arc<Self>) -> Result<Live, String> {
@@ -1419,7 +1434,6 @@ impl Task {
         let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
             .await
             .map_err(|e| e.to_string())?;
-        let sign_in_message = spec.sign_in_message();
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);
@@ -1439,7 +1453,9 @@ impl Task {
             .map_err(|e| format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command))?;
 
         let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
+        let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
+        let mcp_stdio = init.mcp_stdio();
         let (capabilities, embedded) = capabilities_of(&init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
@@ -1448,7 +1464,7 @@ impl Task {
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
             let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": [] }), None).await;
+                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }), None).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1461,14 +1477,13 @@ impl Task {
             Some(s) => s,
             None => {
                 let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": [] }), None)
+                    .request(
+                        "session/new",
+                        json!({ "cwd": cwd_s, "mcpServers": mcp_servers_for(mcp_stdio, &self.shared.paths.project_root) }),
+                        None,
+                    )
                     .await
-                    .map_err(|e| match e {
-                        RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {
-                            sign_in_message.clone()
-                        }
-                        e => self.describe(e),
-                    })?;
+                    .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
                 (id, v)
             }
@@ -1557,7 +1572,8 @@ impl Task {
         }
         self.persist();
         self.emit_task();
-        let live = Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load };
+        let live =
+            Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load, mcp_stdio };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }
@@ -1581,6 +1597,7 @@ impl Task {
                 .collect()
         };
         if due.is_empty() {
+            self.approve_pending();
             return;
         }
         let task = self.clone();
@@ -1610,6 +1627,7 @@ impl Task {
                     Err(e) => tracing::warn!("agent task {}: setting {} to {value} failed: {e}", task.id, option.id),
                 }
             }
+            task.approve_pending();
             task.persist();
             task.emit_task();
         });
@@ -1699,7 +1717,7 @@ impl Task {
                     true
                 }
                 "available_commands_update" => {
-                    s.task.commands = config::commands_of(update);
+                    s.task.commands = config::commands_of(update, &provider);
                     true
                 }
                 "usage_update" => {
@@ -1725,6 +1743,9 @@ impl Task {
             self.emit_task();
             if kind == "config_option_update" && !self.replaying.load(Ordering::Acquire) {
                 self.apply_late_choices();
+            }
+            if !self.replaying.load(Ordering::Acquire) && kind == "current_mode_update" {
+                self.approve_pending();
             }
             return;
         }
@@ -1756,12 +1777,7 @@ impl Task {
     fn ask_permission(self: &Arc<Self>, params: &Value) -> Value {
         let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
         let (questions, by_index) = asked_questions(params);
-        let title = params
-            .pointer("/toolCall/title")
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .unwrap_or("The agent asks for permission")
-            .to_owned();
+        let title = permission_title(params);
         // An agent that answers by index titles its request "Ask user N question(s)"; its
         // first question says what it wants, as the Claude Code adapter titles its own.
         let title =
@@ -1862,7 +1878,7 @@ impl Task {
 
     fn approve_pending(&self) {
         let s = self.state.lock();
-        if self.cancel_pending.load(Ordering::Acquire) || !config::bypass_approvals(&s.task.provider, &s.task.config) {
+        if self.cancel_pending.load(Ordering::Acquire) || !config::bypass_approvals(&s.task.config) {
             return;
         }
         let mut pending = self.permissions.lock();
@@ -1933,6 +1949,65 @@ impl Handler for Client {
 fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
     prompt.text = prompt.text.trim().to_owned();
     (!prompt.text.is_empty() || !prompt.images.is_empty() || !prompt.files.is_empty()).then_some(prompt)
+}
+
+fn permission_title(params: &Value) -> String {
+    let call = &params["toolCall"];
+    let title = call.get("title").and_then(Value::as_str).filter(|t| !t.is_empty());
+    if call.get("kind").and_then(Value::as_str) == Some("execute") {
+        if let Some(command) = call.pointer("/rawInput/command").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+            // Network approvals describe the host rather than approving command execution.
+            if !title.is_some_and(|t| t.starts_with("Allow network access to ")) {
+                return format!("Run {}", shell_script(command).unwrap_or_else(|| command.to_owned()));
+            }
+        }
+        if title.is_none()
+            && let Some(content) = call.get("content").and_then(Value::as_array)
+            && let Some(text) = content.iter().find_map(|c| c.pointer("/content/text").and_then(Value::as_str))
+        {
+            return format!("Run {text}");
+        }
+    }
+    title.unwrap_or("The agent asks for permission").to_owned()
+}
+
+/// The script of a `<shell> -c <quoted script>` command line, when the whole line is exactly that.
+pub(crate) fn shell_script(command: &str) -> Option<String> {
+    let (shell, rest) = command.split_once(' ')?;
+    if !matches!(shell.rsplit('/').next(), Some("sh" | "bash" | "zsh")) {
+        return None;
+    }
+    let quoted = rest.strip_prefix("-lc ").or_else(|| rest.strip_prefix("-c "))?;
+    let mut out = String::new();
+    let mut chars = quoted.chars();
+    // Adjacent quoted words, e.g. 'a'\''b' or "a \"b\"".
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    c => out.push(c),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '\\' => match chars.next()? {
+                        c @ ('"' | '\\' | '$' | '`') => out.push(c),
+                        '\n' => {}
+                        c => {
+                            out.push('\\');
+                            out.push(c);
+                        }
+                    },
+                    c => out.push(c),
+                }
+            },
+            '\\' => out.push(chars.next()?),
+            _ => return None,
+        }
+    }
+    Some(out)
 }
 
 /// The questions a permission request asks, and whether they answer by question index.
@@ -2152,3 +2227,20 @@ mod replay;
 mod replay_tests;
 #[cfg(test)]
 mod tests;
+
+// The desktop advertises its relay only while the built-in server is listening.
+static MCP_EXECUTABLE: parking_lot::RwLock<Option<std::path::PathBuf>> = parking_lot::RwLock::new(None);
+
+pub fn set_mcp_executable(executable: Option<std::path::PathBuf>) {
+    *MCP_EXECUTABLE.write() = executable;
+}
+
+fn mcp_servers_for(supported: bool, root: &std::path::Path) -> Vec<Value> {
+    stdio_mcp_servers(MCP_EXECUTABLE.read().as_deref(), supported, root)
+}
+
+fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
+    let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
+    let command = ide_mcp::stdio_command(executable, root);
+    vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+}

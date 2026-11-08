@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerFileEditorProvider } from "@/workbench/contributions";
 import { EditorController, openFilePaths, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
+import { storeSession } from "./model/session";
 import { initialTabsState } from "./model/tabs";
 import { useProject } from "@/platform/project";
 
@@ -63,6 +64,25 @@ function tabFor(path: string) {
 }
 
 describe("file open order", () => {
+  it("keeps the caret and activation of a file opened while the project's session restores", async () => {
+    const before = setup();
+    before.restoreSession("/p");
+    await before.openFile("/p/b.ts", { focus: false });
+    before.stop();
+    useTabs.setState(initialTabsState(), true);
+    try {
+      const controller = setup();
+      const open = controller.openFile("/p/a.ts", { selection: { line: 1, col: 2 }, focus: false });
+      controller.restoreSession("/p");
+      await open;
+      expect(openFilePaths(useTabs.getState()).sort()).toEqual(["/p/a.ts", "/p/b.ts"]);
+      expect(activePath()).toBe("/p/a.ts");
+      expect(controller.slotFor(tabFor("/p/a.ts")!.id)?.caret()).toMatchObject({ line: 1, col: 2 });
+    } finally {
+      storeSession("/p", null);
+    }
+  });
+
   it.each([1, 30])("keeps the newer file active after an earlier probe (tab limit: %s)", async (tabLimit) => {
     useProject.setState({ settings: { editor: { tabs: { tabLimit } } } as never });
     const { started, response } = delayProvider();

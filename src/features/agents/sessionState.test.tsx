@@ -121,6 +121,108 @@ beforeEach(() => {
 });
 
 describe("conversation rows", () => {
+  it("keeps authors above messages and their folded work with matching icon-only actions", async () => {
+    const user = (text: string): AgentEntry => ({
+      type: "user",
+      text,
+      attachments: [],
+      steered: false,
+      sentMs: null,
+      doneMs: null,
+    });
+    backend.entries.set("A", [
+      user("First question"),
+      { type: "agent", text: "First reply" },
+      tool("read"),
+      { type: "agent", text: "More detail" },
+      user("Next question"),
+      { type: "thought", text: "Considering the next question" },
+      tool("next"),
+      { type: "agent", text: "Next reply" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("More detail");
+    expect(stream().querySelectorAll(`.${styles.agentAuthor} .${styles.role}`)).toHaveLength(2);
+    const author = stream().querySelectorAll(`.${styles.agentAuthor}`)[1]!;
+    expect(author.nextElementSibling).toHaveClass(styles.processRun!);
+    expect(author.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
+    const quote = within(stream()).getAllByRole("button", { name: "Quote Reply" });
+    const copy = within(stream()).getAllByRole("button", { name: "Copy Markdown" });
+    expect(quote).toHaveLength(3);
+    for (const button of [...quote, ...copy]) {
+      expect(button.textContent).toBe("");
+      expect(button.querySelector("svg path")).not.toBeNull();
+      expect(button.parentElement).toHaveClass(styles.messageActions!);
+    }
+    expect(stream()).not.toHaveTextContent("66");
+    expect(quote[0]?.className).toBe(copy[0]?.className);
+    expect(within(stream()).getAllByRole("button", { name: "Copy" })[0]?.className).toBe(copy[0]?.className);
+  });
+
+  it.each([null, "allow"])("keeps tool, reasoning, plan and approval rows in one author run (%s)", async (chosen) => {
+    backend.entries.set("A", [
+      { type: "agent", text: "I’ll read package.json…" },
+      tool("one"),
+      tool("two"),
+      { type: "agent", text: "More detail" },
+      tool("List .", { status: "running" }),
+      { type: "permission", id: 1, title: "Run python3", options: [], chosen },
+      { type: "plan", items: [{ content: "Check files", status: "in_progress" }] },
+      { type: "thought", text: "Consider the result" },
+      { type: "agent", text: "Done" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Done");
+    expect(stream().querySelectorAll(`.${styles.agentAuthor}`)).toHaveLength(1);
+    expect(stream().firstElementChild?.firstElementChild).toHaveClass(styles.agentAuthor!);
+  });
+
+  it.each<AgentEntry>([subagent, { type: "message", incoming: true, text: "Parent request" }])(
+    "starts another author run after $type entries",
+    async (other) => {
+      backend.entries.set("A", [
+        { type: "agent", text: "Before the switch" },
+        other,
+        { type: "thought", text: "After the switch" },
+        tool("read"),
+        { type: "agent", text: "After the work" },
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      await screen.findByText("After the work");
+      const authors = stream().querySelectorAll(`.${styles.agentAuthor}`);
+      expect(authors).toHaveLength(2);
+      expect(stream().children[1]?.querySelector(`.${styles.agentAuthor}`)).toBeNull();
+      expect(authors[1]?.nextElementSibling).toHaveClass(styles.processRun!);
+      expect(authors[1]?.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
+    },
+  );
+
+  it("anchors every agent footer with its time before the hover actions", async () => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: 13000 },
+      { type: "agent", text: "First reply" },
+      tool("read"),
+      { type: "agent", text: "Final reply" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Final reply");
+    const messages = stream().querySelectorAll(`.${styles.agentMessage}`);
+    expect(messages).toHaveLength(2);
+    for (const message of messages) {
+      const [card, footer] = message.children;
+      expect(card).toHaveClass(styles.agentCard!);
+      expect(footer).toHaveClass(styles.messageFooter!);
+      expect(footer?.firstElementChild).toHaveClass(styles.messageTime!);
+      expect(footer?.firstElementChild).toHaveTextContent("12s");
+      expect(footer?.lastElementChild).toHaveClass(styles.messageActions!);
+    }
+    expect(stream().querySelector(`.${styles.userMessage} > .${styles.messageFooter}`)).not.toBeNull();
+  });
+
   it("builds only the requested tail, with absolute indexes", () => {
     const entries = Array.from({ length: 45 }, (_, i) => ({ type: "agent", text: `reply ${i}` }) as AgentEntry);
     const rows = conversationRows(entries, 40);
@@ -269,7 +371,7 @@ describe("tool calls", () => {
 });
 
 describe("a pending question", () => {
-  it("shows the whole question in the banner, with every answer, and sends the chosen one", async () => {
+  it("shows the whole question once inline, with every answer, and sends the chosen one", async () => {
     const question =
       'Scenario 4 ("follows the TR") still leaves the "About your request" section empty after two rewrites.\nHow should we continue?';
     const entries: AgentEntry[] = [
@@ -289,9 +391,10 @@ describe("a pending question", () => {
     backend.answers = [];
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const banner = await screen.findByRole("alert", { name: question });
-    expect(banner.querySelector(`.${styles.bannerText}`)?.textContent).toBe(question);
-    const answers = within(banner.querySelector<HTMLElement>(`.${styles.bannerActions}`)!).getAllByRole("button");
+    const card = await screen.findByRole("region", { name: "Allow tool call?" });
+    expect(within(card).getByText(question.replaceAll("\n", " "))).toBeInTheDocument();
+    expect(screen.getAllByText(question.replaceAll("\n", " "))).toHaveLength(1);
+    const answers = within(card).getAllByRole("button");
     expect(answers.map((b) => b.textContent)).toEqual([
       "Ship it as is and record it (Recommended)",
       "Detect the request in code",
@@ -434,14 +537,76 @@ describe("a pending AskUserQuestion", () => {
 });
 
 describe("a pending permission request in the conversation", () => {
+  const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
+  const options = [
+    { id: "opaque-once", name: "Allow Once", kind: "allow_once" },
+    { id: "opaque-policy", name: `Always Allow \`${command}\``, kind: "allow_always" },
+    { id: "opaque-no", name: "Decline", kind: "reject_once" },
+    { id: "opaque-stop", name: "Decline and Stop", kind: "reject_always" },
+  ];
+
+  it("shows the requested command while another read tool is pending, with one card and short buttons", async () => {
+    backend.entries.set("A", [
+      {
+        type: "tool",
+        id: "pending-read",
+        title: "List .",
+        kind: "search",
+        status: "running",
+        output: null,
+        diffs: [],
+        locations: [],
+      },
+      { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("region", { name: "codex wants to run a command" });
+    expect(screen.getAllByRole("region", { name: "codex wants to run a command" })).toHaveLength(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(stream()).toContainElement(card);
+    expect(card.querySelector("pre")?.textContent).toBe(command);
+    const buttons = within(card).getAllByRole("button");
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Allow Once",
+      "Always Allow",
+      "Decline",
+      "Decline and Stop",
+    ]);
+    expect(buttons.every((b) => b.tabIndex === 0)).toBe(true);
+    expect(buttons[1]?.textContent).toBe("Always Allow");
+    expect(buttons[1]?.title).toBe(options[1]?.name);
+  });
+
+  it.each(options)("sends the original $kind option id, then collapses the resolved card", async (option) => {
+    const pending: AgentEntry = { type: "permission", id: 12, title: `Run ${command}`, options, chosen: null };
+    backend.answers = [];
+    backend.entries.set("A", [pending]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    const card = await screen.findByRole("region", { name: "codex wants to run a command" });
+    const button = within(card).getAllByRole("button")[options.indexOf(option)]!;
+    button.focus();
+    fireEvent.click(button);
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, option.id]]));
+    act(() =>
+      useAgents.setState({ entries: new Map(backend.entries).set("A", [{ ...pending, chosen: option.name }]) }),
+    );
+    expect(card.querySelector("pre")).toBeNull();
+    expect(within(card).queryByRole("button")).toBeNull();
+    expect(card.textContent).toContain("python3 …");
+    expect(card.textContent).not.toContain("write_text");
+    expect(card).toHaveFocus();
+  });
+
   it("is answered from its line too, and one without options can be cancelled", async () => {
     backend.entries.set("A", [
       {
         type: "permission",
         id: 3,
-        title: "ls d:/project",
+        title: "Run ls d:/project",
         options: [
-          { id: "once", name: "Allow once", kind: "allow_once" },
+          { id: "once", name: "Allow Once", kind: "allow_once" },
           { id: "reject", name: "Reject", kind: "reject_once" },
         ],
         chosen: null,
@@ -453,18 +618,16 @@ describe("a pending permission request in the conversation", () => {
     backend.answers = [];
     useAgents.setState({ entries: new Map(backend.entries) });
     const { unmount } = render(<SessionEditor input={input("A")} />);
-    const line = (await screen.findAllByText("ls d:/project")).find((e) =>
-      e.classList.contains(styles.permissionTitle!),
-    )!.parentElement!;
+    const line = await screen.findByRole("region", { name: "codex wants to run a command" });
     const answers = within(line.querySelector<HTMLElement>(`.${styles.permissionAnswers}`)!).getAllByRole("button");
-    expect(answers.map((b) => b.textContent)).toEqual(["Allow once", "Reject"]);
+    expect(answers.map((b) => b.textContent)).toEqual(["Allow Once", "Decline"]);
     fireEvent.click(answers[0]!);
     await waitFor(() => expect(backend.answers).toEqual([["A", 3, "once"]]));
     unmount();
 
     render(<SessionEditor input={input("B")} />);
-    const banner = await screen.findByRole("alert", { name: "The agent asks for permission" });
-    fireEvent.click(within(banner).getByRole("button", { name: "Cancel" }));
+    const card = await screen.findByRole("region", { name: "Allow tool call?" });
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
     await waitFor(() =>
       expect(backend.answers).toEqual([
         ["A", 3, "once"],

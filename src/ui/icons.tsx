@@ -252,9 +252,6 @@ const ICONS = {
   "window-maximize": "openidea/general/windowMaximize",
   "window-restore": "openidea/general/windowRestore",
   "window-close": "openidea/general/windowClose",
-  "mac-window-close": "openidea/general/macWindowClose",
-  "mac-window-minimize": "openidea/general/macWindowMinimize",
-  "mac-window-exit-full-screen": "openidea/general/macWindowExitFullScreen",
   hide: "general/hide",
   pin: "general/pin",
   eye: "general/show",
@@ -699,6 +696,14 @@ function build(lightSrc: string, darkSrc: string | undefined, keepColours: boole
 }
 
 function prepare(path: string, large: boolean): Prepared | null {
+  if (path === ICONS.quote) {
+    return {
+      viewBox: "0 0 16 16",
+      html: '<path d="M3 3v10M6.5 4.5H13M6.5 8H13M6.5 11.5H11" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>',
+      hasIds: false,
+      mono: true,
+    };
+  }
   const key = `${path}|${large ? 20 : 16}`;
   let out = prepared.get(key);
   if (out !== undefined) return out;

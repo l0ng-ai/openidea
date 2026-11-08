@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupWorktrees, isCurrentWorktree, type RepoWorktrees } from "./worktrees";
+import { groupWorktrees, isCurrentWorktree, worktreeContainsProject, type RepoWorktrees } from "./worktrees";
 
 const worktree = (path: string, main = false) => ({
   path,
@@ -78,5 +78,21 @@ describe("groupWorktrees", () => {
     };
     expect(groupWorktrees([failed, loaded])).toEqual([loaded, failed]);
     expect(groupWorktrees([failed])).toEqual([failed]);
+  });
+});
+
+describe("worktreeContainsProject", () => {
+  it.each([
+    ["/p/front", "/p/front", true],
+    ["/p/front/", "/p/front/src", true],
+    ["/p/front", "/p/front-wt", false],
+    ["/p/front/linked", "/p/front", false],
+    ["/", "/p/front", true],
+    ["C:\\Work\\App", "c:/work/app/src", true],
+    ["C:/Work/App/", "c:/work/app-wt", false],
+    ["/Work/App", "/work/app", false],
+    ["/p/front", null, false],
+  ])("compares %s with project %s", (path, root, expected) => {
+    expect(worktreeContainsProject(path, root)).toBe(expected);
   });
 });

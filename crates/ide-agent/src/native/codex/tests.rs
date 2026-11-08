@@ -247,11 +247,37 @@ fn approvals_offer_what_codex_offers_and_always_a_decline() {
     assert_eq!(
         command_approval_title(
             &json!({"command": "/bin/zsh -lc 'ls'", "commandActions": [{"type": "unknown", "command": "touch b"}]}),
-            None,
             None
         ),
-        "Run touch b"
+        "Run ls"
     );
+}
+
+#[test]
+fn approval_title_shows_the_script_inside_a_shell_wrapper() {
+    let title = |command: &str| command_approval_title(&json!({ "command": command }), None);
+    assert_eq!(
+        title(r#"/bin/zsh -lc "python3 -c 'import pathlib\np = pathlib.Path(\"a.txt\")'""#),
+        "Run python3 -c 'import pathlib\\np = pathlib.Path(\"a.txt\")'"
+    );
+    assert_eq!(title(r#"bash -lc 'echo '\''hi'\'''"#), "Run echo 'hi'");
+    assert_eq!(title("/bin/zsh -lc ls"), "Run /bin/zsh -lc ls");
+    assert_eq!(title("/bin/zsh -lc 'ls' && rm x"), "Run /bin/zsh -lc 'ls' && rm x");
+    assert_eq!(title("python3 -c 'print(1)'"), "Run python3 -c 'print(1)'");
+}
+
+#[test]
+fn approval_command_uses_its_request_and_matching_item_only() {
+    let command = "python3 -c 'import pathlib\np = pathlib.Path(\"note.txt\")\np.write_text(\"hi\\n\")'";
+    let pending_read = json!({"id": "read", "type": "commandExecution", "command": "ls",
+        "commandActions": [{"type": "listFiles", "path": "."}]});
+    let request = json!({"itemId": "write", "command": command});
+    assert_eq!(command_approval_title(&request, Some(&pending_read)), format!("Run {command}"));
+    let item = json!({"id": "write", "command": command});
+    let request = json!({"itemId": "write"});
+    assert_eq!(command_approval_title(&request, Some(&item)), format!("Run {command}"));
+    assert_eq!(command_approval_title(&request, Some(&pending_read)), "Run a command");
+    assert_eq!(command_approval_title(&request, None), "Run a command");
 }
 
 #[test]
@@ -595,6 +621,23 @@ async fn auth_failure_names_auth() {
     assert!(start["params"]["approvalPolicy"].is_string() && start["params"]["sandboxPolicy"].is_object());
     assert_eq!(start["params"]["input"], json!([{"type": "text", "text": "Reply with the single word: hi"}]));
     assert!(start.get("jsonrpc").is_some(), "codex accepts the jsonrpc field");
+}
+
+#[test]
+fn request_errors_classify_authentication_without_matching_author_or_protocol_errors() {
+    for (code, message, expected) in [
+        (codes::INTERNAL_ERROR, "Missing author field", codes::INTERNAL_ERROR),
+        (codes::INTERNAL_ERROR, "Unknown authority", codes::INTERNAL_ERROR),
+        (codes::INTERNAL_ERROR, "Authentication failed: expired token", AUTH_REQUIRED),
+        (codes::INTERNAL_ERROR, "Unauthorized", AUTH_REQUIRED),
+        (codes::METHOD_NOT_FOUND, "authentication method not found", codes::METHOD_NOT_FOUND),
+        (AUTH_REQUIRED, "Account is not eligible", AUTH_REQUIRED),
+    ] {
+        let response = from_codex(RpcError::Server { code, message: message.into(), data: Some(json!({"detail": 1})) });
+        assert_eq!(response.code, expected, "{message}");
+        assert_eq!(response.message, message);
+        assert_eq!(response.data, Some(json!({"detail": 1})));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1000,4 +1043,16 @@ fn scrub(line: &str, paths: &[(&str, &str)]) -> String {
 fn v_method(line: &str) -> Option<&str> {
     let at = line.find("\"method\":\"")? + 10;
     line[at..].split('"').next()
+}
+
+#[test]
+fn session_mcp_servers_become_thread_configuration() {
+    assert!(mcp_config(&json!({"mcpServers":[]})).is_none());
+    assert_eq!(
+        mcp_config(&json!({"mcpServers":[{"name":"OpenIDEA","command":"/app/openidea",
+        "args":["--mcp-stdio","--project","/project"],"env":[{"name":"K","value":"V"}]}]})),
+        Some(
+            json!({"mcp_servers":{"OpenIDEA":{"command":"/app/openidea","args":["--mcp-stdio","--project","/project"],"env":{"K":"V"}}}})
+        )
+    );
 }

@@ -33,6 +33,9 @@
   color: var(--fg-muted);
   animation: spin 0.9s linear infinite;
 }
+.spokes {
+  animation: spin 1s steps(8, end) infinite;
+}
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -116,6 +119,8 @@
   display: flex;
   gap: 10px;
   width: 340px;
+  /* Never grow past the window: the close button must stay reachable. */
+  max-height: calc(100vh - 48px);
   padding: 14px 34px 14px 14px;
   background: var(--bg-popup);
   border: 1px solid var(--border-popup);
@@ -166,6 +171,10 @@
 .toastBody {
   color: var(--fg-secondary);
   overflow-wrap: anywhere;
+  /* A huge message (stack trace, build output) scrolls inside the balloon instead
+     of growing past the window and pushing the close button off-screen. */
+  max-height: 40vh;
+  overflow: auto;
   -webkit-user-select: text;
   user-select: text;
 }
@@ -200,5 +209,8 @@
   }
   .spinner {
     animation-duration: 2.4s;
+  }
+  .spokes {
+    animation: none;
   }
 }
