@@ -54,7 +54,7 @@ use ide_core::settings::LaravelSettings;
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::frameworks::laravel::{ConfigKeys, LaravelProject, RouteTable, ViewTable};
+use crate::frameworks::laravel::{BladeCatalog, ConfigKeys, LaravelProject, RouteTable, ViewTable};
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
 use crate::inspect::{InspectionConfig, Inspections};
@@ -196,6 +196,8 @@ struct Shared {
     laravel_views: Mutex<Option<(u64, Arc<ViewTable>)>>,
     /// The variables passed to each view file, for a modification count.
     view_variables: Mutex<ViewVariables>,
+    /// The Blade components and custom directives, for a modification count.
+    laravel_blade: Mutex<Option<(u64, Arc<BladeCatalog>)>>,
     /// What Laravel support shows (Settings › PHP › Laravel).
     laravel_settings: Mutex<LaravelSettings>,
 }
@@ -250,6 +252,7 @@ impl PhpEngine {
             laravel_routes: Mutex::new(None),
             laravel_views: Mutex::new(None),
             view_variables: Mutex::new(HashMap::new()),
+            laravel_blade: Mutex::new(None),
             laravel_settings: Mutex::new(LaravelSettings::default()),
         });
         let worker = shared.clone();
@@ -623,6 +626,26 @@ impl PhpEngine {
         }));
         *self.shared.laravel_views.lock() = Some((modification, views.clone()));
         Some(views)
+    }
+
+    /// The Blade components and custom directives of the Laravel project,
+    /// or `None` when the project isn't a Laravel project. Read again when
+    /// the modification count moves.
+    pub fn laravel_blade(&self) -> Option<Arc<BladeCatalog>> {
+        let modification = self.modification_count();
+        if let Some((at, catalog)) = &*self.shared.laravel_blade.lock()
+            && *at == modification
+        {
+            return Some(catalog.clone());
+        }
+        let project = self.laravel()?;
+        let views = self.laravel_views()?;
+        let catalog = Arc::new(BladeCatalog::read(&project, &views, |path| match self.open_document(path) {
+            Some(document) if !document.embedded => Some(document.text.to_string()),
+            _ => std::fs::read_to_string(path).ok(),
+        }));
+        *self.shared.laravel_blade.lock() = Some((modification, catalog.clone()));
+        Some(catalog)
     }
 
     /// The cache of [`PhpEngine::laravel_view_variables`].

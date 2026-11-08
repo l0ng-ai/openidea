@@ -31,7 +31,8 @@ impl PhpEngine {
     pub fn blade_sync(&self, blade: &BladeDocument) -> Compiled {
         let component = ViewPaths::new(&self.root()).is_component_view(blade.path);
         let variables = self.laravel_view_variables(blade.path);
-        let compiled = compile_with(blade.text, component, &variables);
+        let custom = self.laravel_blade().map(|catalog| catalog.directive_names()).unwrap_or_default();
+        let compiled = compile_with(blade.text, component, &variables, &custom);
         self.embedded_document(blade.doc, blade.path, blade.version, &compiled.php);
         compiled
     }

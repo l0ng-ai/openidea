@@ -2,22 +2,28 @@
 //! completion of directive names, goto definition of the views and
 //! components a view names (`@include('a.b')`, `<x-alert>`), and, while the
 //! native PHP engine runs, completion, hover, signature help and goto
-//! definition in the PHP of echoes, directives and PHP blocks; in a Laravel
-//! project, Find Usages of a view (the one named at the caret, else the
-//! view itself) in PHP files and templates. The engine
+//! definition in the PHP of echoes, directives, PHP blocks and bound
+//! component attributes; in a Laravel project, custom directives, section
+//! and stack names, component tags and attributes (completion and goto),
+//! and Find Usages of a view (the one named at the caret, else the
+//! view itself) in PHP files and templates. [`BladeObserver`] publishes the
+//! template's own problems (unclosed sections) for open views. The engine
 //! holds the PHP compiled from the open view as an embedded document under
 //! the view's id; `PhpObserver` drops it when the view closes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ide_core::{CancellationToken, DocId, Location, Pos};
+use ide_core::{CancellationToken, DocId, IdeEvent, Location, Pos, SharedSink};
 use ide_lsp::types::{
     CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, References, Signature, SignatureHelp,
 };
+use ide_php::blade::structure::DIAGNOSTIC_SOURCE;
 use ide_php::blade::views::{ViewPaths, ViewRef, goto_view, view_ref_at};
 use ide_php::blade::{BladeDocument, DIRECTIVES, compile, directive_prefix};
 use ide_php::complete::CompletionData;
+use ide_text::AppliedChange;
+use ide_workspace::documents::DocumentObserver;
 use ide_workspace::{DocumentInfo, Documents};
 
 use crate::language_service::{Answer, LanguageService};
@@ -55,15 +61,19 @@ impl LanguageService for BladeService {
         cancel: &CancellationToken,
     ) -> Answer<CompletionList> {
         let info = self.info(doc)?;
-        if let Some((_, range)) = directive_prefix(&info.text, pos) {
-            let items = DIRECTIVES.iter().map(|name| directive_item(name, range, self.server)).collect();
-            return Some(Ok(CompletionList { is_incomplete: false, items }));
-        }
         let Some(engine) = self.php.engine() else {
-            return Some(Ok(CompletionList { is_incomplete: false, items: Vec::new() }));
+            let items = match directive_prefix(&info.text, pos) {
+                Some((_, range)) => DIRECTIVES.iter().map(|name| directive_item(name, range, self.server)).collect(),
+                None => Vec::new(),
+            };
+            return Some(Ok(CompletionList { is_incomplete: false, items }));
         };
         let server = engine.server_id();
-        let found = engine.blade_completion(&blade(&info), pos, trigger, cancel).unwrap_or_default();
+        let found = engine
+            .blade_directive_completion(&info.text, pos)
+            .or_else(|| engine.blade_laravel_completion(&blade(&info), pos))
+            .or_else(|| engine.blade_completion(&blade(&info), pos, trigger, cancel))
+            .unwrap_or_default();
         let items = found.items.into_iter().map(|item| crate::php::completion_item(item, server)).collect();
         Some(Ok(CompletionList { is_incomplete: found.incomplete, items }))
     }
@@ -150,19 +160,76 @@ impl LanguageService for BladeService {
         if !matches!(kind, GotoKind::Definition | GotoKind::Declaration) {
             return Some(Ok(Vec::new()));
         }
+        let engine = self.php.engine();
+        if let Some(targets) = engine.as_ref().and_then(|engine| engine.blade_laravel_definition(&blade(&info), pos))
+            && !targets.is_empty()
+        {
+            return Some(Ok(targets.into_iter().map(|target| Location::file(target.path, target.range)).collect()));
+        }
         let files = goto_view(&info.text, pos, &ViewPaths::new(&self.root));
         if !files.is_empty() {
             return Some(Ok(files.into_iter().map(|path| Location::file(path, Default::default())).collect()));
         }
-        let targets = self
-            .php
-            .engine()
+        let targets = engine
             .and_then(|engine| engine.blade_definition(&blade(&info), pos))
             .unwrap_or_default()
             .into_iter()
             .map(|target| Location::file(target.path, target.range))
             .collect();
         Some(Ok(targets))
+    }
+}
+
+/// Publishes the problems of open Blade views (unclosed sections and
+/// pushes, closing directives with nothing open) under the `blade` source,
+/// with the project's custom directives while the engine runs.
+pub(crate) struct BladeObserver {
+    pub(crate) php: Arc<PhpEngineSlot>,
+    pub(crate) sink: SharedSink,
+}
+
+impl BladeObserver {
+    fn publish(&self, path: &Path, text: &str) {
+        let items = match self.php.engine() {
+            Some(engine) => engine.blade_problems(text),
+            None => ide_php::blade::structure::inspect(text, &[]),
+        };
+        self.sink.emit(IdeEvent::Diagnostics { path: path.into(), source: DIAGNOSTIC_SOURCE.into(), items });
+    }
+}
+
+fn is_blade_document(info: &DocumentInfo) -> bool {
+    info.language.as_str() == "blade" && info.uri.is_none() && !info.large
+}
+
+impl DocumentObserver for BladeObserver {
+    fn opened(&self, info: &DocumentInfo) {
+        if is_blade_document(info) {
+            self.publish(&info.path, &info.text);
+        }
+    }
+
+    fn changed(
+        &self,
+        _doc: DocId,
+        path: &Path,
+        _version: u32,
+        _changes: &[AppliedChange],
+        full_text: &dyn Fn() -> String,
+    ) {
+        if ide_php::frameworks::laravel::views::is_blade(path) {
+            self.publish(path, &full_text());
+        }
+    }
+
+    fn closed(&self, _doc: DocId, path: &Path) {
+        if ide_php::frameworks::laravel::views::is_blade(path) {
+            self.sink.emit(IdeEvent::Diagnostics {
+                path: path.into(),
+                source: DIAGNOSTIC_SOURCE.into(),
+                items: Vec::new(),
+            });
+        }
     }
 }
 
@@ -226,6 +293,34 @@ mod tests {
         let list = service.completion(doc, Pos::new(2, 5), None, &CancellationToken::new()).unwrap().unwrap();
         assert!(list.items.is_empty());
         assert!(service.hover(doc, Pos::new(2, 4), &CancellationToken::new()).unwrap().unwrap().is_none());
+    }
+
+    #[test]
+    fn publishes_unclosed_sections_of_open_views() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let views = root.join("resources/views");
+        std::fs::create_dir_all(&views).unwrap();
+        let page = views.join("page.blade.php");
+        std::fs::write(&page, "@section('content')\n<p>x</p>\n").unwrap();
+        let published: Arc<parking_lot::Mutex<Vec<(PathBuf, String, usize)>>> = Arc::default();
+        let events = published.clone();
+        let sink: SharedSink = Arc::new(move |event: IdeEvent| {
+            if let IdeEvent::Diagnostics { path, source, items } = event {
+                events.lock().push((PathBuf::from(path), source, items.len()));
+            }
+        });
+        let documents = documents();
+        let php = Arc::new(PhpEngineSlot::new(&root, &root.join(".cache"), sink.clone(), documents.clone()));
+        documents.add_observer(Arc::new(BladeObserver { php, sink }));
+        let doc = documents.open(&page).unwrap().id;
+        let blade_events = || -> Vec<usize> {
+            published.lock().iter().filter(|(_, source, _)| source == "blade").map(|(_, _, n)| *n).collect()
+        };
+        assert_eq!(blade_events(), [1]);
+        assert_eq!(published.lock()[0].0, page);
+        documents.close(doc);
+        assert_eq!(blade_events(), [1, 0]);
     }
 
     #[test]

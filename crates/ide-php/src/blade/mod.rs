@@ -17,6 +17,8 @@
 //! spaces and balanced parentheses; `@@name` and `@{{ }}` escape.
 
 mod engine;
+pub mod structure;
+pub mod tags;
 pub mod views;
 
 #[cfg(test)]
@@ -167,6 +169,9 @@ pub enum NodeKind {
     Php,
     /// `@name`, with the arguments between its parentheses as the code.
     Directive { name: String },
+    /// A bound attribute of a component tag (`:message="$m"`, `:$m`), with
+    /// its PHP expression as the code.
+    Bound,
 }
 
 /// One Blade construct of a template.
@@ -224,14 +229,37 @@ fn close_paren(b: &[u8], open: usize) -> Option<usize> {
 
 /// The Blade constructs of `text`, in order.
 pub fn parse(text: &str) -> Vec<Node> {
+    parse_with(text, &[])
+}
+
+/// [`parse`], with `custom` directives (`Blade::directive('money', …)`)
+/// besides the built-in ones.
+pub fn parse_with(text: &str, custom: &[String]) -> Vec<Node> {
     let b = text.as_bytes();
     let n = b.len();
     let mut nodes = Vec::new();
     let mut i = 0;
     let span = |start: usize, end: usize| start as u32..end as u32;
+    // The PHP of bound attributes, skipped by the scan.
+    let mut bound: Vec<Span<u32>> = Vec::new();
     while i < n {
+        if let Some(skip) = bound.iter().find(|code| code.start as usize <= i && i < code.end as usize) {
+            i = skip.end as usize;
+            continue;
+        }
         let rest = &b[i..];
-        if rest.starts_with(b"{{--") {
+        if rest.starts_with(b"<x-") || rest.starts_with(b"<x:") {
+            if let Some(tag) = tags::tag_at(text, i) {
+                for attribute in &tag.attributes {
+                    if let Some(code) = attribute.bound_code(text) {
+                        let span = attribute.name.start..code.end;
+                        nodes.push(Node { kind: NodeKind::Bound, span, code: Some(code.clone()) });
+                        bound.push(code);
+                    }
+                }
+            }
+            i += 1;
+        } else if rest.starts_with(b"{{--") {
             let end = find(b, i + 4, b"--}}").map_or(n, |at| at + 4);
             nodes.push(Node { kind: NodeKind::Comment, span: span(i, end), code: None });
             i = end;
@@ -268,7 +296,7 @@ pub fn parse(text: &str) -> Vec<Node> {
             }
             let name_end = (i + 1..n).find(|&at| !is_word(b[at])).unwrap_or(n);
             let name = &text[i + 1..name_end];
-            if name.is_empty() || !is_directive(name) {
+            if name.is_empty() || !is_directive(name) && !custom.iter().any(|known| known == name) {
                 i = name_end.max(i + 1);
                 continue;
             }
@@ -306,6 +334,7 @@ pub fn parse(text: &str) -> Vec<Node> {
             i += 1;
         }
     }
+    nodes.sort_by_key(|node| node.span.start);
     nodes
 }
 
@@ -438,13 +467,13 @@ pub const VIEW_CALL_PREFIX: &str = "__blade_";
 /// Compiles `text` to PHP. `component`: the template is a component view
 /// (below `views/components/`), so `$attributes` and `$slot` are defined.
 pub fn compile(text: &str, component: bool) -> Compiled {
-    compile_with(text, component, &[])
+    compile_with(text, component, &[], &[])
 }
 
 /// [`compile`], with `variables` (`(name, type)`, the variables the view's
-/// callers pass it) declared at the top.
-pub fn compile_with(text: &str, component: bool, variables: &[(String, String)]) -> Compiled {
-    let nodes = parse(text);
+/// callers pass it) declared at the top, and `custom` directives.
+pub fn compile_with(text: &str, component: bool, variables: &[(String, String)], custom: &[String]) -> Compiled {
+    let nodes = parse_with(text, custom);
     let mut out = Out { text, php: String::from("<?php\n"), segments: Vec::new() };
 
     // `@use` imports go first: PHP takes them only at the top level.
@@ -493,6 +522,11 @@ pub fn compile_with(text: &str, component: bool, variables: &[(String, String)])
                     out.code(code);
                 }
                 out.push("\n;\n");
+            }
+            NodeKind::Bound => {
+                out.push("(");
+                out.code_or(code, "null");
+                out.push(");\n");
             }
             NodeKind::Directive { name } => directive(&mut out, &mut blocks, name, code),
         }

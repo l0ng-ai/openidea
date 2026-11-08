@@ -120,13 +120,7 @@ impl ViewTable {
                 }
             }
         }
-        let mut providers: Vec<PathBuf> = php_files(&project.paths.app.join("Providers"));
-        for module in &project.modules {
-            for sub in ["Providers", "app/Providers", "src/Providers"] {
-                providers.extend(php_files(&module.path.join(sub)));
-            }
-        }
-        for path in providers {
+        for path in provider_files(project) {
             let Some(text) = text_of(&path) else { continue };
             for (name, dir) in registered_namespaces(project, &path, &text) {
                 add(name, dir);
@@ -247,8 +241,19 @@ pub fn valid_local_name(local: &str) -> bool {
         })
 }
 
+/// The service providers of the app and of its modules.
+pub(crate) fn provider_files(project: &LaravelProject) -> Vec<PathBuf> {
+    let mut providers: Vec<PathBuf> = php_files(&project.paths.app.join("Providers"));
+    for module in &project.modules {
+        for sub in ["Providers", "app/Providers", "src/Providers"] {
+            providers.extend(php_files(&module.path.join(sub)));
+        }
+    }
+    providers
+}
+
 /// The `.php` files directly in `dir`, sorted.
-fn php_files(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn php_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<PathBuf> = entries
         .flatten()
@@ -321,7 +326,7 @@ fn registered_namespaces(project: &LaravelProject, path: &Path, text: &str) -> V
 }
 
 /// The top-level arguments of the call whose `(` is at `open`, trimmed.
-fn call_arguments(text: &str, open: usize) -> Option<Vec<String>> {
+pub(crate) fn call_arguments(text: &str, open: usize) -> Option<Vec<String>> {
     let b = text.as_bytes();
     let mut depth = 0usize;
     let mut args = Vec::new();
@@ -358,7 +363,7 @@ fn call_arguments(text: &str, open: usize) -> Option<Vec<String>> {
 }
 
 /// The content of a quoted string without interpolation.
-fn string_literal(text: &str) -> Option<String> {
+pub(crate) fn string_literal(text: &str) -> Option<String> {
     let text = text.trim();
     let quote = text.chars().next().filter(|c| *c == '\'' || *c == '"')?;
     let inner = text.strip_prefix(quote)?.strip_suffix(quote)?;

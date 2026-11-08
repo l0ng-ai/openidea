@@ -170,6 +170,13 @@ namespace Illuminate\Support\Facades {
     class View extends Facade {
         protected static function getFacadeAccessor() { return 'view'; }
     }
+    /**
+     * @method static void directive(string $name, callable $handler)
+     * @method static void if(string $name, callable $callback)
+     */
+    class Blade extends Facade {
+        protected static function getFacadeAccessor() { return 'blade.compiler'; }
+    }
 }
 
 namespace Illuminate\Contracts\Auth\Access {

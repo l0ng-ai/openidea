@@ -31,6 +31,7 @@ fn nodes(text: &str) -> Vec<(String, &str, Option<&str>)> {
                 NodeKind::Echo { raw: true } => "raw".to_owned(),
                 NodeKind::Php => "php".to_owned(),
                 NodeKind::Directive { name } => format!("@{name}"),
+                NodeKind::Bound => "bound".to_owned(),
             };
             let span = &text[node.span.start as usize..node.span.end as usize];
             (kind, span, node.code.map(|code| &text[code.start as usize..code.end as usize]))
@@ -179,6 +180,165 @@ fn directive_prefix_only_outside_php() {
         let (text, pos) = caret(source);
         assert_eq!(directive_prefix(&text, pos), None, "{source}");
     }
+}
+
+#[test]
+fn parse_finds_bound_component_attributes() {
+    let text = "<x-alert type=\"info\" :message=\"$post->title\" ::class=\"{ a: b }\" :$user>{{ $x }}</x-alert>";
+    assert_eq!(
+        nodes(text),
+        [
+            ("bound".to_owned(), ":message=\"$post->title", Some("$post->title")),
+            ("bound".to_owned(), ":$user", Some("$user")),
+            ("echo".to_owned(), "{{ $x }}", Some(" $x ")),
+        ]
+    );
+    // The PHP of bound attributes isn't scanned for Blade constructs.
+    assert_eq!(nodes("<x-a :b=\"'@if'\" />"), [("bound".to_owned(), ":b=\"'@if'", Some("'@if'"))]);
+    let compiled = compile(
+        "@if($a)
+<x-alert :message=\"$a->name\" />
+@endif",
+        false,
+    );
+    assert!(
+        compiled.php.contains(
+            "if ($a) {
+($a->name);
+}"
+        ),
+        "{}",
+        compiled.php
+    );
+    let parsed = crate::syntax::ParsedFile::parse("view.blade.php", compiled.php.as_str());
+    assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+}
+
+#[test]
+fn custom_directives_take_php_arguments() {
+    let custom = ["money".to_owned()];
+    assert!(nodes("@money($cents)").is_empty());
+    let found = parse_with("@money($cents)", &custom);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].kind, NodeKind::Directive { name: "money".into() });
+    let compiled = compile_with("@money($cents)", false, &[], &custom);
+    assert!(compiled.php.contains("[$cents];"), "{}", compiled.php);
+}
+
+#[test]
+fn component_tags_and_places() {
+    use super::tags::{TagPlace, component_tags, tag_place};
+    let text = "<x-forms.input name=\"a\" :value=\"$v\" disabled />
+<x-billing::alert>";
+    let tags = component_tags(text);
+    assert_eq!(tags.len(), 2);
+    let names: Vec<&str> =
+        tags[0].attributes.iter().map(|a| &text[a.name.start as usize..a.name.end as usize]).collect();
+    assert_eq!(names, ["name", ":value", "disabled"]);
+    assert!(tags[0].closed);
+    assert_eq!(&text[tags[1].name.start as usize..tags[1].name.end as usize], "billing::alert");
+
+    let place = |source: &str| {
+        let (text, pos) = caret(source);
+        tag_place(&text, LineIndex::new(&text).byte(pos)).map(|place| match place {
+            TagPlace::Name(span) => format!("name {}", &text[span.start as usize..span.end as usize]),
+            TagPlace::Attribute { component, name, bound } => {
+                format!("{component} {} {bound}", &text[name.start as usize..name.end as usize])
+            }
+        })
+    };
+    assert_eq!(place("<x-al/*|*/").as_deref(), Some("name al"));
+    assert_eq!(place("<x-alert ty/*|*/").as_deref(), Some("alert ty false"));
+    assert_eq!(place("<x-alert :mess/*|*/age=\"$m\" />").as_deref(), Some("alert message true"));
+    assert_eq!(place("<x-alert type=\"info\" /*|*/>").as_deref(), Some("alert  false"));
+    assert_eq!(place("<x-alert type=\"in/*|*/fo\" />"), None);
+    assert_eq!(place("<x-alert /> <p/*|*/>"), None);
+    assert_eq!(place("<div cl/*|*/>"), None);
+}
+
+#[test]
+fn sections_stacks_and_props() {
+    use super::structure::{NameKind, NameRole, extends, names, props};
+    let text = "@extends('layouts.app')
+@section('title', 'Home')
+@section('content') x @endsection
+@yield('side')
+@hasSection('nav')
+@push('scripts') a @endpush
+@pushIf($x, 'styles') b @endPushIf
+@stack('head')";
+    let found: Vec<(NameKind, NameRole, String)> =
+        names(text, &[]).into_iter().map(|name| (name.kind, name.role, name.name)).collect();
+    use NameKind::*;
+    use NameRole::*;
+    assert_eq!(
+        found,
+        [
+            (Section, Fill, "title".to_owned()),
+            (Section, Fill, "content".to_owned()),
+            (Section, Show, "side".to_owned()),
+            (Section, Show, "nav".to_owned()),
+            (Stack, Fill, "scripts".to_owned()),
+            (Stack, Fill, "styles".to_owned()),
+            (Stack, Show, "head".to_owned()),
+        ]
+    );
+    assert_eq!(extends(text).map(|(name, _)| name).as_deref(), Some("layouts.app"));
+    // A name being typed.
+    let typing = names(
+        "@section('con
+<p>",
+        &[],
+    );
+    assert_eq!(typing.len(), 1);
+    assert_eq!(typing[0].name, "con");
+
+    let props = props("@props(['type' => 'info', 'message', 'isActive' => fn () => [1, 2]])");
+    let props: Vec<(&str, Option<&str>)> = props.iter().map(|p| (p.name.as_str(), p.default.as_deref())).collect();
+    assert_eq!(props, [("type", Some("'info'")), ("message", None), ("isActive", Some("fn () => [1, 2]"))]);
+}
+
+#[test]
+fn unclosed_sections_are_reported() {
+    use super::structure::inspect;
+    let messages = |text: &str| -> Vec<(u32, String)> {
+        inspect(text, &[]).into_iter().map(|d| (d.range.start.line, d.message)).collect()
+    };
+    // Closed every way, inline sections, pushes.
+    let fine = "@section('a') x @endsection
+@section('b') @show
+@section('c') @stop
+@section('d') @overwrite
+@section('e') @append
+@section('title', 'Home')
+@push('s') @endpush @prepend('s') @endprepend";
+    assert!(messages(fine).is_empty(), "{:?}", messages(fine));
+    assert_eq!(
+        messages(
+            "@section('content')
+<p>x</p>
+@push('scripts')
+"
+        ),
+        [
+            (
+                0,
+                "`@section('content')` is not closed: add `@endsection`, `@show`, `@stop`, `@overwrite`, `@append`"
+                    .to_owned()
+            ),
+            (2, "`@push('scripts')` is not closed: add `@endpush`, `@endPushIf`".to_owned()),
+        ]
+    );
+    assert_eq!(
+        messages(
+            "<p>
+@endsection"
+        ),
+        [(1, "`@endsection` without an open `@section`".to_owned())]
+    );
+    let problem = &inspect("@section('a')", &[])[0];
+    assert_eq!(problem.source.as_deref(), Some("blade"));
+    assert_eq!(problem.range, Range::new(Pos::new(0, 0), Pos::new(0, 13)));
 }
 
 fn write(root: &Path, files: &[(&str, &str)]) {

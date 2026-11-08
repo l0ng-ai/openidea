@@ -409,3 +409,6 @@ mod route_tests;
 
 #[path = "view_tests.rs"]
 mod view_tests;
+
+#[path = "blade_tests.rs"]
+mod blade_tests;

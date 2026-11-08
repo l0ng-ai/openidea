@@ -298,6 +298,7 @@ impl Host {
             documents.clone(),
         ));
         documents.add_observer(Arc::new(crate::php::PhpObserver(php.clone())));
+        documents.add_observer(Arc::new(crate::blade::BladeObserver { php: php.clone(), sink: sink.clone() }));
         let php_analyzers = crate::php_analyzers::PhpAnalyzers::new(
             &root,
             settings.clone(),

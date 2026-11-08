@@ -544,7 +544,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Add completion of the variables passed to a view (`view('x', ['user' => …])`, `compact()`, `with()`) inside the Blade file, using the embedded PHP analysis of phase 7.4. Tests: caret fixtures, a rename test, and a quick-fix test.
 
-- [ ] Phase 8.7: Blade: layouts, sections, stacks and components
+- [x] Phase 8.7: Blade: layouts, sections, stacks and components
       Building on phase 7.4, add:
   - completion and goto for sections from the parent layout (`@section`/`@yield`), and for stacks (`@push`/`@stack`)
   - an inspection for unclosed sections

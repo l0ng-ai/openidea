@@ -19,6 +19,8 @@ manual QA, do the same or run `composer install` on a copy.
 - `crates/ide-php/src/frameworks/laravel/refs/route_tests.rs` and `view_tests.rs` check
   route names, controller actions, middleware and view names (completion, goto, usages,
   rename, the undefined route and view inspections, the variables passed to views).
+- `crates/ide-php/src/frameworks/laravel/refs/blade_tests.rs` checks Blade layouts, stacks,
+  components and custom directives (completion, goto, bound attributes, unclosed sections).
 - `crates/ide-host/tests/language_smoke.rs` (`laravel`) checks hover and completion on a
   model attribute through the app's `ops`.
 
@@ -48,7 +50,7 @@ manual QA, do the same or run `composer install` on a copy.
 | `app/Http/Middleware/EnsureUserIsAuthor.php`                | a middleware class with an alias                                                                                   |
 | `app/Http/Requests/StorePostRequest.php`                    | Form Request: string and array validation rules, `Rule::unique`/`Rule::enum`, custom messages                      |
 | `app/Policies/PostPolicy.php`                               | a policy found by convention (`Post` → `PostPolicy`)                                                               |
-| `app/Providers/AppServiceProvider.php`                      | a container binding (`blog.feed`), `Gate::define` abilities                                                        |
+| `app/Providers/AppServiceProvider.php`                      | a container binding (`blog.feed`), `Gate::define` abilities, custom Blade directives (`Blade::directive('money')`, `Blade::if('admin')`) |
 | `app/Services/FeedBuilder.php`                              | the bound service, a nested `config()` key                                                                         |
 | `app/Console/Commands/PublishScheduledPosts.php`            | an Artisan command: `$signature` with an option, `$description`, `option()`                                        |
 | `app/View/Components/Alert.php`                             | a class-based Blade component                                                                                      |
