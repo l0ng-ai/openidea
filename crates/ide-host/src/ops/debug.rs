@@ -1,4 +1,6 @@
 mod kotlin;
+#[cfg(test)]
+mod kotlin_tests;
 mod output;
 
 use crate::Host;
