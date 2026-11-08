@@ -5,6 +5,7 @@
 use crate::{AgentCommandReadOnlyReason, AgentProvider, AgentSource};
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -92,9 +93,26 @@ impl ProviderSpec {
         render_login_hint(self, program, on_path.as_deref(), cfg!(windows))
     }
 
-    pub(crate) fn sign_in_message(&self) -> String {
+    pub(crate) fn sign_in_message(&self, auth_methods: &[Value]) -> String {
         let name = &self.name;
-        let hint = self.login_hint(Path::new(&self.command));
+        let program = Path::new(&self.command);
+        let terminal_args = matches!(self.source, AgentSource::Registry { .. })
+            .then(|| {
+                auth_methods.iter().find_map(|method| {
+                    if method.get("type").and_then(Value::as_str) != Some("terminal") {
+                        return None;
+                    }
+                    method.get("args")?.as_array()?.iter().map(Value::as_str).collect::<Option<Vec<_>>>()
+                })
+            })
+            .flatten();
+        let hint = match terminal_args {
+            Some(args) => {
+                let command = render_login_command(program, args, cfg!(windows));
+                format!("Run `{command}` in a terminal.")
+            }
+            None => self.login_hint(program),
+        };
         format!("{name} needs you to sign in. {hint}")
     }
 
@@ -124,19 +142,29 @@ fn render_login_hint(spec: &ProviderSpec, program: &Path, on_path: Option<&Path>
     if on_path.is_some_and(|path| same_path(path, program)) {
         return spec.login_hint.clone();
     }
-    let path = program.to_string_lossy();
-    let quoted = if windows {
-        format!("& '{}'", path.replace('\'', "''"))
-    } else {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    };
     let (args, suffix) = rest.split_once('`').expect("built-in login hints delimit their command");
-    let command = format!("{quoted}{args}");
+    let command = render_login_command(program, args.split_whitespace(), windows);
     match suffix {
         " in a terminal." => format!("Run `{command}` in a terminal."),
         " in a terminal and sign in." => format!("Run `{command}` in a terminal and sign in."),
         _ => spec.login_hint.clone(),
     }
+}
+
+fn render_login_command<'a>(program: &Path, args: impl IntoIterator<Item = &'a str>, windows: bool) -> String {
+    let quote = |word: &str| {
+        if windows { format!("'{}'", word.replace('\'', "''")) } else { format!("'{}'", word.replace('\'', "'\\''")) }
+    };
+    let mut command = format!("{}{}", if windows { "& " } else { "" }, quote(&program.to_string_lossy()));
+    for arg in args {
+        command.push(' ');
+        if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_=./".contains(c)) {
+            command.push_str(arg);
+        } else {
+            command.push_str(&quote(arg));
+        }
+    }
+    command
 }
 
 /// Whether `id` names a built-in agent that needs no registry install (native drivers
@@ -370,6 +398,7 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn login_hints_cover_all_builtin_commands_and_preserve_separate_login_tools() {
@@ -429,10 +458,41 @@ mod tests {
         cursor.env.push(("PATH".into(), dir.path().to_string_lossy().into_owned()));
         let resolved = cursor.clone().resolve_for_launch(dir.path());
         assert_eq!(Path::new(&resolved.command), program);
-        assert!(resolved.sign_in_message().contains(&*program.to_string_lossy()));
+        assert!(resolved.sign_in_message(&[]).contains(&*program.to_string_lossy()));
         cursor.command = format!("tools/{command}");
         let resolved = cursor.resolve_for_launch(dir.path());
         assert_eq!(Path::new(&resolved.command), dir.path().join("tools").join(command));
+    }
+
+    #[test]
+    fn terminal_login_commands_quote_the_binary_and_each_argument() {
+        for (windows, expected) in [
+            (false, "'/agent'\\''s tools/$cli' auth login --account 'user name' 'a'\\''b' '$token' ''"),
+            (true, "& '/agent''s tools/$cli' auth login --account 'user name' 'a''b' '$token' ''"),
+        ] {
+            assert_eq!(
+                render_login_command(
+                    Path::new("/agent's tools/$cli"),
+                    ["auth", "login", "--account", "user name", "a'b", "$token", ""],
+                    windows
+                ),
+                expected
+            );
+        }
+        let mut spec = builtin_spec("cursor").unwrap();
+        spec.id = "custom".into();
+        spec.source = AgentSource::Registry { version: "1.4.5".into(), update: None };
+        spec.login_hint = "Sign in with the agent's own command line first.".into();
+        for method in [
+            json!({"type": "terminal"}),
+            json!({"type": "terminal", "args": ["login", null]}),
+            json!({"type": "agent", "args": ["login"]}),
+        ] {
+            assert_eq!(
+                spec.sign_in_message(&[method]),
+                "Cursor needs you to sign in. Sign in with the agent's own command line first."
+            );
+        }
     }
 
     #[cfg(unix)]
