@@ -358,8 +358,11 @@ impl PhpEngine {
         let parsed = self.parsed_document(doc)?;
         let path = self.document_path(doc)?;
         let here = FileSummary::extract(&parsed);
-        let resolver = self.resolver();
         let offset = parsed.line_index().byte(pos);
+        if let Some(targets) = self.string_ref_definition(&parsed, &path, offset) {
+            return Some(targets);
+        }
+        let resolver = self.resolver();
         let found = self.at_caret(&parsed, &here, &resolver, offset)?;
         let mut out: Vec<Target> = Vec::new();
         match found.subject {

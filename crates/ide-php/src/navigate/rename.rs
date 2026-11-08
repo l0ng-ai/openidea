@@ -208,6 +208,9 @@ impl PhpEngine {
     pub fn prepare_rename(&self, doc: DocId, pos: Pos) -> Option<Option<Range>> {
         let parsed = self.parsed_document(doc)?;
         let path = self.document_path(doc)?;
+        if let Some(range) = self.string_ref_prepare_rename(&parsed, &path, parsed.line_index().byte(pos)) {
+            return Some(range);
+        }
         let here = FileSummary::extract(&parsed);
         Some(self.renaming(&parsed, &path, &here, pos).map(|renaming| renaming.range))
     }
@@ -225,6 +228,9 @@ impl PhpEngine {
     ) -> Option<IdeResult<WorkspaceEdit>> {
         let parsed = self.parsed_document(doc)?;
         let path = self.document_path(doc)?;
+        if let Some(edit) = self.string_ref_rename(&parsed, &path, parsed.line_index().byte(pos), new_name, cancel) {
+            return Some(edit);
+        }
         let here = FileSummary::extract(&parsed);
         let Some(renaming) = self.renaming(&parsed, &path, &here, pos) else {
             return Some(Err(IdeError::invalid("nothing that can be renamed at the caret")));

@@ -21,8 +21,9 @@ use ide_core::{
 use ide_lsp::types::{
     CallHierarchy, CodeAction, CodeActionQuery, CompletionItem, CompletionKind, CompletionList, FormatOptions,
     GotoKind, HierarchyChoice, HierarchyClass, HierarchyDirection, HierarchyItem, HierarchyMember, HierarchyMemberKind,
-    HierarchyMembers, HierarchyRefactored, HierarchyRefactoring, Hover, InlayHint, InlayKind, Markup, ProblemSeverity,
-    RefactoringProblem, References, Renamed, SemanticTokens, Signature, SignatureHelp, WorkspaceSymbol,
+    HierarchyMembers, HierarchyRefactored, HierarchyRefactoring, Highlight, HighlightKind, Hover, InlayHint, InlayKind,
+    Markup, ProblemSeverity, RefactoringProblem, References, Renamed, SemanticTokens, Signature, SignatureHelp,
+    WorkspaceSymbol,
 };
 
 use crate::language_service::Answer;
@@ -199,7 +200,8 @@ impl DocumentObserver for PhpObserver {
 /// hints (parameter names and types; Editor › Inlay Hints decides which
 /// kinds the editor shows), semantic tokens, find usages, goto
 /// implementation (also for the gutter markers), the type and call
-/// hierarchies, rename, the reference updates of file moves, the
+/// hierarchies, rename, the document highlights of framework string
+/// references, the reference updates of file moves, the
 /// code actions (inspection quick-fixes, auto-import fixes, Optimize
 /// Imports, the refactorings, and Change Signature resolved with the
 /// dialog's new signature), Pull Members Up / Push Members Down and
@@ -413,6 +415,22 @@ impl crate::language_service::LanguageService for PhpService {
         };
         let locations = usages.into_iter().map(|usage| Location::file(usage.path, usage.range)).collect();
         Some(Ok(References { locations, ..References::default() }))
+    }
+
+    /// The usages and declaration of a framework string reference
+    /// (`config('app.name')`) in the document; other places go to the
+    /// language servers as before.
+    fn document_highlights(&self, doc: DocId, pos: Pos) -> Answer<Vec<Highlight>> {
+        let engine = self.0.engine()?;
+        let found = engine.string_highlights(doc, pos)?;
+        let highlights = found
+            .into_iter()
+            .map(|found| Highlight {
+                range: found.range,
+                kind: if found.write { HighlightKind::Write } else { HighlightKind::Read },
+            })
+            .collect();
+        Some(Ok(highlights))
     }
 
     fn prepare_rename(&self, doc: DocId, pos: Pos) -> Answer<Option<Range>> {

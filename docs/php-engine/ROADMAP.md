@@ -503,7 +503,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   It is stored in the index, updated from watcher batches, and exposed as `PhpEngine::laravel()`. Tests: unit tests on snippets, plus the fixture app (route files found, prefixes right, modules listed).
 
-- [ ] Phase 8.3: String reference framework
+- [x] Phase 8.3: String reference framework
       Add `refs`, the framework from the design:
   - place patterns
   - the reference-kind trait (complete, resolve, find usages, rename, validate)

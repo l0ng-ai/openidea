@@ -120,6 +120,11 @@ impl PhpEngine {
     ) -> Option<IdeResult<Vec<Usage>>> {
         let parsed = self.parsed_document(doc)?;
         let path = self.document_path(doc)?;
+        if let Some(found) =
+            self.string_ref_references(&parsed, &path, parsed.line_index().byte(pos), include_declaration, cancel)
+        {
+            return Some(found);
+        }
         let here = FileSummary::extract(&parsed);
         let sought = {
             let resolver = self.resolver();

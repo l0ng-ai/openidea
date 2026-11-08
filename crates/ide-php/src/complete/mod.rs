@@ -32,6 +32,8 @@
 //! - `match` arms: the enum cases (or literal values) of the subject not
 //!   covered yet.
 //! - array keys (`$a['` / `$a[`): the keys of the array's shapes.
+//! - string references of a framework (`config('app.`): the items of their
+//!   kind only ([`crate::frameworks::laravel::refs`]).
 //!
 //! Items are sorted by their group (what the context makes most likely)
 //! and then by how well they match the typed prefix. Documentation is left
@@ -172,6 +174,11 @@ impl PhpEngine {
     ) -> Option<Completions> {
         let parsed = self.parsed_document(doc)?;
         let offset = parsed.line_index().byte(pos);
+        if let Some(path) = self.document_path(doc)
+            && let Some(found) = self.string_ref_completion(&parsed, &path, offset)
+        {
+            return Some(found);
+        }
         let resolver = self.resolver();
         let here = FileSummary::extract(&parsed);
         let names = FileNames::resolve(&parsed);
@@ -258,7 +265,7 @@ fn word_before(bytes: &[u8], end: usize) -> String {
 
 /// Whether the probe needs a `;` after it: the statement looks unfinished
 /// (what follows is on a later line, a `}` or the end of the file).
-fn needs_terminator(rest: &str) -> bool {
+pub(crate) fn needs_terminator(rest: &str) -> bool {
     let trimmed = rest.trim_start();
     let Some(&next) = trimmed.as_bytes().first() else { return true };
     let newline = rest[..rest.len() - trimmed.len()].contains('\n');
@@ -266,7 +273,7 @@ fn needs_terminator(rest: &str) -> bool {
 }
 
 /// The opening quote of the single-line string the caret is in.
-fn string_start(bytes: &[u8], offset: usize) -> Option<usize> {
+pub(crate) fn string_start(bytes: &[u8], offset: usize) -> Option<usize> {
     let line_start = bytes[..offset].iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
     let mut open: Option<usize> = None;
     let mut i = line_start;
@@ -288,7 +295,7 @@ fn string_start(bytes: &[u8], offset: usize) -> Option<usize> {
 /// How well `name` matches the typed `prefix`: 0 for a prefix with the
 /// same case, 1 for a prefix in another case, 2 for the letters in order;
 /// `None` when it doesn't match.
-fn quality(name: &str, prefix: &str) -> Option<u8> {
+pub(crate) fn quality(name: &str, prefix: &str) -> Option<u8> {
     if prefix.is_empty() || name.starts_with(prefix) {
         return Some(0);
     }

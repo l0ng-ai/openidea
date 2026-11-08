@@ -34,7 +34,9 @@
 //! is read the same way: its files that aren't PHP (`composer.json`,
 //! `composer.lock`, modules) on first use until a rescan or a batch touching
 //! one of them or a folder, and its route files from the summaries in the
-//! index for each modification count.
+//! index for each modification count. Its configuration keys
+//! ([`PhpEngine::laravel_config`]) are read from `config/` for each
+//! modification count.
 
 #[cfg(test)]
 mod tests;
@@ -50,7 +52,7 @@ use ide_core::event::ServerStatus;
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::frameworks::laravel::LaravelProject;
+use crate::frameworks::laravel::{ConfigKeys, LaravelProject};
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
 use crate::inspect::{InspectionConfig, Inspections};
@@ -184,6 +186,8 @@ struct Shared {
     /// when a YAML file changes.
     symfony_config: Mutex<Option<Arc<SymfonyConfig>>>,
     laravel: Mutex<LaravelCache>,
+    /// The Laravel configuration keys for a modification count.
+    laravel_config: Mutex<Option<(u64, Arc<ConfigKeys>)>>,
 }
 
 /// The Laravel project model: what [`LaravelProject::load`] read (`None`:
@@ -229,6 +233,7 @@ impl PhpEngine {
             inspection_config: Mutex::new(InspectionConfig::default()),
             symfony_config: Mutex::new(None),
             laravel: Mutex::new(LaravelCache::default()),
+            laravel_config: Mutex::new(None),
         });
         let worker = shared.clone();
         let thread = std::thread::Builder::new()
@@ -543,6 +548,25 @@ impl PhpEngine {
             cache.project = Some((modification, project.clone()));
         }
         project
+    }
+
+    /// The configuration keys of the Laravel project (`config/*.php`, open
+    /// buffers first), or `None` when the project isn't a Laravel project.
+    /// Read again when the modification count moves.
+    pub fn laravel_config(&self) -> Option<Arc<ConfigKeys>> {
+        let modification = self.modification_count();
+        if let Some((at, keys)) = &*self.shared.laravel_config.lock()
+            && *at == modification
+        {
+            return Some(keys.clone());
+        }
+        let project = self.laravel()?;
+        let keys = Arc::new(ConfigKeys::read(&project.paths.config, |path| match self.open_document(path) {
+            Some(document) => Some(document.text.to_string()),
+            None => std::fs::read_to_string(path).ok(),
+        }));
+        *self.shared.laravel_config.lock() = Some((modification, keys.clone()));
+        Some(keys)
     }
 
     /// Every open document.
