@@ -43,7 +43,7 @@ import { activate as notebook } from "./notebook";
 import { activate as web } from "./web";
 import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
-import { activate as github } from "./github";
+import { activate as github, activateSettingsPages as githubPages } from "./github";
 import { activate as httpClient } from "./http-client";
 import { activate as database } from "./database";
 import { activate as graphql } from "./graphql";
@@ -166,6 +166,7 @@ export function activateSettingsWindowFeatures(parent: string): () => void {
     ["agents", agentsPages],
     ["vim", vimPages],
     ["vcs", vcsPages],
+    ["github", githubPages],
   ];
   return activateAll("settings pages", pages);
 }
