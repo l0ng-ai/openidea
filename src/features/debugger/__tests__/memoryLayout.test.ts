@@ -14,3 +14,17 @@ describe.each(["MemoryView", "InstancesPane"])("%s row buttons", (name) => {
     expect(css).toMatch(/\.row:hover \.rowButton:disabled[^{]*\{[^}]*opacity: 0\.4;/);
   });
 });
+
+// The pane has a fixed height: in a short Debug tool window it squeezed the class table to nothing,
+// whose header and footer then painted over the pane, and the pane's last rows fell out of view.
+describe("instances pane in a short Memory view", () => {
+  const read = (name: string) => readFileSync(`src/features/debugger/memory/${name}.module.css`, "utf8");
+
+  it("takes at most 60% of the view", () => {
+    expect(read("InstancesPane")).toMatch(/\.pane \{[^}]*height: min\([^;]*, 60%\);/);
+  });
+
+  it("keeps the squeezed class table from painting over it", () => {
+    expect(read("MemoryView")).toMatch(/\.table \{[^}]*overflow: hidden;/);
+  });
+});

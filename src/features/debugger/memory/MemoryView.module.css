@@ -48,6 +48,8 @@
 .table {
   flex: 1;
   min-height: 0;
+  /* Squeezed by the instances pane, it must not paint over it. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   --memory-columns: minmax(0, 1fr) 96px 72px 104px;

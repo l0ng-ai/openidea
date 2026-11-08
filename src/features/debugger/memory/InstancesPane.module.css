@@ -2,7 +2,8 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  height: calc(var(--h-row) + 10 * var(--h-list-row));
+  /* A short Debug tool window keeps room for the class table above. */
+  height: min(calc(var(--h-row) + 10 * var(--h-list-row)), 60%);
   min-height: 0;
   border-top: 1px solid var(--border);
 }
