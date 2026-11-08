@@ -173,6 +173,18 @@ it("retains an opened tab's local state while switching tabs", async () => {
   expect(input).toHaveValue("retain this draft");
 });
 
+it("defaults headerless side views to secondary split and honors explicit secondary", () => {
+  add("k8s", { id: "explorer", location: "right", header: "none" });
+  add("k8s", { id: "pinnedTop", location: "right", header: "none", secondary: false });
+  add("k8s", { id: "bottomPanel", location: "bottom", header: "none" });
+  add("k8s", { id: "explicitSecondary", location: "left", secondary: true });
+
+  expect(useContributions.getState().toolWindows.get("plugin.k8s.explorer")?.secondary).toBe(true);
+  expect(useContributions.getState().toolWindows.get("plugin.k8s.pinnedTop")?.secondary).toBe(false);
+  expect(useContributions.getState().toolWindows.get("plugin.k8s.bottomPanel")?.secondary).toBe(false);
+  expect(useContributions.getState().toolWindows.get("plugin.k8s.explicitSecondary")?.secondary).toBe(true);
+});
+
 it("discards a conditionally hidden tab and keeps it lazy when it becomes available again", async () => {
   setContext("plugin.spring.ready", true);
   add("spring", { id: "routes", title: "Routes", group: "framework" });
