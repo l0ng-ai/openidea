@@ -8,12 +8,12 @@
  */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
-import { executeAction } from "@/platform/actions";
+import { executeAction, registerActions } from "@/platform/actions";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { projectLocation, useRemote } from "@/platform/remote";
 import { tx, useT, useTxTemplate } from "@/platform/i18n";
-import { Button, EmptyState, T } from "@/ui";
+import { Button, EmptyState, T, showContextMenu } from "@/ui";
 import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
@@ -26,6 +26,7 @@ import {
   type ServiceTreeItem,
 } from "@/workbench/contributions";
 import { commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
+import { openUrl } from "./navigate";
 import { SessionPanel } from "./RunView";
 import { showApplicationUpdate } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
@@ -38,6 +39,7 @@ import {
   startRun,
   stopSession,
   useRun,
+  waitForExit,
   type RunSession,
   isLive,
 } from "./store";
@@ -369,9 +371,115 @@ function debug(r: Resolved) {
   else if (r.config) void executeAction("run.debugConfig", { config: r.config, show: false });
 }
 
-function actions(item: ServiceTreeItem): ServiceItemAction[] {
+function groupConfigs(kind: string): RunConfig[] {
+  const root = useProject.getState().project?.root ?? null;
+  const location = projectLocation(root);
+  const { configs, sessions } = useRun.getState();
+  const debug = useDebugRunSessions.getState().serviceSessions;
+  const latest = currentServiceSessions(serviceSessions(sessions, debug));
+  const group = runServiceItems(
+    configs,
+    sessions,
+    currentTypes(),
+    ranIds(root),
+    location ? currentServiceOrder(location) : {},
+    debug,
+    configRemoved,
+  ).find((item) => item.key === TYPE_PREFIX + kind);
+  return (group?.children ?? []).flatMap((item) => {
+    const id = item.key.slice(CONFIG_PREFIX.length);
+    const config = configs.find((c) => c.id === id) ?? latest.get(id)?.config;
+    return config ? [config] : [];
+  });
+}
+
+async function startAll(kind: string, restart: boolean): Promise<void> {
+  const root = useProject.getState().project?.root;
+  const entries = groupConfigs(kind).filter((c) => !isDebugOnly(c));
+  if (restart) {
+    const { sessions } = useRun.getState();
+    const running = serviceSessions(sessions, useDebugRunSessions.getState().serviceSessions).filter(
+      (s) => s.config.kind === kind && liveServiceSession(s),
+    );
+    await stopServiceSessions(running);
+    await waitForExit(
+      running.flatMap((s) => (s.run ? [s.run.id] : [])),
+      null,
+    );
+  }
+  for (const config of entries) {
+    if (useProject.getState().project?.root !== root) return;
+    const running = serviceSessions(useRun.getState().sessions, useDebugRunSessions.getState().serviceSessions);
+    if (running.some((s) => s.config.id === config.id && liveServiceSession(s))) continue;
+    try {
+      await startRun(config, undefined, undefined, { show: false });
+    } catch (e) {
+      notifications().notify({ group: "run", level: "error", title: tx`Cannot run '${config.name}'`, body: String(e) });
+    }
+  }
+}
+
+function browserActions(sessions: readonly ServiceSession[]): ServiceItemAction[] {
+  const urls = new Map<string, string>();
+  for (const s of sessions) {
+    if (!liveServiceSession(s)) continue;
+    const port = (s.run && isLive(s.run) ? s.run.httpPort : undefined) ?? serviceDebugger(s)?.httpPort;
+    if (port && Number.isInteger(port) && port > 0 && port < 65536) urls.set(`http://localhost:${port}`, s.config.name);
+  }
+  return [
+    {
+      id: "open-browser",
+      title: "Open in Browser",
+      icon: "web",
+      disabled: !urls.size,
+      run: () => {
+        if (urls.size === 1) return void openUrl(urls.keys().next().value!);
+        if (!urls.size) return;
+        showContextMenu(
+          { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+          [...urls].map(([url, name]) => ({
+            label: `${name} — ${url}`,
+            verbatim: true,
+            icon: "web",
+            run: () => void openUrl(url),
+          })),
+        );
+      },
+    },
+  ];
+}
+
+function itemActions(item: ServiceTreeItem): ServiceItemAction[] {
   const r = resolve(item);
   const running = r.sessions.filter(liveServiceSession);
+  if (!r.config && r.kind) {
+    const kind = r.kind;
+    const entries = groupConfigs(kind).filter((c) => !isDebugOnly(c));
+    return [
+      {
+        id: "run-all",
+        title: "Run All",
+        icon: "run",
+        disabled: !entries.some((c) => !running.some((s) => s.config.id === c.id)),
+        run: () => startAll(kind, false),
+      },
+      {
+        id: "restart-all",
+        title: "Restart All",
+        icon: "rerun",
+        disabled: !entries.length,
+        run: () => startAll(kind, true),
+      },
+      {
+        id: "stop-all",
+        title: "Stop All",
+        icon: "stop",
+        disabled: !running.length,
+        run: () => stopServiceSessions(running),
+      },
+      ...browserActions(r.sessions),
+    ];
+  }
   const stop = {
     id: "stop",
     title: "Stop",
@@ -391,6 +499,7 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
       run: () => run(r),
     },
     { id: "debug", title: "Debug", icon: "debug", disabled: !!debugging && !debugging.rerun, run: () => debug(r) },
+    ...browserActions(r.sessions),
     stop,
     ...(isUpdatable(r.config)
       ? [
@@ -404,6 +513,44 @@ function actions(item: ServiceTreeItem): ServiceItemAction[] {
         ]
       : []),
   ];
+}
+
+const SERVICE_ACTIONS = [
+  { id: "run-all", action: "run.services.runAll", title: "Run All", icon: "run" },
+  { id: "restart-all", action: "run.services.restartAll", title: "Restart All", icon: "rerun" },
+  { id: "stop-all", action: "run.services.stopAll", title: "Stop All", icon: "stop" },
+  { id: "open-browser", action: "run.services.openBrowser", title: "Open in Browser", icon: "web" },
+];
+
+export function registerRunServiceActions(): () => void {
+  return registerActions(
+    SERVICE_ACTIONS.map(({ id, action, title, icon }) => ({
+      id: action,
+      title,
+      icon,
+      category: "Run",
+      hidden: true,
+      run: async ({ arg }) => {
+        if (typeof arg !== "string" || (!arg.startsWith(TYPE_PREFIX) && !arg.startsWith(CONFIG_PREFIX))) return;
+        const action = itemActions({ key: arg, label: "", icon: "" }).find((a) => a.id === id);
+        if (action && !action.disabled) await action.run();
+      },
+    })),
+  );
+}
+
+function actions(item: ServiceTreeItem): ServiceItemAction[] {
+  return itemActions(item).map((entry) => {
+    const action = SERVICE_ACTIONS.find((a) => a.id === entry.id);
+    return action
+      ? {
+          ...entry,
+          run: async () => {
+            await executeAction(action.action, item.key);
+          },
+        }
+      : entry;
+  });
 }
 
 function menu(item: ServiceTreeItem): MenuItem[] {
