@@ -18,6 +18,7 @@ import {
 } from "@/workbench/contributions";
 import { SQL_LANGUAGE, consoleExtension, executeInView, explainInView } from "./console";
 import { DatabaseDialogs } from "./Dialogs";
+import { phpSqlExtension } from "./phpSql";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
@@ -61,6 +62,7 @@ export function activate(): () => void {
     }),
     registerOverlay({ id: "database.dialogs", component: DatabaseDialogs }),
     registerEditorContribution({ id: "database.console", order: 57, extensions: consoleExtension }),
+    registerEditorContribution({ id: "database.php-sql", order: 57, extensions: phpSqlExtension }),
     // A reopened project starts with a fresh backend: forget the old one's state.
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;

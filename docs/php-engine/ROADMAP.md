@@ -481,7 +481,7 @@ The design:
 - [x] Phase 7.4: Blade
       Add a `blade` language. Highlight directives and echo statements, and treat the PHP inside directives and `{{ }}` as embedded PHP using the engine's analysis. Add goto for `@include` and `@extends` views and components. Tests: unit tests.
 
-- [ ] Phase 7.5: SQL in strings
+- [x] Phase 7.5: SQL in strings
       Highlight SQL inside PHP strings recognised by a heuristic or a `/** @lang SQL */` comment, with completion against the connected `ide-db` data source when there is one. Tests: unit tests.
 
 - [ ] Phase 7.6: PHPStan and Psalm diagnostics

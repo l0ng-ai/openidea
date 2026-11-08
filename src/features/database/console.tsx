@@ -358,12 +358,12 @@ const ICONS: Record<CandidateKind, string | null> = {
   type: null,
 };
 
-function iconOf(c: SqlCandidate): string | null {
+export function iconOf(c: SqlCandidate): string | null {
   if (c.kind !== "column") return ICONS[c.kind];
   return c.primaryKey ? "db-column-key" : c.foreignKey ? "db-column-fk" : "db-column";
 }
 
-function docNode(text: string): Node {
+export function docNode(text: string): Node {
   const pre = document.createElement("pre");
   pre.className = "cm-openidea-db-doc";
   pre.textContent = text;

@@ -115,6 +115,21 @@ const OWN_MODES = [
   }),
   LanguageDescription.of({ name: "JSP", load: () => import("./jsp").then((m) => m.jsp()) }),
   LanguageDescription.of({
+    name: "PHP",
+    extensions: ["php", "php3", "php4", "php5", "php7", "phtml"],
+    // The stock mode with SQL highlighted in SQL strings (`phpSql.ts`).
+    load: async () => {
+      const find = (name: string) => languageData.find((l) => l.name === name)!;
+      const [php, sql, { htmlLanguage }, { phpWithSql }] = await Promise.all([
+        find("PHP").load(),
+        find("MySQL").load(),
+        import("@codemirror/lang-html"),
+        import("./phpSql"),
+      ]);
+      return phpWithSql(php, sql.language.parser, htmlLanguage.parser);
+    },
+  }),
+  LanguageDescription.of({
     name: "Blade",
     alias: ["blade"],
     extensions: ["blade.php"],
