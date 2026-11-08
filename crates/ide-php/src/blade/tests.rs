@@ -98,7 +98,7 @@ fn compile_writes_php_structures() {
 use App\\Models\\User as Account;
 /** @var \\Illuminate\\Support\\ViewErrorBag $errors */
 $errors = null;
-['layouts.app'];
+__blade_extends('layouts.app');
 foreach ($users as $user) {
 /** @var \\stdClass $loop */
 $loop = null;

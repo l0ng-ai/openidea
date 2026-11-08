@@ -19,7 +19,7 @@ use super::{NodeKind, parse, string_args};
 use crate::syntax::LineIndex;
 
 /// The directives whose string arguments name views.
-const VIEW_DIRECTIVES: &[&str] = &[
+pub const VIEW_DIRECTIVES: &[&str] = &[
     "component",
     "componentFirst",
     "each",

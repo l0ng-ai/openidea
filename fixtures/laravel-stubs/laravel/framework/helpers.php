@@ -26,6 +26,8 @@ function __($key = null, $replace = [], $locale = null) { return null; }
 
 function view($view = null, $data = [], $mergeData = []): \Illuminate\Contracts\View\View { return new \Illuminate\View\View(); }
 
+function response($content = null, $status = 200, array $headers = []): \Illuminate\Routing\ResponseFactory { return new \Illuminate\Routing\ResponseFactory(); }
+
 function route($name, $parameters = [], $absolute = true): string { return ''; }
 
 function redirect($to = null, $status = 302, $headers = [], $secure = null): \Illuminate\Routing\Redirector { return new \Illuminate\Routing\Redirector(); }

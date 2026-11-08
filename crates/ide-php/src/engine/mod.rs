@@ -54,7 +54,7 @@ use ide_core::settings::LaravelSettings;
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::frameworks::laravel::{ConfigKeys, LaravelProject, RouteTable};
+use crate::frameworks::laravel::{ConfigKeys, LaravelProject, RouteTable, ViewTable};
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
 use crate::inspect::{InspectionConfig, Inspections};
@@ -192,9 +192,16 @@ struct Shared {
     laravel_config: Mutex<Option<(u64, Arc<ConfigKeys>)>>,
     /// The Laravel routes, for a modification count.
     laravel_routes: Mutex<Option<(u64, Arc<RouteTable>)>>,
+    /// The Laravel views, for a modification count.
+    laravel_views: Mutex<Option<(u64, Arc<ViewTable>)>>,
+    /// The variables passed to each view file, for a modification count.
+    view_variables: Mutex<ViewVariables>,
     /// What Laravel support shows (Settings › PHP › Laravel).
     laravel_settings: Mutex<LaravelSettings>,
 }
+
+/// The variables passed to view files: by file, for a modification count.
+type ViewVariables = HashMap<PathBuf, (u64, Arc<Vec<(String, String)>>)>;
 
 /// The Laravel project model: what [`LaravelProject::load`] read (`None`:
 /// not read yet), and the model with its route files for a modification
@@ -241,6 +248,8 @@ impl PhpEngine {
             laravel: Mutex::new(LaravelCache::default()),
             laravel_config: Mutex::new(None),
             laravel_routes: Mutex::new(None),
+            laravel_views: Mutex::new(None),
+            view_variables: Mutex::new(HashMap::new()),
             laravel_settings: Mutex::new(LaravelSettings::default()),
         });
         let worker = shared.clone();
@@ -594,6 +603,31 @@ impl PhpEngine {
         }));
         *self.shared.laravel_routes.lock() = Some((modification, routes.clone()));
         Some(routes)
+    }
+
+    /// The views of the Laravel project (`resources/views`, the modules'
+    /// and the registered namespaces' folders), or `None` when the project
+    /// isn't a Laravel project. Read again when the modification count
+    /// moves.
+    pub fn laravel_views(&self) -> Option<Arc<ViewTable>> {
+        let modification = self.modification_count();
+        if let Some((at, views)) = &*self.shared.laravel_views.lock()
+            && *at == modification
+        {
+            return Some(views.clone());
+        }
+        let project = self.laravel()?;
+        let views = Arc::new(ViewTable::read(&project, |path| match self.open_document(path) {
+            Some(document) if !document.embedded => Some(document.text.to_string()),
+            _ => std::fs::read_to_string(path).ok(),
+        }));
+        *self.shared.laravel_views.lock() = Some((modification, views.clone()));
+        Some(views)
+    }
+
+    /// The cache of [`PhpEngine::laravel_view_variables`].
+    pub(crate) fn view_variables_cache(&self) -> &Mutex<ViewVariables> {
+        &self.shared.view_variables
     }
 
     /// What Laravel support shows.

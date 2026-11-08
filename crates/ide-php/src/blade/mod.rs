@@ -429,9 +429,21 @@ pub(crate) fn string_args(text: &str, code: &Span<u32>) -> Vec<(String, Span<u32
     found
 }
 
+/// The prefix of the function a view directive compiles to:
+/// `@include('a', [...])` is `__blade_include('a', [...]);`, so the view
+/// name is a string argument of a call (the `viewName` string reference)
+/// and the data array is typed like any other.
+pub const VIEW_CALL_PREFIX: &str = "__blade_";
+
 /// Compiles `text` to PHP. `component`: the template is a component view
 /// (below `views/components/`), so `$attributes` and `$slot` are defined.
 pub fn compile(text: &str, component: bool) -> Compiled {
+    compile_with(text, component, &[])
+}
+
+/// [`compile`], with `variables` (`(name, type)`, the variables the view's
+/// callers pass it) declared at the top.
+pub fn compile_with(text: &str, component: bool, variables: &[(String, String)]) -> Compiled {
     let nodes = parse(text);
     let mut out = Out { text, php: String::from("<?php\n"), segments: Vec::new() };
 
@@ -452,13 +464,18 @@ pub fn compile(text: &str, component: bool) -> Compiled {
             }
         }
     }
-    let mut variables = vec![("\\Illuminate\\Support\\ViewErrorBag", "errors")];
+    let mut defined = vec![("\\Illuminate\\Support\\ViewErrorBag", "errors")];
     if component {
-        variables.push(("\\Illuminate\\View\\ComponentAttributeBag", "attributes"));
-        variables.push(("\\Illuminate\\View\\ComponentSlot", "slot"));
+        defined.push(("\\Illuminate\\View\\ComponentAttributeBag", "attributes"));
+        defined.push(("\\Illuminate\\View\\ComponentSlot", "slot"));
     }
-    for (class, name) in variables {
+    for (class, name) in &defined {
         out.push(&format!("/** @var {class} ${name} */\n${name} = null;\n"));
+    }
+    for (name, ty) in variables {
+        if is_identifier(name) && name != "this" && !defined.iter().any(|(_, known)| known == name) {
+            out.push(&format!("/** @var {ty} ${name} */\n${name} = null;\n"));
+        }
     }
 
     let mut blocks: Vec<Block> = Vec::new();
@@ -585,6 +602,14 @@ fn directive(out: &mut Out, blocks: &mut Vec<Block>, name: &str, code: Option<&S
             }
         }
         "use" => {}
+        _ if views::VIEW_DIRECTIVES.contains(&name) && code.is_some() => {
+            out.push(&format!("{VIEW_CALL_PREFIX}{name}("));
+            out.code_or(code, "");
+            out.push(
+                ");
+",
+            );
+        }
         _ => generic(out),
     }
 }

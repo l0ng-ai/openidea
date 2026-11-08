@@ -87,6 +87,7 @@ namespace Illuminate\Support {
         /** @var \Illuminate\Foundation\Application */
         protected $app;
         public function register(): void {}
+        protected function loadViewsFrom($path, $namespace): void {}
     }
 }
 
@@ -158,6 +159,16 @@ namespace Illuminate\Support\Facades {
      */
     class Schedule extends Facade {
         protected static function getFacadeAccessor() { return \Illuminate\Console\Scheduling\Schedule::class; }
+    }
+    /**
+     * @method static \Illuminate\Contracts\View\View make(string $view, array $data = [], array $mergeData = [])
+     * @method static bool exists(string $view)
+     * @method static \Illuminate\Contracts\View\View first(array $views, array $data = [], array $mergeData = [])
+     * @method static array composer(array|string $views, \Closure|string $callback)
+     * @method static void addNamespace(string $namespace, string|array $hints)
+     */
+    class View extends Facade {
+        protected static function getFacadeAccessor() { return 'view'; }
     }
 }
 
@@ -242,6 +253,7 @@ namespace Illuminate\Http {
         /** @return mixed */
         public function user($guard = null) { return null; }
     }
+    class Response extends \Symfony\Component\HttpFoundation\Response {}
     class RedirectResponse extends \Symfony\Component\HttpFoundation\Response {
         public function with($key, $value = null): static { return $this; }
     }
@@ -267,13 +279,55 @@ namespace Illuminate\Validation\Rules {
 }
 
 namespace Illuminate\Contracts\View {
-    interface View {}
+    interface View {
+        public function with($key, $value = null): static;
+    }
+    interface Factory {
+        public function make($view, $data = [], $mergeData = []): View;
+        public function exists($view): bool;
+    }
 }
 
 namespace Illuminate\View {
-    class View implements \Illuminate\Contracts\View\View {}
+    class View implements \Illuminate\Contracts\View\View {
+        public function with($key, $value = null): static { return $this; }
+    }
+    class Factory implements \Illuminate\Contracts\View\Factory {
+        public function make($view, $data = [], $mergeData = []): \Illuminate\Contracts\View\View { return new View(); }
+        public function exists($view): bool { return false; }
+        public function first(array $views, $data = [], $mergeData = []): \Illuminate\Contracts\View\View { return new View(); }
+        public function addNamespace($namespace, $hints): static { return $this; }
+    }
     abstract class Component {
         abstract public function render();
+    }
+}
+
+namespace Illuminate\Mail {
+    class Mailable {
+        public function view($view, array $data = []): static { return $this; }
+        public function markdown($view, array $data = []): static { return $this; }
+        public function text($textView, array $data = []): static { return $this; }
+        public function with($key, $value = null): static { return $this; }
+    }
+}
+
+namespace Illuminate\Mail\Mailables {
+    class Content {
+        public function __construct(
+            ?string $view = null,
+            ?string $html = null,
+            ?string $text = null,
+            ?string $markdown = null,
+            array $with = [],
+            ?string $htmlString = null,
+        ) {}
+    }
+}
+
+namespace Illuminate\Routing {
+    class ResponseFactory {
+        public function view($view, $data = [], $status = 200, array $headers = []): \Illuminate\Http\Response { return new \Illuminate\Http\Response(); }
     }
 }
 

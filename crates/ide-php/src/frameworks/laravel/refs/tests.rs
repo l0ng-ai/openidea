@@ -406,3 +406,6 @@ fn kinds_validate_values() {
 
 #[path = "route_tests.rs"]
 mod route_tests;
+
+#[path = "view_tests.rs"]
+mod view_tests;

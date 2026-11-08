@@ -2,7 +2,9 @@
 //! completion of directive names, goto definition of the views and
 //! components a view names (`@include('a.b')`, `<x-alert>`), and, while the
 //! native PHP engine runs, completion, hover, signature help and goto
-//! definition in the PHP of echoes, directives and PHP blocks. The engine
+//! definition in the PHP of echoes, directives and PHP blocks; in a Laravel
+//! project, Find Usages of a view (the one named at the caret, else the
+//! view itself) in PHP files and templates. The engine
 //! holds the PHP compiled from the open view as an embedded document under
 //! the view's id; `PhpObserver` drops it when the view closes.
 
@@ -11,10 +13,10 @@ use std::sync::Arc;
 
 use ide_core::{CancellationToken, DocId, Location, Pos};
 use ide_lsp::types::{
-    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, Signature, SignatureHelp,
+    CompletionItem, CompletionKind, CompletionList, GotoKind, Hover, Markup, References, Signature, SignatureHelp,
 };
-use ide_php::blade::views::{ViewPaths, goto_view};
-use ide_php::blade::{BladeDocument, DIRECTIVES, directive_prefix};
+use ide_php::blade::views::{ViewPaths, ViewRef, goto_view, view_ref_at};
+use ide_php::blade::{BladeDocument, DIRECTIVES, compile, directive_prefix};
 use ide_php::complete::CompletionData;
 use ide_workspace::{DocumentInfo, Documents};
 
@@ -109,6 +111,37 @@ impl LanguageService for BladeService {
             }
         });
         Some(Ok(help))
+    }
+
+    /// The usages of the view named at the caret (`@include('a.b')`), or,
+    /// outside the template's PHP, of the template's own view. Left to the
+    /// other services inside the PHP and outside Laravel projects.
+    fn references(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        include_declaration: bool,
+        _project_wide: bool,
+        cancel: &CancellationToken,
+    ) -> Answer<References> {
+        let info = self.info(doc)?;
+        let engine = self.php.engine()?;
+        let name = match view_ref_at(&info.text, pos) {
+            Some((ViewRef::View(name), _)) => name,
+            Some(_) => return None,
+            None if compile(&info.text, false).to_php(pos).is_some() => return None,
+            None => engine.laravel_view_name(&info.path)?,
+        };
+        let usages = match engine.laravel_view_usages(&name, cancel)? {
+            Ok(usages) => usages,
+            Err(e) => return Some(Err(e)),
+        };
+        let mut locations = Vec::new();
+        if include_declaration && let Some(view) = engine.laravel_views().and_then(|views| views.get(&name).cloned()) {
+            locations.push(Location::file(view.path, Default::default()));
+        }
+        locations.extend(usages.into_iter().map(|usage| Location::file(usage.path, usage.range)));
+        Some(Ok(References { locations, ..References::default() }))
     }
 
     /// The views and components the view names, else the PHP's targets.
@@ -231,6 +264,46 @@ mod tests {
         let targets = service.goto(doc, Pos::new(1, 8), GotoKind::Definition).unwrap().unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].path.as_ref() as &Path, root.join("app").join("helpers.php").as_path());
+        php.shutdown();
+    }
+
+    #[test]
+    fn finds_usages_of_views_from_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        write("composer.json", r#"{"require": {"laravel/framework": "^11.0"}}"#);
+        let controller = write("app/Home.php", "<?php\nfunction home() { return view('pages.card'); }\n");
+        let card = write("resources/views/pages/card.blade.php", "<p>{{ $title }}</p>\n");
+        let list = write("resources/views/pages/list.blade.php", "<ul>\n@include('pages.card')\n</ul>\n");
+        let documents = documents();
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let php = Arc::new(PhpEngineSlot::new(&root, &root.join(".cache"), sink, documents.clone()));
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.php.engine = ide_core::settings::PhpEngineKind::Native;
+        php.apply(&settings);
+        let engine = php.engine().expect("the engine");
+        assert!(engine.wait_idle(std::time::Duration::from_secs(60)));
+        let service = BladeService::new(&root, documents.clone(), php.clone());
+        let cancel = CancellationToken::new();
+        let found = |doc: DocId, pos: Pos| -> Vec<(PathBuf, u32)> {
+            let refs = service.references(doc, pos, true, true, &cancel).unwrap().unwrap();
+            refs.locations.into_iter().map(|l| (PathBuf::from(l.path.clone()), l.range.start.line)).collect()
+        };
+
+        // On the template's HTML: the usages of the template's own view.
+        let doc = documents.open(&card).unwrap().id;
+        assert_eq!(found(doc, Pos::new(0, 1)), [(card.clone(), 0), (controller.clone(), 1), (list.clone(), 1)]);
+        // In its PHP: left to the PHP services.
+        assert!(service.references(doc, Pos::new(0, 8), true, true, &cancel).is_none());
+        // On a view name in a directive.
+        let doc = documents.open(&list).unwrap().id;
+        assert_eq!(found(doc, Pos::new(1, 12)), [(card, 0), (controller, 1), (list, 1)]);
         php.shutdown();
     }
 }

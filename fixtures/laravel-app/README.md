@@ -16,6 +16,9 @@ manual QA, do the same or run `composer install` on a copy.
 - `crates/ide-php/src/frameworks/laravel/tests.rs` (`the_fixture_app_model`) checks the
   Laravel project model: version, app namespace, route files with their prefixes, name
   prefixes and middleware, and the module.
+- `crates/ide-php/src/frameworks/laravel/refs/route_tests.rs` and `view_tests.rs` check
+  route names, controller actions, middleware and view names (completion, goto, usages,
+  rename, the undefined route and view inspections, the variables passed to views).
 - `crates/ide-host/tests/language_smoke.rs` (`laravel`) checks hover and completion on a
   model attribute through the app's `ops`.
 
@@ -34,7 +37,7 @@ manual QA, do the same or run `composer install` on a copy.
 | `routes/api.php`                                            | the `api` route file (prefix from `withRouting`)                                                                   |
 | `routes/admin.php`                                          | a route file loaded with prefix `admin`, name prefix `admin.` and `web`/`auth` middleware                          |
 | `routes/console.php`                                        | `Artisan::command` closure command, `Schedule::command`                                                            |
-| `Modules/Billing/*`, `modules_statuses.json`                | an nwidart module (`module.json`, enabled): its `RouteServiceProvider` loads `Routes/web.php` and `Routes/api.php` through `module_path()` with prefixes and name prefixes |
+| `Modules/Billing/*`, `modules_statuses.json`                | an nwidart module (`module.json`, enabled): its `RouteServiceProvider` loads `Routes/web.php` and `Routes/api.php` through `module_path()` with prefixes and name prefixes, and its views (`resources/views`, the `billing::` view namespace) |
 | `app/Models/Post.php`                                       | `$casts` (enum, `datetime`, `array`), relations (`belongsTo`, `hasMany`, `belongsToMany`), a local scope, an `Attribute` accessor, `SoftDeletes` |
 | `app/Models/User.php`                                       | `casts()` method, `Authenticatable`, relations with a custom foreign key                                           |
 | `app/Models/Comment.php`, `Tag.php`                         | more relations, `$timestamps = false`                                                                              |

@@ -206,6 +206,13 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description:
       "Reports Symfony route names passed to path(), url(), generateUrl(), redirectToRoute() or a URL generator's generate() that no #[Route] attribute or config/routes*.yaml file defines.",
   },
+  {
+    code: "PhpUndefinedView",
+    name: "Undefined view",
+    group: "Frameworks",
+    description:
+      "Reports Laravel view names passed to view(), View::make(), Route::view(), response()->view() or a mailable's view() or markdown() that no view file has. The quick-fix creates the Blade template.",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionId(i.code), i]));

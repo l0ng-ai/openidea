@@ -537,7 +537,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Add a Route Search dialog (search everywhere scope "Routes", by name or URI part). Add a setting to turn the hints off. User-visible text goes in `en.json` and `zh.json`. Tests: engine unit tests for the route table, and frontend tests for the dialog.
 
-- [ ] Phase 8.6: Views
+- [x] Phase 8.6: Views
       Add the `viewName` kind:
   - `view()`, `View::make`, `Route::view`, `@include`/`@extends`/`@each`, `return view(...)`, `markdown()` in mailables, namespaced views (`pkg::name`)
   - completion as a path tree, goto to the file, find usages from a view file, rename (moves the file and updates the strings), and an "undefined view" inspection with a "Create view" quick-fix

@@ -21,7 +21,7 @@ fn copy_dir(from: &Path, to: &Path) {
 
 impl Project {
     /// The fixture app with the stubs as its `vendor/`.
-    fn app() -> Self {
+    pub(super) fn app() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(tmp.path()).unwrap();
         let root = base.join("project");
@@ -54,14 +54,14 @@ impl Project {
         kind
     }
 
-    fn complete_in(&mut self, rel: &str, source: &str) -> Vec<String> {
+    pub(super) fn complete_in(&mut self, rel: &str, source: &str) -> Vec<String> {
         let (doc, pos) = self.open(rel, source);
         let found = self.engine.completion(doc, pos, None, &CancellationToken::new()).unwrap();
         self.engine.document_closed(doc);
         found.items.into_iter().map(|item| item.label).collect()
     }
 
-    fn definition_in(&mut self, rel: &str, source: &str) -> Vec<(String, u32, String)> {
+    pub(super) fn definition_in(&mut self, rel: &str, source: &str) -> Vec<(String, u32, String)> {
         let (doc, pos) = self.open(rel, source);
         let found = self.engine.definition(doc, pos).unwrap_or_default();
         self.engine.document_closed(doc);
@@ -297,13 +297,27 @@ fn finds_usages_of_route_names_and_controller_methods() {
         [
             ("app/Http/Controllers/Api/PostController.php".to_owned(), 14, "posts.show".to_owned(), UsageKind::String),
             ("app/Http/Controllers/PostController.php".to_owned(), 36, "posts.show".to_owned(), UsageKind::String),
+            // In templates too.
+            ("resources/views/posts/_card.blade.php".to_owned(), 1, "posts.show".to_owned(), UsageKind::String),
+            ("resources/views/posts/_card.blade.php".to_owned(), 4, "posts.show".to_owned(), UsageKind::String),
             ("routes/web.php".to_owned(), 10, "posts".to_owned(), UsageKind::Declaration),
         ]
     );
     // From the declaration, in the route file.
     let source = project.edited("routes/web.php", "->name('posts.store')", "->name('posts.st/*|*/ore')");
     let found = project.references("routes/web.php", &source);
-    assert_eq!(found, [("routes/web.php".to_owned(), 14, "posts.store".to_owned(), UsageKind::Declaration)]);
+    assert_eq!(
+        found,
+        [
+            (
+                "resources/views/posts/create.blade.php".to_owned(),
+                5,
+                "dashboard.posts.store".to_owned(),
+                UsageKind::String
+            ),
+            ("routes/web.php".to_owned(), 14, "posts.store".to_owned(), UsageKind::Declaration),
+        ]
+    );
 
     // A controller method's usages include the routes naming it.
     let source = std::fs::read_to_string(project.root.join("app/Http/Controllers/PostController.php"))
@@ -358,7 +372,14 @@ fn renames_a_route_name_in_its_route_file_and_callers() {
     // From the declaration.
     let source = project.edited("routes/web.php", "->name('posts.store')", "->name('posts.st/*|*/ore')");
     let edits = project.rename("routes/web.php", &source, "posts.save");
-    assert_eq!(edits, [("routes/web.php".to_owned(), 14, "posts.store".to_owned())]);
+    assert_eq!(
+        edits,
+        [
+            // `route('dashboard.posts.store')` in a template.
+            ("resources/views/posts/create.blade.php".to_owned(), 5, "posts.store".to_owned()),
+            ("routes/web.php".to_owned(), 14, "posts.store".to_owned()),
+        ]
+    );
     // A resource's names aren't renamed one by one.
     let (doc, pos) = project.open("app/Http/Probe.php", "<?php\nroute('posts.in/*|*/dex');\n");
     assert_eq!(project.engine.prepare_rename(doc, pos), Some(None));
@@ -396,7 +417,7 @@ fn route_kinds_validate_values() {
 
 impl Project {
     /// Opens the app's file `rel` as it is on disk.
-    fn open_file(&mut self, rel: &str) -> DocId {
+    pub(super) fn open_file(&mut self, rel: &str) -> DocId {
         let text = std::fs::read_to_string(self.root.join(rel)).unwrap().replace("\r\n", "\n");
         let doc = DocId(self.next_doc);
         self.next_doc += 1;

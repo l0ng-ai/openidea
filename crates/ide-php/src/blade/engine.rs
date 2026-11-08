@@ -8,7 +8,7 @@ use std::path::Path;
 use ide_core::{CancellationToken, DocId, Pos};
 
 use super::views::ViewPaths;
-use super::{Compiled, compile};
+use super::{Compiled, compile_with};
 use crate::complete::{CompletionData, Completions};
 use crate::engine::PhpEngine;
 use crate::navigate::{HoverInfo, Target};
@@ -25,10 +25,13 @@ pub struct BladeDocument<'a> {
 
 impl PhpEngine {
     /// Compiles the template and holds its PHP as the embedded document of
-    /// `blade.doc`.
+    /// `blade.doc`. In a Laravel project, the variables the view's callers
+    /// pass it are declared with their types
+    /// ([`PhpEngine::laravel_view_variables`]).
     pub fn blade_sync(&self, blade: &BladeDocument) -> Compiled {
         let component = ViewPaths::new(&self.root()).is_component_view(blade.path);
-        let compiled = compile(blade.text, component);
+        let variables = self.laravel_view_variables(blade.path);
+        let compiled = compile_with(blade.text, component, &variables);
         self.embedded_document(blade.doc, blade.path, blade.version, &compiled.php);
         compiled
     }

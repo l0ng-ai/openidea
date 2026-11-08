@@ -391,6 +391,7 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpLanguageLevel",
             "PhpDeprecation",
             "PhpUndefinedRoute",
+            "PhpUndefinedView",
         ]
     );
 }

@@ -11,7 +11,8 @@
 //! string names and supplies completion items, targets, usages, rename and
 //! validation. Kinds are listed in [`kinds`]: `configKey` ([`config_key`]),
 //! `routeName` ([`route_name`]), `controllerAction` and `resourceAction`
-//! ([`controller_action`]) and `middleware` ([`middleware`]).
+//! ([`controller_action`]), `middleware` ([`middleware`]) and `viewName`
+//! ([`view_name`]).
 //!
 //! A kind sees the string's site ([`SiteInfo`]): its file, and the class it
 //! is about (the `Foo::class` before it in its array, or the controller of
@@ -24,7 +25,9 @@
 //! probe string in its place (as completion does), so a partial string
 //! (`config('app.na`) works too. Find usages goes through the word index
 //! (the words of the value and the kind's words) and checks each candidate
-//! string against the patterns again.
+//! string against the patterns again. Blade templates are compiled first
+//! ([`crate::blade::compile`]), so the strings of their directives and echoes
+//! count too, at their places in the template.
 //!
 //! Everything is off unless the project is a Laravel project
 //! ([`PhpEngine::laravel`]).
@@ -35,6 +38,7 @@ pub mod middleware;
 pub mod route_name;
 #[cfg(test)]
 mod tests;
+pub mod view_name;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -63,6 +67,7 @@ pub use config_key::ConfigKey;
 pub use controller_action::{ControllerAction, ResourceAction};
 pub use middleware::Middleware;
 pub use route_name::RouteName;
+pub use view_name::ViewName;
 
 // --------------------------------------------------------------- patterns
 
@@ -214,6 +219,8 @@ const HELPER_INSTANCES: &[(&str, &str)] = &[
     ("config", "Illuminate\\Config\\Repository"),
     ("redirect", "Illuminate\\Routing\\Redirector"),
     ("url", "Illuminate\\Routing\\UrlGenerator"),
+    ("response", "Illuminate\\Routing\\ResponseFactory"),
+    ("view", "Illuminate\\View\\Factory"),
 ];
 
 /// A string literal argument before its call is resolved.
@@ -573,6 +580,12 @@ pub trait ReferenceKind: Send + Sync {
         value == key
     }
 
+    /// The files a rename of `key` moves, `new_value` being `key` with its
+    /// rename range replaced (a view's file).
+    fn rename_files(&self, _cx: &RefContext<'_>, _key: &str, _new_value: &str) -> Vec<FileEdit> {
+        Vec::new()
+    }
+
     /// Whether `name` can be the new name of a rename.
     fn valid_name(&self, name: &str) -> bool {
         !name.is_empty() && !name.contains(['\'', '"', '\\'])
@@ -594,7 +607,7 @@ pub struct Declared {
 
 /// The built-in kinds.
 pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
-    &[&ConfigKey, &RouteName, &ControllerAction, &ResourceAction, &Middleware]
+    &[&ConfigKey, &RouteName, &ControllerAction, &ResourceAction, &Middleware, &ViewName]
 }
 
 /// The kind whose patterns `site` matches.
@@ -886,6 +899,8 @@ impl PhpEngine {
         for (path, edits) in files {
             edit.files.push(FileEdit::Edit { path: path.into(), edits, version: None });
         }
+        let new_value = format!("{}{new_name}{}", &key[..target.range.0], &key[target.range.1..]);
+        edit.files.extend(kind.rename_files(&cx, &key, &new_value));
         Some(Ok(edit))
     }
 
@@ -930,6 +945,70 @@ impl PhpEngine {
         keep: &dyn Fn(&str) -> bool,
         cancel: &CancellationToken,
     ) -> IdeResult<Vec<FoundSite>> {
+        let candidates = self.usage_candidates(kind, key)?;
+        let open: Vec<_> = self.open_documents().into_iter().filter(|document| !document.embedded).collect();
+        let text = kind.usage_text(key);
+        let resolver = self.resolver();
+        let mut out = Vec::new();
+        for path in candidates {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let Some(file) = self.usage_file(&path, &open, text) else { continue };
+            for site in sites(&file.parsed, &resolver, &[kind], None) {
+                if !kind.patterns().iter().any(|pattern| pattern.matches(&site, &resolver)) {
+                    continue;
+                }
+                let Some(cx) = self.site_context(&path, &site) else { continue };
+                if !keep(&kind.canonical(&cx, &site.value)) {
+                    continue;
+                }
+                let Some((start, end)) = file.to_source(site.start, site.end) else { continue };
+                let range = file.lines.range(start, end);
+                out.push(FoundSite { path: path.clone(), range, start, lines: file.lines.clone() });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The candidate file `path` of a usage search for text `text`: the
+    /// parse of its open buffer or of the file on disk (a Blade template
+    /// compiled first). `None` for a library file or one without `text`.
+    fn usage_file(&self, path: &Path, open: &[crate::engine::OpenDocument], text: &str) -> Option<UsageFile> {
+        if self.is_library(path) {
+            return None;
+        }
+        if crate::frameworks::laravel::views::is_blade(path) {
+            let source = std::fs::read_to_string(path).ok()?.replace("\r\n", "\n");
+            if !source.contains(text) {
+                return None;
+            }
+            let component = crate::blade::views::ViewPaths::new(&self.root()).is_component_view(path);
+            let compiled = crate::blade::compile(&source, component);
+            let parsed = Arc::new(ParsedFile::parse("usages.php", compiled.php.as_str()));
+            let lines = Arc::new(crate::syntax::LineIndex::new(&source));
+            return Some(UsageFile { parsed, lines, compiled: Some(compiled) });
+        }
+        let parsed = match open.iter().find(|document| document.path == path) {
+            Some(document) => self.parse_open(document),
+            None => {
+                let source = std::fs::read_to_string(path).ok()?;
+                if !source.contains(text) {
+                    return None;
+                }
+                Arc::new(ParsedFile::parse("usages.php", source))
+            }
+        };
+        if !parsed.text().contains(text) {
+            return None;
+        }
+        let lines = Arc::new(parsed.line_index().clone());
+        Some(UsageFile { parsed, lines, compiled: None })
+    }
+
+    /// The files [`string_usages`](Self::string_usages) looks at for `key`
+    /// of `kind`: the indexed files with every word, and the open documents.
+    fn usage_candidates(&self, kind: &'static dyn ReferenceKind, key: &str) -> IdeResult<Vec<PathBuf>> {
         let mut candidates: Vec<PathBuf> = Vec::new();
         if let Some(index) = self.index() {
             let mut words = kind.usage_words(key);
@@ -945,51 +1024,114 @@ impl PhpEngine {
             }
             candidates.extend(found.unwrap_or_default());
         }
-        let open: Vec<_> = self.open_documents().into_iter().filter(|document| !document.embedded).collect();
-        for document in &open {
+        for document in self.open_documents().into_iter().filter(|document| !document.embedded) {
             if !candidates.contains(&document.path) {
                 candidates.push(document.path.clone());
             }
         }
         candidates.sort();
-        let text = kind.usage_text(key);
-        let resolver = self.resolver();
-        let library = |path: &Path| self.is_library(path);
-        let mut out = Vec::new();
-        for path in candidates {
-            if cancel.is_cancelled() {
-                return Err(IdeError::cancelled());
-            }
-            if library(&path) {
-                continue;
-            }
-            let parsed = match open.iter().find(|document| document.path == path) {
-                Some(document) => self.parse_open(document),
-                None => {
-                    let Ok(source) = std::fs::read_to_string(&path) else { continue };
-                    if !source.contains(text) {
-                        continue;
-                    }
-                    Arc::new(ParsedFile::parse("usages.php", source))
-                }
-            };
-            if !parsed.text().contains(text) {
-                continue;
-            }
-            let lines = Arc::new(parsed.line_index().clone());
-            for site in sites(&parsed, &resolver, &[kind], None) {
-                if !kind.patterns().iter().any(|pattern| pattern.matches(&site, &resolver)) {
-                    continue;
-                }
-                let Some(cx) = self.site_context(&path, &site) else { continue };
-                if !keep(&kind.canonical(&cx, &site.value)) {
-                    continue;
-                }
-                let range = lines.range(site.start, site.end);
-                out.push(FoundSite { path: path.clone(), range, start: site.start, lines: lines.clone() });
-            }
+        Ok(candidates)
+    }
+
+    /// The views of the Laravel project with the name of the view file
+    /// `path` (`posts.index`), when it is one.
+    pub fn laravel_view_name(&self, path: &Path) -> Option<String> {
+        self.laravel_views()?.name_of(path)
+    }
+
+    /// The usages of view `name` (`view('posts.index')`, `@include(…)`, …)
+    /// in the project. `None` outside Laravel projects.
+    pub fn laravel_view_usages(&self, name: &str, cancel: &CancellationToken) -> Option<IdeResult<Vec<Usage>>> {
+        self.ref_context()?;
+        let key = crate::frameworks::laravel::views::normalize_name(name);
+        let found = self.string_usages(&ViewName, &key, &|value| value == key, cancel);
+        Some(found.map(|sites| {
+            let mut usages: Vec<Usage> = sites
+                .into_iter()
+                .map(|site| Usage { path: site.path, range: site.range, kind: UsageKind::String })
+                .collect();
+            usages.sort_by(|a, b| (&a.path, a.range.start).cmp(&(&b.path, b.range.start)));
+            usages.dedup();
+            usages
+        }))
+    }
+
+    /// The variables the callers of the view file `path` pass it (`(name,
+    /// type)`, sorted by name; the types of one name joined), for the Blade
+    /// compiler. Empty outside Laravel projects and for other files.
+    pub fn laravel_view_variables(&self, path: &Path) -> Arc<Vec<(String, String)>> {
+        let modification = self.modification_count();
+        let path = crate::project::normalize(path);
+        if let Some(found) = self.view_variables_cache().lock().get(&path).filter(|(at, _)| *at == modification) {
+            return found.1.clone();
         }
-        Ok(out)
+        let found = Arc::new(self.view_variables_uncached(&path).unwrap_or_default());
+        self.view_variables_cache().lock().insert(path, (modification, found.clone()));
+        found
+    }
+
+    fn view_variables_uncached(&self, path: &Path) -> Option<Vec<(String, String)>> {
+        self.ref_context()?;
+        let name = self.laravel_view_name(path)?;
+        let kind: &'static dyn ReferenceKind = &ViewName;
+        let candidates = self.usage_candidates(kind, &name).ok()?;
+        let open: Vec<_> = self.open_documents().into_iter().filter(|document| !document.embedded).collect();
+        let resolver = self.resolver();
+        let mut passed: Vec<(String, Type)> = Vec::new();
+        for candidate in candidates {
+            let Some(file) = self.usage_file(&candidate, &open, kind.usage_text(&name)) else { continue };
+            let starts: Vec<u32> = sites(&file.parsed, &resolver, &[kind], None)
+                .into_iter()
+                .filter(|site| {
+                    kind.patterns().iter().any(|pattern| pattern.matches(site, &resolver))
+                        && crate::frameworks::laravel::views::normalize_name(&site.value) == name
+                })
+                .map(|site| site.start)
+                .collect();
+            if starts.is_empty() {
+                continue;
+            }
+            let file_names = FileNames::resolve(&file.parsed);
+            let summary = FileSummary::extract(&file.parsed);
+            let types = ExprTypes::new(&file.parsed, &file_names, &summary, &resolver);
+            passed.extend(crate::frameworks::laravel::views::passed_variables(&types, &file.parsed, &starts));
+        }
+        let mut names: Vec<String> = passed.iter().map(|(name, _)| name.clone()).collect();
+        names.sort();
+        names.dedup();
+        Some(
+            names
+                .into_iter()
+                .map(|name| {
+                    let known: Vec<Type> = passed
+                        .iter()
+                        .filter(|(passed, ty)| *passed == name && !matches!(ty, Type::Mixed))
+                        .map(|(_, ty)| ty.clone())
+                        .collect();
+                    let ty = if known.is_empty() { Type::Mixed } else { Type::union(known) };
+                    (name, ty.to_string())
+                })
+                .collect(),
+        )
+    }
+}
+
+/// A file a usage search parsed.
+struct UsageFile {
+    parsed: Arc<ParsedFile>,
+    /// The lines of the file's own text (the template's for a Blade one).
+    lines: Arc<crate::syntax::LineIndex>,
+    /// A Blade template's compiled PHP, which `parsed` is the parse of.
+    compiled: Option<crate::blade::Compiled>,
+}
+
+impl UsageFile {
+    /// The byte range in the file's own text of `start..end` of the parse.
+    fn to_source(&self, start: u32, end: u32) -> Option<(u32, u32)> {
+        match &self.compiled {
+            Some(compiled) => Some((compiled.blade_offset(start)?, compiled.blade_offset(end)?)),
+            None => Some((start, end)),
+        }
     }
 }
 
