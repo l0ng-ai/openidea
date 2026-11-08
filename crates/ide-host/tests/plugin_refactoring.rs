@@ -213,6 +213,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
             .unwrap();
     }
     native_rename_refusal(&host, &project, doc.id, &first, source).await;
+    code_identifier_rename(&host, &plugins, &root, &fixture).await;
     plugins.set_enabled("test.indexer", false).unwrap();
     plugins.set_enabled("test.duplicate", false).unwrap();
     assert!(plugins.indexed_symbol_at(&project.root, &first, Pos::new(0, 4), Some("main")).is_none());
@@ -391,4 +392,152 @@ async fn native_rename_refusal(
     for peer in peers.lock().drain(..) {
         peer.kill();
     }
+}
+
+async fn code_identifier_rename(host: &Host, plugins: &PluginHost, root: &Path, fixture: &Path) {
+    use ide_core::{FileEdit, Range};
+    use ide_jsonrpc::{Handler, Peer};
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let plugin = root.join("ruby-indexer");
+    std::fs::create_dir_all(plugin.join("dist")).unwrap();
+    std::fs::copy(fixture.join("dist/plugin.wasm"), plugin.join("dist/plugin.wasm")).unwrap();
+    std::fs::write(
+        plugin.join("plugin.toml"),
+        std::fs::read_to_string(fixture.join("plugin.toml"))
+            .unwrap()
+            .replace("test.indexer", "test.ruby")
+            .replace(r#"extensions = ["idx"]"#, r#"extensions = ["rb"]"#),
+    )
+    .unwrap();
+    plugins.install_from_dir(&plugin, &Consent::all()).unwrap();
+    let app = root.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    let source = "def order\nend\nref order\nref \"orders.index\"\n";
+    let used = "ref order\nref \"orders.index\"\n";
+    let model = app.join("order.rb");
+    let usage = app.join("orders_controller.rb");
+    std::fs::write(&model, source).unwrap();
+    std::fs::write(&usage, used).unwrap();
+    let project = host.open_light("ruby", &model).unwrap();
+    let doc = project.documents.open(dunce::simplified(&model)).unwrap();
+    for (path, text, version) in [(&model, source, Some(doc.version)), (&usage, used, None)] {
+        plugins
+            .index_navigation(
+                &project.root,
+                Snapshot { path, text, version, symbols: &[], scope: "app" },
+                Invocation {
+                    client: Some("ruby".into()),
+                    workspace_root: Some(project.root.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let edits = |files: &[FileEdit]| {
+        let mut out: Vec<(String, u32, u32, String)> = files
+            .iter()
+            .flat_map(|file| match file {
+                FileEdit::Edit { path, edits, .. } => {
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    edits
+                        .iter()
+                        .map(|e| (name.clone(), e.range.start.line, e.range.start.col, e.new_text.clone()))
+                        .collect()
+                }
+                _ => vec![],
+            })
+            .collect();
+        out.sort();
+        out
+    };
+    let refusal = "The Ruby language server can't rename this symbol; \
+                   renaming only the plugin's indexed names would leave it half renamed";
+    let ruby = ide_core::LanguageId::new("ruby");
+    project.lsp.set_servers_hook(Box::new(|_, _| vec![]));
+    project.lsp.did_open(doc.id, &model, &ruby, 0, source);
+    for pos in [Pos::new(0, 5), Pos::new(2, 5)] {
+        let refused = ops::lsp::lsp_prepare_rename(host, "ruby", doc.id, pos).await.unwrap_err();
+        assert_eq!((refused.kind, refused.message.as_str()), (ErrorKind::InvalidInput, refusal));
+        let refused =
+            ops::lsp::lsp_rename(host, "ruby", RequestId(120), doc.id, pos, "purchase".into()).await.unwrap_err();
+        assert_eq!((refused.kind, refused.message.as_str()), (ErrorKind::InvalidInput, refusal));
+    }
+    assert_eq!(
+        ops::lsp::lsp_prepare_rename(host, "ruby", doc.id, Pos::new(3, 6)).await.unwrap(),
+        Some(Range::new(Pos::new(3, 4), Pos::new(3, 18))),
+        "a name inside a string stays the plugin's"
+    );
+    let list = "\"orders.list\"".to_owned();
+    let renamed =
+        ops::lsp::lsp_rename(host, "ruby", RequestId(121), doc.id, Pos::new(3, 6), list.clone()).await.unwrap();
+    assert!(renamed.preview);
+    assert_eq!(
+        edits(&renamed.edit.files),
+        [("order.rb".to_owned(), 3, 4, list.clone()), ("orders_controller.rb".to_owned(), 1, 4, list)]
+    );
+    project.lsp.did_close(doc.id);
+    struct Native(Arc<AtomicBool>);
+    impl Handler for Native {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+            let owned = self.0.load(Ordering::SeqCst);
+            let name = json!({"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 9}});
+            Ok(match method {
+                "initialize" => {
+                    json!({"capabilities": {"textDocumentSync": 1, "renameProvider": {"prepareProvider": true}}})
+                }
+                "textDocument/prepareRename" if owned => name,
+                "textDocument/rename" if owned => {
+                    let uri = params["textDocument"]["uri"].as_str().unwrap().to_owned();
+                    json!({"changes": {uri: [{"range": name, "newText": params["newName"]}]}})
+                }
+                _ => Value::Null,
+            })
+        }
+    }
+    let owned = Arc::new(AtomicBool::new(true));
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peers = Arc::new(Mutex::new(Vec::<Peer>::new()));
+    let accepted = peers.clone();
+    let state = owned.clone();
+    let task = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (reader, writer) = stream.into_split();
+            accepted.lock().push(Peer::connect(reader, writer, Arc::new(Native(state.clone()))));
+        }
+    });
+    let config: ide_language::LanguageServerConfig = toml::from_str(&format!(
+        "name = 'ruby-renamer'\ncommand = 'no-process-required'\nconnect = '127.0.0.1:{port}'"
+    ))
+    .unwrap();
+    project.lsp.set_servers_hook(Box::new(move |_, _| vec![config.clone()]));
+    project.lsp.did_open(doc.id, &model, &ruby, 0, source);
+    let everywhere: Vec<_> = [("order.rb", 0), ("order.rb", 2), ("orders_controller.rb", 0)]
+        .map(|(file, line)| (file.to_owned(), line, 4, "purchase".to_owned()))
+        .into();
+    assert_eq!(
+        ops::lsp::lsp_prepare_rename(host, "ruby", doc.id, Pos::new(2, 5)).await.unwrap(),
+        Some(Range::new(Pos::new(2, 4), Pos::new(2, 9)))
+    );
+    let renamed =
+        ops::lsp::lsp_rename(host, "ruby", RequestId(122), doc.id, Pos::new(2, 5), "purchase".into()).await.unwrap();
+    assert!(renamed.preview);
+    assert_eq!(edits(&renamed.edit.files), everywhere, "the server's rename and the indexed names merge");
+    owned.store(false, Ordering::SeqCst);
+    let renamed =
+        ops::lsp::lsp_rename(host, "ruby", RequestId(123), doc.id, Pos::new(2, 5), "purchase".into()).await.unwrap();
+    assert_eq!(edits(&renamed.edit.files), everywhere, "a server that declines the name leaves it to the plugin");
+    assert_eq!(std::fs::read_to_string(&model).unwrap(), source);
+    assert_eq!(std::fs::read_to_string(&usage).unwrap(), used);
+    project.lsp.did_close(doc.id);
+    project.lsp.shutdown_all().await;
+    project.lsp.set_servers_hook(Box::new(|_, _| vec![]));
+    task.abort();
+    let _ = task.await;
+    for peer in peers.lock().drain(..) {
+        peer.kill();
+    }
+    host.close_project("ruby");
 }
