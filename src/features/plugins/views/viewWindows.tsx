@@ -107,9 +107,7 @@ function refresh(id: string, group: WindowGroup) {
     members,
     selected: selected ?? members[0]?.decl.id ?? null,
   });
-  const secondary = first
-    ? (first.decl.secondary ?? (first.decl.header === "none" && first.decl.location !== "bottom"))
-    : false;
+  const secondary = first?.decl.secondary === true;
   const signature =
     first && members.length ? JSON.stringify([first.decl.title, first.decl.location, secondary, first.icon]) : "";
   if (signature === group.signature) return;
