@@ -284,7 +284,13 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
 fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
-    dispatch_menu_action(app, event.id().as_ref());
+    let id = event.id().as_ref();
+    // A keymap accelerator only draws the shortcut: its key reached the menu because the keymap declined it.
+    #[cfg(target_os = "macos")]
+    if macos::handling_key_press() && !menu::fires_natively(&menu::spec(menu::Os::Mac), id) {
+        return;
+    }
+    dispatch_menu_action(app, id);
 }
 
 /// Runs menu item `id` as if it were chosen: in the focused window's frontend, or here without one.

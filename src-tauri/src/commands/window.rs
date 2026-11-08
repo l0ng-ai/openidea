@@ -243,8 +243,8 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text and updates the menu when the visible
-/// items changed. Shortcuts for actions that are not on the menu must not call
+/// Sets the menu's labels / accelerators and updates the menu when the visible
+/// items changed. Accelerators of actions that are not on the menu must not call
 /// `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]

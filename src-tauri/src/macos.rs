@@ -463,3 +463,13 @@ fn grouped_window(app: &AppHandle, native: *mut AnyObject) -> Option<WebviewWind
     let grouped = app.state::<WindowsState>().groups.lock().group(window.label()).is_some();
     grouped.then_some(window)
 }
+
+/// Whether AppKit is handling a key press right now. A menu item performed at this point
+/// was chosen by its key equivalent: a click, arrow keys plus Return and accessibility
+/// presses all run with a non-key current event.
+pub fn handling_key_press() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    objc2_app_kit::NSApplication::sharedApplication(mtm)
+        .currentEvent()
+        .is_some_and(|event| event.r#type() == objc2_app_kit::NSEventType::KeyDown)
+}

@@ -10,8 +10,8 @@ import {
   buildMenuConfig,
   disabledMenuActions,
   dynamicMenuItems,
+  menuAccelerator,
   menuActionIds,
-  menuShortcut,
   routeMenuEvent,
 } from "../menuBridge";
 
@@ -98,17 +98,16 @@ describe("menu event routing", () => {
 });
 
 describe("menu config", () => {
-  it("carries keymap shortcuts as display text", () => {
+  it("carries keymap shortcuts as native accelerators", () => {
     const mac = buildMenuConfig("macos");
-    expect(mac.shortcuts["file.save"]).toBe("⌘S");
-    expect(mac.shortcuts["navigate.gotoFile"]).toBe("⇧⌘O");
-    expect(mac.shortcuts["navigate.searchEverywhere"]).toBe("⇧⇧");
-    expect(buildMenuConfig("windows").shortcuts["navigate.gotoFile"]).toBe("Shift+Meta+O");
+    expect(mac.accelerators["file.save"]).toBe("Meta+S");
+    expect(mac.accelerators["navigate.gotoFile"]).toBe("Shift+Meta+O");
+    expect(mac.accelerators["navigate.searchEverywhere"]).toBeUndefined();
   });
 
   it("follows user keymap overrides", () => {
     useKeymap.setState({ overrides: { "file.save": ["Ctrl+Alt+S"] } });
-    expect(buildMenuConfig("macos").shortcuts["file.save"]).toBe("⌃⌥S");
+    expect(buildMenuConfig("macos").accelerators["file.save"]).toBe("Ctrl+Alt+S");
   });
 
   it("sends localised labels with platform-specific variants", async () => {
@@ -122,16 +121,49 @@ describe("menu config", () => {
     expect(zh.labels["menu.file.save"]).toBe("全部保存");
   });
 
-  it("formats chords", () => {
-    expect(menuShortcut("Meta+Alt+N Meta+Alt+N", "linux")).toBe("Alt+Meta+N, Alt+Meta+N");
-    expect(menuShortcut("Shift Shift", "windows")).toBe("Shift, Shift");
+  it("gives keys a native menu can show as they are", () => {
+    for (const binding of [
+      "Meta+[",
+      "Shift+Meta+Backspace",
+      "Meta+Delete",
+      "Meta+F12",
+      "Alt+F1",
+      "Ctrl+Shift+Down",
+      "Alt+Enter",
+      "Escape",
+      "Meta+,",
+      "Alt+Meta+PageDown",
+      "Meta+NumpadAdd",
+      "Meta+NumpadMultiply",
+      "F13",
+      "Shift+F24",
+      "Meta+`",
+      "Meta+\\",
+      "Meta+'",
+      "Meta+;",
+    ])
+      expect(menuAccelerator(binding)).toBe(binding);
+    expect(menuAccelerator("shift+meta+o")).toBe("Shift+Meta+O");
+  });
+
+  it("leaves out bindings a native menu cannot show", () => {
+    for (const binding of [
+      "Shift Shift",
+      "Ctrl Ctrl",
+      "Alt Alt+Up",
+      "Meta+Alt+N Meta+Alt+N",
+      "Meta+NumpadMultiply 1",
+      "Meta+Button1",
+      "SwipeLeft",
+    ])
+      expect(menuAccelerator(binding)).toBeUndefined();
   });
 });
 
 describe("window-scoped menu labels", () => {
   it("flips Enter / Exit Distraction Free Mode with the window's mode", () => {
     expect(buildMenuConfig("macos").labels["menu.editor.toggleZen"]).toBe("Enter Distraction Free Mode");
-    expect(buildMenuConfig("macos").shortcuts["editor.toggleZen"]).toBeUndefined();
+    expect(buildMenuConfig("macos").accelerators["editor.toggleZen"]).toBeUndefined();
     setDistractionFree(true);
     expect(buildMenuConfig("macos").labels["menu.editor.toggleZen"]).toBe("Exit Distraction Free Mode");
     resetDistractionFree();
