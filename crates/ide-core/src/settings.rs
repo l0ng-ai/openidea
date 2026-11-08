@@ -926,6 +926,8 @@ pub struct MavenSettings {
     pub home: String,
     /// User `settings.xml` (`-s`); empty = `~/.m2/settings.xml`.
     pub user_settings: String,
+    /// Toolchains file (`-t`); empty = `~/.m2/toolchains.xml`.
+    pub toolchains: String,
     /// Local repository (`-Dmaven.repo.local`); empty = from `settings.xml`.
     pub local_repository: String,
     /// Run Maven through the Maven Daemon (`mvnd`) for faster builds. mvnd embeds
@@ -937,9 +939,25 @@ pub struct MavenSettings {
     /// Thread count of Maven builds (`-T`): a number of threads (`4`) or a core
     /// multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
     pub threads: String,
+    /// Active Maven profiles (`-P`), comma-separated; empty leaves profiles to the POM/settings.
+    pub active_profiles: String,
 }
 
 impl MavenSettings {
+    /// Settings profiles followed by the Maven tool window's choices.
+    pub fn profiles(&self, choices: &[String]) -> Vec<String> {
+        let mut profiles = Vec::new();
+        for profile in self.active_profiles.split(',').chain(choices.iter().map(String::as_str)).map(str::trim) {
+            if !profile.is_empty() && !profiles.iter().any(|p| p == profile) {
+                profiles.push(profile.to_owned());
+            }
+        }
+        let excluded: Vec<String> =
+            profiles.iter().filter_map(|p| p.strip_prefix(['!', '-']).map(str::to_owned)).collect();
+        profiles.retain(|p| !excluded.contains(p));
+        profiles
+    }
+
     /// The `-T` value when it is one Maven accepts: a thread count (`4`) or a
     /// core multiplier with an optional decimal fraction (`1C`, `2.5C`).
     /// Anything else is dropped: a bad `-T` would make every Maven run fail.
@@ -1397,6 +1415,24 @@ mod maven_linkage_tests {
         assert_eq!(threads("-4").as_deref(), None);
         assert_eq!(threads("1e3").as_deref(), None);
         assert_eq!(threads("2..5C").as_deref(), None);
+    }
+
+    #[test]
+    fn maven_profiles_combine_settings_and_tool_window_choices() {
+        let settings = MavenSettings { active_profiles: " a, b, ,a ".into(), ..Default::default() };
+        assert_eq!(settings.profiles(&["!b".into(), "c".into(), "a".into()]), ["a", "!b", "c"]);
+        let settings = MavenSettings { active_profiles: "!a".into(), ..Default::default() };
+        assert_eq!(settings.profiles(&["a".into()]), ["!a"]);
+    }
+
+    #[test]
+    fn maven_profiles_and_toolchains_round_trip_and_default_to_empty() {
+        let old: MavenSettings = serde_json::from_str(r#"{"home":"/opt/maven"}"#).unwrap();
+        assert!(old.toolchains.is_empty() && old.active_profiles.is_empty());
+        let settings =
+            MavenSettings { toolchains: "config files/toolchains.xml".into(), active_profiles: "a,b,!c".into(), ..old };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        assert_eq!(serde_json::from_str::<MavenSettings>(&encoded).unwrap(), settings);
     }
 
     #[test]
