@@ -608,7 +608,7 @@ impl PhpEngine {
 
     /// The text of the file `path`: its open buffer (not an embedded one),
     /// else the file on disk.
-    fn text_of(&self, path: &Path) -> Option<String> {
+    pub(crate) fn text_of(&self, path: &Path) -> Option<String> {
         match self.open_document(path) {
             Some(document) if !document.embedded => Some(document.text.to_string()),
             _ => std::fs::read_to_string(path).ok(),

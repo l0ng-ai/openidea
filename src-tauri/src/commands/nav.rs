@@ -70,6 +70,34 @@ pub async fn php_laravel_create_translation(
     ide_host::ops::laravel::php_laravel_create_translation(&state.host, window.label(), key, texts).await
 }
 
+/// The Eloquent model view of Laravel model class `model` (table, columns,
+/// relations, scopes, accessors, related classes), from the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_model_view(
+    window: Window,
+    state: State<'_, AppState>,
+    model: String,
+) -> IdeResult<ide_host::ops::laravel::LaravelModelView> {
+    ide_host::ops::laravel::php_laravel_model_view(&state.host, window.label(), model).await
+}
+
+/// The edit of the Eloquent model view's Add Columns button: a migration adding
+/// `columns` to the model's table, and the columns added to `$fillable`.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_add_columns(
+    window: Window,
+    state: State<'_, AppState>,
+    model: String,
+    columns: Vec<ide_host::ops::laravel::LaravelNewColumn>,
+    fillable: bool,
+    timestamp: String,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_add_columns(&state.host, window.label(), model, columns, fillable, timestamp)
+        .await
+}
+
 /// Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 /// native PHP engine (`None`: none chosen).
 #[tauri::command]

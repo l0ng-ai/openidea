@@ -557,3 +557,89 @@ async fn laravel_live_database_schema() {
     assert_eq!(ops::laravel::php_laravel_refresh_schema(&host, "main").await.unwrap(), None);
     host.close_project("main");
 }
+
+/// Laravel's Eloquent model view: the lens on a model class runs the client
+/// command with the class, the view command answers what the panel shows, and
+/// the Add Columns command makes a migration and fills `$fillable`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn laravel_model_view_lens_and_commands() {
+    use ide_core::FileEdit;
+    use ide_host::ops::laravel::{LaravelNewColumn, php_laravel_add_columns, php_laravel_model_view};
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let root = base.join("blog");
+    write(
+        &root.join("composer.json"),
+        r#"{"require": {"laravel/framework": "^11.0"}, "autoload": {"psr-4": {"App\\": "app/"}}}"#,
+    );
+    write(
+        &root.join("vendor/laravel/framework/src/Model.php"),
+        "<?php\nnamespace Illuminate\\Database\\Eloquent;\n\nabstract class Model\n{\n    protected $fillable = [];\n}\n",
+    );
+    write(
+        &root.join("app/Models/Post.php"),
+        "<?php\nnamespace App\\Models;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\nclass Post extends Model\n{\n    protected $fillable = ['title'];\n\n    public function scopePublished($query)\n    {\n        return $query;\n    }\n}\n",
+    );
+    write(
+        &root.join("database/migrations/2024_01_01_000000_create_posts_table.php"),
+        "<?php\n\nuse Illuminate\\Support\\Facades\\Schema;\n\nreturn new class {\n    public function up(): void\n    {\n        Schema::create('posts', function ($table) {\n            $table->id();\n            $table->string('title');\n        });\n    }\n};\n",
+    );
+    let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+    let host = host(&base.join("app"), events.clone());
+    let project = host.open_project("main", &root).unwrap();
+    set_engine(&host, "native");
+    until("the engine to start", || project.php.engine().is_some()).await;
+    let engine = project.php.engine().unwrap();
+    assert!(engine.wait_idle(WAIT));
+
+    let doc = ops::doc::open(&host, "main", root.join("app/Models/Post.php")).await.unwrap();
+    let lenses = ops::lsp::lsp_code_lens(&host, "main", doc.id).await.unwrap();
+    let lens = lenses
+        .iter()
+        .find(|lens| lens.command.as_ref().is_some_and(|c| c.command == "laravel.modelView"))
+        .unwrap_or_else(|| panic!("{lenses:?}"));
+    let command = lens.command.as_ref().unwrap();
+    assert_eq!(command.title, "posts · 2 columns · 0 relations");
+    assert_eq!(command.arguments, [serde_json::Value::String("App\\Models\\Post".into())]);
+    assert_eq!(lens.range.start.line, 5);
+
+    let view = php_laravel_model_view(&host, "main", "App\\Models\\Post".into()).await.unwrap();
+    assert_eq!((view.table.as_str(), view.primary_key.as_str()), ("posts", "id"));
+    let columns: Vec<(&str, &str, bool)> =
+        view.columns.iter().map(|c| (c.name.as_str(), c.source.as_str(), c.fillable)).collect();
+    assert_eq!(columns, [("id", "migration", false), ("title", "migration", true)]);
+    assert_eq!(view.scopes[0].name, "published");
+    assert_eq!(view.related[0].kind, "migration");
+    let err = php_laravel_model_view(&host, "main", "App\\Nope".into()).await.unwrap_err();
+    assert!(err.message.contains("not an Eloquent model"), "{err:?}");
+
+    let column = |name: &str| LaravelNewColumn { name: name.into(), ty: "string".into(), nullable: true };
+    let edit = php_laravel_add_columns(
+        &host,
+        "main",
+        "App\\Models\\Post".into(),
+        vec![column("subtitle")],
+        true,
+        "2024_06_01_120000".into(),
+    )
+    .await
+    .unwrap();
+    let migration = root.join("database/migrations/2024_06_01_120000_add_subtitle_to_posts_table.php");
+    assert!(
+        edit.files.iter().any(|f| matches!(f, FileEdit::Create { path, .. } if path.clone() == migration)),
+        "{edit:?}"
+    );
+    let fillable = edit.files.iter().find_map(|f| match f {
+        FileEdit::Edit { path, edits, .. } if path.clone() == root.join("app/Models/Post.php") => {
+            Some(edits[0].new_text.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(fillable.as_deref(), Some(", 'subtitle'"));
+    let err =
+        php_laravel_add_columns(&host, "main", "App\\Models\\Post".into(), vec![column("title")], true, "x".into())
+            .await
+            .unwrap_err();
+    assert!(err.message.contains("already"), "{err:?}");
+    host.close_project("main");
+}

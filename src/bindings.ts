@@ -339,6 +339,16 @@ export const commands = {
 	 */
 	phpLaravelCreateTranslation: (key: string, texts: TranslationText[]) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_create_translation", { key, texts })),
 	/**
+	 *  The Eloquent model view of Laravel model class `model` (table, columns,
+	 *  relations, scopes, accessors, related classes), from the native PHP engine.
+	 */
+	phpLaravelModelView: (model: string) => typedError<LaravelModelView, IdeError>(__TAURI_INVOKE("php_laravel_model_view", { model })),
+	/**
+	 *  The edit of the Eloquent model view's Add Columns button: a migration adding
+	 *  `columns` to the model's table, and the columns added to `$fillable`.
+	 */
+	phpLaravelAddColumns: (model: string, columns: LaravelNewColumn[], fillable: boolean, timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_add_columns", { model, columns, fillable, timestamp })),
+	/**
 	 *  Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
 	 *  native PHP engine (`None`: none chosen).
 	 */
@@ -4756,6 +4766,81 @@ export type LanguagesSettings = {
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
+};
+
+/**  A place in a file of the model view. */
+export type LaravelLocation = {
+	path: IpcPath,
+	range: Range,
+};
+
+/**  A column of a model's table. */
+export type LaravelModelColumn = {
+	name: string,
+	/**  The PHP type reading the column gives (before casts). */
+	ty: string,
+	nullable: boolean,
+	/**  The model's cast of it. */
+	cast: string | null,
+	/**  `migration` or `database`. */
+	source: string,
+	/**  The data source's name, for columns of the database. */
+	database: string | null,
+	fillable: boolean,
+	hidden: boolean,
+	location: LaravelLocation | null,
+};
+
+/**  A local scope or an accessor of a model. */
+export type LaravelModelMember = {
+	name: string,
+	method: string,
+	ty: string | null,
+	location: LaravelLocation | null,
+};
+
+/**  A relation method of a model. */
+export type LaravelModelRelation = {
+	name: string,
+	/**  `HasMany`, `BelongsTo`… */
+	kind: string,
+	related: string | null,
+	many: boolean,
+	location: LaravelLocation | null,
+};
+
+/**  The Eloquent model view of a model class. */
+export type LaravelModelView = {
+	class: string,
+	name: string,
+	location: LaravelLocation | null,
+	table: string,
+	primaryKey: string,
+	keyType: string,
+	incrementing: boolean,
+	/**  The columns are known for certain (a migration creates the table, or the database has it). */
+	schemaCertain: boolean,
+	columns: LaravelModelColumn[],
+	relations: LaravelModelRelation[],
+	scopes: LaravelModelMember[],
+	accessors: LaravelModelMember[],
+	related: LaravelRelatedClass[],
+};
+
+/**  A column the model view's **Add columns** button adds. */
+export type LaravelNewColumn = {
+	name: string,
+	/**  The `Blueprint` method making it (`string`, `foreignId`). */
+	ty: string,
+	nullable: boolean,
+};
+
+/**  A factory, resource, policy, observer or migration of a model. */
+export type LaravelRelatedClass = {
+	/**  `factory`, `resource`, `policy`, `observer` or `migration`. */
+	kind: string,
+	name: string,
+	location: LaravelLocation,
 };
 
 /**

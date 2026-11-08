@@ -609,7 +609,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 - [x] Phase 8.11: Live database schema
       Optionally use a connection from `ide-db` as a schema source for models, the validation rules of 8.9 and the query builder (`DB::table('…')`). The user picks the connection in Settings › PHP › Laravel. Merge it with the migration data, with the database winning and the source shown in hover. Refresh it on demand and when the database tool reports a schema change. Text goes in `en.json` and `zh.json`. Tests: an in-memory SQLite connection through `ide-db`.
 
-- [ ] Phase 8.12: Eloquent model view
+- [x] Phase 8.12: Eloquent model view
       Add a panel for a model, opened from a gutter icon or code lens on the model class. It shows:
   - the table, primary key, and columns with types and where each comes from
   - relations, scopes and accessors

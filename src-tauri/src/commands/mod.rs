@@ -190,6 +190,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::spring_route_sources,
         nav::php_laravel_routes,
         nav::php_laravel_create_translation,
+        nav::php_laravel_model_view,
+        nav::php_laravel_add_columns,
         nav::php_laravel_refresh_schema,
         nav::find_files,
         nav::find_dirs,

@@ -209,6 +209,8 @@ pub(crate) struct ModelRelation {
     pub class: String,
     pub related: Option<String>,
     pub many: bool,
+    /// The relation class's short name (`HasMany`, `BelongsTo`).
+    pub kind: String,
 }
 
 fn is_make(method: &str) -> bool {
@@ -487,7 +489,7 @@ impl LaravelProvider {
     /// The factory class of `model` by Laravel's convention
     /// (`Factory::resolveFactoryName`): `Database\Factories\` and the
     /// model's name below the app's `Models\` namespace, plus `Factory`.
-    fn factory_of(resolver: &Resolver<'_>, model: &str) -> Option<String> {
+    pub(crate) fn factory_of(resolver: &Resolver<'_>, model: &str) -> Option<String> {
         let relative = match model.split_once("\\Models\\") {
             Some((_, rest)) => rest,
             None => model.rsplit('\\').next().unwrap_or(model),
@@ -531,14 +533,15 @@ impl LaravelProvider {
                     _ => None,
                 };
                 let many = TO_MANY.iter().any(|class| relation.is_subclass_of(&format!("{RELATIONS}{class}")));
-                Some((related, many))
+                Some((related, many, short_name(relation.fqn()).to_owned()))
             });
-            if let Some((related, many)) = found {
+            if let Some((related, many, kind)) = found {
                 out.push(ModelRelation {
                     name: method.name.clone(),
                     class: method.declaring.fqn.clone(),
                     related,
                     many,
+                    kind,
                 });
             }
         }
@@ -825,7 +828,7 @@ impl LaravelProvider {
     }
 
     /// The casts a model uses: its own, else a parent's.
-    fn casts_of<'f>(facts: &'f LaravelFacts, model: &ClassModel) -> Option<&'f ModelCasts> {
+    pub(crate) fn casts_of<'f>(facts: &'f LaravelFacts, model: &ClassModel) -> Option<&'f ModelCasts> {
         facts
             .casts
             .iter()
@@ -1015,13 +1018,13 @@ fn cast_type(resolver: &Resolver<'_>, cast: &str) -> Option<Type> {
 }
 
 /// `scopeActive` → `Active`.
-fn scope_name(method: &str) -> Option<&str> {
+pub(crate) fn scope_name(method: &str) -> Option<&str> {
     let rest = method.get(5..).filter(|rest| !rest.is_empty())?;
     method[..5].eq_ignore_ascii_case("scope").then_some(rest)
 }
 
 /// `getFullNameAttribute` → `FullName`.
-fn accessor_name(method: &str) -> Option<&str> {
+pub(crate) fn accessor_name(method: &str) -> Option<&str> {
     let lower = method.to_ascii_lowercase();
     if method.len() > 12 && lower.starts_with("get") && lower.ends_with("attribute") {
         method.get(3..method.len() - 9)

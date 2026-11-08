@@ -377,17 +377,27 @@ impl crate::language_service::LanguageService for PhpService {
         Some(Ok(hints))
     }
 
-    /// Laravel: the routes pointing to each controller method.
+    /// Laravel: the routes pointing to each controller method, and the model
+    /// view of each Eloquent model class.
     fn code_lens(&self, doc: DocId) -> Answer<Vec<CodeLens>> {
         let engine = self.0.engine()?;
         if !engine.is_open(doc) {
             return None;
         }
         let lenses = engine.laravel_route_lenses(doc).unwrap_or_default();
-        let lenses = lenses
+        let mut lenses: Vec<CodeLens> = lenses
             .into_iter()
             .map(|lens| CodeLens { range: lens.range, command: route_command(lens.title(), &lens.routes) })
             .collect();
+        lenses.extend(engine.laravel_model_lenses(doc).unwrap_or_default().into_iter().map(|lens| CodeLens {
+            range: lens.range,
+            command: Some(Command {
+                title: lens.title,
+                command: ide_php::frameworks::laravel::model_view::MODEL_VIEW_COMMAND.to_owned(),
+                arguments: vec![serde_json::Value::String(lens.class)],
+            }),
+        }));
+        lenses.sort_by_key(|lens| (lens.range.start.line, lens.range.start.col));
         Some(Ok(lenses))
     }
 

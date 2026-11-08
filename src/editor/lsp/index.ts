@@ -28,6 +28,7 @@ import { semanticExtension } from "./semantic";
 import { usagesLensExtension } from "./codeLens";
 import { serverLensExtension } from "./serverLens";
 import { CreateTranslationDialog, registerCreateTranslation } from "./createTranslation";
+import { ModelViewDialog, registerModelView } from "./modelView";
 import { autoImportExtension } from "./autoImport";
 import { installAvailabilityEvents } from "./availability";
 import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from "./actions";
@@ -83,6 +84,9 @@ export function activate(): () => void {
     // Laravel: "Create translation key…" asks for the text per locale.
     registerOverlay({ id: "editor-lsp.createTranslationDialog", component: CreateTranslationDialog }),
     registerCreateTranslation(),
+    // Laravel: the Eloquent model view, from the lens on a model class.
+    registerOverlay({ id: "editor-lsp.modelViewDialog", component: ModelViewDialog }),
+    registerModelView(),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.

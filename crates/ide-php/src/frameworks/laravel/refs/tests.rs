@@ -422,3 +422,6 @@ mod validation_tests;
 
 #[path = "eloquent_tests.rs"]
 mod eloquent_tests;
+
+#[path = "model_view_tests.rs"]
+mod model_view_tests;
