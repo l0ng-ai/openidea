@@ -13,6 +13,7 @@ const ipc = vi.hoisted(() => ({
     termKill: vi.fn(),
     termResize: vi.fn(),
     termIsBusy: vi.fn(),
+    termWrite: vi.fn(),
   },
 }));
 const workbench = vi.hoisted(() => ({
@@ -117,6 +118,27 @@ describe("resolveStartCwd", () => {
 
 describe("terminal start directory fallback", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("shows rejected terminal input instead of silently discarding it", async () => {
+    ipc.commands.termSpawn.mockResolvedValue({ id: 9, title: "zsh" });
+    ipc.commands.termWrite.mockRejectedValueOnce(new Error("input queue full"));
+    const session = new TerminalSession({
+      key: "s-input-error",
+      cwd: "/repo",
+      onChange: () => undefined,
+      onFocus: () => undefined,
+    });
+    await session.start();
+    session.input("paste");
+    await vi.waitFor(() =>
+      expect(workbench.notify).toHaveBeenCalledWith({
+        level: "error",
+        title: "Cannot write to terminal",
+        body: "input queue full",
+      }),
+    );
+    session.dispose();
+  });
 
   it("spawns a restored session in the project root when its saved directory is gone", async () => {
     ipc.commands.fsEntryKind.mockRejectedValue(new Error("gone"));

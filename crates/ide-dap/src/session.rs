@@ -588,15 +588,14 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
 
 /// A `runInTerminal` program and the pseudo-terminal it runs in.
 pub(crate) struct ProgramTerminal {
-    writer: Box<dyn std::io::Write + Send>,
+    writer: ide_core::input::InputWriter,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     _master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
 impl ProgramTerminal {
     pub(crate) fn write(&mut self, text: &str) -> std::io::Result<()> {
-        self.writer.write_all(text.as_bytes())?;
-        self.writer.flush()
+        self.writer.write(text.as_bytes())
     }
 }
 
@@ -616,6 +615,10 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
     let pair = native_pty_system()
         .openpty(PtySize { rows: 24, cols: 200, pixel_width: 0, pixel_height: 0 })
         .map_err(|e| format!("cannot open a terminal for {program}: {e}"))?;
+    #[cfg(unix)]
+    if let Some(fd) = pair.master.as_raw_fd() {
+        ide_core::input::nonblocking(fd).map_err(|e| format!("terminal of {program}: {e}"))?;
+    }
     let mut cmd = CommandBuilder::new(program);
     // CodeLLDB's launcher clears the terminal first; the console keeps the session's earlier output.
     cmd.args(rest.iter().filter(|a| *a != "--clear-screen"));
@@ -641,10 +644,18 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
             };
         }
     }
-    let child = pair.slave.spawn_command(cmd).map_err(|e| format!("failed to start {program}: {e}"))?;
+    let mut child = pair.slave.spawn_command(cmd).map_err(|e| format!("failed to start {program}: {e}"))?;
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| format!("terminal of {program}: {e}"))?;
     let writer = pair.master.take_writer().map_err(|e| format!("terminal of {program}: {e}"))?;
+    let writer = ide_core::input::InputWriter::new(format!("openidea-debug-input-{}", s.id.0), writer, |e| {
+        tracing::warn!("debug input: {e}");
+    })
+    .inspect_err(|_| {
+        let _ = child.kill();
+        let _ = child.wait();
+    })
+    .map_err(|e| format!("terminal input worker: {e}"))?;
     let pid = child.process_id();
     forward_terminal_output(s, reader);
     if let Some(mut previous) = s.program.lock().replace(ProgramTerminal { writer, child, _master: pair.master }) {
@@ -663,8 +674,19 @@ fn forward_terminal_output(s: &Session, mut reader: Box<dyn std::io::Read + Send
         let mut pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(n) => pending.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(4));
+                    continue;
+                }
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                Err(e) => {
+                    tracing::warn!(%session, "debug terminal read: {e}");
+                    break;
+                }
             }
             // Keep incomplete UTF-8 sequences, and a `\r` that may start a `\r\n`, for the next chunk.
             let mut valid = match std::str::from_utf8(&pending) {
