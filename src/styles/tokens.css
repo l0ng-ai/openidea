@@ -299,6 +299,10 @@ html {
   --dur: 140ms;
 
   /* additive: overlays, layers, controls */
+  --bg-stripe-tooltip: var(--bg-tooltip);
+  --fg-stripe-tooltip: var(--fg-tooltip);
+  --border-stripe-tooltip: var(--border-tooltip);
+  --shadow-stripe-tooltip: var(--shadow-tooltip);
   --bg-tooltip: #33353b;
   --fg-tooltip: #d1d3d9;
   --border-tooltip: #33353b;
@@ -660,6 +664,10 @@ html {
   --traffic-off-border: #c8c8c8;
 
   /* additive */
+  --bg-stripe-tooltip: #27282e;
+  --fg-stripe-tooltip: #ffffff;
+  --border-stripe-tooltip: #383a42;
+  --shadow-stripe-tooltip: 0 2px 8px rgba(0, 0, 0, 0.24);
   --bg-tooltip: #ffffff;
   --fg-tooltip: #000000;
   --border-tooltip: #d1d3d9;

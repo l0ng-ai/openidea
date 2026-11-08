@@ -420,6 +420,7 @@ function StripeButton({
         e.preventDefault();
         showContextMenu(e, stripeButtonMenu(tw, showName));
       }}
+      data-tooltip-stripe={side}
       {...tooltipAttrs(titleOf(tw), shortcut, true)}
     >
       <span className={styles.stripeIcon}>
