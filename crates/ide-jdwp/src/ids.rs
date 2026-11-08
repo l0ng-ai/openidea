@@ -40,20 +40,26 @@ pub enum ReplyIds {
 }
 
 /// ObjectIDs of `body` in encounter order, one element per occurrence; null (0) is skipped.
+///
+/// Strict on purpose: these ids feed `DisposeObjects`, so a body that does not match `layout`
+/// exactly (trailing bytes, a tag that cannot occur there) is an `Err`, which only leaks.
 pub fn object_ids(layout: ReplyIds, body: &[u8], sizes: &IdSizes) -> Result<Vec<u64>, CodecError> {
     let mut out = Vec::new();
     let mut r = Reader::new(body);
     match layout {
-        ReplyIds::None => {}
+        ReplyIds::None => return Ok(out),
         ReplyIds::TaggedObjects => {
             for _ in 0..r.count()? {
-                r.u8()?;
+                let tag = r.u8()?;
+                if !is_object_tag(tag) {
+                    return Err(CodecError::BadTag(tag));
+                }
                 push_id(&mut out, r.id(sizes.object)?);
             }
         }
         ReplyIds::Values => {
             for _ in 0..r.count()? {
-                push_value(&mut out, r.tagged_value(sizes)?);
+                push_value(&mut out, tagged_value(&mut r, sizes, |tag| tag != b'V')?);
             }
         }
         ReplyIds::ArrayRegion => {
@@ -61,7 +67,7 @@ pub fn object_ids(layout: ReplyIds, body: &[u8], sizes: &IdSizes) -> Result<Vec<
             let n = r.count()?;
             if is_object_tag(tag) {
                 for _ in 0..n {
-                    push_value(&mut out, r.tagged_value(sizes)?);
+                    push_value(&mut out, tagged_value(&mut r, sizes, is_object_tag)?);
                 }
             } else {
                 let size = primitive_size(tag).ok_or(CodecError::BadTag(tag))?;
@@ -69,7 +75,18 @@ pub fn object_ids(layout: ReplyIds, body: &[u8], sizes: &IdSizes) -> Result<Vec<
             }
         }
     }
-    Ok(out)
+    match r.remaining() {
+        0 => Ok(out),
+        extra => Err(CodecError::BadLength(u32::try_from(extra).unwrap_or(u32::MAX))),
+    }
+}
+
+fn tagged_value(r: &mut Reader<'_>, sizes: &IdSizes, allowed: fn(u8) -> bool) -> Result<Value, CodecError> {
+    let tag = r.u8()?;
+    if !allowed(tag) {
+        return Err(CodecError::BadTag(tag));
+    }
+    r.value(tag, sizes)
 }
 
 fn push_id(out: &mut Vec<u64>, id: u64) {
@@ -84,11 +101,11 @@ fn push_value(out: &mut Vec<u64>, value: Value) {
     }
 }
 
-/// The first event of a `Composite` (64/100) event packet that suspended something.
+/// The first event of a `Composite` (64/100) event packet, whatever its suspend policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stop {
     pub suspend_policy: u8,
-    /// `None` for events that carry no thread (`CLASS_UNLOAD`, `VM_DEATH`).
+    /// `None` for events that carry no thread (`CLASS_UNLOAD`, `VM_DEATH`) or the null thread.
     pub thread: Option<u64>,
 }
 
@@ -106,7 +123,7 @@ pub fn stop_of(event_body: &[u8], sizes: &IdSizes) -> Option<Stop> {
     r.i32().ok()?;
     let thread = match kind {
         EVENT_CLASS_UNLOAD | EVENT_VM_DEATH => None,
-        _ => Some(r.id(sizes.object).ok()?),
+        _ => Some(r.id(sizes.object).ok()?).filter(|&thread| thread != 0),
     };
     Some(Stop { suspend_policy, thread })
 }
@@ -190,6 +207,60 @@ mod tests {
     }
 
     #[test]
+    fn layouts_reject_trailing_bytes() {
+        let mut body = values_body(&[(b'L', 0x11)], &S8);
+        body.push(0);
+        assert_eq!(object_ids(ReplyIds::Values, &body, &S8), Err(CodecError::BadLength(1)));
+
+        let mut w = Writer::new();
+        w.i32(1);
+        w.u8(b'L');
+        w.id(9, 8);
+        w.u8(0);
+        assert_eq!(object_ids(ReplyIds::TaggedObjects, &w.into_vec(), &S8), Err(CodecError::BadLength(1)));
+
+        let mut w = Writer::new();
+        w.u8(b'I');
+        w.i32(1);
+        w.id(1, 4);
+        w.i32(0);
+        assert_eq!(object_ids(ReplyIds::ArrayRegion, &w.into_vec(), &S8), Err(CodecError::BadLength(4)));
+    }
+
+    #[test]
+    fn tagged_objects_reject_a_primitive_tag() {
+        let mut w = Writer::new();
+        w.i32(1);
+        w.u8(b'I');
+        w.id(9, 8);
+        assert_eq!(object_ids(ReplyIds::TaggedObjects, &w.into_vec(), &S8), Err(CodecError::BadTag(b'I')));
+    }
+
+    #[test]
+    fn values_reject_void() {
+        let mut w = Writer::new();
+        w.i32(1);
+        w.u8(b'V');
+        assert_eq!(object_ids(ReplyIds::Values, &w.into_vec(), &S8), Err(CodecError::BadTag(b'V')));
+    }
+
+    #[test]
+    fn object_array_region_rejects_void_and_primitive_elements() {
+        for inner in [b'V', b'I'] {
+            let mut w = Writer::new();
+            w.u8(b'[');
+            w.i32(1);
+            w.u8(inner);
+            w.id(1, 4);
+            assert_eq!(object_ids(ReplyIds::ArrayRegion, &w.into_vec(), &S8), Err(CodecError::BadTag(inner)));
+        }
+        let mut w = Writer::new();
+        w.u8(b'V');
+        w.i32(0);
+        assert_eq!(object_ids(ReplyIds::ArrayRegion, &w.into_vec(), &S8), Err(CodecError::BadTag(b'V')));
+    }
+
+    #[test]
     fn none_layout_counts_nothing() {
         assert_eq!(object_ids(ReplyIds::None, &[1, 2, 3], &S8), Ok(vec![]));
     }
@@ -253,6 +324,8 @@ mod tests {
         assert_eq!(stop_of(&event(2, 99, None), &S8), Some(Stop { suspend_policy: 2, thread: None }));
         assert_eq!(stop_of(&event(1, 9, None), &S8), Some(Stop { suspend_policy: 1, thread: None }));
         assert_eq!(stop_of(&event(0, 2, Some(0x77)), &S8), Some(Stop { suspend_policy: 0, thread: Some(0x77) }));
+        // CLASS_PREPARE from a thread the VM does not expose carries the null thread
+        assert_eq!(stop_of(&event(1, 8, Some(0)), &S8), Some(Stop { suspend_policy: 1, thread: None }));
         assert_eq!(stop_of(&event(2, 2, None), &S8), None);
         assert_eq!(stop_of(&[], &S8), None);
     }

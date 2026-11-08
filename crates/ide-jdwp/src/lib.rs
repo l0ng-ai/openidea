@@ -1,10 +1,13 @@
-//! JDWP packet codec. Bounds-checked: malformed input is an `Err`, never a panic.
+//! JDWP packet codec and the debugger link built on it. Bounds-checked: malformed input is an
+//! `Err`, never a panic.
 
 mod codec;
 mod ids;
+mod link;
 
 pub use codec::{
     CodecError, FLAG_REPLY, HEADER_LEN, Header, MAX_ADAPTER_PACKET, Reader, Value, Writer, is_object_tag,
     primitive_text,
 };
 pub use ids::{IdSizes, ReplyIds, Stop, dispose_body, object_ids, stop_of};
+pub use link::{JdwpLink, LinkOptions, LinkState, OWN_IDS};
