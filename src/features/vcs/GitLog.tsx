@@ -1781,7 +1781,7 @@ function CommitList() {
 
 interface ColumnDrag {
   id: string;
-  target: string;
+  target: string | null;
   after: boolean;
 }
 // The flexible "Commit" column shares the same order and can be dragged like the rest.
@@ -1802,15 +1802,15 @@ function ColumnHeaders({
 }) {
   const [drag, setDrag] = useState<ColumnDrag | null>(null);
   const ids = columnSequence(options.columnOrder, columns);
-  const move = (source: string, target: string, after: boolean) => {
-    const from = ids.indexOf(source);
-    if (from < 0) return;
-    ids.splice(from, 1);
-    const to = ids.indexOf(target);
-    if (to < 0) return;
-    ids.splice(after ? to + 1 : to, 0, source);
-    updateLogOptions({ columnOrder: ids });
+  const cancel = useCallback(() => setDrag(null), []);
+  const move = (source: string, target: string | null, after: boolean) => {
+    if (!target || source === target || !ids.includes(source) || !ids.includes(target)) return;
+    const reordered = ids.filter((id) => id !== source);
+    const to = reordered.indexOf(target);
+    reordered.splice(after ? to + 1 : to, 0, source);
+    updateLogOptions({ columnOrder: reordered });
   };
+  const visibleIds = ids.filter((id) => id === SUBJECT_COLUMN.id || columns.some((column) => column.id === id));
   return (
     <div className={clsx(styles.row, styles.columnHeader)} style={{ minWidth }}>
       {options.showRepository && useVcs.getState().roots.length > 1 && (
@@ -1824,18 +1824,14 @@ function ColumnHeaders({
             key={cid}
             column={column}
             subject={cid === SUBJECT_COLUMN.id}
-            ids={ids}
+            ids={visibleIds}
             options={options}
             drag={drag}
-            onDragStart={(id) => setDrag({ id, target: id, after: false })}
-            onDragOver={(target, after) =>
-              setDrag((d) => (d && (d.target !== target || d.after !== after) ? { ...d, target, after } : d))
+            onMove={move}
+            onDragOver={(id, target, after) =>
+              setDrag((d) => (d?.id === id && d.target === target && d.after === after ? d : { id, target, after }))
             }
-            onDragEnd={() => {
-              if (drag && drag.target !== drag.id) move(drag.id, drag.target, drag.after);
-              setDrag(null);
-            }}
-            onDragCancel={() => setDrag(null)}
+            onDragCancel={cancel}
           />
         );
       })}
@@ -1851,9 +1847,8 @@ function LogColumnHeader({
   ids,
   options,
   drag,
-  onDragStart,
+  onMove,
   onDragOver,
-  onDragEnd,
   onDragCancel,
 }: {
   column: LogColumn;
@@ -1861,31 +1856,51 @@ function LogColumnHeader({
   ids: string[];
   options: LogOptions;
   drag: ColumnDrag | null;
-  onDragStart(id: string): void;
-  onDragOver(target: string, after: boolean): void;
-  onDragEnd(): void;
+  onMove(source: string, target: string | null, after: boolean): void;
+  onDragOver(id: string, target: string | null, after: boolean): void;
   onDragCancel(): void;
 }) {
-  const press = useRef<{ x: number; y: number } | null>(null);
-  const resizeDrag = useRef<{ x: number; width: number } | null>(null);
+  const press = useRef<{
+    x: number;
+    y: number;
+    active: boolean;
+    element: HTMLElement;
+    pointerId: number;
+  } | null>(null);
+  const resizeDrag = useRef<{ x: number; width: number; element: HTMLElement; pointerId: number } | null>(null);
+  const cancel = useCallback(() => {
+    const captures = [press.current, resizeDrag.current];
+    press.current = null;
+    resizeDrag.current = null;
+    for (const capture of captures)
+      if (capture?.element.hasPointerCapture?.(capture.pointerId))
+        capture.element.releasePointerCapture(capture.pointerId);
+    onDragCancel();
+  }, [onDragCancel]);
+  useEffect(() => {
+    const escape = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "Escape" || (!press.current && !resizeDrag.current)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+    };
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", escape, true);
+    return () => {
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", escape, true);
+      cancel();
+    };
+  }, [cancel]);
   const width = options.columnWidths[column.id] ?? column.width ?? 120;
   const resize = (value: number) =>
     updateLogOptions({
       columnWidths: { ...logOptions().columnWidths, [column.id]: Math.max(40, Math.min(800, value)) },
     });
-  const move = (source: string, target: string, after: boolean) => {
-    const from = ids.indexOf(source);
-    if (from < 0) return;
-    ids.splice(from, 1);
-    const to = ids.indexOf(target);
-    if (to < 0) return;
-    ids.splice(after ? to + 1 : to, 0, source);
-    updateLogOptions({ columnOrder: ids });
-  };
   const index = ids.indexOf(column.id);
   const hitColumn = (x: number, y: number) => {
     const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
-    if (!el) return null;
+    if (!el || el.parentElement !== press.current?.element.parentElement) return null;
     const rect = el.getBoundingClientRect();
     return { id: el.getAttribute("data-log-column")!, after: x > rect.left + rect.width / 2 };
   };
@@ -1905,45 +1920,38 @@ function LogColumnHeader({
       data-log-column={column.id}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
-        press.current = { x: e.clientX, y: e.clientY };
+        press.current = { x: e.clientX, y: e.clientY, active: false, element: e.currentTarget, pointerId: e.pointerId };
         e.currentTarget.setPointerCapture?.(e.pointerId);
       }}
       onPointerMove={(e) => {
         const start = press.current;
-        console.log("HEADER pointerMove", column.id, start, drag);
-        if (!start) return;
-        if (!drag) {
-          if (Math.hypot(e.clientX - start.x, e.clientY - start.y) >= 4) onDragStart(column.id);
-          return;
-        }
-        if (drag.id !== column.id) return;
+        if (!start || start.pointerId !== e.pointerId) return;
+        if (!start.active && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 4) return;
+        start.active = true;
         const target = hitColumn(e.clientX, e.clientY);
-        if (target) onDragOver(target.id, target.after);
+        onDragOver(column.id, target?.id ?? null, target?.after ?? false);
       }}
-      onPointerUp={() => {
-        if (!press.current) return;
-        press.current = null;
-        if (drag) onDragEnd();
+      onPointerUp={(e) => {
+        const start = press.current;
+        if (!start || start.pointerId !== e.pointerId) return;
+        const target = hitColumn(e.clientX, e.clientY);
+        if (start.active) onMove(column.id, target?.id ?? null, target?.after ?? false);
+        cancel();
       }}
-      onPointerCancel={() => {
-        press.current = null;
-        if (drag) onDragCancel();
-      }}
-      onLostPointerCapture={() => {
-        press.current = null;
-      }}
+      onPointerCancel={cancel}
+      onLostPointerCapture={cancel}
       onContextMenu={(e) => {
         e.preventDefault();
         showContextMenu(e, [
           {
             label: "Move Left",
             disabled: index === 0,
-            run: () => move(column.id, ids[index - 1]!, false),
+            run: () => onMove(column.id, ids[index - 1] ?? null, false),
           },
           {
             label: "Move Right",
             disabled: index === ids.length - 1,
-            run: () => move(column.id, ids[index + 1]!, true),
+            run: () => onMove(column.id, ids[index + 1] ?? null, true),
           },
           ...(subject ? [] : [{ label: "Reset Width", run: () => resize(column.width ?? 120) }]),
         ]);
@@ -1961,9 +1969,10 @@ function LogColumnHeader({
           aria-valuenow={width}
           tabIndex={0}
           onPointerDown={(e) => {
+            if (e.button !== 0) return;
             e.preventDefault();
             e.stopPropagation();
-            resizeDrag.current = { x: e.clientX, width };
+            resizeDrag.current = { x: e.clientX, width, element: e.currentTarget, pointerId: e.pointerId };
             e.currentTarget.setPointerCapture(e.pointerId);
           }}
           onPointerMove={(e) => {
@@ -1984,7 +1993,8 @@ function LogColumnHeader({
             if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
             e.preventDefault();
             e.stopPropagation();
-            if (e.altKey) move(column.id, ids[index + (e.key === "ArrowLeft" ? -1 : 1)]!, e.key === "ArrowRight");
+            if (e.altKey)
+              onMove(column.id, ids[index + (e.key === "ArrowLeft" ? -1 : 1)] ?? null, e.key === "ArrowRight");
             else resize(width + (e.key === "ArrowLeft" ? -10 : 10));
           }}
         />
@@ -2084,7 +2094,7 @@ function CommitRowView({
     />
   );
   const subjectCell = (
-    <span className={styles.colSubject}>
+    <span key={SUBJECT_COLUMN.id} className={styles.colSubject}>
       {graph && (
         <GraphCell
           row={graph}
