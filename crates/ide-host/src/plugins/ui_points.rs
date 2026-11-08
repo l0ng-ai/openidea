@@ -307,7 +307,36 @@ struct SettingsAction {
 
 #[derive(Debug, Deserialize)]
 struct SchemaFile {
-    properties: serde_json::Map<String, Value>,
+    #[serde(deserialize_with = "ordered_properties")]
+    properties: Vec<(String, Box<serde_json::value::RawValue>)>,
+}
+
+// Preserve schema field order locally, without changing serde_json maps throughout the host.
+fn ordered_properties<'de, D>(deserializer: D) -> Result<Vec<(String, Box<serde_json::value::RawValue>)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Properties;
+    impl<'de> serde::de::Visitor<'de> for Properties {
+        type Value = Vec<(String, Box<serde_json::value::RawValue>)>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an object of setting schemas")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut fields = Vec::new();
+            let mut keys = BTreeSet::new();
+            while let Some((key, value)) = map.next_entry::<String, Box<serde_json::value::RawValue>>()? {
+                if !keys.insert(key.clone()) {
+                    return Err(serde::de::Error::custom(format!("duplicate setting key {key:?}")));
+                }
+                fields.push((key, value));
+            }
+            Ok(fields)
+        }
+    }
+    deserializer.deserialize_map(Properties)
 }
 
 /// One setting of a plugin.
@@ -355,15 +384,16 @@ impl SettingSchema {
     }
 }
 
-fn setting(key: &str, raw: &Value) -> Result<SettingSchema, String> {
+fn setting(key: &str, raw: &serde_json::value::RawValue) -> Result<SettingSchema, String> {
     setting_at(key, raw, 0)
 }
 
-fn setting_at(key: &str, raw: &Value, depth: u8) -> Result<SettingSchema, String> {
+fn setting_at(key: &str, raw: &serde_json::value::RawValue, depth: u8) -> Result<SettingSchema, String> {
     if key.is_empty() || key.len() > 64 || !key.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
         return Err(format!("setting {key:?}: keys are 1–64 of [A-Za-z0-9._-]"));
     }
-    let o = raw.as_object().ok_or_else(|| format!("setting {key:?}: expected an object"))?;
+    let value: Value = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+    let o = value.as_object().ok_or_else(|| format!("setting {key:?}: expected an object"))?;
     let kind = o.get("type").and_then(Value::as_str).unwrap_or("");
     let mut items = None;
     let mut properties = Vec::new();
@@ -372,8 +402,12 @@ fn setting_at(key: &str, raw: &Value, depth: u8) -> Result<SettingSchema, String
         "string" => o.get("default").cloned().unwrap_or(Value::String(String::new())),
         "number" | "integer" => o.get("default").cloned().unwrap_or(Value::from(0)),
         "array" if depth == 0 => {
-            let raw = o.get("items").ok_or_else(|| format!("setting {key:?}: array needs `items`"))?;
-            let item = setting_at("item", raw, 1)?;
+            #[derive(Deserialize)]
+            struct ArraySchema {
+                items: Box<serde_json::value::RawValue>,
+            }
+            let array: ArraySchema = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
+            let item = setting_at("item", &array.items, 1)?;
             if item.kind != "string" && item.kind != "object" {
                 return Err(format!("setting {key:?}: items must be strings or objects"));
             }
@@ -381,10 +415,7 @@ fn setting_at(key: &str, raw: &Value, depth: u8) -> Result<SettingSchema, String
             o.get("default").cloned().unwrap_or_else(|| Value::Array(Vec::new()))
         }
         "object" if depth == 1 => {
-            let fields = o
-                .get("properties")
-                .and_then(Value::as_object)
-                .ok_or_else(|| format!("setting {key:?}: table needs `properties`"))?;
+            let fields = serde_json::from_str::<SchemaFile>(raw.get()).map_err(|e| e.to_string())?.properties;
             if fields.is_empty() || fields.len() > MAX_SETTINGS {
                 return Err(format!("setting {key:?}: table needs 1–{MAX_SETTINGS} columns"));
             }
@@ -968,6 +999,21 @@ mod tests {
         assert_eq!(lists[0].key, "z");
         assert!(lists[0].accepts(&serde_json::json!(["feat", "fix"])));
         assert!(!lists[0].accepts(&serde_json::json!([1])));
+    }
+
+    #[test]
+    fn schema_order_is_local_and_duplicate_fields_are_rejected() {
+        let raw = r#"{"properties":{"z":{"type":"string"},"a":{"type":"boolean"}}}"#;
+        let fields = parse_settings_schema(raw).unwrap();
+        assert_eq!(fields.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(), ["z", "a"]);
+        let ordinary: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(ordinary["properties"].as_object().unwrap().keys().collect::<Vec<_>>(), ["a", "z"]);
+        for raw in [
+            r#"{"properties":{"x":{"type":"string"},"x":{"type":"boolean"}}}"#,
+            r#"{"properties":{"rows":{"type":"array","items":{"type":"object","properties":{"x":{"type":"string"},"x":{"type":"boolean"}}}}}}"#,
+        ] {
+            assert!(parse_settings_schema(raw).unwrap_err().contains("duplicate setting key"));
+        }
     }
 
     #[test]

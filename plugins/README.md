@@ -1307,7 +1307,8 @@ For a model-profile table, use:
 Table cells support scalar types, including enums. Rows edit inline; new rows
 use each column's default. Nested collections are unsupported. Arrays default
 to `[]` and contain at most 1,000 entries. A plugin can declare at most 32 pages,
-200 settings across pages, and 32 actions per page.
+200 settings across pages, and 32 actions per page. Field and table-column order
+follows the schema; duplicate property keys are rejected, including table columns.
 
 Edits use the normal Apply/OK/Cancel flow. Reset discards only the current page’s
 edits, including when several pages edit one plugin. Invalid collection edits

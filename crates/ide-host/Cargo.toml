@@ -49,7 +49,7 @@ ide-tools = { path = "../ide-tools" }
 ide-docker = { path = "../ide-docker" }
 semver = "1"
 serde.workspace = true
-serde_json = { workspace = true, features = ["preserve_order"] }
+serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
