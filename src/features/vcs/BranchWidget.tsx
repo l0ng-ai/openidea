@@ -1,6 +1,6 @@
 import { branchesByRepo } from "./multiRoot";
 /** Title bar branch widget (branch name + incoming / outgoing markers) + Branches popup. */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import type { Branch, BranchInfo } from "@/bindings";
@@ -23,6 +23,7 @@ import {
   type MenuItem,
   T,
 } from "@/ui";
+import type { PopupAnchor } from "@/ui/Popup";
 import { buildBranchRows, withExpanded, type BranchRow, type PopupAction } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
@@ -68,7 +69,6 @@ export function BranchWidget() {
   const otherOp = useVcs((s) => (current ? (s.operations[current] ?? null) : null));
   const open = useBranchesPopup((s) => s.open);
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
-  const ref = useRef<HTMLButtonElement>(null);
   if (!available || !selected) return null;
   // Another feature presents the current branch (the GitHub pull request on it).
   const presented = other ? null : branchPresentation(extensions);
@@ -98,7 +98,7 @@ export function BranchWidget() {
   return (
     <>
       <BarButton
-        ref={ref}
+        data-branches-widget
         variant="title"
         className={styles.widget}
         tooltip={tooltip}
@@ -120,9 +120,15 @@ export function BranchWidget() {
         <BranchSync behind={branch.behind} ahead={branch.ahead} showCounts={false} />
         <Icon name="chevron-down" size={14} className={styles.chevron} />
       </BarButton>
-      {open && <BranchesPopup anchor={ref} onClose={() => useBranchesPopup.setState({ open: false })} />}
     </>
   );
+}
+
+export function BranchesPopupHost() {
+  const open = useBranchesPopup((s) => s.open);
+  if (!open) return null;
+  const anchor = document.querySelector("[data-branches-widget]") ?? { x: window.innerWidth / 2 - 160, y: 60 };
+  return <BranchesPopup anchor={anchor} onClose={() => useBranchesPopup.setState({ open: false })} />;
 }
 
 const POPUP_ACTIONS: PopupAction[] = [
@@ -283,7 +289,7 @@ const caretAt = (e: KeyboardEvent, where: "start" | "end") => {
   return where === "end" ? input.selectionStart === input.value.length : input.selectionStart === 0;
 };
 
-function BranchesPopup({ anchor, onClose }: { anchor: RefObject<HTMLElement | null>; onClose: () => void }) {
+function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () => void }) {
   const multi = useVcs((s) => s.roots.length > 1);
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
   const actions = useMemo(() => [...POPUP_ACTIONS, ...extensionPopupActions(extensions)], [extensions]);

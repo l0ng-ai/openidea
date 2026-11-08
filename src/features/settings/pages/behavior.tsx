@@ -642,6 +642,8 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "UI Options",
         options: [
+          { kind: "toggle", key: "appearance.showMainToolbar", label: "Show main toolbar" },
+          { kind: "toggle", key: "appearance.showStatusBar", label: "Show status bar" },
           {
             kind: "custom",
             label: "Main menu",

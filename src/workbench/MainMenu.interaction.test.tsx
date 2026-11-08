@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { registerActions } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 import { MainMenu } from "./MainMenu";
 
 let available = 500;
@@ -266,4 +267,40 @@ describe("main menu presentation", () => {
     expect(screen.queryByRole("menubar")).toBeNull();
     expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
   });
+});
+
+it.each(["windows", "linux"] as const)("renders toggle and widget checks in the %s main menu", async (os) => {
+  const platform = usePlatform.getState();
+  usePlatform.setState({ os, framelessTitleBar: true, overlayTitleBar: false });
+  const off = registerActions([
+    { id: "view.toggleToolbar", title: "Toolbar", toggled: () => true, run: () => {} },
+    { id: "view.toggleStatusBarWidget", title: "Status Bar Widget", run: () => {} },
+  ]);
+  vi.mocked(commands.menuModel).mockResolvedValue([
+    {
+      kind: "submenu",
+      id: "view",
+      label: "View",
+      children: [
+        { kind: "action", id: "view.toggleToolbar", label: "Toolbar", hint: null, arg: null, checked: null },
+        {
+          kind: "action",
+          id: "view.toggleStatusBarWidget",
+          label: "Memory Indicator",
+          hint: null,
+          arg: "memory",
+          checked: false,
+        },
+      ],
+    },
+  ]);
+  try {
+    render(<MainMenu />);
+    fireEvent.click(screen.getByRole("button", { name: "Main Menu" }));
+    expect(await screen.findByRole("menuitemcheckbox", { name: "Toolbar" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("menuitemcheckbox", { name: "Memory Indicator" })).toHaveAttribute("aria-checked", "false");
+  } finally {
+    off();
+    usePlatform.setState(platform);
+  }
 });

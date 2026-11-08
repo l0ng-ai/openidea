@@ -1,3 +1,4 @@
+import { showBackgroundTasks } from "./StatusBar";
 import { executeAction, getAction, registerActions } from "@/platform/actions";
 import { isTauri } from "@/platform/ipc";
 import { closeProject, confirmLeaveProject, openProject, useProject } from "@/platform/project";
@@ -113,6 +114,13 @@ export function registerShellActions(): () => void {
       category: "View",
       hidden: true,
       run: ({ arg }) => (typeof arg === "string" ? toggleStatusWidget(arg) : undefined),
+    },
+    {
+      id: "view.backgroundTasks",
+      title: "Background Tasks",
+      category: "View",
+      keywords: ["progress", "running", "processes"],
+      run: showBackgroundTasks,
     },
     {
       id: "view.notifications",
