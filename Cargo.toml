@@ -49,6 +49,7 @@ ide-jvm-attach = { path = "crates/ide-jvm-attach" }
 ide-streams = { path = "crates/ide-streams" }
 ide-jvm-inspect = { path = "crates/ide-jvm-inspect" }
 ide-jdwp = { path = "crates/ide-jdwp" }
+ide-heap = { path = "crates/ide-heap" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
@@ -84,6 +85,7 @@ trash = "5"
 blake3 = "1"
 dunce = "1"
 dirs = "6"
+memmap2 = "0.9"
 zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # search, index, language
