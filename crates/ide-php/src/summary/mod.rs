@@ -40,7 +40,8 @@ mod symfony;
 
 pub(crate) use extract::{inline_vars, type_hint};
 pub use laravel::{
-    Binding, Cast, Column, LaravelFacts, ModelCasts, RouteFileKind, RoutePath, RouteRegistration, Table,
+    Binding, Cast, Column, LaravelFacts, ModelCasts, RequestRules, RouteFileKind, RoutePath, RouteRegistration,
+    RuleEntry, Table,
 };
 pub use symfony::{RepositoryEntity, RouteAttribute, SymfonyFacts};
 
@@ -60,9 +61,9 @@ use crate::types::LazyType;
 /// provider payloads and `getFacadeAccessor()` values; 10: Laravel
 /// bindings, migrations and casts; 11: locations of casts and
 /// columns; 12: Doctrine repository classes of entities; 13: Symfony
-/// routes and repository entities; 14: Laravel route files), so stored
-/// summaries are rebuilt.
-pub const SCHEMA_VERSION: u32 = 14;
+/// routes and repository entities; 14: Laravel route files; 15: the
+/// fields of `rules()` methods), so stored summaries are rebuilt.
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// A source location: byte offsets (end exclusive) and the IDE range.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]

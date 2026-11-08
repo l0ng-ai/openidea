@@ -667,6 +667,7 @@ impl<'ast, 'arena, 'f> Walker<'ast, 'arena, Extractor<'f>> for SummaryWalker {
             node.implements.as_ref().map(|implements| cx.class_names(&implements.types)).unwrap_or_default();
         cx.provided_properties(&mut class, &node.members);
         cx.model_casts(&class.fqn, &node.members);
+        cx.request_rules(&class.fqn, &node.members);
         cx.routes(&node.attribute_lists, &node.members);
         cx.entity_repository(&class.fqn, class.repository.as_deref());
         cx.repository_scope =

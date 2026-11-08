@@ -758,6 +758,19 @@ impl<'e, 'r> Collector<'e, 'r> {
             }
         }
         self.magic_members(&receiver, &context, is_static, dollar, call_follows);
+        if !is_static && !dollar && !call_follows {
+            // The innermost function-like's start.
+            let scope = frames.iter().rev().find_map(|frame| match frame {
+                Frame::Method(method) => Some(method.span().start.offset),
+                Frame::Function(function) => Some(function.span().start.offset),
+                Frame::Closure(closure) => Some(closure.span().start.offset),
+                Frame::Arrow(arrow) => Some(arrow.span().start.offset),
+                Frame::Class(_) => None,
+            });
+            if let Some(scope) = scope {
+                self.validated_request_fields(&receiver, &context, scope, start as u32);
+            }
+        }
         if is_static && !dollar {
             self.push(Self::item("class", CompletionKind::Keyword), 3);
         }
@@ -803,6 +816,26 @@ impl<'e, 'r> Collector<'e, 'r> {
                     item
                 }
             };
+            self.push(item, 2);
+        }
+    }
+
+    /// After `$request->` in a function that validated the request before
+    /// (`$request->validate([...])` and the like), the fields it validated,
+    /// typed from their rules (Laravel's dynamic request properties).
+    fn validated_request_fields(&mut self, receiver: &Type, context: &Context, from: u32, to: u32) {
+        const REQUEST: &str = "Illuminate\\Http\\Request";
+        let is_request = self
+            .resolver
+            .class_models(receiver, context)
+            .iter()
+            .any(|model| fqn_eq(NameKind::ClassLike, model.fqn(), REQUEST) || model.is_subclass_of(REQUEST));
+        if !is_request {
+            return;
+        }
+        for (name, rules) in self.engine.validated_fields(self.parsed, from, to) {
+            let mut item = Self::item(&name, CompletionKind::Property);
+            item.detail = Some(crate::frameworks::laravel::validation::rule_type(&rules).widen().to_string());
             self.push(item, 2);
         }
     }

@@ -224,7 +224,8 @@ impl PhpEngine {
                 if let MagicTarget::Attribute {
                     origin:
                         AttributeOrigin::Cast { source: Some(source), .. }
-                        | AttributeOrigin::Column { source: Some(source), .. },
+                        | AttributeOrigin::Column { source: Some(source), .. }
+                        | AttributeOrigin::Rule { source: Some(source), .. },
                     ..
                 } = &magic.member.target
                 {

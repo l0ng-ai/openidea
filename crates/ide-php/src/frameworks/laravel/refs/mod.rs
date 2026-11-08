@@ -51,6 +51,7 @@ pub mod route_name;
 #[cfg(test)]
 mod tests;
 pub mod translation_key;
+pub mod validation_actions;
 pub mod validation_rule;
 pub mod view_name;
 pub mod vite_asset;

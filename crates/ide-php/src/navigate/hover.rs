@@ -454,6 +454,8 @@ impl PhpEngine {
                 let nullable = if *nullable { ", nullable" } else { "" };
                 format!("Column `{}` of table `{table}` (`{ty}`{nullable}), from a migration", magic.member.name)
             }
+            AttributeOrigin::Rule { rules, .. } if rules.is_empty() => "Validated field, from `rules()`".to_owned(),
+            AttributeOrigin::Rule { rules, .. } => format!("Validated field (`{rules}`), from `rules()`"),
         };
         if let Some(doc) = method.and_then(|member| self.member_doc(&member, resolver, here, summary)) {
             let doc = doc.markdown();

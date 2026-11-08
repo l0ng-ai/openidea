@@ -26,11 +26,18 @@ pub struct LaravelFacts {
     pub casts: Vec<ModelCasts>,
     /// Route files loaded with their group attributes, in source order.
     pub routes: Vec<RouteRegistration>,
+    /// The fields of the array a class's `rules()` method returns (a Form
+    /// Request's, when the class is one).
+    pub rules: Vec<RequestRules>,
 }
 
 impl LaravelFacts {
     pub fn is_empty(&self) -> bool {
-        self.bindings.is_empty() && self.tables.is_empty() && self.casts.is_empty() && self.routes.is_empty()
+        self.bindings.is_empty()
+            && self.tables.is_empty()
+            && self.casts.is_empty()
+            && self.routes.is_empty()
+            && self.rules.is_empty()
     }
 
     /// The facts of several files, in order.
@@ -49,6 +56,7 @@ impl LaravelFacts {
             out.casts.extend(facts.casts.iter().map(|casts| ModelCasts { file: file.clone(), ..casts.clone() }));
             out.routes
                 .extend(facts.routes.iter().map(|route| RouteRegistration { file: file.clone(), ..route.clone() }));
+            out.rules.extend(facts.rules.iter().map(|rules| RequestRules { file: file.clone(), ..rules.clone() }));
         }
         out
     }
@@ -122,6 +130,30 @@ pub struct Cast {
     /// dropped).
     pub cast: String,
     /// The attribute's key in the casts array.
+    pub loc: Loc,
+}
+
+/// The fields a class's `rules()` method validates.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestRules {
+    /// The class (FQN).
+    pub class: String,
+    pub fields: Vec<RuleEntry>,
+    /// The file declaring the class, when the facts were merged with their
+    /// files ([`LaravelFacts::merge_located`]); not stored in summaries.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
+}
+
+/// A field of a rules array: `'title' => 'required|string|max:255'`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleEntry {
+    /// The key (`title`, `tags.*`).
+    pub field: String,
+    /// The names of its string rules (`required`, `string`, `max`), any
+    /// case as written; rule objects aren't listed.
+    pub rules: Vec<String>,
+    /// The key in the array.
     pub loc: Loc,
 }
 

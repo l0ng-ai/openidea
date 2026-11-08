@@ -12,6 +12,8 @@
 //!   `morphs()`.
 //! - **Casts:** the array of a class's `$casts` property, or the array a
 //!   `casts()` method returns.
+//! - **Rules:** the keys of the array a class's `rules()` method returns,
+//!   with the names of their string rules (pipe strings and arrays).
 //! - **Route files:** the `web`, `api`, `commands` and `channels` files of
 //!   `withRouting(…)` (Laravel 11's `bootstrap/app.php`, with the `web` and
 //!   `api` middleware groups and the `apiPrefix` its `ApplicationBuilder`
@@ -35,7 +37,8 @@ use mago_syntax::cst::{
 use super::Extractor;
 use crate::names::{NameKind, Resolution};
 use crate::summary::{
-    Binding, Cast, Column, DocType, Loc, ModelCasts, RouteFileKind, RoutePath, RouteRegistration, Table,
+    Binding, Cast, Column, DocType, Loc, ModelCasts, RequestRules, RouteFileKind, RoutePath, RouteRegistration,
+    RuleEntry, Table,
 };
 use crate::types::ops::literal_type;
 use crate::types::{LazyType, Type};
@@ -304,6 +307,82 @@ impl Extractor<'_> {
         }
         if !casts.is_empty() {
             self.summary.laravel.casts.push(ModelCasts { class: class.to_owned(), casts, file: None });
+        }
+    }
+
+    // --------------------------------------------------------------- rules
+
+    /// The fields of the array a class's `rules()` method returns.
+    pub(super) fn request_rules(&mut self, class: &str, members: &Sequence<'_, ClassLikeMember<'_>>) {
+        let mut fields = Vec::new();
+        for member in members {
+            let ClassLikeMember::Method(method) = member else { continue };
+            if !method.name.value.eq_ignore_ascii_case(b"rules") {
+                continue;
+            }
+            let MethodBody::Concrete(body) = &method.body else { continue };
+            for statement in &body.statements {
+                if let Statement::Return(r#return) = statement
+                    && let Some(value) = r#return.value
+                {
+                    self.rule_array(value, &mut fields);
+                }
+            }
+        }
+        if !fields.is_empty() {
+            self.summary.laravel.rules.push(RequestRules { class: class.to_owned(), fields, file: None });
+        }
+    }
+
+    fn rule_array(&self, value: &Expression<'_>, out: &mut Vec<RuleEntry>) {
+        let elements = match value {
+            Expression::Array(array) => array.elements.iter(),
+            Expression::LegacyArray(array) => array.elements.iter(),
+            // `array_merge(parent::rules(), [...])`.
+            Expression::Call(Call::Function(call)) => {
+                for arg in args(&call.argument_list) {
+                    self.rule_array(arg, out);
+                }
+                return;
+            }
+            _ => return,
+        };
+        for element in elements {
+            let ArrayElement::KeyValue(element) = element else { continue };
+            let Some(field) = string(element.key) else { continue };
+            let mut rules = Vec::new();
+            let mut push = |text: &str| {
+                for segment in crate::frameworks::laravel::validation::segments(text) {
+                    let name = segment.name.trim();
+                    if !name.is_empty() {
+                        rules.push(name.to_owned());
+                    }
+                }
+            };
+            match element.value {
+                Expression::Array(array) => {
+                    for item in array.elements.iter() {
+                        if let ArrayElement::Value(item) = item
+                            && let Some(text) = string(item.value)
+                        {
+                            push(&text);
+                        }
+                    }
+                }
+                value => {
+                    if let Some(text) = string(value) {
+                        push(&text);
+                    }
+                }
+            }
+            let loc = self.loc(element.key.span());
+            match out.iter_mut().find(|known| known.field == field) {
+                Some(known) => {
+                    known.rules = rules;
+                    known.loc = loc;
+                }
+                None => out.push(RuleEntry { field, rules, loc }),
+            }
         }
     }
 

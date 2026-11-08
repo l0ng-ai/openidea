@@ -403,7 +403,7 @@ fn abstract_declaration(
 
 /// `declaration`'s lines after the first, re-based from `from` indentation
 /// to `to`.
-pub(super) fn reindent(declaration: &str, from: &str, to: &str) -> String {
+pub(crate) fn reindent(declaration: &str, from: &str, to: &str) -> String {
     let mut out = String::new();
     for (i, line) in declaration.split('\n').enumerate() {
         if i > 0 {

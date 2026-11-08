@@ -55,7 +55,8 @@
 //! `Application::registerCoreContainerAliases`).
 
 use super::{AttributeOrigin, CallKind, CallSite, MagicMember, MagicTarget, Source, TypeProvider, provided};
-use crate::summary::{ClassKind, LaravelFacts, ModelCasts, Visibility};
+use crate::frameworks::laravel::validation::rule_type;
+use crate::summary::{ClassKind, Column, LaravelFacts, ModelCasts, RequestRules, Visibility};
 use crate::types::{ClassModel, Context, LazyType, Resolver, Type};
 
 const APPLICATION: &str = "Illuminate\\Foundation\\Application";
@@ -63,6 +64,7 @@ const CONTAINER: &str = "Illuminate\\Contracts\\Container\\Container";
 const CONTAINER_CLASS: &str = "Illuminate\\Container\\Container";
 const FACADE: &str = "Illuminate\\Support\\Facades\\Facade";
 const MODEL: &str = "Illuminate\\Database\\Eloquent\\Model";
+const FORM_REQUEST: &str = "Illuminate\\Foundation\\Http\\FormRequest";
 const ELOQUENT_BUILDER: &str = "Illuminate\\Database\\Eloquent\\Builder";
 const QUERY_BUILDER: &str = "Illuminate\\Database\\Query\\Builder";
 const COLLECTION: &str = "Illuminate\\Database\\Eloquent\\Collection";
@@ -536,6 +538,8 @@ impl LaravelProvider {
                 Self::forwarded_methods(resolver, ELOQUENT_BUILDER, true, &mut out);
                 Self::forwarded_methods(resolver, QUERY_BUILDER, true, &mut out);
                 Self::attributes(resolver, &model, &mut out);
+            } else if model.is_subclass_of(FORM_REQUEST) {
+                Self::request_fields(resolver, &model, &mut out);
             }
         }
         // A builder or relation: the related model's scopes, then what it
@@ -556,6 +560,66 @@ impl LaravelProvider {
             Self::forwarded_methods(resolver, QUERY_BUILDER, false, &mut out);
         }
         out
+    }
+
+    /// The rules a Form Request validates: its own `rules()`, else a
+    /// parent's.
+    fn rules_of<'f>(facts: &'f LaravelFacts, model: &ClassModel) -> Option<&'f RequestRules> {
+        facts
+            .rules
+            .iter()
+            .filter(|rules| model.is_subclass_of(&rules.class))
+            .min_by_key(|rules| !rules.class.eq_ignore_ascii_case(model.fqn()))
+    }
+
+    /// A Form Request's field read as a property (`$request->title`),
+    /// typed from its rules.
+    fn request_property(resolver: &Resolver<'_>, class: &str, name: &str) -> Option<Type> {
+        let model = resolver.class_model(class)?;
+        if !model.is_subclass_of(FORM_REQUEST) {
+            return None;
+        }
+        let facts = resolver.laravel();
+        let entry = Self::rules_of(&facts, &model)?.fields.iter().find(|entry| entry.field == name)?;
+        Some(rule_type(&entry.rules))
+    }
+
+    /// The fields of a Form Request's rules as properties (not the nested
+    /// `tags.*` ones).
+    fn request_fields(resolver: &Resolver<'_>, model: &ClassModel, out: &mut Vec<MagicMember>) {
+        let facts = resolver.laravel();
+        let Some(rules) = Self::rules_of(&facts, model) else { return };
+        for entry in &rules.fields {
+            let name = &entry.field;
+            if name.is_empty() || name.contains(['.', '*', '-', ' ']) || model.property(name).is_some() {
+                continue;
+            }
+            let source = rules.file.clone().map(|file| Source { file, loc: entry.loc });
+            let origin = AttributeOrigin::Rule { rules: entry.rules.join("|"), source };
+            let target = MagicTarget::Attribute { class: rules.class.clone(), ty: rule_type(&entry.rules), origin };
+            out.push(MagicMember { name: name.clone(), is_static: false, target });
+        }
+    }
+
+    /// The columns migrations give the table of model `class`, in
+    /// migration order, each with the model's cast of it (as written in
+    /// the casts, a class with a leading `\`). Empty for other classes.
+    pub(crate) fn model_columns(resolver: &Resolver<'_>, class: &str) -> Vec<(Column, Option<String>)> {
+        let Some(model) = resolver.class_model(class).filter(|model| model.is_subclass_of(MODEL)) else {
+            return Vec::new();
+        };
+        let facts = resolver.laravel();
+        let casts = Self::casts_of(&facts, &model);
+        facts
+            .columns(&Self::table(&model))
+            .into_iter()
+            .map(|(_, column)| {
+                let cast = casts
+                    .and_then(|casts| casts.casts.iter().find(|cast| cast.attribute == column.name))
+                    .map(|cast| cast.cast.clone());
+                (column.clone(), cast)
+            })
+            .collect()
     }
 
     /// A model attribute: its cast, else its migrated column.
@@ -650,7 +714,7 @@ fn accessor_name(method: &str) -> Option<&str> {
 }
 
 /// `BlogPost` → `blog_post`.
-fn snake(name: &str) -> String {
+pub(crate) fn snake(name: &str) -> String {
     let mut out = String::new();
     for (i, c) in name.chars().enumerate() {
         if c.is_uppercase() && i > 0 {
@@ -663,7 +727,7 @@ fn snake(name: &str) -> String {
 
 /// The English plural of a lower-case word, for the common cases
 /// (`post` → `posts`, `category` → `categories`, `box` → `boxes`).
-fn plural(word: &str) -> String {
+pub(crate) fn plural(word: &str) -> String {
     const IRREGULAR: &[(&str, &str)] =
         &[("person", "people"), ("child", "children"), ("man", "men"), ("woman", "women"), ("mouse", "mice")];
     const SAME: &[&str] = &["data", "equipment", "information", "media", "news", "series", "species"];
@@ -686,7 +750,7 @@ fn plural(word: &str) -> String {
 }
 
 /// `first_name` → `FirstName`.
-fn studly(name: &str) -> String {
+pub(crate) fn studly(name: &str) -> String {
     name.split(['_', '-'])
         .filter(|part| !part.is_empty())
         .map(|part| {
@@ -773,7 +837,7 @@ impl TypeProvider for LaravelProvider {
         if !Self::installed(resolver) {
             return None;
         }
-        Self::model_property(resolver, class, name)
+        Self::model_property(resolver, class, name).or_else(|| Self::request_property(resolver, class, name))
     }
 
     fn magic_members(&self, receiver: &Type, resolver: &Resolver<'_>, context: &Context) -> Vec<MagicMember> {

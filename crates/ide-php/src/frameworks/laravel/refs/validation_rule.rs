@@ -28,7 +28,8 @@ use std::sync::Arc;
 use ide_core::TextEdit;
 
 use super::{
-    CallTarget, CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind, Undefined, kind_of, sites,
+    ArrayStep, CallTarget, CalleePattern, PlacePattern, Position, RefContext, RefItem, ReferenceKind, Undefined,
+    kind_of, sites,
 };
 use crate::engine::PhpEngine;
 use crate::frameworks::laravel::validation::{
@@ -245,6 +246,47 @@ impl PhpEngine {
         }
         out.sort();
         out.dedup();
+        out
+    }
+
+    /// The fields validated by the `validate()`-like calls (not `rules()`)
+    /// that start between bytes `from` and `to` of `parsed`, with the names
+    /// of their string rules, in source order. Nested fields (`tags.*`)
+    /// aren't listed. Empty outside Laravel projects.
+    pub(crate) fn validated_fields(&self, parsed: &ParsedFile, from: u32, to: u32) -> Vec<(String, Vec<String>)> {
+        if self.ref_context().is_none() {
+            return Vec::new();
+        }
+        let resolver = self.resolver();
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        for site in sites(parsed, &resolver, &[&RuleField, &ValidationRule], None) {
+            if site.call < from || site.call >= to || matches!(site.target, CallTarget::Return { .. }) {
+                continue;
+            }
+            let (field, rule) = if FIELD_PATTERNS.iter().any(|pattern| pattern.matches(&site, &resolver)) {
+                (site.value.clone(), None)
+            } else if RULE_PATTERNS.iter().any(|pattern| pattern.matches(&site, &resolver)) {
+                let Some(ArrayStep::Value(Some(field))) = site.steps.first() else { continue };
+                (field.clone(), Some(site.value.clone()))
+            } else {
+                continue;
+            };
+            if field.is_empty() || field.contains(['$', '\\', '{', '.', '*', '-', ' ']) {
+                continue;
+            }
+            let at = match out.iter().position(|(known, _)| *known == field) {
+                Some(at) => at,
+                None => {
+                    out.push((field, Vec::new()));
+                    out.len() - 1
+                }
+            };
+            if let Some(rule) = rule {
+                out[at].1.extend(
+                    segments(&rule).into_iter().map(|s| s.name.trim().to_owned()).filter(|name| !name.is_empty()),
+                );
+            }
+        }
         out
     }
 

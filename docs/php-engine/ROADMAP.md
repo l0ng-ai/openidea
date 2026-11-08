@@ -586,7 +586,7 @@ Runs after Plan 7. Before any 8.x phase, read [LARAVEL-ROADMAP.md](LARAVEL-ROADM
 
   Tests: caret fixtures and refactoring tests.
 
-- [ ] Phase 8.9.b: Validation refactorings and request properties
+- [x] Phase 8.9.b: Validation refactorings and request properties
       Phase 8.9 added the `validationRule` and `requestField` kinds (`refs/validation_rule.rs`, rules in `rules()`, `validate()`, `Validator::make`, `validator()`; rule and parameter completion; the "unknown rule" inspection; `$request->input('…')`/`validated('…')` fields) and the "convert rule string to array" intentions. Add the rest:
   - `$request->field` magic properties typed from the rules (a Form Request's `rules()`, `validate()` calls in the method)
   - the intention converting a rule to a `Rule::` object (`unique`, `exists`, `in`, `dimensions`), adding the `use`

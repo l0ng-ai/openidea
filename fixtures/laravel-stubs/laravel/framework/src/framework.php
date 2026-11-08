@@ -307,6 +307,7 @@ namespace Illuminate\Http {
         public function has($key): bool { return false; }
         public function only($keys): array { return []; }
         public function except($keys): array { return []; }
+        public function __get($key) { return null; }
     }
     class Response extends \Symfony\Component\HttpFoundation\Response {}
     class RedirectResponse extends \Symfony\Component\HttpFoundation\Response {
@@ -337,11 +338,17 @@ namespace Illuminate\Validation {
     class Rule {
         public static function unique(string $table, string $column = 'NULL'): Rules\Unique { return new Rules\Unique(); }
         public static function enum(string $type): Rules\Enum { return new Rules\Enum(); }
+        public static function exists(string $table, string $column = 'NULL'): Rules\Exists { return new Rules\Exists(); }
+        public static function in($values): Rules\In { return new Rules\In(); }
+        public static function dimensions(array $constraints = []): Rules\Dimensions { return new Rules\Dimensions(); }
     }
 }
 
 namespace Illuminate\Validation\Rules {
     class Unique {}
+    class Exists {}
+    class In {}
+    class Dimensions {}
     class Enum {}
 }
 

@@ -5,8 +5,12 @@
 //! (`Validator::extend('name', …)`, [`custom_rule_names`]) and the
 //! rewrite of a rule string as an array ([`rule_array`]).
 //!
+//! [`rule_type`] gives a validated field's type as a request property.
+//!
 //! The `validationRule` and `requestField` string references
 //! ([`super::refs::validation_rule`]) build on these.
+
+use crate::types::Type;
 
 /// What a rule's parameters name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,6 +279,36 @@ pub fn unknown_rules<'v>(value: &'v str, custom: &[String]) -> Vec<&'v str> {
         .map(|segment| segment.name.trim())
         .filter(|name| !name.is_empty() && rule_spec(name).is_none() && !custom.contains(&snake_name(name)))
         .collect()
+}
+
+/// Laravel's uploaded file class.
+pub const UPLOADED_FILE: &str = "Illuminate\\Http\\UploadedFile";
+
+/// The type a field validated by `rules` (rule names) has when read as a
+/// request property: the first rule naming a type decides it (`integer`
+/// is `int`, `file` an uploaded file, `string`/`email`/`date` a string),
+/// `mixed` without any; nullable unless the field is `required` (an absent
+/// field reads as `null`) or when `nullable`.
+pub fn rule_type<S: AsRef<str>>(rules: &[S]) -> Type {
+    let names: Vec<String> = rules.iter().map(|rule| snake_name(rule.as_ref())).collect();
+    let has = |wanted: &[&str]| names.iter().any(|name| wanted.contains(&name.as_str()));
+    let ty = names.iter().find_map(|name| {
+        Some(match name.as_str() {
+            "integer" | "digits" | "digits_between" => Type::Int,
+            "numeric" | "decimal" => Type::union(vec![Type::Int, Type::Float]),
+            "boolean" | "accepted" | "declined" => Type::Bool,
+            "array" | "list" => Type::array(),
+            "file" | "image" | "mimes" | "mimetypes" | "extensions" | "dimensions" => Type::named(UPLOADED_FILE),
+            "string" | "email" | "url" | "active_url" | "uuid" | "ulid" | "alpha" | "alpha_dash" | "alpha_num"
+            | "ascii" | "ip" | "ipv4" | "ipv6" | "mac_address" | "json" | "date" | "date_format" | "timezone"
+            | "hex_color" | "lowercase" | "uppercase" | "regex" | "not_regex" | "starts_with" | "ends_with" => {
+                Type::string()
+            }
+            _ => return None,
+        })
+    });
+    let Some(ty) = ty else { return Type::Mixed };
+    if has(&["required"]) && !has(&["nullable"]) { ty } else { ty.nullable() }
 }
 
 /// The rule string `value` written as an array with `quote` around each
