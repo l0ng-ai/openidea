@@ -151,6 +151,24 @@ fn stdin_echo_with_cat() {
 }
 
 #[test]
+fn full_stdin_does_not_block_input_or_stop_for_pipes_and_ptys() {
+    for pty in [false, true] {
+        let h = harness();
+        let mut config =
+            cfg("t:blocked-input", "/bin/sh", &["-c", "stty raw -echo 2>/dev/null; printf READY; exec sleep 60"]);
+        config.extras.emulate_terminal = pty;
+        let (id, chunks) = start(&h, &config);
+        wait_for(&chunks, "READY");
+        let started = Instant::now();
+        h.pm.write_stdin(id, &"x".repeat(512 * 1024)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(250));
+        h.pm.stop(id).unwrap();
+        h.pm.stop(id).unwrap();
+        wait_exit(&h, id, Duration::from_secs(10));
+    }
+}
+
+#[test]
 fn missing_command_and_cwd_are_errors() {
     let h = harness();
     let err =
