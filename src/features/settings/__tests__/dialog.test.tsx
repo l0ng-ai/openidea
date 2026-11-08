@@ -25,7 +25,7 @@ import { registerAction, executeAction } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { useKeymap } from "@/platform/keymap";
-import { ContextMenuHost } from "@/ui";
+import { ContextMenuHost, hideContextMenu, useContextMenuStore } from "@/ui";
 import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
 import { openSettings, stage, useSettingsDialog } from "../model/staging";
@@ -53,6 +53,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => useSettingsDialog.setState({ open: false, projectStructureOpen: false }));
+  act(hideContextMenu);
   dispose();
 });
 
@@ -328,8 +329,10 @@ describe("Settings dialog", () => {
     });
     registerAction({ id: "t.mine", title: "My Action", category: "Code", when: "editorFocus", run: () => {} });
     const dialog = await openDialog("keymap");
+    render(<ContextMenuHost />);
     const row = within(dialog).getByText("My Action");
     fireEvent.doubleClick(row);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" }));
     const recorder = await screen.findByRole("dialog", { name: /Keyboard Shortcut: My Action/ });
     const first = within(recorder).getByRole("textbox", { name: "First stroke" });
     fireEvent.keyDown(first, { code: "KeyD", key: "d", metaKey: true });
@@ -349,6 +352,67 @@ describe("Settings dialog", () => {
     expect(useSettingsDialog.getState().open).toBe(false);
   });
 
+  it.each(["double-click", "Enter"])(
+    "opens the shortcut menu on %s and clears mouse recording mode",
+    async (activation) => {
+      render(<ContextMenuHost />);
+      registerAction({ id: "t.activate", title: "Activation Target", category: "Code", run: () => {} });
+      const dialog = await openDialog("keymap");
+      const row = within(dialog).getByText("Activation Target").closest('[role="treeitem"]')!;
+      const tree = within(dialog).getByRole("tree", { name: "Actions" });
+      const rect = vi.spyOn(row, "getBoundingClientRect").mockReturnValue({
+        left: 100,
+        bottom: 150,
+        top: 126,
+        right: 500,
+        width: 400,
+        height: 24,
+        x: 100,
+        y: 126,
+        toJSON: () => ({}),
+      });
+      const activateRow = () => {
+        fireEvent.mouseDown(row, { button: 0 });
+        if (activation === "double-click") fireEvent.doubleClick(row, { clientX: 220, clientY: 138 });
+        else fireEvent.keyDown(tree, { key: "Enter" });
+      };
+      activateRow();
+      expect(useContextMenuStore.getState().menu).toMatchObject(
+        activation === "double-click" ? { x: 220, y: 138 } : { x: 100, y: 150 },
+      );
+      expect(screen.queryByRole("dialog", { name: /Shortcut: Activation Target/ })).not.toBeInTheDocument();
+      const keyboard = await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" });
+      expect(keyboard).toHaveFocus();
+      fireEvent.keyDown(keyboard, { key: "ArrowDown" });
+      const mouse = screen.getByRole("menuitem", { name: "Add Mouse Shortcut" });
+      expect(mouse).toHaveFocus();
+      fireEvent.keyDown(mouse, { key: "Enter" });
+      const recorder = await screen.findByRole("dialog", { name: "Mouse Shortcut: Activation Target" });
+      fireEvent.mouseDown(within(recorder).getByRole("textbox", { name: "Mouse shortcut" }), {
+        button: 0,
+        altKey: true,
+      });
+      fireEvent.click(within(recorder).getByRole("button", { name: "OK" }));
+      const overrides = useSettingsDialog.getState().staged["global|keymapOverrides"]?.value;
+      expect(overrides).toEqual({ "t.activate": ["Alt+Button1"] });
+      activateRow();
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" }));
+      const keys = await screen.findByRole("dialog", { name: "Keyboard Shortcut: Activation Target" });
+      expect(within(keys).getByRole("textbox", { name: "First stroke" })).toBeInTheDocument();
+      fireEvent.click(within(keys).getByRole("button", { name: "Cancel" }));
+      fireEvent.contextMenu(row);
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Add Mouse Shortcut" }));
+      fireEvent.click(
+        within(await screen.findByRole("dialog", { name: "Mouse Shortcut: Activation Target" })).getByRole("button", {
+          name: "Cancel",
+        }),
+      );
+      fireEvent.click(within(dialog).getByRole("button", { name: "Add Keyboard Shortcut" }));
+      expect(await screen.findByRole("dialog", { name: "Keyboard Shortcut: Activation Target" })).toBeInTheDocument();
+      rect.mockRestore();
+    },
+  );
+
   it("duplicates the keymap from the gear menu and edits the copy", async () => {
     render(<ContextMenuHost />);
     registerAction({ id: "t.dup", title: "Dup Target", category: "Code", run: () => {} });
@@ -364,6 +428,7 @@ describe("Settings dialog", () => {
       "custom.macos-copy": { name: "macOS copy", parent: "intellij-macos", overrides: {} },
     });
     fireEvent.doubleClick(within(dialog).getByText("Dup Target"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" }));
     const recorder = await screen.findByRole("dialog", { name: /Keyboard Shortcut: Dup Target/ });
     fireEvent.keyDown(within(recorder).getByRole("textbox", { name: "First stroke" }), {
       code: "F9",

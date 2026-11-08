@@ -5,6 +5,11 @@ import type { Branch, Commit } from "@/bindings";
 const vcsCommitFiles = vi.fn();
 const vcsDiffNumstat = vi.fn();
 const vcsTags = vi.fn();
+const { deleteBranches } = vi.hoisted(() => ({ deleteBranches: vi.fn() }));
+vi.mock("../branchOps", async (original) => ({
+  ...(await original<typeof import("../branchOps")>()),
+  deleteBranches,
+}));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -22,6 +27,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+import { canDeleteBranch } from "../branchOps";
 import { buildBranchTree, filterBranchTree } from "../branches";
 import { buildFileTree } from "../fileTree";
 import {
@@ -34,7 +40,7 @@ import {
   toLogChanges,
   useLogChanges,
 } from "../logChanges";
-import { canDeleteBranch, canUpdateBranch, useBranchesPane } from "../logPaneActions";
+import { canUpdateBranch, useBranchesPane } from "../logPaneActions";
 import { BranchesPanel, CommitDetails, changesMenu, graphOptionsMenu } from "../GitLog";
 import { LogSettingsPage } from "../LogSettingsPage";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
@@ -75,6 +81,7 @@ afterEach(() => {
   vcsCommitFiles.mockReset();
   vcsDiffNumstat.mockReset();
   vcsTags.mockReset();
+  deleteBranches.mockReset();
 });
 
 describe("changed files model", () => {
@@ -213,6 +220,32 @@ describe("Branches pane", () => {
     expect(canUpdateBranch({ ref: "origin/x", branch: b("origin/x", { remote: true }) })).toBe(false);
   });
 
+  it.each([true, false])("context Delete respects membership in the selection (%s)", async (inside) => {
+    vcsTags.mockResolvedValue({ status: "ok", data: ["v1"] });
+    useVcs.setState({
+      root: "/p",
+      repo: "/p",
+      branchesLoaded: true,
+      branches: [b("main", { current: true }), b("one"), b("two"), b("outside")],
+    });
+    render(<BranchesPanel />);
+    fireEvent.doubleClick(await screen.findByText("Tags"));
+    fireEvent.mouseDown(screen.getByText("one"));
+    fireEvent.mouseDown(screen.getByText("two"), { metaKey: true });
+    fireEvent.mouseDown(await screen.findByText("v1"), { metaKey: true });
+    fireEvent.mouseDown(screen.getByText("Local"), { metaKey: true });
+    fireEvent.contextMenu(screen.getByText(inside ? "two" : "outside"));
+    const { useContextMenuStore, hideContextMenu } = await import("@/ui/Menu");
+    const item = useContextMenuStore.getState().menu!.items.find((i) => "label" in i && i.label === "Delete");
+    expect(item).toBeDefined();
+    if (item && "run" in item) item.run?.();
+    await waitFor(() => expect(deleteBranches).toHaveBeenCalledTimes(1));
+    expect(deleteBranches.mock.calls[0]![0].map((t: { ref: string }) => t.ref)).toEqual(
+      inside ? ["one", "two", "v1"] : ["outside"],
+    );
+    hideContextMenu();
+  });
+
   it("has a vertical toolbar acting on the selected branch, and shows tags", async () => {
     vcsTags.mockResolvedValue({ status: "ok", data: ["v1"] });
     useVcs.setState({
@@ -226,6 +259,12 @@ describe("Branches pane", () => {
     expect(screen.getByRole("toolbar", { name: "Branches" })).toHaveAttribute("aria-orientation", "vertical");
     expect(screen.getByPlaceholderText("Branch or tag")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete Branch" })).toBeDisabled();
+    fireEvent.mouseDown(screen.getByText("main"));
+    expect(screen.getByRole("button", { name: "Delete Branch" })).toBeDisabled();
+    fireEvent.contextMenu(screen.getByText("main"));
+    const { useContextMenuStore, hideContextMenu } = await import("@/ui/Menu");
+    expect(useContextMenuStore.getState().menu!.items.some((i) => "label" in i && i.label === "Delete")).toBe(false);
+    hideContextMenu();
     fireEvent.mouseDown(screen.getByText("feature"));
     expect(useBranchesPane.getState().selected.map((t) => t.ref)).toEqual(["feature"]);
     expect(screen.getByRole("button", { name: "Delete Branch" })).toBeEnabled();
