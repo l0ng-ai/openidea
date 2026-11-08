@@ -35,7 +35,7 @@ function focusEditorNow() {
  */
 function dropEditorCaret(e: FocusEvent) {
   const editor = e.target;
-  if (!(editor instanceof HTMLElement) || editor.getAttribute("contenteditable") !== "true") return;
+  if (!(editor instanceof HTMLElement) || !editor.matches('.cm-content[contenteditable="true"]')) return;
   // The window lost focus and keeps the editor focused for its return.
   if (document.activeElement === editor) return;
   if (e.relatedTarget instanceof Node && editor.contains(e.relatedTarget)) return;

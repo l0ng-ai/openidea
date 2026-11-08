@@ -55,6 +55,25 @@ describe("focus after popups", () => {
     dispose();
   });
 
+  it.each([
+    '<div contenteditable="true" tabindex="0">draft message</div>',
+    '<div class="cm-content" contenteditable="false" tabindex="0">preview text</div>',
+  ])("keeps the selection in an unrelated editable or read-only preview: %s", (markup) => {
+    document.body.innerHTML = `${markup}<button id="other">x</button>`;
+    const content = document.body.firstElementChild as HTMLElement;
+    const dispose = installFocusTracking(() => {});
+    content.focus();
+    const selection = document.getSelection()!;
+    selection.setBaseAndExtent(content.firstChild!, 1, content.firstChild!, 5);
+    let selectedOnBlur = "";
+    const probe = () => (selectedOnBlur = selection.toString());
+    document.addEventListener("focusout", probe);
+    document.getElementById("other")!.focus();
+    document.removeEventListener("focusout", probe);
+    dispose();
+    expect(selectedOnBlur).toBe(content.textContent!.slice(1, 5));
+  });
+
   it("leaves focus alone when the popup handed it to another component", () => {
     vi.useFakeTimers();
     setup();
