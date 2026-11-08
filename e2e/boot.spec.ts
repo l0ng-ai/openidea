@@ -73,7 +73,9 @@ test("a slow module load succeeds before the deadline and cancels the startup ti
     await gate;
     await route.fulfill({ response });
   });
+  const moduleRequest = page.waitForRequest("**/src/main.tsx");
   await page.goto("/", { waitUntil: "commit" });
+  await moduleRequest;
   await page.locator("#splash").waitFor({ state: "attached" });
   await page.clock.runFor(25_000);
   await expect(page.locator("#boot-error")).toHaveCount(0);
