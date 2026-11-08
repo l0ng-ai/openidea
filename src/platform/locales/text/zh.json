@@ -1,4 +1,5 @@
 {
+  "Identifiers › Package reference": "标识符 › 包引用",
   "Cannot remove a worktree containing the open project.": "无法移除包含当前打开项目的工作树。",
   "Select Python Environment Folder": "选择 Python 环境文件夹",
   "Checking interpreter": "正在检查解释器",
