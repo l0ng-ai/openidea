@@ -18,6 +18,13 @@
  *
  * Everything else stays xterm's: real compositions (`compositionstart` … `compositionend`),
  * input events for keys xterm already sent, and input with no IME keydown behind it.
+ *
+ * A real composition still needs two corrections before xterm sends it:
+ * - switching the input source mid-composition (CapsLock with macOS Pinyin) reports a
+ *   keyCode-0 keydown before `compositionend`; xterm takes it for a key that ends the
+ *   composition and sends the text at once, then sends it again on `compositionend`;
+ * - the letters committed by that switch keep the spaces the IME showed between syllables
+ *   (`awd` arrives as `aw d`), so the textarea is rewritten to what was typed.
  */
 import { isImeKey } from "@/platform/ime";
 
@@ -32,6 +39,16 @@ export interface TerminalInputOptions {
 }
 
 /**
+ * The text a composition commits, without the syllable spaces an IME displays when it commits
+ * its raw letters (the commit is the composition text itself and plain ASCII). The user never
+ * typed those spaces: Space picks a candidate while composing.
+ */
+function typedCommit(commit: string, composition: string): string {
+  if (commit !== composition || !/^[\x20-\x7e]+$/.test(commit)) return commit;
+  return commit.replaceAll(" ", "");
+}
+
+/**
  * Takes input-method commits away from xterm's textarea handling. Returns a disposer.
  *
  * `send` receives the committed text once per commit, in order; it is never called for
@@ -39,13 +56,19 @@ export interface TerminalInputOptions {
  */
 export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions): () => void {
   let composing = false;
+  /** The composition text the IME displays, from the last `compositionupdate`. */
+  let composition = "";
   /** The pending keydown went to the input method, so its keypress belongs to it too. */
   let imeKey = false;
   /** An IME keydown was seen since the last keyup: its commit is ours to deliver. */
   let imeDown = false;
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (composing) return;
+    if (composing) {
+      // The input-source switch, not a key: the commit follows on `compositionend`.
+      if (e.keyCode === 0) e.stopPropagation();
+      return;
+    }
     imeKey = isImeKey(e);
     if (imeKey) {
       // The IME owns this key: xterm must not run its deferred textarea diff or send the
@@ -85,9 +108,18 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
 
   const onCompositionStart = () => {
     composing = true;
+    composition = "";
   };
-  const onCompositionEnd = () => {
+  const onCompositionUpdate = (e: CompositionEvent) => {
+    composition = e.data;
+  };
+  // Runs before xterm reads the commit from the textarea, which it defers by a task.
+  const onCompositionEnd = (e: CompositionEvent) => {
     composing = false;
+    const commit = typedCommit(e.data, composition);
+    if (commit !== e.data && textarea.value.endsWith(e.data)) {
+      textarea.value = textarea.value.slice(0, -e.data.length) + commit;
+    }
   };
 
   host.addEventListener("keydown", onKeyDown, true);
@@ -95,6 +127,7 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
   host.addEventListener("input", onInput, true);
   host.addEventListener("keyup", onKeyUp, true);
   textarea.addEventListener("compositionstart", onCompositionStart);
+  textarea.addEventListener("compositionupdate", onCompositionUpdate);
   textarea.addEventListener("compositionend", onCompositionEnd);
   return () => {
     host.removeEventListener("keydown", onKeyDown, true);
@@ -102,6 +135,7 @@ export function ownTerminalInput({ host, textarea, send }: TerminalInputOptions)
     host.removeEventListener("input", onInput, true);
     host.removeEventListener("keyup", onKeyUp, true);
     textarea.removeEventListener("compositionstart", onCompositionStart);
+    textarea.removeEventListener("compositionupdate", onCompositionUpdate);
     textarea.removeEventListener("compositionend", onCompositionEnd);
   };
 }

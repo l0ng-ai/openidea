@@ -1,5 +1,0 @@
-<!-- OpenIDEA: macOS window button glyph (exit full screen), drawn in the full-screen title bar. -->
-<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M8.75 2.5V7.25H13.5L8.75 2.5Z" fill="#6C707E"/>
-<path d="M7.25 13.5V8.75H2.5L7.25 13.5Z" fill="#6C707E"/>
-</svg>
