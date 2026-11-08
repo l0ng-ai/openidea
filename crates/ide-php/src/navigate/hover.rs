@@ -352,6 +352,9 @@ impl PhpEngine {
         let here = FileSummary::extract(&parsed);
         let resolver = self.resolver();
         let offset = parsed.line_index().byte(pos);
+        if let Some(info) = self.string_ref_hover(&parsed, &path, offset) {
+            return Some(info);
+        }
         let found = self.at_caret(&parsed, &here, &resolver, offset)?;
         let markdown = match &found.subject {
             Subject::Variable { name, ty, .. } => render(None, &format!("{ty} ${name}"), None),

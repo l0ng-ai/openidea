@@ -9,11 +9,15 @@
 //! `config/app.php`, after `blog.feed.` the keys of the `feed` array. Goto
 //! opens the segment at the caret (`app` opens the file, `name` the key).
 //! Renaming changes one segment of a key in the array and in every usage
-//! of the key or of the keys below it; a file's segment isn't renamed.
+//! of the key or of the keys below it; a file's segment isn't renamed, nor
+//! a key a package declares. Hover shows the value and its type; a key
+//! below a known array that isn't there is undefined.
 
 use std::path::Path;
 
-use super::{CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget};
+use super::{
+    CalleePattern, Declared, PlacePattern, Position, RefContext, RefItem, ReferenceKind, RenameTarget, Undefined,
+};
 use crate::frameworks::laravel::config::{ConfigKeys, declared_key_at, file_prefix};
 use crate::navigate::Target;
 use crate::syntax::ParsedFile;
@@ -125,7 +129,7 @@ impl ReferenceKind for ConfigKey {
         let end = segment_end(value, at);
         let key = &value[..end];
         let entry = keys.get(key)?;
-        if entry.is_file {
+        if entry.is_file || !entry.path.starts_with(&cx.project.paths.config) {
             return None;
         }
         let start = key.rfind('.').map_or(0, |dot| dot + 1);
@@ -146,5 +150,36 @@ impl ReferenceKind for ConfigKey {
 
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool {
         Self::keys(cx).get(value).is_some()
+    }
+
+    fn hover(&self, cx: &RefContext<'_>, value: &str) -> Option<String> {
+        let keys = Self::keys(cx);
+        let entry = keys.get(value)?;
+        let file = entry.path.strip_prefix(&cx.project.root).unwrap_or(&entry.path);
+        let file = file.to_string_lossy().replace('\\', "/");
+        let mut out = format!("**config** `{}`", entry.key);
+        if let Some(value) = &entry.value {
+            out.push_str(&format!("\n\n```php\n{value}\n```"));
+        }
+        let ty = entry.ty.as_deref().map(|ty| format!("`{ty}` · ")).unwrap_or_default();
+        out.push_str(&format!("\n\n{ty}{file}"));
+        Some(out)
+    }
+
+    fn undefined(&self, cx: &RefContext<'_>, value: &str) -> Option<Undefined> {
+        let keys = Self::keys(cx);
+        if keys.get(value).is_some() {
+            return None;
+        }
+        // Only below an array literal that is known: the value of a key
+        // that isn't one (`env(…)`) or a file no one declares may hold it.
+        let mut prefix = value;
+        while let Some(dot) = prefix.rfind('.') {
+            prefix = &prefix[..dot];
+            if let Some(entry) = keys.get(prefix) {
+                return entry.is_array.then(|| Undefined::warning(format!("Config key '{value}' is not defined")));
+            }
+        }
+        None
     }
 }

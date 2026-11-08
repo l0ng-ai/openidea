@@ -464,6 +464,11 @@ pub(crate) fn string_args(text: &str, code: &Span<u32>) -> Vec<(String, Span<u32
 /// and the data array is typed like any other.
 pub const VIEW_CALL_PREFIX: &str = "__blade_";
 
+/// Other directives compiled to `__blade_<directive>(…)` calls, so their
+/// strings are string references too: `@lang('key')` and `@choice('key',
+/// n)` (translation keys), `@vite([...])` (Vite assets).
+pub const CALL_DIRECTIVES: &[&str] = &["lang", "choice", "vite"];
+
 /// Compiles `text` to PHP. `component`: the template is a component view
 /// (below `views/components/`), so `$attributes` and `$slot` are defined.
 pub fn compile(text: &str, component: bool) -> Compiled {
@@ -636,7 +641,7 @@ fn directive(out: &mut Out, blocks: &mut Vec<Block>, name: &str, code: Option<&S
             }
         }
         "use" => {}
-        _ if views::VIEW_DIRECTIVES.contains(&name) && code.is_some() => {
+        _ if (views::VIEW_DIRECTIVES.contains(&name) || CALL_DIRECTIVES.contains(&name)) && code.is_some() => {
             out.push(&format!("{VIEW_CALL_PREFIX}{name}("));
             out.code_or(code, "");
             out.push(

@@ -214,7 +214,8 @@ fn place_patterns_match_config_strings() {
         ("config()->get('app/*|*/');", Some("configKey")),
         ("config()?->get('app/*|*/');", Some("configKey")),
         ("config('x')->get('app/*|*/');", None),
-        ("trans('app/*|*/');", None),
+        // A translation key (phase 8.8), not a configuration key.
+        ("trans('app/*|*/');", Some("translationKey")),
         ("$x->get('app/*|*/');", None),
         ("$x = 'app/*|*/';", None),
         // Partial strings while typing.
@@ -412,3 +413,6 @@ mod view_tests;
 
 #[path = "blade_tests.rs"]
 mod blade_tests;
+
+#[path = "data_tests.rs"]
+mod data_tests;

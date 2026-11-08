@@ -213,6 +213,34 @@ export const PHP_INSPECTIONS: readonly PhpInspection[] = [
     description:
       "Reports Laravel view names passed to view(), View::make(), Route::view(), response()->view() or a mailable's view() or markdown() that no view file has. The quick-fix creates the Blade template.",
   },
+  {
+    code: "PhpUndefinedConfigKey",
+    name: "Undefined config key",
+    group: "Frameworks",
+    description:
+      "Reports Laravel configuration keys passed to config() or Config::get() that a known configuration array doesn't have.",
+  },
+  {
+    code: "PhpUndefinedEnvKey",
+    name: "Undefined environment variable",
+    group: "Frameworks",
+    description:
+      "Reports keys passed to env() that neither .env nor .env.example sets, and keys missing from .env.example. The quick-fix adds the key to .env.example.",
+  },
+  {
+    code: "PhpUndefinedTranslation",
+    name: "Undefined translation key",
+    group: "Frameworks",
+    description:
+      "Reports Laravel translation keys passed to __(), trans(), trans_choice() or Lang::get() that no locale has. The quick-fix creates the key in every locale.",
+  },
+  {
+    code: "PhpUndefinedViteAsset",
+    name: "Undefined Vite asset",
+    group: "Frameworks",
+    description:
+      "Reports paths passed to Vite::asset() or @vite that are neither a file, a Vite entry point nor in the build manifest.",
+  },
 ];
 
 const BY_ID = new Map(PHP_INSPECTIONS.map((i) => [phpInspectionId(i.code), i]));

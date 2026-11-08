@@ -54,7 +54,9 @@ use ide_core::settings::LaravelSettings;
 use ide_core::{CancellationToken, DocId, IdeError, IdeEvent, IdeResult, Pos, ServerId, SharedSink};
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::frameworks::laravel::{BladeCatalog, ConfigKeys, LaravelProject, RouteTable, ViewTable};
+use crate::frameworks::laravel::{
+    BladeCatalog, ConfigKeys, EnvKeys, LaravelProject, RouteTable, Translations, ViewTable, ViteAssets,
+};
 use crate::index::{IndexStats, PhpIndex};
 use crate::inspect::runner::Runner;
 use crate::inspect::{InspectionConfig, Inspections};
@@ -190,6 +192,11 @@ struct Shared {
     laravel: Mutex<LaravelCache>,
     /// The Laravel configuration keys for a modification count.
     laravel_config: Mutex<Option<(u64, Arc<ConfigKeys>)>>,
+    /// The Laravel environment keys, translations and Vite assets, for a
+    /// modification count.
+    laravel_env: Mutex<Option<(u64, Arc<EnvKeys>)>>,
+    laravel_lang: Mutex<Option<(u64, Arc<Translations>)>>,
+    laravel_assets: Mutex<Option<(u64, Arc<ViteAssets>)>>,
     /// The Laravel routes, for a modification count.
     laravel_routes: Mutex<Option<(u64, Arc<RouteTable>)>>,
     /// The Laravel views, for a modification count.
@@ -249,6 +256,9 @@ impl PhpEngine {
             symfony_config: Mutex::new(None),
             laravel: Mutex::new(LaravelCache::default()),
             laravel_config: Mutex::new(None),
+            laravel_env: Mutex::new(None),
+            laravel_lang: Mutex::new(None),
+            laravel_assets: Mutex::new(None),
             laravel_routes: Mutex::new(None),
             laravel_views: Mutex::new(None),
             view_variables: Mutex::new(HashMap::new()),
@@ -411,6 +421,12 @@ impl PhpEngine {
         if changed.iter().chain(removed).any(|p| is_yaml_path(p) || p.ends_with("config")) {
             // The Symfony configuration is read again on next use.
             *self.shared.symfony_config.lock() = None;
+            self.shared.modification.fetch_add(1, Ordering::SeqCst);
+            self.shared.inspect_open_documents();
+        }
+        if changed.iter().chain(removed).any(|p| is_laravel_data(p)) {
+            // `.env`, JSON translations, the Vite config or manifest: the
+            // models built from them are read again on next use.
             self.shared.modification.fetch_add(1, Ordering::SeqCst);
             self.shared.inspect_open_documents();
         }
@@ -581,12 +597,60 @@ impl PhpEngine {
             return Some(keys.clone());
         }
         let project = self.laravel()?;
-        let keys = Arc::new(ConfigKeys::read(&project.paths.config, |path| match self.open_document(path) {
-            Some(document) => Some(document.text.to_string()),
-            None => std::fs::read_to_string(path).ok(),
-        }));
+        let packages = crate::frameworks::laravel::config::package_configs(&project, |path| self.text_of(path));
+        let keys = Arc::new(ConfigKeys::read_with(&project.paths.config, &packages, |path| self.text_of(path)));
         *self.shared.laravel_config.lock() = Some((modification, keys.clone()));
         Some(keys)
+    }
+
+    /// The text of the file `path`: its open buffer (not an embedded one),
+    /// else the file on disk.
+    fn text_of(&self, path: &Path) -> Option<String> {
+        match self.open_document(path) {
+            Some(document) if !document.embedded => Some(document.text.to_string()),
+            _ => std::fs::read_to_string(path).ok(),
+        }
+    }
+
+    /// A Laravel model in `slot` for the current modification count, built
+    /// by `build` when it is older; `None` outside Laravel projects.
+    fn laravel_cached<T>(
+        &self,
+        slot: &Mutex<Option<(u64, Arc<T>)>>,
+        build: impl FnOnce(&LaravelProject) -> T,
+    ) -> Option<Arc<T>> {
+        let modification = self.modification_count();
+        if let Some((at, found)) = &*slot.lock()
+            && *at == modification
+        {
+            return Some(found.clone());
+        }
+        let project = self.laravel()?;
+        let found = Arc::new(build(&project));
+        *slot.lock() = Some((modification, found.clone()));
+        Some(found)
+    }
+
+    /// The keys of the Laravel project's `.env` and `.env.example`, or
+    /// `None` when the project isn't a Laravel project.
+    pub fn laravel_env(&self) -> Option<Arc<EnvKeys>> {
+        self.laravel_cached(&self.shared.laravel_env, |project| {
+            EnvKeys::read(&project.root, |path| std::fs::read_to_string(path).ok())
+        })
+    }
+
+    /// The translation keys of the Laravel project (`lang/`, open buffers
+    /// first), or `None` when the project isn't a Laravel project.
+    pub fn laravel_translations(&self) -> Option<Arc<Translations>> {
+        self.laravel_cached(&self.shared.laravel_lang, |project| Translations::read(project, |path| self.text_of(path)))
+    }
+
+    /// The Vite entry points, manifest and asset files of the Laravel
+    /// project, or `None` when the project isn't a Laravel project.
+    pub fn laravel_assets(&self) -> Option<Arc<ViteAssets>> {
+        self.laravel_cached(&self.shared.laravel_assets, |project| {
+            ViteAssets::read(&project.root, &project.paths.resources, |path| std::fs::read_to_string(path).ok())
+        })
     }
 
     /// The routes and middleware of the Laravel project (its route files,
@@ -942,6 +1006,16 @@ fn is_laravel_input(path: &Path) -> bool {
             "composer.json" | "composer.lock" | "installed.json" | "module.json" | "modules_statuses.json" | "artisan"
         )
     ) || path.ends_with("config/modules.php")
+}
+
+/// Files that aren't PHP but feed Laravel string references: `.env`
+/// files, JSON translations, Vite's config and build manifest.
+fn is_laravel_data(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return false };
+    name.starts_with(".env")
+        || name.starts_with("vite.config.")
+        || name == "manifest.json"
+        || (name.ends_with(".json") && path.components().any(|part| part.as_os_str() == "lang"))
 }
 
 fn is_manifest_name(path: &Path) -> bool {

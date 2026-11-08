@@ -88,6 +88,7 @@ namespace Illuminate\Support {
         protected $app;
         public function register(): void {}
         protected function loadViewsFrom($path, $namespace): void {}
+        protected function mergeConfigFrom($path, $key): void {}
     }
 }
 
@@ -176,6 +177,34 @@ namespace Illuminate\Support\Facades {
      */
     class Blade extends Facade {
         protected static function getFacadeAccessor() { return 'blade.compiler'; }
+    }
+    /**
+     * @method static string|array get(string $key, array $replace = [], string|null $locale = null, bool $fallback = true)
+     * @method static bool has(string $key, string|null $locale = null, bool $fallback = true)
+     * @method static string choice(string $key, \Countable|int|float|array $number, array $replace = [], string|null $locale = null)
+     */
+    class Lang extends Facade {
+        protected static function getFacadeAccessor() { return 'translator'; }
+    }
+    /**
+     * @method static string asset(string $asset, string|null $buildDirectory = null)
+     * @method static string content(string $asset, string|null $buildDirectory = null)
+     */
+    class Vite extends Facade {
+        protected static function getFacadeAccessor() { return \Illuminate\Foundation\Vite::class; }
+    }
+}
+
+namespace Illuminate\Support {
+    class Env {
+        public static function get($key, $default = null): mixed { return null; }
+        public static function getOrFail($key): mixed { return null; }
+    }
+}
+
+namespace Illuminate\Foundation {
+    class Vite {
+        public function asset($asset, $buildDirectory = null): string { return ''; }
     }
 }
 

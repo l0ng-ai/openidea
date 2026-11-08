@@ -311,9 +311,14 @@ impl PhpEngine {
         Some(Completions { items, incomplete: false })
     }
 
-    /// The template's own problems (unclosed sections and pushes).
+    /// The template's own problems (unclosed sections and pushes), and its
+    /// undefined configuration keys, environment keys, translations and
+    /// Vite assets.
     pub fn blade_problems(&self, text: &str) -> Vec<Diagnostic> {
-        structure::inspect(text, &self.custom_directives())
+        let mut out = structure::inspect(text, &self.custom_directives());
+        out.extend(self.blade_reference_problems(text));
+        out.sort_by_key(|diagnostic| diagnostic.range.start);
+        out
     }
 
     /// The views `blade` extends, nearest first.

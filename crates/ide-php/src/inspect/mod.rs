@@ -16,7 +16,8 @@
 //!   returning; [`level`]: syntax newer than the project's PHP version and
 //!   uses of deprecated symbols; [`routes`]: Symfony and Laravel route
 //!   names no route defines; [`views`]: Laravel view names no view file
-//!   has); [`PhpEngine::set_inspections`] replaces the
+//!   has; [`laravel`]: undefined Laravel configuration keys, environment
+//!   keys, translations and Vite assets); [`PhpEngine::set_inspections`] replaces the
 //!   set, and [`PhpEngine::configure_inspections`] builds it from the
 //!   settings ([`InspectionConfig`]: the inspection profile in effect, where
 //!   the engine's inspections are `lsp:php:<Id>`, turned off or with their
@@ -51,6 +52,7 @@ pub mod calls;
 pub mod control;
 pub(crate) mod fixes;
 pub(crate) mod intentions;
+pub mod laravel;
 pub mod level;
 pub mod members;
 pub mod routes;
@@ -122,7 +124,7 @@ impl Inspections {
     /// The engine's own inspections, each call and type check in the mode
     /// `mode` gives for its id.
     fn builtin_modes(mode: &dyn Fn(&'static str) -> TypeCheckMode) -> Self {
-        Self::new(vec![
+        let mut list: Vec<Arc<dyn Inspection>> = vec![
             Arc::new(undefined::UndefinedClass),
             Arc::new(undefined::UndefinedFunction),
             Arc::new(undefined::UndefinedConstant),
@@ -149,7 +151,11 @@ impl Inspections {
             Arc::new(level::Deprecation),
             Arc::new(routes::UndefinedRoute),
             Arc::new(views::UndefinedView),
-        ])
+        ];
+        for inspection in laravel::UndefinedReference::all() {
+            list.push(Arc::new(inspection));
+        }
+        Self::new(list)
     }
 
     pub fn new(list: Vec<Arc<dyn Inspection>>) -> Self {

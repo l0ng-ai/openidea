@@ -10,9 +10,16 @@
 //! or not), and a **reference kind** ([`ReferenceKind`]) says what such a
 //! string names and supplies completion items, targets, usages, rename and
 //! validation. Kinds are listed in [`kinds`]: `configKey` ([`config_key`]),
-//! `routeName` ([`route_name`]), `controllerAction` and `resourceAction`
-//! ([`controller_action`]), `middleware` ([`middleware`]) and `viewName`
-//! ([`view_name`]).
+//! `envKey` ([`env_key`]), `translationKey` ([`translation_key`]),
+//! `viteAsset` ([`vite_asset`]), `routeName` ([`route_name`]),
+//! `controllerAction` and `resourceAction` ([`controller_action`]),
+//! `middleware` ([`middleware`]) and `viewName` ([`view_name`]).
+//!
+//! A kind may describe a usage for hover ([`ReferenceKind::hover`]) and say
+//! what is wrong with one that names nothing ([`ReferenceKind::undefined`]),
+//! which the "undefined …" inspections
+//! ([`crate::inspect::laravel::UndefinedReference`]) and the problems of
+//! Blade templates ([`PhpEngine::blade_problems`]) report.
 //!
 //! A kind sees the string's site ([`SiteInfo`]): its file, and the class it
 //! is about (the `Foo::class` before it in its array, or the controller of
@@ -34,17 +41,22 @@
 
 pub mod config_key;
 pub mod controller_action;
+pub mod env_key;
 pub mod middleware;
 pub mod route_name;
 #[cfg(test)]
 mod tests;
+pub mod translation_key;
 pub mod view_name;
+pub mod vite_asset;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ide_core::{CancellationToken, DocId, FileEdit, IdeError, IdeResult, Pos, Range, TextEdit, WorkspaceEdit};
+use ide_core::{
+    CancellationToken, Diagnostic, DocId, FileEdit, IdeError, IdeResult, Pos, Range, Severity, TextEdit, WorkspaceEdit,
+};
 use mago_span::{HasSpan, Span};
 use mago_syntax::cst::{
     Access, Argument, ArgumentList, ArrayElement, Call, ClassLikeConstantSelector, ClassLikeMemberSelector, Expression,
@@ -65,9 +77,12 @@ use crate::types::{ExprTypes, Resolver, Type};
 
 pub use config_key::ConfigKey;
 pub use controller_action::{ControllerAction, ResourceAction};
+pub use env_key::EnvKey;
 pub use middleware::Middleware;
 pub use route_name::RouteName;
+pub use translation_key::TranslationKey;
 pub use view_name::ViewName;
+pub use vite_asset::ViteAsset;
 
 // --------------------------------------------------------------- patterns
 
@@ -221,6 +236,7 @@ const HELPER_INSTANCES: &[(&str, &str)] = &[
     ("url", "Illuminate\\Routing\\UrlGenerator"),
     ("response", "Illuminate\\Routing\\ResponseFactory"),
     ("view", "Illuminate\\View\\Factory"),
+    ("trans", "Illuminate\\Translation\\Translator"),
 ];
 
 /// A string literal argument before its call is resolved.
@@ -594,6 +610,49 @@ pub trait ReferenceKind: Send + Sync {
     /// Whether `value` names something that exists (the "unknown …"
     /// inspection).
     fn is_known(&self, cx: &RefContext<'_>, value: &str) -> bool;
+
+    /// Markdown describing what a usage written `value` names (hover).
+    fn hover(&self, _cx: &RefContext<'_>, _value: &str) -> Option<String> {
+        None
+    }
+
+    /// What is wrong with a usage written `value` (a plain literal) that
+    /// names nothing; `None` when it is fine, or when that can't be told
+    /// (a package's configuration, say).
+    fn undefined(&self, _cx: &RefContext<'_>, _value: &str) -> Option<Undefined> {
+        None
+    }
+}
+
+/// A usage naming nothing; see [`ReferenceKind::undefined`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Undefined {
+    pub message: String,
+    pub severity: Severity,
+    /// A quick-fix: its title and edit.
+    pub fix: Option<(String, WorkspaceEdit)>,
+}
+
+impl Undefined {
+    pub fn warning(message: impl Into<String>) -> Self {
+        Self { message: message.into(), severity: Severity::Warning, fix: None }
+    }
+
+    pub fn with_fix(mut self, title: impl Into<String>, edit: WorkspaceEdit) -> Self {
+        self.fix = Some((title.into(), edit));
+        self
+    }
+}
+
+/// An undefined usage found in a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UndefinedSite {
+    /// The kind's id.
+    pub kind: &'static str,
+    /// The literal's content (bytes of the parse).
+    pub start: u32,
+    pub end: u32,
+    pub problem: Undefined,
 }
 
 /// A declaration found by [`ReferenceKind::declared_at`].
@@ -607,7 +666,17 @@ pub struct Declared {
 
 /// The built-in kinds.
 pub fn kinds() -> &'static [&'static dyn ReferenceKind] {
-    &[&ConfigKey, &RouteName, &ControllerAction, &ResourceAction, &Middleware, &ViewName]
+    &[
+        &ConfigKey,
+        &EnvKey,
+        &TranslationKey,
+        &ViteAsset,
+        &RouteName,
+        &ControllerAction,
+        &ResourceAction,
+        &Middleware,
+        &ViewName,
+    ]
 }
 
 /// The kind whose patterns `site` matches.
@@ -683,7 +752,7 @@ pub fn site_at(parsed: &ParsedFile, resolver: &Resolver<'_>, offset: u32) -> Opt
 
 impl PhpEngine {
     /// The reference context, when the project is a Laravel project.
-    fn ref_context(&self) -> Option<RefContext<'_>> {
+    pub(crate) fn ref_context(&self) -> Option<RefContext<'_>> {
         Some(RefContext { engine: self, project: self.laravel()?, site: None })
     }
 
@@ -720,7 +789,7 @@ impl PhpEngine {
     }
 
     /// The reference context of `site` in the file at `path`.
-    fn site_context(&self, path: &Path, site: &StringSite) -> Option<RefContext<'_>> {
+    pub(crate) fn site_context(&self, path: &Path, site: &StringSite) -> Option<RefContext<'_>> {
         let mut cx = self.ref_context()?;
         let class = site.class.clone().or_else(|| {
             let routes = self.laravel_routes()?;
@@ -795,6 +864,83 @@ impl PhpEngine {
         items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
         // The segment being completed changes with every `.`: ask again.
         Some(Completions { items, incomplete: true })
+    }
+
+    /// Hover over a string reference; `None` when the caret isn't on one (or
+    /// its kind has nothing to say).
+    pub(crate) fn string_ref_hover(
+        &self,
+        parsed: &ParsedFile,
+        path: &Path,
+        offset: u32,
+    ) -> Option<crate::navigate::HoverInfo> {
+        let (cx, subject) = self.ref_subject(parsed, path, offset)?;
+        if subject.declaration {
+            return None;
+        }
+        let markdown = subject.kind.hover(&cx, &subject.value)?;
+        Some(crate::navigate::HoverInfo { markdown, range: parsed.line_index().range(subject.start, subject.end) })
+    }
+
+    /// The usages of `kinds` in `parsed` (the file at `path`) that name
+    /// nothing, plain literals only (no interpolation or escapes).
+    pub(crate) fn undefined_references(
+        &self,
+        parsed: &ParsedFile,
+        path: &Path,
+        kinds: &[&'static dyn ReferenceKind],
+        cancel: &CancellationToken,
+    ) -> Vec<UndefinedSite> {
+        if self.ref_context().is_none() {
+            return Vec::new();
+        }
+        let resolver = self.resolver();
+        let mut out = Vec::new();
+        for site in sites(parsed, &resolver, kinds, None) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let value = &site.value;
+            if value.is_empty() || value.contains(['$', '\\', '{']) {
+                continue;
+            }
+            let Some(kind) = kind_of(&site, &resolver) else { continue };
+            if !kinds.iter().any(|wanted| wanted.id() == kind.id()) {
+                continue;
+            }
+            let Some(cx) = self.site_context(path, &site) else { continue };
+            if let Some(problem) = kind.undefined(&cx, value) {
+                out.push(UndefinedSite { kind: kind.id(), start: site.start, end: site.end, problem });
+            }
+        }
+        out
+    }
+
+    /// The undefined configuration keys, environment keys, translations and
+    /// Vite assets of a Blade template, as diagnostics of the template.
+    pub(crate) fn blade_reference_problems(&self, text: &str) -> Vec<Diagnostic> {
+        let compiled = crate::blade::compile(text, false);
+        let parsed = ParsedFile::parse("template.php", compiled.php.as_str());
+        let kinds: [&'static dyn ReferenceKind; 4] = [&ConfigKey, &EnvKey, &TranslationKey, &ViteAsset];
+        let lines = crate::syntax::LineIndex::new(text);
+        let mut out = Vec::new();
+        for found in self.undefined_references(&parsed, Path::new(""), &kinds, &CancellationToken::new()) {
+            let (Some(start), Some(end)) = (compiled.blade_offset(found.start), compiled.blade_offset(found.end))
+            else {
+                continue;
+            };
+            out.push(Diagnostic {
+                range: lines.range(start, end),
+                severity: found.problem.severity,
+                message: found.problem.message,
+                source: Some(crate::blade::structure::DIAGNOSTIC_SOURCE.into()),
+                code: Some(crate::inspect::laravel::inspection_id(found.kind).unwrap_or(found.kind).into()),
+                unnecessary: false,
+                deprecated: false,
+                server: None,
+            });
+        }
+        out
     }
 
     /// Goto from a string reference; `None` when the caret isn't on one (or

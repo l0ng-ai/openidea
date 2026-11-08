@@ -392,6 +392,10 @@ fn replacing_the_inspections_runs_them_again() {
             "PhpDeprecation",
             "PhpUndefinedRoute",
             "PhpUndefinedView",
+            "PhpUndefinedConfigKey",
+            "PhpUndefinedEnvKey",
+            "PhpUndefinedTranslation",
+            "PhpUndefinedViteAsset",
         ]
     );
 }

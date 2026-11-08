@@ -403,7 +403,7 @@ fn concatenation(text: &str) -> Vec<&str> {
 }
 
 /// The folder a path expression of the provider `file` names.
-fn path_expression(project: &LaravelProject, file: &Path, text: &str) -> Option<PathBuf> {
+pub(crate) fn path_expression(project: &LaravelProject, file: &Path, text: &str) -> Option<PathBuf> {
     let text = path_expression_text(project, file, text)?;
     Some(normalize(&clean(Path::new(&text))))
 }
@@ -457,7 +457,7 @@ fn path_expression_text(project: &LaravelProject, file: &Path, text: &str) -> Op
 }
 
 /// `a/./b/../c` is `a/c`.
-fn clean(path: &Path) -> PathBuf {
+pub(crate) fn clean(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {

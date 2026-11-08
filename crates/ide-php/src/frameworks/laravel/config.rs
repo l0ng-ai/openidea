@@ -6,6 +6,17 @@
 //!
 //! Only string keys of array literals count; a value that isn't an array
 //! literal (`env(…)`, a function call) ends the nesting.
+//!
+//! Packages add configuration of their own ([`package_configs`]): the
+//! framework's defaults (`vendor/laravel/framework/config/*.php`, which
+//! Laravel 11 merges below the application's files) and the files service
+//! providers merge with `mergeConfigFrom(path, 'key')` (the app's and
+//! modules' providers, and the providers packages list under
+//! `extra.laravel.providers` in `vendor/composer/installed.json`). The
+//! application's own keys win.
+//!
+//! Each value gets a type read from its source ([`value_type`]): literals,
+//! casts and `env('…', default)` (the default's type).
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +24,8 @@ use ide_core::Range;
 use mago_span::HasSpan;
 use mago_syntax::cst::{ArrayElement, Expression, Literal, Statement};
 
+use super::LaravelProject;
+use super::views::{call_arguments, clean, path_expression, php_files, provider_files, string_literal};
 use crate::syntax::ParsedFile;
 
 /// The longest value text kept for completion details.
@@ -38,6 +51,9 @@ pub struct ConfigEntry {
     /// The source text of the value on one line, shortened (`env('APP_NAME',
     /// 'Laravel')`); `None` for arrays and files.
     pub value: Option<String>,
+    /// The value's type when its source says it (`string`, `int`, `bool`,
+    /// `array`, …).
+    pub ty: Option<String>,
     /// The value is an array literal (or the entry is a file): it has keys
     /// of its own.
     pub is_array: bool,
@@ -65,9 +81,16 @@ impl ConfigKeys {
     /// The keys of the files below `dir`; `text_of` reads a file (an open
     /// buffer first). Files are visited in path order.
     pub fn read(dir: &Path, text_of: impl Fn(&Path) -> Option<String>) -> Self {
+        Self::read_with(dir, &[], text_of)
+    }
+
+    /// [`read`](Self::read), plus the files of `packages` (`(key, file)`)
+    /// below the application's keys.
+    pub fn read_with(dir: &Path, packages: &[(String, PathBuf)], text_of: impl Fn(&Path) -> Option<String>) -> Self {
         let mut files = Vec::new();
         config_files(dir, dir, &mut files);
         files.sort();
+        files.extend(packages.iter().cloned());
         let mut entries = Vec::new();
         for (prefix, path) in files {
             let Some(text) = text_of(&path) else { continue };
@@ -85,6 +108,7 @@ impl ConfigKeys {
             path: path.to_path_buf(),
             range: Range::default(),
             value: None,
+            ty: Some("array".to_owned()),
             is_array: true,
             is_file: true,
         }];
@@ -94,6 +118,7 @@ impl ConfigKeys {
         out
     }
 
+    /// The entries sorted by key; of entries with one key, the first wins.
     pub fn from_entries(mut entries: Vec<ConfigEntry>) -> Self {
         entries.sort_by(|a, b| a.key.cmp(&b.key));
         entries.dedup_by(|later, earlier| later.key == earlier.key);
@@ -203,11 +228,14 @@ fn collect(parsed: &ParsedFile, path: &Path, prefix: &str, array: &Expression<'_
         let key = format!("{prefix}.{name}");
         let nested = is_array(element.value);
         let value = (!nested).then(|| value_text(parsed, element.value));
+        let span = element.value.span();
+        let source = parsed.text().get(span.start.offset as usize..span.end.offset as usize).unwrap_or_default();
         out.push(ConfigEntry {
             key: key.clone(),
             path: path.to_path_buf(),
             range: lines.range(start, end),
             value,
+            ty: value_type(source),
             is_array: nested,
             is_file: false,
         });
@@ -231,6 +259,115 @@ fn find_key(prefix: &str, array: &Expression<'_>, offset: u32) -> Option<Declare
         }
     }
     None
+}
+
+/// The type of a value written `source`, when the source says it: a
+/// literal, a cast, an array, or `env('…', default)` (the default's type).
+pub fn value_type(source: &str) -> Option<String> {
+    let source = source.trim();
+    let lower = source.to_ascii_lowercase();
+    let compact = lower.replace([' ', '\t'], "");
+    let casts: [(&[&str], &str); 5] = [
+        (&["(int)", "(integer)"], "int"),
+        (&["(bool)", "(boolean)"], "bool"),
+        (&["(string)"], "string"),
+        (&["(float)", "(double)"], "float"),
+        (&["(array)"], "array"),
+    ];
+    for (names, ty) in casts {
+        if names.iter().any(|cast| compact.starts_with(cast)) {
+            return Some(ty.to_owned());
+        }
+    }
+    let ty = match lower.as_str() {
+        "true" | "false" => "bool",
+        "null" => "null",
+        _ if source.starts_with(['\'', '"']) => "string",
+        _ if source.starts_with('[') || compact.starts_with("array(") => "array",
+        _ if source.replace('_', "").parse::<i64>().is_ok() => "int",
+        _ if source.parse::<f64>().is_ok() => "float",
+        _ if compact.trim_start_matches('\\').starts_with("env(") => {
+            let open = source.find('(')?;
+            let args = call_arguments(source, open)?;
+            return match args.get(1) {
+                Some(default) => value_type(default),
+                None => Some("mixed".to_owned()),
+            };
+        }
+        _ => return None,
+    };
+    Some(ty.to_owned())
+}
+
+/// The configuration files packages add, as `(key, file)`; see the module
+/// documentation. `text_of` reads a provider.
+pub fn package_configs(project: &LaravelProject, text_of: impl Fn(&Path) -> Option<String>) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
+    let framework = project.root.join("vendor").join("laravel").join("framework").join("config");
+    for path in php_files(&framework) {
+        if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+            out.push((stem.to_owned(), crate::project::normalize(&path)));
+        }
+    }
+    let mut providers = provider_files(project);
+    providers.extend(vendor_providers(&project.root));
+    for provider in providers {
+        let Some(text) = text_of(&provider) else { continue };
+        let call = "mergeConfigFrom(";
+        let mut from = 0;
+        while let Some(at) = text[from..].find(call) {
+            let open = from + at + call.len() - 1;
+            from = open + 1;
+            let Some(args) = call_arguments(&text, open) else { continue };
+            let (Some(file), Some(key)) = (args.first(), args.get(1)) else { continue };
+            let Some(key) = string_literal(key) else { continue };
+            let Some(file) = path_expression(project, &provider, file) else { continue };
+            if !out.iter().any(|(known, path)| *known == key && *path == file) {
+                out.push((key, file));
+            }
+        }
+    }
+    out
+}
+
+/// The service provider files installed packages list under
+/// `extra.laravel.providers`, found through their PSR-4 autoload.
+fn vendor_providers(root: &Path) -> Vec<PathBuf> {
+    let composer = root.join("vendor").join("composer");
+    let Ok(text) = std::fs::read_to_string(composer.join("installed.json")) else { return Vec::new() };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+    let packages = json.get("packages").unwrap_or(&json).as_array().cloned().unwrap_or_default();
+    let mut out = Vec::new();
+    for package in packages {
+        let Some(providers) = package.pointer("/extra/laravel/providers").and_then(|p| p.as_array()) else {
+            continue;
+        };
+        let install = package.get("install-path").and_then(|p| p.as_str());
+        let dir = match (install, package.get("name").and_then(|n| n.as_str())) {
+            (Some(install), _) => composer.join(install),
+            (None, Some(name)) => root.join("vendor").join(name),
+            _ => continue,
+        };
+        let psr4 = package.pointer("/autoload/psr-4").and_then(|p| p.as_object()).cloned().unwrap_or_default();
+        for provider in providers.iter().filter_map(|p| p.as_str()) {
+            let provider = provider.trim_start_matches('\\');
+            for (prefix, dirs) in &psr4 {
+                let Some(rest) = provider.strip_prefix(prefix.as_str()) else { continue };
+                let dirs: Vec<&str> = match dirs {
+                    serde_json::Value::String(one) => vec![one.as_str()],
+                    serde_json::Value::Array(many) => many.iter().filter_map(|d| d.as_str()).collect(),
+                    _ => Vec::new(),
+                };
+                for base in dirs {
+                    let file = dir.join(base).join(format!("{}.php", rest.replace('\\', "/")));
+                    if file.is_file() {
+                        out.push(crate::project::normalize(&clean(&file)));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The value's source on one line, shortened.
