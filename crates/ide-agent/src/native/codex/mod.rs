@@ -263,7 +263,7 @@ impl CodexShim {
             "agentCapabilities": {
                 "loadSession": true,
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
-                "mcpCapabilities": { "http": false, "sse": false },
+                "mcpCapabilities": { "http": false, "sse": false, "stdio": true },
                 "sessionCapabilities": { "fork": {}, "close": {} },
                 "_meta": { "openidea": { "rollback": true, "steer": true } },
             },
@@ -317,7 +317,11 @@ impl CodexShim {
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let models = self.models().await;
-        let result = self.call("thread/start", json!({ "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/start", request).await?;
         let (id, options) = self.open_thread(&result, &models, None);
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
@@ -329,7 +333,11 @@ impl CodexShim {
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
         let models = self.models().await;
-        let result = self.call("thread/resume", json!({ "threadId": id, "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/resume", request).await?;
         let (_, options) = self.open_thread(&result, &models, None);
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
         let thread = result.get("thread").unwrap_or(&Value::Null);
@@ -344,6 +352,9 @@ impl CodexShim {
         let models = self.models().await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
         if let Some(s) = &settings {
             request["model"] = json!(s.model_slug(&models));
             request["approvalPolicy"] = json!(s.mode.approval_policy());

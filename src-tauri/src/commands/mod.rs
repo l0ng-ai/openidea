@@ -29,6 +29,7 @@ pub mod history;
 pub mod http;
 pub mod java;
 pub mod lsp;
+pub mod mcp;
 pub mod nav;
 pub mod notebook;
 pub mod perf;
@@ -65,6 +66,10 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        mcp::mcp_server_status,
+        mcp::mcp_set_open_editors,
+        mcp::mcp_set_focused_editor,
+        mcp::mcp_report_problems,
         android::android_devices,
         android::android_logcat,
         app::recent_projects,

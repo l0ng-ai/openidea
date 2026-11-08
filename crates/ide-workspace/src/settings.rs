@@ -27,7 +27,10 @@ pub enum SettingsScope {
     Project,
 }
 
-fn remove_custom_schemes(layer: &mut Json) {
+fn remove_global_settings(layer: &mut Json) {
+    if let Some(layer) = layer.as_object_mut() {
+        layer.remove("mcpServer");
+    }
     if let Some(editor) = layer.get_mut("editor").and_then(Json::as_object_mut) {
         editor.remove("customSchemes");
     }
@@ -187,7 +190,7 @@ impl SettingsStore {
         for (scope, file) in self.layers() {
             let Some(mut layer) = read_layer(&file) else { continue };
             if scope == SettingsScope::Project {
-                remove_custom_schemes(&mut layer);
+                remove_global_settings(&mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer) {
                 tracing::warn!("{} has invalid settings, ignoring it: {e}", file.display());
@@ -219,6 +222,9 @@ impl SettingsStore {
                 || (key == "editor" && value.get("customSchemes").is_some()))
         {
             return Err(IdeError::invalid("custom color schemes belong to user settings"));
+        }
+        if scope == SettingsScope::Project && (key == "mcpServer" || key.starts_with("mcpServer.")) {
+            return Err(IdeError::invalid("MCP server belongs to user settings"));
         }
         let file = self.file(scope).ok_or_else(|| IdeError::invalid("no project is open"))?.to_path_buf();
         let segments: Vec<&str> = key.split('.').collect();
@@ -259,7 +265,7 @@ impl SettingsStore {
             let layer = if is_target { parse_layer(&new_text).ok() } else { read_layer(&layer_file) };
             let Some(mut layer) = layer else { continue };
             if layer_scope == SettingsScope::Project {
-                remove_custom_schemes(&mut layer);
+                remove_global_settings(&mut layer);
             }
             if let Err(e) = try_merge(&mut merged, layer)
                 && is_target
@@ -636,5 +642,23 @@ mod tests {
         assert_eq!(toolbar.hidden, ["vcs.branch"]);
         let s = store.set(SettingsScope::Global, "appearance.mainToolbar", Json::Null).unwrap();
         assert_eq!(s.appearance.main_toolbar, None);
+    }
+    #[test]
+    fn mcp_server_is_default_off_and_cannot_be_enabled_by_a_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[mcpServer]\nenabled = true\n").unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(!settings.effective().mcp_server.enabled);
+        assert!(settings.set(SettingsScope::Project, "mcpServer.enabled", serde_json::json!(true)).is_err());
+        assert!(
+            settings
+                .set(SettingsScope::Global, "mcpServer.enabled", serde_json::json!(true))
+                .unwrap()
+                .mcp_server
+                .enabled
+        );
     }
 }

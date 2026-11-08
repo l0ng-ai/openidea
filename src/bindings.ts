@@ -8,6 +8,15 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
+	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
+	mcpSetFocusedEditor: (editor: {
+	path: IpcPath,
+	/**  Zero-based lines and UTF-16 columns, end exclusive. */
+	selection: Range,
+	selectedText: string,
+} | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
+	mcpReportProblems: (reset: boolean, files: FileProblems[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_report_problems", { reset, files })),
 	/**  Devices `adb` knows about, online ones first. */
 	androidDevices: () => typedError<AndroidDevice[], IdeError>(__TAURI_INVOKE("android_devices")),
 	/**
@@ -3956,6 +3965,11 @@ export type FileProbe = {
 	tooLarge: boolean,
 };
 
+export type FileProblems = {
+	path: IpcPath,
+	items: Diagnostic[],
+};
+
 /**  A path written in a document: an HTML URL attribute, a CSS `url()` / `@import`. */
 export type FileReference = {
 	range: Range,
@@ -4022,6 +4036,13 @@ export type FilesChanged = {
 	created: string[],
 	modified: string[],
 	removed: string[],
+};
+
+export type FocusedEditor = {
+	path: IpcPath,
+	/**  Zero-based lines and UTF-16 columns, end exclusive. */
+	selection: Range,
+	selectedText: string,
 };
 
 export type FoldKind = "region" | "comment" | "imports";
@@ -5594,6 +5615,28 @@ export type MavenSettings = {
 	 *  multiplier (`2C`, `2.5C`); empty = Maven's default (one thread per module).
 	 */
 	threads?: string,
+};
+
+/**  Tools › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings = {
+	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	enabled?: boolean,
+};
+
+/**  What Settings › Tools › MCP Server shows. */
+export type McpServerStatus = {
+	running: boolean,
+	/**  Why it isn't running though turned on. */
+	error: string | null,
+	port: number | null,
+	/**  The window's local project, which the URL and command below are for. */
+	project: IpcPath | null,
+	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	url: string | null,
+	/**  Bearer token of `url` (changes with every run). */
+	token: string | null,
+	/**  The stdio bridge: this executable and its arguments. */
+	stdioCommand: string[],
 };
 
 export type MemoryCategory = 
@@ -7373,6 +7416,8 @@ export type Settings_Deserialize = {
 	cmake?: CMakeSettings_Deserialize,
 	/**  Tools › Agents › Chat. */
 	agents?: AgentSettings,
+	/**  Tools › MCP Server (global only). */
+	mcpServer?: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -7433,6 +7478,8 @@ export type Settings_Serialize = {
 	cmake: CMakeSettings_Serialize,
 	/**  Tools › Agents › Chat. */
 	agents: AgentSettings,
+	/**  Tools › MCP Server (global only). */
+	mcpServer: McpServerSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };
