@@ -48,6 +48,7 @@ pub(crate) struct Session {
     /// Set once `configurationDone` was sent; breakpoint updates go out live after that.
     pub configured: AtomicBool,
     pub initialized: watch::Sender<bool>,
+    pub output_drained: watch::Sender<bool>,
     pub terminated: AtomicBool,
     /// Set by a second Stop: the one waiting for the program kills it instead.
     pub stop_force: AtomicBool,
@@ -103,6 +104,7 @@ impl Session {
             program: Mutex::new(None),
             configured: AtomicBool::new(false),
             initialized: watch::channel(false).0,
+            output_drained: watch::channel(true).0,
             terminated: AtomicBool::new(false),
             stop_force: AtomicBool::new(false),
             debuggee_pid: AtomicI64::new(0),
@@ -275,6 +277,11 @@ impl Session {
     pub fn kill_processes(&self) {
         self.kotlin_relay.lock().take();
         if let Some(mut c) = self.adapter_process.lock().take() {
+            if self.adapter == "rdbg"
+                && let Some(pid) = c.id()
+            {
+                ide_core::process::kill_tree_of(pid);
+            }
             let _ = c.start_kill();
         }
         for mut c in std::mem::take(&mut *self.debuggees.lock()) {
@@ -447,6 +454,11 @@ pub(crate) async fn event_loop(
             }
             Incoming::Closed => break,
         }
+    }
+    // rdbg closes DAP before Ruby's remaining at_exit handlers print the test summary.
+    if session.adapter == "rdbg" && session.request == "launch" {
+        let mut drained = session.output_drained.subscribe();
+        let _ = tokio::time::timeout(DEBUGGEE_EXIT_WAIT, drained.wait_for(|done| *done)).await;
     }
     if let Some(mgr) = manager.upgrade() {
         mgr.session_closed(&session);

@@ -1398,7 +1398,7 @@ fn rdbg_runs_the_debuggee_after_its_options_with_the_configuration_environment()
     let config = LaunchConfig {
         adapter: "rdbg".into(),
         program: Some("ruby".into()),
-        args: ["-Ilib", "app.rb", "--verbose"].map(String::from).to_vec(),
+        args: ["-Ilib", "app with spaces.rb", "$(touch sentinel); literal"].map(String::from).to_vec(),
         env: BTreeMap::from([("RAILS_ENV".into(), "test".into())]),
         extra_json: None,
         ..config()
@@ -1406,7 +1406,10 @@ fn rdbg_runs_the_debuggee_after_its_options_with_the_configuration_environment()
     let mut spec = adapter::resolve(&rdbg, dir.path().into());
     rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
     assert_eq!(spec.command, "rdbg");
-    assert_eq!(spec.args, ["-O", "--port", "${port}", "-c", "--", "ruby", "-Ilib", "app.rb", "--verbose"]);
+    assert_eq!(
+        spec.args,
+        ["-O", "--port", "${port}", "-c", "--", "ruby", "-Ilib", "app with spaces.rb", "$(touch sentinel); literal"]
+    );
     assert!(spec.env.contains(&("RAILS_ENV".into(), "test".into())));
 }
 
@@ -1438,6 +1441,41 @@ fn rdbg_runs_from_a_bundle_that_has_debug_and_refuses_one_without() {
         assert_eq!(spec.command, "bundle");
         assert_eq!(spec.args, ["exec", "rdbg", "-O", "--port", "${port}", "-c", "--", "bundle", "exec", "rspec"]);
     }
+}
+
+#[test]
+fn rdbg_commands_without_arguments_are_ruby_entry_points_not_shell_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    for program in ["rspec", "/app with spaces/bin/rake", "$(touch sentinel); literal"] {
+        let config =
+            LaunchConfig { adapter: "rdbg".into(), program: Some(program.into()), args: Vec::new(), ..config() };
+        let mut spec = adapter::resolve(&rdbg, dir.path().into());
+        rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+        assert_eq!(&spec.args[4..], ["--", "ruby", "-S", "--", program]);
+    }
+}
+
+#[test]
+fn rdbg_remote_attach_does_not_check_the_local_bundle_or_append_a_program() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Gemfile"), "").unwrap();
+    let rdbg = adapter::find_config(&LanguageRegistry::from_configs(Vec::new()), "rdbg").unwrap();
+    let config = LaunchConfig { adapter: "rdbg".into(), request: "attach".into(), ..config() };
+    let mut spec = adapter::resolve(&rdbg, dir.path().into());
+    let args = spec.args.clone();
+    rdbg_command_line(&mut spec, &config, dir.path()).unwrap();
+    assert_eq!(spec.command, "rdbg");
+    assert_eq!(spec.args, args);
+}
+
+#[test]
+fn bundler_prefers_gems_rb_when_both_gemfiles_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["Gemfile", "gems.rb"] {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    assert_eq!(bundler_gemfile(dir.path(), &BTreeMap::new()), Some(dir.path().join("gems.rb")));
 }
 
 #[test]
@@ -1672,4 +1710,65 @@ fn delve_leftovers_are_removed_without_touching_other_files() {
         assert!(dir.join(name).exists(), "{name} should stay");
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rdbg_drains_test_output_after_dap_closes_before_killing_the_process() {
+    struct Launcher;
+    impl AdapterLauncher for Launcher {
+        fn launch(&self, _spec: AdapterSpec, _reuse: Option<u16>) -> LaunchFuture {
+            Box::pin(async {
+                let (client, server) = tokio::io::duplex(1 << 16);
+                tokio::spawn(fake_adapter(server, Arc::default(), Script::default()));
+                let mut command = tokio::process::Command::new("/bin/sh");
+                ide_core::process::own_group(command.as_std_mut());
+                let mut child = command
+                    .args(["-c", "sleep 1; printf 'test summary\\n'"])
+                    .stdout(std::process::Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap();
+                let mut stdout = child.stdout.take().unwrap();
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                tokio::spawn(async move {
+                    let mut text = String::new();
+                    tokio::io::AsyncReadExt::read_to_string(&mut stdout, &mut text).await.unwrap();
+                    let _ = tx.send(("stdout", text));
+                });
+                let (reader, writer) = tokio::io::split(client);
+                Ok(AdapterIo {
+                    reader: Box::new(reader),
+                    writer: Box::new(writer),
+                    child: Some(child),
+                    port: None,
+                    stderr: Arc::default(),
+                    program_output: Some(rx),
+                })
+            })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let manager = DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(Launcher));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let collected = events.clone();
+    let owner = SessionOwner::new("rdbg-test", Arc::new(move |e| collected.lock().push(e)));
+    let id = manager
+        .start(
+            LaunchConfig { adapter: "rdbg".into(), cwd: Some(dir.path().into()), extra_json: None, ..config() },
+            owner,
+        )
+        .await
+        .unwrap();
+    manager.session(id).unwrap().conn.close();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !manager.sessions(None).is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(events.lock().iter().any(|e| matches!(e,
+        IdeEvent::Debug { event: DebugEvent::Output { output, .. }, .. } if output == "test summary\n"
+    )));
 }
