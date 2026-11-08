@@ -5315,6 +5315,55 @@ iconDark = "{dark}"
 }
 
 #[test]
+fn marker_icons_validate_indexed_marker_prefixes_and_tooltips() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("plugin");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    std::fs::write(pkg.join("icons/usages.svg"), r#"<svg viewBox="0 0 16 16"><rect width="16" height="16"/></svg>"#)
+        .unwrap();
+    let manifest = |engine: &str, fields: &str| {
+        format!(
+            r#"
+id = "indexed-marker-icons"
+name = "Indexed Marker Icons"
+version = "1.0.0"
+engines.openidea = "{engine}"
+[[contributes.markerIcons]]
+id = "usages"
+icon = "icons/usages.svg"
+{fields}
+"#
+        )
+    };
+    let long = "k".repeat(257);
+    let many = format!("[{}]", (0..17).map(|i| format!("\"k{i}#\"")).collect::<Vec<_>>().join(", "));
+    for (engine, fields) in [
+        ("^1.0", r#"markers = ["usages#"]"#.to_owned()),
+        ("^1.3", r#"markers = [""]"#.to_owned()),
+        ("^1.3", format!(r#"markers = ["{long}"]"#)),
+        ("^1.3", format!("markers = {many}")),
+        ("^1.3", r#"markers = "usages#""#.to_owned()),
+        ("^1.3", r#"tooltip = "Usages""#.to_owned()),
+        ("^1.3", "markers = [\"usages#\"]\ntooltip = \" \"".to_owned()),
+        ("^1.3", format!("markers = [\"usages#\"]\ntooltip = \"{long}\"")),
+    ] {
+        std::fs::write(pkg.join("plugin.toml"), manifest(engine, &fields)).unwrap();
+        assert!(f.host.install_from_dir(&pkg, &Consent::all()).is_err(), "accepted {fields}");
+    }
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        manifest("^1.3", "markers = [\"usages#\", \"scope#\"]\ntooltip = \"Usages\""),
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let decl = &f.host.ui_items("markerIcons")[0].decl;
+    assert_eq!(decl["markers"], serde_json::json!(["usages#", "scope#"]));
+    assert_eq!(decl["tooltip"], "Usages");
+}
+
+#[test]
 fn marker_providers_preserve_names_and_package_paths() {
     let f = fixture(Limits::default());
     let tmp = tempfile::tempdir().unwrap();

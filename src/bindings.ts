@@ -3954,7 +3954,7 @@ export type FileLineStats = {
 export type FileMarkers = {
 	path: string,
 	version: number | null,
-	markers: NavigationResult[],
+	markers: IndexedMarker[],
 };
 
 export type FileMatch = {
@@ -4731,6 +4731,14 @@ export type IndexStatus = {
 	indexing: boolean,
 	files: number,
 	symbols: number,
+};
+
+export type IndexedMarker = {
+	range: Range,
+	targets: Location[],
+	pluginId: string,
+	/**  The `[[contributes.markerIcons]]` id whose `markers` prefix matches the marker's key. */
+	icon: string | null,
 };
 
 export type InlayHint = {
