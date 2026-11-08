@@ -2,20 +2,57 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerAction } from "@/platform/actions";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { useKeymap } from "@/platform/keymap";
+import * as ipc from "@/platform/ipc";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
 import { registerToolWindow } from "@/workbench/contributions";
 import { _reloadLayouts, saveLayout } from "@/workbench/toolwindows/layouts";
-import { setContext } from "@/platform/context";
+import { clearContext, setContext } from "@/platform/context";
 import {
   buildMenuConfig,
   disabledMenuActions,
   dynamicMenuItems,
+  installMenuBridge,
   menuAccelerator,
   menuActionIds,
   routeMenuEvent,
 } from "../menuBridge";
 
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  getCurrentWebviewWindow: () => ({ listen: async () => () => {} }),
+}));
+
 describe("menu state from the frontend", () => {
+  it("refreshes the focused window's enablement even if context changes during the debounce", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(ipc, "isTauri").mockReturnValue(true);
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    vi.spyOn(ipc.commands, "appBuildInfo").mockRejectedValue(new Error("No build info in tests"));
+    vi.spyOn(ipc.commands, "menuConfigure").mockResolvedValue();
+    vi.spyOn(ipc.commands, "menuModel").mockResolvedValue([
+      { kind: "action", id: "test.menuFocus", label: "Test", hint: null, arg: null },
+    ]);
+    const pushDisabled = vi.spyOn(ipc.commands, "menuSetDisabled").mockResolvedValue();
+    const offAction = registerAction({ id: "test.menuFocus", title: "Test", run: () => {} });
+    const dispose = installMenuBridge();
+    try {
+      await vi.advanceTimersByTimeAsync(120);
+      expect(pushDisabled).toHaveBeenCalledWith([]);
+      pushDisabled.mockClear();
+
+      window.dispatchEvent(new Event("focus"));
+      setContext("testMenuFocusNoise", true);
+      await vi.advanceTimersByTimeAsync(120);
+
+      expect(pushDisabled).toHaveBeenCalledExactlyOnceWith([]);
+    } finally {
+      dispose();
+      offAction();
+      clearContext("testMenuFocusNoise");
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
   it("lists registered tool windows by title and saved layouts", () => {
     localStorage.clear();
     _reloadLayouts();

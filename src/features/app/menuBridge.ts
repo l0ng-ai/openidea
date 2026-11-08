@@ -144,15 +144,18 @@ export function installMenuBridge(): () => void {
   // what cannot run). Recomputed shortly after context changes, sent only when it changed.
   let ids: Set<string> | null = null;
   let lastDisabled = "";
+  let forceEnablement = false;
   let enableTimer: ReturnType<typeof setTimeout> | undefined;
   const pushEnablement = (force = false) => {
+    forceEnablement ||= force;
     clearTimeout(enableTimer);
     enableTimer = setTimeout(() => {
       if (!ids || disposed || !document.hasFocus()) return;
       const dynamic = Object.values(dynamicMenuItems()).flatMap((items) => items.map((d) => d.action));
       const disabled = disabledMenuActions(new Set([...ids, ...dynamic]));
       const key = disabled.join(",");
-      if (!force && key === lastDisabled) return;
+      if (!forceEnablement && key === lastDisabled) return;
+      forceEnablement = false;
       lastDisabled = key;
       void commands.menuSetDisabled(disabled);
     }, 120);
