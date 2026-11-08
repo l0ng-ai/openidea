@@ -138,6 +138,9 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("escape", "String › Valid escape sequence", [LD], "escape"),
   syn("lineComment", "Comments › Line comment", [LD], "comment"),
   syn("docComment", "Comments › Doc comment", [LD], "doc-comment", { defaultItalic: true }),
+  syn("docCommentTag", "Comments › Doc comment › Tag", [LD], "doc-comment-tag"),
+  syn("docCommentTagValue", "Comments › Doc comment › Tag value", [LD], "doc-comment-tag-value"),
+  { ...syn("docCommentMarkup", "Comments › Doc comment › Markup", [LD], "doc-markup"), bg: "--syn-doc-markup-bg" },
   syn("metadata", "Metadata", [LD], "decorator"),
   syn("operator", "Braces and Operators", [LD], "punct"),
   syn("markupTag", "Markup › Tag", [LD], "tag"),
@@ -208,6 +211,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 const SCHEME_VARS = new Set<string>([
   ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
   "--syn-comment-style",
+  "--syn-doc-comment-tag-effect",
   "--editor-error-decoration",
   "--editor-warning-decoration",
   "--editor-warning-background",
