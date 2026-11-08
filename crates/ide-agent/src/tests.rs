@@ -17,6 +17,14 @@ fn permission_uses_its_own_command_payload() {
     assert_eq!(permission_title(&request), format!("Run {command}"));
 }
 
+#[test]
+fn permission_shows_the_script_inside_a_shell_wrapper() {
+    let wrapped = r#"/bin/zsh -lc "python3 -c 'import pathlib\np = pathlib.Path(\"a.txt\")'""#;
+    let request = json!({"toolCall": {"toolCallId": "write", "kind": "execute",
+        "title": "Run python3", "rawInput": {"command": wrapped}}});
+    assert_eq!(permission_title(&request), "Run python3 -c 'import pathlib\\np = pathlib.Path(\"a.txt\")'");
+}
+
 /// Says "Hi", edits a file, asks to run a command and reports what it was allowed.
 #[derive(Default)]
 struct FakeAgent {
