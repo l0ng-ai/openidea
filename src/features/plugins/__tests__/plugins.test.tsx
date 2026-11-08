@@ -705,6 +705,55 @@ describe("PluginsPage", () => {
     expect(screen.getByLabelText("Iconic details").querySelector("circle")).not.toBeNull();
   });
 
+  describe.each(["installed", "catalog"] as const)("%s homepage", (source) => {
+    async function showHomepage(homepage: string) {
+      const entry = plugin({ id: "homepage", name: "Homepage Example", homepage });
+      const catalog = { ...sampleCatalog()[0]!, id: entry.id, name: entry.name, homepage };
+      setPluginsBackend(createMemoryPluginsBackend(source === "installed" ? [entry] : [], [catalog]));
+      const user = userEvent.setup();
+      render(<PluginsPage />);
+      if (source === "catalog") await user.click(screen.getByRole("tab", { name: /Available/ }));
+      await screen.findByRole("heading", { level: 2, name: entry.name });
+      return user;
+    }
+
+    it.each(["https://example.com/plugin", "http://example.com/plugin", "HTTPS://example.com/plugin"])(
+      "opens a web homepage %s with a click or Enter",
+      async (homepage) => {
+        const open = vi.spyOn(window, "open").mockImplementation(() => null);
+        try {
+          const user = await showHomepage(homepage);
+          const link = screen.getByRole("link", { name: homepage });
+          expect(link).toHaveAttribute("href", homepage);
+          await user.click(link);
+          expect(open).toHaveBeenCalledWith(homepage, "_blank", "noopener");
+          open.mockClear();
+          link.focus();
+          expect(link).toHaveFocus();
+          await user.keyboard("{Enter}");
+          expect(open).toHaveBeenCalledWith(homepage, "_blank", "noopener");
+        } finally {
+          open.mockRestore();
+        }
+      },
+    );
+
+    it.each(["not a URL", "https://", "/relative", "file:///tmp/plugin", "javascript:alert(1)", "mailto:a@b.com"])(
+      "keeps an unsupported or malformed homepage %s as plain text",
+      async (homepage) => {
+        const open = vi.spyOn(window, "open").mockImplementation(() => null);
+        try {
+          const user = await showHomepage(homepage);
+          expect(screen.queryByRole("link", { name: homepage })).not.toBeInTheDocument();
+          await user.click(screen.getByText(homepage));
+          expect(open).not.toHaveBeenCalled();
+        } finally {
+          open.mockRestore();
+        }
+      },
+    );
+  });
+
   it("restarts a failed plugin instead of disabling it", async () => {
     setPluginsBackend(createMemoryPluginsBackend([plugin({ id: "broken", status: "failed", error: "trap" })]));
     const user = userEvent.setup();
