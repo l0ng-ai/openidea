@@ -404,27 +404,15 @@
   overflow-wrap: break-word;
 }
 .popup {
+  display: flex;
+  flex-direction: column;
   width: min(560px, calc(100vw - 12px));
   border-radius: var(--radius-popup);
   cursor: default;
 }
 .items {
   max-height: 300px;
-  overflow: auto;
-  padding: 4px 0;
-}
-.item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: var(--h-row);
-  margin: 0 4px;
-  padding: 0 8px;
-  border-radius: var(--radius-row);
-  white-space: nowrap;
-}
-.active {
-  background: var(--bg-list-selected);
+  margin: 4px 0;
 }
 .itemName {
   flex: none;

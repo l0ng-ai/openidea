@@ -6,7 +6,7 @@ vi.mock("@/platform/ipc", async (original) => {
   return { ...real, commands: { ...real.commands, vcsCompareScope: mocks.scope } };
 });
 vi.mock("../RevisionChooser", () => ({ chooseRepositoryRevision: mocks.choose }));
-vi.mock("../diffInput", () => ({ openDiff: mocks.open }));
+vi.mock("../diffInput", () => ({ openDiff: mocks.open, openVcsDiff: mocks.open }));
 vi.mock("../operations", () => ({ showPathComparison: mocks.show }));
 vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify }) }));
 import { useProject } from "@/platform/project";
