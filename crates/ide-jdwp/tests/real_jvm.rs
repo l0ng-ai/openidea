@@ -4,12 +4,15 @@
 //! A JDK 8 `java` cannot run a source file: also set `OPENIDEA_TEST_JAVAC` to the `javac` of a
 //! newer JDK, which compiles `Main.java` with `--release 8` first.
 
-use ide_jdwp::{HEADER_LEN, Header, IdSizes, JdwpLink, LinkOptions, LinkState, Reader, ReplyIds, Writer, object_ids};
+use ide_jdwp::{
+    HEADER_LEN, Header, IdSizes, JdwpLink, LinkInspector, LinkOptions, LinkState, Reader, ReplyIds, Writer, object_ids,
+};
+use ide_jvm_inspect::{JvmInspector, JvmValue, VmTarget};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -23,10 +26,17 @@ import java.util.List;
 public class Main {
     static final class Item {
         final int n;
-        Item(int n) { this.n = n; }
+        final String name;
+        Item(int n) { this.n = n; this.name = "item-" + n; }
+    }
+
+    static final class Row {
+        final String label;
+        Row(int i) { this.label = "row-" + i; }
     }
 
     static final List<Item> ITEMS = new ArrayList<Item>();
+    static final List<Row> ROWS = new ArrayList<Row>();
 
     static void pause() {
         try {
@@ -39,6 +49,9 @@ public class Main {
     public static void main(String[] args) {
         for (int i = 0; i < 5; i++) {
             ITEMS.add(new Item(i));
+        }
+        for (int i = 0; i < 1000; i++) {
+            ROWS.add(new Row(i));
         }
         System.out.println("READY");
         while (true) {
@@ -254,11 +267,16 @@ async fn wait_suspended(link: &JdwpLink, generation: u64) {
     assert!(seen.is_ok(), "link state {:?}", link.state());
 }
 
-#[tokio::test]
-#[ignore = "needs a JDK: OPENIDEA_TEST_JAVA=<jdk>/bin/java"]
-async fn link_releases_exactly_its_own_references() {
+/// A JVM stopped at a breakpoint in `Main.pause` (generation 1), with the test as its adapter.
+struct Session {
+    jvm: Jvm,
+    link: JdwpLink,
+    adapter: Adapter,
+}
+
+async fn stopped() -> Session {
     let java = std::env::var("OPENIDEA_TEST_JAVA").expect("OPENIDEA_TEST_JAVA");
-    let mut jvm = Jvm::launch(&java);
+    let jvm = Jvm::launch(&java);
     let listening = jvm.line_starting("Listening for transport dt_socket at address: ");
     let port: u16 = listening.rsplit(' ').next().unwrap().trim().parse().unwrap();
     jvm.line_starting("READY");
@@ -266,15 +284,22 @@ async fn link_releases_exactly_its_own_references() {
     let (link, adapter_port) =
         JdwpLink::start("127.0.0.1".into(), port, LinkOptions { hold_resumes: false }).await.unwrap();
     let mut adapter = Adapter::connect(adapter_port).await;
-    let sizes = adapter.sizes();
-    assert_eq!(link.id_sizes(), Some(sizes), "the link's own IDSizes");
+    assert_eq!(link.id_sizes(), Some(adapter.sizes()), "the link's own IDSizes");
 
     let main = adapter.class("LMain;").await;
-    let item = adapter.class("LMain$Item;").await;
     let pause = adapter.method(main, "pause").await;
     adapter.break_at_start(main, pause).await;
     adapter.event().await;
     wait_suspended(&link, 1).await;
+    Session { jvm, link, adapter }
+}
+
+#[tokio::test]
+#[ignore = "needs a JDK: OPENIDEA_TEST_JAVA=<jdk>/bin/java"]
+async fn link_releases_exactly_its_own_references() {
+    let Session { mut jvm, link, mut adapter } = stopped().await;
+    let sizes = adapter.sizes();
+    let item = adapter.class("LMain$Item;").await;
 
     // The adapter holds its own reference to each Item, as java-debug would.
     let own = adapter.ok(2, 16, instances_body(item, &sizes)).await;
@@ -315,5 +340,83 @@ async fn link_releases_exactly_its_own_references() {
     }
     adapter.ok(1, 9, Vec::new()).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
+    jvm.assert_alive();
+}
+
+fn object_type(value: &JvmValue) -> &str {
+    match value {
+        JvmValue::Object { type_name, .. } => type_name,
+        other => panic!("not a plain object: {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a JDK: OPENIDEA_TEST_JAVA=<jdk>/bin/java"]
+async fn link_inspector_reads_instances_fields_and_referrers() {
+    let Session { mut jvm, link, mut adapter } = stopped().await;
+    let inspector = LinkInspector::new(link.clone());
+    let target = VmTarget { pid: None, attach_host: None, attach_port: None, generation: 1 };
+
+    let started = Instant::now();
+    let items = inspector.instances(&target, "Main$Item", 1000).await.expect("instances of Main$Item");
+    eprintln!("timing: instances(Main$Item, 1000) = {} objects in {:?}", items.len(), started.elapsed());
+    assert_eq!(items.len(), 5);
+    assert!(items.iter().all(|item| object_type(item) == "Main$Item"), "{items:?}");
+
+    // `Instances` does not promise allocation order, so find the item by its field.
+    let mut first = None;
+    for item in &items {
+        let id = item.object_id().unwrap();
+        let fields = inspector.fields(&target, id).await.expect("fields of an item");
+        let names: Vec<_> = fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["n", "name"]);
+        let JvmValue::Primitive { type_name, text: n } = &fields[0].value else {
+            panic!("n is {:?}", fields[0].value);
+        };
+        assert_eq!(type_name, "int");
+        let JvmValue::Str { text, length, .. } = &fields[1].value else {
+            panic!("name is {:?}", fields[1].value);
+        };
+        let expected = format!("item-{n}");
+        assert_eq!(text.as_deref(), Some(expected.as_str()));
+        assert_eq!(*length as usize, expected.len());
+        if n == "0" {
+            first = Some(id);
+        }
+    }
+    let first = first.expect("the item with n == 0");
+
+    let started = Instant::now();
+    let referrers = inspector.referrers(&target, first, 50).await.expect("referrers of the first item");
+    eprintln!("timing: referrers(first item) = {} in {:?}", referrers.len(), started.elapsed());
+    assert_eq!(referrers.len(), 1, "{referrers:?}");
+    let JvmValue::Array { type_name, .. } = &referrers[0].value else {
+        panic!("referrer is {:?}", referrers[0].value);
+    };
+    assert_eq!(type_name, "java.lang.Object[]");
+    assert_eq!(referrers[0].via, ["[0]"]);
+
+    let started = Instant::now();
+    let counts = inspector.class_counts(&target).await.expect("class counts");
+    eprintln!("timing: class_counts = {} classes in {:?}", counts.len(), started.elapsed());
+    let count = |name: &str| counts.iter().find(|c| c.name == name).map(|c| c.instances);
+    assert_eq!(count("Main$Item"), Some(5));
+    assert_eq!(count("Main$Row"), Some(1000));
+    assert!(counts.iter().all(|c| c.instances > 0));
+
+    // Previews cost a few commands each; record what 1000 of them take.
+    let started = Instant::now();
+    let rows = inspector.instances(&target, "Main$Row", 1000).await.expect("instances of Main$Row");
+    eprintln!("timing: instances(Main$Row, 1000) = {} objects in {:?}", rows.len(), started.elapsed());
+    assert_eq!(rows.len(), 1000);
+    let started = Instant::now();
+    let strings = inspector.instances(&target, "java.lang.String", 1000).await.expect("instances of String");
+    eprintln!("timing: instances(java.lang.String, 1000) = {} strings in {:?}", strings.len(), started.elapsed());
+    assert!(strings.iter().all(|s| matches!(s, JvmValue::Str { .. })));
+    assert!(strings.len() > 900, "only {} strings", strings.len());
+
+    // The link counted every id above; releasing them must leave the JVM running.
+    adapter.ok(1, 9, Vec::new()).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     jvm.assert_alive();
 }

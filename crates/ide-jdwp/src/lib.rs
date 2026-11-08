@@ -3,6 +3,7 @@
 
 mod codec;
 mod ids;
+mod inspector;
 mod link;
 
 pub use codec::{
@@ -10,4 +11,5 @@ pub use codec::{
     primitive_text,
 };
 pub use ids::{IdSizes, ReplyIds, Stop, dispose_body, object_ids, stop_of};
+pub use inspector::LinkInspector;
 pub use link::{JdwpLink, LinkError, LinkOptions, LinkState, OWN_IDS};
