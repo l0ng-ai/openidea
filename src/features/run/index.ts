@@ -215,21 +215,28 @@ function configFromArg(arg: unknown): RunConfig | undefined {
  * stoppable process, or a list of them with Stop All when there are several.
  */
 function stopAction(arg?: unknown) {
+  // Loading in the widget must not hide or redirect Stop for other running processes.
+  const runningOnly = arg === "widget-running";
   const ctx = getContext();
-  if (ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
+  if (!runningOnly && ctx.toolWindowFocus && ctx.activeToolWindow === "debug" && getAction("debug.stop")) {
     void executeAction("debug.stop");
     return;
   }
-  const running = runningSessions();
-  if (ctx.toolWindowFocus && ctx.activeToolWindow === "run") {
+  const selectedId = useRun.getState().selectedId;
+  const running = runningSessions().filter(
+    (s) => !runningOnly || (s.status !== "starting" && s.config.id !== selectedId),
+  );
+  if (!runningOnly && ctx.toolWindowFocus && ctx.activeToolWindow === "run") {
     const active = running.find((s) => s.id === useRun.getState().activeSession);
     if (active) {
       void stopSession(active.id);
       return;
     }
   }
-  const debug = useDebugRunSessions.getState().sessions;
-  if (arg === "widget") {
+  const debug = useDebugRunSessions
+    .getState()
+    .sessions.filter((s) => !runningOnly || (s.status !== "starting" && s.configId !== selectedId));
+  if (arg === "widget" || runningOnly) {
     const compound = compoundTargets(selectedConfig(), running, debug);
     if (compound.length) {
       compound.forEach((s) => s.stop());
@@ -248,7 +255,9 @@ function stopAction(arg?: unknown) {
       icon: "run",
       run: () => void stopSession(s.id),
     })),
-    ...menuGroupItems("stopProcess", { paths: [] }),
+    ...(runningOnly
+      ? debug.map((s): MenuItem => ({ label: s.name, verbatim: true, icon: "debug", run: () => s.stop() }))
+      : menuGroupItems("stopProcess", { paths: [] })),
   ].filter((i): i is MenuItem & { run: () => void } => "run" in i && !!i.run);
   // A Debug launch has no Run process: with nothing else to stop, the title-bar Stop reaches
   // the debug session itself (the Debug window need not be focused).

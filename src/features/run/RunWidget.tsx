@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { BarButton, Icon, IconButton, Menu, Spinner, type MenuItem } from "@/ui";
 import { executeAction } from "@/platform/actions";
@@ -11,6 +11,8 @@ import { CURRENT_FILE, useRun, isLive } from "./store";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { isDebugOnly } from "./types";
 import styles from "./Run.module.css";
+
+const RUNNING_FEEDBACK_DELAY_MS = 300;
 
 /** Title bar: configuration chooser, Run / Debug, and Rerun / Stop while running. */
 export function RunWidget() {
@@ -28,16 +30,20 @@ export function RunWidget() {
   const debug = useDebugRunSessions((s) => s.sessions);
   const compoundRunning = compoundTargets(selected, running, debug);
   const target = selectedTarget(selectedId, running, debug);
-  const debugging = !!target?.debug;
-  const active = !!target || compoundRunning.length > 0;
-  const count = running.length + debug.length;
-  const stopping = running.some((s) => s.status === "stopping") || debug.some((s) => s.status === "stopping");
+  const { active, debugging, showLoading, launch } = useLaunchFeedback(selectedId, target, compoundRunning);
+  const stopRuns = showLoading ? running.filter((s) => s.status !== "starting" && s.config.id !== selectedId) : running;
+  const stopDebug = showLoading ? debug.filter((s) => s.status !== "starting" && s.configId !== selectedId) : debug;
+  const stopTarget = selectedTarget(selectedId, stopRuns, stopDebug);
+  const stopCompound = compoundTargets(selected, stopRuns, stopDebug);
+  const count = stopRuns.length + stopDebug.length;
+  const stopping = stopRuns.some((s) => s.status === "stopping") || stopDebug.some((s) => s.status === "stopping");
+  const stop = () => void executeAction("run.stop", showLoading ? "widget-running" : "widget");
   const targetStopping =
     running.some((s) => s.status === "stopping" && s.config.id === selectedId) ||
     debug.some((s) => s.status === "stopping" && s.configId === selectedId);
-  const stopName = compoundRunning.length
+  const stopName = stopCompound.length
     ? selected?.name
-    : (target?.name ?? running[0]?.config.name ?? debug[0]?.name);
+    : (stopTarget?.name ?? stopRuns[0]?.config.name ?? stopDebug[0]?.name);
   const moreRef = useRef<HTMLButtonElement>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const executors = useRunExecutors((s) => s.executors);
@@ -73,7 +79,7 @@ export function RunWidget() {
           // IDEA: the configuration's type icon, with a status dot on its top-right corner while active.
           <span className={styles.widgetConfigIcon}>
             <Icon name={configIcon(selected)} size={16} />
-            {active && (
+            {active && !showLoading && (
               <span className={styles.widgetStatusDot} aria-label={debugging ? "Debugging" : "Running"} role="img" />
             )}
           </span>
@@ -84,7 +90,33 @@ export function RunWidget() {
         <Icon name="chevron-down" size={14} className={styles.widgetChevron} />
       </BarButton>
       <span className={styles.widgetButtons}>
-        {active ? (
+        {showLoading ? (
+          <>
+            {debugging && (
+              <IconButton
+                icon="run"
+                size="large"
+                iconSize={18}
+                className={clsx(styles.widgetButton, styles.widgetRun)}
+                title="Run"
+                disabled
+              />
+            )}
+            <span className={clsx(styles.widgetButton, styles.widgetLoading)}>
+              <Spinner variant="spokes" size={18} label={tx("Starting…")} />
+            </span>
+            {!debugging && (
+              <IconButton
+                icon="debug"
+                size="large"
+                iconSize={18}
+                className={styles.widgetButton}
+                title="Debug"
+                disabled
+              />
+            )}
+          </>
+        ) : active ? (
           <>
             {target?.paused && (
               <IconButton
@@ -105,7 +137,7 @@ export function RunWidget() {
               title={tx`Rerun '${selected?.name ?? target?.name ?? ""}'`}
               shortcut={shortcutLabel("run.run")}
               disabled={!!target && (!target.rerun || targetStopping)}
-              onClick={() => void executeAction("run.run")}
+              onClick={() => void launch("run.run")}
             />
           </>
         ) : (
@@ -126,7 +158,7 @@ export function RunWidget() {
               }
               shortcut={shortcutLabel("run.run")}
               disabled={(!selected && !currentFile) || debugOnly}
-              onClick={() => void executeAction("run.run")}
+              onClick={() => void launch("run.run")}
             />
             <IconButton
               icon="debug"
@@ -136,7 +168,7 @@ export function RunWidget() {
               title={selected ? tx`Debug '${selected.name}'` : currentFile ? "Debug Current File" : "Debug"}
               shortcut={shortcutLabel("run.debug")}
               disabled={!selected && !currentFile}
-              onClick={() => void executeAction("run.debug")}
+              onClick={() => void launch("run.debug")}
             />
           </>
         )}
@@ -149,7 +181,7 @@ export function RunWidget() {
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop, styles.widgetStopping)}
               title={tx`Kill process`}
               aria-label={tx`Kill process`}
-              onClick={() => void executeAction("run.stop", "widget")}
+              onClick={stop}
             >
               <Spinner size={14} />
             </button>
@@ -159,9 +191,13 @@ export function RunWidget() {
               size="large"
               iconSize={16}
               className={clsx(styles.widgetButton, styles.widgetFilled, styles.widgetFilledStop)}
-              title={active || count === 1 ? tx`Stop '${stopName ?? ""}'` : tx`Stop (${count} running)`}
+              title={
+                stopTarget || stopCompound.length || count === 1
+                  ? tx`Stop '${stopName ?? ""}'`
+                  : tx`Stop (${count} running)`
+              }
               shortcut={shortcutLabel("run.stop")}
-              onClick={() => void executeAction("run.stop", "widget")}
+              onClick={stop}
             />
           ))}
         <IconButton
@@ -185,4 +221,51 @@ export function RunWidget() {
       </span>
     </div>
   );
+}
+
+/** Keeps launch acknowledgement and the short running-state delay in one place. */
+function useLaunchFeedback(
+  selectedId: string | null,
+  target: ReturnType<typeof selectedTarget>,
+  compoundRunning: ReturnType<typeof compoundTargets>,
+) {
+  const [pendingLaunch, setPendingLaunch] = useState<{ configId: string | null; debug: boolean } | null>(null);
+  const launching = useRef(false);
+  const pending = pendingLaunch?.configId === selectedId ? pendingLaunch : null;
+  const debugging = pending ? pending.debug : !!target?.debug;
+  const starting =
+    !!pending || target?.status === "starting" || compoundRunning.some((session) => session.status === "starting");
+  const stopping = target?.status === "stopping" || compoundRunning.some((session) => session.status === "stopping");
+  const launch = async (action: "run.run" | "run.debug") => {
+    if (launching.current) return;
+    launching.current = true;
+    setPendingLaunch({ configId: selectedId, debug: action === "run.debug" });
+    try {
+      await executeAction(action);
+    } finally {
+      launching.current = false;
+      setPendingLaunch(null);
+    }
+  };
+  const active = !!target || compoundRunning.length > 0;
+  const runningKey =
+    active && !starting ? `${selectedId}:${target?.debug ?? false}:${target?.startedAt ?? "compound"}` : null;
+  const [feedback, setFeedback] = useState({ configId: selectedId, key: runningKey, settled: true });
+  if (feedback.key !== runningKey || feedback.configId !== selectedId) {
+    setFeedback({
+      configId: selectedId,
+      key: runningKey,
+      settled: feedback.configId !== selectedId || runningKey === null,
+    });
+  }
+  useEffect(() => {
+    if (runningKey === null || feedback.settled) return;
+    const timer = setTimeout(() => {
+      setFeedback({ configId: selectedId, key: runningKey, settled: true });
+    }, RUNNING_FEEDBACK_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [selectedId, runningKey, feedback.settled]);
+  // Keep short-lived processes in the loading phase to avoid flashing the red Stop button.
+  const showLoading = !stopping && (starting || (active && !target?.paused && !feedback.settled));
+  return { active, debugging, showLoading, launch };
 }
