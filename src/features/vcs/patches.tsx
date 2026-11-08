@@ -2,6 +2,7 @@ import { commitRepo } from "./multiRoot";
 /** Create Patch… (from local changes or commits) and Apply Patch… (file or clipboard, with a preview). */
 import { useEffect, useState } from "react";
 import type { Commit, FileStatus, PatchFile, PatchSource, ShelvedChangeList } from "@/bindings";
+import { revealInFileManager } from "@/platform/fileManager";
 import { call, commands } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, List, Spinner, fileIconName, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -96,7 +97,7 @@ async function afterPatchSaved(path: string) {
     if (r.checked) await rememberSetting("vcs.confirmation.onPatchCreated", show ? "reveal" : "no");
     if (!show) return;
   }
-  void import("@tauri-apps/plugin-opener").then((m) => m.revealItemInDir(path)).catch(() => undefined);
+  void revealInFileManager(path).catch(() => undefined);
 }
 
 function CreatePatchDialog({ origin, onClose }: { origin: PatchOrigin; onClose: () => void }) {

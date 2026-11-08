@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
 import { CLEAR_COLOR } from "@/platform/colorScheme";
+import { setLocale } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings, stage, stagedValue, useSettingsDialog } from "../model/staging";
@@ -117,6 +118,49 @@ describe("scheme actions", () => {
     await run("import");
     await waitFor(() => expect(mocks.error).toHaveBeenCalledWith("Color Scheme", "Invalid .icls color scheme"));
     expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+});
+
+describe("Go scheme attributes", () => {
+  it("translates the attribute tree and preview selection in Chinese", async () => {
+    await act(async () => {
+      await setLocale("zh");
+    });
+    try {
+      schemePage("editor.colorScheme.go");
+      expect(screen.getByRole("treeitem", { name: "标识符" })).toBeInTheDocument();
+      const preview = screen.getByLabelText("配色方案预览");
+      act(() => fireEvent.click(within(preview).getByText("fmt")));
+      expect(screen.getByRole("treeitem", { name: "包引用" })).toHaveAttribute("aria-selected", "true");
+    } finally {
+      await act(async () => {
+        await setLocale("en");
+      });
+    }
+  });
+
+  it("selects package references from the preview, inherits defaults and restores overrides", () => {
+    act(() => {
+      stage("editor.colorScheme", "global", "editor.colorScheme", "dark");
+      stage("editor.colorScheme", "global", "editor.colorOverrides", {
+        dark: { packageReference: { foreground: "#139839" } },
+      });
+    });
+    schemePage("editor.colorScheme.go");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("fmt")));
+    expect(screen.getByRole("treeitem", { name: "Package reference" })).toHaveAttribute("aria-selected", "true");
+    expect(preview.style.getPropertyValue("--syn-namespace")).toBe("#139839");
+
+    act(() => fireEvent.click(screen.getByRole("checkbox", { name: "Bold" })));
+    expect(value("colorOverrides")).toEqual({
+      dark: { packageReference: { foreground: "#139839" }, "go.packageReference": { bold: true } },
+    });
+    expect(preview.style.getPropertyValue("--syn-namespace-bold")).toBe("var(--fw-code-bold, 700)");
+
+    act(() => fireEvent.click(screen.getByRole("button", { name: "Restore Defaults" })));
+    expect(value("colorOverrides")).toEqual({});
+    expect(screen.getByRole("checkbox", { name: "Bold" })).not.toBeChecked();
   });
 });
 

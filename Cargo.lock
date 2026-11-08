@@ -3908,6 +3908,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3933,6 +3939,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -4112,6 +4119,7 @@ dependencies = [
  "encoding_rs",
  "ide-core",
  "ide-jsonrpc",
+ "ide-mcp",
  "ide-tools",
  "ide-vcs",
  "ide-vfs",
@@ -4338,6 +4346,7 @@ dependencies = [
  "dirs 6.0.0",
  "dunce",
  "encoding_rs",
+ "futures",
  "getrandom 0.3.4",
  "globset",
  "ide-agent",
@@ -4354,6 +4363,7 @@ dependencies = [
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
+ "ide-mcp",
  "ide-notebook",
  "ide-plugin",
  "ide-remote",
@@ -4372,6 +4382,7 @@ dependencies = [
  "ignore",
  "parking_lot",
  "quick-xml 0.42.0",
+ "regex-lite",
  "regex-syntax",
  "reqwest",
  "rustix",
@@ -4527,6 +4538,25 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "ide-mcp"
+version = "0.1.39"
+dependencies = [
+ "bytes",
+ "dunce",
+ "getrandom 0.3.4",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -6400,6 +6430,7 @@ dependencies = [
  "ide-jsonrpc",
  "ide-language",
  "ide-lsp",
+ "ide-mcp",
  "ide-notebook",
  "ide-plugin",
  "ide-profiler",

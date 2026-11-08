@@ -29,6 +29,7 @@ export { languageSemantics } from "./languages";
 import "./kotlin";
 import "./python";
 import "./php";
+import "./go";
 
 const semanticBackoff = featureBackoff();
 
