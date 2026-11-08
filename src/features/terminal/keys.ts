@@ -1,9 +1,10 @@
 /**
  * Terminal keyboard handling that must run before the IDE keymap dispatcher
  * (IDEA's "Override IDE shortcuts"): Ctrl+letter goes to the shell (Ctrl+R
- * reverse search, Ctrl+D EOF…), plus the macOS conveniences ⌘C / ⌘V / ⌘K /
- * ⌘W, ⌘F (find) and ⌘/⌥ arrow navigation, and Ctrl+Shift+C / V (copy / paste
- * on Windows and Linux, where Ctrl+C also copies a selection and otherwise interrupts the shell).
+ * reverse search, Ctrl+D EOF…), Shift+Enter as Esc+Return, plus the macOS
+ * conveniences ⌘C / ⌘V / ⌘K / ⌘W, ⌘F (find) and ⌘/⌥ arrow navigation, and
+ * Ctrl+Shift+C / V (copy / paste on Windows and Linux, where Ctrl+C also
+ * copies a selection and otherwise interrupts the shell).
  *
  * With "Override IDE shortcuts" on, a Ctrl or Escape stroke still reaches the IDE when the
  * keymap binds it to one of IDEA's terminal-allowed actions (Find Action, Go to
@@ -70,6 +71,9 @@ export function terminalKeyAction(e: KeyLike, hasSelection: boolean): TerminalKe
     if (e.code === "Space") return { kind: "send", data: "\x00" };
     return { kind: "pass" };
   }
+  // Alt+Enter's Esc+Return, which Claude Code and similar TUIs take as a newline rather than
+  // submit; Claude Code's /terminal-setup binds the same in VS Code, Zed and Alacritty.
+  if (shift && !meta && !ctrl && !alt && e.key === "Enter") return { kind: "send", data: "\x1b\r" };
   if (!meta && !ctrl && !alt && e.key === "Escape") {
     // IDEA's Terminal.Escape: a selection is cleared first.
     return hasSelection && !shift ? { kind: "clearSelection" } : { kind: "send", data: "\x1b" };
