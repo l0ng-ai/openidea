@@ -33,6 +33,9 @@
   color: var(--fg-muted);
   animation: spin 0.9s linear infinite;
 }
+.spokes {
+  animation: spin 1s steps(8, end) infinite;
+}
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -206,5 +209,8 @@
   }
   .spinner {
     animation-duration: 2.4s;
+  }
+  .spokes {
+    animation: none;
   }
 }

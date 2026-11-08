@@ -83,6 +83,10 @@
     "--traffic-off-border": "#363e49",
 
     // Additive
+    "--bg-stripe-tooltip": "var(--bg-tooltip)",
+    "--fg-stripe-tooltip": "var(--fg-tooltip)",
+    "--border-stripe-tooltip": "var(--border-tooltip)",
+    "--shadow-stripe-tooltip": "var(--shadow-tooltip)",
     "--bg-tooltip": "#2a333f",
     "--fg-tooltip": "#c9d1dc",
     "--border-tooltip": "#2a333f",
