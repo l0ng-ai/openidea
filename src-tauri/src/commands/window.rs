@@ -9,7 +9,7 @@ use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -193,17 +193,10 @@ pub fn window_open_projects(
         .collect())
 }
 
-/// Whether this window fills the screen: in native full screen, or (macOS) shown in its window
-/// group's full-screen Space.
+/// Whether this window is in native full screen (on macOS, also a tab of a fullscreen group).
 #[tauri::command]
 #[specta::specta]
 pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::Manager;
-        crate::window_groups::in_fullscreen(window.app_handle(), &window)
-    }
-    #[cfg(not(target_os = "macos"))]
     window.is_fullscreen().unwrap_or(false)
 }
 
@@ -218,8 +211,18 @@ pub struct CloseContext {
 
 #[tauri::command]
 #[specta::specta]
-pub fn window_close_context(app: AppHandle, windows: State<'_, WindowsState>) -> CloseContext {
-    CloseContext { quitting: windows.quitting(), windows: windows::project_window_labels(&app).len() as u32 }
+pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, WindowsState>) -> CloseContext {
+    let all = windows::project_window_labels(&app);
+    let pending: Vec<String> = windows::sorted_labels(
+        windows.pending_closes().iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)),
+    );
+    // Members of a tab group asking to close together are one window closing: the first of them
+    // is the last window left (it returns to the welcome screen); the others just close.
+    let count = match pending.first() {
+        Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
+        _ => all.len(),
+    };
+    CloseContext { quitting: windows.quitting(), windows: count as u32 }
 }
 
 /// Quits: closes every window, each of which runs its own unsaved-changes check.
