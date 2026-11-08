@@ -1581,6 +1581,7 @@ impl Task {
                 .collect()
         };
         if due.is_empty() {
+            self.approve_pending();
             return;
         }
         let task = self.clone();
@@ -1610,6 +1611,7 @@ impl Task {
                     Err(e) => tracing::warn!("agent task {}: setting {} to {value} failed: {e}", task.id, option.id),
                 }
             }
+            task.approve_pending();
             task.persist();
             task.emit_task();
         });
@@ -1725,6 +1727,9 @@ impl Task {
             self.emit_task();
             if kind == "config_option_update" && !self.replaying.load(Ordering::Acquire) {
                 self.apply_late_choices();
+            }
+            if !self.replaying.load(Ordering::Acquire) && kind == "current_mode_update" {
+                self.approve_pending();
             }
             return;
         }
@@ -1857,7 +1862,7 @@ impl Task {
 
     fn approve_pending(&self) {
         let s = self.state.lock();
-        if self.cancel_pending.load(Ordering::Acquire) || !config::bypass_approvals(&s.task.provider, &s.task.config) {
+        if self.cancel_pending.load(Ordering::Acquire) || !config::bypass_approvals(&s.task.config) {
             return;
         }
         let mut pending = self.permissions.lock();
