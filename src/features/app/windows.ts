@@ -242,11 +242,11 @@ export async function consumeLaunch(): Promise<void> {
 async function openCliDiff(diff: { left: string; right: string }): Promise<void> {
   const s = useProject.getState();
   if (!s.project && !s.lightEdit) await openLightEdit(diff.right).catch(() => {});
-  const [{ openDiff }, { compareFilesData }] = await Promise.all([
+  const [{ openVcsDiff }, { compareFilesData }] = await Promise.all([
     import("@/features/vcs/diffInput"),
     import("@/features/vcs/compareData"),
   ]);
-  await openDiff(compareFilesData(diff.left, diff.right));
+  await openVcsDiff(compareFilesData(diff.left, diff.right));
 }
 
 /** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */

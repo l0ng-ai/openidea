@@ -1,17 +1,19 @@
 /**
- * The diff "window" of the modal Commit dialog (#1863): activating a changed file
- * there opens the diff in front of the dialog, not in an editor tab behind it.
- * A `Dialog` stacked on `openDialog`'s stack keeps the Commit dialog (and its
- * message, selection and options) mounted underneath; Esc / the close button /
- * the close-tab chord return to it. F7 / Shift+F7 and the diff navigation actions
- * move along the file's change chain by swapping this dialog's content.
+ * The diff "window" of the modal commit interface (#1863): diffs open in front, not in
+ * an editor tab that the modal Commit dialog would hide. A `Dialog` stacked on
+ * `openDialog`'s stack keeps whatever is underneath (the Commit dialog and its message,
+ * selection and options, a comparison list) mounted; Esc / the close button / the
+ * close-tab chord return to it. F7 / Shift+F7 and the diff navigation actions move
+ * along the file's change chain by swapping this dialog's content.
  */
-import { useState, type KeyboardEvent } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { bindingsFor, normalizeBinding, strokeOf } from "@/platform/keymap";
 import { Dialog } from "@/ui";
+import type { EditorInput } from "@/workbench/contributions";
 import { DiffEditor } from "./DiffEditor";
 import { diffInput, diffTitle, type DiffData } from "./diffInput";
 import { openDialog } from "./dialogs";
+import { GitMergeDiff } from "./GitMergeDiff";
 
 /** Whether `e` is one of the strokes bound to `actionId`. */
 function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
@@ -22,22 +24,16 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
 /** The open diff dialog's close function (one diff window at a time, as in IDEA). */
 let shown: (() => void) | null = null;
 
-/**
- * Opens `data` in a front dialog; returns its close function. A second activation
- * replaces the open diff window instead of stacking another on top.
- */
-export function openDiffDialog(data: DiffData): () => void {
+/** Shows `render`'s window, replacing the open diff window instead of stacking another on top. */
+function showFront(render: (onClose: () => void) => ReactNode): () => void {
   shown?.();
   shown = null;
-  const close = openDialog((c) => (
-    <DiffDialog
-      data={data}
-      onClose={() => {
-        if (shown === close) shown = null;
-        c();
-      }}
-    />
-  ));
+  const close = openDialog((c) =>
+    render(() => {
+      if (shown === close) shown = null;
+      c();
+    }),
+  );
   shown = close;
   return () => {
     if (shown === close) shown = null;
@@ -45,13 +41,26 @@ export function openDiffDialog(data: DiffData): () => void {
   };
 }
 
-function DiffDialog({ data: initial, onClose }: { data: DiffData; onClose: () => void }) {
-  const [data, setData] = useState(initial);
-  const input = diffInput({ ...data, embedded: true });
+/** Opens `data` in a front dialog; returns its close function. */
+export function openDiffDialog(data: DiffData): () => void {
+  return showFront((onClose) => <DiffDialog data={data} onClose={onClose} />);
+}
+
+/** Opens a merge commit's file (parent ↔ merge result ↔ parent, a `git-merge-diff` input) in front. */
+export function openMergeDiffDialog(input: EditorInput): () => void {
+  const title = (input.data as { path: string }).path;
+  return showFront((onClose) => (
+    <FrontWindow title={title} onClose={onClose}>
+      <GitMergeDiff input={input} />
+    </FrontWindow>
+  ));
+}
+
+function FrontWindow({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   return (
     <Dialog
       open
-      title={diffTitle(data)}
+      title={title}
       onClose={onClose}
       width="calc(100vw - 64px)"
       resizable="both"
@@ -72,8 +81,18 @@ function DiffDialog({ data: initial, onClose }: { data: DiffData; onClose: () =>
           }
         }}
       >
-        <DiffEditor key={input.key} input={input} onNeighbour={setData} />
+        {children}
       </div>
     </Dialog>
+  );
+}
+
+function DiffDialog({ data: initial, onClose }: { data: DiffData; onClose: () => void }) {
+  const [data, setData] = useState(initial);
+  const input = diffInput({ ...data, embedded: true });
+  return (
+    <FrontWindow title={diffTitle(data)} onClose={onClose}>
+      <DiffEditor key={input.key} input={input} onNeighbour={setData} onJumpToSource={onClose} />
+    </FrontWindow>
   );
 }
