@@ -172,3 +172,20 @@ unsafe extern "C-unwind" fn should_terminate(_this: *mut AnyObject, _selector: S
 }
 
 static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+/// Whether AppKit is handling a key press right now. A menu item performed at this point
+/// was chosen by its key equivalent: a click, arrow keys plus Return and accessibility
+/// presses all run with a non-key current event.
+pub fn handling_key_press() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    objc2_app_kit::NSApplication::sharedApplication(mtm)
+        .currentEvent()
+        .is_some_and(|event| event.r#type() == objc2_app_kit::NSEventType::KeyDown)
+}
+
+/// Native dialogs block the workbench even when their menu event no longer carries a key press.
+pub fn native_modal_open() -> bool {
+    let Some(mtm) = MainThreadMarker::new() else { return false };
+    let application = objc2_app_kit::NSApplication::sharedApplication(mtm);
+    application.modalWindow().is_some() || application.windows().iter().any(|window| window.attachedSheet().is_some())
+}
