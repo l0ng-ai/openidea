@@ -1,9 +1,17 @@
 // OpenIDEA: BootRun is a JavaExec task; give its forked application JVM a dynamic
 // JDWP port instead of Gradle's fixed 5005. The property is added by jdwpLaunch.
-allprojects {
-    tasks.matching { it.name == 'bootRun' }.configureEach {
-        if (System.getProperty('openidea.run.debug') == 'true') {
-            jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')
+gradle.projectsEvaluated {
+    allprojects {
+        tasks.matching { it.name == 'bootRun' }.configureEach { task ->
+            if (System.getProperty('openidea.run.debug') == 'true') {
+                task.debugOptions.enabled = false
+                task.doFirst {
+                    task.setJvmArgs(task.jvmArgs.findAll {
+                        !it.startsWith('-agentlib:jdwp=') && !it.startsWith('-Xrunjdwp:')
+                    })
+                    task.jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')
+                }
+            }
         }
     }
 }

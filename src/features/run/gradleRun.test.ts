@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
+import * as ipc from "@/platform/ipc";
 import { applicationConfig } from "./application";
 import {
   DELEGATED_DEBUG,
   delegatedGradleConfig,
   gradleDelegation,
+  gradleBootLaunch,
+  gradleTestLaunch,
   withTestEvents,
   wrapperGradleVersion,
 } from "./gradleRun";
@@ -175,6 +178,40 @@ describe("Gradle test runs", () => {
     expect(withTestEvents(maven, script)).toBe(maven);
     const twice = withTestEvents({ kind: "gradle", command: "gradle", args: ["test"] }, script);
     expect(withTestEvents(twice, script)).toBe(twice);
+  });
+});
+
+describe("Gradle launch routing", () => {
+  const boot = {
+    kind: "gradle",
+    command: "./gradlew",
+    args: [":module:bootRun"],
+  } as RunConfig;
+  const test = { ...boot, args: [":module:test"], isTest: true };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("leaves non-desktop launches alone", async () => {
+    vi.spyOn(ipc, "isTauri").mockReturnValue(false);
+    expect(await gradleBootLaunch(boot)).toBe(boot);
+    expect(await gradleTestLaunch(test)).toBe(test);
+  });
+
+  it("keeps the configuration when the host cannot write the init script", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(ipc.commands, "runGradleInitScript").mockRejectedValue(new Error("host unavailable"));
+    expect(await gradleBootLaunch(boot)).toBe(boot);
+    expect(await gradleTestLaunch(test)).toBe(test);
+  });
+
+  it("adds reporting scripts without enabling JDWP for plain Run", async () => {
+    for (const config of [await gradleBootLaunch(boot), await gradleTestLaunch(test)]) {
+      expect(config.args.slice(0, 2)).toEqual(["--init-script", "/tmp/openidea-gradle-run.gradle"]);
+      expect(config.args).not.toContain(DELEGATED_DEBUG);
+      expect(config.args).not.toContain("--debug-jvm");
+    }
+    expect(boot.args).toEqual([":module:bootRun"]);
+    expect(test.args).toEqual([":module:test"]);
   });
 });
 

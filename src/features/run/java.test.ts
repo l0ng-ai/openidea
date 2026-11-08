@@ -325,6 +325,8 @@ describe("java command lines", () => {
     expect(joinJavaArgs(["a", "b c", 'q"'])).toBe('a "b c" "q\\""');
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 50123")).toBe(50123);
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 127.0.0.1:5005")).toBe(5005);
+    expect(jdwpListeningPort("[Test worker] Listening for transport dt_socket at address: 50124")).toBe(50124);
+    expect(jdwpListeningPort("    Listening for transport dt_socket at address: 50125\r")).toBe(50125);
     expect(jdwpListeningPort("[INFO] Listening")).toBeNull();
   });
 });
