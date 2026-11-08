@@ -93,6 +93,11 @@ export function createVenv(
   return streamed((req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, req, ch)), onLine);
 }
 
+/** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
+export function pythonInterpreter(path: string): Promise<Sdk | null> {
+  return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
+}
+
 export function listPackages(python: string): Promise<PythonPackage[]> {
   return call(commands.sdkPythonPackages(python, nextRequestId()));
 }

@@ -45,6 +45,16 @@ pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<V
     .map_err(join_err)
 }
 
+/// The interpreter `path` picked by hand ("Add Python Interpreter" › Existing) as an SDK, named
+/// like the detected ones; `None` when it isn't a usable Python.
+pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<Sdk>> {
+    host.require_trust(window)?;
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    tokio::task::spawn_blocking(move || Ok(ide_sdk::python_interpreter_sdk(&path, root.as_deref())))
+        .await
+        .map_err(join_err)?
+}
+
 /// The interpreter the project uses: the configured one, else its virtualenv.
 pub fn sdk_python_effective(host: &Host, window: &str, near: Option<PathBuf>) -> IdeResult<Option<ide_core::IpcPath>> {
     host.require_trust(window)?;
@@ -288,6 +298,10 @@ pub async fn sdk_python_pip(
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
+    d.add(
+        "sdk_python_interpreter",
+        |c| async move { sdk_python_interpreter(&c.host, &c.window, c.arg("path")?).await },
+    );
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
     d.add("sdk_php_xdebug", |c| async move { sdk_php_xdebug(&c.host, &c.window, c.arg("php")?, c.arg("cwd")?).await });
@@ -333,4 +347,49 @@ pub(crate) fn register(d: &mut Dispatcher) {
         )
         .await
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::HostConfig;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    fn fake_venv(root: &Path, name: &str) -> PathBuf {
+        let bin = if cfg!(windows) { "Scripts" } else { "bin" };
+        let python = if cfg!(windows) { "python.exe" } else { "python" };
+        let venv = root.join(name);
+        std::fs::create_dir_all(venv.join(bin)).unwrap();
+        std::fs::write(venv.join("pyvenv.cfg"), "home = /usr/bin\nversion = 3.12.1\n").unwrap();
+        venv.join(bin).join(python)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hand_picked_venv_is_resolved_like_a_detected_interpreter() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        host.trust.decide(&root, true, false).unwrap();
+        host.open_project("main", &root).unwrap();
+
+        let sdk = sdk_python_interpreter(&host, "main", fake_venv(&root, ".venv")).await.unwrap().unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (project)", "venv"));
+        let sdk = sdk_python_interpreter(&host, "main", fake_venv(&base, "erp19py3.12")).await.unwrap().unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (erp19py3.12)", "venv"));
+        assert!(sdk_python_interpreter(&host, "main", root.join("README.md")).await.unwrap().is_none());
+        host.close_project("main");
+    }
 }

@@ -96,6 +96,18 @@ pub async fn sdk_locate_tools(
     ide_host::ops::sdk::sdk_locate_tools(&state.host, window.label(), names, near).await
 }
 
+/// The interpreter `path` picked by hand ("Add Python Interpreter" › Existing) as an SDK, named
+/// like the detected ones; `None` when it isn't a usable Python.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_python_interpreter(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+) -> IdeResult<Option<Sdk>> {
+    ide_host::ops::sdk::sdk_python_interpreter(&state.host, window.label(), path).await
+}
+
 /// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
 #[tauri::command]
 #[specta::specta]

@@ -5,7 +5,7 @@
 import { isCancelled } from "@/platform/ipc";
 import { useId, useMemo, useState } from "react";
 import { Dialog, IconButton, Input, Select, Spinner, type SelectOption, T } from "@/ui";
-import { choosePath, createVenv, rememberSdk, type VenvTool } from "./api";
+import { choosePath, createVenv, pythonInterpreter, rememberSdk, type VenvTool } from "./api";
 import { tildify, useDetected } from "./components";
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
@@ -58,7 +58,12 @@ export function AddInterpreterDialog({
   const ok = () => {
     setError(null);
     if (mode === "existing") {
-      if (existing) onAdded(existing);
+      if (existing) {
+        void pythonInterpreter(existing)
+          .then((sdk) => sdk && rememberSdk("python", sdk))
+          .catch(() => {});
+        onAdded(existing);
+      }
       return;
     }
     if (!baseValue || !location.trim()) return;

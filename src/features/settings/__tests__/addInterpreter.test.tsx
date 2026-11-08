@@ -5,6 +5,7 @@ import type { Sdk } from "@/bindings";
 const mocks = vi.hoisted(() => ({
   detect: vi.fn(),
   createVenv: vi.fn(),
+  interpreter: vi.fn(),
   choosePath: vi.fn(),
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -16,6 +17,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       sdkDetect: mocks.detect,
       sdkPythonCreateVenv: mocks.createVenv,
+      sdkPythonInterpreter: mocks.interpreter,
       cancelRequest: vi.fn(),
     },
   };
@@ -48,6 +50,7 @@ beforeEach(() => {
   Object.assign(window, { __TAURI_INTERNALS__: { transformCallback: () => 1 } });
   mocks.detect.mockResolvedValue(ok([VENV, SYSTEM]));
   mocks.createVenv.mockResolvedValue(new Promise(() => {}));
+  mocks.interpreter.mockResolvedValue(ok(null));
   useSdks.setState({ byKind: {}, loading: {}, errors: {} });
 });
 afterEach(() => {
@@ -119,6 +122,7 @@ describe("Add Python Interpreter", () => {
   });
 
   it("adds an existing interpreter without creating anything", async () => {
+    mocks.interpreter.mockResolvedValue(ok(VENV));
     const onAdded = open();
     await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
@@ -127,5 +131,31 @@ describe("Add Python Interpreter", () => {
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     expect(mocks.createVenv).not.toHaveBeenCalled();
     expect(onAdded).toHaveBeenCalledWith("/project/.venv/bin/python");
+    expect(mocks.interpreter).toHaveBeenCalledWith("/project/.venv/bin/python");
+    await waitFor(() =>
+      expect(useSdks.getState().byKind.python?.some((s) => s.path === "/project/.venv/bin/python")).toBe(true),
+    );
+  });
+
+  it("registers a virtualenv picked from outside detection", async () => {
+    const OUTSIDE: Sdk = {
+      path: "/opt/pyenv/erp19py3.12/bin/python",
+      name: "Python 3.12 (erp19py3.12)",
+      version: "3.12.1",
+      source: "venv",
+      home: "/opt/pyenv/erp19py3.12",
+      extra: null,
+    };
+    mocks.interpreter.mockResolvedValue(ok(OUTSIDE));
+    mocks.choosePath.mockResolvedValue("/opt/pyenv/erp19py3.12/bin/python");
+    const onAdded = open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("radio", { name: "Existing environment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "OK" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(onAdded).toHaveBeenCalledWith("/opt/pyenv/erp19py3.12/bin/python");
+    expect(mocks.interpreter).toHaveBeenCalledWith("/opt/pyenv/erp19py3.12/bin/python");
+    await waitFor(() => expect(useSdks.getState().byKind.python?.some((s) => s.path === OUTSIDE.path)).toBe(true));
   });
 });
