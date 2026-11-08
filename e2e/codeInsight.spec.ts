@@ -155,6 +155,43 @@ test("⇧F6 renames in place and sends the server's edit to be applied", async (
   expect(JSON.stringify(apply)).toContain('"new_text":"placed"');
 });
 
+test("indexed single-file rename previews all anchors and applies only after confirmation", async ({
+  workbench: page,
+}) => {
+  const editor = await openSample(page);
+  await page.evaluate(
+    ({ file, prepared, uses }) => {
+      window.__ipc.handlers.lsp_prepare_rename = () => prepared;
+      window.__ipc.handlers.lsp_rename = (args) => ({
+        preview: true,
+        edit: {
+          files: [{ kind: "edit", path: file, edits: uses.map((range) => ({ range, new_text: args.newName })) }],
+          preconditions: [{ path: file, hash: "indexed-snapshot" }],
+        },
+        incomplete: null,
+      });
+      window.__ipc.handlers.apply_workspace_edit = () => null;
+    },
+    { file: FILE, prepared: range(20, 12, 17), uses: [range(20, 12, 17), range(21, 15, 20)] },
+  );
+  for (const confirm of [false, true]) {
+    await caretAt(editor, page, "val order: Order", "order");
+    await page.keyboard.press("Shift+F6");
+    await expect(page.getByText(/Press ⇧F6 to show dialog/)).toBeVisible();
+    await page.keyboard.type("placed");
+    await page.keyboard.press("Enter");
+    const preview = page.getByRole("dialog", { name: "Rename 'order' to 'placed'" });
+    await expect(preview).toBeVisible();
+    await expect(preview.getByText("2 occurrences in 1 file")).toBeVisible();
+    expect(await ipcCalls(page, "apply_workspace_edit")).toHaveLength(0);
+    await preview.getByRole("button", { name: confirm ? "Do Refactor" : "Cancel", exact: true }).click();
+    await expect(preview).toBeHidden();
+  }
+  await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
+  const [apply] = await ipcCalls(page, "apply_workspace_edit");
+  expect(apply.edit).toMatchObject({ preconditions: [{ path: FILE, hash: "indexed-snapshot" }] });
+});
+
 test("diagnostics underline the range and ⌥⏎ applies the preferred quick fix", async ({ workbench: page }) => {
   const editor = await openSample(page);
   await page.evaluate(
