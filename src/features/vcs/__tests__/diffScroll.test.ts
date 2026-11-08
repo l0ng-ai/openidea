@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Chunk, MergeView } from "@codemirror/merge";
 import { Text } from "@codemirror/state";
-import { bandAt, bandPath, transferY, type Band } from "../diffScroll";
+import type { EditorView } from "@codemirror/view";
+import { bandAt, bandPath, transferY, UnalignedPanes, type Band } from "../diffScroll";
 
 const doc = (s: string) => Text.of(s.split("\n"));
 const LINE = 20;
@@ -93,5 +94,80 @@ describe("unaligned side-by-side scrolling", () => {
   it("can keep MergeView from padding the panes", () => {
     // UnalignedPanes replaces this (private) method; a rename upstream would bring the padding back.
     expect(typeof (MergeView.prototype as unknown as { measure: unknown }).measure).toBe("function");
+  });
+});
+
+describe("animated synchronized scrolling", () => {
+  function panes(sync = true) {
+    const root = document.createElement("div");
+    const text = doc(Array.from({ length: 200 }, () => "line").join("\n"));
+    const view = () => {
+      const wrapper = root.appendChild(document.createElement("div"));
+      const dom = wrapper.appendChild(document.createElement("div"));
+      const scrollDOM = dom.appendChild(document.createElement("div"));
+      Object.defineProperty(scrollDOM, "scrollHeight", { value: 4000 });
+      scrollDOM.scrollTo = vi.fn();
+      return {
+        dom,
+        scrollDOM,
+        state: { doc: text },
+        get documentTop() {
+          return -scrollDOM.scrollTop;
+        },
+        lineBlockAt: (pos: number) => ({ bottom: text.lineAt(pos).number * LINE }),
+      } as unknown as EditorView;
+    };
+    const a = view();
+    const b = view();
+    const controller = new UnalignedPanes({ sync });
+    controller.attach({ a, b, chunks: [] } as unknown as MergeView);
+    const scroll = (view: EditorView, top: number) => {
+      view.scrollDOM.scrollTop = top;
+      view.scrollDOM.dispatchEvent(new Event("scroll"));
+    };
+    return { a, b, controller, scroll };
+  }
+
+  it.each(["a", "b"] as const)("ignores delayed follower layout scrolls while %s animates", (side) => {
+    vi.useFakeTimers();
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const p = panes();
+    try {
+      const leader = p[side];
+      const follower = p[side === "a" ? "b" : "a"];
+      p.controller.scrollTo(side, { top: 2000, behavior: "smooth" });
+      p.scroll(leader, 1000);
+      expect(follower.scrollDOM.scrollTop).toBe(1000);
+      p.scroll(follower, 200);
+      expect(leader.scrollDOM.scrollTop).toBe(1000);
+      expect(follower.scrollDOM.scrollTop).toBe(1000);
+      p.scroll(leader, 2000);
+      expect(follower.scrollDOM.scrollTop).toBe(2000);
+      vi.advanceTimersByTime(150);
+      p.scroll(follower, 300);
+      expect(leader.scrollDOM.scrollTop).toBe(300);
+    } finally {
+      p.controller.destroy();
+      frame.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["wheel", "pointerdown"])("lets %s interrupt an animated jump", (event) => {
+    vi.useFakeTimers();
+    const frame = vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+    const p = panes();
+    try {
+      p.controller.scrollTo("a", { top: 2000, behavior: "smooth" });
+      p.scroll(p.a, 1000);
+      p.b.scrollDOM.dispatchEvent(new Event(event));
+      expect(p.a.scrollDOM.scrollTo).toHaveBeenLastCalledWith({ top: 1000, behavior: "instant" });
+      p.scroll(p.b, 400);
+      expect(p.a.scrollDOM.scrollTop).toBe(400);
+    } finally {
+      p.controller.destroy();
+      frame.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

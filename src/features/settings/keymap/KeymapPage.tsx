@@ -2,8 +2,8 @@
  * Keymap page (IDEA layout): keymap selector with a gear menu (Duplicate… /
  * Rename… / Restore Defaults / Delete), search by name or by recorded shortcut,
  * and the action tree grouped as Main Menu › File…Help, Editor Actions, Tool
- * Windows, Other, Plugins. Add / Remove / Reset via the context menu (Enter /
- * double-click adds). Edits are staged as the `keymap`, `keymapOverrides`
+ * Windows, Other, Plugins. Enter / double-click opens the context menu to add,
+ * remove or reset shortcuts. Edits are staged as the `keymap`, `keymapOverrides`
  * (bundled keymaps) and `customKeymaps` (user keymaps) settings, global scope.
  */
 import { useMemo, useRef, useState, type MouseEvent } from "react";
@@ -396,7 +396,15 @@ export function KeymapPage() {
           multiSelect={false}
           speedSearch={false}
           onSelectionChange={(_sel, node) => setLead(node?.kind === "action" ? node.key : null)}
-          onActivate={(n) => n.kind === "action" && setRecordFor(n.action)}
+          onActivate={(n, e) => {
+            if (n.kind !== "action") return;
+            if ("clientX" in e) showContextMenu(e, menuFor(n.action));
+            else {
+              const row = document.getElementById(e.currentTarget.getAttribute("aria-activedescendant") ?? "");
+              const rect = row?.getBoundingClientRect();
+              if (rect) showContextMenu({ x: rect.left, y: rect.bottom }, menuFor(n.action));
+            }
+          }}
           onContextMenu={(n, _sel, e: MouseEvent) => {
             if (n?.kind !== "action") return;
             e.preventDefault();
