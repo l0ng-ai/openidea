@@ -292,7 +292,7 @@ fn scan_for_jvm(probe: &dyn AttachProbe, port: u16, suspended: bool) -> Result<i
 fn pid_tree(pid: i32) -> Vec<i32> {
     #[cfg(unix)]
     {
-        crate::session::process_tree(pid)
+        ide_core::process::process_tree(pid)
     }
     #[cfg(not(unix))]
     {

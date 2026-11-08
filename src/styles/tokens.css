@@ -105,6 +105,7 @@ html {
   --flame-3: color-mix(in srgb, var(--danger) 36%, var(--bg-elev));
   --flame-4: color-mix(in srgb, var(--danger) 26%, var(--bg-elev));
   --flame-match: color-mix(in srgb, var(--accent) 60%, var(--bg-elev));
+  --flame-type: color-mix(in srgb, var(--accent) 30%, var(--bg-elev));
   --flame-fg: var(--fg-strong);
 
   /* syntax (Islands Dark scheme) */

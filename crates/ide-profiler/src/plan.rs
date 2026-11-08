@@ -1,6 +1,6 @@
 //! Which profiler samples a configuration, and how its command line changes.
 
-use crate::{ProfilePrepared, ProfileSpec, ProfilerInstall};
+use crate::{ProfileMode, ProfilePrepared, ProfileSpec, ProfilerInstall};
 use ide_run::RunConfig;
 use ide_run::wrap::{self, program_name};
 use std::path::{Path, PathBuf};
@@ -24,21 +24,30 @@ fn ready(profiler: &str, launch: RunConfig, spec: ProfileSpec) -> ProfilePrepare
     ProfilePrepared::Ready { profiler: profiler.to_owned(), launch: Box::new(launch), spec }
 }
 
+/// What `key` holds for `config`: its own environment first, then the IDE's.
+fn env_base(config: &RunConfig, key: &str) -> String {
+    config.env.get(key).cloned().or_else(|| std::env::var(key).ok()).unwrap_or_default()
+}
+
 /// Appends `value` to the space-separated option variable `key` of `config`'s environment.
 fn append_env(config: &mut RunConfig, key: &str, value: &str) {
-    let base = config.env.get(key).cloned().or_else(|| std::env::var(key).ok()).unwrap_or_default();
+    let base = env_base(config, key);
     let joined = if base.trim().is_empty() { value.to_owned() } else { format!("{base} {value}") };
     config.env.insert(key.to_owned(), joined);
 }
 
 /// How to run `config` under a sampling profiler. `out` is an existing empty
 /// directory for the profile. Probes tools: call from a blocking thread.
-pub fn prepare(root: &Path, config: &RunConfig, out: &Path) -> ProfilePrepared {
+/// Allocation modes exist for JVM programs only.
+pub fn prepare(root: &Path, config: &RunConfig, out: &Path, mode: ProfileMode) -> ProfilePrepared {
     let dir = wrap::run_dir(root, config);
     let program = program_name(&config.command);
+    if mode != ProfileMode::Cpu && program != "java" {
+        return unsupported("Allocation profiling is available for JVM applications.");
+    }
     match program.as_str() {
         "node" | "npx" | "tsx" | "ts-node" | "npm" | "pnpm" | "yarn" => node(root, config, out),
-        "java" => jvm(root, config, &dir, out),
+        "java" => jvm(root, config, &dir, out, mode),
         "cargo" => cargo(config, &dir, out),
         "bun" | "deno" => unsupported(format!("Profiling {program} programs is not supported.")),
         _ if config.kind == "native" => native(config, &dir, out),
@@ -105,6 +114,7 @@ fn python(root: &Path, config: &RunConfig, dir: &Path, out: &Path, py: wrap::Pyt
         ext: s("txt"),
         base: dir.to_path_buf().into(),
         jvm_root: None,
+        mode: ProfileMode::Cpu,
     };
     ready("py-spy", launch, spec)
 }
@@ -127,9 +137,28 @@ fn async_profiler_lib(config: &RunConfig) -> Option<PathBuf> {
     homes.into_iter().map(|h| h.join("lib").join(lib)).find(|p| p.is_file())
 }
 
-fn jvm(root: &Path, config: &RunConfig, dir: &Path, out: &Path) -> ProfilePrepared {
+/// async-profiler's `live` option needs JDK 11+. An unreadable version does not stop the run.
+fn live_objects_jdk_too_old(config: &RunConfig) -> Option<ProfilePrepared> {
+    let command = Path::new(&config.command);
+    let launcher = if command.is_absolute() {
+        Some(command.to_path_buf())
+    } else {
+        ide_run::which::find_executable("java", &wrap::search_path(config))
+    };
+    let version = ide_run::java_cmdline::java_feature_version(&launcher?)?;
+    (version < 11).then(|| {
+        unsupported(format!("Profiling live objects needs JDK 11 or newer; '{}' runs JDK {version}.", config.name))
+    })
+}
+
+fn jvm(root: &Path, config: &RunConfig, dir: &Path, out: &Path, mode: ProfileMode) -> ProfilePrepared {
     if cfg!(windows) {
         return unsupported("async-profiler, used to profile JVM applications, does not run on Windows.");
+    }
+    if mode == ProfileMode::LiveObjects
+        && let Some(refusal) = live_objects_jdk_too_old(config)
+    {
+        return refusal;
     }
     let Some(lib) = async_profiler_lib(config) else {
         return ProfilePrepared::MissingTool {
@@ -143,7 +172,20 @@ fn jvm(root: &Path, config: &RunConfig, dir: &Path, out: &Path) -> ProfilePrepar
     };
     let mut launch = config.clone();
     let file = out.join("profile-%p.collapsed");
-    let agent = format!("-agentpath:{}=start,event=cpu,collapsed,file={}", path(&lib), path(&file));
+    // One event per run: async-profiler cannot combine `cpu` with `alloc` in collapsed output.
+    let event = match mode {
+        ProfileMode::Cpu => "cpu",
+        ProfileMode::Allocations => "alloc,total",
+        ProfileMode::LiveObjects => "alloc,live",
+    };
+    let agent = format!("-agentpath:{}=start,event={event},collapsed,file={}", path(&lib), path(&file));
+    if mode == ProfileMode::LiveObjects {
+        // The IDE reaches the running JVM through its attach listener, never by SIGQUIT.
+        let jvm_args = format!("{} {}", env_base(config, "JAVA_TOOL_OPTIONS"), config.args.join(" "));
+        if ide_jvm_attach::wants_listener_flag(&jvm_args) {
+            append_env(&mut launch, "JAVA_TOOL_OPTIONS", ide_jvm_attach::START_LISTENER_FLAG);
+        }
+    }
     append_env(&mut launch, "JAVA_TOOL_OPTIONS", &quote_opt(&agent));
     let spec = ProfileSpec::Folded {
         profiler: s("async-profiler"),
@@ -151,6 +193,7 @@ fn jvm(root: &Path, config: &RunConfig, dir: &Path, out: &Path) -> ProfilePrepar
         ext: s("collapsed"),
         base: dir.to_path_buf().into(),
         jvm_root: Some(root.to_path_buf().into()),
+        mode,
     };
     ready("async-profiler", launch, spec)
 }
@@ -242,7 +285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = cfg("node", "node", &["index.js"]);
         c.env.insert("NODE_OPTIONS".into(), "--max-old-space-size=4096".into());
-        match prepare(dir.path(), &c, dir.path()) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
             ProfilePrepared::Ready { launch, spec, .. } => {
                 let opts = &launch.env["NODE_OPTIONS"];
                 assert!(opts.starts_with("--max-old-space-size=4096 --cpu-prof --cpu-prof-dir="));
@@ -262,7 +305,7 @@ mod tests {
         std::fs::write(&python, "").unwrap();
         let mut c = cfg("python", &python.to_string_lossy(), &["main.py"]);
         c.env.insert("PATH".into(), dir.path().join("nothing").to_string_lossy().into_owned());
-        match prepare(dir.path(), &c, dir.path()) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
             ProfilePrepared::MissingTool { tool, install: Some(i), .. } => {
                 assert_eq!(tool, "py-spy");
                 assert_eq!(i.args, ["-m", "pip", "install", "py-spy"]);
@@ -271,7 +314,7 @@ mod tests {
         }
         let spy = bin.join(if cfg!(windows) { "py-spy.exe" } else { "py-spy" });
         std::fs::write(&spy, "").unwrap();
-        match prepare(dir.path(), &c, dir.path()) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
             ProfilePrepared::Ready { launch, .. } => {
                 assert_eq!(launch.command, spy.to_string_lossy());
                 assert_eq!(&launch.args[..4], ["record", "--format", "raw", "--function"]);
@@ -291,35 +334,158 @@ mod tests {
         let mut c = cfg("application", "java", &["-cp", "${classpath}", "com.x.App"]);
         c.env.insert("PATH".into(), dir.path().to_string_lossy().into_owned());
         c.env.insert("ASYNC_PROFILER_HOME".into(), dir.path().join("none").to_string_lossy().into_owned());
-        assert!(matches!(prepare(dir.path(), &c, dir.path()), ProfilePrepared::MissingTool { install: None, .. }));
-        let lib_dir = dir.path().join("ap/lib");
-        std::fs::create_dir_all(&lib_dir).unwrap();
-        let lib =
-            lib_dir.join(if cfg!(target_os = "macos") { "libasyncProfiler.dylib" } else { "libasyncProfiler.so" });
-        std::fs::write(&lib, "").unwrap();
-        c.env.insert("ASYNC_PROFILER_HOME".into(), dir.path().join("ap").to_string_lossy().into_owned());
-        match prepare(dir.path(), &c, dir.path()) {
-            ProfilePrepared::Ready { launch, .. } => {
-                assert!(launch.env["JAVA_TOOL_OPTIONS"].contains("collapsed,file="));
+        assert!(matches!(
+            prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu),
+            ProfilePrepared::MissingTool { install: None, .. }
+        ));
+        let home = fake_async_profiler(dir.path());
+        c.env.insert("ASYNC_PROFILER_HOME".into(), home.to_string_lossy().into_owned());
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
+            ProfilePrepared::Ready { launch, spec, .. } => {
+                let opts = &launch.env["JAVA_TOOL_OPTIONS"];
+                assert!(opts.contains("=start,event=cpu,collapsed,file="));
+                assert!(!opts.contains("StartAttachListener"));
+                assert!(matches!(spec, ProfileSpec::Folded { mode: ProfileMode::Cpu, .. }));
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A JVM configuration whose async-profiler and `PATH` are both under `dir`.
+    fn jvm_cfg(dir: &Path, command: &str, args: &[&str]) -> RunConfig {
+        let mut c = cfg("application", command, args);
+        c.env.insert("PATH".into(), dir.join("nothing").to_string_lossy().into_owned());
+        c.env.insert("ASYNC_PROFILER_HOME".into(), fake_async_profiler(dir).to_string_lossy().into_owned());
+        c.env.insert("JAVA_TOOL_OPTIONS".into(), "-Xmx2g".into());
+        c
+    }
+
+    /// Creates `<dir>/ap/lib/libasyncProfiler.*` and returns the home directory.
+    fn fake_async_profiler(dir: &Path) -> PathBuf {
+        let home = dir.join("ap");
+        let lib_dir = home.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        let lib =
+            lib_dir.join(if cfg!(target_os = "macos") { "libasyncProfiler.dylib" } else { "libasyncProfiler.so" });
+        std::fs::write(lib, "").unwrap();
+        home
+    }
+
+    fn ready_jvm(c: &RunConfig, dir: &Path, mode: ProfileMode) -> (RunConfig, ProfileSpec) {
+        match prepare(dir, c, dir, mode) {
+            ProfilePrepared::Ready { launch, spec, .. } => (*launch, spec),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn jvm_allocations_records_bytes() {
+        if cfg!(windows) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let c = jvm_cfg(dir.path(), "java", &["-cp", "${classpath}", "com.x.App"]);
+        let (launch, spec) = ready_jvm(&c, dir.path(), ProfileMode::Allocations);
+        let opts = &launch.env["JAVA_TOOL_OPTIONS"];
+        assert!(opts.contains("=start,event=alloc,total,collapsed,file="), "{opts}");
+        assert!(!opts.contains("StartAttachListener"), "{opts}");
+        assert!(!opts.contains("alloc="), "{opts}");
+        assert!(
+            matches!(spec, ProfileSpec::Folded { mode: ProfileMode::Allocations, ref ext, .. } if ext == "collapsed")
+        );
+    }
+
+    #[test]
+    fn jvm_live_objects_starts_the_attach_listener() {
+        if cfg!(windows) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let c = jvm_cfg(dir.path(), "java", &["-cp", "${classpath}", "com.x.App"]);
+        let (launch, spec) = ready_jvm(&c, dir.path(), ProfileMode::LiveObjects);
+        let opts = &launch.env["JAVA_TOOL_OPTIONS"];
+        assert!(opts.starts_with("-Xmx2g -XX:+StartAttachListener -agentpath:"), "{opts}");
+        assert!(opts.contains("event=alloc,live,collapsed"), "{opts}");
+        assert!(!opts.contains("total"), "{opts}");
+        assert!(
+            matches!(spec, ProfileSpec::Folded { mode: ProfileMode::LiveObjects, ref ext, .. } if ext == "collapsed")
+        );
+    }
+
+    #[test]
+    fn live_objects_keeps_user_attach_opt_out() {
+        if cfg!(windows) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let c = jvm_cfg(dir.path(), "java", &["-XX:+DisableAttachMechanism", "com.x.App"]);
+        let (launch, _) = ready_jvm(&c, dir.path(), ProfileMode::LiveObjects);
+        assert!(!launch.env["JAVA_TOOL_OPTIONS"].contains("StartAttachListener"));
+
+        let mut c = jvm_cfg(dir.path(), "java", &["com.x.App"]);
+        c.env.insert("JAVA_TOOL_OPTIONS".into(), "-XX:-StartAttachListener".into());
+        let (launch, _) = ready_jvm(&c, dir.path(), ProfileMode::LiveObjects);
+        let opts = &launch.env["JAVA_TOOL_OPTIONS"];
+        assert!(opts.starts_with("-XX:-StartAttachListener -agentpath:"), "{opts}");
+        assert!(!opts.contains("+StartAttachListener"), "{opts}");
+    }
+
+    #[test]
+    fn live_objects_refuses_jdk8() {
+        if cfg!(windows) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let java = dir.path().join("jdk8/bin/java");
+        std::fs::create_dir_all(java.parent().unwrap()).unwrap();
+        std::fs::write(&java, "").unwrap();
+        std::fs::write(dir.path().join("jdk8/release"), "JAVA_VERSION=\"1.8.0_512\"\n").unwrap();
+        // No async-profiler is installed: the refusal does not depend on it.
+        let mut c = cfg("application", &java.to_string_lossy(), &["com.x.App"]);
+        c.env.insert("PATH".into(), dir.path().join("nothing").to_string_lossy().into_owned());
+        c.env.insert("ASYNC_PROFILER_HOME".into(), dir.path().join("none").to_string_lossy().into_owned());
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects) {
+            ProfilePrepared::Unsupported { reason } => assert!(reason.contains("JDK 11"), "{reason}"),
+            other => panic!("{other:?}"),
+        }
+        // Allocations do not need the attach listener, so JDK 8 is fine.
+        assert!(matches!(
+            prepare(dir.path(), &c, dir.path(), ProfileMode::Allocations),
+            ProfilePrepared::MissingTool { .. }
+        ));
+
+        std::fs::write(dir.path().join("jdk8/release"), "JAVA_VERSION=\"11.0.29\"\n").unwrap();
+        c.env.insert("ASYNC_PROFILER_HOME".into(), fake_async_profiler(dir.path()).to_string_lossy().into_owned());
+        assert!(matches!(prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects), ProfilePrepared::Ready { .. }));
+    }
+
+    #[test]
+    fn allocation_modes_need_a_jvm() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = cfg("node", "node", &["index.js"]);
+        for mode in [ProfileMode::Allocations, ProfileMode::LiveObjects] {
+            match prepare(dir.path(), &c, dir.path(), mode) {
+                ProfilePrepared::Unsupported { reason } => assert!(reason.contains("JVM"), "{reason}"),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(matches!(prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu), ProfilePrepared::Ready { .. }));
     }
 
     #[test]
     fn cargo_and_unknown() {
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(
-            prepare(dir.path(), &cfg("cargo", "cargo", &["test"]), dir.path()),
+            prepare(dir.path(), &cfg("cargo", "cargo", &["test"]), dir.path(), ProfileMode::Cpu),
             ProfilePrepared::Unsupported { .. }
         ));
         assert!(matches!(
-            prepare(dir.path(), &cfg("make", "make", &[]), dir.path()),
+            prepare(dir.path(), &cfg("make", "make", &[]), dir.path(), ProfileMode::Cpu),
             ProfilePrepared::Unsupported { .. }
         ));
         if !cfg!(target_os = "linux") {
             assert!(matches!(
-                prepare(dir.path(), &cfg("cargo", "cargo", &["run"]), dir.path()),
+                prepare(dir.path(), &cfg("cargo", "cargo", &["run"]), dir.path(), ProfileMode::Cpu),
                 ProfilePrepared::Unsupported { .. }
             ));
         }

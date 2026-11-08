@@ -1021,9 +1021,15 @@ export const commands = {
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
-	profilerPrepare: (config: RunConfig_Deserialize) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config })),
+	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  Reads the profile a profiled run left behind. */
 	profilerCollect: (spec: ProfileSpec) => typedError<Profile, IdeError>(__TAURI_INVOKE("profiler_collect", { spec })),
+	/**
+	 *  Runs a full garbage collection in the JVMs of a running local run, so a live-object profile
+	 *  written when it stops holds only reachable objects. Returns how many JVMs collected; 0 for a
+	 *  run that is gone, remote, or has no JVM with an attach listener.
+	 */
+	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**
@@ -6290,8 +6296,9 @@ export type ProcessMemory = {
 export type Profile = {
 	/**  `node --cpu-prof`, `py-spy`, `async-profiler`, `perf`. */
 	profiler: string,
-	/**  `ms` (time-weighted) or `samples`. */
+	/**  `ms` (time-weighted), `samples` (sample or live-object counts) or `bytes` (allocated). */
 	unit: string,
+	mode: ProfileMode,
 	total: number | null,
 	frames: ProfileFrame[],
 	/**  Depth-first; `nodes[0]` is the root. */
@@ -6305,7 +6312,23 @@ export type ProfileFrame = {
 	file: IpcPath | null,
 	/**  0-based. */
 	line: number | null,
+	kind: ProfileFrameKind,
 };
+
+export type ProfileFrameKind = 
+/**  A function; `file` / `line` locate its source. */
+"code" | 
+/**  The leaf of an allocation stack: the type that was allocated, not a source line. */
+"allocatedType";
+
+/**  What a profile measures. */
+export type ProfileMode = 
+/**  Sampled CPU time. */
+"cpu" | 
+/**  Bytes allocated, by allocation stack. */
+"allocations" | 
+/**  Objects still alive when the run stopped, by allocation stack. */
+"liveObjects";
 
 /**  A call-tree node; node 0 is the synthetic root (`all`). */
 export type ProfileNode = {
@@ -6335,9 +6358,10 @@ export type ProfileSpec =
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
- *  against `base`. `jvm_root`: map JVM class frames to sources below it.
+ *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
+ *  allocation modes the last frame of a JVM stack is the allocated type.
  */
-{ kind: "folded"; profiler: string; dir: IpcPath; ext: string; base: IpcPath; jvmRoot: IpcPath | null } | 
+{ kind: "folded"; profiler: string; dir: IpcPath; ext: string; base: IpcPath; jvmRoot: IpcPath | null; mode: ProfileMode } | 
 /**  `perf script -i <data>` output. */
 { kind: "perf"; perf: string; data: IpcPath; cwd: IpcPath; env: { [key in string]: string } };
 

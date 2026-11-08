@@ -5,6 +5,8 @@ use crate::adapter::AdapterSpec;
 use crate::connection::{Connection, DapError, Incoming};
 use crate::{Breakpoint, BreakpointState, DataBreakpoint, DebugManager, FunctionBreakpoint, SessionOwner};
 use ide_core::event::DebugEvent;
+#[cfg(unix)]
+use ide_core::process::process_tree;
 use ide_core::{DebugSessionId, IdeEvent, TaskId};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -403,32 +405,6 @@ impl Session {
 
 /// How long Stop waits for a launched program to exit before reporting the session ended.
 pub(crate) const DEBUGGEE_EXIT_WAIT: Duration = Duration::from_secs(10);
-
-/// The program and everything it started: an adapter may report the launcher shell, whose
-/// child is the debugged program, so stopping only the reported pid leaves the program alive.
-#[cfg(unix)]
-pub(crate) fn process_tree(pid: i32) -> Vec<i32> {
-    use std::collections::HashMap;
-    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else {
-        return vec![pid];
-    };
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let mut it = line.split_whitespace();
-        let (Some(p), Some(parent)) = (it.next(), it.next()) else { continue };
-        let (Ok(p), Ok(parent)) = (p.parse::<i32>(), parent.parse::<i32>()) else { continue };
-        children.entry(parent).or_default().push(p);
-    }
-    let mut tree = vec![pid];
-    let mut at = 0;
-    while at < tree.len() {
-        if let Some(kids) = children.get(&tree[at]) {
-            tree.extend(kids.iter().copied());
-        }
-        at += 1;
-    }
-    tree
-}
 
 /// Asks the program itself to exit (`force` = SIGKILL) without ending the adapter session:
 /// its output keeps flowing over DAP while it shuts down. The first call remembers the pid

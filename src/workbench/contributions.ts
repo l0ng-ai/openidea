@@ -17,7 +17,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, SearchQuery, RunConfig } from "@/bindings";
+import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -1141,6 +1141,11 @@ export interface ExecutorLaunch {
   launch: RunConfig;
   /** The process exited (not called when it failed to start). */
   finished(result: { exitCode: number | null; stopped: boolean }): void;
+  /**
+   * The user stopped the run: called before the stop signal, which waits for it (at most
+   * `BEFORE_STOP_TIMEOUT_MS`). A second Stop does not wait.
+   */
+  beforeStop?(runId: RunId): Promise<void>;
 }
 
 export interface RunExecutorContribution {

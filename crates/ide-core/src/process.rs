@@ -115,6 +115,32 @@ pub fn process_alive(pid: u32) -> bool {
     }
 }
 
+/// The program and everything it started: an adapter may report the launcher shell, whose
+/// child is the debugged program, so stopping only the reported pid leaves the program alive.
+#[cfg(unix)]
+pub fn process_tree(pid: i32) -> Vec<i32> {
+    use std::collections::HashMap;
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else {
+        return vec![pid];
+    };
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let (Some(p), Some(parent)) = (it.next(), it.next()) else { continue };
+        let (Ok(p), Ok(parent)) = (p.parse::<i32>(), parent.parse::<i32>()) else { continue };
+        children.entry(parent).or_default().push(p);
+    }
+    let mut tree = vec![pid];
+    let mut at = 0;
+    while at < tree.len() {
+        if let Some(kids) = children.get(&tree[at]) {
+            tree.extend(kids.iter().copied());
+        }
+        at += 1;
+    }
+    tree
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,
@@ -905,6 +931,25 @@ mod tests {
             assert_eq!(find_executable("agent", &search), Some(a.join("agent")));
         }
         assert_eq!(find_executable("nope", &search), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_tree_lists_the_child_of_a_shell() {
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 5 & wait"]);
+        let mut child = cmd.spawn().unwrap();
+        let sh_pid = child.id() as i32;
+        // The shell forks `sleep` after it starts, so the tree grows a moment later.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut tree = process_tree(sh_pid);
+        while tree.len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            tree = process_tree(sh_pid);
+        }
+        kill_tree(&mut child);
+        assert_eq!(tree[0], sh_pid, "the pid itself comes first");
+        assert!(tree.len() >= 2 && tree[1..].iter().all(|p| *p != sh_pid), "the shell's child follows: {tree:?}");
     }
 }
 

@@ -1,6 +1,7 @@
 //! Profile formats: collapsed ("folded") stacks, V8 `.cpuprofile` JSON and
 //! `perf script` text.
 
+use crate::ProfileFrameKind;
 use crate::tree::{FrameKey, TreeBuilder};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -19,7 +20,12 @@ fn folded_frame(raw: &str, base: &Path) -> FrameKey {
         {
             let p = Path::new(file);
             let file = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
-            return FrameKey { name: raw[..open].to_owned(), file: Some(file), line: Some(line.saturating_sub(1)) };
+            return FrameKey {
+                name: raw[..open].to_owned(),
+                file: Some(file),
+                line: Some(line.saturating_sub(1)),
+                kind: ProfileFrameKind::Code,
+            };
         }
     }
     // async-profiler frame type suffixes (`_[j]` JIT, `_[i]` interpreted, `_[k]` kernel…).
@@ -30,8 +36,16 @@ fn folded_frame(raw: &str, base: &Path) -> FrameKey {
     FrameKey::named(name)
 }
 
-/// Adds collapsed stacks (`root;caller;callee <count>` per line).
-pub(crate) fn add_folded(b: &mut TreeBuilder, text: &str, base: &Path) {
+/// The allocated type of an async-profiler allocation leaf (`byte[]_[i]`, `java.lang.String_[k]`).
+fn allocated_type(raw: &str) -> Option<&str> {
+    let raw = raw.trim();
+    let name = raw.strip_suffix("_[i]").or_else(|| raw.strip_suffix("_[k]"))?;
+    (!name.is_empty()).then_some(name)
+}
+
+/// Adds collapsed stacks (`root;caller;callee <count>` per line). With `allocation_leaf`
+/// the last frame of a stack is the allocated type.
+pub(crate) fn add_folded(b: &mut TreeBuilder, text: &str, base: &Path, allocation_leaf: bool) {
     for line in text.lines() {
         let line = line.trim_end();
         let Some((stack, count)) = line.rsplit_once(' ') else { continue };
@@ -39,7 +53,13 @@ pub(crate) fn add_folded(b: &mut TreeBuilder, text: &str, base: &Path) {
         if stack.is_empty() || count <= 0.0 {
             continue;
         }
-        b.add_stack(stack.split(';').map(|f| folded_frame(f, base)), count);
+        let mut frames: Vec<&str> = stack.split(';').collect();
+        let leaf = if allocation_leaf { frames.last().and_then(|f| allocated_type(f)) } else { None };
+        if leaf.is_some() {
+            frames.pop();
+        }
+        let stack = frames.into_iter().map(|f| folded_frame(f, base)).chain(leaf.map(FrameKey::allocated));
+        b.add_stack(stack, count);
     }
 }
 
@@ -137,7 +157,7 @@ pub(crate) fn add_cpuprofile(b: &mut TreeBuilder, json: &str) -> Result<(), Stri
         let name = if name.is_empty() { "(anonymous)".to_owned() } else { name.to_owned() };
         let line =
             file.as_ref().and(cf.get("lineNumber").and_then(Value::as_i64)).filter(|l| *l >= 0).map(|l| l as u32);
-        Some(FrameKey { name, file, line })
+        Some(FrameKey { name, file, line, kind: ProfileFrameKind::Code })
     };
     for (id, weight) in self_time {
         if weight <= 0.0 {
@@ -202,6 +222,34 @@ pub(crate) fn add_perf_script(b: &mut TreeBuilder, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProfileMode;
+
+    #[test]
+    fn allocation_leaves_become_types() {
+        let mut b = TreeBuilder::new();
+        let text = "Alloc.main;Alloc.garbage;byte[]_[i] 541064184\n\
+                    Alloc.main;Alloc.strings;java/lang/StringBuilder.toString;java.lang.String_[i] 6815731\n\
+                    Alloc.main;Alloc.retained;byte[]_[k] 4112\n\
+                    java.lang.String_[i] 524287\n";
+        add_folded(&mut b, text, Path::new("/p"), true);
+        let p = b.finish("async-profiler", "bytes", ProfileMode::Allocations);
+        assert_eq!(p.total, 541064184.0 + 6815731.0 + 4112.0 + 524287.0);
+        let kind = |n: &str| p.frames.iter().find(|f| f.name == n).unwrap().kind;
+        assert_eq!(kind("byte[]"), ProfileFrameKind::AllocatedType);
+        assert_eq!(kind("java.lang.String"), ProfileFrameKind::AllocatedType);
+        assert_eq!(kind("Alloc.garbage"), ProfileFrameKind::Code);
+        assert_eq!(kind("java/lang/StringBuilder.toString"), ProfileFrameKind::Code);
+        assert_eq!(p.frames.iter().filter(|f| f.name == "byte[]").count(), 1, "_[i] and _[k] are one type");
+    }
+
+    #[test]
+    fn cpu_mode_keeps_kernel_leaf_as_code() {
+        let mut b = TreeBuilder::new();
+        add_folded(&mut b, "java/lang/Thread.run;__psynch_cvwait_[k] 3\n", Path::new("/p"), false);
+        let p = b.finish("async-profiler", "samples", ProfileMode::Cpu);
+        assert!(p.frames.iter().all(|f| f.kind == ProfileFrameKind::Code));
+        assert!(p.frames.iter().any(|f| f.name == "__psynch_cvwait"));
+    }
 
     #[test]
     fn folded_stacks_with_py_spy_and_async_profiler_frames() {
@@ -210,8 +258,8 @@ mod tests {
                     <module> (main.py:10) 1\n\
                     java/lang/Thread.run_[j];com/x/App.work_[i] 2\n\
                     garbage\n";
-        add_folded(&mut b, text, Path::new("/proj"));
-        let p = b.finish("t", "samples");
+        add_folded(&mut b, text, Path::new("/proj"), false);
+        let p = b.finish("t", "samples", ProfileMode::Cpu);
         assert_eq!(p.total, 6.0);
         let compute = p.frames.iter().find(|f| f.name == "compute").unwrap();
         assert_eq!(compute.file.as_deref(), Some(Path::new("/abs/lib.py")));
@@ -243,7 +291,7 @@ mod tests {
             "startTime":0,"endTime":10,"samples":[3,3,2,4],"timeDeltas":[0,1000,2000,500]}"#;
         let mut b = TreeBuilder::new();
         add_cpuprofile(&mut b, json).unwrap();
-        let p = b.finish("node", "ms");
+        let p = b.finish("node", "ms", ProfileMode::Cpu);
         // Sample i gets delta i+1: 3→1ms, 3→2ms, 2→0.5ms, 4→0.
         assert!((p.total - 3.5).abs() < 1e-9);
         let main = p.frames.iter().find(|f| f.name == "main").unwrap();
@@ -259,7 +307,7 @@ mod tests {
             {"id":2,"callFrame":{"functionName":"f","url":"node:internal/x"},"hitCount":4}]}"#;
         let mut b = TreeBuilder::new();
         add_cpuprofile(&mut b, json).unwrap();
-        let p = b.finish("node", "samples");
+        let p = b.finish("node", "samples", ProfileMode::Cpu);
         assert_eq!(p.total, 4.0);
         assert_eq!(p.frames.iter().find(|f| f.name == "f").unwrap().file, None);
     }
@@ -275,7 +323,7 @@ mod tests {
                     \t    ffffff [unknown] ([kernel.kallsyms])\n";
         let mut b = TreeBuilder::new();
         add_perf_script(&mut b, text);
-        let p = b.finish("perf", "samples");
+        let p = b.finish("perf", "samples", ProfileMode::Cpu);
         assert_eq!(p.total, 2.0);
         let root = &p.nodes[0];
         let names: Vec<&str> =
