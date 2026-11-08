@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { create } from "zustand";
-import { call, commands } from "@/platform/ipc";
+import { call, commands, isCancelled, nextRequestId, type ProjectDiscovery, type RequestId } from "@/platform/ipc";
+import { invokeLocal } from "@/platform/tauriCore";
 import { basename, dirname, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
 import { tx } from "@/platform/i18n";
-import { Button, Dialog, Icon, IconButton, Input, T } from "@/ui";
+import { Button, Checkbox, Dialog, Icon, IconButton, Input, T } from "@/ui";
 import { openProjectWithPolicy } from "./windows";
 import styles from "./WorkspaceDialog.module.css";
 
@@ -28,7 +29,25 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
   );
   const [adding, setAdding] = useState("");
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [discovery, setDiscovery] = useState<ProjectDiscovery | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState("");
+  const request = useRef<RequestId | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (request.current !== null) {
+        // Discovery and its native folder picker stay local in remote windows too.
+        void invokeLocal("cancel_request", { id: request.current }).catch(() => {});
+        request.current = null;
+      }
+    };
+  }, []);
+  const disabled = busy || scanning;
   const add = (value: string) => {
     const path = value.trim();
     if (path && !projects.includes(path)) setProjects([...projects, path]);
@@ -42,11 +61,38 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
       title: tx(target === "project" ? "Add Projects" : "Workspace Location"),
     });
     const paths = result === null ? [] : Array.isArray(result) ? result : [result];
-    if (target === "workspace" && paths[0]) setPath(paths[0]);
-    else setProjects((current) => [...new Set([...current, ...paths])]);
+    if (!mounted.current || !paths.length) return;
+    if (target === "workspace") {
+      setPath(paths[0]);
+      return;
+    }
+    const id = nextRequestId();
+    request.current = id;
+    setScanning(true);
+    setError("");
+    setTruncated(false);
+    try {
+      const found = await call(commands.workspaceDiscoverProjects(id, paths));
+      if (request.current !== id) return;
+      setProjects((current) => [...new Set([...current, ...found.direct])]);
+      setTruncated(found.truncated);
+      if (found.projects.length) {
+        setDiscovery(found);
+        setSelected(
+          new Set(found.projects.map((p) => p.path).filter((p) => !projects.includes(p) && !found.direct.includes(p))),
+        );
+      }
+    } catch (e) {
+      if (request.current === id && !isCancelled(e)) setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (request.current === id) {
+        request.current = null;
+        setScanning(false);
+      }
+    }
   };
   const save = async () => {
-    if (busy) return;
+    if (disabled || discovery) return;
     setBusy(true);
     setError("");
     try {
@@ -65,6 +111,84 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
       setBusy(false);
     }
   };
+  if (discovery)
+    return (
+      <Dialog
+        open
+        onClose={onClose}
+        title="Choose Projects"
+        width={640}
+        buttons={[
+          { label: "Back", role: "cancel", onClick: () => setDiscovery(null) },
+          {
+            label: "Add Selected",
+            role: "default",
+            disabled: !selected.size,
+            onClick: () => {
+              setProjects((current) => [...new Set([...current, ...selected])]);
+              setDiscovery(null);
+            },
+          },
+        ]}
+      >
+        <div className={styles.body}>
+          <div className={styles.heading}>
+            <T>Projects found</T>
+            <div className={styles.row}>
+              <Button
+                size="small"
+                onClick={() =>
+                  setSelected(new Set(discovery.projects.map((p) => p.path).filter((p) => !projects.includes(p))))
+                }
+              >
+                Select All
+              </Button>
+              <Button size="small" onClick={() => setSelected(new Set())}>
+                Select None
+              </Button>
+            </div>
+          </div>
+          <p className={styles.hint}>
+            <T>Choose the projects to link to this workspace.</T>
+          </p>
+          <div className={styles.projects} role="group" aria-label={tx("Projects found")}>
+            {discovery.projects.map((candidate) => {
+              const linked = projects.includes(candidate.path);
+              return (
+                <div className={styles.project} key={candidate.path}>
+                  <Checkbox
+                    checked={selected.has(candidate.path)}
+                    disabled={linked}
+                    aria-label={candidate.relative_path}
+                    label={
+                      <span className={styles.candidate} title={candidate.path}>
+                        <span>{candidate.relative_path}</span>
+                        <span className={styles.hint}>{linked ? <T>Already linked</T> : basename(candidate.root)}</span>
+                      </span>
+                    }
+                    onChange={(checked) =>
+                      setSelected((current) => {
+                        const next = new Set(current);
+                        if (checked) next.add(candidate.path);
+                        else next.delete(candidate.path);
+                        return next;
+                      })
+                    }
+                  />
+                </div>
+              );
+            })}
+          </div>
+          {truncated && (
+            <p className={styles.hint} role="status">
+              <T>
+                Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.
+              </T>
+            </p>
+          )}
+        </div>
+      </Dialog>
+    );
   return (
     <Dialog
       open
@@ -78,7 +202,7 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
         {
           label: mode === "create" ? "Create" : "Apply",
           role: "default",
-          disabled: busy || !name.trim() || !path.trim(),
+          disabled: disabled || !name.trim() || !path.trim(),
           onClick: () => void save(),
         },
       ]}
@@ -86,7 +210,12 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
       <div className={styles.body}>
         <label className={styles.field}>
           <T>Name</T>
-          <Input aria-label="Workspace name" value={name} disabled={busy} onChange={(e) => setName(e.target.value)} />
+          <Input
+            aria-label="Workspace name"
+            value={name}
+            disabled={disabled}
+            onChange={(e) => setName(e.target.value)}
+          />
         </label>
         <label className={styles.field}>
           <T>Location</T>
@@ -94,13 +223,14 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
             <Input
               aria-label="Workspace location"
               value={path}
-              disabled={busy || mode === "manage"}
+              disabled={disabled || mode === "manage"}
               onChange={(e) => setPath(e.target.value)}
             />
             {mode === "create" && (
               <IconButton
                 icon="folder-open"
                 title="Choose workspace location"
+                disabled={disabled}
                 onClick={() => void browse("workspace").catch((e) => setError(String(e)))}
               />
             )}
@@ -111,7 +241,7 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
           <Button
             size="small"
             icon="plus"
-            disabled={busy}
+            disabled={disabled}
             onClick={() => void browse("project").catch((e) => setError(String(e)))}
           >
             Add Projects…
@@ -128,7 +258,7 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
               <IconButton
                 icon="close"
                 title={tx`Remove ${basename(root)}`}
-                disabled={busy}
+                disabled={disabled}
                 onClick={() => setProjects(projects.filter((p) => p !== root))}
               />
             </div>
@@ -144,7 +274,7 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
             aria-label="Project folder path"
             placeholder="Project folder path"
             value={adding}
-            disabled={busy}
+            disabled={disabled}
             onChange={(e) => setAdding(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -154,13 +284,23 @@ function WorkspaceDialog({ mode, onClose }: { mode: "create" | "manage"; onClose
               }
             }}
           />
-          <Button disabled={busy || !adding.trim()} onClick={() => add(adding)}>
+          <Button disabled={disabled || !adding.trim()} onClick={() => add(adding)}>
             Add
           </Button>
         </div>
         <p className={styles.hint}>
           <T>Project folders stay in place. Removing a project here keeps its files.</T>
         </p>
+        {scanning && (
+          <p className={styles.hint} role="status">
+            <T>Searching for projects…</T>
+          </p>
+        )}
+        {truncated && (
+          <p className={styles.hint} role="status">
+            <T>Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.</T>
+          </p>
+        )}
         {error && (
           <div className={styles.error} role="alert">
             {error}

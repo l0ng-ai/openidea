@@ -1,4 +1,5 @@
 {
+  "Skills": "技能",
   "Identifiers": "标识符",
   "Parameter": "参数",
   "Package reference": "包引用",
@@ -6840,5 +6841,13 @@
   "Build did not start": "构建未启动",
   "Select a module for the Build Module task": "请为构建模块任务选择模块",
   "The Build Module task uses a different module; remove it and add it again": "构建模块任务使用了不同的模块，请移除后重新添加",
-  "Module '{target}' no longer exists": "模块“{target}”已不存在"
+  "Module '{target}' no longer exists": "模块“{target}”已不存在",
+  "Choose Projects": "选择项目",
+  "Add Selected": "添加所选项目",
+  "Projects found": "找到的项目",
+  "Select None": "全不选",
+  "Choose the projects to link to this workspace.": "选择要关联到此工作区的项目。",
+  "Already linked": "已关联",
+  "Searching for projects…": "正在查找项目…",
+  "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.": "搜索已达到条目数量上限，可能还有更多项目。请选择较小的文件夹重新搜索。"
 }
