@@ -1,0 +1,12 @@
+[package]
+name = "ide-jdwp"
+description = "JDWP packet codec that counts every object ID in a reply, so references taken by the debugger can be released exactly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

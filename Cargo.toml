@@ -48,6 +48,7 @@ ide-plugin = { path = "crates/ide-plugin" }
 ide-jvm-attach = { path = "crates/ide-jvm-attach" }
 ide-streams = { path = "crates/ide-streams" }
 ide-jvm-inspect = { path = "crates/ide-jvm-inspect" }
+ide-jdwp = { path = "crates/ide-jdwp" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }

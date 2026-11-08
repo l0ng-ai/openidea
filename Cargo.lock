@@ -4419,6 +4419,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-jdwp"
+version = "0.1.38"
+dependencies = [
+ "proptest",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "ide-jsonrpc"
 version = "0.1.38"
 dependencies = [
