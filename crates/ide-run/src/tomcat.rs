@@ -1407,7 +1407,10 @@ mod tests {
     #[test]
     fn prepares_plain_windows_paths_from_verbatim_root() {
         let tmp = tempfile::tempdir().unwrap();
-        let root = PathBuf::from(format!(r"\\?\{}", dunce::canonicalize(tmp.path()).unwrap().display()));
+        let canonical = dunce::canonicalize(tmp.path()).unwrap();
+        // `canonicalize` may already return a verbatim path; never prepend `\\?\` twice.
+        let plain = canonical.to_string_lossy();
+        let root = PathBuf::from(format!(r"\\?\{}", plain.strip_prefix(r"\\?\").unwrap_or(&plain)));
         check_prepared_paths(&root);
     }
     #[test]
