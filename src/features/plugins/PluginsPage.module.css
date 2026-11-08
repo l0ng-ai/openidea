@@ -43,6 +43,7 @@
 }
 .body {
   display: flex;
+  min-width: 640px;
   flex: 1;
   min-height: 0;
   border-radius: var(--radius-small);

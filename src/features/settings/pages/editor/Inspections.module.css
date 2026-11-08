@@ -27,6 +27,7 @@
 }
 .split {
   flex: 1;
+  min-width: 520px;
   min-height: 0;
   display: flex;
   gap: 12px;

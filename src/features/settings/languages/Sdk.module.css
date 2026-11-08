@@ -212,7 +212,7 @@
 /* Project Structure */
 .structure {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
+  grid-template-columns: minmax(240px, 1fr) 220px;
   gap: 10px;
   min-height: 420px;
 }
@@ -418,7 +418,7 @@
 }
 .splitLayout {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
+  grid-template-columns: 268px minmax(300px, 1fr);
   gap: 12px;
   min-height: 360px;
 }
