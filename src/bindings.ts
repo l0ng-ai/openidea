@@ -1030,6 +1030,19 @@ export const commands = {
 	 *  run that is gone, remote, or has no JVM with an attach listener.
 	 */
 	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
+	/**  Dumps the session's JVM and analyzes the dump; cancel with `request`. */
+	debugHeapCapture: (session: DebugSessionId, request: RequestId, onProgress: Channel<HeapProgress>) => typedError<HeapCaptureResult, IdeError>(__TAURI_INVOKE("debug_heap_capture", { session, request, onProgress })),
+	/**  Analyzes an `.hprof` file; cancel with `request`. */
+	debugHeapOpen: (path: IpcPath, request: RequestId, onProgress: Channel<HeapProgress>) => typedError<HeapOpenResult, IdeError>(__TAURI_INVOKE("debug_heap_open", { path, request, onProgress })),
+	debugHeapClasses: (snapshot: HeapSnapshotId) => typedError<HeapClassRow[], IdeError>(__TAURI_INVOKE("debug_heap_classes", { snapshot })),
+	/**  A page of the dominator tree: under `parent`, of type `classIndex`, or both. */
+	debugHeapDominators: (snapshot: HeapSnapshotId, parent: number | null, classIndex: number | null, offset: number, limit: number) => typedError<HeapObjectPage, IdeError>(__TAURI_INVOKE("debug_heap_dominators", { snapshot, parent, classIndex, offset, limit })),
+	/**  The shortest path from `object` to a GC root; `null` when it is unreachable. */
+	debugHeapPath: (snapshot: HeapSnapshotId, object: HeapObjectRef) => typedError<HeapPathStep[] | null, IdeError>(__TAURI_INVOKE("debug_heap_path", { snapshot, object })),
+	debugHeapCompare: (base: HeapSnapshotId, current: HeapSnapshotId) => typedError<HeapClassDiff[], IdeError>(__TAURI_INVOKE("debug_heap_compare", { base, current })),
+	/**  Copies the snapshot's dump to `path`, replacing a file there. */
+	debugHeapSave: (snapshot: HeapSnapshotId, path: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_save", { snapshot, path })),
+	debugHeapClose: (snapshot: HeapSnapshotId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_close", { snapshot })),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**
@@ -4289,6 +4302,121 @@ export type HeadChange = {
 	after: string,
 };
 
+export type HeapCaptureResult = { status: "ready"; snapshot: HeapSnapshotInfo } | { status: "unavailable"; reason: JvmHeapUnavailable } | { status: "cancelled" };
+
+/**  One class name in two snapshots; a side without the name has zeros. */
+export type HeapClassDiff = {
+	name: string,
+	baseCount: number,
+	count: number,
+	baseShallow: number,
+	shallow: number,
+	baseRetained: number,
+	retained: number,
+	/**
+	 *  Several classes have this name on one side or both, so the sides cannot be matched: each
+	 *  side shows the sum over its classes, and there is no difference to show.
+	 */
+	ambiguous: boolean,
+};
+
+export type HeapClassRow = {
+	/**  Type slot, as `classIndex` in [`crate::HeapIndex::dominated`]. */
+	classIndex: number,
+	name: string,
+	count: number,
+	shallow: number,
+	retained: number,
+	unreachableCount: number,
+	/**
+	 *  Another class has the same name (several class loaders): nothing joined by name, such as a
+	 *  second snapshot, can tell them apart.
+	 */
+	ambiguous: boolean,
+};
+
+/**  How an object is held by the next step of a path to a GC root. */
+export type HeapEdge = 
+/**  An instance field; the name is empty when the dump does not show which one. */
+{ kind: "field"; name: string } | { kind: "element"; index: number } | { kind: "static"; name: string } | 
+/**  From an instance to its class. */
+{ kind: "classOf" } | { kind: "superClass" } | { kind: "classLoader" } | 
+/**  `thread` is the name of the thread whose root it is, when the dump has it. */
+{ kind: "root"; root: HeapRootKind; thread: string | null };
+
+export type HeapObjectPage = {
+	rows: HeapObjectRow[],
+	/**  Rows of every page together. */
+	total: number,
+};
+
+/**
+ *  An object of one snapshot: its index in the [`crate::HeapIndex`] columns. Any value may
+ *  arrive over IPC; queries answer an index that names no object with nothing.
+ */
+export type HeapObjectRef = number;
+
+export type HeapObjectRow = {
+	object: HeapObjectRef,
+	className: string,
+	/**  The object's hprof id in hex, `0x1300`. */
+	address: string,
+	shallow: number,
+	retained: number,
+	/**  Has children in the dominator tree. */
+	hasChildren: boolean,
+	/**  The text of a `java.lang.String`, or the name of the class a class object stands for. */
+	preview: string | null,
+};
+
+export type HeapOpenResult = { status: "ready"; snapshot: HeapSnapshotInfo } | 
+/**  Bytes, for the index next to the dump. */
+{ status: "notEnoughDiskSpace"; needed: number; available: number } | { status: "cancelled" };
+
+export type HeapOrigin = 
+/**  Dumped from a live debug session. */
+{ kind: "captured"; session: DebugSessionId; pid: number; javaVersion: string; takenWhileSuspended: boolean; dumpMs: number } | 
+/**  An `.hprof` the user opened; it is never deleted. */
+{ kind: "file"; path: IpcPath };
+
+export type HeapPathStep = {
+	object: HeapObjectRow,
+	/**  How the next step holds this object; on the last step, the root. */
+	via: HeapEdge,
+};
+
+export type HeapPhase = "reading" | "linking" | "dominators" | "retained" | "paths" | "saving";
+
+export type HeapProgress = { type: "dumping" } | { type: "analyzing"; phase: HeapPhase; done: number; total: number };
+
+export type HeapRootKind = "unknown" | "jniGlobal" | "jniLocal" | "javaFrame" | "nativeStack" | "stickyClass" | "threadBlock" | "monitorUsed" | "threadObject";
+
+export type HeapSnapshotId = number;
+
+export type HeapSnapshotInfo = {
+	id: HeapSnapshotId,
+	label: string,
+	origin: HeapOrigin,
+	summary: HeapSummary,
+	/**  Unix time in milliseconds when the snapshot was opened. */
+	createdMs: number,
+};
+
+/**  Counts over instances and arrays; class objects (class dumps) are left out. */
+export type HeapSummary = {
+	/**  `reachable_objects + unreachable_objects`. */
+	objects: number,
+	reachableObjects: number,
+	reachableBytes: number,
+	unreachableObjects: number,
+	unreachableBytes: number,
+	/**  Class dumps in the dump. */
+	classes: number,
+	weakEdgesSkipped: number,
+	sizeSource: SizeSource,
+	analysisMs: number,
+};
+
 export type HierarchyChoice = {
 	id: string,
 	makeAbstract: boolean,
@@ -4949,6 +5077,12 @@ export type JvmFilePresentation = {
 	path: string,
 	presentation: JvmPresentation,
 };
+
+export type JvmHeapUnavailable = 
+/**  The reason a class table could not be read applies to the dump too. */
+{ kind: "memory"; reason: JvmMemoryUnavailable } | 
+/**  Bytes. */
+{ kind: "notEnoughDiskSpace"; needed: number; available: number } | { kind: "dumpFailed"; message: string } | { kind: "dumpTimedOut"; seconds: number };
 
 export type JvmInspectUnavailable = 
 /**  The session has no inspector: not a JVM session, not ready yet, or turned off. */
@@ -7424,6 +7558,24 @@ export type SignatureHelp = {
 	activeSignature: number,
 	activeParameter: number,
 };
+
+/**
+ *  Where the sizes of instances came from.
+ * 
+ *  Class objects (mirrors) are approximate in every case: HotSpot leaves the fields it injects
+ *  into `java.lang.Class` out of the dump, so their layout size is short by a fixed amount per
+ *  mirror. With a histogram that amount is fitted to its `java.lang.Class` row; otherwise (or when
+ *  the fit is rejected) it comes from a table measured per JDK and reference size, within a few
+ *  bytes per mirror, or is 32 when the JDK is unknown.
+ */
+export type SizeSource = 
+/**  The JVM's class histogram from the capture. */
+"jvm" | 
+/**
+ *  The smallest distance between neighbouring objects of a type, in a dump the IDE did not
+ *  capture.
+ */
+"addressGaps" | "layout";
 
 export type SkipReason = 
 /**  A configuration with this name already exists. */

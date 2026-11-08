@@ -4357,6 +4357,7 @@ dependencies = [
  "ide-db",
  "ide-docker",
  "ide-extension",
+ "ide-heap",
  "ide-http",
  "ide-index",
  "ide-jsonrpc",

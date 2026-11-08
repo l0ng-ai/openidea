@@ -67,6 +67,10 @@ pub struct Host {
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
     pub debugger: Arc<ide_dap::DebugManager>,
+    /// Heap snapshots open in any window, captured from a debug session or opened from a file.
+    pub heap: Arc<ide_heap::HeapRegistry>,
+    /// The window that owns each open heap snapshot; its project's close closes them.
+    pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -125,6 +129,8 @@ impl Host {
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),
             debugger: ide_dap::DebugManager::new(languages.clone()),
+            heap: Arc::new(ide_heap::HeapRegistry::new(ide_heap::snapshots_root(&local_data_dir))),
+            heap_windows: Mutex::default(),
             languages,
             syntax,
             config_dir,
@@ -222,6 +228,8 @@ impl Host {
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);
         }
+        // After the cancels: a capture or open still running then discards what it registers.
+        ops::heap::close_window_snapshots(self, window);
         let project = self.projects.write().remove(window)?;
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
