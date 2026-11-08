@@ -126,7 +126,7 @@ export const MCP_SERVER_PAGE: PageSpec = {
           kind: "toggle",
           key: "mcpServer.enabled",
           label: "Enable MCP server",
-          hint: "Agents can read and search projects open in OpenIDEA through its built-in tools. The server listens on 127.0.0.1 only and requires a token.",
+          hint: "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.",
         },
         {
           kind: "custom",

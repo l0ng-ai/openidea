@@ -1,5 +1,10 @@
 //! Built-in IDE tools. Transport and discovery live in `ide-mcp`.
+mod edit;
 mod editors;
+mod requests;
+mod run;
+mod vcs;
+pub use requests::Requests;
 mod files;
 mod reports;
 mod search;
@@ -26,6 +31,10 @@ fn tools() -> Vec<tool::Tool> {
     tools.extend(search::tools());
     tools.extend(editors::tools());
     tools.push(symbols::get_symbol_info());
+    tools.push(symbols::find_references());
+    tools.extend(edit::tools());
+    tools.extend(run::tools());
+    tools.extend(vcs::tools());
     tools
 }
 
@@ -75,13 +84,31 @@ impl ToolRegistry for Registry {
         arguments: &str,
         cancel: CancellationToken,
     ) -> Result<String, ToolCallError> {
+        self.call_with_client(root, name, arguments, cancel, "MCP client")
+    }
+    fn call_with_client(
+        &self,
+        root: &Path,
+        name: &str,
+        arguments: &str,
+        cancel: CancellationToken,
+        client: &str,
+    ) -> Result<String, ToolCallError> {
         let (window, project) = self.target(root).map_err(ToolCallError::Failed)?;
         let tool = tools()
             .into_iter()
             .find(|t| t.metadata.name == name && allowed(&t.metadata, project.is_trusted()))
             .ok_or_else(|| ToolCallError::UnknownTool(format!("unknown tool: {name}")))?;
         let args = serde_json::from_str(arguments).map_err(|e| ToolCallError::Failed(e.to_string()))?;
-        let call = tool::Call { host: self.0.clone(), project, window, args, cancel: cancel.clone() };
+        let call = tool::Call {
+            host: self.0.clone(),
+            project,
+            window,
+            args,
+            cancel: cancel.clone(),
+            client: client.to_owned(),
+            tool: name.to_owned(),
+        };
         if cancel.is_cancelled() {
             return Err(ToolCallError::Failed(IdeError::cancelled().message));
         }

@@ -66,6 +66,8 @@ pub(crate) fn sender<T: tauri::ipc::IpcResponse + Send + Sync + 'static>(
 pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new().commands(collect_commands![
         app::app_info,
+        mcp::mcp_ui_ready,
+        mcp::mcp_respond,
         mcp::mcp_server_status,
         mcp::mcp_set_open_editors,
         mcp::mcp_set_focused_editor,

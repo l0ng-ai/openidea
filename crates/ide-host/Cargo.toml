@@ -17,6 +17,7 @@ futures.workspace = true
 ide-text.workspace = true
 ide-vfs.workspace = true
 regex-syntax.workspace = true
+regex-lite = "0.1"
 ide-workspace.workspace = true
 ide-language.workspace = true
 blake3.workspace = true

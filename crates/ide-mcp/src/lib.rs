@@ -64,6 +64,17 @@ pub trait ToolRegistry: Send + Sync + 'static {
     /// The tools callable for `project` (one of [`Self::projects`]). `Err`
     /// says why there are none (an unsupported project).
     fn tools(&self, project: &Path) -> Result<Vec<Tool>, String>;
+    fn call_with_client(
+        &self,
+        project: &Path,
+        name: &str,
+        arguments: &str,
+        cancel: CancellationToken,
+        _client: &str,
+    ) -> Result<String, ToolCallError> {
+        self.call(project, name, arguments, cancel)
+    }
+
     /// Runs tool `name` with `arguments` (a JSON object, as text) for `project`.
     fn call(
         &self,

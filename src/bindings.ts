@@ -8,6 +8,8 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
+	mcpRespond: (id: number, allow: boolean, error: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_respond", { id, allow, error })),
 	mcpServerStatus: () => typedError<McpServerStatus, IdeError>(__TAURI_INVOKE("mcp_server_status")),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpSetFocusedEditor: (editor: {
@@ -4552,7 +4554,7 @@ export type IdeError = {
 	data?: ErrorData | null,
 };
 
-export type IdeEvent = 
+export type IdeEvent = { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
@@ -5638,6 +5640,8 @@ export type McpServerStatus = {
 	/**  The stdio bridge: this executable and its arguments. */
 	stdioCommand: string[],
 };
+
+export type McpUiRequest = { type: "confirm"; client: string; tool: string; subject: string; project: string; detail: string | null } | { type: "openFile"; path: IpcPath; line: number | null; column: number | null };
 
 export type MemoryCategory = 
 /**  The backend and its WebView processes. */

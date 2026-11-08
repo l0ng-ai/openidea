@@ -47,8 +47,16 @@ vi.mock("@/platform/project", () => ({
 vi.mock("@/platform/remote", () => ({ isRemoteWindow: () => state.remote }));
 vi.mock("@/platform/ipc", () => ({
   call: (promise: Promise<unknown>) => promise,
-  commands: { mcpSetOpenEditors: state.reportOpen, mcpSetFocusedEditor: state.reportFocused },
+  onIdeEvent: () => () => {},
+  ideEventsReady: async () => {},
+  commands: {
+    mcpUiReady: vi.fn(async () => {}),
+    mcpSetOpenEditors: state.reportOpen,
+    mcpSetFocusedEditor: state.reportFocused,
+  },
 }));
+vi.mock("@/workbench/contributions", () => ({ registerOverlay: () => () => {}, editorService: vi.fn() }));
+vi.mock("./ConfirmDialog", () => ({ McpConfirmHost: () => null }));
 const { activate } = await import("./index");
 
 describe("MCP editor reports", () => {

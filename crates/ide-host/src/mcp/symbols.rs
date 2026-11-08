@@ -206,3 +206,59 @@ fn leads_declaration(line: &str, line_comment: Option<&str>) -> bool {
     ["//", "/*", "*", "#[", "#![", "@"].iter().any(|p| t.starts_with(p))
         || line_comment.is_some_and(|c| !c.is_empty() && t.starts_with(c))
 }
+
+pub fn find_references() -> Tool {
+    Tool::new("find_references", "Find references using the language service and the IDE's project index. Positions are 1-based UTF-16. Reports incomplete results when analysis is still running.", |call| async move {
+        let path = call.resolve_readable(&call.str("filePath")?).await?;
+        let line = call.opt_i64("line")?.ok_or_else(|| IdeError::invalid("missing line"))?;
+        let column = call.opt_i64("column")?.ok_or_else(|| IdeError::invalid("missing column"))?;
+        let project = call.project.clone();
+        let (doc, text) = call.host.blocking(move || {
+            let text = project.text_of(&path)?;
+            let doc = project.documents.open(&path)?;
+            Ok((doc.id, text))
+        }).await?;
+        struct Close(std::sync::Arc<crate::Project>, ide_core::DocId);
+        impl Drop for Close { fn drop(&mut self) { self.0.documents.close(self.1); } }
+        let _close = Close(call.project.clone(), doc);
+        let pos = mcp_position(&text, line, column)?;
+        let request = super::tool::request_id();
+        let work = crate::ops::lsp::lsp_references(&call.host, &call.window, request, doc, pos, call.flag("includeDeclaration", true)?, true, false, crate::ops::Channel::new(|_| {}));
+        tokio::pin!(work);
+        let result = tokio::select! {
+            result = &mut work => result?,
+            _ = call.cancel.cancelled() => { call.host.cancel_request(request); let _ = work.await; return Err(IdeError::cancelled()); }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => { call.host.cancel_request(request); let _ = work.await; return Err(IdeError::unavailable("references timed out; retry when analysis finishes")); }
+        };
+        let mut value = serde_json::to_value(&result).map_err(|e| IdeError::internal(e.to_string()))?;
+        // Convert every Location range at this boundary, including declarations.
+        fn positions(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if let (Some(line), Some(col)) = (map.get("line").and_then(|v| v.as_u64()), map.get("col").and_then(|v| v.as_u64())) {
+                        map.insert("line".into(), (line + 1).into()); map.insert("col".into(), (col + 1).into());
+                    } else { for v in map.values_mut() { positions(v); } }
+                }
+                serde_json::Value::Array(items) => { for v in items { positions(v); } }
+                _ => {}
+            }
+        }
+        positions(&mut value);
+        Output::json(value)
+    })
+    .param(Param::required("filePath", ParamType::String, "Path relative to the project root"))
+    .param(Param::required("line", ParamType::Integer, "1-based line"))
+    .param(Param::required("column", ParamType::Integer, "1-based UTF-16 column"))
+    .param(Param::optional("includeDeclaration", ParamType::Boolean, "Include declarations (default true)"))
+}
+
+fn mcp_position(text: &str, line: i64, column: i64) -> IdeResult<Pos> {
+    if line < 1 || line > u32::MAX as i64 || column < 1 || column > u32::MAX as i64 {
+        return Err(IdeError::invalid("line and column must be positive 1-based positions"));
+    }
+    let row = text.split('\n').nth((line - 1) as usize).ok_or_else(|| IdeError::invalid("line is out of bounds"))?;
+    if column as usize > row.encode_utf16().count() + 1 {
+        return Err(IdeError::invalid("column is out of bounds"));
+    }
+    Ok(Pos::new((line - 1) as u32, (column - 1) as u32))
+}

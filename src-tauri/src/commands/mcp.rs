@@ -128,3 +128,23 @@ pub fn mcp_report_problems(
     state.host.mcp_reports.report_problems(window.label(), reset, files);
     Ok(())
 }
+
+#[tauri::command]
+#[specta::specta]
+pub fn mcp_ui_ready(window: Window, state: State<'_, AppState>, ready: bool) -> IdeResult<()> {
+    state.project(window.label())?;
+    state.host.mcp_requests.set_ready(window.label(), ready);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn mcp_respond(
+    window: Window,
+    state: State<'_, AppState>,
+    id: u32,
+    allow: bool,
+    error: Option<String>,
+) -> IdeResult<()> {
+    state.host.mcp_requests.answer(window.label(), id, allow, error)
+}

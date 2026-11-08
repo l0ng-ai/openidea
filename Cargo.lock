@@ -4382,6 +4382,7 @@ dependencies = [
  "ignore",
  "parking_lot",
  "quick-xml 0.42.0",
+ "regex-lite",
  "regex-syntax",
  "reqwest",
  "rustix",

@@ -12,6 +12,7 @@ use std::sync::Mutex;
 pub(crate) struct Requests(Mutex<RequestState>);
 #[derive(Default)]
 struct RequestState {
+    clients: HashMap<String, String>,
     running: HashMap<(String, String), CancellationToken>,
     early: HashMap<(String, String), std::time::Instant>,
 }
@@ -148,6 +149,12 @@ impl Session<'_> {
     }
 
     fn initialize(&self, params: &Value) -> Value {
+        if let Some(name) = params.pointer("/clientInfo/name").and_then(Value::as_str) {
+            let mut requests = self.requests.0.lock().unwrap();
+            if requests.clients.len() < 1024 {
+                requests.clients.insert(self.scope.into(), name.chars().take(128).collect());
+            }
+        }
         let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(LATEST);
         let version = if SUPPORTED.contains(&asked) { asked } else { LATEST };
         let about = match self.project() {
@@ -182,7 +189,9 @@ impl Session<'_> {
         let outcome = if cancel.is_cancelled() {
             Err(ToolCallError::Failed("cancelled".into()))
         } else {
-            self.registry.call(&project, name, &arguments, cancel)
+            let client =
+                self.requests.0.lock().unwrap().clients.get(self.scope).cloned().unwrap_or_else(|| "MCP client".into());
+            self.registry.call_with_client(&project, name, &arguments, cancel, &client)
         };
         let (text, is_error) = match outcome {
             Ok(text) => (text, false),

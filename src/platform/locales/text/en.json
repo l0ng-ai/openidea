@@ -477,5 +477,12 @@
   "Copy HTTP Config": "Copy HTTP Config",
   "Copy Stdio Config": "Copy Stdio Config",
   "Copied to the clipboard": "Copied to the clipboard",
-  "Agents can read and search projects open in OpenIDEA through its built-in tools. The server listens on 127.0.0.1 only and requires a token.": "Agents can read and search projects open in OpenIDEA through its built-in tools. The server listens on 127.0.0.1 only and requires a token."
+  "{0} wants to run {1}": "{0} wants to run {1}",
+  "{0} more waiting": "{0} more waiting",
+  "Project: {0}": "Project: {0}",
+  "Tool: {0}": "Tool: {0}",
+  "Could not send the answer: {0}": "Could not send the answer: {0}",
+  "Allow": "Allow",
+  "Deny": "Deny",
+  "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.": "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token."
 }

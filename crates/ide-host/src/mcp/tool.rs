@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub struct Call {
+    pub client: String,
+    pub tool: String,
     pub host: Arc<Host>,
     pub project: Arc<Project>,
     pub window: String,
@@ -14,6 +16,52 @@ pub struct Call {
 }
 
 impl Call {
+    pub fn opt_str(&self, name: &str) -> IdeResult<Option<String>> {
+        self.args
+            .get(name)
+            .filter(|v| !v.is_null())
+            .map(|v| v.as_str().map(str::to_owned).ok_or_else(|| IdeError::invalid(format!("{name} must be a string"))))
+            .transpose()
+    }
+    pub fn str_map(&self, name: &str) -> IdeResult<Vec<(String, String)>> {
+        self.args
+            .get(name)
+            .and_then(Value::as_object)
+            .ok_or_else(|| IdeError::invalid(format!("{name} must be an object")))?
+            .iter()
+            .map(|(k, v)| {
+                v.as_str()
+                    .map(|v| (k.clone(), v.to_owned()))
+                    .ok_or_else(|| IdeError::invalid(format!("{name} must contain strings")))
+            })
+            .collect()
+    }
+    pub fn resolve_inside(&self, path: &str) -> IdeResult<PathBuf> {
+        resolve_inside(self.root(), path)
+    }
+    pub async fn resolve_writable(&self, path: &str) -> IdeResult<PathBuf> {
+        let path = self.resolve_inside(path)?;
+        self.check_writable(&path).await?;
+        Ok(path)
+    }
+    pub async fn check_writable(&self, path: &Path) -> IdeResult<()> {
+        self.project.require_trust()?;
+        ensure_inside(self.root(), path)
+    }
+    pub async fn ask(&self, request: ide_core::event::McpUiRequest) -> IdeResult<()> {
+        self.host.mcp_requests.ask(self, request).await
+    }
+    pub async fn confirm(&self, subject: &str, detail: Option<String>) -> IdeResult<()> {
+        self.ask(ide_core::event::McpUiRequest::Confirm {
+            client: self.client.clone(),
+            tool: self.tool.clone(),
+            subject: subject.into(),
+            project: self.root().to_string_lossy().into_owned(),
+            detail,
+        })
+        .await?;
+        self.project.require_trust()
+    }
     pub fn host(&self) -> Arc<Host> {
         self.host.clone()
     }
@@ -125,6 +173,7 @@ pub enum ParamType {
     Integer,
     Boolean,
     StringList,
+    StringMap,
 }
 pub struct Param {
     name: &'static str,
@@ -166,11 +215,16 @@ impl Tool {
             handler: Arc::new(move |call| Box::pin(handler(call))),
         }
     }
+    pub fn write(mut self) -> Self {
+        self.metadata.read_only = false;
+        self
+    }
     pub fn param(mut self, param: Param) -> Self {
         let mut schema = match param.kind {
             ParamType::String => json!({"type":"string"}),
             ParamType::Integer => json!({"type":"integer"}),
             ParamType::Boolean => json!({"type":"boolean"}),
+            ParamType::StringMap => json!({"type":"object","additionalProperties":{"type":"string"}}),
             ParamType::StringList => json!({"type":"array","items":{"type":"string"}}),
         };
         schema["description"] = param.description.into();
@@ -203,4 +257,41 @@ pub fn normalize(path: &Path) -> PathBuf {
 pub fn request_id() -> ide_core::RequestId {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x8000_0000);
     ide_core::RequestId(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Resolve existing ancestors too, so symlinks cannot escape the project.
+pub fn resolve_inside(root: &Path, raw: &str) -> IdeResult<PathBuf> {
+    let path = if raw.starts_with("file://") {
+        ide_lsp::uri_to_path(raw).ok_or_else(|| IdeError::invalid("invalid file URL"))?
+    } else {
+        PathBuf::from(raw)
+    };
+    let path = if path.is_absolute() { path } else { root.join(path) };
+    if path.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git")) {
+        return Err(IdeError::invalid("VCS metadata cannot be changed"));
+    }
+    let path = normalize(&path);
+    let ancestor =
+        path.ancestors().find(|p| p.exists()).ok_or_else(|| IdeError::invalid("path has no existing parent"))?;
+    let mut real = dunce::canonicalize(ancestor)?;
+    let suffix = path.strip_prefix(ancestor).map_err(|e| IdeError::invalid(e.to_string()))?;
+    if !suffix.as_os_str().is_empty() {
+        real.push(suffix);
+    }
+    let root = dunce::canonicalize(root)?;
+    if !real.starts_with(&root) {
+        return Err(IdeError::invalid("path is outside the project"));
+    }
+    if real
+        .strip_prefix(&root)
+        .unwrap()
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(".git"))
+    {
+        return Err(IdeError::invalid("VCS metadata cannot be changed"));
+    }
+    Ok(real)
+}
+pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
+    resolve_inside(root, &path.to_string_lossy()).map(|_| ())
 }
