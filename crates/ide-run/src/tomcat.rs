@@ -395,10 +395,6 @@ fn canonical_path(path: &Path) -> IdeResult<PathBuf> {
     let mut resolved = PathBuf::new();
     for component in std::path::absolute(path)?.components() {
         match component {
-            std::path::Component::Prefix(_) => {
-                resolved.push(component);
-                continue;
-            }
             std::path::Component::ParentDir => {
                 resolved.pop();
             }
