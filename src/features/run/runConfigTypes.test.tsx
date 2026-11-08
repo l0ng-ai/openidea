@@ -1,3 +1,4 @@
+import { useBuildModel } from "@/platform/buildModel";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { useProject } from "@/platform/project";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -114,6 +115,22 @@ describe("configuration types", () => {
       module: "",
     });
     expect(formParams(saved)).toMatchObject({ mainClass: "a.Main", module: "." });
+  });
+
+  it("sets the before launch build policy of a Java configuration", async () => {
+    const type = typeFor("application")!;
+    const config = withParams(newConfigOfType(type, []), {
+      ...newConfigOfType(type, []).params,
+      mainClass: "a.Main",
+    });
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    fireEvent.click(await screen.findByText("Build"));
+    expect(screen.getByRole("button", { name: "Build" }).textContent).toContain("Automatic");
+    fireEvent.click(screen.getByRole("button", { name: "Build" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Rebuild" }));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ buildPolicy: "rebuild" }));
   });
 
   it.each(["spring-boot", "tomcat"])("edits shared update policies in the %s form", async (kind) => {
@@ -700,6 +717,16 @@ describe("before launch tasks", () => {
     useBuildPresentation.setState({ modules: new Map() });
     disposeBuild();
   });
+
+  it("shows the build policy for a Maven configuration", async () => {
+    const type = typeFor("maven")!;
+    const config = newConfigOfType(type, []);
+    const changed = vi.fn();
+    render(<ConfigForm config={config} all={[config]} type={type} errors={{}} onChange={changed} modifyRequest={0} />);
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    fireEvent.click(await screen.findByText("Build"));
+    expect(screen.getByRole("button", { name: "Build" })).toBeTruthy();
+  });
 });
 
 describe("environment variables", () => {
@@ -866,3 +893,37 @@ describe("new Gradle wrapper default", () => {
     },
   );
 });
+
+it.each(["maven", "gradle", "delegated", "absolute", "legacy"])(
+  "offers only supported build policies for %s",
+  (tool) => {
+    const kind = tool === "maven" || tool === "gradle" ? tool : "application";
+    const config = cfg("main", { kind, module: tool === "legacy" ? null : "app", buildPolicy: "make" });
+    const previous = useProject.getState();
+    if (kind === "application") {
+      useProject.setState({ project: { root: "/work" } as never, settings: null });
+      useBuildModel.setState({
+        model: { gradle: [{ projects: [{ dir: tool === "absolute" ? "/work/app" : "app" }] }] } as never,
+      });
+    }
+    try {
+      render(
+        <ConfigForm
+          config={config}
+          all={[config]}
+          type={typeFor(kind)}
+          errors={{}}
+          onChange={vi.fn()}
+          modifyRequest={0}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Build" }));
+      expect(screen.queryByRole("option", { name: "No build" })).toBeNull();
+      expect(screen.queryByRole("option", { name: "Build, no error check" }) !== null).toBe(tool === "maven");
+      expect(screen.getByRole("option", { name: "Rebuild" })).toBeTruthy();
+    } finally {
+      useBuildModel.setState({ model: null });
+      useProject.setState(previous);
+    }
+  },
+);

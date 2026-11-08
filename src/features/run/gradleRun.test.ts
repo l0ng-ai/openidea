@@ -265,3 +265,15 @@ describe("delegation across independent builds", () => {
     expect(run!.args.at(-1)).toBe(":app:openideaRun");
   });
 });
+
+it("uses the same Rebuild preparation for delegated Run and Debug", () => {
+  const app = {
+    ...applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []),
+    buildPolicy: "rebuild" as const,
+  };
+  const run = delegatedGradleConfig(app, "app", ctx)!;
+  expect(run.args[0]).toBe("clean");
+  const debug = jdwpLaunch(run)!;
+  expect(debug.args.filter((a) => a === "clean")).toHaveLength(1);
+  expect(debug.args).toContain(DELEGATED_DEBUG);
+});
