@@ -491,6 +491,38 @@ describe("MemoryView", () => {
         await act(async () => {});
         expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(1);
       });
+
+      describe("when asking again fails", () => {
+        // Long enough for a request loop to show.
+        const settle = () => act(() => new Promise((r) => setTimeout(r, 50)));
+
+        it("asks once when the session can list instances", async () => {
+          ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(promised(false)));
+          const { rerender } = render(show(running));
+          await screen.findByText(NO_LISTENER);
+          ipc.debugJvmMemoryClasses.mockReturnValue(fail("session gone"));
+          rerender(show({ ...running, caps: { jvmInstances: true } as DebugCapabilities }));
+          expect((await screen.findByRole("alert")).textContent).toBe("session gone");
+          await settle();
+          expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(2);
+        });
+
+        it("asks once per stop after the pause hint", async () => {
+          const live = { ...withInstances, status: "running" } as DebugSession;
+          ipc.debugJvmMemoryClasses.mockReturnValueOnce(ok(promised(true)));
+          const { rerender } = render(show(live));
+          await screen.findByText(PAUSE_HINT);
+          ipc.debugJvmMemoryClasses.mockReturnValue(fail("session gone"));
+          rerender(show({ ...live, status: "paused", stops: 1 }));
+          await screen.findByRole("alert");
+          await settle();
+          expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(2);
+          rerender(show({ ...live, stops: 1 }));
+          rerender(show({ ...live, status: "paused", stops: 2 }));
+          await settle();
+          expect(ipc.debugJvmMemoryClasses).toHaveBeenCalledTimes(3);
+        });
+      });
     });
 
     it("says the debugger is counting while paused", async () => {

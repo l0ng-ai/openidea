@@ -6,7 +6,7 @@ import type { RowQuery } from "./rows";
 export interface MemoryEntry {
   /** The latest answer, which may say why no snapshot could be taken. */
   result: JvmMemoryResult | null;
-  /** The session when `result` was asked for: its `stops` and whether it could list instances. */
+  /** The session when the last answered or failed request was sent: its `stops` and whether it could list instances. */
   asked: { stop: number; listsInstances: boolean } | null;
   /** The last snapshot taken: it stays on screen when a later refresh is refused or fails. */
   snapshot: JvmMemorySnapshot | null;
@@ -60,7 +60,8 @@ export async function refreshMemory(id: DebugSessionId): Promise<void> {
     );
   } catch (e) {
     if (inflight.get(id) !== token) return;
-    patchEntry(id, () => ({ error: e instanceof Error ? e.message : String(e) }));
+    // A failed request was still asked: `isOvertaken` must not send it again at once.
+    patchEntry(id, () => ({ asked, error: e instanceof Error ? e.message : String(e) }));
   } finally {
     if (inflight.get(id) === token) {
       inflight.delete(id);
