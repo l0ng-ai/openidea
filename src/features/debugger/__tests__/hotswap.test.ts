@@ -4,7 +4,8 @@ const ipc = vi.hoisted(() => {
   const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
   return {
     ok,
-    javaBuildWorkspace: vi.fn(() => ok("succeeded" as string)),
+    cancelRequest: vi.fn((_request: number) => Promise.resolve()),
+    javaBuildWorkspace: vi.fn((_module: string, _request?: number) => ok("succeeded" as string)),
     debugRedefineClasses: vi.fn(() =>
       ok({ changedClasses: ["com.x.A", "com.x.B"], errorMessage: null as string | null }),
     ),
@@ -27,10 +28,16 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
   };
 });
 
-import type { DebugCapabilities, DebugSessionId } from "@/platform/ipc";
+import { IpcError, type DebugCapabilities, type DebugSessionId } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
-import { hotSwapMenuItems, hotSwapMessage, onHotCodeReplace, reloadChangedClasses } from "../hotswap";
+import {
+  cancelHotSwapBuild,
+  hotSwapMenuItems,
+  hotSwapMessage,
+  onHotCodeReplace,
+  reloadChangedClasses,
+} from "../hotswap";
 import { publishContext, useDebug, type DebugSession } from "../state";
 
 function session(id: number, hotCodeReplace: boolean): DebugSession {
@@ -67,6 +74,7 @@ function session(id: number, hotCodeReplace: boolean): DebugSession {
 describe("HotSwap", () => {
   beforeEach(() => {
     notes.length = 0;
+    ipc.cancelRequest.mockClear();
     ipc.javaBuildWorkspace.mockClear();
     ipc.debugRedefineClasses.mockClear();
     useDebug.setState({ sessions: { 1: session(1, true), 2: session(2, false) }, active: 1 });
@@ -110,6 +118,49 @@ describe("HotSwap", () => {
     await reloadChangedClasses();
     expect(ipc.debugRedefineClasses).not.toHaveBeenCalled();
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "Hot Swap cancelled" });
+  });
+
+  it("treats a cancellation error as cancellation and allows the next reload", async () => {
+    ipc.javaBuildWorkspace.mockRejectedValueOnce(new IpcError({ kind: "cancelled", message: "cancelled" }));
+    await reloadChangedClasses();
+    expect(ipc.debugRedefineClasses).not.toHaveBeenCalled();
+    expect(notes.at(-1)).toMatchObject({ level: "info", title: "Hot Swap cancelled" });
+    expect(getContext().debugHotSwapBuilding).toBe(false);
+    cancelHotSwapBuild();
+    expect(ipc.cancelRequest).not.toHaveBeenCalled();
+    await reloadChangedClasses();
+    expect(ipc.debugRedefineClasses).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the first request when reloads overlap and stops at the cancelled module", async () => {
+    const two = session(3, true);
+    two.launch = { ...two.launch!, cwd: "/p/other" };
+    useDebug.setState({ sessions: { 1: session(1, true), 3: two } });
+    let finish!: (result: { status: "ok"; data: string }) => void;
+    ipc.javaBuildWorkspace.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const pending = reloadChangedClasses();
+    await vi.waitFor(() => expect(ipc.javaBuildWorkspace).toHaveBeenCalledTimes(1));
+    const request = ipc.javaBuildWorkspace.mock.calls[0]![1];
+    expect(getContext().debugHotSwapBuilding).toBe(true);
+    expect(notes.at(-1)).toMatchObject({ title: "Compiling changed classes…", actions: [expect.any(Object)] });
+    await reloadChangedClasses();
+    await reloadChangedClasses(false);
+    expect(ipc.javaBuildWorkspace).toHaveBeenCalledTimes(1);
+    cancelHotSwapBuild();
+    cancelHotSwapBuild();
+    expect(ipc.cancelRequest).toHaveBeenCalledExactlyOnceWith(request);
+    // A success response racing the cancel must not reload partially compiled classes.
+    finish({ status: "ok", data: "succeeded" });
+    await pending;
+    expect(ipc.javaBuildWorkspace).toHaveBeenCalledTimes(1);
+    expect(ipc.debugRedefineClasses).not.toHaveBeenCalled();
+    expect(notes.at(-1)).toMatchObject({ level: "info", title: "Hot Swap cancelled" });
+    expect(getContext().debugHotSwapBuilding).toBe(false);
+    cancelHotSwapBuild();
+    expect(ipc.cancelRequest).toHaveBeenCalledTimes(1);
+    await reloadChangedClasses();
+    expect(ipc.javaBuildWorkspace).toHaveBeenCalledTimes(3);
+    expect(ipc.debugRedefineClasses).toHaveBeenCalledTimes(2);
   });
 
   it("does not reload after a failed build", async () => {

@@ -455,7 +455,7 @@ export function registerDebugActions(): () => void {
       description: "Stop the compile a Reload Changed Classes action is waiting on",
       category: "Debug",
       icon: "stop",
-      when: "debugCanHotSwap",
+      when: "debugHotSwapBuilding",
       run: () => cancelHotSwapBuild(),
     },
     {

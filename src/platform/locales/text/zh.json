@@ -6853,5 +6853,6 @@
   "Search stopped at the entry limit. More projects may exist; choose a smaller folder to search again.": "搜索已达到条目数量上限，可能还有更多项目。请选择较小的文件夹重新搜索。",
   "Cancel Hot Swap Build": "取消 Hot Swap 构建",
   "Stop the compile a Reload Changed Classes action is waiting on": "停止 Reload Changed Classes 正在等待的编译",
-  "Hot Swap cancelled": "Hot Swap 已取消"
+  "Hot Swap cancelled": "Hot Swap 已取消",
+  "Compiling changed classes…": "正在编译更改的类…"
 }
