@@ -427,5 +427,7 @@
   "Allowed for this session": "Allowed for this session",
   "Always allowed": "Always allowed",
   "Declined": "Declined",
-  "Always declined": "Always declined"
+  "Always declined": "Always declined",
+  "Delete Remote Branches": "Delete Remote Branches",
+  "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.": "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well."
 }
