@@ -29,7 +29,13 @@ export function menuItems(nodes: MenuNode[]): MenuItem[] {
       case "submenu":
         return { id: n.id, label: label(n.id, n.label), submenu: menuItems(n.children) };
       case "action":
-        return { kind: "action", action: n.id, arg: n.arg ?? undefined, label: n.arg ? n.label : label(n.id, n.label) };
+        return {
+          kind: "action",
+          action: n.id,
+          arg: n.arg ?? undefined,
+          label: n.arg ? n.label : label(n.id, n.label),
+          ...(n.checked != null && { checked: n.checked }),
+        };
     }
   });
 }

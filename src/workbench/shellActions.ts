@@ -10,6 +10,7 @@ import { activateToolWindow } from "./toolwindows/store";
 import { toggleTheme } from "./theme";
 import { cancelTask, canCancel, useTasks } from "./tasks";
 import { maybeEditorService, showStatusInfo } from "./contributions";
+import { toggleStatusWidget } from "./statusBarWidgets";
 
 export async function openProjectDialog() {
   if (!isTauri()) {
@@ -104,6 +105,14 @@ export function registerShellActions(): () => void {
       category: "View",
       keywords: ["toolbar", "widgets", "title bar"],
       run: showCustomizeToolbar,
+    },
+    {
+      // View › Appearance › Status Bar Widgets: the argument is the widget id.
+      id: "view.toggleStatusBarWidget",
+      title: "Status Bar Widget",
+      category: "View",
+      hidden: true,
+      run: ({ arg }) => (typeof arg === "string" ? toggleStatusWidget(arg) : undefined),
     },
     {
       id: "view.notifications",

@@ -313,6 +313,7 @@ fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     {
         return;
     }
+    menu::restore_check(app, &app.state::<menu::MenuState>(), id);
     dispatch_menu_action(app, id);
 }
 

@@ -1911,6 +1911,9 @@ export type AppearanceSettings = {
 	showToolWindowNames?: boolean,
 	showToolWindowBadges?: boolean,
 	widescreenToolWindows?: boolean,
+	/**  View › Appearance › Toolbar; hidden leaves IDEA's compact window header. */
+	showMainToolbar?: boolean,
+	showStatusBar?: boolean,
 	/**
 	 *  Status bar widgets shown (`true`) or hidden (`false`) by the user
 	 *  (status bar context menu); widgets not listed use their default.
@@ -3548,6 +3551,8 @@ export type DynamicItem = {
 	action: string,
 	arg: string | null,
 	label: string,
+	/**  Drawn with a check mark in this state; `None` for a plain item. */
+	checked?: boolean | null,
 };
 
 /**  Editor › General › Appearance. */
@@ -5705,6 +5710,8 @@ export type MenuConfig = {
 	accelerators: { [key in string]: string },
 	/**  [`Entry::Dynamic`] slot → its items, already localised. */
 	dynamic?: { [key in string]: DynamicItem[] },
+	/**  Ids of the toggle actions currently on. */
+	checked?: string[],
 };
 
 /**
@@ -5712,8 +5719,13 @@ export type MenuConfig = {
  *  Labels are the English defaults; the frontend localises them like the native menu.
  */
 export type MenuNode = { kind: "submenu"; id: string; label: string; children: MenuNode[] } | 
-/**  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label. */
-{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null } | 
+/**
+ *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
+ *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
+ *  leave it unset: the frontend menu reads their state from the action (`toggled`), the
+ *  source [`MenuConfig::checked`] is built from for the native menu.
+ */
+{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null } | 
 /**  A disabled placeholder such as "No Recent Projects". */
 { kind: "placeholder"; id: string; label: string } | { kind: "separator" };
 

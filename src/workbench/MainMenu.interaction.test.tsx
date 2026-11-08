@@ -35,13 +35,13 @@ beforeEach(() => {
       kind: "submenu",
       id: "file",
       label: "File",
-      children: [{ kind: "action", id: "test.open", label: "Open", hint: null, arg: null }],
+      children: [{ kind: "action", id: "test.open", label: "Open", hint: null, arg: null, checked: null }],
     },
     {
       kind: "submenu",
       id: "edit",
       label: "Edit",
-      children: [{ kind: "action", id: "test.undo", label: "Undo", hint: null, arg: null }],
+      children: [{ kind: "action", id: "test.undo", label: "Undo", hint: null, arg: null, checked: null }],
     },
   ]);
   dispose = registerActions([
