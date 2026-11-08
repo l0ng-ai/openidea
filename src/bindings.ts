@@ -1902,6 +1902,8 @@ export type AppearanceSettings = {
 	menuIcons?: boolean,
 	/**  `hamburger` | `merged`: main menu presentation in the frameless title bar. */
 	mainMenuStyle?: string,
+	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
+	mainMenuAlt?: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,

@@ -344,6 +344,11 @@ function UiOptionsGrid() {
             hint="Project, Structure, Commit and other tool window trees indent less per level"
           />
           <BoundToggle k="appearance.menuIcons" label="Display icons in menu items" />
+          <BoundToggle
+            k="appearance.mainMenuAlt"
+            label="Open main menu with a lone Alt press"
+            hint="When off, Alt key combinations still work but pressing Alt alone does not focus the main menu"
+          />
         </>
       }
     />
