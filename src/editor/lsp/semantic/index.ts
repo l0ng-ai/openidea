@@ -26,6 +26,7 @@ import { languageSemantics, type SemanticRange } from "./languages";
 // elsewhere go through the re-exported `languageSemantics`.
 export { languageSemantics } from "./languages";
 // Registers each language's semantics (highlighting hooks, construct docs).
+import "./kotlin";
 import "./python";
 import "./php";
 

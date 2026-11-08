@@ -42,11 +42,12 @@ pub enum SyntaxHighlightKind {
     Tag,
     Operator,
     Punctuation,
+    Parameter,
 }
 
 impl SyntaxHighlightKind {
     /// Every kind, in `as u32` order: the legend for [`SyntaxHighlights::data`].
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Keyword,
         Self::String,
         Self::StringSpecial,
@@ -71,6 +72,7 @@ impl SyntaxHighlightKind {
         Self::Tag,
         Self::Operator,
         Self::Punctuation,
+        Self::Parameter,
     ];
 
     /// The kebab-case name plugins use (`doc-comment`, `function-call`, …).
@@ -162,7 +164,8 @@ const CAPTURES: &[(&str, Paint)] = {
         ("variable.member", Kind(K::Property)),
         ("variable.field", Kind(K::Property)),
         ("variable", Kind(K::Variable)),
-        ("parameter", Kind(K::Variable)),
+        ("variable.parameter", Kind(K::Parameter)),
+        ("parameter", Kind(K::Parameter)),
         ("property", Kind(K::Property)),
         ("field", Kind(K::Property)),
         ("attribute", Kind(K::Attribute)),
@@ -374,6 +377,32 @@ mod tests {
             .chunks(3)
             .map(|t| (String::from_utf16(&units[t[0] as usize..t[1] as usize]).unwrap(), h.kinds[t[2] as usize]))
             .collect()
+    }
+
+    #[test]
+    fn kotlin_supplements_stream_highlighting_with_declaration_roles() {
+        use SyntaxHighlightKind as K;
+        let src = "package palette\n/** Docs */\n@Deprecated(\"old\")\nclass Greeter(val name: String) {\n var count: Int = 0\n fun greet(prefix: String): String { val message = \"hello\\n\"; println(message); return prefix }\n}\ntypealias Handler = (String) -> Unit\nvalue class UserId(val value: String)\n";
+        let got = spans("kotlin", src);
+        for (text, expected) in [
+            ("Deprecated", K::Attribute),
+            ("Greeter", K::Type),
+            ("name", K::Property),
+            ("count", K::Property),
+            ("greet", K::Function),
+            ("prefix", K::Parameter),
+            ("message", K::Variable),
+            ("println", K::FunctionCall),
+            ("Handler", K::Type),
+            ("value", K::Keyword),
+            ("/** Docs */", K::DocComment),
+            ("\\n", K::Escape),
+        ] {
+            assert!(
+                got.iter().any(|(word, kind)| word == text && *kind == expected),
+                "missing {text}: {expected:?} in {got:?}"
+            );
+        }
     }
 
     #[test]

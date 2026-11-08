@@ -38,6 +38,17 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it("requests Kotlin declaration highlights while retaining its CodeMirror language", async () => {
+    const { backend, manager, frame } = setup({ "/p/Palette.kt": "class Greeter { fun greet() {} }" });
+    const highlights = vi.spyOn(backend, "highlights").mockResolvedValue({ kinds: ["function"], data: [20, 25, 0] });
+    const model = await manager.acquire("/p/Palette.kt");
+    await frame();
+    expect(model.language).not.toBeNull();
+    expect(model.getMeta().language).toBe("kotlin");
+    await vi.waitFor(() => expect(highlights).toHaveBeenCalledWith(model.doc));
+    manager.stop();
+  });
+
   it("gives a new slot the Code Style indent for Reformat Code, not the detected one", async () => {
     const settings = {
       editor: {
